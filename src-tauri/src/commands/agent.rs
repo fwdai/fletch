@@ -115,17 +115,9 @@ pub fn send_user_message(
     turn_id: String,
     text: String,
     attachments: Vec<String>,
-    thinking: Option<String>,
 ) -> Result<bool> {
     let sup = supervisor.inner().clone();
-    sup.send_user_message(
-        &app,
-        &agent_id,
-        &turn_id,
-        &text,
-        &attachments,
-        thinking.as_deref(),
-    )
+    sup.send_user_message(&app, &agent_id, &turn_id, &text, &attachments)
 }
 
 #[tauri::command]

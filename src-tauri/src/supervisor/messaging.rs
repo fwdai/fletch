@@ -33,7 +33,6 @@ impl Supervisor {
         turn_id: &str,
         text: &str,
         attachments: &[String],
-        thinking: Option<&str>,
     ) -> Result<bool> {
         let mode = injection_mode(&self.workspace.agent(agent_id)?.provider);
         let busy = self.is_busy(agent_id);
@@ -48,7 +47,6 @@ impl Supervisor {
             turn_id: turn_id.to_string(),
             text: text.to_string(),
             attachments: attachments.to_vec(),
-            thinking: thinking.map(str::to_string),
         };
 
         let delivery = decide_delivery(busy, mode, tool_gated, queue_nonempty);
@@ -122,11 +120,10 @@ impl Supervisor {
         // `live_agent` yields `AgentNotFound` when the turn already ended; the
         // send error then propagates untouched so the caller's fallback still
         // fires. Both happen with the `agents` lock released (see `live_agent`).
-        self.live_agent(agent_id)?.send_user_message(
-            &msg.text,
-            &msg.attachments,
-            msg.thinking.as_deref(),
-        )?;
+        // Live injection is claude-only (managed), and claude's model/effort are
+        // fixed on its running process — so no per-turn config to pass.
+        self.live_agent(agent_id)?
+            .send_user_message(&msg.text, &msg.attachments, None, None)?;
         if let Err(e) =
             self.workspace
                 .insert_user_turn(agent_id, &msg.turn_id, &msg.text, &msg.attachments)
@@ -157,7 +154,6 @@ impl Supervisor {
         turn_id: &str,
         text: &str,
         attachments: &[String],
-        thinking: Option<&str>,
     ) -> Result<()> {
         // Durable capture first — independent of whether the agent accepts.
         if let Err(e) = self
@@ -166,8 +162,17 @@ impl Supervisor {
         {
             tracing::warn!(error = %e, agent_id, "persist outgoing user turn failed");
         }
+        // Resolve the session's current model/effort from the record at dispatch
+        // — the single source of truth. Per-turn runners bake it into this turn's
+        // argv; claude (managed) ignores it (config fixed on its process).
+        let record = self.workspace.agent(agent_id)?;
         let agent = self.live_agent(agent_id)?;
-        agent.send_user_message(text, attachments, thinking)?;
+        agent.send_user_message(
+            text,
+            attachments,
+            record.model.as_deref(),
+            record.effort.as_deref(),
+        )?;
         Ok(())
     }
 
@@ -305,13 +310,7 @@ fn deliver_as_turn(
     if deletion_guard.contains(&project_id) {
         return Err(Error::Other("project deletion is in progress".into()));
     }
-    sup.deliver_user_message(
-        agent_id,
-        &msg.turn_id,
-        &msg.text,
-        &msg.attachments,
-        msg.thinking.as_deref(),
-    )?;
+    sup.deliver_user_message(agent_id, &msg.turn_id, &msg.text, &msg.attachments)?;
     mark_user_turn_started(sup, app, agent_id, Some(&msg.turn_id));
     on_first_user_message(
         sup.clone(),
@@ -466,7 +465,7 @@ mod tests {
         sup.workspace.add_agent(&mut record).unwrap();
 
         let err = sup
-            .deliver_user_message("yosemite", "turn-1", "hello", &[], None)
+            .deliver_user_message("yosemite", "turn-1", "hello", &[])
             .unwrap_err();
         assert!(matches!(err, Error::AgentNotFound(_)));
 

@@ -31,8 +31,6 @@ pub struct PerTurnSpec {
     pub sandbox_root: PathBuf,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
-    /// Session-level model override. `None` keeps the provider CLI default.
-    pub model: Option<String>,
     /// A custom agent's standing instructions, snapshotted on the session and
     /// injected into every turn (appended after Fletch's global system prompt).
     /// Includes the materialized skill index when the session has skills.
@@ -450,7 +448,6 @@ impl Agent {
                 keepalive,
                 cwd: spec.cwd,
                 session_id: spec.session_id,
-                model: spec.model,
                 stdout_is_json,
                 env,
                 kill_plan: kill,
@@ -471,15 +468,23 @@ impl Agent {
         }
     }
 
+    /// Deliver a user turn. `model`/`effort` are the session's current config,
+    /// resolved from the record at dispatch (see `deliver_user_message`) and
+    /// used only by per-turn runners, which bake them into that turn's argv.
+    /// claude (Managed) ignores them — its config is fixed on the persistent
+    /// process at spawn and changed via a session-preserving respawn instead.
     pub fn send_user_message(
         &self,
         text: &str,
         attachments: &[String],
-        thinking: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<()> {
         match self {
             Self::Managed(a) => a.session.send_user_message(text, attachments),
-            Self::PerTurn(a) => a.session.send_user_message(text, attachments, thinking),
+            Self::PerTurn(a) => a
+                .session
+                .send_user_message(text, attachments, model, effort),
             Self::Pty(_) => Err(Error::Other("send_user_message called on pty agent".into())),
         }
     }

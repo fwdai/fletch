@@ -29,6 +29,8 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const turnStartedAt = useAppStore((s) => s.turnStartedAt[agent.id]);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   const send = useAppStore((s) => s.sendUserMessage);
+  const setAgentEffort = useAppStore((s) => s.setAgentEffort);
+  const setAgentModel = useAppStore((s) => s.setAgentModel);
   const stop = useAppStore((s) => s.stop);
   const runLocalCommand = useAppStore((s) => s.runLocalCommand);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
@@ -363,20 +365,16 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               defaultCustomAgentId={agent.custom_agent_id ?? undefined}
               initialThinking={agent.effort ?? undefined}
               onChangeEffort={(value) => {
-                // Persist the mid-session change; the backend restarts claude
-                // (resuming the same session) to re-apply --effort, and per-turn
-                // agents pick it up on their next message. Best-effort: a failure
-                // just leaves the prior effort in force.
-                api.setAgentEffort(agent.id, value).catch((e) => {
+                // Go through the store so the change is serialized per agent and
+                // a subsequent send waits for it to land (see queueConfigOp).
+                // claude restarts to re-apply --effort; per-turn agents read the
+                // new value from the record on their next turn.
+                setAgentEffort(agent.id, value).catch((e) => {
                   console.error("set_agent_effort failed", e);
                 });
               }}
               onChangeModel={(model) => {
-                // Persist the mid-session model change; the backend restarts
-                // claude (resuming the same session) to re-apply --model, and
-                // per-turn agents pick it up on their next turn. Best-effort: a
-                // failure just leaves the prior model in force.
-                api.setAgentModel(agent.id, model ?? null).catch((e) => {
+                setAgentModel(agent.id, model ?? null).catch((e) => {
                   console.error("set_agent_model failed", e);
                 });
               }}
@@ -410,9 +408,13 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               seed={composerSeed}
               onSeedConsumed={onSeedConsumed}
               draftKey={agent.id}
-              onSend={({ text, thinking, attachments }) => {
+              onSend={({ text, attachments }) => {
+                // Effort is session-level now (persisted via onChangeEffort and
+                // read from the record each turn), so sends carry no per-message
+                // effort — the composer's `thinking` in the payload is only used
+                // by the new-agent spawn path.
                 pinnedToBottom.current = true;
-                send(agent.id, text, attachments, thinking);
+                send(agent.id, text, attachments);
               }}
               onStop={() => stop(agent.id)}
             />

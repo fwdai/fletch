@@ -30,6 +30,25 @@ import { interruptedAgents } from "./interrupted";
 import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppState, SliceCreator } from "./types";
 
+// Per-agent serialization of session-config mutations (effort/model). Config
+// and message sends travel on separate async channels, so without this a send
+// could reach the backend and dispatch a turn before a just-issued effort/model
+// change was persisted — the turn would then read stale config from the record.
+// `sendUserMessage` awaits the agent's pending config op before dispatching, and
+// chaining also applies rapid config changes in call order.
+const configOps = new Map<string, Promise<void>>();
+
+function queueConfigOp(id: string, op: () => Promise<void>): Promise<void> {
+  const next = (configOps.get(id) ?? Promise.resolve()).catch(() => {}).then(op);
+  configOps.set(id, next);
+  void next
+    .catch(() => {})
+    .finally(() => {
+      if (configOps.get(id) === next) configOps.delete(id);
+    });
+  return next;
+}
+
 /** A degraded transcript-ingest state stored per agent (the `healthy` status is
  *  never stored — it deletes the key). `provider`/`version` are for the banner
  *  copy; `status` picks the message. */
@@ -146,12 +165,13 @@ export interface WorkspaceSlice {
     code: ForkCode,
     context: ForkContext,
   ) => Promise<AgentRecord | null>;
-  sendUserMessage: (
-    id: string,
-    text: string,
-    attachments?: string[],
-    thinking?: string,
-  ) => Promise<void>;
+  sendUserMessage: (id: string, text: string, attachments?: string[]) => Promise<void>;
+  /** Persist a mid-session reasoning-effort change and (for claude) restart to
+   *  apply it. Serialized per agent so a subsequent send waits for it to land —
+   *  the next turn then reads the new value from the record. */
+  setAgentEffort: (id: string, effort: string | null) => Promise<void>;
+  /** Persist a mid-session model change (see `setAgentEffort`). */
+  setAgentModel: (id: string, model: string | null) => Promise<void>;
   /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
    *  Looks up the held control-protocol request for `toolUseId` and delivers
    *  `updatedInput` (the tool's input with the user's `answers` merged in) as
@@ -389,7 +409,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  sendUserMessage: async (id, text, attachments = [], thinking) => {
+  setAgentEffort: (id, effort) => queueConfigOp(id, () => api.setAgentEffort(id, effort)),
+  setAgentModel: (id, model) => queueConfigOp(id, () => api.setAgentModel(id, model)),
+
+  sendUserMessage: async (id, text, attachments = []) => {
+    // Wait for any in-flight effort/model change for this agent to land before
+    // dispatching, so the turn reads the intended config from the record (the
+    // backend resolves per-turn config at dispatch). See `queueConfigOp`.
+    await configOps.get(id)?.catch(() => {});
     // Guard: some Claude built-in control commands (e.g. /usage, /agents,
     // /login) only work in its interactive TUI and don't resolve over this
     // view's stream-json transport. Dispatched as a plain message they'd
@@ -480,7 +507,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         };
       });
       try {
-        const enqueued = await api.sendUserMessage(id, turnId, sendText, attachments, thinking);
+        const enqueued = await api.sendUserMessage(id, turnId, sendText, attachments);
         // Only a genuinely-held message wears the badge; a delivered one stays a
         // plain bubble. Match by turnId — agent output may have appended since.
         if (wasBusy && enqueued) {
@@ -499,9 +526,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
           // process in --resume mode, then deliver the message once ready.
           // Not busy, so it lands as a new turn (never queued) — no badge.
           await api.resumeAgent(id);
-          await sendWhenAgentReady(() =>
-            api.sendUserMessage(id, turnId, sendText, attachments, thinking),
-          );
+          await sendWhenAgentReady(() => api.sendUserMessage(id, turnId, sendText, attachments));
         } else {
           throw e;
         }

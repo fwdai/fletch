@@ -212,7 +212,6 @@ fn pending_messages_round_trip_and_scoped_delete() {
         turn_id: id.into(),
         text: text.into(),
         attachments: vec![],
-        thinking: None,
     };
 
     // Enqueue three follow-ups; they read back for this workspace in seq order.
@@ -273,7 +272,6 @@ fn pending_messages_excluded_for_archived_workspace() {
             turn_id: "t1".into(),
             text: "hi".into(),
             attachments: vec![],
-            thinking: None,
         },
     )
     .unwrap();

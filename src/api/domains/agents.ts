@@ -75,19 +75,12 @@ export const agentsApi = {
     invoke<void>("write_to_agent", { agentId, data }),
   /** Resolves to `true` when the message was enqueued for a later turn boundary
    *  rather than delivered now (injected live / sent as a new turn). */
-  sendUserMessage: (
-    agentId: string,
-    turnId: string,
-    text: string,
-    attachments: string[] = [],
-    thinking?: string,
-  ) =>
+  sendUserMessage: (agentId: string, turnId: string, text: string, attachments: string[] = []) =>
     invoke<boolean>("send_user_message", {
       agentId,
       turnId,
       text,
       attachments,
-      thinking: thinking ?? null,
     }),
   answerToolUse: (
     agentId: string,

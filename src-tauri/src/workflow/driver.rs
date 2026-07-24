@@ -194,7 +194,7 @@ impl AgentDriver for SupervisorDriver {
             let turn_id = uuid::Uuid::new_v4().to_string();
             self.sup
                 .clone()
-                .send_user_message(&self.app, agent_id, &turn_id, &text, &[], None)?;
+                .send_user_message(&self.app, agent_id, &turn_id, &text, &[])?;
             Ok(())
         })
     }
