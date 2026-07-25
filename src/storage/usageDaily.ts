@@ -26,13 +26,19 @@ export function recordUsageSnapshot(
   const now = Date.now();
   const day = localDay(now);
   const { tokens, costUsd } = usage.spend;
+  // `cost_usd` is NOT NULL DEFAULT 0, and a bound NULL does not fall back to a
+  // column default — it fails the constraint. A snapshot's cost is null whenever
+  // no agent priced its own calls (claude, codex, cursor), which is most
+  // sessions, so this is the difference between recording their history and
+  // silently recording none of it. The column already reads 0 as "unpriced".
+  const cost = costUsd ?? 0;
   const fingerprint = [
     day,
     tokens.input,
     tokens.output,
     tokens.cacheRead,
     tokens.cacheWrite,
-    costUsd,
+    cost,
   ].join("|");
   if (lastWritten.get(workspaceId) === fingerprint) return;
   lastWritten.set(workspaceId, fingerprint);
@@ -46,7 +52,7 @@ export function recordUsageSnapshot(
       output_tokens: tokens.output,
       cache_read_tokens: tokens.cacheRead,
       cache_write_tokens: tokens.cacheWrite,
-      cost_usd: costUsd,
+      cost_usd: cost,
       updated_at: now,
     },
     "workspace_id,day",
