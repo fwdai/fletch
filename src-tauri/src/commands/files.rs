@@ -140,37 +140,57 @@ fn resolve(p: &Path) -> PathBuf {
     crate::sandbox::policy::resolve_existing_prefix(p)
 }
 
-/// Whether any component of `rel` under `checkout` is a symlink whose target
-/// lands outside `root`.
+/// Cap on link hops per component, mirroring the kernel's `SYMLOOP_MAX`. A
+/// cycle (`x` → `y` → `x`) never terminates on its own; the kernel answers
+/// `ELOOP` and so do we, by refusing the path.
+const MAX_SYMLINK_HOPS: usize = 32;
+
+/// Whether walking `rel` under `checkout` leaves `root` by way of a symlink.
 ///
 /// This is a second pass because resolving the longest existing prefix alone
 /// misses the sharpest case: a **dangling** symlink. `canonicalize` fails on
 /// one, so the leaf is re-appended verbatim and the path reads as an ordinary
 /// in-checkout file — while `fs::write` would happily follow it and *create*
-/// the outside target. Reading each link explicitly catches that, and catches
+/// the outside target. Reading the links explicitly catches that, and catches
 /// it before the file exists. In-tree links resolve back under `root` and pass.
+///
+/// Each component's links are followed to the **end of the chain**, not one
+/// hop. A single hop is not enough: `a` → `b` → `/outside/nope` has an entirely
+/// innocent first hop (`b` is in the checkout), and with a dangling tail
+/// `resolve` can't see past it either — it gives up at the missing target and
+/// re-anchors the remainder under the checkout. `fs::write` has no such trouble
+/// and follows all the way to `/outside/nope`, creating it.
 fn escapes_via_symlink(root: &Path, checkout: &Path, rel: &Path) -> bool {
     let mut cur = checkout.to_path_buf();
     for component in rel.components() {
         cur.push(component);
-        let Ok(meta) = std::fs::symlink_metadata(&cur) else {
-            // Doesn't exist yet, so it isn't a link — and nothing can exist
-            // beneath a path that doesn't exist.
-            return false;
-        };
-        if !meta.file_type().is_symlink() {
-            continue;
-        }
-        let Ok(target) = std::fs::read_link(&cur) else {
-            return true; // unreadable link — fail closed
-        };
-        let absolute = if target.is_absolute() {
-            target
-        } else {
-            cur.parent().unwrap_or(checkout).join(target)
-        };
-        if !resolve(&absolute).starts_with(root) {
-            return true;
+        for hop in 0.. {
+            let Ok(meta) = std::fs::symlink_metadata(&cur) else {
+                // Nothing here yet, so it isn't a link — and nothing can exist
+                // beneath a path that doesn't exist.
+                return false;
+            };
+            if !meta.file_type().is_symlink() {
+                break;
+            }
+            if hop >= MAX_SYMLINK_HOPS {
+                return true; // cycle or absurd nesting — fail closed
+            }
+            let Ok(target) = std::fs::read_link(&cur) else {
+                return true; // unreadable link — fail closed
+            };
+            let absolute = if target.is_absolute() {
+                target
+            } else {
+                cur.parent().unwrap_or(checkout).join(target)
+            };
+            // `resolve` both collapses a fully-resolvable chain in one step and
+            // normalizes any `..` in the target; where it stalls (a dangling
+            // hop) the loop reads the next link itself.
+            cur = resolve(&absolute);
+            if !cur.starts_with(root) {
+                return true;
+            }
         }
     }
     false
@@ -769,6 +789,66 @@ mod safe_join_tests {
         assert!(
             safe_join(&checkout, "notes.txt").is_err(),
             "a dangling symlink out of the checkout must be rejected"
+        );
+    }
+
+    /// A *chain* of links: the first hop stays in the checkout, so checking one
+    /// hop clears it — but the write follows the chain to the end. Compounded
+    /// with a dangling tail, since that is what defeats prefix resolution.
+    #[test]
+    fn rejects_dangling_symlink_chain_out_of_the_checkout() {
+        let (_td, checkout, outside) = checkout_and_outside();
+        let never = outside.join("nope");
+        // a -> b (in-checkout, innocent-looking), b -> outside/nope (missing).
+        std::os::unix::fs::symlink("b", checkout.join("a")).unwrap();
+        std::os::unix::fs::symlink(&never, checkout.join("b")).unwrap();
+        assert!(!never.exists(), "the chain's tail must not exist");
+
+        assert!(
+            safe_join(&checkout, "a").is_err(),
+            "a symlink chain ending outside the checkout must be rejected"
+        );
+    }
+
+    /// A longer chain, escaping only on the last hop — guards against the walk
+    /// being accidentally bounded at one or two hops.
+    #[test]
+    fn rejects_long_symlink_chain_escaping_on_the_final_hop() {
+        let (_td, checkout, outside) = checkout_and_outside();
+        // h0 -> h1 -> h2 -> h3 -> outside/nope (missing)
+        for i in 0..3 {
+            std::os::unix::fs::symlink(format!("h{}", i + 1), checkout.join(format!("h{i}")))
+                .unwrap();
+        }
+        std::os::unix::fs::symlink(outside.join("nope"), checkout.join("h3")).unwrap();
+
+        assert!(
+            safe_join(&checkout, "h0").is_err(),
+            "the walk must follow the chain to its end"
+        );
+    }
+
+    /// The same chain shape, but landing back inside — must still be allowed.
+    #[test]
+    fn allows_symlink_chain_that_stays_inside_the_checkout() {
+        let (_td, checkout, _outside) = checkout_and_outside();
+        std::fs::write(checkout.join("real.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink("b", checkout.join("a")).unwrap();
+        std::os::unix::fs::symlink("real.txt", checkout.join("b")).unwrap();
+
+        assert!(safe_join(&checkout, "a").is_ok(), "in-tree chain must work");
+    }
+
+    /// A cycle must not hang the walk, and must fail closed.
+    #[test]
+    fn rejects_symlink_cycle() {
+        let (_td, checkout, _outside) = checkout_and_outside();
+        std::os::unix::fs::symlink("y", checkout.join("x")).unwrap();
+        std::os::unix::fs::symlink("x", checkout.join("y")).unwrap();
+
+        assert!(
+            safe_join(&checkout, "x").is_err(),
+            "a cycle must be refused"
         );
     }
 
