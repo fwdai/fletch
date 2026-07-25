@@ -1,51 +1,56 @@
 import { useState } from "react";
-import { lookupModel } from "@/data/modelCatalog";
-import { type AgentUsage, useAppStore } from "@/store";
+import { contextPercent, resolveContextWindow, totalTokens } from "@/adapters/usage";
+import { type UsageSnapshot, useAppStore } from "@/store";
 import { formatCost, formatTokens } from "@/util/format";
 
 /** Laconic context gauge for the composer foot — a donut ring + %, hover for a
  *  full breakdown. Mirrors the v2 design (.usage / .up-* styles in app.css).
  *
- *  The segmented bar splits the CURRENT context window by cache state — reused
- *  (cache read), newly cached (cache write), fresh input — which is the
- *  truthful equivalent of the design's mocked system/conversation/reasoning
- *  split (that semantic split isn't recoverable from any agent's transcript).
- *  The rows below are SESSION cumulative totals. */
-export function UsageMeter({ usage }: { usage: AgentUsage }) {
+ *  The two halves of the popover answer different questions and are labelled
+ *  apart. The ring and the segmented bar are the LIVE context window: one
+ *  measurement of the last turn, split by cache state (reused / newly cached /
+ *  fresh input — the truthful equivalent of the design's mocked
+ *  system/conversation/reasoning split, which no agent's transcript exposes).
+ *  The rows are the SESSION TOTAL: every API call the session made, summed. A
+ *  long session's total dwarfs its window, and that's correct — the cached
+ *  prefix is paid for again on every turn. */
+export function UsageMeter({ usage }: { usage: UsageSnapshot }) {
   const [open, setOpen] = useState(false);
   const catalog = useAppStore((s) => s.modelCatalog);
 
-  // Prefer the window the agent reports for the live deployment (codex does);
-  // otherwise look the model up in the catalog (claude/opencode/pi don't
-  // report one); fall back to a default only when the model is unknown.
-  const contextWindow =
-    usage.contextWindow ||
-    lookupModel(catalog, usage.model)?.contextWindow ||
-    DEFAULT_CONTEXT_WINDOW;
-  const used = usage.contextTokens;
+  const contextWindow = resolveContextWindow(usage, catalog);
+  const pct = contextPercent(usage, contextWindow);
+  const used = usage.context.tokens;
   const free = Math.max(0, contextWindow - used);
-  const pct = Math.min(100, Math.round((used / contextWindow) * 100));
+  const { tokens, costUsd } = usage.spend;
 
   const segments = [
     {
       key: "cacheRead",
       label: "Cache read",
-      tokens: usage.contextCacheRead,
+      tokens: usage.context.fill.cacheRead,
       color: "var(--accent)",
     },
     {
       key: "cacheWrite",
       label: "Cache write",
-      tokens: usage.contextCacheWrite,
+      tokens: usage.context.fill.cacheWrite,
       color: "var(--info)",
     },
-    { key: "input", label: "Input", tokens: usage.contextInput, color: "var(--fg-2)" },
+    { key: "input", label: "Input", tokens: usage.context.fill.input, color: "var(--fg-2)" },
   ].filter((s) => s.tokens > 0);
 
   // ring geometry — a 13px donut whose arc length encodes pct
   const R = 6.5;
   const C = 2 * Math.PI * R;
-  const ringColor = pct >= 90 ? "var(--danger)" : pct >= 75 ? "var(--warn)" : "var(--accent)";
+  const ringColor =
+    pct == null
+      ? "var(--fg-3)"
+      : pct >= 90
+        ? "var(--danger)"
+        : pct >= 75
+          ? "var(--warn)"
+          : "var(--accent)";
 
   return (
     <div
@@ -53,7 +58,11 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
     >
-      <button type="button" className="usage-chip iflex-center" aria-label={`Context ${pct}% used`}>
+      <button
+        type="button"
+        className="usage-chip iflex-center"
+        aria-label={pct == null ? "Context unknown" : `Context ${pct}% used`}
+      >
         <svg className="usage-ring" viewBox="0 0 18 18" width="15" height="15">
           <circle cx="9" cy="9" r={R} fill="none" stroke="var(--bd-strong)" strokeWidth="2.2" />
           <circle
@@ -65,11 +74,11 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
             strokeWidth="2.2"
             strokeLinecap="round"
             strokeDasharray={C}
-            strokeDashoffset={C * (1 - pct / 100)}
+            strokeDashoffset={C * (1 - (pct ?? 0) / 100)}
             transform="rotate(-90 9 9)"
           />
         </svg>
-        <span className="usage-val text-xs">{pct}%</span>
+        <span className="usage-val text-xs">{pct == null ? "—" : `${pct}%`}</span>
       </button>
 
       {open && (
@@ -77,48 +86,85 @@ export function UsageMeter({ usage }: { usage: AgentUsage }) {
           <div className="up-head">
             <span className="up-title text-xs">Context window</span>
             <span className="up-frac text-xs">
-              <b>{formatTokens(used)}</b> / {formatTokens(contextWindow)}
+              {pct == null ? (
+                usage.context.state === "reset" ? (
+                  "compacted"
+                ) : (
+                  "unknown"
+                )
+              ) : (
+                <>
+                  <b>{formatTokens(used)}</b> / {formatTokens(contextWindow)}
+                </>
+              )}
             </span>
           </div>
 
-          <div className="up-bar">
-            {segments.map((s) => (
-              <span
-                key={s.key}
-                className="up-seg"
-                style={{ flex: s.tokens, background: s.color }}
-              />
-            ))}
-            <span className="up-seg track" style={{ flex: free }} />
-          </div>
-
-          <div className="up-legend">
-            {segments.map((s) => (
-              <div key={s.key} className="up-leg flex-center text-sm">
-                <span className="up-dot" style={{ background: s.color }} />
-                <span className="up-k">{s.label}</span>
-                <span className="up-v">{formatTokens(s.tokens)}</span>
-              </div>
-            ))}
-            <div className="up-leg flex-center text-sm">
-              <span className="up-dot track" />
-              <span className="up-k">Free</span>
-              <span className="up-v">{formatTokens(free)}</span>
+          {pct == null ? (
+            <div className="up-note text-sm">
+              {usage.context.state === "reset"
+                ? "Conversation compacted. The next turn measures the new window."
+                : "This agent doesn't report context usage."}
             </div>
-          </div>
+          ) : (
+            <>
+              <div className="up-bar">
+                {segments.map((s) => (
+                  <span
+                    key={s.key}
+                    className="up-seg"
+                    style={{ flex: s.tokens, background: s.color }}
+                  />
+                ))}
+                <span className="up-seg track" style={{ flex: free }} />
+              </div>
+
+              <div className="up-legend">
+                {segments.map((s) => (
+                  <div key={s.key} className="up-leg flex-center text-sm">
+                    <span className="up-dot" style={{ background: s.color }} />
+                    <span className="up-k">{s.label}</span>
+                    <span className="up-v">{formatTokens(s.tokens)}</span>
+                  </div>
+                ))}
+                <div className="up-leg flex-center text-sm">
+                  <span className="up-dot track" />
+                  <span className="up-k">Free</span>
+                  <span className="up-v">{formatTokens(free)}</span>
+                </div>
+              </div>
+            </>
+          )}
 
           <div className="up-sep" />
 
+          <div className="up-head">
+            <span className="up-title text-xs">Session total</span>
+          </div>
+
           <div className="up-rows">
-            <Row label="Input" value={formatTokens(usage.inputTokens)} />
-            <Row label="Output" value={formatTokens(usage.outputTokens)} />
-            {usage.costUsd > 0 && (
+            <Row label="Input" value={formatTokens(tokens.input)} />
+            <Row label="Output" value={formatTokens(tokens.output)} />
+            <Row label="Cache read" value={formatTokens(tokens.cacheRead)} />
+            <Row label="Cache write" value={formatTokens(tokens.cacheWrite)} />
+            <div className="up-row flex-center total text-sm">
+              <span>All tokens</span>
+              <span className="up-rv">{formatTokens(totalTokens(tokens))}</span>
+            </div>
+            {costUsd != null && (
               <div className="up-row flex-center total text-sm">
-                <span>Est. cost</span>
-                <span className="up-rv">{formatCost(usage.costUsd)}</span>
+                <span>Cost</span>
+                <span className="up-rv">{formatCost(costUsd)}</span>
               </div>
             )}
           </div>
+
+          {usage.coverage === "partial" && (
+            <div className="up-note text-sm">
+              This agent reports usage only while running, so turns from before Fletch was opened
+              aren't counted.
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -133,7 +179,3 @@ function Row({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-
-/** Fallback window for agents that don't report their own (claude/opencode/pi
- *  all run 200k-class models here); codex reports its own. */
-const DEFAULT_CONTEXT_WINDOW = 200_000;

@@ -8,7 +8,7 @@
 //  - `app:*`  drive existing store/UI capabilities the app already owns.
 
 import type { ChatItem } from "@/adapters";
-import type { AgentUsage } from "@/adapters/usage";
+import { totalTokens, type UsageSnapshot } from "@/adapters/usage";
 import { api } from "@/api";
 import type { LocalCommandAction } from "@/data/slashCommands";
 import { repoPathFor } from "@/helpers";
@@ -23,19 +23,34 @@ export interface LocalCommandsSlice {
   runLocalCommand: (action: LocalCommandAction, agentId?: string) => Promise<void>;
 }
 
-/** One-line-per-field summary of a session's token usage, for `/cost`. Claude
- *  doesn't report a dollar cost in-transcript, so that line only appears for
- *  agents that do (costUsd > 0). */
-function formatUsage(u: AgentUsage | undefined): string {
+/** Summary of a session's token usage, for `/cost`.
+ *
+ *  The token lines are the session TOTAL — every API call the session made,
+ *  summed — while the context line is the live window, which is a measurement
+ *  of the last turn and not a sum of anything. They are labelled apart so the
+ *  two can't be read as the same kind of number. Claude, codex and cursor
+ *  report no dollar cost in-transcript, so that line appears only when an agent
+ *  priced its own calls. */
+function formatUsage(u: UsageSnapshot | undefined): string {
   if (!u) return "No usage recorded for this session yet.";
   const n = (v: number) => v.toLocaleString();
+  const { tokens, costUsd } = u.spend;
   const lines = [
-    `Input ${n(u.inputTokens)} · Output ${n(u.outputTokens)}`,
-    `Cache read ${n(u.cacheReadTokens)} · write ${n(u.cacheWriteTokens)}`,
-    `Context ${n(u.contextTokens)}${u.contextWindow ? ` / ${n(u.contextWindow)}` : ""}`,
+    "Session total" + (u.coverage === "partial" ? " (live capture only)" : ""),
+    `  Input ${n(tokens.input)} · Output ${n(tokens.output)}`,
+    `  Cache read ${n(tokens.cacheRead)} · write ${n(tokens.cacheWrite)}`,
+    `  All tokens ${n(totalTokens(tokens))}`,
   ];
-  if (u.costUsd > 0) lines.push(`Cost $${u.costUsd.toFixed(4)}`);
+  if (costUsd != null) lines.push(`  Cost $${costUsd.toFixed(4)}`);
+  lines.push(contextLine(u));
   return lines.join("\n");
+}
+
+function contextLine(u: UsageSnapshot): string {
+  if (u.context.state === "reset") return "Context compacted — unknown until the next turn";
+  if (u.context.state === "unknown") return "Context unknown";
+  const limit = u.context.limit ? ` / ${u.context.limit.toLocaleString()}` : "";
+  return `Context now ${u.context.tokens.toLocaleString()}${limit}`;
 }
 
 export const createLocalCommandsSlice: SliceCreator<LocalCommandsSlice> = (set, get) => {

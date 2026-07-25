@@ -1,11 +1,11 @@
 import type { KeyboardEvent, MouseEvent } from "react";
 import { useState } from "react";
+import { contextPercent, resolveContextWindow } from "@/adapters/usage";
 import type { AgentRecord, AgentStatus, PrChecks, PrState, ShortStats } from "@/api";
 import { AgentIdentityChip } from "@/components/AgentIdentityChip";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
-import { lookupModel } from "@/data/modelCatalog";
 import { providerChip, providerLabel } from "@/data/providers";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
@@ -97,27 +97,24 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const awaiting = working && !!pending && Object.keys(pending).length > 0;
 
   const catalog = useAppStore((s) => s.modelCatalog);
-  const hasUsage = !!usage && usage.contextTokens > 0;
-  // Prefer the window the agent reports (codex does); otherwise look the model
-  // up in the catalog (claude/opencode/pi don't report one) so the 1M-context
-  // models read true; fall back to a default only when the model is unknown.
-  // Mirrors the composer's UsageMeter so both gauges agree.
-  const contextWindow =
-    usage?.contextWindow ||
-    lookupModel(catalog, usage?.model)?.contextWindow ||
-    DEFAULT_CONTEXT_WINDOW;
+  // Both gauges resolve the window the same way — provider-reported, else the
+  // catalog entry for the turn's model, else a default. Shared so the sidebar
+  // and the composer can't disagree about the denominator.
+  const contextWindow = resolveContextWindow(usage, catalog);
+  const pct = contextPercent(usage, contextWindow);
   const stats: AgentStats = {
     launched: age || "just now",
     runtime: liveRuntime(agent.created_at, now, agent.status),
-    contextTokens: hasUsage ? usage?.contextTokens : null,
+    contextTokens: pct == null ? null : usage?.context.tokens,
     contextWindow,
-    contextPct: hasUsage ? contextPct(usage?.contextTokens, contextWindow) : 0,
-    // Fresh input only — matching the composer gauge. Cumulative cache read
-    // balloons (the same cached prefix re-read every turn) and is misleading
-    // as a session "input" total.
-    totalInput: usage ? usage.inputTokens : null,
-    totalOutput: usage ? usage.outputTokens : null,
-    costUsd: usage ? usage.costUsd : null,
+    contextPct: pct,
+    contextState: usage?.context.state ?? "unknown",
+    // Fresh input and output only — matching the composer gauge's headline.
+    // Cumulative cache read balloons (the same cached prefix re-read every
+    // turn), so it belongs in the full breakdown, not a two-number summary.
+    totalInput: usage ? usage.spend.tokens.input : null,
+    totalOutput: usage ? usage.spend.tokens.output : null,
+    costUsd: usage?.spend.costUsd ?? null,
   };
 
   const stoppable = agent.status === "spawning" || agent.status === "running";
@@ -434,13 +431,4 @@ function liveRuntime(iso: string, now: number, status: AgentStatus): string {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${m}m ${s}s`;
-}
-
-/** Fallback context window for agents that don't report their own (claude,
- *  opencode, pi all run 200k-class models here). */
-const DEFAULT_CONTEXT_WINDOW = 200_000;
-
-function contextPct(tokens: number, window: number): number {
-  if (tokens <= 0 || window <= 0) return 0;
-  return Math.min(100, Math.round((tokens / window) * 100));
 }

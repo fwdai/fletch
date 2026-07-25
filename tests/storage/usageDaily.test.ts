@@ -9,15 +9,16 @@ vi.mock("@/storage/db", () => ({
   },
 }));
 
-import { EMPTY_USAGE } from "@/adapters/usage";
+import { EMPTY_SNAPSHOT, type UsageSnapshot } from "@/adapters/usage";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { localDay } from "@/util/format";
 
-const usage = (input: number, output: number, cost = 0) => ({
-  ...EMPTY_USAGE,
-  inputTokens: input,
-  outputTokens: output,
-  costUsd: cost,
+const usage = (input: number, output: number, cost: number | null = 0): UsageSnapshot => ({
+  ...EMPTY_SNAPSHOT,
+  spend: {
+    tokens: { input, output, cacheRead: 0, cacheWrite: 0 },
+    costUsd: cost,
+  },
 });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -50,6 +51,18 @@ describe("recordUsageSnapshot", () => {
     await flush();
     expect(upserts).toHaveLength(2);
     expect(upserts[1].data).toMatchObject({ input_tokens: 120, output_tokens: 60 });
+  });
+
+  // Every column of usage_daily is NOT NULL, and a bound NULL fails the
+  // constraint rather than falling back to the column default — so an unpriced
+  // agent (claude, codex, cursor: costUsd null) must still write a number, or
+  // its whole history is lost to a swallowed constraint error.
+  it("writes an unpriced session's cost as 0, never null", async () => {
+    recordUsageSnapshot("ws4", "p1", usage(100, 50, null));
+    await flush();
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0].data.cost_usd).toBe(0);
+    expect(Object.values(upserts[0].data).some((v) => v == null)).toBe(false);
   });
 
   it("is a no-op without a project id", async () => {

@@ -128,8 +128,12 @@ export async function loadPulseUsage(projectId: string): Promise<PulseUsage> {
           if (records.length === 0) return;
           const usage = usageFromRecords(r.provider ?? undefined, records);
           if (!hasUsage(usage)) return;
-          tokens += usage.inputTokens + usage.outputTokens;
-          costUsd += usage.costUsd;
+          // Fresh input + output: the tokens the project actually generated.
+          // Cache reads are excluded on purpose — the same cached prefix is
+          // re-read every turn, so including them would make a long session
+          // look like an order of magnitude more work than it was.
+          tokens += usage.spend.tokens.input + usage.spend.tokens.output;
+          costUsd += usage.spend.costUsd ?? 0;
           recordUsageSnapshot(r.id, projectId, usage);
         } catch {
           // Unreadable session (e.g. cleaned-up archive) — skip, don't abort.
