@@ -26,7 +26,7 @@ use serde_json::Value;
 
 use crate::child_io;
 use crate::error::{Error, Result};
-use crate::sandbox::{Keepalive, KillHandle};
+use crate::sandbox::KillHandle;
 
 type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
 type SessionIdCb = Arc<dyn Fn(String) + Send + Sync>;
@@ -40,13 +40,10 @@ pub struct ExecSpawn {
     /// agent binary carried in `prefix_args`; tests pass the agent directly.
     pub program: PathBuf,
     /// Args inserted before the per-turn args on every spawn — e.g.
-    /// `["-f", <profile>, <agent_bin>]` when `program` is `sandbox-exec`. Empty
-    /// when the agent runs unwrapped.
+    /// `["-p", <profile>, <agent_bin>]` when `program` is `sandbox-exec`. Empty
+    /// when the agent runs unwrapped. Self-contained: the sandbox engine embeds
+    /// no external resource here, so per-turn respawns need nothing kept alive.
     pub prefix_args: Vec<String>,
-    /// Sandbox keepalive, held for the session's lifetime so any resource the
-    /// engine embedded in `prefix_args` (e.g. a profile path) stays valid across
-    /// the per-turn respawns.
-    pub keepalive: Keepalive,
     /// The agent's primary checkout — set as the child's cwd.
     pub cwd: PathBuf,
     /// Session id to resume, if one has been captured already.
@@ -65,9 +62,6 @@ pub struct ExecSpawn {
 pub struct ExecSession {
     program: PathBuf,
     prefix_args: Vec<String>,
-    /// Kept alive (not read) so any sandbox resource outlives the session.
-    #[allow(dead_code)]
-    keepalive: Keepalive,
     cwd: PathBuf,
     stdout_is_json: bool,
     env: Vec<(String, String)>,
@@ -121,7 +115,6 @@ impl ExecSession {
         Self {
             program: spec.program,
             prefix_args: spec.prefix_args,
-            keepalive: spec.keepalive,
             cwd: spec.cwd,
             stdout_is_json: spec.stdout_is_json,
             env: spec.env,
@@ -434,7 +427,6 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,
@@ -492,7 +484,6 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: Some("prev-thread".into()),
                 stdout_is_json: true,
@@ -532,7 +523,6 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,
@@ -589,7 +579,6 @@ mod tests {
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],
-                keepalive: Keepalive::None,
                 cwd: dir.path().to_path_buf(),
                 session_id: None,
                 stdout_is_json: true,

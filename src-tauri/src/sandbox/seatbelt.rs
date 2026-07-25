@@ -38,7 +38,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::engine::{AgentLaunchCtx, EngineKind, Keepalive, KillHandle, LaunchPlan, SandboxEngine};
+use super::engine::{AgentLaunchCtx, EngineKind, KillHandle, LaunchPlan, SandboxEngine};
 use super::policy;
 use crate::error::{Error, Result};
 
@@ -58,12 +58,6 @@ impl SandboxEngine for SandboxExecEngine {
             claude_config_dir.as_deref(),
             ctx.blackboard,
         )?;
-        let profile_file = profile_tempfile(&profile_text)?;
-        let profile_path = profile_file
-            .path()
-            .to_str()
-            .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
-            .to_string();
         // A workflow step agent's blackboard is granted writable in the profile
         // above; also point the agent at it via `WF_BLACKBOARD` (the same host
         // path the sandbox sees — seatbelt shares the host filesystem).
@@ -74,11 +68,12 @@ impl SandboxEngine for SandboxExecEngine {
             )],
             None => vec![],
         };
+        let mut prefix_args = profile_args(&profile_text).to_vec();
+        prefix_args.push(agent_bin.to_string());
         Ok(LaunchPlan {
             program: PathBuf::from(SANDBOX_EXEC),
-            prefix_args: vec!["-f".into(), profile_path, agent_bin.to_string()],
+            prefix_args,
             env,
-            keepalive: Keepalive::Profile(profile_file),
             // sandbox-exec is a plain process wrapper — the session's own
             // process-group escalation tears everything down; the trait's
             // default no-op `kill` applies.
@@ -88,7 +83,8 @@ impl SandboxEngine for SandboxExecEngine {
 }
 
 /// The macOS sandbox wrapper. Every confined process (agents *and* the Run
-/// panel) is launched as `sandbox-exec -f <profile> <program> …`.
+/// panel) is launched as `sandbox-exec -p <profile> <program> …` — the profile
+/// travels in argv, never a file; see [`profile_args`].
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
 /// PTY / device write rules shared by every profile — terminal programs need
@@ -508,21 +504,24 @@ fn subpath_grants(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
     out
 }
 
-/// Write an SBPL profile to a private `.sb` tempfile. `sandbox-exec -f <path>`
-/// reads it at launch, so it must live at least until the child execs; the
-/// caller keeps the returned handle alive and dropping it unlinks the file.
-pub fn profile_tempfile(text: &str) -> Result<tempfile::NamedTempFile> {
-    use std::io::Write;
-    let mut f = tempfile::Builder::new()
-        .prefix("fletch-sandbox-")
-        .suffix(".sb")
-        .tempfile()
-        .map_err(|e| Error::Other(format!("create sandbox profile tmp: {e}")))?;
-    f.write_all(text.as_bytes())
-        .map_err(|e| Error::Other(format!("write sandbox profile: {e}")))?;
-    f.flush()
-        .map_err(|e| Error::Other(format!("flush sandbox profile: {e}")))?;
-    Ok(f)
+/// The leading `sandbox-exec` argv for a profile: `["-p", <profile text>]`.
+///
+/// The profile is passed **in argv, never through a file**. `-f <path>` would
+/// mean writing it somewhere and having `sandbox-exec` read it back at the
+/// child's `exec` — and every temp location we could write it to
+/// (`std::env::temp_dir()`, i.e. `/var/folders/…`) is a subpath these very
+/// profiles grant confined processes write access to. A already-running agent
+/// could then watch for the predictable filename and overwrite the profile in
+/// the window between our write and `sandbox-exec`'s read, choosing the policy
+/// the *next* agent launches under. Argv closes that window by construction:
+/// there is no file to race, and nothing on disk to unlink afterwards (which is
+/// why launches no longer carry a `Keepalive`).
+///
+/// SBPL is whitespace-insensitive and `;;` comments end at the newline, so the
+/// multi-line profile survives as a single argv element unchanged. Profiles run
+/// a few KB against a 1 MB `ARG_MAX`, so there is no size concern.
+pub fn profile_args(text: &str) -> [String; 2] {
+    ["-p".to_string(), text.to_string()]
 }
 
 fn sbpl_string(s: &str) -> String {
@@ -1208,5 +1207,68 @@ mod tests {
             profile.contains(&format!("(subpath \"{}\")", canonical_common.display())),
             "run profile should grant the target's git common dir"
         );
+    }
+
+    /// The profile must reach `sandbox-exec` through argv (`-p`), never a file
+    /// (`-f`). A file would have to live somewhere, and every temp location we
+    /// could write it to is a subpath these profiles grant confined processes
+    /// write access to — so an already-running agent could overwrite the next
+    /// agent's profile between our write and `sandbox-exec`'s read.
+    #[test]
+    fn profile_travels_in_argv_never_a_file() {
+        let text = "(version 1)\n(allow default)\n;; comment\n(deny file-write*)";
+        let args = profile_args(text);
+        assert_eq!(
+            args[0], "-p",
+            "the profile must be passed inline, not as -f"
+        );
+        assert_eq!(args[1], text, "argv must carry the profile text verbatim");
+    }
+
+    /// End-to-end on the real launch path: the plan `sandbox-exec` is invoked
+    /// with must embed the policy text itself and must not name any file the
+    /// policy leaves writable. Guards against a regression to `-f <tempfile>`,
+    /// whose `std::env::temp_dir()` home is granted by `(subpath
+    /// "/private/var/folders")`.
+    #[test]
+    fn agent_launch_plan_passes_policy_inline_and_references_no_writable_file() {
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let ctx = AgentLaunchCtx {
+            agent_id: "a1",
+            provider: "claude",
+            writable_root: &root,
+            rpc_dir: &rpc,
+            cwd: &root,
+            home: &home,
+            interactive: true,
+            blackboard: None,
+        };
+        let plan = SandboxExecEngine
+            .launch_agent(&ctx, "/usr/local/bin/claude")
+            .unwrap();
+
+        assert_eq!(plan.program, PathBuf::from(SANDBOX_EXEC));
+        assert_eq!(plan.prefix_args[0], "-p");
+        assert!(
+            plan.prefix_args[1].contains("(deny file-write*)"),
+            "argv must carry the policy itself, got: {}",
+            plan.prefix_args[1]
+        );
+        assert_eq!(plan.prefix_args[2], "/usr/local/bin/claude");
+        assert_eq!(plan.prefix_args.len(), 3);
+
+        // No argument may *be* a path under a tree the policy makes writable —
+        // that is precisely the file an agent could swap out. (The policy text
+        // mentions those trees as grants, but never starts with one.)
+        assert!(
+            !plan.prefix_args.iter().any(|a| a == "-f"),
+            "a file-backed profile is exactly the race this avoids"
+        );
+        for writable in ["/private/var/folders", "/private/tmp", "/private/var/tmp"] {
+            assert!(
+                !plan.prefix_args.iter().any(|a| a.starts_with(writable)),
+                "no argv element may be a path under the agent-writable {writable}"
+            );
+        }
     }
 }

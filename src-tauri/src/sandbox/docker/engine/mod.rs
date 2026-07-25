@@ -68,7 +68,7 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::sandbox::engine::{
-    AgentLaunchCtx, EngineKind, Keepalive, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
+    AgentLaunchCtx, EngineKind, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
 use crate::sandbox::policy::{codex_home_dir, opencode_config_dir, opencode_data_dir};
 
@@ -479,7 +479,6 @@ impl SandboxEngine for DockerEngine {
             program: docker,
             prefix_args,
             env,
-            keepalive: Keepalive::None,
             kill: KillHandle::Engine {
                 engine: DockerEngine::shared(),
                 plan: KillPlan::Container { name },

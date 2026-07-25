@@ -27,7 +27,6 @@ mod tests;
 use crate::exec_session::ExecSession;
 use crate::managed_session::ManagedSession;
 use crate::pty_session::PtySession;
-use crate::sandbox::Keepalive;
 
 pub use capabilities::{
     capabilities, injection_mode, per_turn_descriptor, transcript_reader, PerTurnDescriptor,
@@ -51,14 +50,10 @@ pub enum Agent {
 
 pub struct PtyAgent {
     pty: PtySession,
-    #[allow(dead_code)]
-    keepalive: Keepalive,
 }
 
 pub struct ManagedAgent {
     session: ManagedSession,
-    #[allow(dead_code)]
-    keepalive: Keepalive,
 }
 
 pub struct PerTurnAgent {
