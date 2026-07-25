@@ -125,8 +125,8 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
   // Codex reports a running total instead of individual calls. Neither summing
   // (it re-emits identical snapshots) nor "latest wins" (it restarts at zero in
   // a resumed rollout, or when a fork inherits its parent's records) is right,
-  // so consecutive snapshots are differenced, and a snapshot that went
-  // backwards is treated as a restart whose whole value is new spend.
+  // so consecutive snapshots are differenced, and a snapshot where ANY category
+  // went backwards is treated as a restart whose whole value is new spend.
   let counter: TokenCounts | undefined;
 
   let state: ContextState = "unknown";
@@ -211,12 +211,36 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
   };
 }
 
+/** Difference a running counter against the previous one, or take it whole when
+ *  it restarted.
+ *
+ *  A counter only ever grows *per category* within one rollout, so any single
+ *  category reading below the last one means the counter belongs to a new
+ *  rollout — even when the aggregate rose. A resumed rollout re-reads a smaller
+ *  cached prefix than its parent had accumulated, or the fresh prompt it sends
+ *  outweighs everything the parent counted; comparing aggregates alone reads
+ *  that as continuation and clamps the restarted category to zero, dropping its
+ *  tokens from the ledger.
+ *
+ *  Not detectable, and not detectable without a rollout id: a restart whose new
+ *  counter happens to be at or above the old one in every category. That
+ *  undercounts by the overlap, which is bounded by the previous total — the
+ *  category-blind version could silently drop a whole rollout's cache reads. */
 function counterDelta(totals: TokenCounts, previous: TokenCounts | undefined): TokenCounts {
-  if (!previous || totalTokens(totals) < totalTokens(previous)) return totals;
+  if (!previous || restarted(totals, previous)) return totals;
   return {
-    input: Math.max(0, totals.input - previous.input),
-    output: Math.max(0, totals.output - previous.output),
-    cacheRead: Math.max(0, totals.cacheRead - previous.cacheRead),
-    cacheWrite: Math.max(0, totals.cacheWrite - previous.cacheWrite),
+    input: totals.input - previous.input,
+    output: totals.output - previous.output,
+    cacheRead: totals.cacheRead - previous.cacheRead,
+    cacheWrite: totals.cacheWrite - previous.cacheWrite,
   };
+}
+
+function restarted(totals: TokenCounts, previous: TokenCounts): boolean {
+  return (
+    totals.input < previous.input ||
+    totals.output < previous.output ||
+    totals.cacheRead < previous.cacheRead ||
+    totals.cacheWrite < previous.cacheWrite
+  );
 }

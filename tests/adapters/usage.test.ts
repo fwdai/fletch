@@ -366,6 +366,23 @@ describe("codex usage", () => {
     expect(u.spend.tokens.output).toBe(53);
   });
 
+  // The restart the aggregate can't see: the resumed rollout sends a big fresh
+  // prompt, so its total is HIGHER than the parent's even though its cached
+  // prefix and output start over. Comparing totals alone reads that as
+  // continuation and clamps the restarted categories to zero.
+  it("rebases when only some categories restart and the total still rose", () => {
+    const u = usageFromRecords(
+      "codex",
+      records("codex", [
+        codexCounter({ input: 60_000, cached: 50_000, output: 2_000 }),
+        codexCounter({ input: 100_000, cached: 5_000, output: 1_000 }),
+      ]),
+    );
+    expect(u.spend.tokens.input).toBe(10_000 + 95_000);
+    expect(u.spend.tokens.cacheRead).toBe(50_000 + 5_000);
+    expect(u.spend.tokens.output).toBe(2_000 + 1_000);
+  });
+
   it("ignores non token_count event_msgs", () => {
     expect(
       usageFromRecords("codex", [
