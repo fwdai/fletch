@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { hasUsage } from "@/adapters/usage";
 import type { DirListing, PrSummary, TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Chip } from "@/components/ui/Chip";
@@ -12,7 +13,7 @@ import {
 } from "@/data/providerDetail";
 import { DEFAULT_PROVIDER_ID, isDockerSupported, providerLabel } from "@/data/providers";
 import type { LocalCommandAction } from "@/data/slashCommands";
-import type { AgentUsage } from "@/store";
+import type { UsageSnapshot } from "@/store";
 import { useAppStore } from "@/store";
 import { ComposerFrame } from "./ComposerFrame";
 import { IssuePicker } from "./IssuePicker";
@@ -121,7 +122,7 @@ interface Props {
   /** Per-agent token usage for the context gauge in the foot. Omit for new
    *  sessions (no agent yet) or agents that report no usage (cursor,
    *  antigravity) — the gauge then hides. */
-  usage?: AgentUsage;
+  usage?: UsageSnapshot;
 }
 
 /** The effective thinking level for a provider/model. Every candidate — the
@@ -387,7 +388,10 @@ export function Composer({
             />
           )}
           <span className="composer-foot-sep" aria-hidden />
-          {features.tokenUsage && usage && usage.contextTokens > 0 && <UsageMeter usage={usage} />}
+          {/* Gated on spend, not on the context reading: a compacted session has
+           *  a known total and a temporarily unknown window, and hiding the
+           *  gauge there would look like the usage had been lost. */}
+          {features.tokenUsage && usage && hasUsage(usage) && <UsageMeter usage={usage} />}
           {/* A disabled <button> swallows hover in the WebView, so the reason
            *  rides a wrapper span that stays hover-capable (same pattern as the
            *  ModelPicker's disabled rows). */}

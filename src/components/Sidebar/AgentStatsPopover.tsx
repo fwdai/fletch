@@ -1,13 +1,17 @@
+import type { ContextState } from "@/adapters/usage";
 import { formatCost, formatTokens } from "@/util/format";
 
 export interface AgentStats {
   launched: string;
   runtime: string;
-  /** Context-window fill in tokens, or null when the agent reports no usage. */
+  /** Context-window fill in tokens, or null when it isn't known. */
   contextTokens: number | null;
   /** Context window size in tokens (provider-reported or default). */
   contextWindow: number;
-  contextPct: number;
+  /** Percentage of the window in use, or null when the fill isn't known —
+   *  never coerce that to 0, which reads as "empty" rather than "unknown". */
+  contextPct: number | null;
+  contextState: ContextState;
   /** Cumulative session totals, or null when the agent reports no usage. */
   totalInput: number | null;
   totalOutput: number | null;
@@ -22,7 +26,9 @@ export function AgentStatsPopover({ stats }: { stats: AgentStats }) {
   const contextLabel =
     contextTokens != null
       ? `${formatTokens(contextTokens)} / ${formatTokens(stats.contextWindow)}`
-      : "—";
+      : stats.contextState === "reset"
+        ? "compacted"
+        : "—";
   const ioLabel =
     stats.totalInput != null && stats.totalOutput != null
       ? `${formatTokens(stats.totalInput)} in · ${formatTokens(stats.totalOutput)} out`
@@ -34,9 +40,9 @@ export function AgentStatsPopover({ stats }: { stats: AgentStats }) {
       <Row label="Runtime" value={stats.runtime} />
       <Row label="Context" value={contextLabel} />
       <div className="st-bar">
-        <div className="st-bar-fill" style={{ width: `${stats.contextPct}%` }} />
+        <div className="st-bar-fill" style={{ width: `${stats.contextPct ?? 0}%` }} />
       </div>
-      <Row label="Context used" value={`${stats.contextPct}%`} />
+      <Row label="Context used" value={stats.contextPct == null ? "—" : `${stats.contextPct}%`} />
       <Row label="Tokens" value={ioLabel} />
       {stats.costUsd != null && stats.costUsd > 0 && (
         <Row label="Cost" value={formatCost(stats.costUsd)} />

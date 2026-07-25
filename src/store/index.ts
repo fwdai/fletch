@@ -38,6 +38,6 @@ export const useAppStore = create<AppState>()((...a) => ({
 }));
 
 export type { ChatItem } from "@/adapters";
-export type { AgentUsage } from "@/adapters/usage";
+export type { UsageSnapshot } from "@/adapters/usage";
 export type { DraftAgent } from "./drafts";
 export type { AppState } from "./types";

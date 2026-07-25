@@ -9,15 +9,16 @@ vi.mock("@/storage/db", () => ({
   },
 }));
 
-import { EMPTY_USAGE } from "@/adapters/usage";
+import { EMPTY_SNAPSHOT, type UsageSnapshot } from "@/adapters/usage";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { localDay } from "@/util/format";
 
-const usage = (input: number, output: number, cost = 0) => ({
-  ...EMPTY_USAGE,
-  inputTokens: input,
-  outputTokens: output,
-  costUsd: cost,
+const usage = (input: number, output: number, cost = 0): UsageSnapshot => ({
+  ...EMPTY_SNAPSHOT,
+  spend: {
+    tokens: { input, output, cacheRead: 0, cacheWrite: 0 },
+    costUsd: cost,
+  },
 });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));

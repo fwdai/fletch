@@ -6,169 +6,433 @@ import { cursorAdapter } from "@/adapters/cursor";
 import { opencodeAdapter } from "@/adapters/opencode";
 import { piAdapter } from "@/adapters/pi";
 import type { RawEvent } from "@/adapters/types";
-import { addTurnUsage, EMPTY_USAGE, usageFromRecords } from "@/adapters/usage";
+import { EMPTY_SNAPSHOT, usageFromRecords } from "@/adapters/usage";
 import type { SessionRecord } from "@/api";
 
 // Bodies below are the agents' real ON-DISK transcript shapes (captured from
 // live sessions), which is what session_records persists and what the usage
-// extractors read — distinct from the live event stream the reducers consume.
+// translators read — distinct from the live event stream the reducers consume.
 
 function record(provider: string, body: RawEvent, seq = 0): SessionRecord {
   return { seq, provider, source: "transcript", native_id: `n${seq}`, agent_version: null, body };
 }
 
-describe("claude extractUsage", () => {
-  const body = {
+function records(provider: string, bodies: RawEvent[]): SessionRecord[] {
+  return bodies.map((body, i) => record(provider, body, i));
+}
+
+// ── claude ───────────────────────────────────────────────────────────────────
+
+/** One assistant transcript line. Claude writes several of these per API call
+ *  while a response streams, all sharing `message.id` + `requestId`. */
+function claudeAssistant(opts: {
+  msgId?: string;
+  requestId?: string;
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  model?: string;
+  sidechain?: boolean;
+  extra?: Record<string, unknown>;
+}): RawEvent {
+  return {
     type: "assistant",
+    ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
+    ...(opts.sidechain ? { isSidechain: true } : {}),
+    ...opts.extra,
     message: {
-      model: "claude-opus-4-8",
+      ...(opts.msgId !== undefined ? { id: opts.msgId } : {}),
+      ...(opts.model !== undefined ? { model: opts.model } : {}),
       usage: {
-        input_tokens: 2,
-        output_tokens: 300,
-        cache_creation_input_tokens: 10783,
-        cache_read_input_tokens: 7900,
+        input_tokens: opts.input ?? 0,
+        output_tokens: opts.output ?? 0,
+        cache_read_input_tokens: opts.cacheRead ?? 0,
+        cache_creation_input_tokens: opts.cacheWrite ?? 0,
       },
     },
   } as RawEvent;
+}
 
-  it("maps fresh input / output / cache and context fill", () => {
-    expect(claudeAdapter.extractUsage?.(body)).toEqual({
-      inputTokens: 2,
-      outputTokens: 300,
-      cacheReadTokens: 7900,
-      cacheWriteTokens: 10783,
-      context: { input: 2, cacheRead: 7900, cacheWrite: 10783 },
+describe("claude usage", () => {
+  it("maps fresh input / output / cache and the window the call was made against", () => {
+    const u = usageFromRecords("claude", [
+      record(
+        "claude",
+        claudeAssistant({
+          msgId: "m1",
+          requestId: "r1",
+          input: 2,
+          output: 300,
+          cacheRead: 7900,
+          cacheWrite: 10783,
+          model: "claude-opus-4-8",
+        }),
+      ),
+    ]);
+    expect(u.spend.tokens).toEqual({ input: 2, output: 300, cacheRead: 7900, cacheWrite: 10783 });
+    expect(u.context).toMatchObject({
+      state: "measured",
+      fill: { input: 2, cacheRead: 7900, cacheWrite: 10783 },
+      tokens: 2 + 7900 + 10783,
       model: "claude-opus-4-8",
+    });
+    // Claude reports no dollars in-transcript, so cost is absent rather than 0.
+    expect(u.spend.costUsd).toBeNull();
+  });
+
+  // The bug this whole model exists for: Claude appends a line every time it
+  // re-writes a streaming response. Summing lines multiplied a turn's input and
+  // cache reads by the snapshot count and inflated output on top.
+  it("counts one API call once, however many times the line is re-written", () => {
+    const snapshot = (output: number) =>
+      claudeAssistant({
+        msgId: "msg_A",
+        requestId: "req_1",
+        input: 4,
+        output,
+        cacheRead: 20_000,
+        cacheWrite: 300,
+      });
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [snapshot(9), snapshot(9), snapshot(159)]),
+    );
+    expect(u.spend.tokens).toEqual({
+      input: 4,
+      output: 159, // the settled count, not 9 + 9 + 159
+      cacheRead: 20_000,
+      cacheWrite: 300,
     });
   });
 
+  it("still sums genuinely separate calls", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        claudeAssistant({ msgId: "m1", requestId: "r1", input: 5, output: 100, cacheWrite: 2000 }),
+        claudeAssistant({
+          msgId: "m2",
+          requestId: "r2",
+          input: 3,
+          output: 50,
+          cacheRead: 2000,
+          cacheWrite: 80,
+        }),
+      ]),
+    );
+    expect(u.spend.tokens).toEqual({ input: 8, output: 150, cacheRead: 2000, cacheWrite: 2080 });
+    // The window is the LAST call's, never a sum of both.
+    expect(u.context.tokens).toBe(3 + 2000 + 80);
+    expect(u.context.fill).toEqual({ input: 3, cacheRead: 2000, cacheWrite: 80 });
+  });
+
+  it("records without a message id can't be mistaken for duplicates", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [claudeAssistant({ input: 10 }), claudeAssistant({ input: 10 })]),
+    );
+    expect(u.spend.tokens.input).toBe(20);
+  });
+
+  it("counts subagent turns as spend but keeps them out of the gauge", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        claudeAssistant({ msgId: "m1", input: 5, cacheRead: 50_000, model: "claude-opus-4-8" }),
+        claudeAssistant({
+          msgId: "m2",
+          input: 900,
+          output: 40,
+          cacheRead: 1000,
+          model: "claude-haiku-4-5",
+          sidechain: true,
+        }),
+      ]),
+    );
+    expect(u.spend.tokens.input).toBe(905);
+    expect(u.spend.tokens.output).toBe(40);
+    // The Task's small window must not read as the main conversation's.
+    expect(u.context.tokens).toBe(5 + 50_000);
+    expect(u.context.model).toBe("claude-opus-4-8");
+  });
+
+  it("prefers the TTL breakdown for cache writes when present", () => {
+    const body = {
+      type: "assistant",
+      message: {
+        id: "m1",
+        usage: {
+          input_tokens: 1,
+          output_tokens: 2,
+          cache_creation_input_tokens: 0,
+          cache_creation: { ephemeral_5m_input_tokens: 700, ephemeral_1h_input_tokens: 300 },
+        },
+      },
+    } as RawEvent;
+    expect(usageFromRecords("claude", [record("claude", body)]).spend.tokens.cacheWrite).toBe(1000);
+  });
+
+  it("ignores API-error replays and the synthetic model", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        claudeAssistant({ msgId: "m1", input: 100, extra: { isApiErrorMessage: true } }),
+        claudeAssistant({ msgId: "m2", input: 100, model: "<synthetic>" }),
+        claudeAssistant({ msgId: "m3", input: 7 }),
+      ]),
+    );
+    expect(u.spend.tokens.input).toBe(7);
+  });
+
   it("ignores non-assistant and zero-usage records", () => {
-    expect(claudeAdapter.extractUsage?.({ type: "user" } as RawEvent)).toBeUndefined();
+    expect(usageFromRecords("claude", [record("claude", { type: "user" } as RawEvent)])).toBe(
+      EMPTY_SNAPSHOT,
+    );
     expect(
-      claudeAdapter.extractUsage?.({ type: "assistant", message: {} } as RawEvent),
-    ).toBeUndefined();
+      usageFromRecords("claude", [
+        record("claude", { type: "assistant", message: {} } as RawEvent),
+      ]),
+    ).toBe(EMPTY_SNAPSHOT);
   });
 });
 
-describe("codex extractUsage", () => {
-  const body = {
+describe("claude compaction", () => {
+  const boundary = (compactMetadata?: Record<string, unknown>): RawEvent =>
+    ({
+      type: "system",
+      subtype: "compact_boundary",
+      content: "Conversation compacted",
+      ...(compactMetadata ? { compactMetadata } : {}),
+    }) as RawEvent;
+
+  const big = claudeAssistant({ msgId: "m1", input: 40, output: 900, cacheRead: 180_000 });
+
+  // The reported symptom: after /compact the gauge kept showing the fill the
+  // user had just spent a turn getting rid of, because no record after the
+  // boundary describes the new window until the next turn runs.
+  it("stops reporting the pre-compaction window once the boundary lands", () => {
+    const before = usageFromRecords("claude", [record("claude", big)]);
+    expect(before.context.tokens).toBe(180_040);
+
+    const after = usageFromRecords("claude", records("claude", [big, boundary()]));
+    expect(after.context.state).toBe("reset");
+    expect(after.context.tokens).toBe(0);
+    // Spend is untouched: those tokens were spent whatever happened next.
+    expect(after.spend.tokens.cacheRead).toBe(180_000);
+    expect(after.spend.tokens.output).toBe(900);
+  });
+
+  it("adopts postTokens as the new window when the CLI reports it", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        big,
+        boundary({ trigger: "manual", preTokens: 180_040, postTokens: 21_500 }),
+      ]),
+    );
+    expect(u.context.state).toBe("measured");
+    expect(u.context.tokens).toBe(21_500);
+  });
+
+  it("hands the window back to the next real turn", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        big,
+        boundary(),
+        claudeAssistant({ msgId: "m2", input: 12, cacheWrite: 22_000 }),
+      ]),
+    );
+    expect(u.context.state).toBe("measured");
+    expect(u.context.tokens).toBe(22_012);
+  });
+
+  it("honors a micro-compaction only when it states the resulting size", () => {
+    const micro = (meta?: Record<string, unknown>) =>
+      ({
+        type: "system",
+        subtype: "microcompact_boundary",
+        ...(meta ? { microcompactMetadata: meta } : {}),
+      }) as RawEvent;
+    // Without a size, blanking a still-mostly-full window is worse than keeping
+    // the reading we have.
+    expect(usageFromRecords("claude", records("claude", [big, micro()])).context.tokens).toBe(
+      180_040,
+    );
+    expect(
+      usageFromRecords("claude", records("claude", [big, micro({ postTokens: 90_000 })])).context
+        .tokens,
+    ).toBe(90_000);
+  });
+});
+
+// ── codex ────────────────────────────────────────────────────────────────────
+
+function codexCounter(
+  total: { input: number; cached?: number; output: number; reasoning?: number },
+  last?: { total?: number; input?: number; cached?: number },
+): RawEvent {
+  return {
     type: "event_msg",
     payload: {
       type: "token_count",
       info: {
         total_token_usage: {
-          input_tokens: 65134,
-          cached_input_tokens: 56064,
-          output_tokens: 959,
-          reasoning_output_tokens: 336,
+          input_tokens: total.input,
+          cached_input_tokens: total.cached ?? 0,
+          output_tokens: total.output,
+          reasoning_output_tokens: total.reasoning ?? 0,
         },
-        last_token_usage: { input_tokens: 33939, cached_input_tokens: 31104 },
-        model_context_window: 258400,
+        ...(last
+          ? {
+              last_token_usage: {
+                total_tokens: last.total ?? 0,
+                input_tokens: last.input ?? 0,
+                cached_input_tokens: last.cached ?? 0,
+              },
+            }
+          : {}),
+        model_context_window: 258_400,
       },
     },
   } as RawEvent;
+}
 
-  it("takes cumulative totals, derives fresh input, sums reasoning", () => {
-    expect(codexAdapter.extractUsage?.(body)).toEqual({
-      cumulative: true,
-      inputTokens: 65134 - 56064,
-      outputTokens: 959 + 336,
-      cacheReadTokens: 56064,
-      cacheWriteTokens: 0,
-      context: { input: 33939 - 31104, cacheRead: 31104, cacheWrite: 0 },
-      contextWindow: 258400,
+describe("codex usage", () => {
+  it("derives fresh input and does not add reasoning on top of output", () => {
+    // codex's output_tokens already includes reasoning_output_tokens — its own
+    // blended_total() adds only non-cached input and output.
+    const u = usageFromRecords("codex", [
+      record(
+        "codex",
+        codexCounter(
+          { input: 65_134, cached: 56_064, output: 959, reasoning: 336 },
+          {
+            total: 33_939,
+            input: 33_939,
+            cached: 31_104,
+          },
+        ),
+      ),
+    ]);
+    expect(u.spend.tokens).toEqual({
+      input: 65_134 - 56_064,
+      output: 959,
+      cacheRead: 56_064,
+      cacheWrite: 0,
     });
+    expect(u.context.limit).toBe(258_400);
+  });
+
+  it("measures the window by total_tokens, which includes the turn's output", () => {
+    const u = usageFromRecords("codex", [
+      record(
+        "codex",
+        codexCounter({ input: 100, output: 10 }, { total: 40_000, input: 33_939, cached: 31_104 }),
+      ),
+    ]);
+    // 40k, not the 33.9k input side alone.
+    expect(u.context.tokens).toBe(40_000);
+    expect(u.context.fill).toEqual({ input: 40_000 - 31_104, cacheRead: 31_104, cacheWrite: 0 });
+  });
+
+  it("differences the counter: a re-emitted snapshot adds nothing", () => {
+    const u = usageFromRecords(
+      "codex",
+      records("codex", [
+        codexCounter({ input: 100, output: 10 }, { total: 100 }),
+        codexCounter({ input: 100, output: 10 }, { total: 100 }),
+        codexCounter({ input: 250, output: 25 }, { total: 150 }),
+      ]),
+    );
+    expect(u.spend.tokens.input).toBe(250);
+    expect(u.spend.tokens.output).toBe(25);
+    expect(u.context.tokens).toBe(150);
+  });
+
+  // A resumed rollout, or a fork that inherited its parent's records, restarts
+  // the counter. "Latest wins" used to erase everything before the restart.
+  it("rebases when the counter restarts instead of losing the history", () => {
+    const u = usageFromRecords(
+      "codex",
+      records("codex", [
+        codexCounter({ input: 200, output: 20 }, { total: 200 }),
+        codexCounter({ input: 500, output: 50 }, { total: 300 }),
+        codexCounter({ input: 30, output: 3 }, { total: 30 }),
+      ]),
+    );
+    expect(u.spend.tokens.input).toBe(530);
+    expect(u.spend.tokens.output).toBe(53);
   });
 
   it("ignores non token_count event_msgs", () => {
     expect(
-      codexAdapter.extractUsage?.({
-        type: "event_msg",
-        payload: { type: "agent_message" },
-      } as RawEvent),
-    ).toBeUndefined();
+      usageFromRecords("codex", [
+        record("codex", { type: "event_msg", payload: { type: "agent_message" } } as RawEvent),
+      ]),
+    ).toBe(EMPTY_SNAPSHOT);
   });
 });
 
-describe("opencode extractUsage", () => {
-  const body = {
-    type: "step-finish",
-    tokens: { input: 1532, output: 33, reasoning: 51, cache: { read: 12864, write: 0 } },
-    cost: 0.0123,
-  } as RawEvent;
+// ── opencode ─────────────────────────────────────────────────────────────────
 
-  it("maps per-step delta with cost and context fill", () => {
-    expect(opencodeAdapter.extractUsage?.(body)).toEqual({
-      inputTokens: 1532,
-      outputTokens: 33 + 51,
-      cacheReadTokens: 12864,
-      cacheWriteTokens: 0,
-      costUsd: 0.0123,
-      context: { input: 1532, cacheRead: 12864, cacheWrite: 0 },
-    });
+describe("opencode usage", () => {
+  it("adds reasoning back into output and accumulates cost per step", () => {
+    const step = (id: string, input: number, cost: number): RawEvent =>
+      ({
+        type: "step_finish",
+        part: {
+          id,
+          type: "step-finish",
+          modelID: "claude-sonnet-4-6",
+          tokens: { input, output: 4, reasoning: 6, cache: { read: 18_560, write: 0 } },
+          cost,
+        },
+      }) as RawEvent;
+    const u = usageFromRecords(
+      "opencode",
+      records("opencode", [step("prt_1", 57, 0.002), step("prt_2", 12, 0.003)]),
+    );
+    expect(u.spend.tokens.input).toBe(69);
+    expect(u.spend.tokens.output).toBe(20); // (4 + 6) twice
+    expect(u.spend.costUsd).toBeCloseTo(0.005);
+    expect(u.context.model).toBe("claude-sonnet-4-6");
   });
 
-  // session_records persists OpenCode's ON-DISK shape: usage lives on the
-  // assistant message blob (type is absent), NOT a live `step-finish` part.
-  // This is what the usage fold actually sees.
-  const onDiskMessage = {
-    role: "assistant",
-    modelID: "claude-sonnet-4-6",
-    providerID: "opencode",
-    tokens: { input: 98, output: 18, reasoning: 0, cache: { read: 10624, write: 0 } },
-    cost: 0,
-  } as RawEvent;
-
-  it("maps the on-disk assistant-message shape (no step-finish type)", () => {
-    expect(opencodeAdapter.extractUsage?.(onDiskMessage)).toEqual({
-      inputTokens: 98,
-      outputTokens: 18,
-      cacheReadTokens: 10624,
-      cacheWriteTokens: 0,
-      costUsd: 0,
-      context: { input: 98, cacheRead: 10624, cacheWrite: 0 },
-      model: "claude-sonnet-4-6",
-    });
+  it("reads the on-disk assistant-message shape too", () => {
+    const body = {
+      role: "assistant",
+      id: "msg_1",
+      modelID: "claude-sonnet-4-6",
+      tokens: { input: 98, output: 18, reasoning: 0, cache: { read: 10_624, write: 0 } },
+      cost: 0,
+    } as RawEvent;
+    const u = usageFromRecords("opencode", [record("opencode", body)]);
+    expect(u.spend.tokens).toEqual({ input: 98, output: 18, cacheRead: 10_624, cacheWrite: 0 });
+    // A genuinely free call still reports a cost of 0, not "no cost reported".
+    expect(u.spend.costUsd).toBe(0);
   });
 
   it("ignores user/non-usage messages", () => {
-    expect(opencodeAdapter.extractUsage?.({ role: "user" } as RawEvent)).toBeUndefined();
+    expect(usageFromRecords("opencode", [record("opencode", { role: "user" } as RawEvent)])).toBe(
+      EMPTY_SNAPSHOT,
+    );
   });
 
-  // The live `run --format json` stream wraps the step-finish delta under
-  // `.part`; this is what persistLiveUsage captures and stores.
-  const liveStepFinish = {
-    type: "step_finish",
-    part: {
-      type: "step-finish",
-      reason: "stop",
-      modelID: "claude-sonnet-4-6",
-      tokens: { input: 57, output: 4, reasoning: 6, cache: { read: 18560, write: 0 } },
-      cost: 0.002,
-    },
-  } as RawEvent;
-
-  it("maps the live step_finish wrapper (tokens under .part)", () => {
-    expect(opencodeAdapter.extractUsage?.(liveStepFinish)).toEqual({
-      inputTokens: 57,
-      outputTokens: 4 + 6,
-      cacheReadTokens: 18560,
-      cacheWriteTokens: 0,
-      costUsd: 0.002,
-      context: { input: 57, cacheRead: 18560, cacheWrite: 0 },
-      model: "claude-sonnet-4-6",
-    });
-  });
-
-  it("is marked persistLiveUsage (run mode never writes the blob store)", () => {
+  it("is live-capture only, so its coverage is partial", () => {
     expect(opencodeAdapter.persistLiveUsage).toBe(true);
+    expect(opencodeAdapter.usageCoverage).toBe("partial");
   });
 });
 
-describe("pi extractUsage", () => {
+// ── pi ───────────────────────────────────────────────────────────────────────
+
+describe("pi usage", () => {
   const body = {
     type: "message",
     message: {
+      id: "m1",
       role: "assistant",
       model: "claude-opus-4-7",
       usage: {
@@ -182,192 +446,110 @@ describe("pi extractUsage", () => {
     },
   } as RawEvent;
 
-  it("maps per-message delta with cost", () => {
-    expect(piAdapter.extractUsage?.(body)).toEqual({
-      inputTokens: 2,
-      outputTokens: 258,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 4387,
-      costUsd: 0.0338,
-      context: { input: 2, cacheRead: 0, cacheWrite: 4387 },
-      model: "claude-opus-4-7",
-    });
+  it("maps per-message usage with native cost", () => {
+    const u = usageFromRecords("pi", [record("pi", body)]);
+    expect(u.spend.tokens).toEqual({ input: 2, output: 258, cacheRead: 0, cacheWrite: 4387 });
+    expect(u.spend.costUsd).toBeCloseTo(0.0338);
+    expect(u.context.model).toBe("claude-opus-4-7");
+  });
+
+  it("accumulates every message into the session total", () => {
+    const message = (id: string, output: number, cost: number): RawEvent =>
+      ({
+        type: "message",
+        message: {
+          id,
+          role: "assistant",
+          model: "claude-opus-4-7",
+          usage: { input: 2, output, cacheRead: 0, cacheWrite: 100, cost: { total: cost } },
+        },
+      }) as RawEvent;
+    const u = usageFromRecords(
+      "pi",
+      records("pi", [message("m1", 10, 0.01), message("m2", 20, 0.02), message("m3", 30, 0.03)]),
+    );
+    expect(u.spend.tokens.output).toBe(60);
+    expect(u.spend.tokens.input).toBe(6);
+    expect(u.spend.tokens.cacheWrite).toBe(300);
+    expect(u.spend.costUsd).toBeCloseTo(0.06);
+    // …while the window stays the last turn's measurement, not the sum.
+    expect(u.context.tokens).toBe(102);
   });
 
   it("ignores user / toolResult messages", () => {
     expect(
-      piAdapter.extractUsage?.({ type: "message", message: { role: "user" } } as RawEvent),
-    ).toBeUndefined();
+      usageFromRecords("pi", [
+        record("pi", { type: "message", message: { role: "user" } } as RawEvent),
+      ]),
+    ).toBe(EMPTY_SNAPSHOT);
   });
 });
 
-describe("cursor extractUsage (persisted live result)", () => {
-  const body = {
-    type: "result",
-    subtype: "success",
-    request_id: "req-1",
-    usage: { inputTokens: 2, outputTokens: 122, cacheReadTokens: 0, cacheWriteTokens: 27987 },
-  } as RawEvent;
+// ── cursor ───────────────────────────────────────────────────────────────────
 
-  it("is marked persistLiveUsage and reads the result event", () => {
+describe("cursor usage (persisted live result)", () => {
+  const result = (requestId: string, output: number): RawEvent =>
+    ({
+      type: "result",
+      subtype: "success",
+      request_id: requestId,
+      usage: { inputTokens: 2, outputTokens: output, cacheReadTokens: 0, cacheWriteTokens: 27_987 },
+    }) as RawEvent;
+
+  it("is live-capture only, so its coverage is partial", () => {
     expect(cursorAdapter.persistLiveUsage).toBe(true);
-    expect(cursorAdapter.extractUsage?.(body)).toEqual({
-      inputTokens: 2,
-      outputTokens: 122,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 27987,
-      context: { input: 2, cacheRead: 0, cacheWrite: 27987 },
-    });
+    expect(cursorAdapter.usageCoverage).toBe("partial");
+    expect(usageFromRecords("cursor", [record("cursor", result("req-1", 122))]).coverage).toBe(
+      "partial",
+    );
+  });
+
+  it("accumulates one entry per turn and collapses a redelivered result", () => {
+    const u = usageFromRecords(
+      "cursor",
+      records("cursor", [result("req-1", 122), result("req-1", 122), result("req-2", 40)]),
+    );
+    expect(u.spend.tokens.output).toBe(162);
+    expect(u.spend.tokens.cacheWrite).toBe(27_987 * 2);
+    expect(u.context.tokens).toBe(2 + 27_987);
   });
 
   it("ignores cursor's on-disk transcript bodies (no usage there)", () => {
     expect(
-      cursorAdapter.extractUsage?.({ type: "assistant", message: {} } as RawEvent),
-    ).toBeUndefined();
-  });
-
-  it("folds from records once the result is persisted (live_compiled)", () => {
-    const u = usageFromRecords("cursor", [record("cursor", body)]);
-    expect(u.outputTokens).toBe(122);
-    expect(u.cacheWriteTokens).toBe(27987);
-    expect(u.contextTokens).toBe(2 + 0 + 27987);
+      usageFromRecords("cursor", [
+        record("cursor", { type: "assistant", message: {} } as RawEvent),
+      ]),
+    ).toBe(EMPTY_SNAPSHOT);
   });
 });
 
-it("antigravity exposes no usage extractor", () => {
-  expect(antigravityAdapter.extractUsage).toBeUndefined();
+it("antigravity reports no usage at all", () => {
+  expect(antigravityAdapter.usageEvents).toBeUndefined();
+  expect(usageFromRecords("antigravity", [record("antigravity", {} as RawEvent)])).toBe(
+    EMPTY_SNAPSHOT,
+  );
 });
 
-describe("usageFromRecords fold", () => {
-  it("sums per-message deltas (claude) and tracks latest context fill", () => {
-    const recs = [
-      record(
-        "claude",
-        {
-          type: "assistant",
-          message: {
-            usage: {
-              input_tokens: 5,
-              output_tokens: 100,
-              cache_creation_input_tokens: 2000,
-              cache_read_input_tokens: 0,
-            },
-          },
-        } as RawEvent,
-        0,
-      ),
-      record(
-        "claude",
-        {
-          type: "assistant",
-          message: {
-            usage: {
-              input_tokens: 3,
-              output_tokens: 50,
-              cache_creation_input_tokens: 80,
-              cache_read_input_tokens: 2000,
-            },
-          },
-        } as RawEvent,
-        1,
-      ),
-    ];
-    const u = usageFromRecords("claude", recs);
-    expect(u.inputTokens).toBe(8);
-    expect(u.outputTokens).toBe(150);
-    expect(u.cacheWriteTokens).toBe(2080);
-    expect(u.cacheReadTokens).toBe(2000);
-    // context fill + breakdown = latest record's composition (not summed)
-    expect(u.contextTokens).toBe(3 + 2000 + 80);
-    expect(u.contextInput).toBe(3);
-    expect(u.contextCacheRead).toBe(2000);
-    expect(u.contextCacheWrite).toBe(80);
-    expect(u.costUsd).toBe(0);
-  });
-
-  it("takes the latest cumulative snapshot (codex), not the sum", () => {
-    const mk = (total: number, last: number, seq: number) =>
-      record(
-        "codex",
-        {
-          type: "event_msg",
-          payload: {
-            type: "token_count",
-            info: {
-              total_token_usage: {
-                input_tokens: total,
-                cached_input_tokens: 0,
-                output_tokens: 10,
-                reasoning_output_tokens: 0,
-              },
-              last_token_usage: { input_tokens: last },
-              model_context_window: 258400,
-            },
-          },
-        } as RawEvent,
-        seq,
-      );
-    // duplicate first event (codex re-emits) must not double-count
-    const u = usageFromRecords("codex", [mk(100, 100, 0), mk(100, 100, 1), mk(250, 150, 2)]);
-    expect(u.inputTokens).toBe(250);
-    expect(u.contextTokens).toBe(150);
-    expect(u.contextWindow).toBe(258400);
-  });
-
-  it("accumulates native cost (pi/opencode)", () => {
-    const recs = [
-      record(
-        "opencode",
-        {
-          type: "step-finish",
-          tokens: { input: 10, output: 5, cache: {} },
-          cost: 0.01,
-        } as RawEvent,
-        0,
-      ),
-      record(
-        "opencode",
-        {
-          type: "step-finish",
-          tokens: { input: 20, output: 5, cache: {} },
-          cost: 0.02,
-        } as RawEvent,
-        1,
-      ),
-    ];
-    expect(usageFromRecords("opencode", recs).costUsd).toBeCloseTo(0.03);
-  });
-
-  it("returns EMPTY_USAGE for providers without an extractor or with no usage", () => {
-    expect(usageFromRecords("cursor", [record("cursor", { type: "assistant" } as RawEvent)])).toBe(
-      EMPTY_USAGE,
-    );
-    expect(usageFromRecords("claude", [])).toBe(EMPTY_USAGE);
-  });
+it("an empty session is EMPTY_SNAPSHOT", () => {
+  expect(usageFromRecords("claude", [])).toBe(EMPTY_SNAPSHOT);
 });
 
-describe("addTurnUsage (fold primitive)", () => {
-  it("sums deltas across turns and tracks the latest context fill", () => {
-    let acc = { ...EMPTY_USAGE };
-    for (const body of [
-      {
-        type: "result",
-        usage: { inputTokens: 2, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 5000 },
-      },
-      {
-        type: "result",
-        usage: { inputTokens: 3, outputTokens: 50, cacheReadTokens: 5000, cacheWriteTokens: 80 },
-      },
-    ] as RawEvent[]) {
-      const usage = cursorAdapter.extractUsage!(body);
-      if (!usage) throw new Error("expected usage");
-      acc = addTurnUsage(acc, usage);
-    }
-    expect(acc.inputTokens).toBe(5);
-    expect(acc.outputTokens).toBe(150);
-    expect(acc.cacheWriteTokens).toBe(5080);
-    // latest turn wins for the window breakdown
-    expect(acc.contextTokens).toBe(3 + 5000 + 80);
-    expect(acc.contextCacheRead).toBe(5000);
-  });
+it("a record the translator throws on costs one record, not the session", () => {
+  const broken = {
+    type: "assistant",
+    get message(): never {
+      throw new Error("boom");
+    },
+  } as unknown as RawEvent;
+  const u = usageFromRecords("claude", [
+    record("claude", broken, 0),
+    record("claude", claudeAssistant({ msgId: "m1", input: 11 }), 1),
+  ]);
+  expect(u.spend.tokens.input).toBe(11);
+});
+
+it("every adapter that reports usage declares how it is read", () => {
+  for (const adapter of [claudeAdapter, codexAdapter, cursorAdapter, opencodeAdapter, piAdapter]) {
+    expect(adapter.usageEvents).toBeTypeOf("function");
+  }
 });

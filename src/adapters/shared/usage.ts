@@ -1,39 +1,45 @@
-import type { TurnUsage } from "@/adapters/types";
+// Shared builder for the `request` event four of the five adapters emit.
+//
+// Its only job is normalization: the zero-token guard in one place, and the
+// `TokenCounts` invariants (fresh input, output including reasoning) stated
+// where every adapter has to pass through them.
 
-export interface UsageTokens {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  /** Dollar cost, only for agents that report it natively (opencode, pi). */
-  costUsd?: number;
+import type { UsageEvent } from "@/adapters/usage";
+
+export interface RequestSpec {
+  /** Fresh, non-cached input tokens. */
+  input: number;
+  /** Output tokens, INCLUDING reasoning. */
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** Identity of the API call — see `UsageEvent`'s `id`. */
+  id?: string;
   model?: string;
+  /** Dollar cost, only when the provider prices the call (opencode, pi). */
+  costUsd?: number;
+  /** The call ran in its own context window (a Claude subagent). */
+  ownWindow?: boolean;
 }
 
-/** Build a per-record TurnUsage from the four normalized token counts shared by
- *  claude/cursor/pi/opencode: applies the all-zero guard (returns undefined when
- *  the record carries no usage) and derives the default context-fill split
- *  `{ input, cacheRead, cacheWrite }`. Pass `costUsd`/`model` when the agent
- *  reports them. Codex differs (cumulative totals, derived fresh input and
- *  context) and builds its TurnUsage directly. */
-export function buildTurnUsage({
-  inputTokens,
-  outputTokens,
-  cacheReadTokens,
-  cacheWriteTokens,
-  costUsd,
-  model,
-}: UsageTokens): TurnUsage | undefined {
-  if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens === 0) {
-    return undefined;
-  }
-  return {
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    ...(costUsd !== undefined ? { costUsd } : {}),
-    context: { input: inputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheWriteTokens },
-    ...(model !== undefined ? { model } : {}),
+/** The `request` event for one API call, or nothing when the record carries no
+ *  usage — a zero-token record has no usage, it isn't a free call. */
+export function requestEvent(spec: RequestSpec): UsageEvent[] {
+  const tokens = {
+    input: spec.input,
+    output: spec.output,
+    cacheRead: spec.cacheRead,
+    cacheWrite: spec.cacheWrite,
   };
+  if (tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite === 0) return [];
+  return [
+    {
+      kind: "request",
+      tokens,
+      ...(spec.id !== undefined ? { id: spec.id } : {}),
+      ...(spec.model !== undefined ? { model: spec.model } : {}),
+      ...(spec.costUsd !== undefined ? { costUsd: spec.costUsd } : {}),
+      ...(spec.ownWindow ? { ownWindow: true } : {}),
+    },
+  ];
 }

@@ -424,3 +424,10 @@
 .up-row.total .up-rv {
   color: var(--accent);
 }
+/* Prose caveat: why a number is missing or incomplete. Reads as a footnote so
+   it never competes with the figures above it. */
+.up-note {
+  color: var(--fg-3);
+  line-height: 1.45;
+  margin-top: 8px;
+}

@@ -1,5 +1,5 @@
 import { applyPolicy, type ChatItem, getAdapter } from "@/adapters";
-import { type AgentUsage, hasUsage, usageFromRecords } from "@/adapters/usage";
+import { hasUsage, type UsageSnapshot, usageFromRecords } from "@/adapters/usage";
 import {
   type AgentRecord,
   type AgentView,
@@ -128,11 +128,11 @@ export interface WorkspaceSlice {
    *  event deletes the key. Present = the vendor CLI drifted, so the chat view
    *  shows a non-blocking "couldn't read history" banner. In-memory only. */
   syncHealth: Record<string, SyncHealthInfo>;
-  /** Per-agent cumulative token usage (and latest context-window fill),
-   *  folded from session_records at turn-end and on transcript load. Keyed by
-   *  agent_id; absent until the agent's first turn lands. Empty for agents that
-   *  don't persist usage on disk (cursor, antigravity). See adapters/usage.ts. */
-  usage: Record<string, AgentUsage>;
+  /** Per-agent token spend and context-window state, aggregated from
+   *  session_records at turn-end and on transcript load. Keyed by agent_id;
+   *  absent until the agent's first turn lands, and absent forever for agents
+   *  that report no usage at all (antigravity). See adapters/usage/. */
+  usage: Record<string, UsageSnapshot>;
   /** Live run phase per agent, keyed by agent_id, from the `run:state` event
    *  stream. Absent = never started (read as "idle"). Fed by an app-wide
    *  subscription (not the RunPanel, which unmounts on tab switch) so the Run

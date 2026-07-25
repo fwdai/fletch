@@ -2,7 +2,7 @@ import type { ChatAdapter } from "@/adapters/types";
 import { normalizeTranscript } from "./normalize";
 import { opencodePolicy } from "./policy";
 import { reduce } from "./reduce";
-import { extractUsage } from "./usage";
+import { usageEvents } from "./usage";
 
 // Reduces OpenCode's `opencode run --format json` step/part event stream
 // (verified against opencode 1.15.12 — see ./reduce.ts). Transcript replay
@@ -16,5 +16,6 @@ export const opencodeAdapter: ChatAdapter = {
   // would never fold from a transcript. Capture it from the live `step_finish`
   // stream instead — persisted into session_records like Cursor's.
   persistLiveUsage: true,
-  extractUsage,
+  usageCoverage: "partial",
+  usageEvents,
 };

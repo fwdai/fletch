@@ -5,6 +5,8 @@
 // See docs/superpowers/specs/2026-05-27-multi-agent-chat-adapters-design.md
 // for the design rationale.
 
+import type { Coverage, UsageEvent } from "./usage/events";
+
 export type ChatItem =
   | {
       kind: "user_message";
@@ -98,52 +100,28 @@ export type DisplayMode = "show" | "hide";
 // `${kind}:${subtype}` entry wins when both are present.
 export type DisplayPolicy = Record<string, DisplayMode>;
 
-/** Normalized token usage extracted from ONE persisted session_record body.
- *
- *  Unlike `reduce`/`normalizeTranscript`, the usage extractors read each
- *  agent's ON-DISK transcript body shape directly (see `<agent>/usage.ts`),
- *  not the live event stream. Usage is folded over session_records — the
- *  canonical store — rather than the ephemeral live stream, so cumulative
- *  totals survive restarts and never double-count a turn rendered both live
- *  and from records. See src/adapters/usage.ts for the fold. */
-export interface TurnUsage {
-  /** When true, the fields are running cumulative totals and the latest record
-   *  wins; when false/absent they are a per-record delta and are summed. Codex
-   *  reports cumulative `total_token_usage`; claude/opencode/pi report deltas. */
-  cumulative?: boolean;
-  /** Fresh, non-cached input tokens. */
-  inputTokens: number;
-  /** Output tokens, including reasoning/thinking tokens. */
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  /** Dollar cost, only for agents that report it natively (opencode, pi). */
-  costUsd?: number;
-  /** This record's context-window composition (latest record wins in the fold).
-   *  Its parts sum to the window fill and drive the meter's segmented bar:
-   *  `cacheRead` = reused/cached context, `cacheWrite` = newly cached this turn,
-   *  `input` = fresh non-cached input. The semantic split the design mocks up
-   *  (system / conversation / reasoning) is NOT recoverable from any agent's
-   *  transcript — this cache-state split is the truthful equivalent. */
-  context?: { input: number; cacheRead: number; cacheWrite: number };
-  /** Model context window size in tokens, when the agent reports it (codex). */
-  contextWindow?: number;
-  model?: string;
-}
-
 export interface ChatAdapter {
   readonly id: string;
   reduce(prevItems: ChatItem[], rawEvent: RawEvent): ChatItem[];
   normalizeTranscript(transcriptLines: unknown[]): RawEvent[];
   readonly policy: DisplayPolicy;
-  /** True when the agent emits usage ONLY on its live `result` event and never
-   *  persists it on disk (cursor). The store persists that event into
-   *  session_records (`source = 'live_compiled'`) at turn-end so usage is then
-   *  folded uniformly from records like every other agent — restart-safe, no
-   *  in-memory accumulation. `extractUsage` reads that same `result` body. */
+  /** True when the agent emits usage ONLY on its live stream and never persists
+   *  it on disk (cursor, and opencode in `run` mode). The store writes that
+   *  event into session_records (`source = 'live_compiled'`) at turn-end so
+   *  usage aggregates uniformly from records like every other agent — no
+   *  in-memory accumulation. `usageEvents` reads that same body. */
   readonly persistLiveUsage?: boolean;
-  /** Extract token usage from one session_record body, or undefined when it
-   *  carries none. Optional: agents that report no usage at all (antigravity)
-   *  omit it entirely. */
-  extractUsage?(recordBody: RawEvent): TurnUsage | undefined;
+  /** Whether records can be trusted to hold every request the session made.
+   *  Defaults to `complete`; `persistLiveUsage` agents are `partial`, since a
+   *  turn that ran while Fletch wasn't listening left no trace to re-read. */
+  readonly usageCoverage?: Coverage;
+  /** Translate ONE persisted session_record body into the token-usage events it
+   *  describes — see `usage/events.ts`. Unlike `reduce`/`normalizeTranscript`,
+   *  this reads the agent's ON-DISK body shape (see `<agent>/usage.ts`).
+   *
+   *  Return what the record says HAPPENED; never pre-aggregate. How events
+   *  compose — which collapse, which difference, which reset the window — is
+   *  the aggregator's job, so that logic exists once instead of once per agent.
+   *  Optional: agents that report no usage at all (antigravity) omit it. */
+  usageEvents?(recordBody: RawEvent): UsageEvent[];
 }
