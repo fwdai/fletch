@@ -61,13 +61,6 @@ struct RunSessionInner {
     last_error: Option<String>,
     log: LogBuffer,
     pty: Option<PtySession>,
-    /// The `sandbox-exec` profile file the live PTY was launched under. The
-    /// kernel compiles the SBPL into the child at `exec` and never consults the
-    /// file again, so it only needs to exist until the child has spawned. We
-    /// nonetheless hold it for the PTY's lifetime — a conservative simplification
-    /// that ties cleanup to the process (dropped on stop/replace) rather than
-    /// racing to unlink right after spawn.
-    profile: Option<tempfile::NamedTempFile>,
     /// Bumped on every `start` and `stop`. The PTY exit handler
     /// captures the generation it was spawned under; if that
     /// generation no longer matches, the exit is from a process the
@@ -83,7 +76,6 @@ impl RunSession {
                 last_error: None,
                 log: LogBuffer::new(LOG_BUFFER_CAP),
                 pty: None,
-                profile: None,
                 generation: 0,
             }),
         }
@@ -130,7 +122,6 @@ impl RunSession {
             let mut inner = self.inner.lock();
             let prior = inner.phase;
             let pty = inner.pty.take();
-            inner.profile = None;
             inner.generation = inner.generation.wrapping_add(1);
             inner.phase = RunPhase::Stopped;
             inner.last_error = None;
@@ -164,16 +155,13 @@ impl RunSession {
         inner.generation
     }
 
-    /// Attach a freshly spawned PTY together with the `sandbox-exec` profile
-    /// file it was launched under. The profile only needs to exist through the
-    /// child's `exec`, but we let it ride on the session alongside the PTY so
-    /// its cleanup is tied to the process lifecycle (see the field comment).
-    pub fn attach_pty(&self, pty: PtySession, profile: tempfile::NamedTempFile) {
+    /// Attach a freshly spawned PTY. The `sandbox-exec` profile it was launched
+    /// under travels in argv, so there is no profile resource to park here.
+    pub fn attach_pty(&self, pty: PtySession) {
         let mut inner = self.inner.lock();
-        // Replace and drop any stale handles. (Shouldn't happen — the
-        // supervisor's stop() drops them first — but defensive.)
+        // Replace and drop any stale handle. (Shouldn't happen — the
+        // supervisor's stop() drops it first — but defensive.)
         inner.pty = Some(pty);
-        inner.profile = Some(profile);
     }
 
     /// Returns true if the given generation is still the current one,
@@ -187,7 +175,6 @@ impl RunSession {
     pub fn mark_stopped(&self, error: Option<String>) {
         let mut inner = self.inner.lock();
         inner.pty = None;
-        inner.profile = None;
         inner.phase = RunPhase::Stopped;
         inner.last_error = error;
     }

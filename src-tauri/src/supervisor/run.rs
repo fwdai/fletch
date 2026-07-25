@@ -379,7 +379,7 @@ fn spawn_run_phase(
     // config), so a malicious agent could otherwise plant a script that runs
     // unsandboxed with full user privilege the moment the user clicks ▶. Reads
     // and network stay open (dev servers need them); only writes are fenced.
-    let (program, args, mut env, profile_file) = sandboxed_run_command(&cwd, &cmd)?;
+    let (program, args, mut env) = sandboxed_run_command(&cwd, &cmd)?;
     // Layer the project's opt-in Run environment: the `.env` variables the user
     // chose to share into the sandbox (mirrored live from the source repo's
     // `.env` or overridden per project, with `{{agent_id}}`/`{{worktree}}`
@@ -432,25 +432,19 @@ fn spawn_run_phase(
         },
     )?;
 
-    session.attach_pty(pty, profile_file);
+    session.attach_pty(pty);
     Ok(())
 }
 
 /// Program, argv, extra env, and the profile tempfile returned by
 /// [`sandboxed_run_command`].
-type SandboxedRunCommand = (
-    PathBuf,
-    Vec<String>,
-    Vec<(String, String)>,
-    tempfile::NamedTempFile,
-);
+type SandboxedRunCommand = (PathBuf, Vec<String>, Vec<(String, String)>);
 
 /// Build the `sandbox-exec`-wrapped invocation for a Run-panel command:
-/// `sandbox-exec -f <profile> <shell> -lic <cmd>`. Returns the program, argv,
-/// and the profile tempfile. `sandbox-exec` reads the profile once, at the
-/// child's `exec`, so the tempfile must survive until then; the caller parks it
-/// on the `RunSession` (via `attach_pty`), which conservatively keeps it for the
-/// process's lifetime.
+/// `sandbox-exec -p <profile> <shell> -lic <cmd>`. Returns the program, argv,
+/// and env. The profile travels in argv rather than a tempfile — see
+/// [`crate::sandbox::profile_args`] for why a file would be racy — so there is
+/// nothing for the caller to keep alive.
 fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
@@ -461,19 +455,14 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
     // outside `writable_root`, which would otherwise fail closed.
     let extra_writable: Vec<PathBuf> = run_target_git_common_dir(cwd).into_iter().collect();
     let profile_text = crate::sandbox::build_run_profile(cwd, &home, &extra_writable)?;
-    let profile_file = crate::sandbox::profile_tempfile(&profile_text)?;
-    let profile_path = profile_file
-        .path()
-        .to_str()
-        .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
-        .to_string();
     let shell = user_shell();
     let shell_str = shell
         .to_str()
         .ok_or_else(|| Error::Other("shell path not utf-8".into()))?
         .to_string();
-    // sandbox-exec -f <profile> <shell> -lic <cmd>
-    let mut args = vec!["-f".to_string(), profile_path, shell_str];
+    // sandbox-exec -p <profile> <shell> -lic <cmd>
+    let mut args = crate::sandbox::profile_args(&profile_text).to_vec();
+    args.push(shell_str);
     args.extend(shell_args(cmd));
     // A nested Fletch (dogfooding) can't reach the host's `~/.fletch/{rpc,
     // worktrees}` under this profile; steer both to sandbox-writable roots.
@@ -492,12 +481,7 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
                 .into_owned(),
         ),
     ];
-    Ok((
-        PathBuf::from(crate::sandbox::SANDBOX_EXEC),
-        args,
-        env,
-        profile_file,
-    ))
+    Ok((PathBuf::from(crate::sandbox::SANDBOX_EXEC), args, env))
 }
 
 /// Resolve the git *common dir* of the Run target `cwd`, canonicalized, so the

@@ -133,7 +133,6 @@ impl Agent {
             program,
             prefix_args,
             env: launch_env,
-            keepalive,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
         let mut args = prefix_args;
@@ -165,7 +164,7 @@ impl Agent {
             on_exit,
         )?;
 
-        Ok(Self::Pty(PtyAgent { pty, keepalive }))
+        Ok(Self::Pty(PtyAgent { pty }))
     }
 
     /// Launch a per-turn agent's interactive TUI in a PTY — the native view
@@ -223,7 +222,6 @@ impl Agent {
             program,
             prefix_args,
             env: launch_env,
-            keepalive,
             kill,
         } = engine.launch_agent(&ctx, &bin)?;
         let mut args = prefix_args;
@@ -257,7 +255,7 @@ impl Agent {
             on_exit,
         )?;
 
-        Ok(Self::Pty(PtyAgent { pty, keepalive }))
+        Ok(Self::Pty(PtyAgent { pty }))
     }
 
     pub fn spawn_managed<F, G>(spec: SpawnSpec<'_>, on_event: F, on_exit: G) -> Result<Self>
@@ -285,7 +283,6 @@ impl Agent {
             program,
             prefix_args,
             env: launch_env,
-            keepalive,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
         let mut args = prefix_args;
@@ -315,7 +312,7 @@ impl Agent {
             on_exit,
         )?;
 
-        Ok(Self::Managed(ManagedAgent { session, keepalive }))
+        Ok(Self::Managed(ManagedAgent { session }))
     }
 
     /// Build a per-turn runner (codex, cursor, opencode, pi) from its
@@ -428,7 +425,6 @@ impl Agent {
             program: launch_program,
             prefix_args,
             env: launch_env,
-            keepalive,
             kill,
         } = sandbox::engine_for(spec.engine)?.launch_agent(&ctx, agent_bin)?;
         let mut env = launch_env;
@@ -445,7 +441,6 @@ impl Agent {
             ExecSpawn {
                 program: launch_program,
                 prefix_args,
-                keepalive,
                 cwd: spec.cwd,
                 session_id: spec.session_id,
                 stdout_is_json,

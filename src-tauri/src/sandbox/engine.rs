@@ -52,18 +52,6 @@ pub struct AgentLaunchCtx<'a> {
     pub blackboard: Option<&'a Path>,
 }
 
-/// A resource that must outlive the launched process. Parked on the session
-/// struct purely for its Drop side-effect (e.g. unlinking a profile tempfile),
-/// hence the dead_code allowance — it is held, never read.
-#[allow(dead_code)]
-pub enum Keepalive {
-    None,
-    /// Seatbelt SBPL profile — `sandbox-exec -f <path>` reads it at the
-    /// child's exec, and per-turn sessions respawn from the same
-    /// `prefix_args`, so the file must live as long as the session.
-    Profile(tempfile::NamedTempFile),
-}
-
 /// Engine-specific data describing how to tear down what was launched.
 #[derive(Clone)]
 pub enum KillPlan {
@@ -123,7 +111,6 @@ pub struct LaunchPlan {
     pub program: std::path::PathBuf,
     pub prefix_args: Vec<String>,
     pub env: Vec<(String, String)>,
-    pub keepalive: Keepalive,
     pub kill: KillHandle,
 }
 

@@ -287,15 +287,11 @@ impl Verifier {
         )
     }
 
-    /// Build the `sandbox-exec -f <profile> <shell> -lic <cmd>` invocation under
-    /// the Run-panel profile (writable root = the checkout). The profile tempfile
-    /// is returned so it outlives the child's `exec`; the caller keeps it alive
-    /// until the process has finished.
-    fn sandbox_command(
-        &self,
-        worktree: &Path,
-        cmd: &str,
-    ) -> Result<(PathBuf, Vec<String>, tempfile::NamedTempFile)> {
+    /// Build the `sandbox-exec -p <profile> <shell> -lic <cmd>` invocation under
+    /// the Run-panel profile (writable root = the checkout). The profile travels
+    /// in argv rather than a tempfile — see [`crate::sandbox::profile_args`] —
+    /// so there is nothing for the caller to keep alive.
+    fn sandbox_command(&self, worktree: &Path, cmd: &str) -> Result<(PathBuf, Vec<String>)> {
         // Grant the target's git *common dir* (as the Run panel does) so commands
         // that touch git — e.g. `git worktree add` — work in a linked worktree
         // checkout, whose common dir lives outside `worktree`. For a plain
@@ -307,33 +303,22 @@ impl Verifier {
                 .collect();
         let profile_text =
             crate::sandbox::build_run_profile(worktree, &self.home, &extra_writable)?;
-        let profile_file = crate::sandbox::profile_tempfile(&profile_text)?;
-        let profile_path = profile_file
-            .path()
-            .to_str()
-            .ok_or_else(|| Error::Other("profile path not utf-8".into()))?
-            .to_string();
         let shell = crate::run_session::user_shell();
         let shell_str = shell
             .to_str()
             .ok_or_else(|| Error::Other("shell path not utf-8".into()))?
             .to_string();
-        let mut args = vec!["-f".to_string(), profile_path, shell_str];
+        let mut args = crate::sandbox::profile_args(&profile_text).to_vec();
+        args.push(shell_str);
         args.extend(crate::run_session::shell_args(cmd));
-        Ok((
-            PathBuf::from(crate::sandbox::SANDBOX_EXEC),
-            args,
-            profile_file,
-        ))
+        Ok((PathBuf::from(crate::sandbox::SANDBOX_EXEC), args))
     }
 
     async fn run_sandboxed(&self, worktree: &Path, cmd: &str) -> Bounded {
-        let (program, args, _profile) = match self.sandbox_command(worktree, cmd) {
+        let (program, args) = match self.sandbox_command(worktree, cmd) {
             Ok(t) => t,
             Err(e) => return Bounded::Unrunnable(format!("could not build sandbox profile: {e}")),
         };
-        // `_profile` must outlive the child's `exec`; it drops at the end of this
-        // fn, after `run_bounded` has awaited the process to completion.
         run_bounded(&program, &args, worktree, self.timeout).await
     }
 }

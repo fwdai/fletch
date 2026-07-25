@@ -94,7 +94,25 @@ fn lang_for(path: &str) -> String {
 }
 
 /// Join a caller-supplied relative path onto the checkout root, rejecting
-/// anything that could escape it (absolute paths, `..`, drive prefixes).
+/// anything that could escape it — lexically (absolute paths, `..`, drive
+/// prefixes) *and* through symlinks.
+///
+/// The symlink half is the load-bearing one. Every command below runs in the
+/// **host** process, unsandboxed, while the checkout's contents belong to the
+/// agent — which can plant a symlink at any path it likes. `fs::write`,
+/// `fs::rename` and friends all follow symlinks, so a lexically-clean
+/// `README.md` that happens to be a link to `~/.zshrc` would let the file
+/// panel's Save write outside the workspace (and its viewer read outside it).
+/// Same guard `agent_profile` applies to agent-planted links, applied at the
+/// seam where a renderer-supplied path becomes a host filesystem operation.
+///
+/// Symlinks that stay *inside* the checkout are allowed — repos legitimately
+/// contain them — so the test is where the path resolves, not whether a link
+/// was traversed. Only the existing prefix can be resolved (these commands also
+/// create new files), which leaves a narrow window where the agent replaces a
+/// not-yet-existing leaf with a link between this check and the caller's write.
+/// Closing that needs `O_NOFOLLOW`-per-component `openat` plumbing; the planted
+/// trap this does close is persistent and needs no race to spring.
 fn safe_join(checkout: &Path, rel: &str) -> Result<PathBuf> {
     let p = Path::new(rel);
     let escapes = p.components().any(|c| {
@@ -106,7 +124,56 @@ fn safe_join(checkout: &Path, rel: &str) -> Result<PathBuf> {
     if p.is_absolute() || escapes || rel.is_empty() {
         return Err(Error::InvalidPath(rel.to_string()));
     }
-    Ok(checkout.join(p))
+    let joined = checkout.join(p);
+    // Compare fully-resolved forms: the checkout path itself reaches us through
+    // `~/.fletch/workspaces/…`, which on macOS may sit under a symlinked
+    // prefix, so resolving only one side would reject every legitimate path.
+    let root = resolve(checkout);
+    if !resolve(&joined).starts_with(&root) || escapes_via_symlink(&root, checkout, p) {
+        return Err(Error::InvalidPath(rel.to_string()));
+    }
+    Ok(joined)
+}
+
+/// Symlink-resolve the longest existing prefix of `p`, keeping the rest.
+fn resolve(p: &Path) -> PathBuf {
+    crate::sandbox::policy::resolve_existing_prefix(p)
+}
+
+/// Whether any component of `rel` under `checkout` is a symlink whose target
+/// lands outside `root`.
+///
+/// This is a second pass because resolving the longest existing prefix alone
+/// misses the sharpest case: a **dangling** symlink. `canonicalize` fails on
+/// one, so the leaf is re-appended verbatim and the path reads as an ordinary
+/// in-checkout file — while `fs::write` would happily follow it and *create*
+/// the outside target. Reading each link explicitly catches that, and catches
+/// it before the file exists. In-tree links resolve back under `root` and pass.
+fn escapes_via_symlink(root: &Path, checkout: &Path, rel: &Path) -> bool {
+    let mut cur = checkout.to_path_buf();
+    for component in rel.components() {
+        cur.push(component);
+        let Ok(meta) = std::fs::symlink_metadata(&cur) else {
+            // Doesn't exist yet, so it isn't a link — and nothing can exist
+            // beneath a path that doesn't exist.
+            return false;
+        };
+        if !meta.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(target) = std::fs::read_link(&cur) else {
+            return true; // unreadable link — fail closed
+        };
+        let absolute = if target.is_absolute() {
+            target
+        } else {
+            cur.parent().unwrap_or(checkout).join(target)
+        };
+        if !resolve(&absolute).starts_with(root) {
+            return true;
+        }
+    }
+    false
 }
 
 // ── Agent → repo → checkout resolution ────────────────────────────
@@ -647,5 +714,102 @@ mod safe_join_tests {
         let wt = Path::new("/tmp/wt");
         assert!(safe_join(wt, "/etc/passwd").is_err());
         assert!(safe_join(wt, "").is_err());
+    }
+
+    /// A checkout + an "outside" dir standing in for the user's home.
+    fn checkout_and_outside() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let td = tempfile::tempdir().unwrap();
+        let checkout = td.path().join("checkout");
+        let outside = td.path().join("outside");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        (td, checkout, outside)
+    }
+
+    /// The agent owns the checkout's contents, so a lexically-clean path can
+    /// still be a symlink out of it. `fs::write` would follow it, letting the
+    /// editor's Save overwrite (and its viewer read) an arbitrary host file.
+    #[test]
+    fn rejects_file_symlinked_outside_the_checkout() {
+        let (_td, checkout, outside) = checkout_and_outside();
+        let secret = outside.join("zshrc");
+        std::fs::write(&secret, b"# real user config").unwrap();
+        std::os::unix::fs::symlink(&secret, checkout.join("README.md")).unwrap();
+
+        assert!(
+            safe_join(&checkout, "README.md").is_err(),
+            "a file symlinked out of the checkout must be rejected"
+        );
+    }
+
+    /// The directory variant: the leaf doesn't exist yet, so only the symlinked
+    /// parent gives the escape away — this is the path `create_checkout_file`
+    /// and `rename_checkout_path` take.
+    #[test]
+    fn rejects_path_under_a_symlinked_directory() {
+        let (_td, checkout, outside) = checkout_and_outside();
+        std::os::unix::fs::symlink(&outside, checkout.join("docs")).unwrap();
+
+        assert!(
+            safe_join(&checkout, "docs/new-file.md").is_err(),
+            "a new path under a symlinked-out directory must be rejected"
+        );
+    }
+
+    /// A dangling symlink is the sharpest case: `exists()` is false, so
+    /// `resolve_new_path`'s no-clobber guard passes and `fs::write` would
+    /// *create* the outside target.
+    #[test]
+    fn rejects_dangling_symlink_pointing_outside() {
+        let (_td, checkout, outside) = checkout_and_outside();
+        let not_yet = outside.join("authorized_keys");
+        std::os::unix::fs::symlink(&not_yet, checkout.join("notes.txt")).unwrap();
+        assert!(!not_yet.exists(), "target must not exist for this case");
+
+        assert!(
+            safe_join(&checkout, "notes.txt").is_err(),
+            "a dangling symlink out of the checkout must be rejected"
+        );
+    }
+
+    /// A *relative* link target (`../outside`) escapes just as well and takes
+    /// the other branch of the target-resolution — it is joined onto the link's
+    /// parent rather than used as-is.
+    #[test]
+    fn rejects_relative_symlink_target_escaping_the_checkout() {
+        let (_td, checkout, outside) = checkout_and_outside();
+        std::fs::write(outside.join("secret"), b"x").unwrap();
+        std::os::unix::fs::symlink("../outside/secret", checkout.join("link.txt")).unwrap();
+
+        assert!(
+            safe_join(&checkout, "link.txt").is_err(),
+            "a relative symlink target that escapes must be rejected"
+        );
+    }
+
+    /// Repos legitimately contain symlinks (monorepo links, `node_modules/.bin`).
+    /// The test is where a path *lands*, not whether a link was traversed — so
+    /// in-tree links must keep working.
+    #[test]
+    fn allows_symlinks_that_stay_inside_the_checkout() {
+        let (_td, checkout, _outside) = checkout_and_outside();
+        let real = checkout.join("packages/core");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("index.ts"), b"export {};").unwrap();
+        std::os::unix::fs::symlink(&real, checkout.join("linked")).unwrap();
+
+        assert!(
+            safe_join(&checkout, "linked/index.ts").is_ok(),
+            "an in-tree symlink must remain usable"
+        );
+        // And a not-yet-existing file beneath one, so Save-as still works.
+        assert!(safe_join(&checkout, "linked/new.ts").is_ok());
+    }
+
+    /// New files and dirs — the common case — must not be collateral damage.
+    #[test]
+    fn allows_paths_that_do_not_exist_yet() {
+        let (_td, checkout, _outside) = checkout_and_outside();
+        assert!(safe_join(&checkout, "src/deeply/nested/new.ts").is_ok());
     }
 }
