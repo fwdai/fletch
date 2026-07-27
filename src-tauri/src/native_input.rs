@@ -79,6 +79,17 @@ impl NativeInputTracker {
 
         submitted
     }
+
+    /// Forget any partially-typed line.
+    ///
+    /// Called when the app itself submits into the TUI: that write clears the
+    /// real line editor (see `agent::spawn::pty_input_keystrokes`), so leaving
+    /// the mirror populated would make the user's *next* Enter report their
+    /// discarded draft as a prefix of the submitted line — capturing a turn the
+    /// agent never ran.
+    pub fn clear(&mut self) {
+        self.line.clear();
+    }
 }
 
 fn skip_escape_sequence(bytes: &[u8], start: usize) -> usize {

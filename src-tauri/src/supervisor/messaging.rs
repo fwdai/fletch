@@ -124,6 +124,7 @@ impl Supervisor {
         // fixed on its running process — so no per-turn config to pass.
         self.live_agent(agent_id)?
             .send_user_message(&msg.text, &msg.attachments, None, None)?;
+        self.reset_native_input(agent_id);
         if let Err(e) =
             self.workspace
                 .insert_user_turn(agent_id, &msg.turn_id, &msg.text, &msg.attachments)
@@ -173,7 +174,19 @@ impl Supervisor {
             record.model.as_deref(),
             record.effort.as_deref(),
         )?;
+        self.reset_native_input(agent_id);
         Ok(())
+    }
+
+    /// Drop our mirror of a native agent's half-typed input line. A PTY
+    /// delivery clears the TUI's real editor before typing, so the mirror has
+    /// to be cleared in lockstep or the next Enter would attribute the
+    /// abandoned draft to the user's following turn. No-op for every other
+    /// transport (only native agents have a tracker entry).
+    fn reset_native_input(&self, agent_id: &str) {
+        if let Some(tracker) = self.native_inputs.lock().get_mut(agent_id) {
+            tracker.clear();
+        }
     }
 
     /// Deliver the user's answer to a held user-input prompt as a control

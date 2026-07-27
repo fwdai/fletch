@@ -9,31 +9,74 @@ use super::providers::codex::{codex_build_args, codex_pty_args, codex_session_id
 use super::providers::cursor::{cursor_build_args, cursor_pty_args, cursor_session_id};
 use super::providers::opencode::{opencode_build_args, opencode_pty_args, opencode_session_id};
 use super::providers::pi::{pi_build_args, pi_pty_args, pi_session_id, pi_session_slug};
-use super::spawn::pty_input_line;
+use super::spawn::pty_input_keystrokes;
 use super::transcript::{jsonl_files_ending, records_with_id};
 use super::*;
 
 // ── native (PTY) view input ───────────────────────────────────────────
+//
+// These pin the invariant that one app-originated message becomes exactly one
+// turn, carrying exactly the text we recorded. A violation here means the agent
+// runs a conversation that diverges from `session_user_turns`.
 
-#[test]
-fn pty_input_line_submits_one_line_per_message() {
-    // A TUI reads a bare newline as "submit", so an app-sent multi-line prompt
-    // (a git-action trigger, a coalesced follow-up) must arrive as ONE turn —
-    // otherwise each line lands as its own truncated turn.
-    let line = pty_input_line("first\nsecond\r\nthird", &[]);
-    assert_eq!(line, "first second third\r");
-    assert_eq!(line.matches('\r').count(), 1, "exactly one submit");
+/// Ctrl-E, Ctrl-U — the editor clear that must precede every injected line.
+const CLEAR: &[u8] = &[0x05, 0x15];
+
+fn keys(text: &str, attachments: &[String]) -> Vec<u8> {
+    pty_input_keystrokes(text, attachments)
 }
 
 #[test]
-fn pty_input_line_appends_attachment_paths() {
-    let line = pty_input_line("look at this", &["/tmp/a.png".to_string()]);
-    assert_eq!(line, "look at this /tmp/a.png\r");
+fn pty_input_clears_the_editor_before_typing() {
+    // The user may have a half-typed prompt sitting at the prompt when a
+    // git-action trigger lands. Without the clear, the agent would submit
+    // `<their draft>commit this`.
+    let out = keys("commit this", &[]);
+    assert!(out.starts_with(CLEAR), "must clear the line editor first");
+    assert_eq!(&out[CLEAR.len()..], b"commit this\r");
 }
 
 #[test]
-fn pty_input_line_submits_even_when_empty() {
-    assert_eq!(pty_input_line("", &[]), "\r");
+fn pty_input_submits_exactly_once_per_message() {
+    // A TUI reads LF/CR as "send now", so an unflattened multi-line prompt
+    // would arrive as several truncated turns.
+    let out = keys("first\nsecond\r\nthird", &[]);
+    assert_eq!(&out[CLEAR.len()..], b"first second third\r");
+    // Exactly one CR in the whole byte stream — the submit. (The clear prefix
+    // is 0x05/0x15, so it contributes none.)
+    assert_eq!(out.iter().filter(|&&b| b == b'\r').count(), 1);
+    assert_eq!(out.iter().filter(|&&b| b == b'\n').count(), 0);
+}
+
+#[test]
+fn pty_input_sanitizes_attachment_paths() {
+    // Paths are ordinary bytes on Unix and may legally contain a newline; an
+    // unsanitized one would split the message into two turns.
+    let out = keys("look at this", &["/tmp/we\nird.png".to_string()]);
+    assert_eq!(&out[CLEAR.len()..], b"look at this /tmp/we ird.png\r");
+    assert_eq!(out.iter().filter(|&&b| b == b'\r').count(), 1);
+}
+
+#[test]
+fn pty_input_drops_control_bytes_that_steer_the_tui() {
+    // Ctrl-C would interrupt the turn, ESC would open a mode, Ctrl-U would
+    // clear what we just typed — none may reach the TUI from message content.
+    let out = keys("a\u{3}b\u{1b}c", &["/tmp/x\u{15}.png".to_string()]);
+    assert_eq!(&out[CLEAR.len()..], b"abc /tmp/x.png\r");
+}
+
+#[test]
+fn pty_input_omits_a_leading_separator_for_attachment_only_messages() {
+    let out = keys("", &["/tmp/a.png".to_string()]);
+    assert_eq!(&out[CLEAR.len()..], b"/tmp/a.png\r");
+}
+
+#[test]
+fn pty_input_submits_even_when_empty() {
+    // A bare submit is still a submit — never a no-op write that silently
+    // drops a recorded turn.
+    let out = keys("", &[]);
+    assert_eq!(&out[CLEAR.len()..], b"\r");
 }
 
 // ── transcript readers ────────────────────────────────────────────────
