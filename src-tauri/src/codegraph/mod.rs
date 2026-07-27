@@ -126,13 +126,50 @@ fn should_inject(
     can_receive_mcp: bool,
     existing_names: &[&str],
 ) -> bool {
+    wants_codegraph(enabled, engine, can_receive_mcp, existing_names) && binary_installed
+}
+
+/// Everything that decides whether codegraph takes part in a session *except*
+/// whether the binary is on disk yet: indexing is on, the engine can exec a host
+/// binary, the provider's CLI can actually receive an MCP server, and the
+/// session hasn't already defined its own `"codegraph"` (case-insensitive) that
+/// we must not shadow.
+///
+/// Factored out because the injection gate and the index-provisioning gate need
+/// exactly these four and must never drift — a session that won't get the server
+/// must not pay to build an index, and vice versa. They differ on the fifth
+/// condition only: `should_inject` requires the binary to already exist, while
+/// provisioning is the code path that *installs* it, so requiring it there would
+/// deadlock the first run.
+fn wants_codegraph(
+    enabled: bool,
+    engine: EngineKind,
+    can_receive_mcp: bool,
+    existing_names: &[&str],
+) -> bool {
     enabled
         && engine != EngineKind::Docker
-        && binary_installed
         && can_receive_mcp
         && !existing_names
             .iter()
             .any(|n| n.eq_ignore_ascii_case("codegraph"))
+}
+
+/// [`wants_codegraph`] resolved against live state, for the index-provisioning
+/// gate. `session_servers` is the session's own MCP snapshot — the same list
+/// `inject_mcp_server` checks for a user-defined `"codegraph"` collision.
+pub fn session_wants_codegraph(
+    engine: EngineKind,
+    provider: &str,
+    session_servers: &[McpServerSnapshot],
+) -> bool {
+    let names: Vec<&str> = session_servers.iter().map(|s| s.name.as_str()).collect();
+    wants_codegraph(
+        enabled(),
+        engine,
+        crate::agent::mcp_delivery(provider).is_some(),
+        &names,
+    )
 }
 
 /// The outcome of the dynamic codegraph fold.
@@ -261,6 +298,78 @@ mod tests {
             true,
             &["github", "CodeGraph"]
         ));
+    }
+
+    #[test]
+    fn provisioning_and_injection_agree_on_every_shared_condition() {
+        // The index-provisioning gate must reject everything injection rejects,
+        // or we pay for a mirror clone + parse the agent can never query. Both
+        // go through `wants_codegraph`, so this pins the four shared conditions
+        // rather than trusting two hand-written copies to stay in step.
+        // A session that defines its own "codegraph" suppresses injection — and
+        // so must suppress indexing. This is the case that shipped broken.
+        assert!(!wants_codegraph(
+            true,
+            EngineKind::SandboxExec,
+            true,
+            &["CodeGraph"]
+        ));
+        assert!(!should_inject(
+            true,
+            EngineKind::SandboxExec,
+            true,
+            true,
+            &["CodeGraph"]
+        ));
+
+        // The other three shared conditions, same answer on both sides.
+        for (enabled, engine, can_mcp) in [
+            (false, EngineKind::SandboxExec, true),
+            (true, EngineKind::Docker, true),
+            (true, EngineKind::SandboxExec, false),
+        ] {
+            assert!(!wants_codegraph(enabled, engine, can_mcp, &[]));
+            assert!(!should_inject(enabled, engine, true, can_mcp, &[]));
+        }
+
+        // All four satisfied: both gates open (injection additionally needs the
+        // binary, which provisioning installs itself).
+        assert!(wants_codegraph(true, EngineKind::SandboxExec, true, &[]));
+    }
+
+    #[test]
+    fn provisioning_does_not_require_an_installed_binary() {
+        // The deliberate asymmetry: provisioning is the install path, so gating
+        // it on `is_installed` would stop the first run from ever bootstrapping.
+        assert!(wants_codegraph(true, EngineKind::SandboxExec, true, &[]));
+        assert!(!should_inject(
+            true,
+            EngineKind::SandboxExec,
+            false,
+            true,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn indexing_and_injection_share_one_provider_condition() {
+        // `provision_codegraph_index` gates on the same `mcp_delivery` resolver
+        // as `should_inject`. If they ever diverge we would either index for an
+        // agent that can't query it (wasted clone + parse per spawn) or inject a
+        // server with no index behind it. Pinning the shared resolver here keeps
+        // the two honest without the supervisor needing a test harness.
+        for provider in ["claude", "codex", "opencode"] {
+            assert!(
+                crate::agent::mcp_delivery(provider).is_some(),
+                "{provider} lost MCP delivery; indexing would silently stop too"
+            );
+        }
+        for provider in ["cursor", "pi", "antigravity"] {
+            assert!(
+                crate::agent::mcp_delivery(provider).is_none(),
+                "{provider} gained MCP delivery; it must be indexed again too"
+            );
+        }
     }
 
     #[test]

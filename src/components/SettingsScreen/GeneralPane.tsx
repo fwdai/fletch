@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
-import { ACCENTS } from "@/data/providers";
+import { ACCENTS, mcpCapableLabels } from "@/data/providers";
 import type { SandboxEngine, ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { ContainerAuth } from "./ContainerAuth";
@@ -164,7 +164,7 @@ export function GeneralPane() {
       <SetGroup label="Code indexing">
         <SetRow
           title="Code indexing"
-          sub="Let agents query symbols and call graphs instead of searching files. Stored in Fletch's data directory."
+          sub={`Let agents query symbols and call graphs instead of searching files. Stored in Fletch's data directory. Delivered over MCP, so it applies to ${mcpCapableLabels().join(", ")} — other agents are unaffected and are not indexed.`}
         >
           <SetToggle
             on={codeIndexingEnabled}

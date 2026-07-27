@@ -82,10 +82,24 @@ pub(super) async fn provision_codegraph_index(
     checkout: PathBuf,
     base_sha: Option<String>,
     engine: EngineKind,
+    provider: &str,
+    session_servers: &[crate::agent_profile::McpServerSnapshot],
 ) {
     use crate::codegraph;
 
-    if !codegraph::enabled() || engine == EngineKind::Docker {
+    // Don't build an index this session will never be able to query. Shares
+    // `codegraph::session_wants_codegraph` with the injection gate rather than
+    // re-stating its conditions, so the two can't drift: a provider with no MCP
+    // delivery, a Docker engine, indexing switched off, or a session that
+    // already defines its own `"codegraph"` server all mean the built-in server
+    // is never injected — and cloning the mirror, indexing it, and copying the
+    // db in would be minutes of background git and parse work per spawn for a
+    // tool the agent doesn't have.
+    //
+    // The one condition deliberately *not* shared is `binary_installed`: this is
+    // the path that installs it (see `ensure_installed` below), so requiring it
+    // up front would mean the first run never bootstraps.
+    if !codegraph::session_wants_codegraph(engine, provider, session_servers) {
         return;
     }
     let mirror = match codegraph::mirror_dir(&project_id, &source_repo) {
@@ -399,6 +413,8 @@ impl Supervisor {
         let app_for_task = app.clone();
         let id_for_task = agent_id.clone();
         let project_id_for_task = record.project_id.clone();
+        let provider_for_task = record.provider.clone();
+        let mcp_servers_for_task = record.mcp_servers.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
@@ -473,6 +489,8 @@ impl Supervisor {
                 primary_checkout.clone(),
                 base_sha.clone(),
                 engine_kind,
+                &provider_for_task,
+                &mcp_servers_for_task,
             )
             .await;
 
@@ -623,6 +641,8 @@ impl Supervisor {
             checkout.clone(),
             base_sha.clone(),
             stamped_engine(&record),
+            &record.provider,
+            &record.mcp_servers,
         )
         .await;
 
