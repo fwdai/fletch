@@ -19,7 +19,7 @@ const { discardAgent, restoreAgent, archiveAgent, getWorkspace } = vi.hoisted(()
 vi.mock("@/api", () => ({
   api: { discardAgent, restoreAgent, archiveAgent, getWorkspace },
 }));
-vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn() }));
+vi.mock("@/pty/buffers", () => ({ clearOutputBuffer: vi.fn(), dropAgentPty: vi.fn() }));
 
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";

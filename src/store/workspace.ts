@@ -22,7 +22,7 @@ import {
   sendWhenAgentReady,
   unsupportedManagedCommand,
 } from "@/helpers";
-import { clearOutputBuffer } from "@/pty/buffers";
+import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { forkContextDigest } from "./forkDigest";
 import { interruptedAgents } from "./interrupted";
@@ -622,7 +622,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   discard: async (id) => {
     try {
       await api.discardAgent(id);
-      clearOutputBuffer(id);
+      // The agent is gone for good: release its PTY state (both ring buffers
+      // and its cached live terminal) along with the store's side maps below.
+      dropAgentPty(id);
       // The discard has committed, so drop the agent optimistically: remove its
       // row from the workspace AND its side maps together, and clear the
       // selection. Editing the workspace here (not just the side maps) keeps the
@@ -670,7 +672,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }));
     try {
       await api.archiveAgent(id);
-      clearOutputBuffer(id);
+      // Archiving kills the agent's processes, so release its PTY state (both
+      // ring buffers and its cached live terminal); a restore starts fresh.
+      dropAgentPty(id);
       // Drop the agent's side maps ATOMICALLY with the post-commit snapshot that
       // archives (hides) the row, by folding the cleanup into the guarded
       // refresh. Unlike the sidebar's optimistic placeholder — which a stale,
