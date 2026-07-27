@@ -110,6 +110,37 @@ export function getCommandField(input: unknown, field = "command"): string {
   return "";
 }
 
+/** One-line, punctuation-free view of an arbitrary tool input, for tools with
+ *  no dedicated presenter. Dumping `JSON.stringify` there spent the row's whole
+ *  width on braces and quotes, so instead: a lone field shows just its value
+ *  (`{query: "…"}` reads as the query), several show `key value` pairs. The
+ *  expanded view still carries the exact JSON. */
+export function describeInput(input: unknown, max = 120): string {
+  if (input == null) return "";
+  if (typeof input !== "object") return firstLineOf(compactValue(input), max);
+  if (Array.isArray(input)) return firstLineOf(compactValue(input), max);
+  const entries = Object.entries(input as Record<string, unknown>).filter(
+    ([, v]) => v !== undefined && v !== null && v !== "",
+  );
+  if (entries.length === 0) return "";
+  if (entries.length === 1) return firstLineOf(compactValue(entries[0][1]), max);
+  return firstLineOf(entries.map(([k, v]) => `${k} ${compactValue(v)}`).join(" · "), max);
+}
+
+/** Flatten one value to inline text. Whitespace collapses so a multi-line
+ *  string (a prompt, a patch) stays on the summary's single line. */
+function compactValue(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value.replace(/\s+/g, " ").trim();
+  if (Array.isArray(value)) return value.map(compactValue).filter(Boolean).join(", ");
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([k, v]) => `${k} ${compactValue(v)}`)
+      .join(" ");
+  }
+  return String(value);
+}
+
 /** Truncate at the first newline, with an ellipsis if there's more. */
 export function firstLineOf(text: string, max = 120): string {
   const nl = text.indexOf("\n");

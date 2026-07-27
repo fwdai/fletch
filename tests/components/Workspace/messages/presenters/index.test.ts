@@ -49,6 +49,54 @@ describe("getPresenter", () => {
   });
 });
 
+describe("defaultPresenter.summary", () => {
+  // Unregistered tools used to render `JSON.stringify(input)`, spending the
+  // row on braces and quotes — `ToolSearch` showed up as
+  // `{"max_results":3,"query":"select:mcp__codegraph__codegraph_explore"}`.
+  it("renders a multi-field input as key/value pairs, not JSON", () => {
+    expect(
+      defaultPresenter.summary(
+        toolCall({ max_results: 3, query: "select:mcp__codegraph__codegraph_explore" }),
+        null,
+      ),
+    ).toBe("max_results 3 · query select:mcp__codegraph__codegraph_explore");
+  });
+
+  it("shows just the value when there is only one field", () => {
+    expect(defaultPresenter.summary(toolCall({ query: "how does auth work" }), null)).toBe(
+      "how does auth work",
+    );
+  });
+
+  it("keeps a multi-line value on one line", () => {
+    expect(defaultPresenter.summary(toolCall({ prompt: "line one\nline two" }), null)).toBe(
+      "line one line two",
+    );
+  });
+
+  it("skips empty fields", () => {
+    expect(defaultPresenter.summary(toolCall({ query: "x", cursor: "", limit: null }), null)).toBe(
+      "x",
+    );
+  });
+
+  it("flattens nested values", () => {
+    expect(
+      defaultPresenter.summary(toolCall({ filter: { kind: "file" }, tags: ["a", "b"] }), null),
+    ).toBe("filter kind file · tags a, b");
+  });
+
+  it("renders a bare string or array input", () => {
+    expect(defaultPresenter.summary(toolCall("just a string"), null)).toBe("just a string");
+    expect(defaultPresenter.summary(toolCall(["a", "b"]), null)).toBe("a, b");
+  });
+
+  it("renders nothing for an empty input", () => {
+    expect(defaultPresenter.summary(toolCall({}), null)).toBe("");
+    expect(defaultPresenter.summary(toolCall(null), null)).toBe("");
+  });
+});
+
 describe("bashPresenter.summary", () => {
   // Claude's `Bash` hands over an object input; Codex/Cursor `shell` hand over
   // the command as a bare value. All three must render the command, not the
