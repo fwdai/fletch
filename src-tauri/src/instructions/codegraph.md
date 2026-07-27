@@ -13,6 +13,9 @@ Codex) — it is whichever tool name ends in `codegraph_explore`.
   depends on it. The output is line-numbered source, safe to edit from.
 - Fall back to grep/read when codegraph comes back empty; the index trails a
   just-written file by about a second.
-- **Pass this on when you delegate.** Subagents do not inherit these instructions
-  and their definitions steer toward Grep/Glob, so say it in the task prompt
-  yourself: "use codegraph_explore rather than grep/read to locate code."
+- **When you delegate code-location work, dispatch to the `codegraph` subagent
+  type** rather than a general search agent — it is defined for exactly this and
+  starts from the index. For any other subagent, say it in the task prompt
+  yourself: subagents do not inherit these instructions and their definitions
+  steer toward Grep/Glob, so add "use codegraph_explore rather than grep/read to
+  locate code."

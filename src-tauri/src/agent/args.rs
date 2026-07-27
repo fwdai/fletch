@@ -34,6 +34,22 @@ pub(crate) fn push_opt(args: &mut Vec<String>, flag: &str, value: Option<&str>) 
     }
 }
 
+/// Claude's `--agents <json>` for the Fletch-defined `codegraph` subagent.
+/// Empty unless codegraph actually landed — a subagent whose entire job is
+/// calling `codegraph_explore` is worse than useless without the tool.
+///
+/// `--agents` *adds* here; it can override a built-in by name, but we
+/// deliberately don't (see `agent_profile::codegraph_subagent_json`).
+pub(crate) fn subagent_args(codegraph_available: bool) -> Vec<String> {
+    if !codegraph_available {
+        return Vec::new();
+    }
+    vec![
+        "--agents".into(),
+        crate::agent_profile::codegraph_subagent_json(),
+    ]
+}
+
 /// `mcp_args` comes from the provider's `McpDeliveryBuilder`, resolved and run
 /// by the spawn path (see `agent::mcp_delivery`) — for claude that's
 /// `--mcp-config <path> --strict-mcp-config`. Empty when no servers are
@@ -48,6 +64,7 @@ pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) -> Vec
     args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args(spec.instructions));
     args.extend_from_slice(mcp_args);
+    args.extend(subagent_args(spec.codegraph_available));
 
     if spec.fresh {
         args.push("--session-id".into());
@@ -89,6 +106,7 @@ pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) ->
     args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args(spec.instructions));
     args.extend_from_slice(mcp_args);
+    args.extend(subagent_args(spec.codegraph_available));
 
     if spec.fresh {
         args.push("--session-id".into());

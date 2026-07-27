@@ -76,6 +76,11 @@ pub struct SpawnSpec<'a> {
     /// system prompt on every spawn/resume. Includes the materialized skill
     /// index when the session has skills. `None` for a plain built-in spawn.
     pub instructions: Option<&'a str>,
+    /// Whether the codegraph MCP server actually landed in this session (see
+    /// `codegraph::McpInjection`). Gates the Fletch-defined `codegraph`
+    /// subagent the same way it gates the instruction block: never define a
+    /// subagent whose only tool the agent wasn't given.
+    pub codegraph_available: bool,
     /// The session's MCP-server snapshot. Delivered by the provider's
     /// `McpDeliveryBuilder` at spawn (see `agent::mcp_delivery`); ignored for
     /// providers that have no MCP surface.

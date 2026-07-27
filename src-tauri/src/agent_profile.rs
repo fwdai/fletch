@@ -300,6 +300,45 @@ pub fn effective_instructions(
     Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
 }
 
+/// The subagent type Fletch defines when codegraph is available, as claude's
+/// `--agents` JSON: `{"<name>": {"description", "prompt", "tools"}}`.
+///
+/// **Added, never an override.** `--agents` does replace a built-in of the same
+/// name, so redefining `Explore` was the obvious move — but its `tools` field is
+/// a *positive* allowlist while the real `Explore` is defined negatively ("every
+/// tool except Edit/Write/…"). Overriding would freeze its toolset at whatever
+/// we enumerate today and silently withhold tools a later Claude Code adds, and
+/// would replace a vendor prompt we can't read and would then have to maintain.
+/// Defining our own name instead leaves the built-ins alone; `codegraph.md`
+/// tells the parent to dispatch here for code-location work, and the parent is
+/// the one process whose system prompt we fully control.
+///
+/// `tools` is a read-only set on purpose: this agent locates code, it doesn't
+/// change it. A positive list fails closed — a tool we forget is missing, never
+/// wrongly granted.
+pub fn codegraph_subagent_json() -> String {
+    let agents = serde_json::json!({
+        CODEGRAPH_AGENT: {
+            "description": CODEGRAPH_AGENT_DESCRIPTION,
+            "prompt": CODEGRAPH_AGENT_PROMPT,
+            "tools": ["mcp__codegraph__codegraph_explore", "Read", "Grep", "Glob"],
+        }
+    });
+    agents.to_string()
+}
+
+/// Name of the subagent type above. Referenced from `instructions/codegraph.md`,
+/// so the two must agree — a test pins that.
+pub const CODEGRAPH_AGENT: &str = "codegraph";
+
+const CODEGRAPH_AGENT_DESCRIPTION: &str = "\
+Locates code by querying the codegraph index rather than grepping. Use for \
+where/what is X, how does X work, and for finding everything that depends on a \
+symbol before changing it. Returns verbatim line-numbered source plus callers, \
+in far fewer round-trips than a grep + read sweep.";
+
+const CODEGRAPH_AGENT_PROMPT: &str = "You locate code in this repository. The workspace has codegraph attached: a pre-built index of every symbol, file, and edge.\n\nStart with `codegraph_explore` (the tool whose name ends in that). One call takes a natural-language question or a bag of symbol/file names and returns the verbatim, line-numbered source of the matching symbols grouped by file, plus their callers and what depends on them. It is usually the only call you need.\n\nUse Grep/Glob/Read only to fill gaps codegraph leaves — an empty result, or a file written in the last second or so, which the index may not have picked up yet. Do not open a grep + read sweep first; that re-derives what the index already holds.\n\nReport what you found: the relevant code with its file paths and line numbers, and the callers or dependents that matter for the task. You are read-only — locate and explain, never edit.";
+
 /// Pairs as a JSON string map — the shape `env`/`headers` take in every
 /// provider's config file.
 fn json_string_map(pairs: &[(String, String)]) -> serde_json::Map<String, serde_json::Value> {
@@ -667,6 +706,56 @@ mod tests {
         );
         // Claude carries everything in argv — nothing in the environment.
         assert!(delivery.env.is_empty());
+    }
+
+    #[test]
+    fn codegraph_subagent_is_additive_and_read_only() {
+        let json: serde_json::Value = serde_json::from_str(&codegraph_subagent_json()).unwrap();
+        let agent = &json[CODEGRAPH_AGENT];
+        assert!(agent.is_object(), "agent missing: {json}");
+
+        // Additive: we must not redefine a built-in. Overriding one replaces its
+        // prompt and freezes its toolset to whatever we enumerate (see the doc
+        // on `codegraph_subagent_json`).
+        for builtin in ["Explore", "general-purpose", "Plan", "claude"] {
+            assert!(
+                json.get(builtin).is_none(),
+                "{builtin} is a built-in agent type and must not be overridden"
+            );
+        }
+
+        // Read-only by construction: this agent locates code, never edits it.
+        let tools: Vec<&str> = agent["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap())
+            .collect();
+        assert!(tools.iter().any(|t| t.ends_with("codegraph_explore")));
+        for banned in ["Edit", "Write", "NotebookEdit", "Bash"] {
+            assert!(
+                !tools.contains(&banned),
+                "{banned} granted to a read-only agent"
+            );
+        }
+
+        // The prompt has to actually name the tool, or the agent has no idea
+        // what it is meant to call.
+        assert!(agent["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("codegraph_explore"));
+    }
+
+    #[test]
+    fn guidance_and_subagent_agree_on_the_agent_name() {
+        // `codegraph.md` tells the parent to dispatch to this type by name. A
+        // rename on either side silently sends it to a type that doesn't exist.
+        let guidance = crate::instructions::codegraph_block().unwrap();
+        assert!(
+            guidance.contains(&format!("`{CODEGRAPH_AGENT}` subagent")),
+            "guidance does not reference the `{CODEGRAPH_AGENT}` agent: {guidance}"
+        );
     }
 
     #[test]
