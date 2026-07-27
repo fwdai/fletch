@@ -45,6 +45,8 @@ export function WorkspaceHeader({ agent }: Props) {
   // switcher is hidden, and Workspace renders any native-mode agent as chat so
   // it can't get stranded behind a missing toggle.
   const nativeView = useAppStore((s) => s.features.nativeView);
+  const railOpen = useAppStore((s) => s.transcriptRailOpen);
+  const toggleRail = useAppStore((s) => s.toggleTranscriptRail);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
@@ -98,6 +100,18 @@ export function WorkspaceHeader({ agent }: Props) {
           nativeDisabled={!agent.session_id}
           nativeReason="Available after the agent's first turn"
         />
+      )}
+
+      {/* Only meaningful while the terminal is on screen — in the custom view
+          the transcript IS the pane. */}
+      {nativeView && agent.view === "native" && (
+        <IconButton
+          active={railOpen}
+          tip={railOpen ? "Hide transcript" : "Show transcript"}
+          onClick={toggleRail}
+        >
+          <Icon name="sparkle" />
+        </IconButton>
       )}
 
       <ForkMenu

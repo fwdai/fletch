@@ -743,3 +743,58 @@
   color: var(--fg-2);
   white-space: pre-wrap;
 }
+
+/* ── Native view: terminal + transcript rail ──────────────────────────────
+   `.chat` is a column; the native body splits it into two columns instead —
+   the TUI you type into, and the structured inspector beside it. */
+.native-split {
+  flex-direction: row;
+}
+.native-term {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.native-rail {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 380px;
+  min-height: 0;
+  border-left: 1px solid var(--bd-soft);
+  background: var(--bg-0);
+}
+/* Below this the rail costs the terminal more than it gives back — a TUI
+   reflows badly under ~80 columns. */
+@media (max-width: 1100px) {
+  .native-rail {
+    width: 320px;
+  }
+}
+.native-rail-h {
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  border-bottom: 1px solid var(--bd-soft);
+  flex-shrink: 0;
+}
+.native-rail-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-2);
+  font-weight: 500;
+}
+.native-rail-foot {
+  justify-content: flex-end;
+  padding: 6px 12px;
+  border-top: 1px solid var(--bd-soft);
+  flex-shrink: 0;
+}
+/* The rail is narrow: let the log use its full width rather than the centred,
+   max-width column the main chat pane uses. */
+.native-rail .chat-inner {
+  padding: 12px 10px;
+  max-width: none;
+}

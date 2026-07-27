@@ -11,6 +11,7 @@ import { EmptyWorkspace } from "./EmptyWorkspace";
 import { Home } from "./Home";
 import { MissionControl } from "./MissionControl";
 import { NativeView } from "./NativeView";
+import { TranscriptRail } from "./TranscriptRail";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
 /** Center pane orchestrator. Decides whether to show: a draft empty
@@ -208,10 +209,19 @@ function SyncHealthBanner({ agentId }: { agentId: string }) {
   );
 }
 
+/** Native view body: the agent's TUI, with the structured transcript rail
+ *  optionally docked beside it. The terminal is the live surface you type into;
+ *  the rail is the inspector (tool cards, turn footers, cost) that the raw
+ *  terminal can't give you. */
 function NativeBody({ agent }: { agent: AgentRecord }) {
+  const railOpen = useAppStore((s) => s.transcriptRailOpen);
+  const toggleRail = useAppStore((s) => s.toggleTranscriptRail);
   return (
-    <div className="chat">
-      <NativeView agent={agent} />
+    <div className="chat native-split">
+      <div className="native-term">
+        <NativeView agent={agent} />
+      </div>
+      {railOpen && <TranscriptRail agent={agent} onClose={toggleRail} />}
     </div>
   );
 }

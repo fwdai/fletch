@@ -125,6 +125,8 @@ export const hydrateSettings = async (set: AppSet) => {
       newDraftModel,
       newDraftCustomAgentId,
       lastRepoPath: s.lastRepoPath || undefined,
+      // Opt-out: only an explicit "false" hides the native view's rail.
+      transcriptRailOpen: s.transcriptRailOpen !== "false",
       gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
       onboardingComplete: s.onboardingComplete === "true",
       // Telemetry is opt-out: only an explicit "false" disables it. The key is
