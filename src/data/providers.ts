@@ -68,6 +68,15 @@ export const MCP_SUPPORT: Record<string, McpSupport> = {
   opencode: "all",
 };
 
+/** Providers that can actually receive an MCP server, as human labels — the
+ *  same set the backend derives from `agent::mcp_delivery`. Code indexing is
+ *  delivered to agents over MCP, so this doubles as "which agents benefit from
+ *  the code-indexing setting". Derived rather than hardcoded so wiring a new
+ *  provider updates the settings copy for free. */
+export function mcpCapableLabels(): string[] {
+  return PROVIDERS.filter((p) => (MCP_SUPPORT[p.id] ?? "none") !== "none").map((p) => p.label);
+}
+
 /** Whether a provider with `support` can actually deliver an MCP server of
  *  `transport` at spawn. The single rule behind the agent editor's disabled
  *  rows, its save-path filter, and the spawn snapshot in `store/drafts.ts`,
