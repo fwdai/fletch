@@ -86,6 +86,14 @@ pub struct TurnArgs<'a> {
 pub(crate) type PtyArgsBuilder =
     fn(Option<&str>, Option<&str>, Option<&str>, &[String]) -> Vec<String>;
 
-/// Builds a provider's MCP-delivery args from the session's server snapshot
-/// (e.g. codex `-c mcp_servers.*` overrides).
-pub(crate) type McpArgsBuilder = fn(&[crate::agent_profile::McpServerSnapshot]) -> Vec<String>;
+/// Places the session's MCP servers where a provider's CLI will find them.
+///
+/// The one seam every provider's MCP support goes through: the builder writes
+/// whatever config file its CLI reads (into the profile dir or the checkout,
+/// per `McpTarget`) and returns the argv and/or environment pointing at it.
+/// Fallible because most implementations touch the filesystem. Adding a
+/// provider means writing one of these and listing it on the descriptor — no
+/// new branch at any call site.
+pub(crate) type McpDeliveryBuilder = fn(
+    &crate::agent_profile::McpTarget<'_>,
+) -> crate::error::Result<crate::agent_profile::McpDelivery>;

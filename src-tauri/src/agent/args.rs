@@ -1,7 +1,5 @@
 //! Shared, non-provider-specific CLI arg-building helpers.
 
-use std::path::Path;
-
 use crate::instructions;
 
 use super::spawn::SpawnSpec;
@@ -36,7 +34,11 @@ pub(crate) fn push_opt(args: &mut Vec<String>, flag: &str, value: Option<&str>) 
     }
 }
 
-pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>) -> Vec<String> {
+/// `mcp_args` comes from the provider's `McpDeliveryBuilder`, resolved and run
+/// by the spawn path (see `agent::mcp_delivery`) — for claude that's
+/// `--mcp-config <path> --strict-mcp-config`. Empty when no servers are
+/// attached.
+pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--dangerously-skip-permissions".into(),
         "--permission-mode".into(),
@@ -45,7 +47,7 @@ pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>) -> Vec<String> {
     args.extend(effort_args(spec.effort));
     args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args(spec.instructions));
-    args.extend(mcp_config_args(spec.mcp_config));
+    args.extend_from_slice(mcp_args);
 
     if spec.fresh {
         args.push("--session-id".into());
@@ -58,21 +60,7 @@ pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>) -> Vec<String> {
     args
 }
 
-/// Claude's MCP flags for a generated config file: `--strict-mcp-config` makes
-/// the snapshot-derived file the *only* MCP source, so on-disk user/project MCP
-/// config never rides along with an agent Fletch spawns.
-fn mcp_config_args(config: Option<&Path>) -> Vec<String> {
-    match config {
-        Some(path) => vec![
-            "--mcp-config".into(),
-            path.to_string_lossy().into_owned(),
-            "--strict-mcp-config".into(),
-        ],
-        None => Vec::new(),
-    }
-}
-
-pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>) -> Vec<String> {
+pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) -> Vec<String> {
     // Stream-json input + output give us a structured back-and-forth
     // over stdio. --verbose is required when using stream-json output
     // so events keep flowing. --include-partial-messages emits
@@ -100,7 +88,7 @@ pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>) -> Vec<String> {
     args.extend(effort_args(spec.effort));
     args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args(spec.instructions));
-    args.extend(mcp_config_args(spec.mcp_config));
+    args.extend_from_slice(mcp_args);
 
     if spec.fresh {
         args.push("--session-id".into());

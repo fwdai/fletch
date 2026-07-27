@@ -24,7 +24,7 @@ use super::providers::opencode::{
 };
 use super::providers::pi::{pi_build_args, pi_locate, pi_pty_args, pi_read, pi_session_id};
 use super::transcript::{JsonlTail, TranscriptReader};
-use super::{McpArgsBuilder, PtyArgsBuilder, TurnArgs};
+use super::{McpDeliveryBuilder, PtyArgsBuilder, TurnArgs};
 
 /// Everything that varies between per-turn agents. The runner lifecycle —
 /// one fresh process per turn via `ExecSession` — is identical for all of
@@ -45,11 +45,12 @@ pub struct PerTurnDescriptor {
     /// (PTY) view: `(session [None = fresh], model, custom_instructions,
     /// mcp_args)`.
     pub(crate) pty_args: PtyArgsBuilder,
-    /// Builds this provider's MCP-delivery args from the session's snapshot
-    /// (e.g. codex `-c mcp_servers.*` overrides), applied to both the per-turn
-    /// and native-PTY launches. `None` = provider has no MCP config surface we
-    /// can drive; the snapshot is ignored (the editor UI says so up front).
-    pub(crate) mcp_args: Option<McpArgsBuilder>,
+    /// Places the session's MCP servers where this provider's CLI finds them,
+    /// applied to both the per-turn and native-PTY launches. `None` = provider
+    /// has no MCP config surface we can drive; the snapshot is ignored (the
+    /// editor UI says so up front). Resolve via [`mcp_delivery`], which also
+    /// covers claude.
+    pub(crate) mcp: Option<McpDeliveryBuilder>,
     /// Extracts the agent-assigned session id from a turn's events. The
     /// event-based agents are thin wrappers over `gated_session_id` (same shape,
     /// different gates). No-op for `plaintext` agents (they emit no events — see
@@ -128,7 +129,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "Codex",
         build_args: codex_build_args,
         pty_args: codex_pty_args,
-        mcp_args: Some(crate::agent_profile::codex_mcp_args),
+        mcp: Some(crate::agent_profile::codex_mcp_delivery),
         session_id: codex_session_id,
         activity: || Box::new(ManagedActivity::codex()),
         native_view: true,
@@ -146,7 +147,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "Cursor",
         build_args: cursor_build_args,
         pty_args: cursor_pty_args,
-        mcp_args: None,
+        mcp: None,
         session_id: cursor_session_id,
         // Cursor emits Claude-shaped stream-json incl. a `result` turn-end,
         // so it reuses the Claude managed detector.
@@ -166,7 +167,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "OpenCode",
         build_args: opencode_build_args,
         pty_args: opencode_pty_args,
-        mcp_args: None,
+        mcp: None,
         session_id: opencode_session_id,
         activity: || Box::new(ManagedActivity::opencode()),
         native_view: true,
@@ -184,7 +185,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "Pi",
         build_args: pi_build_args,
         pty_args: pi_pty_args,
-        mcp_args: None,
+        mcp: None,
         session_id: pi_session_id,
         activity: || Box::new(ManagedActivity::pi()),
         native_view: true,
@@ -205,7 +206,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "Antigravity",
         build_args: antigravity_build_args,
         pty_args: antigravity_pty_args,
-        mcp_args: None,
+        mcp: None,
         // agy emits no JSON events; its session id is read from the filesystem.
         session_id: |_| None,
         // No event stream to detect turn-end from — the turn's process exit ends
@@ -243,6 +244,21 @@ pub fn transcript_reader(provider: &str) -> Option<&'static TranscriptReader> {
     }
 }
 
+/// The MCP-delivery builder for a provider, or `None` if it has no MCP surface
+/// Fletch can drive. Same dispatch as `transcript_reader`: per-turn descriptors
+/// plus the claude special case (claude is the lone persistent-runner agent, so
+/// it has no descriptor row of its own).
+///
+/// This is the single resolution point for MCP support — spawn paths and the
+/// injection gate both go through it, so no caller branches on a provider id.
+pub fn mcp_delivery(provider: &str) -> Option<McpDeliveryBuilder> {
+    match per_turn_descriptor(provider) {
+        Some(d) => d.mcp,
+        None if provider == "claude" => Some(crate::agent_profile::claude_mcp_delivery),
+        None => None,
+    }
+}
+
 /// (binary, human label) for a provider, or `None` if unknown. Same dispatch
 /// as `transcript_reader`: per-turn descriptors + the claude special case.
 pub(crate) fn provider_bin_label(provider: &str) -> Option<(&'static str, &'static str)> {
@@ -250,5 +266,28 @@ pub(crate) fn provider_bin_label(provider: &str) -> Option<(&'static str, &'stat
         Some(d) => Some((d.bin, d.label)),
         None if provider == "claude" => Some(("claude", "Claude Code")),
         None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_delivery_covers_claude_and_the_descriptor_table() {
+        // Claude has no descriptor row, so it must still resolve — it was the
+        // provider whose delivery used to be hardcoded at the spawn site.
+        assert!(mcp_delivery("claude").is_some());
+        assert!(mcp_delivery("codex").is_some());
+
+        // Not yet wired: the snapshot is ignored rather than mis-delivered.
+        for provider in ["cursor", "opencode", "pi", "antigravity"] {
+            assert!(
+                mcp_delivery(provider).is_none(),
+                "{provider} claims MCP support it can't deliver"
+            );
+        }
+
+        assert!(mcp_delivery("nonesuch").is_none());
     }
 }
