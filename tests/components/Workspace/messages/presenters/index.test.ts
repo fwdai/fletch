@@ -86,6 +86,30 @@ describe("defaultPresenter.summary", () => {
     ).toBe("filter kind file · tags a, b");
   });
 
+  it("skips empty fields nested inside an object", () => {
+    expect(
+      defaultPresenter.summary(
+        toolCall({ query: "x", filter: { kind: null, path: "", depth: 2 } }),
+        null,
+      ),
+    ).toBe("query x · filter depth 2");
+  });
+
+  it("drops a field whose value is empty all the way down", () => {
+    // Nothing left to say about `filter`, so it should not contribute a key.
+    expect(
+      defaultPresenter.summary(toolCall({ query: "x", filter: { kind: null, path: "" } }), null),
+    ).toBe("x");
+    expect(defaultPresenter.summary(toolCall({ filter: { kind: null } }), null)).toBe("");
+    expect(defaultPresenter.summary(toolCall({ query: "x", tags: [], meta: {} }), null)).toBe("x");
+  });
+
+  it("keeps falsy values the tool was actually called with", () => {
+    expect(defaultPresenter.summary(toolCall({ recursive: false, depth: 0 }), null)).toBe(
+      "recursive false · depth 0",
+    );
+  });
+
   it("renders a bare string or array input", () => {
     expect(defaultPresenter.summary(toolCall("just a string"), null)).toBe("just a string");
     expect(defaultPresenter.summary(toolCall(["a", "b"]), null)).toBe("a, b");

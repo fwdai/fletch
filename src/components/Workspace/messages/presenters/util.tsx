@@ -119,12 +119,24 @@ export function describeInput(input: unknown, max = 120): string {
   if (input == null) return "";
   if (typeof input !== "object") return firstLineOf(compactValue(input), max);
   if (Array.isArray(input)) return firstLineOf(compactValue(input), max);
-  const entries = Object.entries(input as Record<string, unknown>).filter(
-    ([, v]) => v !== undefined && v !== null && v !== "",
-  );
+  const entries = compactEntries(input as Record<string, unknown>);
   if (entries.length === 0) return "";
-  if (entries.length === 1) return firstLineOf(compactValue(entries[0][1]), max);
-  return firstLineOf(entries.map(([k, v]) => `${k} ${compactValue(v)}`).join(" · "), max);
+  if (entries.length === 1) return firstLineOf(entries[0][1], max);
+  return firstLineOf(entries.map(([k, v]) => `${k} ${v}`).join(" · "), max);
+}
+
+/** Compact every field, keeping only those that render to something. Emptiness
+ *  is judged *after* compacting, so a field that contributes nothing but its
+ *  own key — `null`, `""`, `[]`, or an object whose fields are all empty —
+ *  drops out at any depth. Note `0` and `false` compact to "0"/"false" and are
+ *  kept: they're values the tool was actually called with. */
+function compactEntries(obj: Record<string, unknown>): [key: string, text: string][] {
+  const out: [string, string][] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    const text = compactValue(value);
+    if (text) out.push([key, text]);
+  }
+  return out;
 }
 
 /** Flatten one value to inline text. Whitespace collapses so a multi-line
@@ -134,8 +146,8 @@ function compactValue(value: unknown): string {
   if (typeof value === "string") return value.replace(/\s+/g, " ").trim();
   if (Array.isArray(value)) return value.map(compactValue).filter(Boolean).join(", ");
   if (typeof value === "object") {
-    return Object.entries(value as Record<string, unknown>)
-      .map(([k, v]) => `${k} ${compactValue(v)}`)
+    return compactEntries(value as Record<string, unknown>)
+      .map(([key, text]) => `${key} ${text}`)
       .join(" ");
   }
   return String(value);
