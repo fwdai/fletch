@@ -222,30 +222,11 @@ pub async fn copy_index_into(mirror_dir: &Path, checkout: &Path) -> Result<()> {
 }
 
 /// Add `.codegraph` to a checkout's `.git/info/exclude` so the copied index
-/// never surfaces in `git status`/diffs. Idempotent: the line is added at most
-/// once, and the file (and its parent) is created if missing.
+/// never surfaces in `git status`/diffs. Thin async wrapper over the shared
+/// [`crate::git_state::ensure_git_exclude`] — the same helper cursor's MCP
+/// config write uses — since the underlying work is a few bytes of file I/O.
 pub async fn append_git_exclude(checkout: &Path) -> Result<()> {
-    let info_dir = checkout.join(".git").join("info");
-    tokio::fs::create_dir_all(&info_dir)
-        .await
-        .map_err(|e| Error::Other(format!("create .git/info: {e}")))?;
-    let exclude = info_dir.join("exclude");
-    let existing = tokio::fs::read_to_string(&exclude)
-        .await
-        .unwrap_or_default();
-    if existing.lines().any(|l| l.trim() == INDEX_DIR) {
-        return Ok(());
-    }
-    let mut next = existing;
-    if !next.is_empty() && !next.ends_with('\n') {
-        next.push('\n');
-    }
-    next.push_str(INDEX_DIR);
-    next.push('\n');
-    tokio::fs::write(&exclude, next)
-        .await
-        .map_err(|e| Error::Other(format!("write .git/info/exclude: {e}")))?;
-    Ok(())
+    crate::git_state::ensure_git_exclude(checkout, INDEX_DIR)
 }
 
 fn path_str(path: &Path) -> Result<String> {

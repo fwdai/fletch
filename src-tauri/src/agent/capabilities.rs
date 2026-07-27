@@ -147,7 +147,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "Cursor",
         build_args: cursor_build_args,
         pty_args: cursor_pty_args,
-        mcp: None,
+        mcp: Some(crate::agent_profile::cursor_mcp_delivery),
         session_id: cursor_session_id,
         // Cursor emits Claude-shaped stream-json incl. a `result` turn-end,
         // so it reuses the Claude managed detector.
@@ -167,7 +167,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "OpenCode",
         build_args: opencode_build_args,
         pty_args: opencode_pty_args,
-        mcp: None,
+        mcp: Some(crate::agent_profile::opencode_mcp_delivery),
         session_id: opencode_session_id,
         activity: || Box::new(ManagedActivity::opencode()),
         native_view: true,
@@ -277,11 +277,17 @@ mod tests {
     fn mcp_delivery_covers_claude_and_the_descriptor_table() {
         // Claude has no descriptor row, so it must still resolve — it was the
         // provider whose delivery used to be hardcoded at the spawn site.
-        assert!(mcp_delivery("claude").is_some());
-        assert!(mcp_delivery("codex").is_some());
+        for provider in ["claude", "codex", "cursor", "opencode"] {
+            assert!(
+                mcp_delivery(provider).is_some(),
+                "{provider} lost MCP support"
+            );
+        }
 
-        // Not yet wired: the snapshot is ignored rather than mis-delivered.
-        for provider in ["cursor", "opencode", "pi", "antigravity"] {
+        // No MCP surface at all: pi ships an extension system instead, and agy
+        // exposes only plugins. The snapshot is ignored rather than
+        // mis-delivered.
+        for provider in ["pi", "antigravity"] {
             assert!(
                 mcp_delivery(provider).is_none(),
                 "{provider} claims MCP support it can't deliver"

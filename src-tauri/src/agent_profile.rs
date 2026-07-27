@@ -25,7 +25,12 @@
 //!   `--strict-mcp-config` (our snapshot is the *only* MCP source, so on-disk
 //!   user/project MCP config can't ride along).
 //! - codex — `-c mcp_servers.<key>.…` TOML config overrides (stdio only).
-//! - cursor/opencode/pi/antigravity — not yet wired.
+//! - cursor — merged into `<cwd>/.cursor/mcp.json`, the only place cursor-agent
+//!   reads MCP config from, plus `--approve-mcps`.
+//! - opencode — a `mcp`-only config in the profile dir, pointed at by
+//!   `OPENCODE_CONFIG`; opencode merges it over the user's own config itself.
+//! - pi/antigravity — no MCP surface at all (pi ships an extension system
+//!   instead, agy only plugins), so the snapshot is not consumed.
 //!
 //! Both snapshots live on the session row (like `sessions.instructions`), so a
 //! running or resumed session keeps the exact profile it spawned with even if
@@ -88,6 +93,11 @@ pub struct McpTarget<'a> {
     /// `<sandbox_root>/.fletch-profile/`, which is bind-mounted at its host
     /// path under docker, so a path written here is valid in both engines.
     pub sandbox_root: &'a Path,
+    /// The agent's working directory — the primary repo's checkout. Only for
+    /// providers that resolve MCP config *relative to cwd* with no flag or env
+    /// override (cursor). Prefer `sandbox_root`: writing into the checkout can
+    /// collide with files the repo tracks.
+    pub cwd: &'a Path,
 }
 
 /// How a provider's MCP config reaches its CLI. A builder writes whatever file
@@ -272,6 +282,42 @@ pub fn effective_instructions(
     Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
 }
 
+/// Pairs as a JSON string map — the shape `env`/`headers` take in every
+/// provider's config file.
+fn json_string_map(pairs: &[(String, String)]) -> serde_json::Map<String, serde_json::Value> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+        .collect()
+}
+
+/// The `{"<key>": {…}}` server map used verbatim by claude *and* cursor — both
+/// read a `mcpServers` object with `command`/`args`/`env` for stdio and
+/// `type: "http"` + `url`/`headers` for http. Keys are slugged and deduped so
+/// two servers with the same display name can't silently overwrite each other.
+fn mcp_servers_object(servers: &[McpServerSnapshot]) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    let mut used: Vec<String> = Vec::new();
+    for s in servers {
+        let key = dedupe(&slug(&s.name), &mut used, '-');
+        let entry = if s.is_stdio() {
+            serde_json::json!({
+                "command": s.command,
+                "args": s.args,
+                "env": json_string_map(&s.env),
+            })
+        } else {
+            serde_json::json!({
+                "type": "http",
+                "url": s.url,
+                "headers": json_string_map(&s.headers),
+            })
+        };
+        map.insert(key, entry);
+    }
+    serde_json::Value::Object(map)
+}
+
 /// Write claude's MCP config (`{"mcpServers": {…}}`) under the writable root
 /// and return its path for `--mcp-config`. `None` when no servers are attached.
 /// Generated from the session's snapshot on every spawn — never read from
@@ -284,32 +330,7 @@ pub fn write_claude_mcp_config(
     if servers.is_empty() {
         return Ok(None);
     }
-    let mut map = serde_json::Map::new();
-    let mut used: Vec<String> = Vec::new();
-    for s in servers {
-        let key = dedupe(&slug(&s.name), &mut used, '-');
-        let to_map = |pairs: &[(String, String)]| {
-            pairs
-                .iter()
-                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                .collect::<serde_json::Map<_, _>>()
-        };
-        let entry = if s.is_stdio() {
-            serde_json::json!({
-                "command": s.command,
-                "args": s.args,
-                "env": to_map(&s.env),
-            })
-        } else {
-            serde_json::json!({
-                "type": "http",
-                "url": s.url,
-                "headers": to_map(&s.headers),
-            })
-        };
-        map.insert(key, entry);
-    }
-    let config = serde_json::json!({ "mcpServers": serde_json::Value::Object(map) });
+    let config = serde_json::json!({ "mcpServers": mcp_servers_object(servers) });
     let dir = profile_dir(sandbox_root);
     ensure_real_dir(&dir)?;
     let path = dir.join("mcp-servers.json");
@@ -340,6 +361,148 @@ pub fn claude_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
 /// overrides, so there's no file to write and no environment to set.
 pub fn codex_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
     Ok(McpDelivery::from_args(codex_mcp_args(target.servers)))
+}
+
+/// Cursor's project-local MCP config path, inside the checkout.
+fn cursor_config_path(cwd: &Path) -> PathBuf {
+    cwd.join(".cursor").join("mcp.json")
+}
+
+/// Cursor's [`McpDeliveryBuilder`]: cursor-agent reads MCP config only from
+/// `<cwd>/.cursor/mcp.json` and `~/.cursor/mcp.json` — there is no flag or env
+/// override — so the session's servers have to be written into the checkout.
+///
+/// **Merged, not replaced.** A repo that ships its own `.cursor/mcp.json` keeps
+/// every server it declares; ours are added alongside. On a key collision the
+/// session's snapshot wins (it's the explicit, current configuration) and the
+/// displaced entry is logged.
+///
+/// Two consequences worth knowing, both forced by cursor's config surface:
+/// - Unlike claude there's no `--strict-mcp-config`, so the user's global
+///   `~/.cursor/mcp.json` still loads alongside the snapshot. Fletch cannot
+///   make its snapshot the *only* MCP source for cursor.
+/// - The write lands in the checkout. `append_cursor_git_exclude` keeps an
+///   untracked file out of `git status`; a repo that *tracks* `.cursor/mcp.json`
+///   will show the merge as a modification.
+pub fn cursor_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
+    if target.servers.is_empty() {
+        return Ok(McpDelivery::default());
+    }
+    let path = cursor_config_path(target.cwd);
+
+    // Start from whatever the repo already declares, so a project's own servers
+    // survive. Unparseable/!object existing config is treated as absent rather
+    // than failing the spawn — same best-effort posture as the rest of profile
+    // materialization.
+    let mut root = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let existing = root
+        .get_mut("mcpServers")
+        .and_then(|v| v.as_object_mut())
+        .cloned()
+        .unwrap_or_default();
+    let mut merged = existing.clone();
+    if let Some(ours) = mcp_servers_object(target.servers).as_object() {
+        for (key, entry) in ours {
+            if existing.contains_key(key) {
+                tracing::warn!(
+                    server = %key,
+                    path = %path.display(),
+                    "session MCP server overrides one declared by the repo's .cursor/mcp.json"
+                );
+            }
+            merged.insert(key.clone(), entry.clone());
+        }
+    }
+    root["mcpServers"] = serde_json::Value::Object(merged);
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| Error::Other("cursor config path has no parent".into()))?;
+    ensure_real_dir(dir)?;
+    let body = serde_json::to_string_pretty(&root)
+        .map_err(|e| Error::Other(format!("failed to encode cursor MCP config: {e}")))?;
+    write_profile_file(&path, &body)?;
+
+    // Keep a file we generated out of the agent's `git status`. Best-effort:
+    // a checkout without `.git` (or an unwritable one) must not fail the spawn
+    // — the config is still valid, it just shows as untracked.
+    if let Err(e) = crate::git_state::ensure_git_exclude(target.cwd, ".cursor/mcp.json") {
+        tracing::warn!(error = %e, "cursor MCP config exclude entry failed");
+    }
+
+    // Without this cursor prompts for approval of each server on first use,
+    // which a headless per-turn run can never answer.
+    Ok(McpDelivery::from_args(vec!["--approve-mcps".into()]))
+}
+
+/// One opencode `mcp` entry. `enabled` is explicit so a server we wrote is
+/// never left off by an inherited default.
+fn opencode_mcp_entry(s: &McpServerSnapshot) -> serde_json::Value {
+    if s.is_stdio() {
+        // opencode takes one `command` array (argv), not command + args.
+        let mut argv = vec![serde_json::Value::String(s.command.clone())];
+        argv.extend(s.args.iter().map(|a| serde_json::Value::String(a.clone())));
+        serde_json::json!({
+            "type": "local",
+            "command": argv,
+            "environment": json_string_map(&s.env),
+            "enabled": true,
+        })
+    } else {
+        serde_json::json!({
+            "type": "remote",
+            "url": s.url,
+            "headers": json_string_map(&s.headers),
+            "enabled": true,
+        })
+    }
+}
+
+/// OpenCode's [`McpDeliveryBuilder`]: write a config carrying only the `mcp`
+/// key into the profile dir and point opencode at it with `OPENCODE_CONFIG`.
+///
+/// opencode treats `OPENCODE_CONFIG` as an *additional* config layered into its
+/// normal resolution order, so it does the merging itself: the user's global
+/// config (providers, models, auth) and any project `opencode.json` all still
+/// apply, and we contribute only servers. That's why this writes to the profile
+/// dir and never touches the checkout — unlike cursor, nothing here can dirty a
+/// repo or collide with a tracked file.
+pub fn opencode_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
+    if target.servers.is_empty() {
+        return Ok(McpDelivery::default());
+    }
+    let mut map = serde_json::Map::new();
+    let mut used: Vec<String> = Vec::new();
+    for s in target.servers {
+        map.insert(
+            dedupe(&slug(&s.name), &mut used, '-'),
+            opencode_mcp_entry(s),
+        );
+    }
+    let config = serde_json::json!({
+        "$schema": "https://opencode.ai/config.json",
+        "mcp": serde_json::Value::Object(map),
+    });
+
+    let dir = profile_dir(target.sandbox_root);
+    ensure_real_dir(&dir)?;
+    let path = dir.join("opencode-mcp.json");
+    let body = serde_json::to_string_pretty(&config)
+        .map_err(|e| Error::Other(format!("failed to encode opencode MCP config: {e}")))?;
+    write_profile_file(&path, &body)?;
+
+    Ok(McpDelivery {
+        args: Vec::new(),
+        env: vec![(
+            "OPENCODE_CONFIG".into(),
+            path.to_string_lossy().into_owned(),
+        )],
+    })
 }
 
 /// Codex `-c mcp_servers.<key>.…` TOML overrides for the snapshot's stdio
@@ -509,6 +672,7 @@ mod tests {
         let delivery = claude_mcp_delivery(&McpTarget {
             servers: &servers,
             sandbox_root: dir.path(),
+            cwd: dir.path(),
         })
         .unwrap();
 
@@ -535,6 +699,7 @@ mod tests {
         let target = McpTarget {
             servers: &[],
             sandbox_root: dir.path(),
+            cwd: dir.path(),
         };
         assert_eq!(
             claude_mcp_delivery(&target).unwrap(),
@@ -560,10 +725,169 @@ mod tests {
         let delivery = codex_mcp_delivery(&McpTarget {
             servers: &servers,
             sandbox_root: dir.path(),
+            cwd: dir.path(),
         })
         .unwrap();
         assert_eq!(delivery.args, codex_mcp_args(&servers));
         assert!(delivery.env.is_empty());
+    }
+
+    fn stdio(name: &str, command: &str) -> McpServerSnapshot {
+        McpServerSnapshot {
+            name: name.into(),
+            transport: "stdio".into(),
+            command: command.into(),
+            ..Default::default()
+        }
+    }
+
+    /// A checkout with a `.git` dir, so the exclude write has somewhere to go.
+    fn checkout() -> tempfile::TempDir {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(td.path().join(".git").join("info")).unwrap();
+        td
+    }
+
+    #[test]
+    fn cursor_config_merges_into_a_repos_own_servers() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = checkout();
+        let cursor_dir = cwd.path().join(".cursor");
+        std::fs::create_dir_all(&cursor_dir).unwrap();
+        // A repo that ships its own MCP config, plus an unrelated top-level key.
+        std::fs::write(
+            cursor_dir.join("mcp.json"),
+            r#"{"someOtherKey": 1, "mcpServers": {"repo-tool": {"command": "repo"}}}"#,
+        )
+        .unwrap();
+
+        let servers = vec![stdio("Codegraph", "/tools/codegraph")];
+        let delivery = cursor_mcp_delivery(&McpTarget {
+            servers: &servers,
+            sandbox_root: root.path(),
+            cwd: cwd.path(),
+        })
+        .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(cursor_dir.join("mcp.json")).unwrap())
+                .unwrap();
+        // Ours landed...
+        assert_eq!(
+            json["mcpServers"]["codegraph"]["command"],
+            "/tools/codegraph"
+        );
+        // ...without dropping the repo's server or its other config.
+        assert_eq!(json["mcpServers"]["repo-tool"]["command"], "repo");
+        assert_eq!(json["someOtherKey"], 1);
+
+        assert_eq!(delivery.args, vec!["--approve-mcps".to_string()]);
+        // The generated file is hidden from the agent's `git status`.
+        let exclude = std::fs::read_to_string(cwd.path().join(".git/info/exclude")).unwrap();
+        assert!(exclude.contains(".cursor/mcp.json"), "{exclude}");
+    }
+
+    #[test]
+    fn cursor_config_survives_a_corrupt_existing_file() {
+        // Unparseable project config must not fail the spawn — we start fresh
+        // rather than propagating an error out of the delivery builder.
+        let root = tempfile::tempdir().unwrap();
+        let cwd = checkout();
+        std::fs::create_dir_all(cwd.path().join(".cursor")).unwrap();
+        std::fs::write(cwd.path().join(".cursor/mcp.json"), "{ not json").unwrap();
+
+        let servers = vec![stdio("Codegraph", "/tools/codegraph")];
+        cursor_mcp_delivery(&McpTarget {
+            servers: &servers,
+            sandbox_root: root.path(),
+            cwd: cwd.path(),
+        })
+        .unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(cwd.path().join(".cursor/mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            json["mcpServers"]["codegraph"]["command"],
+            "/tools/codegraph"
+        );
+    }
+
+    #[test]
+    fn cursor_writes_nothing_when_there_are_no_servers() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = checkout();
+        let delivery = cursor_mcp_delivery(&McpTarget {
+            servers: &[],
+            sandbox_root: root.path(),
+            cwd: cwd.path(),
+        })
+        .unwrap();
+        assert_eq!(delivery, McpDelivery::default());
+        assert!(!cwd.path().join(".cursor").exists(), "created a stray dir");
+    }
+
+    #[test]
+    fn opencode_config_goes_to_the_profile_dir_and_rides_an_env_var() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = checkout();
+        let servers = vec![
+            McpServerSnapshot {
+                name: "Codegraph".into(),
+                transport: "stdio".into(),
+                command: "/tools/codegraph".into(),
+                args: vec!["serve".into(), "--mcp".into()],
+                env: vec![("CODEGRAPH_TELEMETRY".into(), "0".into())],
+                ..Default::default()
+            },
+            McpServerSnapshot {
+                name: "Docs".into(),
+                transport: "http".into(),
+                url: "https://mcp.example.com".into(),
+                headers: vec![("Authorization".into(), "Bearer x".into())],
+                ..Default::default()
+            },
+        ];
+        let delivery = opencode_mcp_delivery(&McpTarget {
+            servers: &servers,
+            sandbox_root: root.path(),
+            cwd: cwd.path(),
+        })
+        .unwrap();
+
+        // Delivered by environment, not argv — opencode has no MCP flag.
+        let path = root.path().join(PROFILE_DIR).join("opencode-mcp.json");
+        assert!(delivery.args.is_empty());
+        assert_eq!(
+            delivery.env,
+            vec![("OPENCODE_CONFIG".to_string(), path.display().to_string())]
+        );
+        // Nothing written into the checkout: opencode merges our layer itself.
+        assert!(!cwd.path().join("opencode.json").exists());
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // stdio collapses to one argv array, unlike claude's command + args.
+        assert_eq!(json["mcp"]["codegraph"]["type"], "local");
+        assert_eq!(
+            json["mcp"]["codegraph"]["command"],
+            serde_json::json!(["/tools/codegraph", "serve", "--mcp"])
+        );
+        assert_eq!(
+            json["mcp"]["codegraph"]["environment"]["CODEGRAPH_TELEMETRY"],
+            "0"
+        );
+        assert_eq!(json["mcp"]["codegraph"]["enabled"], true);
+        assert_eq!(json["mcp"]["docs"]["type"], "remote");
+        assert_eq!(json["mcp"]["docs"]["url"], "https://mcp.example.com");
+        assert_eq!(json["mcp"]["docs"]["headers"]["Authorization"], "Bearer x");
+        // Only the `mcp` key: anything else would override the user's config,
+        // which opencode merges ours into.
+        let obj = json.as_object().unwrap();
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["$schema", "mcp"]);
     }
 
     #[test]

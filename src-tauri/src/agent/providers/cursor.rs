@@ -59,6 +59,7 @@ pub(crate) fn cursor_build_args(turn: &TurnArgs) -> Vec<String> {
         session_id,
         model,
         extra,
+        mcp_args,
         ..
     } = turn;
     let mut args: Vec<String> = vec![
@@ -68,6 +69,10 @@ pub(crate) fn cursor_build_args(turn: &TurnArgs) -> Vec<String> {
         "--force".into(),
         "--trust".into(),
     ];
+    // `--approve-mcps` from `agent_profile::cursor_mcp_delivery`, which also
+    // wrote the servers into `<cwd>/.cursor/mcp.json`. Empty when the session
+    // has none, so cursor keeps its default approval behavior.
+    args.extend_from_slice(mcp_args);
     push_opt(&mut args, "--resume", session_id);
     args.extend(model_args(model));
     // Prompt is positional and must come after options.
@@ -94,9 +99,12 @@ pub(crate) fn cursor_pty_args(
     session_id: Option<&str>,
     model: Option<&str>,
     _extra: Option<&str>,
-    _mcp_args: &[String],
+    mcp_args: &[String],
 ) -> Vec<String> {
     let mut args: Vec<String> = vec!["--force".into()];
+    // Same `--approve-mcps` the per-turn path takes, so switching into the
+    // native TUI keeps the tool set the Custom-view turns had.
+    args.extend_from_slice(mcp_args);
     args.extend(model_args(model));
     push_opt(&mut args, "--resume", session_id);
     args

@@ -51,14 +51,22 @@ export function isDockerSupported(id: string | null | undefined): boolean {
 }
 
 /** Which MCP transports each provider can attach — mirrors the backend
- *  delivery in `agent_profile.rs`: claude takes stdio + http via
- *  `--mcp-config`, codex only stdio via `-c mcp_servers.*` (its `-c` config
- *  has no http transport), and the rest have no MCP surface we can drive.
- *  Unknown ids are treated as unsupported. */
+ *  delivery builders in `agent_profile.rs`, one entry per wired
+ *  `McpDeliveryBuilder`:
+ *    - claude   — stdio + http via `--mcp-config`
+ *    - codex    — stdio only via `-c mcp_servers.*` (its `-c` config has no
+ *                 http transport)
+ *    - cursor   — stdio + http, merged into `<cwd>/.cursor/mcp.json`
+ *    - opencode — stdio + http, via an `OPENCODE_CONFIG` overlay
+ *  pi and antigravity are absent on purpose: neither CLI speaks MCP at all
+ *  (pi ships an extension system, agy only plugins). Unknown ids are treated
+ *  as unsupported. */
 export type McpSupport = "all" | "stdio" | "none";
 export const MCP_SUPPORT: Record<string, McpSupport> = {
   claude: "all",
   codex: "stdio",
+  cursor: "all",
+  opencode: "all",
 };
 
 /** Whether a provider with `support` can actually deliver an MCP server of

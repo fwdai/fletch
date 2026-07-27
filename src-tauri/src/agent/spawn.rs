@@ -116,11 +116,13 @@ fn resolve_mcp(
     provider: &str,
     servers: &[crate::agent_profile::McpServerSnapshot],
     sandbox_root: &Path,
+    cwd: &Path,
 ) -> Result<crate::agent_profile::McpDelivery> {
     match mcp_delivery(provider) {
         Some(build) => build(&crate::agent_profile::McpTarget {
             servers,
             sandbox_root,
+            cwd,
         }),
         None => Ok(crate::agent_profile::McpDelivery::default()),
     }
@@ -149,7 +151,7 @@ impl Agent {
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let engine = sandbox::engine_for(spec.engine)?;
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
-        let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
+        let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root, &spec.cwd)?;
         let agent_args = prepare_pty_args(&spec, &mcp.args);
 
         let ctx = AgentLaunchCtx {
@@ -232,7 +234,7 @@ impl Agent {
         };
         // Provider MCP delivery, rebuilt from the session's snapshot so the TUI
         // resumes with the same tool set the Custom-view turns had.
-        let mcp = resolve_mcp(provider, spec.mcp_servers, &spec.sandbox_root)?;
+        let mcp = resolve_mcp(provider, spec.mcp_servers, &spec.sandbox_root, &spec.cwd)?;
         let agent_args = (desc.pty_args)(session, spec.model, spec.instructions, &mcp.args);
 
         // Unified sandbox: run the agent's TUI under the sandbox engine (the
@@ -298,7 +300,7 @@ impl Agent {
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let engine = sandbox::engine_for(spec.engine)?;
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
-        let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
+        let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root, &spec.cwd)?;
         let agent_args = prepare_managed_args(&spec, &mcp.args);
 
         let ctx = AgentLaunchCtx {
@@ -385,7 +387,7 @@ impl Agent {
         // calling a 4-arg builder.
         let build_args = desc.build_args;
         let extra = spec.instructions.clone();
-        let mcp = resolve_mcp(desc.id, &spec.mcp_servers, &spec.sandbox_root)?;
+        let mcp = resolve_mcp(desc.id, &spec.mcp_servers, &spec.sandbox_root, &spec.cwd)?;
         let mcp_args = mcp.args;
         Self::spawn_exec(
             ExecLaunch {
