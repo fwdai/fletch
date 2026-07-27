@@ -882,15 +882,10 @@ impl Supervisor {
             &record.skills,
             &sandbox_root,
         )?;
-        // Claude's generated MCP config, regenerated from the snapshot each
-        // launch and passed via `--mcp-config` + `--strict-mcp-config`. Other
-        // providers take their MCP delivery from the spec's snapshot instead
-        // (codex `-c` overrides); see `agent_profile`.
-        let mcp_config = if record.provider == "claude" {
-            crate::agent_profile::write_claude_mcp_config(&mcp_servers, &sandbox_root)?
-        } else {
-            None
-        };
+        // MCP delivery is resolved per provider at spawn from this snapshot
+        // (`agent::mcp_delivery`), so there's no provider fork here: the spawn
+        // path writes whatever config file the provider reads and adds the
+        // argv/env pointing at it. See `agent_profile`.
 
         if per_turn {
             match record.view {
@@ -916,7 +911,6 @@ impl Supervisor {
                         model: record.model.as_deref(),
                         instructions: instructions.as_deref(),
                         mcp_servers: &mcp_servers,
-                        mcp_config: None,
                         rpc_dir,
                         cols: 120,
                         rows: 32,
@@ -973,7 +967,6 @@ impl Supervisor {
                 model: record.model.as_deref(),
                 instructions: instructions.as_deref(),
                 mcp_servers: &mcp_servers,
-                mcp_config: mcp_config.as_deref(),
                 rpc_dir,
                 cols: 120,
                 rows: 32,

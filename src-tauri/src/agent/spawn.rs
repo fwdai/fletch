@@ -13,7 +13,7 @@ use crate::sandbox;
 use crate::sandbox::{AgentLaunchCtx, EngineKind, LaunchPlan, SandboxEngine};
 
 use super::args::{prepare_managed_args, prepare_pty_args};
-use super::capabilities::per_turn_descriptor;
+use super::capabilities::{mcp_delivery, per_turn_descriptor};
 use super::probe::resolve_agent_bin;
 use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, PtyAgent, TurnArgs};
 
@@ -36,9 +36,9 @@ pub struct PerTurnSpec {
     /// Includes the materialized skill index when the session has skills.
     /// `None` for a plain built-in spawn.
     pub instructions: Option<String>,
-    /// The session's MCP-server snapshot, delivered by providers with a
-    /// descriptor-level `mcp_args` builder (codex). Empty for plain spawns and
-    /// ignored by providers without MCP support.
+    /// The session's MCP-server snapshot, delivered by the provider's
+    /// `McpDeliveryBuilder` (see `agent::mcp_delivery`). Empty for plain spawns
+    /// and ignored by providers without MCP support.
     pub mcp_servers: Vec<crate::agent_profile::McpServerSnapshot>,
     /// The agent's RPC mailbox dir, exposed to the child as `FLETCH_RPC_DIR`.
     pub rpc_dir: PathBuf,
@@ -76,13 +76,10 @@ pub struct SpawnSpec<'a> {
     /// system prompt on every spawn/resume. Includes the materialized skill
     /// index when the session has skills. `None` for a plain built-in spawn.
     pub instructions: Option<&'a str>,
-    /// The session's MCP-server snapshot, consumed by per-turn providers with
-    /// a descriptor `mcp_args` builder when this spec launches their native
-    /// TUI. Claude ignores it (it takes `mcp_config` instead).
+    /// The session's MCP-server snapshot. Delivered by the provider's
+    /// `McpDeliveryBuilder` at spawn (see `agent::mcp_delivery`); ignored for
+    /// providers that have no MCP surface.
     pub mcp_servers: &'a [crate::agent_profile::McpServerSnapshot],
-    /// Claude's generated MCP config file, passed as
-    /// `--mcp-config <path> --strict-mcp-config`. `None` = no servers attached.
-    pub mcp_config: Option<&'a Path>,
     /// The agent's RPC mailbox dir, exposed to the child as `FLETCH_RPC_DIR`.
     pub rpc_dir: PathBuf,
     pub cols: u16,
@@ -107,6 +104,41 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
     )]
 }
 
+/// Run `provider`'s MCP-delivery builder over the session's snapshot, writing
+/// whatever config file the provider reads and returning the argv/env that
+/// points at it. An empty delivery when the provider has no MCP surface, which
+/// is exactly the "snapshot not consumed" behavior those providers had before.
+///
+/// Called on every launch path (fresh, resume, view-switch) rather than
+/// persisted, so a config file is always regenerated from the current snapshot
+/// — the same reasoning as `write_claude_mcp_config` and the skill index.
+fn resolve_mcp(
+    provider: &str,
+    servers: &[crate::agent_profile::McpServerSnapshot],
+    sandbox_root: &Path,
+) -> Result<crate::agent_profile::McpDelivery> {
+    match mcp_delivery(provider) {
+        Some(build) => build(&crate::agent_profile::McpTarget {
+            servers,
+            sandbox_root,
+        }),
+        None => Ok(crate::agent_profile::McpDelivery::default()),
+    }
+}
+
+/// The provider-identity half of a per-turn launch: what to run, under whose
+/// name, and the extra environment its MCP delivery asked for. Bundled so
+/// `spawn_exec` keeps a readable signature as delivery grows inputs.
+struct ExecLaunch<'a> {
+    /// Provider id, forwarded to the sandbox engine's launch context.
+    provider: &'a str,
+    /// Resolved agent binary (host path under seatbelt, image bin under docker).
+    program: PathBuf,
+    /// Extra environment from the provider's MCP delivery, layered on after the
+    /// engine's launch env and `FLETCH_RPC_DIR`.
+    mcp_env: Vec<(String, String)>,
+}
+
 impl Agent {
     pub fn spawn_pty<F, G>(spec: SpawnSpec<'_>, on_output: F, on_exit: G) -> Result<Self>
     where
@@ -117,7 +149,8 @@ impl Agent {
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let engine = sandbox::engine_for(spec.engine)?;
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
-        let agent_args = prepare_pty_args(&spec);
+        let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
+        let agent_args = prepare_pty_args(&spec, &mcp.args);
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
@@ -139,6 +172,7 @@ impl Agent {
         args.extend(agent_args);
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
+        env.extend(mcp.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -196,14 +230,10 @@ impl Agent {
         } else {
             Some(spec.session_id)
         };
-        // Provider MCP overrides (codex `-c mcp_servers.*`), rebuilt from the
-        // session's snapshot so the TUI resumes with the same tool set the
-        // Custom-view turns had.
-        let mcp_args = desc
-            .mcp_args
-            .map(|build| build(spec.mcp_servers))
-            .unwrap_or_default();
-        let agent_args = (desc.pty_args)(session, spec.model, spec.instructions, &mcp_args);
+        // Provider MCP delivery, rebuilt from the session's snapshot so the TUI
+        // resumes with the same tool set the Custom-view turns had.
+        let mcp = resolve_mcp(provider, spec.mcp_servers, &spec.sandbox_root)?;
+        let agent_args = (desc.pty_args)(session, spec.model, spec.instructions, &mcp.args);
 
         // Unified sandbox: run the agent's TUI under the sandbox engine (the
         // agent's own sandbox is disabled in its arg builder), so per-turn
@@ -228,6 +258,7 @@ impl Agent {
         args.extend(agent_args);
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
+        env.extend(mcp.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -267,7 +298,8 @@ impl Agent {
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let engine = sandbox::engine_for(spec.engine)?;
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
-        let agent_args = prepare_managed_args(&spec);
+        let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
+        let agent_args = prepare_managed_args(&spec, &mcp.args);
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
@@ -289,6 +321,7 @@ impl Agent {
         args.extend(agent_args);
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
+        env.extend(mcp.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -352,13 +385,14 @@ impl Agent {
         // calling a 4-arg builder.
         let build_args = desc.build_args;
         let extra = spec.instructions.clone();
-        let mcp_args = desc
-            .mcp_args
-            .map(|build| build(&spec.mcp_servers))
-            .unwrap_or_default();
+        let mcp = resolve_mcp(desc.id, &spec.mcp_servers, &spec.sandbox_root)?;
+        let mcp_args = mcp.args;
         Self::spawn_exec(
-            desc.id,
-            program,
+            ExecLaunch {
+                provider: desc.id,
+                program,
+                mcp_env: mcp.env,
+            },
             spec,
             move |prompt, session_id, thinking, model| {
                 build_args(&TurnArgs {
@@ -387,8 +421,7 @@ impl Agent {
     /// failed turn that never emits an in-band turn-end still leaves the
     /// agent promptly.
     fn spawn_exec<A, I, F, G, H>(
-        provider: &str,
-        program: PathBuf,
+        launch: ExecLaunch<'_>,
         spec: PerTurnSpec,
         build_args: A,
         extract_session_id: I,
@@ -405,6 +438,11 @@ impl Agent {
         G: Fn(String) + Send + Sync + 'static,
         H: Fn(ExecExit) + Send + Sync + 'static,
     {
+        let ExecLaunch {
+            provider,
+            program,
+            mcp_env,
+        } = launch;
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let agent_bin = program
@@ -429,6 +467,7 @@ impl Agent {
         } = sandbox::engine_for(spec.engine)?.launch_agent(&ctx, agent_bin)?;
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
+        env.extend(mcp_env);
 
         tracing::info!(
             agent_bin = %program.display(),

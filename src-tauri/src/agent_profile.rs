@@ -12,13 +12,20 @@
 //! The writable root is bind-mounted at its host path under docker (path
 //! identity), so the index paths are valid in both sandbox engines.
 //!
-//! **MCP servers** are delivered per provider:
+//! **MCP servers** are delivered per provider, but through one shared shape:
+//! every provider that has an MCP surface implements an [`McpDeliveryBuilder`]
+//! — `fn(&McpTarget) -> Result<McpDelivery>` — which writes whatever config
+//! file its CLI reads and returns the argv and/or environment that points at
+//! it. `agent::mcp_delivery(provider)` resolves the builder; `None` means the
+//! provider has no surface we can drive and the snapshot is simply not
+//! consumed (the editor UI says so up front).
+//!
+//! Current builders:
 //! - claude — a generated config file passed via `--mcp-config` +
 //!   `--strict-mcp-config` (our snapshot is the *only* MCP source, so on-disk
 //!   user/project MCP config can't ride along).
 //! - codex — `-c mcp_servers.<key>.…` TOML config overrides (stdio only).
-//! - cursor/opencode/pi/antigravity — unsupported; the editor UI says so and
-//!   the snapshot is simply not consumed.
+//! - cursor/opencode/pi/antigravity — not yet wired.
 //!
 //! Both snapshots live on the session row (like `sessions.instructions`), so a
 //! running or resumed session keeps the exact profile it spawned with even if
@@ -67,6 +74,45 @@ pub struct McpServerSnapshot {
 impl McpServerSnapshot {
     fn is_stdio(&self) -> bool {
         self.transport != "http"
+    }
+}
+
+/// Everything a provider's MCP-delivery builder needs to place the session's
+/// servers where its CLI will look for them. Passed by reference so adding an
+/// input later (a second checkout, the engine kind) doesn't touch every
+/// builder signature.
+pub struct McpTarget<'a> {
+    /// The session's servers, resolved by value at spawn.
+    pub servers: &'a [McpServerSnapshot],
+    /// Sandbox writable root. Fletch-owned artifacts go under
+    /// `<sandbox_root>/.fletch-profile/`, which is bind-mounted at its host
+    /// path under docker, so a path written here is valid in both engines.
+    pub sandbox_root: &'a Path,
+}
+
+/// How a provider's MCP config reaches its CLI. A builder writes whatever file
+/// its provider reads as a side effect and returns the argv and/or environment
+/// that points at it; providers that carry config entirely in flags (codex)
+/// return args with no env. Default (both empty) is the correct no-op for a
+/// session with no servers attached.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct McpDelivery {
+    /// Extra argv appended to the provider's launch, for both the per-turn and
+    /// native-PTY paths.
+    pub args: Vec<String>,
+    /// Extra environment layered onto the child, after the sandbox engine's
+    /// own launch env and alongside `FLETCH_RPC_DIR`.
+    pub env: Vec<(String, String)>,
+}
+
+impl McpDelivery {
+    /// A delivery carrying only argv — the common case for flag-based
+    /// providers and for file-based ones whose path rides in a flag.
+    pub fn from_args(args: Vec<String>) -> Self {
+        Self {
+            args,
+            env: Vec::new(),
+        }
     }
 }
 
@@ -230,7 +276,7 @@ pub fn effective_instructions(
 /// and return its path for `--mcp-config`. `None` when no servers are attached.
 /// Generated from the session's snapshot on every spawn — never read from
 /// agent-writable or user-level config, and paired with `--strict-mcp-config`
-/// at the arg builder so this file is the only MCP source claude loads.
+/// by [`claude_mcp_delivery`] so this file is the only MCP source claude loads.
 pub fn write_claude_mcp_config(
     servers: &[McpServerSnapshot],
     sandbox_root: &Path,
@@ -271,6 +317,29 @@ pub fn write_claude_mcp_config(
         .map_err(|e| Error::Other(format!("failed to encode MCP config: {e}")))?;
     write_profile_file(&path, &body)?;
     Ok(Some(path))
+}
+
+/// Claude's [`McpDeliveryBuilder`]: write the generated config under the
+/// writable root and point claude at it with `--mcp-config <path>
+/// --strict-mcp-config`. `--strict-mcp-config` makes the generated file the
+/// *only* MCP source, so on-disk user/project MCP config never rides along
+/// with an agent Fletch spawns. No servers → an empty delivery, so claude runs
+/// with no MCP config flag at all (its pre-profile behavior).
+pub fn claude_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
+    let Some(path) = write_claude_mcp_config(target.servers, target.sandbox_root)? else {
+        return Ok(McpDelivery::default());
+    };
+    Ok(McpDelivery::from_args(vec![
+        "--mcp-config".into(),
+        path.to_string_lossy().into_owned(),
+        "--strict-mcp-config".into(),
+    ]))
+}
+
+/// Codex's [`McpDeliveryBuilder`]: the servers ride entirely in `-c` config
+/// overrides, so there's no file to write and no environment to set.
+pub fn codex_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
+    Ok(McpDelivery::from_args(codex_mcp_args(target.servers)))
 }
 
 /// Codex `-c mcp_servers.<key>.…` TOML overrides for the snapshot's stdio
@@ -426,6 +495,75 @@ mod tests {
         );
 
         assert_eq!(write_claude_mcp_config(&[], dir.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn claude_delivery_emits_the_strict_config_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let servers = vec![McpServerSnapshot {
+            name: "GitHub".into(),
+            transport: "stdio".into(),
+            command: "npx".into(),
+            ..Default::default()
+        }];
+        let delivery = claude_mcp_delivery(&McpTarget {
+            servers: &servers,
+            sandbox_root: dir.path(),
+        })
+        .unwrap();
+
+        // The exact argv claude got before delivery was a shared seam: the
+        // generated path, and `--strict-mcp-config` so it's the only source.
+        let path = dir.path().join(PROFILE_DIR).join("mcp-servers.json");
+        assert_eq!(
+            delivery.args,
+            vec![
+                "--mcp-config".to_string(),
+                path.display().to_string(),
+                "--strict-mcp-config".to_string(),
+            ]
+        );
+        // Claude carries everything in argv — nothing in the environment.
+        assert!(delivery.env.is_empty());
+    }
+
+    #[test]
+    fn no_servers_is_an_empty_delivery_for_every_provider() {
+        // An empty snapshot must not put a config flag (or a stray file) in
+        // play: that's the pre-profile behavior each provider falls back to.
+        let dir = tempfile::tempdir().unwrap();
+        let target = McpTarget {
+            servers: &[],
+            sandbox_root: dir.path(),
+        };
+        assert_eq!(
+            claude_mcp_delivery(&target).unwrap(),
+            McpDelivery::default()
+        );
+        assert_eq!(codex_mcp_delivery(&target).unwrap(), McpDelivery::default());
+        assert!(!dir
+            .path()
+            .join(PROFILE_DIR)
+            .join("mcp-servers.json")
+            .exists());
+    }
+
+    #[test]
+    fn codex_delivery_carries_the_config_overrides_in_argv() {
+        let dir = tempfile::tempdir().unwrap();
+        let servers = vec![McpServerSnapshot {
+            name: "GitHub".into(),
+            transport: "stdio".into(),
+            command: "npx".into(),
+            ..Default::default()
+        }];
+        let delivery = codex_mcp_delivery(&McpTarget {
+            servers: &servers,
+            sandbox_root: dir.path(),
+        })
+        .unwrap();
+        assert_eq!(delivery.args, codex_mcp_args(&servers));
+        assert!(delivery.env.is_empty());
     }
 
     #[test]
