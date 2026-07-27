@@ -29,7 +29,8 @@ use crate::managed_session::ManagedSession;
 use crate::pty_session::PtySession;
 
 pub use capabilities::{
-    capabilities, injection_mode, per_turn_descriptor, transcript_reader, PerTurnDescriptor,
+    capabilities, injection_mode, mcp_delivery, per_turn_descriptor, transcript_reader,
+    PerTurnDescriptor,
 };
 pub(crate) use probe::parse_semver;
 pub use probe::{

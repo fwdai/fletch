@@ -109,44 +109,75 @@ fn mcp_server_snapshot() -> Option<McpServerSnapshot> {
 /// Pure gate for MCP injection, factored out so the decision is testable
 /// without touching global state or the filesystem. Inject only when indexing
 /// is enabled, the engine is not Docker (a container can't exec the host macOS
-/// binary), the binary is installed, and no server named `"codegraph"`
-/// (case-insensitive) already exists — a user-defined one must never be
-/// shadowed, and its config key would otherwise collide.
+/// binary), the binary is installed, the provider can actually *receive* an MCP
+/// server, and no server named `"codegraph"` (case-insensitive) already exists
+/// — a user-defined one must never be shadowed, and its config key would
+/// otherwise collide.
+///
+/// `can_receive_mcp` is resolved by the caller from
+/// `agent::mcp_delivery(provider)` rather than looked up here: it keeps this
+/// function free of provider ids and of the `agent` module, and it is the one
+/// input that decides whether the snapshot is delivered or silently dropped
+/// (pi and antigravity have no MCP surface at all).
 fn should_inject(
     enabled: bool,
     engine: EngineKind,
     binary_installed: bool,
+    can_receive_mcp: bool,
     existing_names: &[&str],
 ) -> bool {
     enabled
         && engine != EngineKind::Docker
         && binary_installed
+        && can_receive_mcp
         && !existing_names
             .iter()
             .any(|n| n.eq_ignore_ascii_case("codegraph"))
 }
 
+/// The outcome of the dynamic codegraph fold.
+pub struct McpInjection {
+    /// The session's servers, with codegraph appended when the gate allowed
+    /// it. Feeds the provider's delivery builder directly.
+    pub servers: Vec<McpServerSnapshot>,
+    /// Whether codegraph is actually in `servers` — i.e. whether this agent
+    /// will really have the tool. Every gate in [`should_inject`] can drop it
+    /// silently, so the instruction layer keys off this flag rather than off
+    /// the settings toggle (see `instructions::codegraph_block`).
+    pub codegraph_available: bool,
+}
+
 /// Return `servers` with the codegraph MCP server appended when [`should_inject`]
-/// allows it. Injection is dynamic — the returned list feeds the config writers
-/// directly and is never persisted onto the session snapshot, so the toggle's
-/// *current* state always wins for both fresh spawns and resumes.
+/// allows it, plus whether that happened. Injection is dynamic — the returned
+/// list feeds the config writers directly and is never persisted onto the
+/// session snapshot, so the toggle's *current* state always wins for both fresh
+/// spawns and resumes.
 pub fn inject_mcp_server(
     servers: &[McpServerSnapshot],
     engine: EngineKind,
-) -> Vec<McpServerSnapshot> {
+    provider: &str,
+) -> McpInjection {
     let mut out = servers.to_vec();
     let allow = {
         let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
-        should_inject(enabled(), engine, is_installed(), &names)
+        should_inject(
+            enabled(),
+            engine,
+            is_installed(),
+            crate::agent::mcp_delivery(provider).is_some(),
+            &names,
+        )
     };
-    if allow {
-        // `is_installed()` was true, so this is `Some` barring a race with an
-        // uninstall between the two checks — in which case we simply skip.
-        if let Some(server) = mcp_server_snapshot() {
-            out.push(server);
-        }
+    // `is_installed()` was true, so this is `Some` barring a race with an
+    // uninstall between the two checks — in which case we simply skip, and the
+    // flag stays false so nothing advertises a tool that isn't there.
+    let server = if allow { mcp_server_snapshot() } else { None };
+    let codegraph_available = server.is_some();
+    out.extend(server);
+    McpInjection {
+        servers: out,
+        codegraph_available,
     }
-    out
 }
 
 #[cfg(test)]
@@ -163,23 +194,61 @@ mod tests {
 
     #[test]
     fn should_inject_happy_path() {
-        assert!(should_inject(true, EngineKind::SandboxExec, true, &[]));
+        assert!(should_inject(
+            true,
+            EngineKind::SandboxExec,
+            true,
+            true,
+            &[]
+        ));
     }
 
     #[test]
     fn should_inject_requires_enabled() {
-        assert!(!should_inject(false, EngineKind::SandboxExec, true, &[]));
+        assert!(!should_inject(
+            false,
+            EngineKind::SandboxExec,
+            true,
+            true,
+            &[]
+        ));
     }
 
     #[test]
     fn should_inject_skips_docker() {
         // A container can't exec the host macOS binary.
-        assert!(!should_inject(true, EngineKind::Docker, true, &[]));
+        assert!(!should_inject(true, EngineKind::Docker, true, true, &[]));
     }
 
     #[test]
     fn should_inject_requires_installed_binary() {
-        assert!(!should_inject(true, EngineKind::SandboxExec, false, &[]));
+        assert!(!should_inject(
+            true,
+            EngineKind::SandboxExec,
+            false,
+            true,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn should_inject_requires_an_mcp_surface() {
+        // pi and antigravity can't consume MCP at all, so a snapshot pushed at
+        // them is dropped on the floor — don't index for them and don't tell
+        // them the tool exists.
+        assert!(!should_inject(
+            true,
+            EngineKind::SandboxExec,
+            true,
+            false,
+            &[]
+        ));
+        for provider in ["pi", "antigravity"] {
+            assert!(
+                crate::agent::mcp_delivery(provider).is_none(),
+                "{provider} would now pass the gate"
+            );
+        }
     }
 
     #[test]
@@ -189,7 +258,18 @@ mod tests {
             true,
             EngineKind::SandboxExec,
             true,
+            true,
             &["github", "CodeGraph"]
         ));
+    }
+
+    #[test]
+    fn inject_reports_nothing_for_a_provider_without_mcp() {
+        // End to end through the globals: whatever the toggle and the binary
+        // say, a provider with no MCP surface gets neither the server nor the
+        // instruction flag.
+        let injection = inject_mcp_server(&[], EngineKind::SandboxExec, "pi");
+        assert!(injection.servers.is_empty());
+        assert!(!injection.codegraph_available);
     }
 }
