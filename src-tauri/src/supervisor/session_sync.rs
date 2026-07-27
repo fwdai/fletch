@@ -6,7 +6,9 @@ use tauri::AppHandle;
 
 use crate::agent::per_turn_descriptor;
 use crate::github::{MergeableState, PrState, PrStatus};
-use crate::workspace::{repo_checkout_path, AgentRecord, AgentView, TrackedRepo, WorkspaceManager};
+use crate::workspace::{
+    repo_checkout_path, AgentRecord, AgentStatus, AgentView, TrackedRepo, WorkspaceManager,
+};
 
 use super::events::{
     emit_pr_state, emit_session_records_appended, emit_session_sync_health, emit_verification,
@@ -15,6 +17,7 @@ use super::Supervisor;
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
 /// Wall-clock ceiling for a turn-end verification, matching the ad-hoc
 /// `run_verification` command (spec §9.4 uses the same 15-minute bound).
@@ -23,6 +26,12 @@ const TURN_END_VERIFY_TIMEOUT_SECS: u64 = 900;
 /// Project setting key (stored by the frontend Project Settings toggle) that
 /// opts a project into running verification at every ad-hoc turn end.
 const VERIFY_ON_TURN_END_KEY: &str = "verify.on_turn_end";
+
+/// How often the native-view live poller re-reads a running agent's transcript.
+/// A CLI flushes its JSONL once per *completed* assistant message (claude does
+/// so ~7 times in a turn, sub-second after each one), not per token — so a
+/// faster tick buys no extra freshness and only burns syscalls.
+const LIVE_SYNC_TICK: Duration = Duration::from_secs(1);
 
 impl Supervisor {
     /// Synchronously ingest the agent's transcript into session_records (used
@@ -430,6 +439,121 @@ fn is_persistent_runner(record: &AgentRecord) -> bool {
     !(per_turn && record.view == AgentView::Custom)
 }
 
+/// Whether this agent qualifies for the mid-turn live transcript poll.
+///
+/// Two independent things have to hold:
+///
+/// - **Native view.** There the CLI runs its own TUI in a PTY and we get no
+///   event stream, so the transcript on disk is the only structured view of the
+///   turn in progress. A custom-view agent already streams its structure, so
+///   polling would duplicate work and race the stream.
+/// - **A tailable reader.** `sync_session_records` only reads incrementally
+///   (O(new), seeking to the stored byte offset) when the reader declares
+///   `tail: Some(..)`. Readers with `tail: None` — codex and opencode locate
+///   several rollout files, antigravity a blob directory — fall back to a *full
+///   re-parse of every file on every call*. That's fine once at turn end and a
+///   performance bug at 1 Hz. Gating on `tail.is_some()` rather than a provider
+///   allowlist means any provider that later gains a single-file tail is picked
+///   up with no change here.
+pub(super) fn should_live_sync(provider: &str, view: AgentView) -> bool {
+    view == AgentView::Native
+        && crate::agent::transcript_reader(provider).is_some_and(|r| r.tail.is_some())
+}
+
+/// Ingest the native-view agent's transcript *during* the turn, so the UI can
+/// render tool cards and thinking blocks while its TUI is still working instead
+/// of waiting for the turn-end sync.
+///
+/// Gen-guarded exactly like `spawn_turn_watchdog`: no handle is tracked, the
+/// task simply retires itself once a respawn/teardown/view-switch bumps the
+/// generation it was started under. Because a view switch goes through
+/// `start_process` (new generation), the view/provider gate is evaluated once up
+/// front rather than re-read from the DB every tick.
+///
+/// This deliberately calls `sync_session_records` directly rather than reusing
+/// `trigger_session_sync`:
+///
+/// - `SyncPoll` stops after two consecutive zero-insert reads. At turn end that
+///   means "the file settled"; mid-turn it only means the model is thinking, so
+///   it would give up seconds into a long reasoning block.
+/// - `ReadDiagnostics::absorb` accumulates across passes and is never reset, and
+///   `classify` maps `records_parsed > 0 && io_errors > 0` to `PartialRead` — so
+///   a single transient read error would permanently pin this agent's reported
+///   health. Turn-end stays the sole authority on sync health; this path never
+///   classifies.
+pub(super) fn spawn_live_transcript_sync(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+    gen: u64,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(LIVE_SYNC_TICK).await;
+
+            let current_gen = sup.generations.lock().get(&agent_id).copied().unwrap_or(0);
+            if current_gen != gen {
+                return;
+            }
+
+            // Only read while a turn is actually in flight. An idle agent's
+            // transcript cannot grow, so ticking the filesystem and the (global)
+            // sqlite lock once a second for it would be a permanent background
+            // tax that scales with the number of open agents. `Spawning` is
+            // excluded too — there is no turn yet, and the turn-end sync from
+            // the *previous* generation may still be draining.
+            if !matches!(sup.live_status(&agent_id), Some(AgentStatus::Running)) {
+                continue;
+            }
+
+            let inserted = sync_session_records(&sup.workspace, &agent_id)
+                .map(|o| o.inserted)
+                .unwrap_or(0);
+
+            // Emit only on a real insert. The frontend refetches the whole
+            // record list on this event, so firing it every tick would turn a
+            // thinking agent into a 1 Hz refetch loop over the conversation.
+            if inserted > 0 {
+                emit_session_records_appended(&app, &agent_id);
+            }
+        }
+    });
+}
+
+/// Per-agent lock serializing [`sync_session_records`].
+///
+/// The ingest is `read offset → read file → append rows → write offset` with no
+/// atomicity across the steps, and the live poller can now overlap the turn-end
+/// `trigger_session_sync` for the same agent (a turn ending mid-tick is the
+/// normal case, not a rare one). Two overlapping passes both start from the same
+/// stored offset, read the same byte range, and both write a `next` offset — the
+/// later writer wins, so the cursor can move *backwards*.
+///
+/// A backwards cursor cannot lose records: every offset written corresponds to
+/// bytes that pass actually appended, so the worst case is re-reading a range.
+/// But the re-read is not always harmless. Duplicate *rows* are absorbed only
+/// when the record ids come out of the file (`JsonlTail { id_field: Some(..) }`,
+/// as claude and pi use). A positional reader (`id_field: None`, cursor) mints
+/// `ln:{i}` ids from `session_record_count`, so two passes over the same lines
+/// with different starting counts produce *different* native ids for the same
+/// line and `INSERT OR IGNORE` inserts both — duplicated turns in the UI.
+///
+/// The lock therefore wraps the whole read/append/advance sequence here rather
+/// than at the call sites, so every caller (live poll, turn end, lazy backfill,
+/// fork) is covered without knowing about it. Per agent, not global, so one
+/// agent's full re-parse can't stall another's poll. Same pattern as
+/// `codegraph::mirror`'s per-path locks; the map is only ever added to, bounded
+/// by the number of distinct agent ids this process touches.
+fn agent_sync_lock(agent_id: &str) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .entry(agent_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
 /// Whether the turn-end transcript poll should keep going.
 #[derive(Debug, PartialEq, Eq)]
 enum PollControl {
@@ -684,6 +808,13 @@ fn report_sync_health(
 /// changed) plus the `ReadDiagnostics` the locate/read pass collected so the
 /// caller can tell those two apart.
 fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<SyncOutcome> {
+    // The offset cursor is read here and written at the bottom, so two
+    // overlapping passes for the same agent would both start from the stale
+    // offset and re-read the same range (see `agent_sync_lock`). Held across the
+    // whole sequence, and only ever taken *outside* the workspace db lock.
+    let serialize = agent_sync_lock(agent_id);
+    let _pass = serialize.lock();
+
     let record = workspace.agent(agent_id).ok()?;
     let reader = crate::agent::transcript_reader(&record.provider)?;
 
@@ -1202,5 +1333,48 @@ mod tests {
         let mut bad_state = snapshot_repo();
         bad_state.pr_state = Some("weird".into());
         assert!(pr_snapshot(&bad_state).is_none());
+    }
+
+    // ── Live-poll gate: native view AND a reader that can tail ──
+
+    #[test]
+    fn live_sync_polls_native_agents_whose_reader_tails() {
+        // claude/pi/cursor all locate a single JSONL, so `sync_session_records`
+        // seeks to the stored offset and reads only what's new — cheap at 1 Hz.
+        // The gate is `tail.is_some()`, not a provider allowlist, so all three
+        // qualify without being named anywhere.
+        for provider in ["claude", "pi", "cursor"] {
+            assert!(
+                should_live_sync(provider, AgentView::Native),
+                "{provider} tails a single jsonl and should be polled live"
+            );
+        }
+    }
+
+    #[test]
+    fn live_sync_skips_the_custom_view() {
+        // Custom-view agents render from their event stream, which already
+        // carries live structure; polling the transcript would duplicate it.
+        for provider in ["claude", "pi", "cursor"] {
+            assert!(
+                !should_live_sync(provider, AgentView::Custom),
+                "{provider} in the custom view already streams structure"
+            );
+        }
+    }
+
+    #[test]
+    fn live_sync_skips_readers_that_cannot_tail() {
+        // These readers locate multiple files (codex rollouts, opencode's blob
+        // dir, antigravity), so every pass is a full re-parse of the whole
+        // conversation. Polling them once a second would be a performance bug.
+        for provider in ["codex", "opencode", "antigravity"] {
+            assert!(
+                !should_live_sync(provider, AgentView::Native),
+                "{provider} has tail: None — a live poll would re-parse everything"
+            );
+        }
+        // A provider with no transcript reader at all is likewise skipped.
+        assert!(!should_live_sync("nonesuch", AgentView::Native));
     }
 }

@@ -3,8 +3,8 @@
 //! An agent is a git worktree + a coding-agent process running inside
 //! it. There are three runner shapes:
 //!
-//! - **Pty** (claude native view): a sandboxed `claude` process in a PTY
-//!   rendering its TUI; the app overlays its own input over the prompt.
+//! - **Pty** (native view): a sandboxed agent process in a PTY rendering its
+//!   own TUI; xterm owns stdin, so the user types straight into it.
 //! - **Managed** (claude custom view): a sandboxed, persistent
 //!   `claude --print` stream-json subprocess; the app renders structured
 //!   chat. Both claude shapes attach to the same conversation via

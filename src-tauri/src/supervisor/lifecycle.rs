@@ -26,6 +26,7 @@ use super::messaging::{
     drain_message_queue, flush_queued, mark_user_turn_started, on_first_user_message,
 };
 use super::rpc_watch::spawn_rpc_watcher;
+use super::session_sync::{should_live_sync, spawn_live_transcript_sync};
 use super::{transition_active, Supervisor};
 
 const WATCHDOG_TICK: Duration = Duration::from_millis(500);
@@ -825,6 +826,16 @@ impl Supervisor {
         }
 
         spawn_turn_watchdog(self.clone(), app.clone(), agent_id_str.clone(), my_gen);
+
+        // A native-view agent drives its own TUI in a PTY, so there's no event
+        // stream to render progress from — without this the panel stays a raw
+        // terminal until the turn-end sync lands. Poll its on-disk transcript
+        // instead so structure (tool cards, thinking) appears while it works.
+        // Self-gating: a no-op for the custom view and for providers whose
+        // reader can't tail cheaply.
+        if should_live_sync(&record.provider, record.view) {
+            spawn_live_transcript_sync(self.clone(), app.clone(), agent_id_str.clone(), my_gen);
+        }
 
         // Register the dispatcher so the mailbox can also be drained on demand
         // (`settle_agent_rpc`), not only on the watcher's tick. Overwrites any

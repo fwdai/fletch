@@ -512,6 +512,10 @@ impl Agent {
     /// used only by per-turn runners, which bake them into that turn's argv.
     /// claude (Managed) ignores them — its config is fixed on the persistent
     /// process at spawn and changed via a session-preserving respawn instead.
+    /// The native (Pty) view has no structured input channel, so a message is
+    /// typed into the TUI exactly as a user would — clearing whatever was in
+    /// the editor first (see [`pty_input_keystrokes`]); model/effort are
+    /// likewise fixed on its running process.
     pub fn send_user_message(
         &self,
         text: &str,
@@ -524,7 +528,7 @@ impl Agent {
             Self::PerTurn(a) => a
                 .session
                 .send_user_message(text, attachments, model, effort),
-            Self::Pty(_) => Err(Error::Other("send_user_message called on pty agent".into())),
+            Self::Pty(a) => a.pty.write(&pty_input_keystrokes(text, attachments)),
         }
     }
 
@@ -594,6 +598,69 @@ impl Agent {
             Self::Pty(a) => a.pty.kill(),
             Self::Managed(a) => a.session.kill(),
             Self::PerTurn(a) => a.session.kill(),
+        }
+    }
+}
+
+/// Put the TUI's line editor into a known-empty state: Ctrl-E (end of line)
+/// then Ctrl-U (kill line). Correct under both readline semantics — where
+/// Ctrl-U clears the whole line the Ctrl-E is a harmless no-op, and where it
+/// only kills back to the cursor, Ctrl-E has already moved the cursor to the
+/// end. `NativeInputTracker` models 0x15 as a line clear for the same reason.
+const CLEAR_LINE: &[u8] = &[0x05, 0x15];
+
+/// Render an app-originated message as the exact keystrokes a user would type
+/// into an agent's TUI: clear the editor, type one line, submit with CR.
+///
+/// Three ways this can otherwise submit something other than what we recorded
+/// as the turn — all of them make the agent run a conversation that diverges
+/// from `session_user_turns`:
+///
+/// 1. **The editor is not empty.** A half-typed prompt may be sitting at the
+///    prompt when a git-action trigger or a queued follow-up is delivered.
+///    Typing on top of it submits `<their draft><our message>`, so the editor
+///    is cleared first. (That discards the draft — unavoidable, and the right
+///    trade for "send this message now"; the app also drops its mirror of it,
+///    see `Supervisor::reset_native_input`.)
+/// 2. **Embedded newlines submit early.** A TUI reads LF/CR as "send now", so
+///    an unflattened multi-line prompt arrives as several truncated turns
+///    instead of one.
+/// 3. **Other control bytes steer the TUI rather than entering it.** Ctrl-C
+///    interrupts, ESC opens modes, Ctrl-U clears. These are dropped — in the
+///    message *and* in attachment paths, which are ordinary bytes on Unix and
+///    may legally contain a newline or a control character.
+pub(super) fn pty_input_keystrokes(text: &str, attachments: &[String]) -> Vec<u8> {
+    let mut line = String::new();
+    push_typed(&mut line, text);
+    for path in attachments {
+        // Only separate from preceding content — a message that is nothing but
+        // an attachment must not submit a leading space.
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        push_typed(&mut line, path);
+    }
+
+    let mut out = Vec::with_capacity(CLEAR_LINE.len() + line.len() + 1);
+    out.extend_from_slice(CLEAR_LINE);
+    out.extend_from_slice(line.as_bytes());
+    out.push(b'\r'); // the one and only submit
+    out
+}
+
+/// Append `s` as literal typing. Newlines become a single space so words stay
+/// separated (a run of them collapses rather than padding the prompt), and every
+/// other control character is dropped.
+fn push_typed(out: &mut String, s: &str) {
+    for ch in s.chars() {
+        match ch {
+            '\r' | '\n' => {
+                if !out.ends_with(' ') && !out.is_empty() {
+                    out.push(' ');
+                }
+            }
+            c if c.is_control() => {}
+            c => out.push(c),
         }
     }
 }

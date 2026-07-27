@@ -1,27 +1,18 @@
 import { open } from "@tauri-apps/plugin-shell";
-import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import type { Terminal } from "@xterm/xterm";
-import { useEffect, useRef, useState } from "react";
 import { type AgentRecord, api } from "@/api";
-import { Icon } from "@/components/Icon";
-import { IconButton } from "@/components/ui/IconButton";
+import { useTerminalSearch } from "@/components/ui/TerminalSearch";
 import { getShellBuffer, registerShellSink } from "@/pty/buffers";
 import { useXterm } from "@/util/useXterm";
-import { resolveTheme } from "@/util/xtermTheme";
 
 export function TermPanel({ agent }: { agent: AgentRecord }) {
-  const termRef = useRef<Terminal | null>(null);
-  const searchAddonRef = useRef<SearchAddon | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
+  const search = useTerminalSearch();
 
   // ── Terminal setup ──────────────────────────────────────────────
   const containerRef = useXterm(
     {
       fontSize: 12,
       lineHeight: 1.2,
-      theme: resolveTheme(),
       scrollback: 20000,
     },
     (term) => {
@@ -29,22 +20,8 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
         console.error("openAgentShell failed", err);
       });
 
-      const searchAddon = new SearchAddon();
-      term.loadAddon(searchAddon);
+      const detachSearch = search.attach(term);
       term.loadAddon(new WebLinksAddon((_, url) => open(url)));
-
-      termRef.current = term;
-      searchAddonRef.current = searchAddon;
-
-      // Intercept Ctrl/Cmd+F so it opens the search bar instead of being
-      // sent to the PTY as a raw byte sequence.
-      term.attachCustomKeyEventHandler((e) => {
-        if ((e.metaKey || e.ctrlKey) && e.key === "f" && e.type === "keydown") {
-          setSearchOpen(true);
-          return false; // prevent xterm from forwarding to PTY
-        }
-        return true;
-      });
 
       const buffered = getShellBuffer(agent.id);
       if (buffered && buffered.length > 0) term.write(buffered);
@@ -60,8 +37,7 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
       const unregister = registerShellSink(agent.id, (bytes) => term.write(bytes));
 
       return () => {
-        termRef.current = null;
-        searchAddonRef.current = null;
+        detachSearch();
         unregister();
         onResize.dispose();
         onData.dispose();
@@ -73,66 +49,9 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
     [agent.id],
   );
 
-  // ── Theme reactivity ────────────────────────────────────────────
-  // Watch <html> class for dark ↔ light switches and re-apply the theme
-  // without recreating the terminal.
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      if (termRef.current) termRef.current.options.theme = resolveTheme();
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
-
-  // ── Search helpers ──────────────────────────────────────────────
-  const runSearch = (query: string, direction: "next" | "prev" = "next") => {
-    if (!searchAddonRef.current || !query) return;
-    if (direction === "next") searchAddonRef.current.findNext(query);
-    else searchAddonRef.current.findPrevious(query);
-  };
-
-  const closeSearch = () => {
-    setSearchOpen(false);
-    setSearchQuery("");
-    termRef.current?.focus();
-  };
-
   return (
     <div className="term-panel">
-      {searchOpen && (
-        <div className="term-search flex-center">
-          <input
-            autoFocus
-            className="term-search-input"
-            placeholder="Find in terminal…"
-            value={searchQuery}
-            onChange={(e) => {
-              setSearchQuery(e.target.value);
-              runSearch(e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") runSearch(searchQuery, e.shiftKey ? "prev" : "next");
-              if (e.key === "Escape") closeSearch();
-            }}
-          />
-          <IconButton
-            size="sm"
-            tip="Previous (Shift+Enter)"
-            onClick={() => runSearch(searchQuery, "prev")}
-          >
-            <Icon name="chevU" />
-          </IconButton>
-          <IconButton size="sm" tip="Next (Enter)" onClick={() => runSearch(searchQuery, "next")}>
-            <Icon name="chevD" />
-          </IconButton>
-          <IconButton size="sm" tip="Close (Esc)" onClick={closeSearch}>
-            <Icon name="close" />
-          </IconButton>
-        </div>
-      )}
+      {search.bar}
       <div className="xterm-slot">
         <div ref={containerRef} className="xterm-host" style={{ inset: "14px 4px 14px 12px" }} />
       </div>

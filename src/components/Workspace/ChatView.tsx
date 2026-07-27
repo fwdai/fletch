@@ -1,29 +1,20 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { applyPolicy, getAdapter } from "@/adapters";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type AgentRecord, api } from "@/api";
 import { Composer } from "@/components/Composer";
-import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
-import { Loader } from "@/components/ui/Loader";
 import { providerLabel } from "@/data/providers";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
-import { stripInjectedInstructions } from "@/util/instructions";
-import { ChatNav } from "./ChatNav";
 import { ChatSearch } from "./ChatSearch";
 import { ChatWorkingStatus } from "./ChatWorkingStatus";
-import { MessageItem } from "./messages/MessageItem";
-import { type PairCache, pairToolItems, rowKey } from "./messages/pair";
+import { TranscriptList } from "./messages/TranscriptList";
 import { isTurnPending } from "./messages/turnPending";
-import { isUserInputTool } from "./messages/UserInput/parse";
-import { TurnFooter } from "./RunTimer";
+import { useTranscript } from "./messages/useTranscript";
 
 /** Custom-view body: scrolling chat log + composer at the bottom.
  *  The composer here dispatches the user's message via the store; it
  *  doesn't care about provider routing yet. */
 export function ChatView({ agent }: { agent: AgentRecord }) {
-  const log = useAppStore((s) => s.managedLogs[agent.id]);
   const transcriptLoading = useAppStore((s) => s.transcriptLoading[agent.id] ?? false);
-  const transcriptLoaded = useAppStore((s) => s.transcriptLoaded[agent.id] ?? false);
   const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
   const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
   const turnStartedAt = useAppStore((s) => s.turnStartedAt[agent.id]);
@@ -33,7 +24,6 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const setAgentModel = useAppStore((s) => s.setAgentModel);
   const stop = useAppStore((s) => s.stop);
   const runLocalCommand = useAppStore((s) => s.runLocalCommand);
-  const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
   const usage = useAppStore((s) => s.usage[agent.id]);
   // The custom agent this session was spawned from (if any, and still present),
   // so the chat surfaces the agent's name rather than its base provider.
@@ -71,7 +61,9 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     };
   }, [projectId]);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Owned here so sending a message can re-pin the log to the bottom.
+  const pinnedToBottom = useRef(true);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -109,142 +101,10 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
     setSearchQuery("");
   }, [agent.id]);
 
-  // Whether the chat is "pinned" to the bottom. While true we follow new
-  // messages; once the user scrolls up we stop auto-scrolling and leave their
-  // position alone until they scroll back down to the bottom.
-  const pinnedToBottom = useRef(true);
-  const hasSession = Boolean(agent.session_id);
-  const hasPriorConversation = agent.task.trim().length > 0;
-
-  useEffect(() => {
-    if (!hasSession || transcriptLoaded || transcriptLoading || switchInFlight) {
-      return;
-    }
-    if (log !== undefined || !hasPriorConversation) {
-      return;
-    }
-    void loadHistoryTranscript(agent.id);
-  }, [
-    agent.id,
-    hasSession,
-    hasPriorConversation,
-    loadHistoryTranscript,
-    log,
-    switchInFlight,
-    transcriptLoaded,
-    transcriptLoading,
-  ]);
-
-  // Re-pin to the bottom whenever we switch to a different agent, so each
-  // conversation opens scrolled to its latest message.
-  useEffect(() => {
-    pinnedToBottom.current = true;
-  }, [agent.id]);
-
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    // Allow a small slop so the user counts as "at the bottom" even a few
-    // pixels short — sub-pixel rounding otherwise makes exact equality flaky.
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    pinnedToBottom.current = distanceFromBottom <= 40;
-  };
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (transcriptLoading) return;
-    if (!pinnedToBottom.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [log, transcriptLoading]);
-
-  // Persist tool_pair wrapper identity across renders so memoized rows survive
-  // streaming deltas (see PairCache). Self-evicts stale ids each pass, so it
-  // needs no reset when switching agents (tool-use ids never collide).
-  const pairCache = useRef<PairCache>(new Map());
-
-  const items = useMemo(() => {
-    const adapter = getAdapter(agent.provider);
-    const visible = applyPolicy(log ?? [], adapter.policy);
-    return pairToolItems(visible, pairCache.current);
-  }, [log, agent.provider]);
-
-  // Navigable turns = the real user prompts (git-action chips excluded). Each
-  // gets a stable ordinal that maps an item to its `data-chat-turn` marker, so
-  // ChatNav can jump straight to any bubble.
-  const { turns, turnIds } = useMemo(() => {
-    const turns: { id: number; text: string }[] = [];
-    const turnIds = items.map((it) => {
-      if (it.kind !== "user_message" || it.text.startsWith(APP_ACTION_PREFIX)) {
-        return undefined;
-      }
-      const id = turns.length;
-      turns.push({ id, text: stripInjectedInstructions(it.text) });
-      return id;
-    });
-    return { turns, turnIds };
-  }, [items]);
-
-  // Footer closing each *ended* turn (border + "Ran …" + copy), placed at the
-  // turn's last item — the seam before the next turn. Gated on the same
-  // turn-end signal as the duration, so it only appears once the turn finishes;
-  // the open turn (started, not ended) carries no footer, just its live timer
-  // on the working strip.
-  const { turnFooters, openTurnStartedAt } = useMemo(() => {
-    // `turnOrdinal` is the footer turn's index among navigable prompts (the same
-    // 0-based ordinal `turns` uses), which is exactly what the fork action needs
-    // as its "up to this message" cutoff.
-    const footers: ({ runSec: number; copyText: string; turnOrdinal: number } | null)[] = items.map(
-      () => null,
-    );
-    let openStart: number | undefined;
-    const starts: number[] = [];
-    items.forEach((it, i) => {
-      if (it.kind === "user_message" && !it.text.startsWith(APP_ACTION_PREFIX)) starts.push(i);
-    });
-    starts.forEach((startIdx, k) => {
-      const start = items[startIdx];
-      if (start.kind !== "user_message" || start.startedAt == null) return;
-      const endExclusive = k + 1 < starts.length ? starts[k + 1] : items.length;
-      if (start.endedAt == null) {
-        openStart = start.startedAt; // turn still running
-        return;
-      }
-      // The agent's settled prose for this turn — what "copy" yields.
-      const texts: string[] = [];
-      for (let j = startIdx; j < endExclusive; j += 1) {
-        const it = items[j];
-        if (it.kind === "agent_message" && !it.streaming && it.text) texts.push(it.text);
-      }
-      footers[endExclusive - 1] = {
-        runSec: (start.endedAt - start.startedAt) / 1000,
-        copyText: texts.join("\n\n"),
-        turnOrdinal: k,
-      };
-    });
-    return { turnFooters: footers, openTurnStartedAt: openStart };
-  }, [items]);
-
-  // The model the agent actually used on its most recent turn (Claude, pi,
-  // Codex, OpenCode report it in their transcripts). Undefined for Cursor /
-  // Antigravity, or before the first turn — the composer then shows just the
-  // provider.
-  const activeModel = useMemo(() => {
-    for (let i = items.length - 1; i >= 0; i -= 1) {
-      const it = items[i];
-      if (it.kind === "agent_message" && it.model) return it.model;
-    }
-    return undefined;
-  }, [items]);
-  // When the last row is an unanswered user-input widget, the agent is paused
-  // on that tool waiting for the user — not working — so suppress the
-  // "is thinking" spinner (the widget itself signals it's the user's turn).
-  const awaitingInput = useMemo(() => {
-    const last = items[items.length - 1];
-    return Boolean(
-      last && last.kind === "tool_pair" && isUserInputTool(last.call.name) && !last.result,
-    );
-  }, [items]);
+  // Log derivation (lazy history load, display policy, tool pairing, per-turn
+  // bookkeeping) is shared with the native view's rail — see useTranscript.
+  const transcript = useTranscript(agent);
+  const { items, turns, activeModel, awaitingInput, openTurnStartedAt } = transcript;
 
   // The backend emits a transient `idle` between process spawn and the first
   // turn's `running` (every process rests at Idle at spawn). Raw `busy` thus
@@ -268,17 +128,6 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   // and the bottom status strip carries the "is working" signal, so the inline
   // anchor is redundant.
   const turnPending = liveBusy && isTurnPending(items) && turns.length <= 1;
-
-  // Index where the currently-open turn begins (the last top-level user
-  // message). Only tools at/after it belong to the running turn, so only they
-  // may show a live spinner — a dangling tool_call left by an interrupted or
-  // reloaded earlier turn must not light up when a later turn sets `busy`.
-  const openTurnStart = useMemo(() => {
-    for (let i = items.length - 1; i >= 0; i -= 1) {
-      if (items[i].kind === "user_message") return i;
-    }
-    return 0;
-  }, [items]);
 
   // Live-timer anchor: the backend's turn-start timestamp (from `turn:started`,
   // the same value the footer's duration uses, so they never drift). On reload
@@ -306,44 +155,15 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
           onClose={closeSearch}
         />
       )}
-      <div className="chat-scroll-wrap">
-        <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-          <div className="chat-inner fade-in" key={agent.id}>
-            {transcriptLoading && items.length === 0 ? (
-              <div className="writing flex-center">
-                <Loader variant="accent" />
-                <span>Loading transcript…</span>
-              </div>
-            ) : items.length === 0 && hasPriorConversation && !busy ? (
-              <div className="empty-msg" style={{ margin: "40px auto", maxWidth: 360 }}>
-                <div className="et">No transcript available</div>
-                <div>
-                  {providerLabel(agent.provider)}'s session file is not on disk for this agent.
-                </div>
-              </div>
-            ) : (
-              items.map((item, i) => (
-                <Fragment key={rowKey(item, i)}>
-                  <MessageItem
-                    item={item}
-                    provider={agent.provider}
-                    agentId={agent.id}
-                    busy={liveBusy && i >= openTurnStart}
-                    turnId={turnIds[i]}
-                  />
-                  {turnFooters[i] != null && <TurnFooter {...turnFooters[i]!} agentId={agent.id} />}
-                </Fragment>
-              ))
-            )}
-            {turnPending && (
-              <div className="chat-pending" aria-hidden="true">
-                <Loader variant="muted" size="md" />
-              </div>
-            )}
-          </div>
-        </div>
-        {!searchOpen && <ChatNav scrollRef={scrollRef} turns={turns} />}
-      </div>
+      <TranscriptList
+        agent={agent}
+        transcript={transcript}
+        liveBusy={liveBusy}
+        pending={turnPending}
+        scrollRef={scrollRef}
+        pinRef={pinnedToBottom}
+        hideNav={searchOpen}
+      />
       <div className="composer-wrap">
         <div className="composer-stack">
           <div className="composer-anchor">

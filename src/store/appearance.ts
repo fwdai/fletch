@@ -1,9 +1,4 @@
-import {
-  DEFAULT_FEATURES,
-  type FeatureFlags,
-  type ThemeMode,
-  type WorkspaceView,
-} from "@/storage/preferences";
+import { DEFAULT_FEATURES, type FeatureFlags, type ThemeMode } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
 import type { SliceCreator } from "./types";
 
@@ -22,10 +17,6 @@ export interface AppearanceSlice {
   /** Send a native OS notification when an agent turn finishes or needs input
    *  while you're not watching that chat. Opt-out. */
   notifyEnabled: boolean;
-  /** View mode preference for the workspace pane. Persisted; falls
-   *  back to the agent's own `view` field for native vs. custom
-   *  switching. */
-  viewMode: WorkspaceView;
 
   // appearance
   setTheme: (t: ThemeMode) => void;
@@ -34,7 +25,6 @@ export interface AppearanceSlice {
   setFeature: <K extends keyof FeatureFlags>(k: K, v: FeatureFlags[K]) => void;
   setSoundEnabled: (on: boolean) => void;
   setNotifyEnabled: (on: boolean) => void;
-  setViewMode: (v: WorkspaceView) => void;
 }
 
 export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
@@ -44,7 +34,6 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   features: DEFAULT_FEATURES,
   soundEnabled: true,
   notifyEnabled: true,
-  viewMode: "custom" as WorkspaceView,
 
   // ── appearance ──────────────────────────────────────────────────────────────
   setTheme: (t) => {
@@ -72,9 +61,5 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   setNotifyEnabled: (on) => {
     set({ notifyEnabled: on });
     setSetting("notifyEnabled", String(on));
-  },
-  setViewMode: (v) => {
-    set({ viewMode: v });
-    setSetting("viewMode", v);
   },
 });

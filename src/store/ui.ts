@@ -46,6 +46,10 @@ export interface UiSlice {
   projectSettingsRepoPath: string | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
+  /** Show the structured transcript rail beside the native view's terminal.
+   *  App-wide (not per agent): it's a way of working, not a property of one
+   *  session. Persisted. */
+  transcriptRailOpen: boolean;
   leftWidth: number;
   rightWidth: number;
   /** Last-open right-rail tab per agent, keyed by agent id. Lets the panel
@@ -82,6 +86,7 @@ export interface UiSlice {
   closeProjectSettings: () => void;
   toggleLeft: () => void;
   toggleRight: () => void;
+  toggleTranscriptRail: () => void;
   /** Live (in-memory) width update during a splitter drag. */
   setLeftWidth: (w: number) => void;
   setRightWidth: (w: number) => void;
@@ -109,6 +114,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   projectSettingsRepoPath: null,
   leftCollapsed: false,
   rightCollapsed: false,
+  transcriptRailOpen: true,
   leftWidth: DEFAULT_LEFT_WIDTH,
   rightWidth: DEFAULT_RIGHT_WIDTH,
   rightPanelTabs: {},
@@ -157,6 +163,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       const leftCollapsed = !s.leftCollapsed;
       setSetting("leftCollapsed", String(leftCollapsed));
       return { leftCollapsed };
+    }),
+  toggleTranscriptRail: () =>
+    set((s) => {
+      const transcriptRailOpen = !s.transcriptRailOpen;
+      setSetting("transcriptRailOpen", String(transcriptRailOpen));
+      return { transcriptRailOpen };
     }),
   toggleRight: () =>
     set((s) => {
