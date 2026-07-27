@@ -567,3 +567,18 @@ fn capability_rollout_matches_what_is_wired_today() {
         );
     }
 }
+
+/// `--agents` must only appear when codegraph actually landed: a subagent whose
+/// entire job is calling `codegraph_explore` is worse than useless without it,
+/// and claude rejects nothing here — it would happily define a broken type.
+#[test]
+fn subagent_args_follow_codegraph_availability() {
+    use crate::agent::args::subagent_args;
+
+    assert!(subagent_args(false).is_empty());
+
+    let args = subagent_args(true);
+    assert_eq!(args[0], "--agents");
+    let json: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+    assert!(json[crate::agent_profile::CODEGRAPH_AGENT].is_object());
+}
