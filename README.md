@@ -15,13 +15,16 @@ Run Claude Code, Codex, Cursor, OpenCode and more in parallel, each in an isolat
 ![Platform: macOS 13+](https://img.shields.io/badge/Platform-macOS%2013%2B-lightgrey.svg)
 ![Built with Tauri](https://img.shields.io/badge/Built%20with-Tauri%202-24C8DB.svg)
 
-<img src="docs/fletch-demo.gif" alt="Seven agents running in parallel in Fletch, each on its own task and branch" width="900">
+<img src="docs/fletch-demo.gif" alt="Fletch running seven agents in parallel. One agent's task is followed from its tool calls through tests passing to a merged pull request." width="900">
 
 <sub>[Watch the full walkthrough →](https://fletch.sh/fletch-demo.mp4)</sub>
 
 </div>
 
-<!-- The GIF above is the demo's opening beat; the full 42s film lives on the site.
+<!-- The GIF is a self-contained 26s loop (1280x800, 5.3 MB): seven agents in the
+     sidebar, one agent's task from tool calls to tests passing, ending on the
+     merged PR. Source is quorum-demo/fletch-command-palette.gif; regenerate there,
+     not here. The 42s film behind the walkthrough link is a different cut.
      A GIF autoplays and renders everywhere (mirrors, forks, VS Code preview),
      which the previous GitHub-hosted mp4 player did not — it needed a click and
      only worked on github.com. To restore that embed instead, drop this URL back
