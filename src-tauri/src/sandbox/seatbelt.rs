@@ -446,6 +446,37 @@ pub fn build_profile(
     // touch any Fletch data dir, dev or otherwise.
     let deny_app_data = deny_app_data_dir(&home_s);
 
+    // Cursor resolves MCP config from `<cwd>/.cursor/mcp.json` *as well as*
+    // `$HOME/.cursor/mcp.json`, and its only approval control is the blanket
+    // `--approve-mcps`. Giving cursor a private HOME secures the second source
+    // but not the first: the checkout is repository content, so a hostile repo
+    // shipping `.cursor/mcp.json` would have its command auto-approved and
+    // executed with the agent's access.
+    //
+    // Approval can't be scoped — it's workspace-level, all-or-nothing — so the
+    // fix is to remove the source rather than try to qualify the approval.
+    // Verified: with that file unreadable, cursor-agent silently skips it and
+    // behaves exactly as if it were absent (exit 0, only the HOME servers
+    // listed), so this degrades cleanly rather than erroring.
+    //
+    // The regex matches a checkout-local file — exactly one path segment under
+    // the writable root — which is why Fletch's own generated config at
+    // `<root>/.fletch-profile/home/.cursor/mcp.json` (three segments) can't be
+    // caught by it. The literal re-allow after the deny makes that explicit
+    // rather than incidental, since SBPL is last-match-wins.
+    let deny_checkout_cursor_mcp = {
+        let root = regex_escape(&writable_root.to_string_lossy());
+        let ours = crate::agent_profile::agent_home(&writable_root)
+            .join(".cursor")
+            .join("mcp.json");
+        format!(
+            ";; Repo-controlled MCP config must not reach cursor's blanket approval.\n\
+             (deny file-read* (regex #\"^{root}/[^/]+/\\.cursor/mcp\\.json$\"))\n\
+             (allow file-read* (literal {}))",
+            sbpl_string(&ours.to_string_lossy())
+        )
+    };
+
     Ok(format!(
         r#"(version 1)
 (allow default)
@@ -464,9 +495,26 @@ pub fn build_profile(
 
 {deny_app_data}
 
+{deny_checkout_cursor_mcp}
+
 {DEVICE_WRITE_RULES}
 "#
     ))
+}
+
+/// Escape a filesystem path for use inside an SBPL `(regex #"…")` literal.
+/// Only the metacharacters that can appear in a path are handled; SBPL regexes
+/// are POSIX-extended, so escaping these is sufficient and keeps the emitted
+/// profile readable.
+fn regex_escape(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        if ".^$*+?()[]{}|\\".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// SBPL `(subpath …)` grant lines for the policy dirs, each emitted in its
@@ -1214,6 +1262,40 @@ mod tests {
     /// could write it to is a subpath these profiles grant confined processes
     /// write access to — so an already-running agent could overwrite the next
     /// agent's profile between our write and `sandbox-exec`'s read.
+    #[test]
+    fn profile_denies_repo_local_cursor_mcp_but_not_our_generated_one() {
+        // Cursor reads `<cwd>/.cursor/mcp.json` as well as `$HOME/...`, and
+        // `--approve-mcps` is all-or-nothing — so a repo-shipped config would be
+        // auto-approved and executed. The per-agent HOME alone does not fix this.
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let rpc = root.path().join("rpc");
+        std::fs::create_dir_all(&rpc).unwrap();
+        let profile = build_profile(root.path(), &rpc, home.path(), None, None).unwrap();
+
+        assert!(
+            profile.contains("(deny file-read*") && profile.contains("cursor/mcp"),
+            "repo-local cursor MCP config is still readable:\n{profile}"
+        );
+
+        // Ours must survive the deny — it is three segments deep, and the
+        // re-allow after it (SBPL is last-match-wins) says so explicitly.
+        let ours = crate::agent_profile::agent_home(&root.path().canonicalize().unwrap())
+            .join(".cursor")
+            .join("mcp.json");
+        let allow_idx = profile
+            .find(&format!(
+                "(allow file-read* (literal \"{}\"))",
+                ours.display()
+            ))
+            .unwrap_or_else(|| panic!("no re-allow for our config:\n{profile}"));
+        let deny_idx = profile.find("(deny file-read*").unwrap();
+        assert!(
+            deny_idx < allow_idx,
+            "re-allow must come after the deny; SBPL is last-match-wins"
+        );
+    }
+
     #[test]
     fn profile_travels_in_argv_never_a_file() {
         let text = "(version 1)\n(allow default)\n;; comment\n(deny file-write*)";
