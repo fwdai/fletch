@@ -1032,6 +1032,31 @@ mod tests {
     }
 }
 
+/// Whether `relative` is tracked by git in `checkout` — i.e. the repository
+/// commits this file, so any write we make would show up as a modification the
+/// agent could commit.
+///
+/// Used as a *refusal* gate before the host writes a generated file into a
+/// checkout (see `cursor_mcp_delivery`). Exit codes map cleanly onto the
+/// question we actually care about — "could writing here clobber something the
+/// repo commits?":
+/// - `0` — tracked, so refuse.
+/// - non-zero — untracked (`1`) or not a repo at all (`128`). Either way there
+///   is no committed file to destroy, so writing is safe.
+/// - couldn't spawn git — unknown, so refuse. Losing the feature beats silently
+///   rewriting a file the user has committed.
+pub fn is_tracked(checkout: &Path, relative: &str) -> bool {
+    let Ok(status) = crate::git_dist::std_command(checkout)
+        .args(["ls-files", "--error-unmatch", "--", relative])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    else {
+        return true;
+    };
+    status.success()
+}
+
 /// Add `entry` to a checkout's `.git/info/exclude` if it isn't already listed,
 /// so a host-generated file inside the worktree never shows up in `git status`.
 ///

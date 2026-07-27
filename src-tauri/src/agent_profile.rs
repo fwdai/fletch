@@ -25,8 +25,9 @@
 //!   `--strict-mcp-config` (our snapshot is the *only* MCP source, so on-disk
 //!   user/project MCP config can't ride along).
 //! - codex — `-c mcp_servers.<key>.…` TOML config overrides (stdio only).
-//! - cursor — merged into `<cwd>/.cursor/mcp.json`, the only place cursor-agent
-//!   reads MCP config from, plus `--approve-mcps`.
+//! - cursor — written to `<cwd>/.cursor/mcp.json`, the only place cursor-agent
+//!   reads MCP config from, plus `--approve-mcps`. Replaces rather than merges,
+//!   and skips a git-tracked file entirely (see `cursor_mcp_delivery`).
 //! - opencode — a `mcp`-only config in the profile dir, pointed at by
 //!   `OPENCODE_CONFIG`; opencode merges it over the user's own config itself.
 //! - pi/antigravity — no MCP surface at all (pi ships an extension system
@@ -363,6 +364,10 @@ pub fn codex_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
     Ok(McpDelivery::from_args(codex_mcp_args(target.servers)))
 }
 
+/// Cursor's project-local MCP config, relative to the checkout root. Used both
+/// as the write target and as the path we test for git-tracking / exclude.
+const CURSOR_CONFIG_REL: &str = ".cursor/mcp.json";
+
 /// Cursor's project-local MCP config path, inside the checkout.
 fn cursor_config_path(cwd: &Path) -> PathBuf {
     cwd.join(".cursor").join("mcp.json")
@@ -372,71 +377,66 @@ fn cursor_config_path(cwd: &Path) -> PathBuf {
 /// `<cwd>/.cursor/mcp.json` and `~/.cursor/mcp.json` — there is no flag or env
 /// override — so the session's servers have to be written into the checkout.
 ///
-/// **Merged, not replaced.** A repo that ships its own `.cursor/mcp.json` keeps
-/// every server it declares; ours are added alongside. On a key collision the
-/// session's snapshot wins (it's the explicit, current configuration) and the
-/// displaced entry is logged.
+/// **Replaces, never merges, and refuses to touch a tracked file.** An earlier
+/// version merged the repo's own `mcpServers` in. Three problems, all rooted in
+/// read-modify-writing a file the repository owns:
 ///
-/// Two consequences worth knowing, both forced by cursor's config surface:
-/// - Unlike claude there's no `--strict-mcp-config`, so the user's global
-///   `~/.cursor/mcp.json` still loads alongside the snapshot. Fletch cannot
-///   make its snapshot the *only* MCP source for cursor.
-/// - The write lands in the checkout. `append_cursor_git_exclude` keeps an
-///   untracked file out of `git status`; a repo that *tracks* `.cursor/mcp.json`
-///   will show the merge as a modification.
+/// 1. `--approve-mcps` has no per-server form, so preserving a repo-declared
+///    entry meant *auto-approving* it — a hostile `.cursor/mcp.json` in any
+///    cloned repo would run its command with the sandbox's access and no
+///    prompt. Writing only our snapshot keeps the trust boundary claude gets
+///    from `--strict-mcp-config`: the servers the user configured in Fletch,
+///    and nothing else.
+/// 2. Re-reading the file on the next spawn read back *our own* previous write,
+///    so a server could never be removed — codegraph survived the toggle being
+///    switched off. Regenerating wholesale from the snapshot restores the
+///    "current state always wins" property `codegraph` depends on.
+/// 3. An unparseable or partially-written file was treated as absent and then
+///    overwritten, silently deleting the repo's declarations.
+///
+/// The cost is real and deliberate: a repo that ships its own
+/// `.cursor/mcp.json` gets no Fletch MCP servers under cursor. When that file
+/// is git-tracked we skip delivery rather than leave a committable
+/// modification in the agent's diff; when it's absent or untracked we own it
+/// outright and keep it out of `git status` via `.git/info/exclude`.
+///
+/// One limit remains, inherent to cursor: there is no `--strict-mcp-config`
+/// equivalent, so the *user's own* `~/.cursor/mcp.json` still loads. That is
+/// their global config rather than untrusted repo content — a different trust
+/// question from the one above.
 pub fn cursor_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
     if target.servers.is_empty() {
         return Ok(McpDelivery::default());
     }
-    let path = cursor_config_path(target.cwd);
-
-    // Start from whatever the repo already declares, so a project's own servers
-    // survive. Unparseable/!object existing config is treated as absent rather
-    // than failing the spawn — same best-effort posture as the rest of profile
-    // materialization.
-    let mut root = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .filter(|v| v.is_object())
-        .unwrap_or_else(|| serde_json::json!({}));
-
-    let existing = root
-        .get_mut("mcpServers")
-        .and_then(|v| v.as_object_mut())
-        .cloned()
-        .unwrap_or_default();
-    let mut merged = existing.clone();
-    if let Some(ours) = mcp_servers_object(target.servers).as_object() {
-        for (key, entry) in ours {
-            if existing.contains_key(key) {
-                tracing::warn!(
-                    server = %key,
-                    path = %path.display(),
-                    "session MCP server overrides one declared by the repo's .cursor/mcp.json"
-                );
-            }
-            merged.insert(key.clone(), entry.clone());
-        }
+    // Refuse before reading or writing: a tracked file belongs to the repo.
+    if crate::git_state::is_tracked(target.cwd, CURSOR_CONFIG_REL) {
+        tracing::warn!(
+            path = %CURSOR_CONFIG_REL,
+            "repo tracks its own cursor MCP config; skipping MCP delivery for this session"
+        );
+        return Ok(McpDelivery::default());
     }
-    root["mcpServers"] = serde_json::Value::Object(merged);
 
+    let path = cursor_config_path(target.cwd);
+    let config = serde_json::json!({ "mcpServers": mcp_servers_object(target.servers) });
     let dir = path
         .parent()
         .ok_or_else(|| Error::Other("cursor config path has no parent".into()))?;
     ensure_real_dir(dir)?;
-    let body = serde_json::to_string_pretty(&root)
+    let body = serde_json::to_string_pretty(&config)
         .map_err(|e| Error::Other(format!("failed to encode cursor MCP config: {e}")))?;
     write_profile_file(&path, &body)?;
 
     // Keep a file we generated out of the agent's `git status`. Best-effort:
     // a checkout without `.git` (or an unwritable one) must not fail the spawn
     // — the config is still valid, it just shows as untracked.
-    if let Err(e) = crate::git_state::ensure_git_exclude(target.cwd, ".cursor/mcp.json") {
+    if let Err(e) = crate::git_state::ensure_git_exclude(target.cwd, CURSOR_CONFIG_REL) {
         tracing::warn!(error = %e, "cursor MCP config exclude entry failed");
     }
 
     // Without this cursor prompts for approval of each server on first use,
-    // which a headless per-turn run can never answer.
+    // which a headless per-turn run can never answer. Safe as a blanket flag
+    // only because the file now contains exactly our snapshot.
     Ok(McpDelivery::from_args(vec!["--approve-mcps".into()]))
 }
 
@@ -741,23 +741,36 @@ mod tests {
         }
     }
 
-    /// A checkout with a `.git` dir, so the exclude write has somewhere to go.
-    fn checkout() -> tempfile::TempDir {
+    /// A checkout that is a real git repo, so `is_tracked` answers honestly
+    /// rather than falling into the "couldn't spawn git" refusal.
+    fn git_repo() -> tempfile::TempDir {
         let td = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(td.path().join(".git").join("info")).unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(td.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
         td
     }
 
     #[test]
-    fn cursor_config_merges_into_a_repos_own_servers() {
+    fn cursor_config_replaces_rather_than_merging() {
+        // An untracked repo config must NOT be folded in: `--approve-mcps` is
+        // all-or-nothing, so preserving a repo-declared server would
+        // auto-approve a command the repository controls.
         let root = tempfile::tempdir().unwrap();
-        let cwd = checkout();
-        let cursor_dir = cwd.path().join(".cursor");
-        std::fs::create_dir_all(&cursor_dir).unwrap();
-        // A repo that ships its own MCP config, plus an unrelated top-level key.
+        let cwd = git_repo();
+        std::fs::create_dir_all(cwd.path().join(".cursor")).unwrap();
         std::fs::write(
-            cursor_dir.join("mcp.json"),
-            r#"{"someOtherKey": 1, "mcpServers": {"repo-tool": {"command": "repo"}}}"#,
+            cwd.path().join(CURSOR_CONFIG_REL),
+            r#"{"mcpServers": {"repo-tool": {"command": "/evil"}}}"#,
         )
         .unwrap();
 
@@ -769,55 +782,92 @@ mod tests {
         })
         .unwrap();
 
-        let json: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(cursor_dir.join("mcp.json")).unwrap())
-                .unwrap();
-        // Ours landed...
-        assert_eq!(
-            json["mcpServers"]["codegraph"]["command"],
-            "/tools/codegraph"
-        );
-        // ...without dropping the repo's server or its other config.
-        assert_eq!(json["mcpServers"]["repo-tool"]["command"], "repo");
-        assert_eq!(json["someOtherKey"], 1);
-
-        assert_eq!(delivery.args, vec!["--approve-mcps".to_string()]);
-        // The generated file is hidden from the agent's `git status`.
-        let exclude = std::fs::read_to_string(cwd.path().join(".git/info/exclude")).unwrap();
-        assert!(exclude.contains(".cursor/mcp.json"), "{exclude}");
-    }
-
-    #[test]
-    fn cursor_config_survives_a_corrupt_existing_file() {
-        // Unparseable project config must not fail the spawn — we start fresh
-        // rather than propagating an error out of the delivery builder.
-        let root = tempfile::tempdir().unwrap();
-        let cwd = checkout();
-        std::fs::create_dir_all(cwd.path().join(".cursor")).unwrap();
-        std::fs::write(cwd.path().join(".cursor/mcp.json"), "{ not json").unwrap();
-
-        let servers = vec![stdio("Codegraph", "/tools/codegraph")];
-        cursor_mcp_delivery(&McpTarget {
-            servers: &servers,
-            sandbox_root: root.path(),
-            cwd: cwd.path(),
-        })
-        .unwrap();
-
         let json: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(cwd.path().join(".cursor/mcp.json")).unwrap(),
+            &std::fs::read_to_string(cwd.path().join(CURSOR_CONFIG_REL)).unwrap(),
         )
         .unwrap();
         assert_eq!(
             json["mcpServers"]["codegraph"]["command"],
             "/tools/codegraph"
         );
+        assert!(
+            json["mcpServers"].get("repo-tool").is_none(),
+            "repo-declared server survived and would be auto-approved: {json}"
+        );
+        assert_eq!(delivery.args, vec!["--approve-mcps".to_string()]);
+        let exclude = std::fs::read_to_string(cwd.path().join(".git/info/exclude")).unwrap();
+        assert!(exclude.contains(CURSOR_CONFIG_REL), "{exclude}");
+    }
+
+    #[test]
+    fn cursor_config_drops_servers_that_left_the_snapshot() {
+        // The staleness bug: spawn once with codegraph, then again without it
+        // (indexing toggled off). Re-reading our own previous write would keep
+        // resurrecting it, so cursor would launch a server the gate rejected.
+        let root = tempfile::tempdir().unwrap();
+        let cwd = git_repo();
+        let deliver = |servers: &[McpServerSnapshot]| -> serde_json::Value {
+            cursor_mcp_delivery(&McpTarget {
+                servers,
+                sandbox_root: root.path(),
+                cwd: cwd.path(),
+            })
+            .unwrap();
+            serde_json::from_str(
+                &std::fs::read_to_string(cwd.path().join(CURSOR_CONFIG_REL)).unwrap(),
+            )
+            .unwrap()
+        };
+
+        let first = deliver(&[
+            stdio("Codegraph", "/tools/codegraph"),
+            stdio("GitHub", "gh-mcp"),
+        ]);
+        assert!(first["mcpServers"]["codegraph"].is_object());
+
+        let second = deliver(&[stdio("GitHub", "gh-mcp")]);
+        assert!(second["mcpServers"]["github"].is_object());
+        assert!(
+            second["mcpServers"].get("codegraph").is_none(),
+            "dropped server survived into the next spawn: {second}"
+        );
+    }
+
+    #[test]
+    fn cursor_never_writes_over_a_tracked_config() {
+        // A repo that commits `.cursor/mcp.json` owns it. Skip delivery rather
+        // than leave a destructive, committable modification behind.
+        let root = tempfile::tempdir().unwrap();
+        let cwd = git_repo();
+        std::fs::create_dir_all(cwd.path().join(".cursor")).unwrap();
+        let original = r#"{"mcpServers": {"repo-tool": {"command": "repo"}}}"#;
+        std::fs::write(cwd.path().join(CURSOR_CONFIG_REL), original).unwrap();
+        std::process::Command::new("git")
+            .args(["add", CURSOR_CONFIG_REL])
+            .current_dir(cwd.path())
+            .status()
+            .unwrap();
+
+        let servers = vec![stdio("Codegraph", "/tools/codegraph")];
+        let delivery = cursor_mcp_delivery(&McpTarget {
+            servers: &servers,
+            sandbox_root: root.path(),
+            cwd: cwd.path(),
+        })
+        .unwrap();
+
+        // Nothing delivered, and the repo's file is byte-for-byte intact.
+        assert_eq!(delivery, McpDelivery::default());
+        assert_eq!(
+            std::fs::read_to_string(cwd.path().join(CURSOR_CONFIG_REL)).unwrap(),
+            original
+        );
     }
 
     #[test]
     fn cursor_writes_nothing_when_there_are_no_servers() {
         let root = tempfile::tempdir().unwrap();
-        let cwd = checkout();
+        let cwd = git_repo();
         let delivery = cursor_mcp_delivery(&McpTarget {
             servers: &[],
             sandbox_root: root.path(),
@@ -831,7 +881,7 @@ mod tests {
     #[test]
     fn opencode_config_goes_to_the_profile_dir_and_rides_an_env_var() {
         let root = tempfile::tempdir().unwrap();
-        let cwd = checkout();
+        let cwd = git_repo();
         let servers = vec![
             McpServerSnapshot {
                 name: "Codegraph".into(),
