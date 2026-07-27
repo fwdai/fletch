@@ -54,6 +54,13 @@ export type ChatItem =
       name: string;
       input: unknown;
       streaming?: boolean;
+      /** Scratch space for assembling `input` from stream deltas, present only
+       *  while `streaming`. `block` is the content-block index this call
+       *  occupies in the in-flight assistant message — Claude keys its
+       *  `input_json_delta` fragments by it — and `json` is the raw JSON text
+       *  accumulated so far, which `input` is the best-effort parse of.
+       *  Cleared when the finalized event lands. */
+      partial?: { block: number; json: string };
       /** Sub-conversation produced by a subagent spawned through this tool
        *  call (Claude's Task/Agent tool). The reducer routes sidechain events
        *  — those the SDK tags with `parent_tool_use_id === this id` — into a

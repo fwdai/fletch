@@ -5,7 +5,7 @@
 // addition of the sanitizer pass on user-message text and the resulting
 // slash_command / hook_output notices.
 
-import { asBlockList, asRecord } from "@/adapters/shared/json";
+import { asBlockList, asRecord, isRecord } from "@/adapters/shared/json";
 import {
   appendToolInputDelta,
   dedupAgainstLast,
@@ -83,12 +83,17 @@ function handleStreamEvent(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       return extendLastAssistant(prev, block.text);
     }
     if (block.type === "tool_use") {
+      // Stamp the content-block index so this call's `input_json_delta`
+      // fragments — which carry that index and nothing else identifying —
+      // can be routed back here rather than to whichever tool call happens
+      // to sit at the same ordinal in the log.
       return upsertToolCall(prev, {
         kind: "tool_call",
         id: String(block.id ?? ""),
         name: String(block.name ?? "tool"),
-        input: block.input ?? "",
+        input: isRecord(block.input) ? block.input : {},
         streaming: true,
+        partial: { block: typeof inner.index === "number" ? inner.index : -1, json: "" },
       });
     }
     return prev;
