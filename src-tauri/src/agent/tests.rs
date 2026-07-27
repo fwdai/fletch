@@ -608,3 +608,65 @@ fn cursor_locate_reads_from_the_per_agent_home() {
     let found = cursor_locate("sid-1", &checkout, &mut diag);
     assert_eq!(found, vec![transcript], "diag: {diag:?}");
 }
+
+/// Every provider whose MCP delivery produces argv must actually forward it in
+/// **both** launch paths.
+///
+/// This is a class of bug, not a one-off: the delivery builder and the arg
+/// builder live in different files, so a provider can emit `--approve-mcps`
+/// (or codex's `-c` overrides) and have the launch silently drop it, leaving
+/// its servers unusable with nothing failing. Cursor shipped exactly that —
+/// its delivery was re-enabled without restoring the `mcp_args` passthrough
+/// that had been reverted along with an earlier rollback.
+///
+/// Providers that deliver purely by environment (opencode's `OPENCODE_CONFIG`)
+/// legitimately return no argv, so they're skipped by construction rather than
+/// exempted by name.
+#[test]
+fn providers_forward_the_argv_their_mcp_delivery_produces() {
+    use crate::agent::capabilities::PER_TURN_AGENTS;
+    use crate::agent_profile::{McpServerSnapshot, McpTarget};
+
+    let servers = vec![McpServerSnapshot {
+        name: "Codegraph".into(),
+        transport: "stdio".into(),
+        command: "/tools/codegraph".into(),
+        ..Default::default()
+    }];
+
+    for desc in PER_TURN_AGENTS {
+        let Some(build) = desc.mcp else { continue };
+        let root = tempfile::tempdir().unwrap();
+        let delivery = build(&McpTarget {
+            servers: &servers,
+            sandbox_root: root.path(),
+            engine: crate::sandbox::EngineKind::SandboxExec,
+        })
+        .unwrap();
+        if delivery.args.is_empty() {
+            continue; // env-only delivery; nothing to forward
+        }
+
+        let turn = (desc.build_args)(&TurnArgs {
+            prompt: "hi",
+            mcp_args: &delivery.args,
+            ..Default::default()
+        });
+        let pty = (desc.pty_args)(Some("sid"), None, None, &delivery.args);
+
+        for arg in &delivery.args {
+            assert!(
+                turn.contains(arg),
+                "{}: per-turn argv drops MCP arg {arg:?}\n  delivery: {:?}\n  argv: {turn:?}",
+                desc.id,
+                delivery.args
+            );
+            assert!(
+                pty.contains(arg),
+                "{}: native-PTY argv drops MCP arg {arg:?}\n  delivery: {:?}\n  argv: {pty:?}",
+                desc.id,
+                delivery.args
+            );
+        }
+    }
+}

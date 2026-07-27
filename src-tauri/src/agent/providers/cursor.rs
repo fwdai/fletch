@@ -67,6 +67,7 @@ pub(crate) fn cursor_build_args(turn: &TurnArgs) -> Vec<String> {
         session_id,
         model,
         extra,
+        mcp_args,
         ..
     } = turn;
     let mut args: Vec<String> = vec![
@@ -76,6 +77,11 @@ pub(crate) fn cursor_build_args(turn: &TurnArgs) -> Vec<String> {
         "--force".into(),
         "--trust".into(),
     ];
+    // `--approve-mcps` from `agent_profile::cursor_mcp_delivery`. Without it the
+    // servers it wrote into the per-agent HOME sit at "needs approval" and never
+    // load, which a headless per-turn run can never resolve. Empty when the
+    // session has no servers.
+    args.extend_from_slice(mcp_args);
     push_opt(&mut args, "--resume", session_id);
     args.extend(model_args(model));
     // Prompt is positional and must come after options.
@@ -102,9 +108,12 @@ pub(crate) fn cursor_pty_args(
     session_id: Option<&str>,
     model: Option<&str>,
     _extra: Option<&str>,
-    _mcp_args: &[String],
+    mcp_args: &[String],
 ) -> Vec<String> {
     let mut args: Vec<String> = vec!["--force".into()];
+    // Same approval flag as the per-turn path, so switching into the native TUI
+    // keeps the tool set the Custom-view turns had.
+    args.extend_from_slice(mcp_args);
     args.extend(model_args(model));
     push_opt(&mut args, "--resume", session_id);
     args
