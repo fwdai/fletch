@@ -284,9 +284,9 @@ mod tests {
             );
         }
 
-        // Not delivered: pi and agy have no MCP surface at all, and cursor's
-        // is ambient + agent-writable (see `agent_profile`'s module doc). The
-        // snapshot is ignored rather than mis-delivered.
+        // Not delivered: pi has no MCP surface at all; cursor's and agy's are
+        // ambient/user-global with no per-session scoping (see `agent_profile`'s
+        // module doc). The snapshot is ignored rather than mis-delivered.
         for provider in ["cursor", "pi", "antigravity"] {
             assert!(
                 mcp_delivery(provider).is_none(),

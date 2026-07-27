@@ -264,6 +264,27 @@ mod tests {
     }
 
     #[test]
+    fn indexing_and_injection_share_one_provider_condition() {
+        // `provision_codegraph_index` gates on the same `mcp_delivery` resolver
+        // as `should_inject`. If they ever diverge we would either index for an
+        // agent that can't query it (wasted clone + parse per spawn) or inject a
+        // server with no index behind it. Pinning the shared resolver here keeps
+        // the two honest without the supervisor needing a test harness.
+        for provider in ["claude", "codex", "opencode"] {
+            assert!(
+                crate::agent::mcp_delivery(provider).is_some(),
+                "{provider} lost MCP delivery; indexing would silently stop too"
+            );
+        }
+        for provider in ["cursor", "pi", "antigravity"] {
+            assert!(
+                crate::agent::mcp_delivery(provider).is_none(),
+                "{provider} gained MCP delivery; it must be indexed again too"
+            );
+        }
+    }
+
+    #[test]
     fn inject_reports_nothing_for_a_provider_without_mcp() {
         // End to end through the globals: whatever the toggle and the binary
         // say, a provider with no MCP surface gets neither the server nor the

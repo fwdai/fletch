@@ -34,8 +34,13 @@
 //!   so occupying them safely needs an explicit ownership marker *and* a
 //!   sandbox deny on the global file — sandbox-policy work that belongs in its
 //!   own change, not here.
-//! - pi/antigravity — no MCP surface at all (pi ships an extension system
-//!   instead, agy only plugins), so the snapshot is not consumed.
+//! - pi — no MCP surface at all; it ships an extension system instead
+//!   (`--extension`, `pi install`) and documents the omission as deliberate.
+//! - antigravity — *does* speak MCP, via `~/.gemini/config/mcp_config.json` and
+//!   `plugins/<name>/mcp_config.json`, but every path it accepts is user-global
+//!   with no project or env override. That can't express a per-session snapshot
+//!   and would leak into the user's own agy, so it's unwired for the same
+//!   reason as cursor rather than for lack of a surface.
 //!
 //! Both snapshots live on the session row (like `sessions.instructions`), so a
 //! running or resumed session keeps the exact profile it spawned with even if

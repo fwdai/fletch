@@ -82,10 +82,21 @@ pub(super) async fn provision_codegraph_index(
     checkout: PathBuf,
     base_sha: Option<String>,
     engine: EngineKind,
+    provider: &str,
 ) {
     use crate::codegraph;
 
-    if !codegraph::enabled() || engine == EngineKind::Docker {
+    // Mirror `codegraph::should_inject`'s provider condition: an agent whose CLI
+    // has no MCP delivery builder never receives the codegraph server, so it can
+    // never query the index we would build for it. Cloning the mirror, indexing
+    // it, and copying the db into that checkout is pure waste — minutes of
+    // background git and parse work per spawn for a tool the agent doesn't have.
+    // Resolved through the same `agent::mcp_delivery` the injection gate uses, so
+    // wiring a provider's MCP delivery automatically re-enables its indexing.
+    if !codegraph::enabled()
+        || engine == EngineKind::Docker
+        || crate::agent::mcp_delivery(provider).is_none()
+    {
         return;
     }
     let mirror = match codegraph::mirror_dir(&project_id, &source_repo) {
@@ -399,6 +410,7 @@ impl Supervisor {
         let app_for_task = app.clone();
         let id_for_task = agent_id.clone();
         let project_id_for_task = record.project_id.clone();
+        let provider_for_task = record.provider.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
@@ -473,6 +485,7 @@ impl Supervisor {
                 primary_checkout.clone(),
                 base_sha.clone(),
                 engine_kind,
+                &provider_for_task,
             )
             .await;
 
@@ -623,6 +636,7 @@ impl Supervisor {
             checkout.clone(),
             base_sha.clone(),
             stamped_engine(&record),
+            &record.provider,
         )
         .await;
 

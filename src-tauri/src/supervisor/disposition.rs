@@ -195,6 +195,7 @@ impl Supervisor {
                 checkout.clone(),
                 Some(tip_sha.to_string()),
                 stamped_engine(&record),
+                &record.provider,
             )
             .await;
 
