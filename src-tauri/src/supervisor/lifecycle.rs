@@ -856,11 +856,15 @@ impl Supervisor {
 
         // Dynamically fold the codegraph MCP server into the session's snapshot
         // for this launch, when code indexing is on, the engine isn't Docker,
-        // and the binary is installed. Injected here (not persisted onto the
-        // session snapshot) so this runs identically for fresh spawns and
-        // resumes and the toggle's *current* state always wins. A user-defined
-        // "codegraph" server suppresses injection (see `codegraph`).
-        let mcp_servers = crate::codegraph::inject_mcp_server(&record.mcp_servers, engine);
+        // the binary is installed, and this provider can actually receive an
+        // MCP server at all. Injected here (not persisted onto the session
+        // snapshot) so this runs identically for fresh spawns and resumes and
+        // the toggle's *current* state always wins. A user-defined "codegraph"
+        // server suppresses injection (see `codegraph`).
+        let crate::codegraph::McpInjection {
+            servers: mcp_servers,
+            codegraph_available,
+        } = crate::codegraph::inject_mcp_server(&record.mcp_servers, engine, &record.provider);
 
         // Materialize the session's skill snapshot under the writable root and
         // fold its index into the injected instructions. Recomputed on every
@@ -876,11 +880,15 @@ impl Supervisor {
             (Some(note), None) => Some(note),
             (None, brief) => brief.map(str::to_string),
         };
+        // The codegraph playbook rides the same suffix, gated on the server
+        // having really landed above — so an agent is only ever told to prefer
+        // the tool in a session that actually has it.
         let instructions = crate::agent_profile::effective_instructions(
             brief.as_deref(),
             record.forked_context.as_deref(),
             &record.skills,
             &sandbox_root,
+            codegraph_available,
         )?;
         // MCP delivery is resolved per provider at spawn from this snapshot
         // (`agent::mcp_delivery`), so there's no provider fork here: the spawn

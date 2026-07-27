@@ -255,19 +255,29 @@ pub fn materialize_skills(skills: &[SkillSnapshot], sandbox_root: &Path) -> Resu
     Ok(Some(index.trim_end().to_string()))
 }
 
-/// The session's effective instruction suffix: the custom agent's standing
-/// brief, then a forked session's carried-conversation digest, then the
-/// materialized skill index. Each is optional; `None` when all are absent —
-/// which keeps every `instructions.rs` helper a no-op, exactly like today.
+/// The session's effective instruction suffix: the codegraph playbook (when
+/// this session got the server), then the custom agent's standing brief, then a
+/// forked session's carried-conversation digest, then the materialized skill
+/// index. Each is optional; `None` when all are absent — which keeps every
+/// `instructions.rs` helper a no-op, exactly like today.
 ///
 /// `brief` and `forked_context` are stored in separate session columns (so the
 /// user brief is never parsed apart from an injected block) but are injected
 /// together here, brief first.
+///
+/// `codegraph_available` says whether the codegraph MCP server actually landed
+/// in this session's delivery (`codegraph::McpInjection::codegraph_available`)
+/// — not whether the setting is on. It gates the one *conditional* Fletch
+/// block, which goes first so it sits with the other app-managed guidance the
+/// global text ends with, ahead of the user's role brief. Passing `false` for
+/// a provider that can't receive MCP is the whole point: never advertise a tool
+/// the agent wasn't given.
 pub fn effective_instructions(
     brief: Option<&str>,
     forked_context: Option<&str>,
     skills: &[SkillSnapshot],
     sandbox_root: &Path,
+    codegraph_available: bool,
 ) -> Result<Option<String>> {
     let index = materialize_skills(skills, sandbox_root)?;
     let clean = |s: Option<&str>| {
@@ -275,7 +285,10 @@ pub fn effective_instructions(
             .filter(|s| !s.is_empty())
             .map(str::to_string)
     };
-    let parts: Vec<String> = [clean(brief), clean(forked_context), index]
+    let codegraph = codegraph_available
+        .then(crate::instructions::codegraph_block)
+        .flatten();
+    let parts: Vec<String> = [codegraph, clean(brief), clean(forked_context), index]
         .into_iter()
         .flatten()
         .collect();
@@ -504,24 +517,55 @@ mod tests {
         let skills = vec![skill("Deploy", "cutting a release", "steps")];
 
         // Brief only.
-        let brief_only = effective_instructions(Some("Be terse."), None, &[], dir.path()).unwrap();
+        let brief_only =
+            effective_instructions(Some("Be terse."), None, &[], dir.path(), false).unwrap();
         assert_eq!(brief_only.as_deref(), Some("Be terse."));
 
         // Both: brief first, index after.
-        let both = effective_instructions(Some("Be terse."), None, &skills, dir.path())
+        let both = effective_instructions(Some("Be terse."), None, &skills, dir.path(), false)
             .unwrap()
             .unwrap();
         assert!(both.starts_with("Be terse.\n\n## Skills"));
 
         // Neither → None, so instructions.rs helpers stay no-ops.
         assert_eq!(
-            effective_instructions(None, None, &[], dir.path()).unwrap(),
+            effective_instructions(None, None, &[], dir.path(), false).unwrap(),
             None
         );
         assert_eq!(
-            effective_instructions(Some("  "), None, &[], dir.path()).unwrap(),
+            effective_instructions(Some("  "), None, &[], dir.path(), false).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn codegraph_block_rides_only_when_the_server_was_injected() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Not injected: no mention of the tool, and an otherwise-empty session
+        // still injects nothing at all.
+        let absent = effective_instructions(Some("Be terse."), None, &[], dir.path(), false)
+            .unwrap()
+            .unwrap();
+        assert!(!absent.contains("codegraph_explore"), "{absent}");
+        assert_eq!(
+            effective_instructions(None, None, &[], dir.path(), false).unwrap(),
+            None
+        );
+
+        // Injected: the block leads, ahead of the user's brief.
+        let present = effective_instructions(Some("Be terse."), None, &[], dir.path(), true)
+            .unwrap()
+            .unwrap();
+        assert!(present.contains("codegraph_explore"), "{present}");
+        assert!(present.ends_with("\n\nBe terse."), "{present}");
+
+        // It stands on its own too — a plain session with the server still
+        // learns about it.
+        let alone = effective_instructions(None, None, &[], dir.path(), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(Some(alone), crate::instructions::codegraph_block());
     }
 
     #[test]
@@ -530,18 +574,25 @@ mod tests {
         let skills = vec![skill("Deploy", "cutting a release", "steps")];
 
         // Forked context alone (no brief) still injects.
-        let ctx_only = effective_instructions(None, Some("prior convo"), &[], dir.path()).unwrap();
+        let ctx_only =
+            effective_instructions(None, Some("prior convo"), &[], dir.path(), false).unwrap();
         assert_eq!(ctx_only.as_deref(), Some("prior convo"));
 
         // All three compose in order: brief, forked context, skill index.
-        let all =
-            effective_instructions(Some("Be terse."), Some("prior convo"), &skills, dir.path())
-                .unwrap()
-                .unwrap();
+        let all = effective_instructions(
+            Some("Be terse."),
+            Some("prior convo"),
+            &skills,
+            dir.path(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
         assert!(all.starts_with("Be terse.\n\nprior convo\n\n## Skills"));
 
         // Blank forked context is dropped like a blank brief.
-        let blank = effective_instructions(Some("Be terse."), Some("  "), &[], dir.path()).unwrap();
+        let blank =
+            effective_instructions(Some("Be terse."), Some("  "), &[], dir.path(), false).unwrap();
         assert_eq!(blank.as_deref(), Some("Be terse."));
     }
 

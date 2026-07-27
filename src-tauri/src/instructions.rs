@@ -17,7 +17,7 @@
 //!   conversation, so later turns don't re-send it (no per-turn token tax, no
 //!   accumulating copies).
 //!
-//! The injected text has three layers: editable general guidance
+//! The injected text has three unconditional layers: editable general guidance
 //! (`instructions/system_prompt.md`), a Fletch-managed protocol block
 //! (`instructions/rpc_protocol.md`) that documents the file-RPC transport the
 //! app exposes (see `rpc.rs`), and Fletch-managed feature playbooks (for
@@ -26,6 +26,12 @@
 //! sync with the op allowlist / trigger names; the general layer is yours to
 //! edit. Blank all files to disable injection entirely — every helper below
 //! no-ops when the combined text is empty.
+//!
+//! One layer is *conditional* and therefore not part of [`text`]:
+//! [`codegraph_block`], which only makes sense for a session that actually got
+//! the codegraph MCP server. It rides the per-session suffix instead (see
+//! `agent_profile::effective_instructions`), which lands right after this
+//! block in all three deliveries above.
 
 /// Editable general guidance. Edit the file, not this constant.
 const SYSTEM_PROMPT: &str = include_str!("instructions/system_prompt.md");
@@ -40,6 +46,16 @@ const RPC_INSTRUCTIONS: &str = include_str!("instructions/rpc_protocol.md");
 /// `components/RightPanel/delegation.ts`).
 const GIT_ACTIONS: &str = include_str!("instructions/git_actions.md");
 
+/// Fletch-managed codegraph playbook: prefer the injected code-index MCP
+/// server over a grep/read loop, and tell delegated subagents to do the same.
+///
+/// Deliberately *not* in [`text`]. The codegraph server reaches only some
+/// sessions — indexing off, a Docker engine, a missing binary, a user-defined
+/// `codegraph` server, or a provider with no MCP surface at all each suppress
+/// it (see `codegraph::inject_mcp_server`) — and instructing an agent to call
+/// a tool it was never given is worse than staying quiet.
+const CODEGRAPH: &str = include_str!("instructions/codegraph.md");
+
 /// The combined instruction text, trimmed. Empty when every source is
 /// blank/whitespace, which makes every injection helper a no-op.
 pub fn text() -> String {
@@ -50,6 +66,14 @@ pub fn text() -> String {
         .collect::<Vec<_>>()
         .join("\n\n");
     combined
+}
+
+/// The codegraph guidance block, for sessions where the server was actually
+/// injected. `None` when the file is blank, so blanking every file under
+/// `instructions/` still disables injection entirely.
+pub fn codegraph_block() -> Option<String> {
+    let block = CODEGRAPH.trim();
+    (!block.is_empty()).then(|| block.to_string())
 }
 
 /// Per-agent workspace-layout note for multi-repo projects, composed ahead of
@@ -190,6 +214,23 @@ mod tests {
         let t = text();
         assert!(t.contains("[app-action]"), "playbook block missing");
         assert!(t.contains("### commit"), "commit playbook missing");
+    }
+
+    #[test]
+    fn codegraph_block_is_conditional_and_names_the_tool() {
+        // Never in the unconditional text: a session without the server must
+        // not be told to call it.
+        assert!(!text().contains("codegraph_explore"));
+
+        let block = codegraph_block().expect("shipped default is non-empty");
+        assert!(block.contains("codegraph_explore"), "block: {block}");
+        // The tool is namespaced differently per provider surface, so the
+        // agent has to be able to recognize both renderings.
+        assert!(block.contains("mcp__codegraph__codegraph_explore"));
+        assert!(block.contains("codegraph.codegraph_explore"));
+        // The whole point of the block: subagents don't inherit it, so the
+        // main agent must be told to pass it down.
+        assert!(block.to_lowercase().contains("subagent"), "block: {block}");
     }
 
     #[test]
