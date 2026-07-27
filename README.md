@@ -15,18 +15,19 @@ Run Claude Code, Codex, Cursor, OpenCode and more in parallel, each in an isolat
 ![Platform: macOS 13+](https://img.shields.io/badge/Platform-macOS%2013%2B-lightgrey.svg)
 ![Built with Tauri](https://img.shields.io/badge/Built%20with-Tauri%202-24C8DB.svg)
 
+<img src="docs/fletch-demo.gif" alt="Seven agents running in parallel in Fletch, each on its own task and branch" width="900">
+
+<sub>[Watch the full walkthrough →](https://fletch.sh/fletch-demo.mp4)</sub>
+
 </div>
 
-<!-- DEMO VIDEO: GitHub only renders an inline player for videos uploaded through
-     its own web UI. To embed the demo: edit this file on github.com and drag
-     fletch-demo-github.mp4 (in the repo root, untracked; <10 MB) onto the blank
-     line below this comment. GitHub uploads it and inserts a
-     github.com/user-attachments/... URL. Keep that URL on its own line, exactly
-     here (outside the <div> above, or the player won't render), then delete the
-     screenshot above. -->
-
-https://github.com/user-attachments/assets/a8fb53d6-d893-4382-894a-fb173cd29f10
-
+<!-- The GIF above is the demo's opening beat; the full 42s film lives on the site.
+     A GIF autoplays and renders everywhere (mirrors, forks, VS Code preview),
+     which the previous GitHub-hosted mp4 player did not — it needed a click and
+     only worked on github.com. To restore that embed instead, drop this URL back
+     on its own line outside the <div> above (it can't be regenerated from the
+     CLI — GitHub only mints these on web-UI upload):
+     https://github.com/user-attachments/assets/a8fb53d6-d893-4382-894a-fb173cd29f10 -->
 
 ---
 
