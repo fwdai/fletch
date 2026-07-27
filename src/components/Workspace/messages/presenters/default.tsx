@@ -1,12 +1,11 @@
 import type { ToolPresenter } from "./types";
-import { firstLineOf, renderToolResult, stringifyInput, ToolBlock } from "./util";
+import { describeInput, renderToolResult, stringifyInput, ToolBlock } from "./util";
 
-/** Fallback presenter for tools without a dedicated implementation.
- *  Mirrors the prior generic ToolUseItem/ToolResultItem behavior:
- *  one-line JSON-summary in collapsed view, full input + result when
- *  expanded. */
+/** Fallback presenter for tools without a dedicated implementation:
+ *  a readable one-line rendering of the input when collapsed, the exact
+ *  input JSON plus the result when expanded. */
 export const defaultPresenter: ToolPresenter = {
-  summary: (call) => firstLineOf(stringifyInput(call.input), 120),
+  summary: (call) => describeInput(call.input, 120),
   expanded: (call, result) => (
     <>
       <ToolBlock label="input">{stringifyInput(call.input, 2)}</ToolBlock>

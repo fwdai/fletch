@@ -110,6 +110,49 @@ export function getCommandField(input: unknown, field = "command"): string {
   return "";
 }
 
+/** One-line, punctuation-free view of an arbitrary tool input, for tools with
+ *  no dedicated presenter. Dumping `JSON.stringify` there spent the row's whole
+ *  width on braces and quotes, so instead: a lone field shows just its value
+ *  (`{query: "…"}` reads as the query), several show `key value` pairs. The
+ *  expanded view still carries the exact JSON. */
+export function describeInput(input: unknown, max = 120): string {
+  if (input == null) return "";
+  if (typeof input !== "object") return firstLineOf(compactValue(input), max);
+  if (Array.isArray(input)) return firstLineOf(compactValue(input), max);
+  const entries = compactEntries(input as Record<string, unknown>);
+  if (entries.length === 0) return "";
+  if (entries.length === 1) return firstLineOf(entries[0][1], max);
+  return firstLineOf(entries.map(([k, v]) => `${k} ${v}`).join(" · "), max);
+}
+
+/** Compact every field, keeping only those that render to something. Emptiness
+ *  is judged *after* compacting, so a field that contributes nothing but its
+ *  own key — `null`, `""`, `[]`, or an object whose fields are all empty —
+ *  drops out at any depth. Note `0` and `false` compact to "0"/"false" and are
+ *  kept: they're values the tool was actually called with. */
+function compactEntries(obj: Record<string, unknown>): [key: string, text: string][] {
+  const out: [string, string][] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    const text = compactValue(value);
+    if (text) out.push([key, text]);
+  }
+  return out;
+}
+
+/** Flatten one value to inline text. Whitespace collapses so a multi-line
+ *  string (a prompt, a patch) stays on the summary's single line. */
+function compactValue(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value.replace(/\s+/g, " ").trim();
+  if (Array.isArray(value)) return value.map(compactValue).filter(Boolean).join(", ");
+  if (typeof value === "object") {
+    return compactEntries(value as Record<string, unknown>)
+      .map(([key, text]) => `${key} ${text}`)
+      .join(" ");
+  }
+  return String(value);
+}
+
 /** Truncate at the first newline, with an ellipsis if there's more. */
 export function firstLineOf(text: string, max = 120): string {
   const nl = text.indexOf("\n");
