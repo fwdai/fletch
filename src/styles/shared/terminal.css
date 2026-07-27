@@ -5,6 +5,10 @@
   position: relative;
   flex: 1;
   min-height: 0;
+  /* Matches the resolved xterm background (--bg-1, see util/xtermTheme.ts) so
+     the host's inset gap reads as part of the terminal rather than as a frame
+     around it. */
+  background: var(--bg-1);
 }
 .xterm-host {
   position: absolute;

@@ -50,11 +50,12 @@ pub enum AgentStatus {
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
 pub enum AgentView {
-    /// Structured chat UI rendered from claude's stream-json events.
+    /// Structured chat UI rendered from the agent's stream-json events.
     #[default]
     Custom,
-    /// Read-only xterm showing claude's native TUI, with our input box
-    /// overlaid on top of the claude input prompt.
+    /// The agent's own interactive TUI, streamed into an xterm that owns stdin
+    /// too — keystrokes go straight to the PTY. App-originated messages are
+    /// typed in as a line (see `agent::spawn::pty_input_line`).
     Native,
 }
 

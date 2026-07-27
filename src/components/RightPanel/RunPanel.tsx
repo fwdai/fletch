@@ -12,7 +12,6 @@ import {
 } from "@/components/RunConfig";
 import { useAppStore } from "@/store";
 import { useXterm } from "@/util/useXterm";
-import { resolveTheme } from "@/util/xtermTheme";
 import { RunSettingsSheet } from "./RunSettingsSheet";
 
 // Detected run config replaces the old hardcoded defaults. The backend
@@ -96,7 +95,6 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     {
       fontSize: 12,
       lineHeight: 1.2,
-      theme: resolveTheme(),
       scrollback: 20000,
       // Read-only log view: no input, no blinking input caret.
       disableStdin: true,
@@ -208,19 +206,6 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
     [agent.id, setRunPhase],
     { autoFocus: false },
   );
-
-  // Re-apply the xterm theme on dark ↔ light switches without recreating the
-  // terminal (same approach as TermPanel).
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      if (termRef.current) termRef.current.options.theme = resolveTheme();
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
 
   // What each row inherits: the project setting when one exists, else the
   // detected value. Agent-level overrides compare against these, so a value

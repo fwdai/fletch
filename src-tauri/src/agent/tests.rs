@@ -9,8 +9,32 @@ use super::providers::codex::{codex_build_args, codex_pty_args, codex_session_id
 use super::providers::cursor::{cursor_build_args, cursor_pty_args, cursor_session_id};
 use super::providers::opencode::{opencode_build_args, opencode_pty_args, opencode_session_id};
 use super::providers::pi::{pi_build_args, pi_pty_args, pi_session_id, pi_session_slug};
+use super::spawn::pty_input_line;
 use super::transcript::{jsonl_files_ending, records_with_id};
 use super::*;
+
+// ── native (PTY) view input ───────────────────────────────────────────
+
+#[test]
+fn pty_input_line_submits_one_line_per_message() {
+    // A TUI reads a bare newline as "submit", so an app-sent multi-line prompt
+    // (a git-action trigger, a coalesced follow-up) must arrive as ONE turn —
+    // otherwise each line lands as its own truncated turn.
+    let line = pty_input_line("first\nsecond\r\nthird", &[]);
+    assert_eq!(line, "first second third\r");
+    assert_eq!(line.matches('\r').count(), 1, "exactly one submit");
+}
+
+#[test]
+fn pty_input_line_appends_attachment_paths() {
+    let line = pty_input_line("look at this", &["/tmp/a.png".to_string()]);
+    assert_eq!(line, "look at this /tmp/a.png\r");
+}
+
+#[test]
+fn pty_input_line_submits_even_when_empty() {
+    assert_eq!(pty_input_line("", &[]), "\r");
+}
 
 // ── transcript readers ────────────────────────────────────────────────
 

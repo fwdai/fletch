@@ -263,7 +263,10 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     set({ busy: true, lastError: null });
     const turnId = crypto.randomUUID();
     try {
-      const view = get().viewMode;
+      // Every agent starts in the custom view. Native is entered per agent via
+      // the header toggle, never as a spawn default — a per-turn provider has
+      // no session id before its first turn, and the backend's native path
+      // requires one, so a native spawn would fail and tear the checkout down.
       // Resolve the selected custom agent's standing brief. Snapshotted at spawn
       // (passed by value, not by id) so the running agent is unaffected if the
       // custom agent is later edited or deleted. Empty/blank instructions inject
@@ -288,10 +291,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // A bodied provider command (codex prompt) expands app-side: `codex
       // exec` takes the prompt as a positional arg and never resolves
       // `/name`. Skills win name clashes (resolved above, mirroring the
-      // menu's precedence), and the native view is exempt — the provider's
-      // own TUI expands the typed command there. Discovery is awaited so a
-      // spawn typed straight into a fresh composer still sees disk prompts.
-      if (view === "custom" && !invocation && text.startsWith("/")) {
+      // menu's precedence). Discovery is awaited so a spawn typed straight
+      // into a fresh composer still sees disk prompts.
+      if (!invocation && text.startsWith("/")) {
         await discoverCommands(provider, draft.repoPath);
         prompt = expandSlashCommand(provider, text, draft.repoPath) ?? prompt;
       }
@@ -306,7 +308,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // spawn (claude reads it as `--effort`; per-turn agents re-read it from
       // the record on each turn), so it never rides individual messages.
       const rec = await api.spawnAgent(
-        view,
+        "custom",
         draft.repoPath,
         provider,
         draft.name,
@@ -324,9 +326,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // closes it (backend appends `Closes #N` to the primary repo's PR).
         draft.issueRef,
       );
-      // Apply the selection, draft cleanup and custom-view log seed immediately,
-      // ahead of the guarded workspace refresh, so this user-intent state can
-      // never be dropped if a concurrent refresh supersedes ours.
+      // Apply the selection, draft cleanup and log seed immediately, ahead of
+      // the guarded workspace refresh, so this user-intent state can never be
+      // dropped if a concurrent refresh supersedes ours.
       set((state) => {
         const { [id]: _droppedDraft, ...restComposerDrafts } = state.composerDrafts;
         const patches: Partial<AppState> = {
@@ -334,28 +336,20 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
           drafts: state.drafts.filter((d) => d.id !== id),
           activeDraftId: null,
           composerDrafts: restComposerDrafts,
-        };
-        if (view === "custom") {
-          patches.managedLogs = {
+          managedLogs: {
             ...state.managedLogs,
             [rec.id]: [
               attachments.length > 0
                 ? { kind: "user_message", text: prompt, attachments }
                 : { kind: "user_message", text: prompt },
             ],
-          };
-          patches.managedBusy = { ...state.managedBusy, [rec.id]: true };
-        }
+          },
+          managedBusy: { ...state.managedBusy, [rec.id]: true },
+        };
         return patches;
       });
       await refreshWorkspace(set);
-      if (view === "native") {
-        await sendWhenAgentReady(() =>
-          api.writeToAgent(rec.id, `${prompt.replace(/\r?\n/g, " ")}\r`),
-        );
-      } else {
-        await sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, attachments));
-      }
+      await sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, attachments));
     } catch (e) {
       const selected = get().selectedAgentId;
       set((state) => ({

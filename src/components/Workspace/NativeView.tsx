@@ -1,28 +1,26 @@
+import { open } from "@tauri-apps/plugin-shell";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { type AgentRecord, api } from "@/api";
+import { useTerminalSearch } from "@/components/ui/TerminalSearch";
 import { getOutputBuffer, registerOutputSink } from "@/pty/buffers";
 import { useXterm } from "@/util/useXterm";
 
-/** Fixed dark background for the native TUI view — used by both the xterm
- *  theme and the host slot so they never drift out of sync. */
-const NATIVE_BG = "#1a1c20";
-
-/** Native view: Claude's Ink TUI is streamed verbatim into xterm.
+/** Native view: the provider's own TUI is streamed verbatim into xterm.
  *  xterm owns stdin too, so slash commands, paste, arrows, escape, and
- *  other terminal interactions go straight to the PTY. */
+ *  other terminal interactions go straight to the PTY.
+ *
+ *  Theme comes from the app palette via `useXterm` (and follows dark/light
+ *  live), and the surface carries the same find + link affordances as the
+ *  right-rail shell. */
 export function NativeView({ agent }: { agent: AgentRecord }) {
+  const search = useTerminalSearch();
+
   const containerRef = useXterm(
-    {
-      fontSize: 13,
-      theme: {
-        background: NATIVE_BG,
-        foreground: "#e6e8eb",
-        cursor: "#e6e8eb",
-        cursorAccent: NATIVE_BG,
-        selectionBackground: "#3a3f4a",
-      },
-      scrollback: 5000,
-    },
+    { fontSize: 13, scrollback: 5000 },
     (term) => {
+      const detachSearch = search.attach(term);
+      term.loadAddon(new WebLinksAddon((_, url) => open(url)));
+
       const buffered = getOutputBuffer(agent.id);
       if (buffered && buffered.length > 0) term.write(buffered);
 
@@ -37,6 +35,7 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
       const unregister = registerOutputSink(agent.id, (bytes) => term.write(bytes));
 
       return () => {
+        detachSearch();
         unregister();
         onResize.dispose();
         onData.dispose();
@@ -46,8 +45,11 @@ export function NativeView({ agent }: { agent: AgentRecord }) {
   );
 
   return (
-    <div className="xterm-slot" style={{ background: NATIVE_BG }}>
-      <div ref={containerRef} className="xterm-host" style={{ inset: "8px 4px 8px 10px" }} />
-    </div>
+    <>
+      {search.bar}
+      <div className="xterm-slot">
+        <div ref={containerRef} className="xterm-host" style={{ inset: "8px 4px 8px 10px" }} />
+      </div>
+    </>
   );
 }

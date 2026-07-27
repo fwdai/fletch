@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import type { AgentRecord, AgentStatus, DiffStats } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -42,9 +41,9 @@ interface Props {
 export function WorkspaceHeader({ agent }: Props) {
   const switchView = useAppStore((s) => s.switchView);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id]);
-  // Native view is gated behind an experimental flag. While it's off, hide the
-  // switcher entirely; and if an agent was left in native mode when the flag
-  // flipped off, pull it back to the custom view so it can't get stranded.
+  // Native view is gated behind an experimental flag: while it's off the
+  // switcher is hidden, and Workspace renders any native-mode agent as chat so
+  // it can't get stranded behind a missing toggle.
   const nativeView = useAppStore((s) => s.features.nativeView);
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
@@ -61,22 +60,6 @@ export function WorkspaceHeader({ agent }: Props) {
   // diffstat and age (`+0 -0 · now`).
   const branch = agent.repos[0]?.branch ?? null;
   const age = formatAge(agent.created_at, now);
-
-  // Guard against an unbounded retry loop: switchInFlight is a dep, so a failed
-  // switch (view stays "native", switchInFlight falls back to false) would
-  // otherwise re-fire the effect forever. Attempt the forced switch at most
-  // once per agent; reset the guard once it's no longer stranded (the switch
-  // landed, or native got re-enabled) so a later off-flip can try again.
-  const forcedCustomFor = useRef<string | null>(null);
-  useEffect(() => {
-    if (nativeView || agent.view !== "native") {
-      forcedCustomFor.current = null;
-      return;
-    }
-    if (switchInFlight || forcedCustomFor.current === agent.id) return;
-    forcedCustomFor.current = agent.id;
-    void switchView(agent.id, "custom");
-  }, [nativeView, agent.view, agent.id, switchInFlight, switchView]);
 
   return (
     <div className="center-h flex-center">

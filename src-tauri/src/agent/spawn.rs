@@ -512,6 +512,9 @@ impl Agent {
     /// used only by per-turn runners, which bake them into that turn's argv.
     /// claude (Managed) ignores them — its config is fixed on the persistent
     /// process at spawn and changed via a session-preserving respawn instead.
+    /// The native (Pty) view has no structured input channel, so a message is
+    /// typed into the TUI exactly as a user would (see [`pty_input_line`]);
+    /// model/effort are likewise fixed on its running process.
     pub fn send_user_message(
         &self,
         text: &str,
@@ -524,7 +527,7 @@ impl Agent {
             Self::PerTurn(a) => a
                 .session
                 .send_user_message(text, attachments, model, effort),
-            Self::Pty(_) => Err(Error::Other("send_user_message called on pty agent".into())),
+            Self::Pty(a) => a.pty.write(pty_input_line(text, attachments).as_bytes()),
         }
     }
 
@@ -596,6 +599,24 @@ impl Agent {
             Self::PerTurn(a) => a.session.kill(),
         }
     }
+}
+
+/// Render an app-originated message as the keystrokes a user would type into an
+/// agent's TUI: one line, terminated by CR to submit.
+///
+/// Newlines are flattened to spaces because a TUI reads a bare LF/CR as "submit
+/// now" — an unflattened multi-line prompt would arrive as several truncated
+/// turns instead of one. Attachment paths are appended as text, which is what a
+/// user would type; there's no out-of-band attachment channel in a PTY, and
+/// dropping them silently would lose part of the message.
+pub(super) fn pty_input_line(text: &str, attachments: &[String]) -> String {
+    let mut line = text.replace("\r\n", "\n").replace(['\r', '\n'], " ");
+    for path in attachments {
+        line.push(' ');
+        line.push_str(path);
+    }
+    line.push('\r');
+    line
 }
 
 /// The agent binary handed to `launch_agent`, decided by the *resolved*

@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { type ITerminalOptions, Terminal } from "@xterm/xterm";
 import { type DependencyList, useEffect, useRef } from "react";
+import { resolveTheme } from "./xtermTheme";
 import "@xterm/xterm/css/xterm.css";
 
 /** Options shared by every terminal in the app; callers override per use. */
@@ -29,6 +30,11 @@ const XTERM_BASE_OPTIONS: ITerminalOptions = {
  *  `hostOptions.autoFocus` (default true) focuses the terminal after mount.
  *  Read-only surfaces (e.g. a log view) pass false so mounting doesn't pull
  *  keyboard focus away from the editor.
+ *
+ *  Theming is owned here: every terminal in the app renders the current
+ *  palette (`resolveTheme`) and re-resolves it live when the theme or accent
+ *  changes, so no caller has to wire its own observer. A caller that passes
+ *  `options.theme` pins its own palette and opts out of that reactivity.
  */
 export function useXterm(
   options: ITerminalOptions,
@@ -43,7 +49,9 @@ export function useXterm(
     const el = containerRef.current;
     if (!el) return;
 
-    const term = new Terminal({ ...XTERM_BASE_OPTIONS, ...options });
+    // The app palette sits between the shared base and the caller's overrides,
+    // so passing `theme` still wins (and pins it — see the observer below).
+    const term = new Terminal({ ...XTERM_BASE_OPTIONS, theme: resolveTheme(), ...options });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
@@ -59,6 +67,20 @@ export function useXterm(
       term.loadAddon(webgl);
     } catch {
       // WebGL unavailable — DOM renderer remains in use
+    }
+
+    // Re-resolve the palette when the app flips dark↔light (a class swap on
+    // <html>) or the accent changes (CSS vars set inline on the same element).
+    // Skipped when the caller pinned its own theme.
+    let themeObserver: MutationObserver | undefined;
+    if (options.theme === undefined) {
+      themeObserver = new MutationObserver(() => {
+        term.options.theme = resolveTheme();
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class", "style"],
+      });
     }
 
     const cleanup = onReady(term);
@@ -93,6 +115,7 @@ export function useXterm(
       cancelAnimationFrame(initialFit);
       if (resizeTimer) clearTimeout(resizeTimer);
       ro.disconnect();
+      themeObserver?.disconnect();
       cleanup?.();
       // Dispose the WebGL renderer BEFORE the terminal. Tearing it down after
       // the core is gone dereferences a disposed _core._store and throws

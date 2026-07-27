@@ -26,6 +26,7 @@ export function Workspace() {
   const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const toggleLeft = useAppStore((s) => s.toggleLeft);
   const missionControl = useAppStore((s) => s.features.missionControl);
+  const nativeView = useAppStore((s) => s.features.nativeView);
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
   // Only surface the draft while its repo is still pinned; a draft stranded on a
@@ -66,7 +67,16 @@ export function Workspace() {
       <WorkspaceHeader agent={agent} />
       {agent.status === "error" && <CrashBanner agent={agent} />}
       <SyncHealthBanner agentId={agent.id} />
-      {agent.view === "native" ? <NativeBody agent={agent} /> : <ChatView agent={agent} />}
+      {/* The flag gates the *presentation*, not the record: an agent left in
+          native mode when the flag flips off renders as chat (its transcript
+          is synced either way) instead of being force-switched, which would
+          kill and respawn its process — and could resurrect a stopped one.
+          Flipping the flag back on restores the terminal. */}
+      {agent.view === "native" && nativeView ? (
+        <NativeBody agent={agent} />
+      ) : (
+        <ChatView agent={agent} />
+      )}
     </div>
   );
 }
@@ -200,7 +210,7 @@ function SyncHealthBanner({ agentId }: { agentId: string }) {
 
 function NativeBody({ agent }: { agent: AgentRecord }) {
   return (
-    <div className="chat" style={{ background: "#1a1c20" }}>
+    <div className="chat">
       <NativeView agent={agent} />
     </div>
   );

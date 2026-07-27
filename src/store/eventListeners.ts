@@ -53,7 +53,6 @@ import {
   parseReviewDismissed,
   parseSandboxEngine,
   type ThemeMode,
-  type WorkspaceView,
 } from "@/storage/preferences";
 import { getAllSettings } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
@@ -126,7 +125,6 @@ export const hydrateSettings = async (set: AppSet) => {
       newDraftModel,
       newDraftCustomAgentId,
       lastRepoPath: s.lastRepoPath || undefined,
-      viewMode: (s.viewMode as WorkspaceView) || "custom",
       gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
       onboardingComplete: s.onboardingComplete === "true",
       // Telemetry is opt-out: only an explicit "false" disables it. The key is

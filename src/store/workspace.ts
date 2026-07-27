@@ -23,7 +23,6 @@ import {
   unsupportedManagedCommand,
 } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
-import { setSetting } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { forkContextDigest } from "./forkDigest";
 import { interruptedAgents } from "./interrupted";
@@ -579,8 +578,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       if (view === "custom") {
         await get().loadHistoryTranscript(id);
       }
-      set({ viewMode: view });
-      setSetting("viewMode", view);
     } catch (e) {
       set({ lastError: String(e) });
     } finally {
