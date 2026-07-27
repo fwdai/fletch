@@ -25,7 +25,17 @@
 //!   `--strict-mcp-config` (our snapshot is the *only* MCP source, so on-disk
 //!   user/project MCP config can't ride along).
 //! - codex — `-c mcp_servers.<key>.…` TOML config overrides (stdio only).
-//! - cursor/opencode/pi/antigravity — not yet wired.
+//! - opencode — a `mcp`-only config in the profile dir, pointed at by
+//!   `OPENCODE_CONFIG`; opencode merges it over the user's own config itself.
+//! - cursor — deliberately unwired. cursor-agent reads MCP config only from
+//!   `<cwd>/.cursor/mcp.json` and `~/.cursor/mcp.json`: ambient, shared paths
+//!   with no per-invocation override, and its only approval control is the
+//!   blanket `--approve-mcps`. Both paths are writable by the sandboxed agent,
+//!   so occupying them safely needs an explicit ownership marker *and* a
+//!   sandbox deny on the global file — sandbox-policy work that belongs in its
+//!   own change, not here.
+//! - pi/antigravity — no MCP surface at all (pi ships an extension system
+//!   instead, agy only plugins), so the snapshot is not consumed.
 //!
 //! Both snapshots live on the session row (like `sessions.instructions`), so a
 //! running or resumed session keeps the exact profile it spawned with even if
@@ -272,6 +282,42 @@ pub fn effective_instructions(
     Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
 }
 
+/// Pairs as a JSON string map — the shape `env`/`headers` take in every
+/// provider's config file.
+fn json_string_map(pairs: &[(String, String)]) -> serde_json::Map<String, serde_json::Value> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+        .collect()
+}
+
+/// The `{"<key>": {…}}` server map used verbatim by claude *and* cursor — both
+/// read a `mcpServers` object with `command`/`args`/`env` for stdio and
+/// `type: "http"` + `url`/`headers` for http. Keys are slugged and deduped so
+/// two servers with the same display name can't silently overwrite each other.
+fn mcp_servers_object(servers: &[McpServerSnapshot]) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    let mut used: Vec<String> = Vec::new();
+    for s in servers {
+        let key = dedupe(&slug(&s.name), &mut used, '-');
+        let entry = if s.is_stdio() {
+            serde_json::json!({
+                "command": s.command,
+                "args": s.args,
+                "env": json_string_map(&s.env),
+            })
+        } else {
+            serde_json::json!({
+                "type": "http",
+                "url": s.url,
+                "headers": json_string_map(&s.headers),
+            })
+        };
+        map.insert(key, entry);
+    }
+    serde_json::Value::Object(map)
+}
+
 /// Write claude's MCP config (`{"mcpServers": {…}}`) under the writable root
 /// and return its path for `--mcp-config`. `None` when no servers are attached.
 /// Generated from the session's snapshot on every spawn — never read from
@@ -284,32 +330,7 @@ pub fn write_claude_mcp_config(
     if servers.is_empty() {
         return Ok(None);
     }
-    let mut map = serde_json::Map::new();
-    let mut used: Vec<String> = Vec::new();
-    for s in servers {
-        let key = dedupe(&slug(&s.name), &mut used, '-');
-        let to_map = |pairs: &[(String, String)]| {
-            pairs
-                .iter()
-                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                .collect::<serde_json::Map<_, _>>()
-        };
-        let entry = if s.is_stdio() {
-            serde_json::json!({
-                "command": s.command,
-                "args": s.args,
-                "env": to_map(&s.env),
-            })
-        } else {
-            serde_json::json!({
-                "type": "http",
-                "url": s.url,
-                "headers": to_map(&s.headers),
-            })
-        };
-        map.insert(key, entry);
-    }
-    let config = serde_json::json!({ "mcpServers": serde_json::Value::Object(map) });
+    let config = serde_json::json!({ "mcpServers": mcp_servers_object(servers) });
     let dir = profile_dir(sandbox_root);
     ensure_real_dir(&dir)?;
     let path = dir.join("mcp-servers.json");
@@ -340,6 +361,71 @@ pub fn claude_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
 /// overrides, so there's no file to write and no environment to set.
 pub fn codex_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
     Ok(McpDelivery::from_args(codex_mcp_args(target.servers)))
+}
+
+/// One opencode `mcp` entry. `enabled` is explicit so a server we wrote is
+/// never left off by an inherited default.
+fn opencode_mcp_entry(s: &McpServerSnapshot) -> serde_json::Value {
+    if s.is_stdio() {
+        // opencode takes one `command` array (argv), not command + args.
+        let mut argv = vec![serde_json::Value::String(s.command.clone())];
+        argv.extend(s.args.iter().map(|a| serde_json::Value::String(a.clone())));
+        serde_json::json!({
+            "type": "local",
+            "command": argv,
+            "environment": json_string_map(&s.env),
+            "enabled": true,
+        })
+    } else {
+        serde_json::json!({
+            "type": "remote",
+            "url": s.url,
+            "headers": json_string_map(&s.headers),
+            "enabled": true,
+        })
+    }
+}
+
+/// OpenCode's [`McpDeliveryBuilder`]: write a config carrying only the `mcp`
+/// key into the profile dir and point opencode at it with `OPENCODE_CONFIG`.
+///
+/// opencode treats `OPENCODE_CONFIG` as an *additional* config layered into its
+/// normal resolution order, so it does the merging itself: the user's global
+/// config (providers, models, auth) and any project `opencode.json` all still
+/// apply, and we contribute only servers. That's why this writes to the profile
+/// dir and never touches the checkout — unlike cursor, nothing here can dirty a
+/// repo or collide with a tracked file.
+pub fn opencode_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
+    if target.servers.is_empty() {
+        return Ok(McpDelivery::default());
+    }
+    let mut map = serde_json::Map::new();
+    let mut used: Vec<String> = Vec::new();
+    for s in target.servers {
+        map.insert(
+            dedupe(&slug(&s.name), &mut used, '-'),
+            opencode_mcp_entry(s),
+        );
+    }
+    let config = serde_json::json!({
+        "$schema": "https://opencode.ai/config.json",
+        "mcp": serde_json::Value::Object(map),
+    });
+
+    let dir = profile_dir(target.sandbox_root);
+    ensure_real_dir(&dir)?;
+    let path = dir.join("opencode-mcp.json");
+    let body = serde_json::to_string_pretty(&config)
+        .map_err(|e| Error::Other(format!("failed to encode opencode MCP config: {e}")))?;
+    write_profile_file(&path, &body)?;
+
+    Ok(McpDelivery {
+        args: Vec::new(),
+        env: vec![(
+            "OPENCODE_CONFIG".into(),
+            path.to_string_lossy().into_owned(),
+        )],
+    })
 }
 
 /// Codex `-c mcp_servers.<key>.…` TOML overrides for the snapshot's stdio
@@ -564,6 +650,63 @@ mod tests {
         .unwrap();
         assert_eq!(delivery.args, codex_mcp_args(&servers));
         assert!(delivery.env.is_empty());
+    }
+
+    #[test]
+    fn opencode_config_goes_to_the_profile_dir_and_rides_an_env_var() {
+        let root = tempfile::tempdir().unwrap();
+        let servers = vec![
+            McpServerSnapshot {
+                name: "Codegraph".into(),
+                transport: "stdio".into(),
+                command: "/tools/codegraph".into(),
+                args: vec!["serve".into(), "--mcp".into()],
+                env: vec![("CODEGRAPH_TELEMETRY".into(), "0".into())],
+                ..Default::default()
+            },
+            McpServerSnapshot {
+                name: "Docs".into(),
+                transport: "http".into(),
+                url: "https://mcp.example.com".into(),
+                headers: vec![("Authorization".into(), "Bearer x".into())],
+                ..Default::default()
+            },
+        ];
+        let delivery = opencode_mcp_delivery(&McpTarget {
+            servers: &servers,
+            sandbox_root: root.path(),
+        })
+        .unwrap();
+
+        // Delivered by environment, not argv — opencode has no MCP flag.
+        let path = root.path().join(PROFILE_DIR).join("opencode-mcp.json");
+        assert!(delivery.args.is_empty());
+        assert_eq!(
+            delivery.env,
+            vec![("OPENCODE_CONFIG".to_string(), path.display().to_string())]
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // stdio collapses to one argv array, unlike claude's command + args.
+        assert_eq!(json["mcp"]["codegraph"]["type"], "local");
+        assert_eq!(
+            json["mcp"]["codegraph"]["command"],
+            serde_json::json!(["/tools/codegraph", "serve", "--mcp"])
+        );
+        assert_eq!(
+            json["mcp"]["codegraph"]["environment"]["CODEGRAPH_TELEMETRY"],
+            "0"
+        );
+        assert_eq!(json["mcp"]["codegraph"]["enabled"], true);
+        assert_eq!(json["mcp"]["docs"]["type"], "remote");
+        assert_eq!(json["mcp"]["docs"]["url"], "https://mcp.example.com");
+        assert_eq!(json["mcp"]["docs"]["headers"]["Authorization"], "Bearer x");
+        // Only the `mcp` key: anything else would override the user's config,
+        // which opencode merges ours into.
+        let obj = json.as_object().unwrap();
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["$schema", "mcp"]);
     }
 
     #[test]

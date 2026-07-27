@@ -1031,3 +1031,83 @@ mod tests {
         assert_eq!(map.get("café.ts"), Some(&(4, 0)));
     }
 }
+
+/// Add `entry` to a checkout's `.git/info/exclude` if it isn't already listed,
+/// so a host-generated file inside the worktree never shows up in `git status`.
+///
+/// `.git/info/exclude` (not `.gitignore`) because it's local to the checkout
+/// and untracked — Fletch never edits a file the repo ships. Idempotent: the
+/// entry is written once and re-checked on every later spawn.
+///
+/// Only hides files git isn't already tracking; a *tracked* path stays visible
+/// as a modification, which is the honest outcome — see `cursor_mcp_delivery`.
+pub fn ensure_git_exclude(checkout: &Path, entry: &str) -> Result<()> {
+    use crate::error::Error;
+
+    let info_dir = checkout.join(".git").join("info");
+    std::fs::create_dir_all(&info_dir)
+        .map_err(|e| Error::Other(format!("create .git/info: {e}")))?;
+    let exclude = info_dir.join("exclude");
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == entry) {
+        return Ok(());
+    }
+    let mut next = existing;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(entry);
+    next.push('\n');
+    std::fs::write(&exclude, next)
+        .map_err(|e| Error::Other(format!("write .git/info/exclude: {e}")))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod exclude_tests {
+    use super::*;
+
+    fn repo() -> tempfile::TempDir {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(td.path().join(".git").join("info")).unwrap();
+        td
+    }
+
+    #[test]
+    fn entry_is_appended_once_and_preserves_existing_lines() {
+        let td = repo();
+        let exclude = td.path().join(".git/info/exclude");
+        std::fs::write(&exclude, "# user's own\nbuild/\n").unwrap();
+
+        ensure_git_exclude(td.path(), ".cursor/mcp.json").unwrap();
+        ensure_git_exclude(td.path(), ".cursor/mcp.json").unwrap();
+
+        let body = std::fs::read_to_string(&exclude).unwrap();
+        assert_eq!(body.matches(".cursor/mcp.json").count(), 1, "{body}");
+        assert!(
+            body.contains("# user's own"),
+            "clobbered user lines: {body}"
+        );
+        assert!(body.contains("build/"), "clobbered user lines: {body}");
+    }
+
+    #[test]
+    fn missing_exclude_file_is_created_with_a_trailing_newline() {
+        let td = repo();
+        ensure_git_exclude(td.path(), ".cursor/mcp.json").unwrap();
+        let body = std::fs::read_to_string(td.path().join(".git/info/exclude")).unwrap();
+        assert_eq!(body, ".cursor/mcp.json\n");
+    }
+
+    #[test]
+    fn a_file_without_a_trailing_newline_does_not_glue_entries_together() {
+        let td = repo();
+        let exclude = td.path().join(".git/info/exclude");
+        std::fs::write(&exclude, "build/").unwrap();
+        ensure_git_exclude(td.path(), ".codegraph").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&exclude).unwrap(),
+            "build/\n.codegraph\n"
+        );
+    }
+}
