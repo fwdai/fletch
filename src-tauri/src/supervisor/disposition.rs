@@ -196,6 +196,7 @@ impl Supervisor {
                 Some(tip_sha.to_string()),
                 stamped_engine(&record),
                 &record.provider,
+                &record.mcp_servers,
             )
             .await;
 
