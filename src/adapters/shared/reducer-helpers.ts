@@ -1,5 +1,6 @@
 import type { ChatItem } from "@/adapters/types";
 import { asRecord } from "./json";
+import { parsePartialJson } from "./partial-json";
 
 // Walk from the end since the items we care about (latest streaming
 // agent_message, latest tool_call) are always near the tail.
@@ -50,7 +51,8 @@ export function finalizeStreamingItems(items: ChatItem[]): ChatItem[] {
     }
     if (item.kind === "tool_call" && item.streaming) {
       mutated = true;
-      const { streaming: _s, ...rest } = item;
+      // Drop the stream-assembly scratch space along with the flag.
+      const { streaming: _s, partial: _p, ...rest } = item;
       return { ...rest, streaming: false };
     }
     return item;
@@ -71,31 +73,37 @@ export function upsertToolCall(
 }
 
 /**
- * Append partial JSON to the input of a streaming tool_call. `index` is the
- * positional index *among tool_call items* (Claude's `stream_event.index`),
- * not the absolute items array index. Falls back to the last tool_call if
- * the positional lookup misses (rare ordering races).
+ * Append a fragment of a streaming tool_call's input JSON.
+ *
+ * `blockIndex` is the content-block index within the in-flight assistant
+ * message (Claude's `stream_event.index`) — it counts text and thinking blocks
+ * too and restarts at 0 each message, so it only identifies a tool call when
+ * matched against the index stamped on it at `content_block_start`. Falls back
+ * to the newest streaming tool_call when the stamp is missing.
+ *
+ * The raw fragments accumulate in `partial.json`; `input` holds the best-effort
+ * parse of them, so presenters see the same object shape mid-stream that they
+ * get from the finalized event.
  */
 export function appendToolInputDelta(
   items: ChatItem[],
-  toolCallIndex: number,
+  blockIndex: number,
   partialJson: string,
 ): ChatItem[] {
-  let seen = -1;
-  let idx = items.findIndex((item) => {
-    if (item.kind !== "tool_call") return false;
-    seen += 1;
-    return seen === toolCallIndex;
-  });
-  if (idx === -1) {
-    idx = findLastIndex(items, (item) => item.kind === "tool_call");
-  }
+  const open = (item: ChatItem): item is Extract<ChatItem, { kind: "tool_call" }> =>
+    item.kind === "tool_call" && item.streaming === true;
+  let idx = findLastIndex(items, (item) => open(item) && item.partial?.block === blockIndex);
+  if (idx === -1) idx = findLastIndex(items, open);
   if (idx === -1) return items;
   const item = items[idx];
   if (item.kind !== "tool_call") return items;
-  const input = typeof item.input === "string" ? item.input + partialJson : partialJson;
+  const json = (item.partial?.json ?? "") + partialJson;
   const next = items.slice();
-  next[idx] = { ...item, input };
+  next[idx] = {
+    ...item,
+    input: parsePartialJson(json),
+    partial: { block: item.partial?.block ?? blockIndex, json },
+  };
   return next;
 }
 

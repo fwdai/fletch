@@ -226,6 +226,123 @@ describe("claudeAdapter.reduce — extended thinking", () => {
   });
 });
 
+describe("claudeAdapter.reduce — streaming tool input", () => {
+  const startBlock = (index: number, id: string, name: string): RawEvent =>
+    ({
+      type: "stream_event",
+      event: {
+        index,
+        type: "content_block_start",
+        content_block: { type: "tool_use", id, name, input: {} },
+      },
+    }) as RawEvent;
+
+  const inputDelta = (index: number, partial_json: string): RawEvent =>
+    ({
+      type: "stream_event",
+      event: {
+        index,
+        type: "content_block_delta",
+        delta: { type: "input_json_delta", partial_json },
+      },
+    }) as RawEvent;
+
+  function inputsById(items: ChatItem[]): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const item of items) if (item.kind === "tool_call") out[item.id] = item.input;
+    return out;
+  }
+
+  it("routes deltas by content-block index, not by position among tool_calls", () => {
+    // Claude's `index` is the block's slot in the *current* assistant message:
+    // it restarts at 0 each message and counts text blocks too. A log that
+    // already holds an earlier tool_call must not have these deltas land on it.
+    const items = reduceAll([
+      startBlock(0, "toolu_first", "Bash"),
+      inputDelta(0, '{"command":"ls"}'),
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "toolu_first", name: "Bash", input: { command: "ls" } },
+          ],
+        },
+      },
+      // Next message: a text block, then two parallel tool calls at blocks 1
+      // and 2 — the ordinals that used to point at the wrong rows.
+      {
+        type: "stream_event",
+        event: {
+          index: 0,
+          type: "content_block_start",
+          content_block: { type: "text", text: "ok" },
+        },
+      },
+      startBlock(1, "toolu_read", "Read"),
+      startBlock(2, "toolu_edit", "Edit"),
+      inputDelta(1, '{"file_path":"/a/pkg.json"}'),
+      inputDelta(2, '{"file_path":"/a/Cargo.toml","old_string":"x"}'),
+    ]);
+
+    expect(inputsById(items)).toEqual({
+      toolu_first: { command: "ls" },
+      toolu_read: { file_path: "/a/pkg.json" },
+      toolu_edit: { file_path: "/a/Cargo.toml", old_string: "x" },
+    });
+  });
+
+  it("exposes input as a parsed object while fragments are still arriving", () => {
+    const items = reduceAll([
+      startBlock(0, "toolu_read", "Read"),
+      inputDelta(0, '{"file_'),
+      inputDelta(0, 'path":"/a/pkg'),
+    ]);
+    expect(items).toEqual([
+      {
+        kind: "tool_call",
+        id: "toolu_read",
+        name: "Read",
+        input: { file_path: "/a/pkg" },
+        streaming: true,
+        partial: { block: 0, json: '{"file_path":"/a/pkg' },
+      },
+    ]);
+  });
+
+  it("clears the stream scratch space when the finalized event lands", () => {
+    const items = reduceAll([
+      startBlock(0, "toolu_read", "Read"),
+      inputDelta(0, '{"file_path":"/a/pkg.json"}'),
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_read",
+              name: "Read",
+              input: { file_path: "/a/pkg.json" },
+            },
+          ],
+        },
+      },
+    ] as RawEvent[]);
+    expect(items).toEqual([
+      {
+        kind: "tool_call",
+        id: "toolu_read",
+        name: "Read",
+        input: { file_path: "/a/pkg.json" },
+      },
+    ]);
+  });
+
+  it("ignores deltas that arrive with no streaming tool_call open", () => {
+    const items = reduceAll([inputDelta(0, '{"command":"ls"}')]);
+    expect(items).toEqual([]);
+  });
+});
+
 describe("claudeAdapter.reduce — model", () => {
   it("stamps the model from a finalized assistant event onto the agent_message", () => {
     const items = reduceAll([
@@ -346,7 +463,8 @@ describe("claudeAdapter.reduce — subagent sidechain routing", () => {
       // The subagent's tool call streams in: content_block_start opens it,
       // input_json_delta fills its input — both tagged with the parent id, so
       // upsertToolCall / appendToolInputDelta must operate on the children
-      // slice (positional index 0 there), not the main items list.
+      // slice, not the main items list. This start carries no index, so the
+      // delta also exercises the "newest streaming tool_call" fallback.
       {
         type: "stream_event",
         parent_tool_use_id: "toolu_task",
@@ -376,8 +494,9 @@ describe("claudeAdapter.reduce — subagent sidechain routing", () => {
           kind: "tool_call",
           id: "toolu_child",
           name: "Read",
-          input: '{"path":"/x"}',
+          input: { path: "/x" },
           streaming: true,
+          partial: { block: -1, json: '{"path":"/x"}' },
         },
       ]);
     }
