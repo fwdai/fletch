@@ -358,13 +358,13 @@ mod tests {
         // agent that can't query it (wasted clone + parse per spawn) or inject a
         // server with no index behind it. Pinning the shared resolver here keeps
         // the two honest without the supervisor needing a test harness.
-        for provider in ["claude", "codex", "opencode"] {
+        for provider in ["claude", "codex", "cursor", "opencode"] {
             assert!(
                 crate::agent::mcp_delivery(provider).is_some(),
                 "{provider} lost MCP delivery; indexing would silently stop too"
             );
         }
-        for provider in ["cursor", "pi", "antigravity"] {
+        for provider in ["pi", "antigravity"] {
             assert!(
                 crate::agent::mcp_delivery(provider).is_none(),
                 "{provider} gained MCP delivery; it must be indexed again too"

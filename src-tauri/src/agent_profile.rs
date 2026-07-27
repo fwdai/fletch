@@ -27,13 +27,11 @@
 //! - codex — `-c mcp_servers.<key>.…` TOML config overrides (stdio only).
 //! - opencode — a `mcp`-only config in the profile dir, pointed at by
 //!   `OPENCODE_CONFIG`; opencode merges it over the user's own config itself.
-//! - cursor — deliberately unwired. cursor-agent reads MCP config only from
-//!   `<cwd>/.cursor/mcp.json` and `~/.cursor/mcp.json`: ambient, shared paths
-//!   with no per-invocation override, and its only approval control is the
-//!   blanket `--approve-mcps`. Both paths are writable by the sandboxed agent,
-//!   so occupying them safely needs an explicit ownership marker *and* a
-//!   sandbox deny on the global file — sandbox-policy work that belongs in its
-//!   own change, not here.
+//! - cursor — a **per-agent `HOME`** under the writable root, so the
+//!   `~/.cursor/mcp.json` cursor-agent reads is one Fletch owns per session.
+//!   See `cursor_mcp_delivery`: cursor has no MCP flag or config env var, so
+//!   relocating HOME is the only way to give it a private channel instead of
+//!   sharing the user's ambient, agent-writable config.
 //! - pi — no MCP surface at all; it ships an extension system instead
 //!   (`--extension`, `pi install`) and documents the omission as deliberate.
 //! - antigravity — *does* speak MCP, via `~/.gemini/config/mcp_config.json` and
@@ -99,6 +97,10 @@ impl McpServerSnapshot {
 pub struct McpTarget<'a> {
     /// The session's servers, resolved by value at spawn.
     pub servers: &'a [McpServerSnapshot],
+    /// Sandbox engine for this launch. Only providers whose delivery depends on
+    /// the boundary need it — cursor relocates `HOME`, which is a host-side
+    /// env var and so is seatbelt-only.
+    pub engine: crate::sandbox::EngineKind,
     /// Sandbox writable root. Fletch-owned artifacts go under
     /// `<sandbox_root>/.fletch-profile/`, which is bind-mounted at its host
     /// path under docker, so a path written here is valid in both engines.
@@ -420,6 +422,136 @@ pub fn codex_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
     Ok(McpDelivery::from_args(codex_mcp_args(target.servers)))
 }
 
+/// Per-agent `HOME` for providers that resolve config through it, under the
+/// Fletch-owned profile dir so a repo checkout can never collide with it and
+/// both sandbox engines see it at the same path.
+pub fn agent_home(sandbox_root: &Path) -> PathBuf {
+    profile_dir(sandbox_root).join("home")
+}
+
+/// The per-agent `HOME` derived from an agent's *checkout* path, for callers
+/// that only have the cwd — notably the transcript reader, which is handed the
+/// checkout and must look for cursor's session logs under the same relocated
+/// home the spawn used. A checkout is always `<sandbox_root>/<subdir>` (see
+/// `workspace::repo_checkout_path`), so the root is its parent.
+pub fn agent_home_from_checkout(cwd: &Path) -> Option<PathBuf> {
+    cwd.parent().map(agent_home)
+}
+
+/// macOS resolves the login keychain at `$HOME/Library/Keychains`, and that is
+/// where cursor-agent's login lives — verified: with HOME relocated,
+/// `cursor-agent status` reports "Logged in" when this link is present and
+/// "Not logged in" when it isn't.
+///
+/// Linking rather than copying: the keychain is the user's, must stay current,
+/// and is already reachable by the agent today at its real path (cursor runs
+/// under the user's real HOME before this change), so this preserves the
+/// existing boundary rather than widening it.
+fn link_login_keychain(home: &Path) -> Result<()> {
+    let Some(real_home) = dirs::home_dir() else {
+        return Ok(()); // no home to borrow from; auth will simply fail closed
+    };
+    let src = real_home.join("Library").join("Keychains");
+    if !src.exists() {
+        return Ok(());
+    }
+    let library = home.join("Library");
+    ensure_real_dir(&library)?;
+    let dst = library.join("Keychains");
+    // Host-owned path: replace whatever the agent may have left here, the same
+    // way `write_profile_file` does for regular files.
+    if std::fs::symlink_metadata(&dst).is_ok() {
+        let _ = std::fs::remove_file(&dst);
+        let _ = std::fs::remove_dir_all(&dst);
+    }
+    std::os::unix::fs::symlink(&src, &dst)
+        .map_err(|e| Error::Other(format!("failed to link login keychain: {e}")))
+}
+
+/// Cursor's [`McpDeliveryBuilder`]: point cursor-agent at a per-agent `HOME`
+/// and own the `~/.cursor/mcp.json` it finds there.
+///
+/// cursor-agent reads MCP config **only** from `<cwd>/.cursor/mcp.json` and
+/// `$HOME/.cursor/mcp.json` — no flag, no config env var. An earlier attempt
+/// wrote the project-local file and was reverted after five findings, all from
+/// occupying paths Fletch doesn't own: `--approve-mcps` is blanket, so a
+/// repo-declared server got auto-approved; re-reading our own writes meant a
+/// server could never be removed; a corrupt file was overwritten, destroying
+/// the repo's config; `~/.cursor/mcp.json` is agent-writable, so one session
+/// could plant a server a later one auto-approves; and git-tracking is a bad
+/// proxy for ownership.
+///
+/// Relocating `HOME` dissolves all five at once. The config lives under the
+/// writable root, regenerated from the snapshot each launch, reachable by no
+/// other session — so `--approve-mcps` is safe because the file contains
+/// exactly our servers and nothing a repo or another agent put there. Nothing
+/// is written into the checkout at all.
+///
+/// Two consequences, both intended:
+/// - The agent no longer sees the user's own `~/.cursor` (extensions, chats,
+///   prior projects). That is the isolation we want, and matches how every
+///   other provider's MCP config is scoped.
+/// - Transcripts land under the relocated home; `cursor_locate` derives the
+///   same path from the checkout so the reader still finds them.
+pub fn cursor_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
+    // Seatbelt only. Under Docker the child we spawn is the `docker` CLI, so a
+    // `HOME` in its environment would rebind the *host* process, not the agent
+    // inside the container — which has its own HOME from the image's PID-1 shim
+    // and authenticates with a forwarded `CURSOR_API_KEY` instead. Delivering
+    // nothing matches cursor's pre-existing Docker behaviour rather than
+    // silently pointing it at a path that doesn't exist in the container.
+    if target.engine == crate::sandbox::EngineKind::Docker {
+        return Ok(McpDelivery::default());
+    }
+    let home = agent_home(target.sandbox_root);
+    let cursor_dir = home.join(".cursor");
+    ensure_real_dir(&profile_dir(target.sandbox_root))?;
+    ensure_real_dir(&home)?;
+    ensure_real_dir(&cursor_dir)?;
+    link_login_keychain(&home)?;
+
+    // Always hand cursor the relocated HOME, even with no servers: the home is
+    // also where its transcripts go, and `cursor_locate` looks for them there
+    // unconditionally. Flipping HOME with the server list would split a
+    // session's logs across two directories.
+    let mut delivery = McpDelivery {
+        args: Vec::new(),
+        env: vec![("HOME".into(), home.to_string_lossy().into_owned())],
+    };
+
+    let path = cursor_dir.join("mcp.json");
+    if target.servers.is_empty() {
+        // Regenerated every launch, so "no servers" has to be representable —
+        // otherwise the last server removed would keep loading forever.
+        remove_generated_file(&path)?;
+        return Ok(delivery);
+    }
+    let config = serde_json::json!({ "mcpServers": mcp_servers_object(target.servers) });
+    let body = serde_json::to_string_pretty(&config)
+        .map_err(|e| Error::Other(format!("failed to encode cursor MCP config: {e}")))?;
+    write_profile_file(&path, &body)?;
+
+    // Safe as a blanket flag only because the file we just wrote is the only
+    // MCP source this cursor process can see.
+    delivery.args.push("--approve-mcps".into());
+    Ok(delivery)
+}
+
+/// Remove a host-generated config file, tolerating absence and clearing a
+/// symlink or directory an agent may have planted at the path instead of
+/// following or failing on it.
+fn remove_generated_file(path: &Path) -> Result<()> {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    let removed = if meta.is_dir() && !meta.file_type().is_symlink() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    removed.map_err(|e| Error::Other(format!("failed to clear generated config: {e}")))
+}
+
 /// One opencode `mcp` entry. `enabled` is explicit so a server we wrote is
 /// never left off by an inherited default.
 fn opencode_mcp_entry(s: &McpServerSnapshot) -> serde_json::Value {
@@ -517,6 +649,15 @@ pub fn codex_mcp_args(servers: &[McpServerSnapshot]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stdio(name: &str, command: &str) -> McpServerSnapshot {
+        McpServerSnapshot {
+            name: name.into(),
+            transport: "stdio".into(),
+            command: command.into(),
+            ..Default::default()
+        }
+    }
 
     fn skill(name: &str, desc: &str, body: &str) -> SkillSnapshot {
         SkillSnapshot {
@@ -690,6 +831,7 @@ mod tests {
         let delivery = claude_mcp_delivery(&McpTarget {
             servers: &servers,
             sandbox_root: dir.path(),
+            engine: crate::sandbox::EngineKind::SandboxExec,
         })
         .unwrap();
 
@@ -758,6 +900,96 @@ mod tests {
         );
     }
 
+    fn cursor_target<'a>(servers: &'a [McpServerSnapshot], root: &'a Path) -> McpTarget<'a> {
+        McpTarget {
+            servers,
+            sandbox_root: root,
+            engine: crate::sandbox::EngineKind::SandboxExec,
+        }
+    }
+
+    #[test]
+    fn cursor_config_lands_in_a_private_per_agent_home() {
+        let root = tempfile::tempdir().unwrap();
+        let servers = vec![stdio("Codegraph", "/tools/codegraph")];
+        let delivery = cursor_mcp_delivery(&cursor_target(&servers, root.path())).unwrap();
+
+        // HOME is the delivery — cursor has no MCP flag or config env var, so
+        // relocating it is the only private channel available.
+        let home = agent_home(root.path());
+        assert_eq!(
+            delivery.env,
+            vec![("HOME".to_string(), home.display().to_string())]
+        );
+        assert_eq!(delivery.args, vec!["--approve-mcps".to_string()]);
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join(".cursor/mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            json["mcpServers"]["codegraph"]["command"],
+            "/tools/codegraph"
+        );
+
+        // Nothing may be written into a checkout: that is what the reverted
+        // attempt did, and every one of its five findings followed from it.
+        assert!(home.starts_with(root.path().join(PROFILE_DIR)));
+    }
+
+    #[test]
+    fn cursor_transcript_home_matches_the_spawned_home() {
+        // `cursor_locate` derives HOME from the checkout. If that derivation
+        // ever disagrees with what the spawn set, transcripts silently vanish.
+        let root = tempfile::tempdir().unwrap();
+        let checkout = root.path().join("myrepo");
+        std::fs::create_dir_all(&checkout).unwrap();
+        let servers = vec![stdio("Codegraph", "/tools/codegraph")];
+        cursor_mcp_delivery(&cursor_target(&servers, root.path())).unwrap();
+
+        assert_eq!(
+            agent_home_from_checkout(&checkout),
+            Some(agent_home(root.path()))
+        );
+    }
+
+    #[test]
+    fn cursor_clears_its_config_when_the_snapshot_empties() {
+        // Regenerated every launch, so the last server removed must actually
+        // disappear — but HOME still ships, because transcripts live there too.
+        let root = tempfile::tempdir().unwrap();
+        let servers = vec![stdio("Codegraph", "/tools/codegraph")];
+        let cfg = agent_home(root.path()).join(".cursor/mcp.json");
+
+        cursor_mcp_delivery(&cursor_target(&servers, root.path())).unwrap();
+        assert!(cfg.exists());
+
+        let delivery = cursor_mcp_delivery(&cursor_target(&[], root.path())).unwrap();
+        assert!(!cfg.exists(), "stale config would keep loading");
+        assert!(delivery.args.is_empty(), "nothing to approve");
+        assert!(
+            delivery.env.iter().any(|(k, _)| k == "HOME"),
+            "HOME must ship regardless, or transcripts split across two homes"
+        );
+        // Idempotent.
+        cursor_mcp_delivery(&cursor_target(&[], root.path())).unwrap();
+    }
+
+    #[test]
+    fn cursor_delivers_nothing_under_docker() {
+        // A host `HOME` would rebind the `docker` CLI, not the containerised
+        // agent, and points at a path the container can't see.
+        let root = tempfile::tempdir().unwrap();
+        let servers = vec![stdio("Codegraph", "/tools/codegraph")];
+        let delivery = cursor_mcp_delivery(&McpTarget {
+            servers: &servers,
+            sandbox_root: root.path(),
+            engine: crate::sandbox::EngineKind::Docker,
+        })
+        .unwrap();
+        assert_eq!(delivery, McpDelivery::default());
+        assert!(!agent_home(root.path()).join(".cursor").exists());
+    }
+
     #[test]
     fn no_servers_is_an_empty_delivery_for_every_provider() {
         // An empty snapshot must not put a config flag (or a stray file) in
@@ -766,6 +998,7 @@ mod tests {
         let target = McpTarget {
             servers: &[],
             sandbox_root: dir.path(),
+            engine: crate::sandbox::EngineKind::SandboxExec,
         };
         assert_eq!(
             claude_mcp_delivery(&target).unwrap(),
@@ -791,6 +1024,7 @@ mod tests {
         let delivery = codex_mcp_delivery(&McpTarget {
             servers: &servers,
             sandbox_root: dir.path(),
+            engine: crate::sandbox::EngineKind::SandboxExec,
         })
         .unwrap();
         assert_eq!(delivery.args, codex_mcp_args(&servers));
@@ -820,6 +1054,7 @@ mod tests {
         let delivery = opencode_mcp_delivery(&McpTarget {
             servers: &servers,
             sandbox_root: root.path(),
+            engine: crate::sandbox::EngineKind::SandboxExec,
         })
         .unwrap();
 

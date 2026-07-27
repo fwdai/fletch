@@ -147,7 +147,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
         label: "Cursor",
         build_args: cursor_build_args,
         pty_args: cursor_pty_args,
-        mcp: None,
+        mcp: Some(crate::agent_profile::cursor_mcp_delivery),
         session_id: cursor_session_id,
         // Cursor emits Claude-shaped stream-json incl. a `result` turn-end,
         // so it reuses the Claude managed detector.
@@ -277,17 +277,17 @@ mod tests {
     fn mcp_delivery_covers_claude_and_the_descriptor_table() {
         // Claude has no descriptor row, so it must still resolve — it was the
         // provider whose delivery used to be hardcoded at the spawn site.
-        for provider in ["claude", "codex", "opencode"] {
+        for provider in ["claude", "codex", "cursor", "opencode"] {
             assert!(
                 mcp_delivery(provider).is_some(),
                 "{provider} lost MCP support"
             );
         }
 
-        // Not delivered: pi has no MCP surface at all; cursor's and agy's are
-        // ambient/user-global with no per-session scoping (see `agent_profile`'s
-        // module doc). The snapshot is ignored rather than mis-delivered.
-        for provider in ["cursor", "pi", "antigravity"] {
+        // Not delivered: pi has no MCP surface at all, and agy's is user-global
+        // with no per-session scoping (see `agent_profile`'s module doc). The
+        // snapshot is ignored rather than mis-delivered.
+        for provider in ["pi", "antigravity"] {
             assert!(
                 mcp_delivery(provider).is_none(),
                 "{provider} claims MCP support it can't deliver"

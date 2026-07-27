@@ -18,10 +18,18 @@ use super::gated_session_id;
 
 pub(crate) fn cursor_locate(
     session_id: &str,
-    _cwd: &Path,
+    cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
+    // Cursor writes transcripts under `$HOME`, and Fletch spawns it with a
+    // per-agent HOME so its MCP config is private (see
+    // `agent_profile::cursor_mcp_delivery`). So look there first, derived from
+    // the checkout the same way the spawn derived it. Falling back to the real
+    // home keeps sessions recorded before that change readable.
+    let Some(home) = crate::agent_profile::agent_home_from_checkout(cwd)
+        .filter(|h| h.join(".cursor").is_dir())
+        .or_else(dirs::home_dir)
+    else {
         return Vec::new();
     };
     let rel = format!("agent-transcripts/{session_id}/{session_id}.jsonl");

@@ -582,3 +582,29 @@ fn subagent_args_follow_codegraph_availability() {
     let json: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
     assert!(json[crate::agent_profile::CODEGRAPH_AGENT].is_object());
 }
+
+/// `cursor_locate` must look under the **per-agent** HOME the spawn set, not the
+/// user's real one — cursor writes transcripts under `$HOME`, and
+/// `cursor_mcp_delivery` relocates it. If these two derivations disagree the
+/// session's transcript silently never syncs.
+#[test]
+fn cursor_locate_reads_from_the_per_agent_home() {
+    use crate::agent::providers::cursor::cursor_locate;
+
+    let root = tempfile::tempdir().unwrap();
+    let checkout = root.path().join("myrepo");
+    std::fs::create_dir_all(&checkout).unwrap();
+
+    // Lay out a transcript exactly where cursor puts one under a relocated home.
+    let home = crate::agent_profile::agent_home(root.path());
+    let dir = home
+        .join(".cursor/projects/some-slug/agent-transcripts")
+        .join("sid-1");
+    std::fs::create_dir_all(&dir).unwrap();
+    let transcript = dir.join("sid-1.jsonl");
+    std::fs::write(&transcript, "{}\n").unwrap();
+
+    let mut diag = crate::agent::ReadDiagnostics::default();
+    let found = cursor_locate("sid-1", &checkout, &mut diag);
+    assert_eq!(found, vec![transcript], "diag: {diag:?}");
+}

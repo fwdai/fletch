@@ -57,15 +57,16 @@ export function isDockerSupported(id: string | null | undefined): boolean {
  *    - codex    — stdio only via `-c mcp_servers.*` (its `-c` config has no
  *                 http transport)
  *    - opencode — stdio + http, via an `OPENCODE_CONFIG` overlay
- *  cursor, pi and antigravity are absent on purpose. pi and agy speak no MCP
- *  at all (pi ships an extension system, agy only plugins); cursor's only
- *  config surface is ambient and agent-writable, so it needs sandbox work
- *  before it can be delivered safely. Unknown ids are treated as unsupported. */
+ *    - cursor   — stdio + http, via a per-agent `HOME` it reads `.cursor/mcp.json` from
+ *  pi and antigravity are absent on purpose: pi speaks no MCP at all (it ships
+ *  an extension system instead), and agy's config paths are user-global with no
+ *  per-session scoping. Unknown ids are treated as unsupported. */
 export type McpSupport = "all" | "stdio" | "none";
 export const MCP_SUPPORT: Record<string, McpSupport> = {
   claude: "all",
   codex: "stdio",
   opencode: "all",
+  cursor: "all",
 };
 
 /** Providers that can actually receive an MCP server, as human labels — the
