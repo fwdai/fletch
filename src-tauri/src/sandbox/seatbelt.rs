@@ -61,13 +61,24 @@ impl SandboxEngine for SandboxExecEngine {
         // A workflow step agent's blackboard is granted writable in the profile
         // above; also point the agent at it via `WF_BLACKBOARD` (the same host
         // path the sandbox sees — seatbelt shares the host filesystem).
-        let env = match ctx.blackboard {
-            Some(board) => vec![(
+        // Redirect every package-manager cache/store into the one Fletch-owned
+        // root the profile grants, so host toolchains (bun, cargo, gem, …) have
+        // somewhere legitimate to write instead of failing closed — or being
+        // redirected into the checkout by an improvising agent. See
+        // `policy::toolchain_cache_root`.
+        let cache_root = policy::toolchain_cache_root(ctx.home);
+        // Create it host-side: the profile grants `(subpath <root>)`, which lets
+        // a tool create the root itself but not its parent, and best-effort is
+        // right — a failure here just means the toolchain writes fail the way
+        // they do today, never that the sandbox is looser.
+        let _ = std::fs::create_dir_all(&cache_root);
+        let mut env = policy::toolchain_cache_env(&cache_root);
+        if let Some(board) = ctx.blackboard {
+            env.push((
                 crate::workflow::blackboard::WF_BLACKBOARD_ENV.to_string(),
                 board.to_string_lossy().into_owned(),
-            )],
-            None => vec![],
-        };
+            ));
+        }
         let mut prefix_args = profile_args(&profile_text).to_vec();
         prefix_args.push(agent_bin.to_string());
         Ok(LaunchPlan {
@@ -195,6 +206,13 @@ pub fn build_run_profile(
             .iter()
             .map(|p| sbpl_string(&p.to_string_lossy())),
     );
+    // The redirected toolchain cache root, granted here too so a Run command
+    // shares the agent's warm caches. Run also keeps RUN_TOOLCHAIN_DIRS below,
+    // so a build that ignores the redirect env still writes its default location
+    // — belt and braces, since Run's boundary is deliberately the looser one.
+    subpaths.push(sbpl_string(
+        &policy::toolchain_cache_root(&home).to_string_lossy(),
+    ));
     // Run-only toolchain + broad-state dirs, including the whole `~/.config`
     // and `~/.local` the agent profile pointedly withholds (see the const's
     // doc-comment). `~/.local` here supersets the scratch `~/.local/share`/
@@ -435,10 +453,15 @@ pub fn build_profile(
     // policy withholds every PATH-resolved bin dir (`~/.local/bin`) and config
     // root (`~/.config`), granting only `~/.local/share`+`~/.local/state` and the
     // specific `~/.config/opencode` — see the policy module's invariants.
+    // Plus the single toolchain scratch root every package-manager cache is
+    // redirected into (`policy::toolchain_cache_env`, layered onto the child in
+    // `launch_agent`). This is the one grant that replaces an open-ended list of
+    // per-toolchain default locations — see `policy::toolchain_cache_root`.
     let policy_dirs = subpath_grants(
         policy::all_provider_state_dirs(&home)
             .into_iter()
-            .chain(policy::agent_scratch_dirs(&home)),
+            .chain(policy::agent_scratch_dirs(&home))
+            .chain(std::iter::once(policy::toolchain_cache_root(&home))),
     )
     .join("\n");
 
@@ -628,6 +651,36 @@ mod tests {
         // macOS-native per-user state dirs, needed by the agents' toolchains.
         assert!(profile.contains("/Library/Caches"));
         assert!(profile.contains("/Library/Application Support"));
+    }
+
+    /// Both profiles grant the redirected toolchain cache root. If the agent
+    /// profile ever loses it, every package-manager write fails closed again and
+    /// agents go back to improvising a cache dir inside the checkout; if Run
+    /// loses it, the two halves silently maintain separate caches.
+    #[test]
+    fn both_profiles_grant_the_toolchain_cache_root() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("agent-parent");
+        let rpc = td.path().join("rpc");
+        let home = td.path().join("home");
+        for d in [&root, &rpc, &home] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        let cache_root = policy::toolchain_cache_root(&canonical_home);
+        let expected = format!("\"{}\"", cache_root.display());
+
+        let agent = build_profile(&root, &rpc, &home, None, None).unwrap();
+        assert!(
+            agent.contains(&expected),
+            "agent profile is missing the toolchain cache root"
+        );
+
+        let run = build_run_profile(&root, &home, &[]).unwrap();
+        assert!(
+            run.contains(&expected),
+            "run profile is missing the toolchain cache root"
+        );
     }
 
     #[test]
