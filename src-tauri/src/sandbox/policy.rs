@@ -272,30 +272,42 @@ pub fn toolchain_cache_root(home: &Path) -> PathBuf {
 /// ignores leaves it writing its default path, which is exactly today's
 /// behavior (fail closed), never a widened sandbox.
 ///
-/// Two classes are mixed here deliberately, and the distinction matters when
-/// debugging:
+/// **Only ever redirect a variable whose target is purely a cache.** A variable
+/// naming a toolchain *home* — `RUSTUP_HOME`, `CARGO_HOME`, `GEM_HOME`,
+/// `GRADLE_USER_HOME`, `COMPOSER_HOME`, … — points at a directory that also
+/// holds user config and installed artifacts, so redirecting it doesn't give the
+/// toolchain a writable scratch dir, it *hides the user's existing installation*.
+/// `RUSTUP_HOME` is the clearest case: it contains the toolchains themselves and
+/// the `settings.toml` naming the default, so pointing it at a fresh empty dir
+/// leaves `cargo` with no compiler — ordinary Rust commands then fail outright,
+/// or re-download hundreds of MB. `COMPOSER_HOME` and `GRADLE_USER_HOME` are
+/// quieter versions of the same bug: they hold `auth.json` / `gradle.properties`,
+/// so redirecting silently drops registry credentials.
 ///
-/// - **Pure caches** (`*_CACHE_DIR`, `GOMODCACHE`, `YARN_CACHE_FOLDER`, …).
-///   Relocating costs one cold fetch and nothing else.
-/// - **Homes** (`CARGO_HOME`, `GEM_HOME`, `COMPOSER_HOME`, `MIX_HOME`,
-///   `GRADLE_USER_HOME`, `DOTNET_CLI_HOME`). These hold config and *installed
-///   artifacts*, not just cache, so relocating also hides whatever the user
-///   already had at the default location — the toolchain re-fetches into the new
-///   root. Accepted because the alternative is a hard failure, but it's why a
-///   first run after this lands is slower than steady state.
+/// Those all previously lived in this table and have been removed. Reads are
+/// unrestricted sandbox-wide, so leaving a home alone costs nothing for an
+/// *already installed* toolchain — only writing to it fails, and failing loudly
+/// beats silently pretending the user has no Rust.
+///
+/// The cost is that toolchains with no cache-only variable are **not served at
+/// all**: `cargo` still can't fetch a crate it hasn't downloaded, and Ruby/JVM
+/// dependency installs still fail closed, exactly as before this mechanism
+/// existed. Granting a cache island under the real home
+/// (`~/.cargo/registry`) was tried and is *not* sufficient on its own — cargo
+/// also locks `~/.cargo/.package-cache`, `.package-cache-mutate` and
+/// `.global-cache`, siblings of the island, so the grant only converts a write
+/// error into a lock error. Closing that needs file-literal grants alongside the
+/// dir-oriented ones (the treatment [`CLAUDE_CREDENTIALS_FILE`] already gets),
+/// which is its own change and wants testing under a real profile.
 ///
 /// Verified empirically on macOS against the installed toolchain at the time of
-/// writing: bun 1.3, npm 10.9, pnpm 10.33, yarn 1.22, deno 2.6, cargo 1.97,
-/// rustup 1.28, pip 25.3, uv 0.11, gem 3.5, bundler 2.5. The rest are
-/// documentation-derived — safe per the fail-closed note above, but unproven.
+/// writing: bun 1.3, npm 10.9, pnpm 10.33, yarn 1.22, deno 2.6, pip 25.3,
+/// uv 0.11, gem 3.5. The rest are documentation-derived — safe per the
+/// fail-closed note above, but unproven.
 ///
 /// `pnpm` is the cautionary row: it does **not** read `PNPM_STORE_DIR` (silently
 /// ignored, store stays at the default). It takes config through npm's env
 /// convention, hence `npm_config_store_dir`.
-///
-/// Maven is deliberately absent: it has no cache env var, only
-/// `-Dmaven.repo.local=…` / `settings.xml`, and injecting build args is a
-/// different mechanism than this table models.
 const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
     // JavaScript / TypeScript
     ("BUN_INSTALL_CACHE_DIR", "bun"),
@@ -303,31 +315,23 @@ const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
     ("npm_config_store_dir", "pnpm"), // NOT PNPM_STORE_DIR — see above
     ("YARN_CACHE_FOLDER", "yarn"),
     ("DENO_DIR", "deno"),
-    // Rust
-    ("CARGO_HOME", "cargo"),
-    ("RUSTUP_HOME", "rustup"),
-    // Go
+    // Go (Rust is served by the ~/.cargo islands in `agent_scratch_dirs`:
+    // CARGO_HOME/RUSTUP_HOME would hide the user's config and toolchains.)
     ("GOMODCACHE", "go/mod"),
     ("GOCACHE", "go/build"),
     // Python
     ("PIP_CACHE_DIR", "pip"),
     ("UV_CACHE_DIR", "uv"),
     ("POETRY_CACHE_DIR", "poetry"),
-    // Ruby
-    ("GEM_HOME", "gem"),
+    // Ruby — the spec cache only; GEM_HOME is where gems are *installed*.
     ("GEM_SPEC_CACHE", "gem/spec-cache"),
-    ("BUNDLE_USER_HOME", "bundle"),
-    // JVM
-    ("GRADLE_USER_HOME", "gradle"),
-    // PHP
-    ("COMPOSER_HOME", "composer"),
+    // PHP — the cache only; COMPOSER_HOME holds auth.json.
     ("COMPOSER_CACHE_DIR", "composer/cache"),
-    // .NET
+    // .NET — the global packages folder is a restore target, not a config home.
     ("NUGET_PACKAGES", "nuget"),
-    ("DOTNET_CLI_HOME", "dotnet"),
-    // Elixir
-    ("MIX_HOME", "mix"),
-    ("HEX_HOME", "hex"),
+    // Elixir is absent for the same reason as Rust/Ruby/PHP homes: MIX_HOME and
+    // HEX_HOME hold archives and `hex.config` (which can carry an API key), not
+    // just cache.
 ];
 
 /// The environment redirecting every toolchain in [`TOOLCHAIN_CACHE_VARS`] into
@@ -557,6 +561,42 @@ mod tests {
             names.len(),
             "duplicate env var in the redirect table"
         );
+    }
+
+    /// The redirect must never claim a variable naming a toolchain *home*.
+    ///
+    /// A home holds installed artifacts and user config, not just cache, so
+    /// pointing one at an empty dir hides the user's installation rather than
+    /// giving the toolchain scratch space. `RUSTUP_HOME` is the sharpest case —
+    /// it contains the toolchains and the `settings.toml` naming the default, so
+    /// redirecting it leaves `cargo` with no compiler. `COMPOSER_HOME` /
+    /// `GRADLE_USER_HOME` / `BUNDLE_USER_HOME` are the quiet version: they carry
+    /// registry credentials that would silently vanish.
+    ///
+    /// Every one of these was in the table at one point. Where a toolchain
+    /// still needs somewhere writable, the answer is a cache island under its
+    /// real home (plus any sibling lock files it takes) — never a redirected
+    /// home.
+    #[test]
+    fn redirect_never_claims_a_toolchain_home() {
+        const FORBIDDEN: &[&str] = &[
+            "RUSTUP_HOME",
+            "CARGO_HOME",
+            "GEM_HOME",
+            "BUNDLE_USER_HOME",
+            "GRADLE_USER_HOME",
+            "COMPOSER_HOME",
+            "MIX_HOME",
+            "HEX_HOME",
+            "DOTNET_CLI_HOME",
+        ];
+        for (var, _) in TOOLCHAIN_CACHE_VARS {
+            assert!(
+                !FORBIDDEN.contains(var),
+                "{var} names a toolchain home — redirecting it hides the user's \
+                 installed toolchain/config; grant a cache island instead"
+            );
+        }
     }
 
     /// The redirect must never claim a variable that provider-state resolution

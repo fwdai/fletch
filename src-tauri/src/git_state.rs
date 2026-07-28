@@ -333,29 +333,62 @@ async fn untracked_additions(checkout_path: &Path, rels: Vec<String>) -> (Vec<u3
     let root = checkout_path.to_path_buf();
     let empty = rels.len();
     tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+
         let mut out = vec![0u32; rels.len()];
         let mut spent: u64 = 0;
+        let mut buf: Vec<u8> = Vec::new();
         for (i, rel) in rels.iter().enumerate() {
+            let remaining = MAX_UNTRACKED_READ_BYTES.saturating_sub(spent);
+            if remaining == 0 {
+                return (out, true);
+            }
             let abs = root.join(rel);
+            // Cheap pre-filter: skip an oversized file (or a non-file) without
+            // opening it. This is an optimization, not the bound — the read
+            // below enforces that, because the file can change underneath us.
             let Ok(meta) = std::fs::metadata(&abs) else {
                 continue;
             };
             if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
                 continue;
             }
-            if spent + meta.len() > MAX_UNTRACKED_READ_BYTES {
-                return (out, true);
-            }
-            spent += meta.len();
-            let Ok(bytes) = std::fs::read(&abs) else {
+            // Read through a hard ceiling rather than trusting the length we
+            // just stat'd. The agent is actively working in this tree, so a
+            // file can grow or be replaced between the `metadata` and the read;
+            // `fs::read` pre-allocates from the *current* size and would then
+            // consume the whole replacement, overshooting both this file's
+            // limit and the pass budget. `take` caps the allocation at what we
+            // are willing to read no matter what happened in between.
+            let ceiling = MAX_FILE_BYTES.min(remaining);
+            let Ok(file) = std::fs::File::open(&abs) else {
                 continue;
             };
-            if bytes.is_empty() || bytes.contains(&0) {
+            buf.clear();
+            // +1 so a file sitting exactly at the ceiling is distinguishable
+            // from one that overruns it.
+            if file.take(ceiling + 1).read_to_end(&mut buf).is_err() {
                 continue;
             }
-            let newlines = bytes.iter().filter(|&&b| b == b'\n').count() as u32;
+            // Charge what was actually read, not what was stat'd.
+            spent += buf.len() as u64;
+            if buf.len() as u64 > ceiling {
+                // Either the file outgrew MAX_FILE_BYTES mid-read, or the
+                // budget ran out inside it. Counting a truncated prefix would
+                // report a wrong line count, so contribute nothing. Only a
+                // budget overrun ends the pass; an oversized file is skipped
+                // the way numstat's `-` marker is.
+                if ceiling == remaining {
+                    return (out, true);
+                }
+                continue;
+            }
+            if buf.is_empty() || buf.contains(&0) {
+                continue;
+            }
+            let newlines = buf.iter().filter(|&&b| b == b'\n').count() as u32;
             // A final line without a trailing newline still counts as a line.
-            out[i] = if bytes.ends_with(b"\n") {
+            out[i] = if buf.ends_with(b"\n") {
                 newlines
             } else {
                 newlines + 1
