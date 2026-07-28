@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useRef } from "react";
 import type { AgentRecord, GitState, TrackedRepo } from "@/api";
 import { useAppStore } from "@/store";
 import { gitKey } from "@/store/git";
 import { basename } from "@/util/format";
-import { usePoll } from "@/util/hooks";
 import { prSnapshot } from "@/util/prState";
 import { GitRepoSection } from "./GitRepoSection";
 import { type PrSetEntry, PrSetStrip } from "./PrSetStrip";
@@ -49,7 +47,6 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 }
 
 function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
-  const fetchGitState = useAppStore((s) => s.fetchGitState);
   const gitStates = useAppStore((s) => s.gitStates);
   const prStates = useAppStore((s) => s.prStates);
   const prChecks = useAppStore((s) => s.prChecks);
@@ -77,25 +74,6 @@ function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
     const pr = live !== undefined ? live : prSnapshot(sc.repo);
     return pr ? [{ repo: sc.repo, pr, checks: prChecks[key] ?? null }] : [];
   });
-
-  // On mount / agent change, fetch git state for EVERY repo so "active" can be
-  // computed — rendered sections then keep their own 1s poll going.
-  const repos = agent.repos;
-  useEffect(() => {
-    repos.forEach((repo, i) => void fetchGitState(agent.id, i === 0 ? undefined : repo.subdir));
-  }, [agent.id, repos, fetchGitState]);
-
-  // Repos without a rendered section have no per-section poll, so sweep them
-  // on a slow cadence — an agent touching a dormant repo promotes it to a
-  // section within a tick. Read through a ref so the poll's identity is
-  // stable (the active set changes with every gitStates write).
-  const dormantRef = useRef<RepoScope[]>([]);
-  dormantRef.current =
-    active.length > 0 ? scopes.filter((sc) => !active.includes(sc)) : scopes.slice(1);
-  const pollDormant = useCallback(async () => {
-    await Promise.all(dormantRef.current.map((sc) => fetchGitState(agent.id, sc.subdir)));
-  }, [agent.id, fetchGitState]);
-  usePoll(pollDormant, 5000, [pollDormant]);
 
   return (
     <div className="git-multi">

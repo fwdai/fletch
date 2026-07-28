@@ -83,15 +83,14 @@ export interface GitSlice {
    *  halves now come from the same instant. */
   refreshAllPrStatus: () => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
-  /** The Git panel's fast tick: PR state + CI in one backend pass over
-   *  ETag-conditional REST. Free at GitHub whenever nothing changed, so it can
-   *  run at a tight cadence; supersedes polling `fetchPrState` and
-   *  `fetchPrChecks` separately, and keeps the two slices from disagreeing
-   *  since both come from the same moment. */
+  /** PR state + CI in one backend pass over ETag-conditional REST. Free at
+   *  GitHub whenever nothing changed, so it can run at a tight cadence, and both
+   *  slices come from the same moment so they can't disagree. Driven by
+   *  `gitSync` for the focused agent — not called from components. */
   fetchPrLive: (agentId: string, subdir?: string) => Promise<void>;
-  /** The Git panel's slow tick: unresolved review threads. Stays on GraphQL
-   *  (thread resolution has no REST equivalent) and so does cost points —
-   *  hence the gentler cadence. */
+  /** Unresolved review threads. Stays on GraphQL (thread resolution has no REST
+   *  equivalent) and so does cost points — hence the gentler cadence. Driven by
+   *  `gitSync`. */
   fetchPrThreads: (agentId: string, subdir?: string) => Promise<void>;
   delegateGitAction: (
     agentId: string,
@@ -316,9 +315,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     const ticket = issuePrWrite();
     try {
       const live = await api.getPrLive(agentId, subdir);
-      // One ticket, checked per slice: the panel and the title capsule both poll
-      // this for the same agent, so an older response must not land on top of a
-      // newer one (nor on top of the post-merge refresh).
+      // One ticket, checked per slice: the 20s fleet sweep writes these same
+      // keys for the focused agent, so an older response must not land on top of
+      // a newer one (nor on top of the post-merge refresh).
       const takeState = acceptPrWrite("prStates", mapKey, ticket);
       const takeChecks =
         (live?.checks != null || live == null) && acceptPrWrite("prChecks", mapKey, ticket);

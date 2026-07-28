@@ -3,21 +3,14 @@ import type { MergeState, TrackedRepo } from "@/api";
 import { deriveState } from "@/components/RightPanel/primaryActions";
 import { useAppStore } from "@/store";
 import { gitKey } from "@/store/git";
-import { usePoll } from "@/util/hooks";
 import { prSnapshot } from "@/util/prState";
 
-/** All the live git/PR reads the panel renders from, plus the polling that
- *  keeps them fresh while the panel is mounted:
- *  - git state at 1s,
- *  - PR state + CI at 5s via `fetchPrLive` — one backend pass over
- *    ETag-conditional REST, which GitHub doesn't bill when nothing changed, so
- *    the tick that users actually watch ("is it green", "did it merge") stays
- *    tight and near-free,
- *  - review threads at 30s while a PR is open. These stay on GraphQL (thread
- *    resolution has no REST equivalent) and so cost points per call — human
- *    review comments arrive on minute timescales, so the slower tick loses
- *    nothing.
- *  usePoll fires immediately, so the first read of each still lands on mount.
+/** The Git panel's view of one repo's git/PR state, derived from the store.
+ *
+ *  A pure read — `useGitSync` owns the polling that keeps these current. The
+ *  fetchers returned at the bottom are for *actions*, not refresh loops: after a
+ *  push or a delegated git op the caller wants the new state now rather than at
+ *  the next tick.
  *
  *  `repo`/`subdir` scope the hook to one repo of a multi-repo agent: `subdir`
  *  undefined = the primary repo, read/written under the plain agent key (the
@@ -55,8 +48,6 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
   const prChecksEntry = useAppStore((s) => s.prChecks[key]);
   const fetchPrChecksStore = useAppStore((s) => s.fetchPrChecks);
   const prCommentsEntry = useAppStore((s) => s.prComments[key]);
-  const fetchPrLiveStore = useAppStore((s) => s.fetchPrLive);
-  const fetchPrThreadsStore = useAppStore((s) => s.fetchPrThreads);
 
   // Subdir-bound fetchers, so every consumer (polls, actions, delegation
   // refresh) hits this section's repo without re-threading the scope.
@@ -72,33 +63,7 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
     (id: string) => fetchPrChecksStore(id, subdir),
     [fetchPrChecksStore, subdir],
   );
-  const fetchPrLive = useCallback(
-    (id: string) => fetchPrLiveStore(id, subdir),
-    [fetchPrLiveStore, subdir],
-  );
-  const fetchPrThreads = useCallback(
-    (id: string) => fetchPrThreadsStore(id, subdir),
-    [fetchPrThreadsStore, subdir],
-  );
-
-  const pollGitState = useCallback(() => fetchGitState(agentId), [agentId, fetchGitState]);
-  usePoll(pollGitState, 1000, [pollGitState]);
-
-  // State and CI in one conditional-REST pass. Runs regardless of PR status —
-  // it *is* how the panel learns a PR merged or closed — and stays at 5s even
-  // once checks settle, because an unchanged read is a 304 that GitHub doesn't
-  // bill. There's nothing to back off from.
-  const pollLive = useCallback(() => fetchPrLive(agentId), [agentId, fetchPrLive]);
-  usePoll(pollLive, 5000, [pollLive]);
-
   const prOpen = prState?.state === "open";
-  const pollThreads = useCallback(async () => {
-    if (!prOpen) return;
-    await fetchPrThreads(agentId);
-  }, [agentId, prOpen, fetchPrThreads]);
-  // 30s: this is the one panel read that still spends GraphQL points, and human
-  // review comments don't arrive faster than that.
-  usePoll(pollThreads, 30000, [pollThreads]);
 
   const checks = prChecksEntry ?? null;
   const comments = prCommentsEntry ?? null;

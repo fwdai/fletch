@@ -1,13 +1,18 @@
 /** Write ordering for the PR store slices.
  *
- *  `prStates` / `prChecks` have several concurrent writers: the Git panel's 5s
- *  `fetchPrLive`, the title capsule's 10s one, the app-wide sweeps, and the
- *  post-merge refresh. `usePoll`'s in-flight guard is per hook instance, so two
- *  components polling the same agent can each have a request outstanding — and
- *  nothing stopped an older one from resolving *last* and overwriting newer
- *  data. That regressed the UI: a merged badge flipping back to open because a
- *  poll issued before the merge landed after it, or a stale CI tint persisting
- *  until the next tick.
+ *  `prStates` / `prChecks` have several concurrent writers, and centralizing the
+ *  polling into `gitSync` did not reduce them to one:
+ *
+ *    - the fleet sweep (`refreshAllPrStatus`, 20s) writes *every* agent's keys,
+ *    - the focused-agent poller (`fetchPrLive`, 5s) writes the selected one's,
+ *    - `createPr` / `commitAndOpenPr` and the pushed `pr:state_changed` event
+ *      write authoritatively at arbitrary moments.
+ *
+ *  The first two overlap on the focused agent's keys at different cadences, so
+ *  an older request can still resolve *last* and overwrite newer data. That
+ *  regressed the UI: a merged badge flipping back to open because a request
+ *  issued before the merge landed after it, or a stale CI tint persisting until
+ *  the next tick.
  *
  *  Every write claims a ticket from one monotonic counter *before* its request,
  *  then applies only if no later-issued write has already landed for the same
