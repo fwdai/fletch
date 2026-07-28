@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { acceptPrWrite, issuePrWrite, resetPrWriteOrder } from "./prWriteOrder";
+import { acceptPrWrite, issuePrWrite, resetPrWriteOrder, stampPrWrite } from "./prWriteOrder";
 
 describe("prWriteOrder", () => {
   beforeEach(() => resetPrWriteOrder());
@@ -54,6 +54,38 @@ describe("prWriteOrder", () => {
 
     expect(acceptPrWrite("prStates", "agent-2", b)).toBe(true);
     expect(acceptPrWrite("prStates", "agent-1", a)).toBe(true);
+  });
+
+  /** A just-created PR must not be erased by a poll that was already in flight
+   *  and saw no PR at all. Without the stamp the high-water mark stays put and
+   *  that poll is still accepted. */
+  it("protects an authoritative write from an in-flight poll", () => {
+    const poll = issuePrWrite(); // panel poll, issued before the PR existed
+    stampPrWrite("prStates", "agent-1"); // createPr's write lands
+    expect(acceptPrWrite("prStates", "agent-1", poll)).toBe(false);
+  });
+
+  /** A backend-pushed `pr:state_changed` is likewise authoritative — a poll that
+   *  observed the PR before the transition must not roll the badge back. */
+  it("protects a pushed state change from an in-flight poll", () => {
+    const poll = issuePrWrite();
+    stampPrWrite("prStates", "agent-1"); // onPrStateChanged
+    expect(acceptPrWrite("prStates", "agent-1", poll)).toBe(false);
+  });
+
+  /** But a poll issued *after* an authoritative write is newer information and
+   *  must still apply — otherwise the stamp would freeze the slice. */
+  it("lets a later poll supersede an authoritative write", () => {
+    stampPrWrite("prStates", "agent-1");
+    const later = issuePrWrite();
+    expect(acceptPrWrite("prStates", "agent-1", later)).toBe(true);
+  });
+
+  /** Stamping one slice must not block another for the same agent. */
+  it("scopes an authoritative write to its slice", () => {
+    const checks = issuePrWrite();
+    stampPrWrite("prStates", "agent-1");
+    expect(acceptPrWrite("prChecks", "agent-1", checks)).toBe(true);
   });
 
   /** A single ticket covers one (slice, key) write. Re-checking the same ticket

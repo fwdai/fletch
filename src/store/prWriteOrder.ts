@@ -44,6 +44,18 @@ export const acceptPrWrite = (slice: PrSlice, key: string, issued: number): bool
   return true;
 };
 
+/** Record an authoritative, synchronous write as the newest for `slice`/`key` —
+ *  a mutation result (`createPr`) or a state change the backend pushed to us.
+ *
+ *  These awaited nothing of their own, so they need no ticket to protect them
+ *  from each other. They must still *advance* the counter: an unstamped write
+ *  leaves the high-water mark where it was, so a poll already in flight — one
+ *  that observed the world before the PR existed, or before it merged — would
+ *  still be accepted afterwards and overwrite it. */
+export const stampPrWrite = (slice: PrSlice, key: string): void => {
+  applied[slice].set(key, issuePrWrite());
+};
+
 /** Tests only — the counter and applied maps are module-global. */
 export const resetPrWriteOrder = (): void => {
   ticket = 0;

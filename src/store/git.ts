@@ -15,7 +15,7 @@ import {
 } from "@/components/RightPanel/delegation";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { setSetting } from "@/storage/settings";
-import { acceptPrWrite, issuePrWrite } from "./prWriteOrder";
+import { acceptPrWrite, issuePrWrite, stampPrWrite } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
 
 export interface GitSlice {
@@ -471,6 +471,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       await api.commitAgent(agentId, message, subdir);
       await api.pushAgent(agentId, subdir);
       const pr = await api.createPr(agentId, "", "", subdir);
+      // Authoritative: we just created this PR. Stamp it so a poll that was
+      // already in flight — and saw no PR at all — can't erase the card.
+      stampPrWrite("prStates", gitKey(agentId, subdir));
       set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: pr } }));
       await get().fetchGitState(agentId, subdir);
       return true;
@@ -500,6 +503,8 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   createPr: async (agentId, title, body, subdir) => {
     try {
       const pr = await api.createPr(agentId, title, body, subdir);
+      // Authoritative (see commitAndOpenPr): outranks any in-flight poll.
+      stampPrWrite("prStates", gitKey(agentId, subdir));
       set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: pr } }));
       return pr;
     } catch (e) {

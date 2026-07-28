@@ -59,6 +59,7 @@ import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { notify } from "@/util/notify";
 import { playAgentDone } from "@/util/sound";
 import { interruptedAgents } from "./interrupted";
+import { stampPrWrite } from "./prWriteOrder";
 import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppSlice, SliceCreator } from "./types";
 
@@ -424,6 +425,10 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   });
 
   await onPrStateChanged((e) => {
+    // A backend-pushed change is the freshest thing we have. Stamp it so a poll
+    // already in flight — which observed the PR before this transition — can't
+    // land afterwards and roll the badge back (merged flipping to open).
+    stampPrWrite("prStates", e.agent_id);
     set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
   });
 
