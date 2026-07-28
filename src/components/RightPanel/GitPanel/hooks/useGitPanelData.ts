@@ -9,9 +9,14 @@ import { prSnapshot } from "@/util/prState";
 /** All the live git/PR reads the panel renders from, plus the polling that
  *  keeps them fresh while the panel is mounted:
  *  - git state at 1s,
- *  - PR state at 5s (so a merge/close/mergeable flip on GitHub shows up),
- *  - checks + review comments at 5s, only while a PR is open — one combined
- *    backend read (`fetchPrDetail`), so both land from the same moment.
+ *  - PR state + CI at 5s via `fetchPrLive` — one backend pass over
+ *    ETag-conditional REST, which GitHub doesn't bill when nothing changed, so
+ *    the tick that users actually watch ("is it green", "did it merge") stays
+ *    tight and near-free,
+ *  - review threads at 30s while a PR is open. These stay on GraphQL (thread
+ *    resolution has no REST equivalent) and so cost points per call — human
+ *    review comments arrive on minute timescales, so the slower tick loses
+ *    nothing.
  *  usePoll fires immediately, so the first read of each still lands on mount.
  *
  *  `repo`/`subdir` scope the hook to one repo of a multi-repo agent: `subdir`
@@ -50,7 +55,8 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
   const prChecksEntry = useAppStore((s) => s.prChecks[key]);
   const fetchPrChecksStore = useAppStore((s) => s.fetchPrChecks);
   const prCommentsEntry = useAppStore((s) => s.prComments[key]);
-  const fetchPrDetailStore = useAppStore((s) => s.fetchPrDetail);
+  const fetchPrLiveStore = useAppStore((s) => s.fetchPrLive);
+  const fetchPrThreadsStore = useAppStore((s) => s.fetchPrThreads);
 
   // Subdir-bound fetchers, so every consumer (polls, actions, delegation
   // refresh) hits this section's repo without re-threading the scope.
@@ -66,32 +72,33 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
     (id: string) => fetchPrChecksStore(id, subdir),
     [fetchPrChecksStore, subdir],
   );
-  const fetchPrDetail = useCallback(
-    (id: string) => fetchPrDetailStore(id, subdir),
-    [fetchPrDetailStore, subdir],
+  const fetchPrLive = useCallback(
+    (id: string) => fetchPrLiveStore(id, subdir),
+    [fetchPrLiveStore, subdir],
+  );
+  const fetchPrThreads = useCallback(
+    (id: string) => fetchPrThreadsStore(id, subdir),
+    [fetchPrThreadsStore, subdir],
   );
 
   const pollGitState = useCallback(() => fetchGitState(agentId), [agentId, fetchGitState]);
   usePoll(pollGitState, 1000, [pollGitState]);
 
-  const pollPrState = useCallback(() => fetchPrState(agentId), [agentId, fetchPrState]);
-  usePoll(pollPrState, 5000, [pollPrState]);
+  // State and CI in one conditional-REST pass. Runs regardless of PR status —
+  // it *is* how the panel learns a PR merged or closed — and stays at 5s even
+  // once checks settle, because an unchanged read is a 304 that GitHub doesn't
+  // bill. There's nothing to back off from.
+  const pollLive = useCallback(() => fetchPrLive(agentId), [agentId, fetchPrLive]);
+  usePoll(pollLive, 5000, [pollLive]);
 
   const prOpen = prState?.state === "open";
-  const pollChecks = useCallback(async () => {
+  const pollThreads = useCallback(async () => {
     if (!prOpen) return;
-    // Checks + review comments arrive together, off one PR node in a single
-    // GraphQL round-trip. Fetching them separately used to cost ~31 rate-limit
-    // points a tick (the review-thread selection billed 30 under the branch
-    // scan) — enough for one open panel to drain the hourly budget on its own.
-    await fetchPrDetail(agentId);
-  }, [agentId, prOpen, fetchPrDetail]);
-  // Adaptive: 5s while checks are still in flight (or not yet fetched), backing
-  // off to 15s once they've settled pass/fail — a settled PR rarely changes, and
-  // the app-wide poll still covers it. `undefined` (first fetch pending) counts
-  // as in-flight so the initial read lands promptly.
-  const checksSettled = prOpen && prChecksEntry != null && prChecksEntry.rollup !== "pending";
-  usePoll(pollChecks, checksSettled ? 15000 : 5000, [pollChecks, checksSettled]);
+    await fetchPrThreads(agentId);
+  }, [agentId, prOpen, fetchPrThreads]);
+  // 30s: this is the one panel read that still spends GraphQL points, and human
+  // review comments don't arrive faster than that.
+  usePoll(pollThreads, 30000, [pollThreads]);
 
   const checks = prChecksEntry ?? null;
   const comments = prCommentsEntry ?? null;

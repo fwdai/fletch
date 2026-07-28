@@ -1,7 +1,7 @@
 //! Public types shared across the GitHub operations — the IPC surface,
 //! unchanged from the gh module.
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrStatus {
     Open,
@@ -180,14 +180,14 @@ pub struct PrComments {
     pub unresolved: Vec<PrComment>,
 }
 
-/// The Git panel's per-poll PR read: the merge gate + checks rollup and the
-/// unresolved review threads, fetched together off one PR node. Both halves
-/// come from the same round-trip, so a present `PrDetail` means both are
-/// current — the panel writes them as a pair.
+/// The Git panel's fast-tick PR read: current state plus CI, both from
+/// ETag-conditional REST in one pass (see `github::live`). `checks` is
+/// `None` when the commit reads didn't resolve — distinct from a rollup of
+/// zero checks, so a transient failure never blanks a passing tint.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct PrDetail {
-    pub checks: PrChecks,
-    pub comments: PrComments,
+pub struct PrLive {
+    pub state: PrState,
+    pub checks: Option<PrChecks>,
 }
 
 /// GitHub connection state. Drives the New Project UI and readiness rows.

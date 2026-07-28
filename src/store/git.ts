@@ -85,11 +85,16 @@ export interface GitSlice {
    *  opening the Git panel. */
   refreshAllPrChecks: () => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
-  /** Refresh checks + review comments together in one backend round-trip —
-   *  what the Git panel polls. Cheaper than the two fetchers side by side (the
-   *  backend reads both off a single PR node) and keeps the two slices
-   *  consistent, since they come from the same moment. */
-  fetchPrDetail: (agentId: string, subdir?: string) => Promise<void>;
+  /** The Git panel's fast tick: PR state + CI in one backend pass over
+   *  ETag-conditional REST. Free at GitHub whenever nothing changed, so it can
+   *  run at a tight cadence; supersedes polling `fetchPrState` and
+   *  `fetchPrChecks` separately, and keeps the two slices from disagreeing
+   *  since both come from the same moment. */
+  fetchPrLive: (agentId: string, subdir?: string) => Promise<void>;
+  /** The Git panel's slow tick: unresolved review threads. Stays on GraphQL
+   *  (thread resolution has no REST equivalent) and so does cost points —
+   *  hence the gentler cadence. */
+  fetchPrThreads: (agentId: string, subdir?: string) => Promise<void>;
   delegateGitAction: (
     agentId: string,
     kind: GitDelegationKind,
@@ -298,27 +303,34 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
 
   fetchPrChecks: (agentId, subdir) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir),
 
-  fetchPrDetail: async (agentId, subdir) => {
+  fetchPrLive: async (agentId, subdir) => {
     const mapKey = gitKey(agentId, subdir);
     try {
-      const detail = await api.getPrDetail(agentId, subdir);
-      // A null detail is "confirmed unavailable" for both halves — the same
-      // meaning fetchPrAux gives a null value, so the panel drops the
-      // "checking…" placeholder rather than hanging on it.
+      const live = await api.getPrLive(agentId, subdir);
+      // Always write state (including null) to distinguish "confirmed: no PR"
+      // from "not yet fetched" — the same rule fetchPrState follows. Checks
+      // are only written when the read resolved them: a null `checks` on a
+      // present PR means the CI reads degraded, and overwriting a good rollup
+      // with null there would blank the pill on a transient error.
       set((s) => ({
-        prChecks: { ...s.prChecks, [mapKey]: detail?.checks ?? null },
-        prComments: { ...s.prComments, [mapKey]: detail?.comments ?? null },
+        prStates: { ...s.prStates, [mapKey]: live?.state ?? null },
+        prChecks:
+          live?.checks != null || live == null
+            ? { ...s.prChecks, [mapKey]: live?.checks ?? null }
+            : s.prChecks,
       }));
     } catch {
-      // Mirror fetchPrAux's failure contract per slice: degrade an absent key
-      // to null so the placeholder clears, but let a later transient error
+      // Mirror fetchPrAux's failure contract: degrade an absent key to null so
+      // the "checking…" placeholder clears, but let a later transient error
       // keep the last good value.
       set((s) => ({
         prChecks: mapKey in s.prChecks ? s.prChecks : { ...s.prChecks, [mapKey]: null },
-        prComments: mapKey in s.prComments ? s.prComments : { ...s.prComments, [mapKey]: null },
       }));
     }
   },
+
+  fetchPrThreads: (agentId, subdir) =>
+    fetchPrAux(set, agentId, "prComments", api.getPrThreads, subdir),
 
   delegateGitAction: (agentId, kind, prompt, subdir) => {
     // If the agent is already running, DON'T inject the trigger mid-turn: Claude
@@ -475,8 +487,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // Refresh immediately: no backend event fires on merge, and the panel
       // should transition to the merged state as soon as GitHub reports it
       // (with --auto + pending checks the PR can legitimately stay open).
-      await get().fetchPrState(agentId, subdir);
-      await get().fetchPrChecks(agentId, subdir);
+      // One read covers state and checks; the merge just changed both, so the
+      // conditional GETs come back 200 rather than 304 here.
+      await get().fetchPrLive(agentId, subdir);
     } catch (e) {
       set({ lastError: String(e) });
     }

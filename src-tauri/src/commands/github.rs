@@ -193,26 +193,16 @@ pub async fn get_pr_checks(
     Ok(gh::pr_checks(&checkout).await.unwrap_or(None))
 }
 
-/// The Git panel's per-poll read: merge gate + checks + unresolved review
-/// threads in one round-trip (spec §6). Supersedes polling `get_pr_checks` and
-/// `get_pr_comments` side by side — those went through the `first:30` branch
-/// scan, under which the review-thread selection bills ~30 GraphQL points a
-/// call; off a single `pullRequest(number:)` node the pair costs 1.
-///
-/// Resolution prefers the bound PR number (one query). A repo with an open PR
-/// but no number yet — a PR opened on GitHub that adoption hasn't claimed —
-/// discovers the number via the cheap state lookup first, then reads by number:
-/// two 1-point queries rather than one 30-point scan. Best-effort throughout:
-/// any degradation returns `None` and the panel keeps its last-known values.
-#[tauri::command]
-pub async fn get_pr_detail(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    subdir: Option<String>,
-) -> Result<Option<gh::PrDetail>> {
-    let Some((repo, checkout)) =
-        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
-    else {
+/// Resolve the PR number for a panel read: the bound number when adoption has
+/// recorded one, else discovered once by branch. Discovery costs a 1-point
+/// GraphQL lookup and only happens for a PR opened outside the app that the
+/// app hasn't claimed yet.
+async fn panel_pr_number(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<Option<(u32, std::path::PathBuf, std::path::PathBuf)>> {
+    let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
         return Ok(None);
     };
     if repo.branch.is_none() {
@@ -225,11 +215,52 @@ pub async fn get_pr_detail(
             None => return Ok(None),
         },
     };
-    Ok(
-        gh::pr_detail_number(&checkout, Some(&repo.repo_path), number)
-            .await
-            .unwrap_or(None),
-    )
+    Ok(Some((number, checkout, repo.repo_path)))
+}
+
+/// The Git panel's fast tick: PR state + CI over ETag-conditional REST.
+///
+/// GitHub does not count a `304 Not Modified` against the primary rate limit,
+/// so this poll is free whenever nothing has changed — which lets the panel run
+/// a tight cadence without spending the GraphQL points budget that the review
+/// threads (`get_pr_threads`) still need. Best-effort: any degradation returns
+/// `None` and the panel keeps its last-known values.
+#[tauri::command]
+pub async fn get_pr_live(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<Option<gh::PrLive>> {
+    let Some((number, checkout, source)) =
+        panel_pr_number(&supervisor, &agent_id, subdir.as_deref()).await?
+    else {
+        return Ok(None);
+    };
+    Ok(gh::pr_live_number(&checkout, Some(&source), number)
+        .await
+        .unwrap_or(None))
+}
+
+/// The Git panel's slow tick: unresolved review threads (Greptile / other bots
+/// / humans), flattened to each thread's root comment.
+///
+/// Stays on GraphQL because thread resolution (`isResolved`/`isOutdated`) has
+/// no REST equivalent — so unlike `get_pr_live` this one does spend points, 1
+/// per call by PR number. Polled well below the state/CI cadence to match.
+#[tauri::command]
+pub async fn get_pr_threads(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<Option<gh::PrComments>> {
+    let Some((number, checkout, source)) =
+        panel_pr_number(&supervisor, &agent_id, subdir.as_deref()).await?
+    else {
+        return Ok(None);
+    };
+    Ok(gh::pr_threads_number(&checkout, Some(&source), number)
+        .await
+        .unwrap_or(None))
 }
 
 /// App-wide background poll that refreshes PR state for every repo with a

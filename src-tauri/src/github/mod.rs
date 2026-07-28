@@ -19,8 +19,8 @@ pub mod closes;
 
 mod checks;
 mod comments;
-mod detail;
 mod issues;
+mod live;
 mod pr;
 mod query;
 mod repo;
@@ -30,8 +30,9 @@ pub use client::{git_auth_env, seed_token, set_token, TOKEN_SETTING};
 pub(crate) use closes::with_closes_trailer;
 
 pub use checks::*;
-pub use detail::*;
+pub use comments::pr_threads_number;
 pub use issues::*;
+pub use live::*;
 pub use pr::*;
 pub use repo::*;
 pub use types::*;
