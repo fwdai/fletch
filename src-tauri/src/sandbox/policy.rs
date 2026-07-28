@@ -552,7 +552,11 @@ mod tests {
         names.sort_unstable();
         let before = names.len();
         names.dedup();
-        assert_eq!(before, names.len(), "duplicate env var in the redirect table");
+        assert_eq!(
+            before,
+            names.len(),
+            "duplicate env var in the redirect table"
+        );
     }
 
     /// The redirect must never claim a variable that provider-state resolution

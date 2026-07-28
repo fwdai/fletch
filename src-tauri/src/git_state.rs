@@ -149,7 +149,10 @@ pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState
         }
     }
     if !untracked_at.is_empty() {
-        let rels: Vec<String> = untracked_at.iter().map(|&i| files[i].path.clone()).collect();
+        let rels: Vec<String> = untracked_at
+            .iter()
+            .map(|&i| files[i].path.clone())
+            .collect();
         let (counts, _truncated) = untracked_additions(checkout_path, rels).await;
         for (&i, adds) in untracked_at.iter().zip(counts) {
             files[i].additions = adds;
@@ -738,7 +741,10 @@ mod tests {
             .collect();
 
         let (counts, truncated) = untracked_additions(td.path(), rels).await;
-        assert!(!truncated, "900 tiny files must not exhaust the read budget");
+        assert!(
+            !truncated,
+            "900 tiny files must not exhaust the read budget"
+        );
         assert_eq!(counts.len(), 900);
         assert_eq!(counts.iter().sum::<u32>(), 2_700);
     }
