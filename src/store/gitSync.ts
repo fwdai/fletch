@@ -27,8 +27,6 @@ import { usePoll } from "@/util/hooks";
 
 /** Mount once, at the app root. */
 export function useGitSync() {
-  const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
-
   const fetchAllShortstats = useAppStore((s) => s.fetchAllShortstats);
   const fetchAllGitMeta = useAppStore((s) => s.fetchAllGitMeta);
   const refreshBaseFreshness = useAppStore((s) => s.refreshBaseFreshness);
@@ -48,16 +46,18 @@ export function useGitSync() {
   // base moves far less often than its diffs.
   usePoll(fetchAllGitMeta, 15000, [fetchAllGitMeta]);
 
+  // Whether GitHub is reachable is enforced *in the store* — see `githubReady`
+  // in `git.ts` — so nothing below re-checks it. It is still listed as a
+  // dependency of the two slow polls: that re-arms them (and fires one tick)
+  // the moment a connection appears. `github` hydrates asynchronously after
+  // launch, so without this a cold start would no-op its first tick and then
+  // wait out the 5-minute idle interval before trying again.
+  const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
+
   // Fetches each project's base branch on its source repo so the staleness
   // chips track a base that moved on GitHub. A git fetch, not an API call.
   // Silent by contract — a background fetch never raises a user-facing error.
-  usePoll(
-    async () => {
-      if (githubConnected) await refreshBaseFreshness();
-    },
-    300000,
-    [refreshBaseFreshness, githubConnected],
-  );
+  usePoll(refreshBaseFreshness, 300000, [refreshBaseFreshness, githubConnected]);
 
   // Remote PR status for every repo with a known PR: state plus the CI rollup
   // that tints each sidebar pill. One batched query for the whole fleet, 1
@@ -68,75 +68,51 @@ export function useGitSync() {
   // Deliberately derived from the store rather than passed in: the cadence
   // reacts to the data it fetches.
   const anyOpenPr = useAppStore((s) => Object.values(s.prStates).some((p) => p?.state === "open"));
-  usePoll(
-    async () => {
-      if (githubConnected) await refreshAllPrStatus();
-    },
-    anyOpenPr ? 20000 : 300000,
-    [refreshAllPrStatus, githubConnected, anyOpenPr],
-  );
+  usePoll(refreshAllPrStatus, anyOpenPr ? 20000 : 300000, [refreshAllPrStatus, githubConnected]);
 
   // ── focused agent ─────────────────────────────────────────────────────────
 
-  const agentId = useAppStore((s) => s.selectedAgentId);
+  // Full git state — branch, ahead/behind, file list. 1s while the right pane is
+  // showing it (the user is watching a diff); slower when it's collapsed, where
+  // only the title capsule reads it. Local git, but each call forks a process,
+  // so the distinction is worth one ternary.
+  const panelVisible = useAppStore((s) => !s.rightCollapsed && !s.activeDraftId);
+  useFocusedRepoPoll(fetchGitState, panelVisible ? 1000 : 10000);
 
-  // Every repo of the focused agent, as the `subdir` the fetchers take
-  // (undefined = primary). Covering all of them — not just the ones a panel
-  // section happens to render — is what retired `pollDormant`. Shallow-compared
-  // so the polls below keep a stable identity across unrelated store writes.
+  // PR state + CI in one backend pass over ETag-conditional REST. Unchanged
+  // reads are 304s GitHub doesn't bill, so there's nothing to back off from.
+  useFocusedRepoPoll(fetchPrLive, 5000);
+
+  // Unresolved review threads — the one panel read still costing GraphQL points,
+  // so it gets the gentlest cadence. Not filtered by PR state here: the backend
+  // returns nothing for a repo whose PR isn't open, and keeping that rule in one
+  // place beats mirroring it in the poller.
+  useFocusedRepoPoll(fetchPrThreads, 30000);
+}
+
+/** Run `fetch` for every repo of the focused agent, on `intervalMs`.
+ *
+ *  Covering *all* of the agent's repos — not just the ones a panel section
+ *  happens to render — is what retired `GitPanel`'s `pollDormant`. No-ops when
+ *  nothing is selected, so callers need no guard of their own. */
+function useFocusedRepoPoll(
+  fetch: (agentId: string, subdir?: string) => Promise<void>,
+  intervalMs: number,
+) {
+  const agentId = useAppStore((s) => s.selectedAgentId);
+  // Each repo as the `subdir` the fetchers take (undefined = primary).
+  // Shallow-compared so the tick keeps a stable identity across unrelated
+  // store writes — `usePoll` holds whatever callback it was last given, so an
+  // unstable one would keep firing a stale closure.
   const subdirs = useAppStore(
     useShallow((s) => {
       const agent = s.workspace?.agents.find((a) => a.id === s.selectedAgentId);
       return agent?.repos.map((r, i) => (i === 0 ? undefined : r.subdir)) ?? [];
     }),
   );
-
-  // Fan one fetcher across the focused agent's repos.
-  const forEachRepo = useCallback(
-    (fetch: (id: string, subdir?: string) => Promise<void>) => async () => {
-      if (!agentId) return;
-      await Promise.all(subdirs.map((subdir) => fetch(agentId, subdir)));
-    },
-    [agentId, subdirs],
-  );
-
-  // Full git state — branch, ahead/behind, file list. 1s while the right pane is
-  // showing it (the user is watching a diff); slower when it's collapsed, where
-  // only the title capsule reads it. Local git, but each call forks a process,
-  // so the distinction is worth one ternary.
-  const panelVisible = useAppStore(
-    (s) => !s.rightCollapsed && !s.activeDraftId && !!s.selectedAgentId,
-  );
-  const pollGitState = useCallback(
-    () => forEachRepo(fetchGitState)(),
-    [forEachRepo, fetchGitState],
-  );
-  usePoll(pollGitState, panelVisible ? 1000 : 10000, [pollGitState, panelVisible]);
-
-  // PR state + CI in one backend pass over ETag-conditional REST. Unchanged
-  // reads are 304s GitHub doesn't bill, so there's nothing to back off from.
-  const pollPrLive = useCallback(() => forEachRepo(fetchPrLive)(), [forEachRepo, fetchPrLive]);
-  usePoll(
-    async () => {
-      if (githubConnected) await pollPrLive();
-    },
-    5000,
-    [pollPrLive, githubConnected],
-  );
-
-  // Unresolved review threads — the one panel read still costing GraphQL points,
-  // so it gets the gentlest cadence. Not filtered by PR state here: the backend
-  // returns nothing for a repo whose PR isn't open, and keeping that rule in one
-  // place beats mirroring it in the poller.
-  const pollThreads = useCallback(
-    () => forEachRepo(fetchPrThreads)(),
-    [forEachRepo, fetchPrThreads],
-  );
-  usePoll(
-    async () => {
-      if (githubConnected) await pollThreads();
-    },
-    30000,
-    [pollThreads, githubConnected],
-  );
+  const tick = useCallback(async () => {
+    if (!agentId) return;
+    await Promise.all(subdirs.map((subdir) => fetch(agentId, subdir)));
+  }, [agentId, subdirs, fetch]);
+  usePoll(tick, intervalMs, [tick]);
 }

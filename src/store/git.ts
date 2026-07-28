@@ -22,9 +22,9 @@ export interface GitSlice {
   /** Full git state — branch, ahead/behind, file list, totals. Keyed by
    *  `gitKey(agentId, subdir?)` (store/git.ts): the plain agent_id addresses
    *  the primary repo, `agentId::subdir` a secondary repo of a multi-repo
-   *  agent. Only populated for the focused agent (by GitPanel's 1s poll
-   *  while it's mounted). For sidebar shortstats / right-rail badges of
-   *  other agents, read from `gitShortstats` instead. */
+   *  agent. Only populated for the focused agent (by `gitSync`, for every one of
+   *  its repos). For sidebar shortstats / right-rail badges of other agents,
+   *  read from `gitShortstats` instead. */
   gitStates: Record<string, GitState>;
   /** Compact per-agent shortstats (additions / deletions / file count),
    *  keyed by agent_id. Updated for every live agent on the app-wide 5s
@@ -207,6 +207,13 @@ const fetchPrAux = async <K extends "prChecks" | "prComments">(
   }
 };
 
+// Whether GitHub is usable. The reads below early-return on `false` so that a
+// user with no connection generates zero API chatter — the rule lives here, in
+// the data layer, rather than being re-checked by each poller. Action-driven
+// reads (`fetchPrState`, `fetchPrChecks`) are deliberately not gated: they
+// resolve against the persisted snapshot, which is still useful offline.
+const githubReady = (get: GitGet) => get().github?.authenticated ?? false;
+
 export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   gitStates: {},
   gitShortstats: {},
@@ -254,6 +261,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   },
 
   refreshBaseFreshness: async () => {
+    if (!githubReady(get)) return;
     try {
       await api.refreshBaseFreshness();
     } catch {
@@ -277,6 +285,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   },
 
   refreshAllPrStatus: async () => {
+    if (!githubReady(get)) return;
     const ticket = issuePrWrite();
     try {
       // Set state directly from the reply (rather than via `pr:state_changed`
@@ -311,6 +320,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   fetchPrChecks: (agentId, subdir) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir),
 
   fetchPrLive: async (agentId, subdir) => {
+    if (!githubReady(get)) return;
     const mapKey = gitKey(agentId, subdir);
     const ticket = issuePrWrite();
     try {
@@ -347,8 +357,10 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  fetchPrThreads: (agentId, subdir) =>
-    fetchPrAux(set, agentId, "prComments", api.getPrThreads, subdir),
+  fetchPrThreads: async (agentId, subdir) => {
+    if (!githubReady(get)) return;
+    await fetchPrAux(set, agentId, "prComments", api.getPrThreads, subdir);
+  },
 
   delegateGitAction: (agentId, kind, prompt, subdir) => {
     // If the agent is already running, DON'T inject the trigger mid-turn: Claude

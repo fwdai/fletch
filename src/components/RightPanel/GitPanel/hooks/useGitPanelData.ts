@@ -49,8 +49,9 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
   const fetchPrChecksStore = useAppStore((s) => s.fetchPrChecks);
   const prCommentsEntry = useAppStore((s) => s.prComments[key]);
 
-  // Subdir-bound fetchers, so every consumer (polls, actions, delegation
-  // refresh) hits this section's repo without re-threading the scope.
+  // Subdir-bound fetchers for *actions* — a push, a merge, a delegated git op —
+  // so callers refresh this section's repo without re-threading the scope.
+  // Background freshness is `useGitSync`'s job, not theirs.
   const fetchGitState = useCallback(
     (id: string) => fetchGitStateStore(id, subdir),
     [fetchGitStateStore, subdir],
