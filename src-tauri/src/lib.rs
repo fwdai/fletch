@@ -1571,7 +1571,7 @@ pub fn run() {
             commands::refresh_all_pr_states,
             commands::refresh_all_pr_checks,
             commands::get_pr_checks,
-            commands::get_pr_comments,
+            commands::get_pr_detail,
             commands::open_agent_shell,
             commands::close_agent_shell,
             commands::write_to_shell,

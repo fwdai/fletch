@@ -1,57 +1,45 @@
-//! Unresolved PR review threads: the branch lookup and the pure flattener.
+//! Unresolved PR review threads: the GraphQL selection, node extractor, and
+//! the pure flattener.
 
-use std::path::Path;
+use serde_json::Value;
 
-use serde_json::{json, Value};
-
-use crate::error::Result;
-
-use super::query::{branch_pr_nodes, branch_prs_query, graphql_opt, pick_branch_pr, repo_ref};
 use super::types::*;
 
-/// Fetch the unresolved review threads for the current branch's PR — one
-/// GraphQL call (threads inline with the branch-PR lookup; the gh version
-/// needed two). `Ok(None)` when there is no PR; the command layer maps both
-/// `None` and `Err` to "comments unavailable".
-pub async fn pr_comments(checkout: &Path) -> Result<Option<PrComments>> {
-    let Some((owner, repo)) = repo_ref(checkout).await else {
-        return Ok(None);
-    };
-    let Some(branch) = crate::git::current_branch(checkout).await? else {
-        return Ok(None);
-    };
-    let query = branch_prs_query(
-        r#"reviewThreads(first:100){
-             nodes{
-               isResolved
-               isOutdated
-               comments(first:1){
-                 totalCount
-                 nodes{ author{ login __typename } body path line url }
-               }
-             }
-           }"#,
-    );
-    let Some(data) = graphql_opt(
-        &query,
-        json!({ "owner": owner, "repo": repo, "branch": branch }),
-    )
-    .await?
-    else {
-        return Ok(None);
-    };
-    let nodes = branch_pr_nodes(&data);
-    let Some(pr) = pick_branch_pr(&nodes) else {
-        return Ok(None);
-    };
+/// GraphQL selection for a PR's review threads. Reused by the branch lookup
+/// (`pr_comments`) and the by-number detail read (`pr_detail_number`).
+///
+/// This is the app's most expensive selection by a wide margin: `comments` is
+/// nested two connections deep, so under a `first:30` branch scan it bills
+/// 30×100 = 3000 requests (~30 points), *regardless of how many threads the PR
+/// actually has* — GraphQL charges the declared shape, not the result. Read it
+/// by PR number wherever a number is known.
+pub(crate) const PR_COMMENTS_FIELDS: &str = r#"reviewThreads(first:100){
+     nodes{
+       isResolved
+       isOutdated
+       comments(first:1){
+         totalCount
+         nodes{ author{ login __typename } body path line url }
+       }
+     }
+   }"#;
+
+/// Extract [`PrComments`] from a PR node carrying [`PR_COMMENTS_FIELDS`].
+pub(crate) fn pr_comments_from_node(pr: &Value) -> PrComments {
     let threads = pr["reviewThreads"]["nodes"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    Ok(Some(PrComments {
+    PrComments {
         unresolved: parse_review_threads(&threads),
-    }))
+    }
 }
+
+// There is deliberately no branch-scan variant of this read. Under
+// `branch_prs_query`'s `first:30`, PR_COMMENTS_FIELDS bills ~30 GraphQL points
+// per call — one open Git panel polling it drained the whole hourly budget.
+// Review threads are only ever read for a PR we can name, so the by-number
+// path (`pr_detail_number`, 1 point) is the only one.
 
 /// Flatten review-thread nodes into the root comment of each *unresolved,
 /// non-outdated* thread. Pure — unit tested against captured fixtures.

@@ -154,7 +154,7 @@ pub async fn repo_create_and_push(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::{pr_checks, pr_comments, pr_list, pr_view, pr_view_number};
+    use crate::github::{pr_checks, pr_detail_number, pr_list, pr_view, pr_view_number};
 
     #[test]
     fn clone_url_forms() {
@@ -216,7 +216,13 @@ mod tests {
             assert_eq!(by_number.number, pr.number);
             let checks = pr_checks(&repo).await.unwrap();
             assert!(checks.is_some(), "checks must resolve for an existing PR");
-            let _ = pr_comments(&repo).await.unwrap();
+            // The panel's combined by-number read: both halves must come back
+            // together off the one PR node.
+            let detail = pr_detail_number(&repo, None, pr.number).await.unwrap();
+            assert!(
+                detail.is_some(),
+                "combined detail must resolve for an existing PR"
+            );
         }
 
         // A PR number that can't exist maps to None, not an error.
