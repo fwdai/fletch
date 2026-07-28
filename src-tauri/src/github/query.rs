@@ -55,8 +55,20 @@ pub(crate) async fn require_current_branch(checkout: &Path, what: &str) -> Resul
         .ok_or_else(|| Error::Gh(format!("{what}: HEAD is detached — no branch to look up")))
 }
 
+/// The budget probe every read query carries. GraphQL bills *points* (~5000/hr),
+/// not requests, and the cost is charged on the query's declared shape — so a
+/// poll path can drain the whole budget without ever seeing an error. Riding
+/// this selection on every read (it is itself free) lets [`note_budget`] arm the
+/// backoff gate *before* exhaustion rather than after GitHub starts 403-ing.
+pub(crate) const RATE_LIMIT_PROBE: &str = "rateLimit{cost remaining resetAt}";
+
 /// Shared query fields for a PR looked up by branch. Created-desc so
 /// `pick_branch_pr` sees the newest first, mirroring gh's branch resolution.
+///
+/// Note the `first:30`: every connection nested under this one is billed
+/// *per parent*, so a selection with its own `first:N` costs 30×N requests
+/// here. Prefer [`pr_node_by_number`] for anything with a nested connection —
+/// the branch scan is for *discovery* (no PR number known yet), not polling.
 pub(crate) fn branch_prs_query(inner_fields: &str) -> String {
     format!(
         r#"query($owner:String!,$repo:String!,$branch:String!){{
@@ -66,8 +78,45 @@ pub(crate) fn branch_prs_query(inner_fields: &str) -> String {
       nodes{{ state {inner_fields} }}
     }}
   }}
+  {RATE_LIMIT_PROBE}
 }}"#
     )
+}
+
+/// Fetch one PR node by number with `inner_fields` selected. The by-number
+/// counterpart to [`branch_prs_query`]: `pullRequest(number:)` is a single
+/// node, not a connection, so nested selections are billed once instead of
+/// thirty times — the same collapse the batched fetchers rely on.
+///
+/// `owner/repo` resolves from the checkout's origin, falling back to
+/// `source_repo` (same origin) when the checkout is broken or gone.
+/// `Ok(None)` when the slug or the PR can't be resolved, or while a
+/// rate-limit backoff is active.
+pub(crate) async fn pr_node_by_number(
+    checkout: &Path,
+    source_repo: Option<&Path>,
+    number: u32,
+    inner_fields: &str,
+) -> Result<Option<Value>> {
+    let Some((owner, repo)) = resolve_slug(checkout, source_repo).await else {
+        return Ok(None);
+    };
+    let query = format!(
+        r#"query($owner:String!,$repo:String!,$number:Int!){{
+  repository(owner:$owner,name:$repo){{ pullRequest(number:$number){{ state {inner_fields} }} }}
+  {RATE_LIMIT_PROBE}
+}}"#
+    );
+    let Some(data) = graphql_opt(
+        &query,
+        json!({ "owner": owner, "repo": repo, "number": number }),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let node = &data["repository"]["pullRequest"];
+    Ok((!node.is_null()).then(|| node.clone()))
 }
 
 /// The PR a branch "belongs to": the newest open PR, else the newest PR of
@@ -96,7 +145,13 @@ pub(crate) async fn graphql_opt(query: &str, variables: Value) -> Result<Option<
         Err(_) => return Ok(None),
     };
     match client.graphql(query, variables).await {
-        Ok(data) => Ok(Some(data)),
+        Ok(data) => {
+            // Feed the budget back into the gate for any query carrying
+            // `RATE_LIMIT_PROBE` (a no-op for those that don't), so the
+            // single-PR read paths throttle themselves like the batches do.
+            note_budget(&data);
+            Ok(Some(data))
+        }
         Err(Error::Gh(msg)) => {
             let low = msg.to_lowercase();
             if low.contains("could not resolve") || low.contains("not found") {

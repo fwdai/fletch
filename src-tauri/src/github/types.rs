@@ -180,6 +180,16 @@ pub struct PrComments {
     pub unresolved: Vec<PrComment>,
 }
 
+/// The Git panel's per-poll PR read: the merge gate + checks rollup and the
+/// unresolved review threads, fetched together off one PR node. Both halves
+/// come from the same round-trip, so a present `PrDetail` means both are
+/// current — the panel writes them as a pair.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrDetail {
+    pub checks: PrChecks,
+    pub comments: PrComments,
+}
+
 /// GitHub connection state. Drives the New Project UI and readiness rows.
 /// `installed` is a legacy of the gh-CLI era kept for IPC compatibility —
 /// there is no binary to install anymore, so it is always `true`; what

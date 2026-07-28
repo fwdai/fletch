@@ -81,3 +81,11 @@ export interface PrComment {
 export interface PrComments {
   unresolved: PrComment[];
 }
+
+/** The Git panel's per-poll PR read — checks and review threads fetched in one
+ *  backend round-trip, so they're always from the same moment. Written to the
+ *  `prChecks` / `prComments` slices as a pair. */
+export interface PrDetail {
+  checks: PrChecks;
+  comments: PrComments;
+}

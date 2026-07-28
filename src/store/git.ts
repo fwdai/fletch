@@ -85,7 +85,11 @@ export interface GitSlice {
    *  opening the Git panel. */
   refreshAllPrChecks: () => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
-  fetchPrComments: (agentId: string, subdir?: string) => Promise<void>;
+  /** Refresh checks + review comments together in one backend round-trip —
+   *  what the Git panel polls. Cheaper than the two fetchers side by side (the
+   *  backend reads both off a single PR node) and keeps the two slices
+   *  consistent, since they come from the same moment. */
+  fetchPrDetail: (agentId: string, subdir?: string) => Promise<void>;
   delegateGitAction: (
     agentId: string,
     kind: GitDelegationKind,
@@ -294,8 +298,27 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
 
   fetchPrChecks: (agentId, subdir) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir),
 
-  fetchPrComments: (agentId, subdir) =>
-    fetchPrAux(set, agentId, "prComments", api.getPrComments, subdir),
+  fetchPrDetail: async (agentId, subdir) => {
+    const mapKey = gitKey(agentId, subdir);
+    try {
+      const detail = await api.getPrDetail(agentId, subdir);
+      // A null detail is "confirmed unavailable" for both halves — the same
+      // meaning fetchPrAux gives a null value, so the panel drops the
+      // "checking…" placeholder rather than hanging on it.
+      set((s) => ({
+        prChecks: { ...s.prChecks, [mapKey]: detail?.checks ?? null },
+        prComments: { ...s.prComments, [mapKey]: detail?.comments ?? null },
+      }));
+    } catch {
+      // Mirror fetchPrAux's failure contract per slice: degrade an absent key
+      // to null so the placeholder clears, but let a later transient error
+      // keep the last good value.
+      set((s) => ({
+        prChecks: mapKey in s.prChecks ? s.prChecks : { ...s.prChecks, [mapKey]: null },
+        prComments: mapKey in s.prComments ? s.prComments : { ...s.prComments, [mapKey]: null },
+      }));
+    }
+  },
 
   delegateGitAction: (agentId, kind, prompt, subdir) => {
     // If the agent is already running, DON'T inject the trigger mid-turn: Claude

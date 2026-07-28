@@ -10,7 +10,8 @@ import { prSnapshot } from "@/util/prState";
  *  keeps them fresh while the panel is mounted:
  *  - git state at 1s,
  *  - PR state at 5s (so a merge/close/mergeable flip on GitHub shows up),
- *  - the heavier checks + review comments at 5s, only while a PR is open.
+ *  - checks + review comments at 5s, only while a PR is open — one combined
+ *    backend read (`fetchPrDetail`), so both land from the same moment.
  *  usePoll fires immediately, so the first read of each still lands on mount.
  *
  *  `repo`/`subdir` scope the hook to one repo of a multi-repo agent: `subdir`
@@ -49,7 +50,7 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
   const prChecksEntry = useAppStore((s) => s.prChecks[key]);
   const fetchPrChecksStore = useAppStore((s) => s.fetchPrChecks);
   const prCommentsEntry = useAppStore((s) => s.prComments[key]);
-  const fetchPrCommentsStore = useAppStore((s) => s.fetchPrComments);
+  const fetchPrDetailStore = useAppStore((s) => s.fetchPrDetail);
 
   // Subdir-bound fetchers, so every consumer (polls, actions, delegation
   // refresh) hits this section's repo without re-threading the scope.
@@ -65,9 +66,9 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
     (id: string) => fetchPrChecksStore(id, subdir),
     [fetchPrChecksStore, subdir],
   );
-  const fetchPrComments = useCallback(
-    (id: string) => fetchPrCommentsStore(id, subdir),
-    [fetchPrCommentsStore, subdir],
+  const fetchPrDetail = useCallback(
+    (id: string) => fetchPrDetailStore(id, subdir),
+    [fetchPrDetailStore, subdir],
   );
 
   const pollGitState = useCallback(() => fetchGitState(agentId), [agentId, fetchGitState]);
@@ -79,10 +80,12 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
   const prOpen = prState?.state === "open";
   const pollChecks = useCallback(async () => {
     if (!prOpen) return;
-    // Checks + review comments share a cadence: both are heavier gh reads that
-    // only matter while a PR is open.
-    await Promise.all([fetchPrChecks(agentId), fetchPrComments(agentId)]);
-  }, [agentId, prOpen, fetchPrChecks, fetchPrComments]);
+    // Checks + review comments arrive together, off one PR node in a single
+    // GraphQL round-trip. Fetching them separately used to cost ~31 rate-limit
+    // points a tick (the review-thread selection billed 30 under the branch
+    // scan) — enough for one open panel to drain the hourly budget on its own.
+    await fetchPrDetail(agentId);
+  }, [agentId, prOpen, fetchPrDetail]);
   // Adaptive: 5s while checks are still in flight (or not yet fetched), backing
   // off to 15s once they've settled pass/fail — a settled PR rarely changes, and
   // the app-wide poll still covers it. `undefined` (first fetch pending) counts

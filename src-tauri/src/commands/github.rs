@@ -193,15 +193,23 @@ pub async fn get_pr_checks(
     Ok(gh::pr_checks(&checkout).await.unwrap_or(None))
 }
 
-/// Fetch the unresolved PR review threads (Greptile / other bots / humans),
-/// flattened to each thread's root comment. Best-effort: any failure (no PR,
-/// gh missing, API error) returns `None` and the panel omits the section.
+/// The Git panel's per-poll read: merge gate + checks + unresolved review
+/// threads in one round-trip (spec §6). Supersedes polling `get_pr_checks` and
+/// `get_pr_comments` side by side — those went through the `first:30` branch
+/// scan, under which the review-thread selection bills ~30 GraphQL points a
+/// call; off a single `pullRequest(number:)` node the pair costs 1.
+///
+/// Resolution prefers the bound PR number (one query). A repo with an open PR
+/// but no number yet — a PR opened on GitHub that adoption hasn't claimed —
+/// discovers the number via the cheap state lookup first, then reads by number:
+/// two 1-point queries rather than one 30-point scan. Best-effort throughout:
+/// any degradation returns `None` and the panel keeps its last-known values.
 #[tauri::command]
-pub async fn get_pr_comments(
+pub async fn get_pr_detail(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     subdir: Option<String>,
-) -> Result<Option<gh::PrComments>> {
+) -> Result<Option<gh::PrDetail>> {
     let Some((repo, checkout)) =
         agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
     else {
@@ -210,7 +218,18 @@ pub async fn get_pr_comments(
     if repo.branch.is_none() {
         return Ok(None);
     }
-    Ok(gh::pr_comments(&checkout).await.unwrap_or(None))
+    let number = match repo.pr_number {
+        Some(n) => n as u32,
+        None => match gh::pr_view(&checkout).await.unwrap_or(None) {
+            Some(pr) => pr.number,
+            None => return Ok(None),
+        },
+    };
+    Ok(
+        gh::pr_detail_number(&checkout, Some(&repo.repo_path), number)
+            .await
+            .unwrap_or(None),
+    )
 }
 
 /// App-wide background poll that refreshes PR state for every repo with a
