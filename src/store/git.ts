@@ -15,6 +15,7 @@ import {
 } from "@/components/RightPanel/delegation";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { setSetting } from "@/storage/settings";
+import { acceptPrWrite, issuePrWrite } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
 
 export interface GitSlice {
@@ -198,8 +199,10 @@ const fetchPrAux = async <K extends "prChecks" | "prComments">(
   subdir?: string,
 ): Promise<void> => {
   const mapKey = gitKey(agentId, subdir);
+  const ticket = issuePrWrite();
   try {
     const value = await fetch(agentId, subdir);
+    if (!acceptPrWrite(key, mapKey, ticket)) return;
     set((s) => ({ [key]: { ...s[key], [mapKey]: value } }) as Partial<GitSlice>);
   } catch {
     set((s) =>
@@ -263,18 +266,22 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   },
 
   fetchPrState: async (agentId, subdir) => {
+    const mapKey = gitKey(agentId, subdir);
+    const ticket = issuePrWrite();
     try {
       const state = await api.getPrState(agentId, subdir);
+      if (!acceptPrWrite("prStates", mapKey, ticket)) return;
       // Always write (including null) to distinguish "confirmed: no PR" from
       // "not yet fetched" (absent key). Unlike fetchGitState which guards the
       // write, PR state being null is meaningful.
-      set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: state } }));
+      set((s) => ({ prStates: { ...s.prStates, [mapKey]: state } }));
     } catch {
       // non-fatal
     }
   },
 
   refreshAllPrStates: async () => {
+    const ticket = issuePrWrite();
     try {
       // Set state directly from the reply (rather than via `pr:state_changed`
       // events) so the very first poll — which usePoll fires immediately on
@@ -282,20 +289,35 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // attach during init(). Merge so agents without a known PR keep whatever
       // state the focused-panel / per-trigger paths recorded.
       const map = await api.refreshAllPrStates();
-      set((s) => ({ prStates: { ...s.prStates, ...map } }));
+      set((s) => {
+        const prStates = { ...s.prStates };
+        for (const [key, state] of Object.entries(map)) {
+          // Per-key ticket check: a slow sweep must not roll back a key that a
+          // newer focused-panel read already advanced.
+          if (acceptPrWrite("prStates", key, ticket)) prStates[key] = state;
+        }
+        return { prStates };
+      });
     } catch {
       // non-fatal — next poll tick will retry
     }
   },
 
   refreshAllPrChecks: async () => {
+    const ticket = issuePrWrite();
     try {
       // Merge (like refreshAllPrStates) so the focused panel's per-agent
       // checks poll isn't clobbered between bulk ticks. The batched reply only
       // carries resolved rollups, so absent agents keep their last value rather
       // than being wiped.
       const map = await api.refreshAllPrChecks();
-      set((s) => ({ prChecks: { ...s.prChecks, ...map } }));
+      set((s) => {
+        const prChecks = { ...s.prChecks };
+        for (const [key, checks] of Object.entries(map)) {
+          if (acceptPrWrite("prChecks", key, ticket)) prChecks[key] = checks;
+        }
+        return { prChecks };
+      });
     } catch {
       // non-fatal — next poll tick will retry
     }
@@ -305,19 +327,24 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
 
   fetchPrLive: async (agentId, subdir) => {
     const mapKey = gitKey(agentId, subdir);
+    const ticket = issuePrWrite();
     try {
       const live = await api.getPrLive(agentId, subdir);
+      // One ticket, checked per slice: the panel and the title capsule both poll
+      // this for the same agent, so an older response must not land on top of a
+      // newer one (nor on top of the post-merge refresh).
+      const takeState = acceptPrWrite("prStates", mapKey, ticket);
+      const takeChecks =
+        (live?.checks != null || live == null) && acceptPrWrite("prChecks", mapKey, ticket);
+      if (!takeState && !takeChecks) return;
       // Always write state (including null) to distinguish "confirmed: no PR"
       // from "not yet fetched" — the same rule fetchPrState follows. Checks
       // are only written when the read resolved them: a null `checks` on a
       // present PR means the CI reads degraded, and overwriting a good rollup
       // with null there would blank the pill on a transient error.
       set((s) => ({
-        prStates: { ...s.prStates, [mapKey]: live?.state ?? null },
-        prChecks:
-          live?.checks != null || live == null
-            ? { ...s.prChecks, [mapKey]: live?.checks ?? null }
-            : s.prChecks,
+        prStates: takeState ? { ...s.prStates, [mapKey]: live?.state ?? null } : s.prStates,
+        prChecks: takeChecks ? { ...s.prChecks, [mapKey]: live?.checks ?? null } : s.prChecks,
       }));
     } catch {
       // Mirror fetchPrAux's failure contract: degrade an absent key to null so

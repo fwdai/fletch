@@ -118,16 +118,72 @@ fn parse_status_context(node: &Value) -> CheckRun {
 
 /// Every check on a commit: App check-runs plus legacy commit statuses,
 /// concatenated the way GraphQL's `statusCheckRollup` presents them.
-fn parse_commit_checks(check_runs: &Value, combined_status: &Value) -> Vec<CheckRun> {
-    let runs = check_runs["check_runs"]
-        .as_array()
-        .map(|arr| arr.iter().map(parse_check_run).collect::<Vec<_>>())
-        .unwrap_or_default();
-    let contexts = combined_status["statuses"]
-        .as_array()
-        .map(|arr| arr.iter().map(parse_status_context).collect::<Vec<_>>())
-        .unwrap_or_default();
-    runs.into_iter().chain(contexts).collect()
+fn parse_commit_checks(check_runs: &[Value], statuses: &[Value]) -> Vec<CheckRun> {
+    check_runs
+        .iter()
+        .map(parse_check_run)
+        .chain(statuses.iter().map(parse_status_context))
+        .collect()
+}
+
+/// Page size for the commit-check reads — GitHub's maximum, so the common case
+/// is one request.
+const CHECKS_PAGE_SIZE: usize = 100;
+/// Pages pulled per endpoint before giving up. 500 checks on one commit is well
+/// past the point where the rollup means anything; the cap only stops a
+/// pathological repo from turning one poll into unbounded work.
+const CHECKS_MAX_PAGES: u32 = 5;
+
+/// Fetch every page of a paginated commit-check endpoint, concatenating the
+/// array at `field`.
+///
+/// These endpoints paginate at **30 items by default**, so requesting them
+/// unpaginated silently truncates: a commit with more checks than one page would
+/// roll up over a subset, under-reporting `total`/`pending`/`failed` and dropping
+/// names from `required_failing` — a green pill over a failing build. `per_page`
+/// is maxed and `total_count` drives the loop, so the full set is always read.
+///
+/// Each page is a distinct path, so conditional caching still applies per page
+/// and an unchanged commit's re-poll stays free.
+async fn fetch_all_checks(
+    client: &client::Client,
+    base_path: &str,
+    field: &str,
+) -> Result<Option<Vec<Value>>> {
+    let mut items: Vec<Value> = Vec::new();
+    for page in 1..=CHECKS_MAX_PAGES {
+        let (status, body) = client
+            .rest_get_conditional(&format!(
+                "{base_path}?per_page={CHECKS_PAGE_SIZE}&page={page}"
+            ))
+            .await?;
+        if !status.is_success() {
+            return Ok(None);
+        }
+        let batch = body[field].as_array().cloned().unwrap_or_default();
+        let batch_len = batch.len();
+        // Absent `total_count` (shouldn't happen on these endpoints) degrades to
+        // "what we have", which the short-page check below then terminates on.
+        let total = body["total_count"]
+            .as_u64()
+            .unwrap_or((items.len() + batch_len) as u64);
+        items.extend(batch);
+
+        // A short page means the server had nothing more to give, whatever
+        // `total_count` claimed.
+        if batch_len < CHECKS_PAGE_SIZE || items.len() as u64 >= total {
+            return Ok(Some(items));
+        }
+        if page == CHECKS_MAX_PAGES {
+            tracing::debug!(
+                field,
+                fetched = items.len(),
+                total,
+                "commit checks truncated at the page cap"
+            );
+        }
+    }
+    Ok(Some(items))
 }
 
 /// Fetch PR state + CI for one PR by number over conditional REST.
@@ -182,16 +238,20 @@ pub async fn pr_live_number(
     let merge_state = parse_merge_state(pr["mergeable_state"].as_str().unwrap_or("unknown"));
 
     let runs = match (
-        client
-            .rest_get_conditional(&format!("/repos/{owner}/{repo}/commits/{sha}/check-runs"))
-            .await,
-        client
-            .rest_get_conditional(&format!("/repos/{owner}/{repo}/commits/{sha}/status"))
-            .await,
+        fetch_all_checks(
+            &client,
+            &format!("/repos/{owner}/{repo}/commits/{sha}/check-runs"),
+            "check_runs",
+        )
+        .await,
+        fetch_all_checks(
+            &client,
+            &format!("/repos/{owner}/{repo}/commits/{sha}/status"),
+            "statuses",
+        )
+        .await,
     ) {
-        (Ok((cs, check_runs)), Ok((ss, combined))) if cs.is_success() && ss.is_success() => {
-            parse_commit_checks(&check_runs, &combined)
-        }
+        (Ok(Some(check_runs)), Ok(Some(statuses))) => parse_commit_checks(&check_runs, &statuses),
         _ => {
             return Ok(Some(PrLive {
                 state,
@@ -263,18 +323,18 @@ mod tests {
     /// same shape the GraphQL rollup produces.
     #[test]
     fn rest_checks_merge_runs_and_legacy_statuses() {
-        let check_runs = json!({"check_runs": [
-            {"name": "build", "status": "completed", "conclusion": "success",
-             "details_url": "https://ci/build", "started_at": "2026-01-01T00:00:00Z",
-             "completed_at": "2026-01-01T00:05:00Z"},
-            {"name": "test", "status": "in_progress", "conclusion": null}
-        ]});
-        let combined = json!({"statuses": [
-            {"context": "ci/legacy", "state": "success", "target_url": "https://ci/legacy",
-             "created_at": "2026-01-01T00:00:00Z"},
-            {"context": "ci/broken", "state": "error", "target_url": null}
-        ]});
-        let runs = parse_commit_checks(&check_runs, &combined);
+        let check_runs = vec![
+            json!({"name": "build", "status": "completed", "conclusion": "success",
+                   "details_url": "https://ci/build", "started_at": "2026-01-01T00:00:00Z",
+                   "completed_at": "2026-01-01T00:05:00Z"}),
+            json!({"name": "test", "status": "in_progress", "conclusion": null}),
+        ];
+        let statuses = vec![
+            json!({"context": "ci/legacy", "state": "success", "target_url": "https://ci/legacy",
+                   "created_at": "2026-01-01T00:00:00Z"}),
+            json!({"context": "ci/broken", "state": "error", "target_url": null}),
+        ];
+        let runs = parse_commit_checks(&check_runs, &statuses);
         assert_eq!(runs.len(), 4);
 
         let checks = rollup_checks(MergeState::Unstable, runs);
@@ -294,9 +354,36 @@ mod tests {
     /// as a failure — the same verdict the GraphQL path gives an empty rollup.
     #[test]
     fn rest_checks_empty_is_none() {
-        let runs = parse_commit_checks(&json!({"check_runs": []}), &json!({"statuses": []}));
+        let runs = parse_commit_checks(&[], &[]);
         assert!(runs.is_empty());
         assert_eq!(rollup_checks(MergeState::Clean, runs).rollup, "none");
+    }
+
+    /// Regression guard for the pagination bug: these endpoints default to 30
+    /// items a page, so a commit with more checks than one page used to roll up
+    /// over a truncated subset. A failure sitting past the first page must still
+    /// reach the rollup — the difference between a red pill and a green one over
+    /// a broken build.
+    #[test]
+    fn rest_checks_rollup_sees_beyond_one_page() {
+        // 40 checks: 39 passing, and the last one — past a 30-item page —
+        // failing.
+        let mut nodes: Vec<Value> = (0..39)
+            .map(|i| json!({"name": format!("ok-{i}"), "status": "completed", "conclusion": "success"}))
+            .collect();
+        nodes.push(json!({"name": "late-failure", "status": "completed", "conclusion": "failure"}));
+
+        let full = rollup_checks(MergeState::Unstable, parse_commit_checks(&nodes, &[]));
+        assert_eq!(full.total, 40);
+        assert_eq!(full.failed, 1);
+        assert_eq!(full.rollup, "failing");
+        assert_eq!(full.required_failing, vec!["late-failure".to_string()]);
+
+        // What a single default-size page would have produced: all green, and
+        // the failing name absent entirely.
+        let truncated = rollup_checks(MergeState::Unstable, parse_commit_checks(&nodes[..30], &[]));
+        assert_eq!(truncated.rollup, "passing");
+        assert!(truncated.required_failing.is_empty());
     }
 
     /// REST spells the merge state lowercase; GraphQL spells it uppercase.
