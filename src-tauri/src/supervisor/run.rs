@@ -464,10 +464,16 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
     let mut args = crate::sandbox::profile_args(&profile_text).to_vec();
     args.push(shell_str);
     args.extend(shell_args(cmd));
+    // Same package-manager cache redirection the agent gets, so a `bun install`
+    // run from the Run panel and one run by the agent share a warm cache instead
+    // of maintaining two. The profile grants this root above.
+    let cache_root = crate::sandbox::toolchain_cache_root(&home);
+    let _ = std::fs::create_dir_all(&cache_root);
+    let mut env = crate::sandbox::toolchain_cache_env(&cache_root);
     // A nested Fletch (dogfooding) can't reach the host's `~/.fletch/{rpc,
     // worktrees}` under this profile; steer both to sandbox-writable roots.
     // Harmless for any other Run target — nothing but Fletch reads these.
-    let env = vec![
+    env.extend([
         (
             crate::rpc::RPC_ROOT_ENV.to_string(),
             crate::sandbox::nested_rpc_root(cwd)
@@ -480,7 +486,7 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
                 .to_string_lossy()
                 .into_owned(),
         ),
-    ];
+    ]);
     Ok((PathBuf::from(crate::sandbox::SANDBOX_EXEC), args, env))
 }
 

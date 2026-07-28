@@ -8,10 +8,6 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
-# Local bun install cache/tmp (sandbox workaround; never committed)
-.bun-cache/
-.bun-tmp/
-
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/

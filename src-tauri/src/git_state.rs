@@ -135,21 +135,26 @@ pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState
 
     // Merge numstat into file list. `git diff --numstat HEAD` only covers
     // tracked files, so untracked (agent-created, never-added) ones fall back
-    // to a direct line count of their on-disk contents, read concurrently so
-    // many new files don't serialize the poll.
-    let mut reads = tokio::task::JoinSet::new();
+    // to a direct line count of their on-disk contents — under the same read
+    // budget the bulk poll uses (MAX_UNTRACKED_READ_BYTES). This path needs the
+    // bound at least as much: the focused Git panel polls it at 1 Hz, five times
+    // the shortstats cadence.
+    let mut untracked_at: Vec<usize> = Vec::new();
     for (i, f) in files.iter_mut().enumerate() {
         if let Some(&(adds, dels)) = numstat.get(&f.path) {
             f.additions = adds;
             f.deletions = dels;
         } else if matches!(f.kind, StatusKind::Untracked) {
-            let root = checkout_path.to_path_buf();
-            let rel = f.path.clone();
-            reads.spawn(async move { (i, untracked_additions(&root, &rel).await) });
+            untracked_at.push(i);
         }
     }
-    while let Some(res) = reads.join_next().await {
-        if let Ok((i, adds)) = res {
+    if !untracked_at.is_empty() {
+        let rels: Vec<String> = untracked_at
+            .iter()
+            .map(|&i| files[i].path.clone())
+            .collect();
+        let (counts, _truncated) = untracked_additions(checkout_path, rels).await;
+        for (&i, adds) in untracked_at.iter().zip(counts) {
             files[i].additions = adds;
         }
     }
@@ -178,6 +183,30 @@ pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState
     })
 }
 
+/// Budget for how much untracked file *content* one git-state pass will read to
+/// count additions.
+///
+/// Untracked lines can only be counted by reading the file — `git diff
+/// --numstat` doesn't see them — which makes this the one part of the git-state
+/// path whose cost scales with the *tree* rather than with the diff. Unbounded,
+/// a checkout holding a large untracked directory (a package-manager cache that
+/// landed inside it) turns every tick into a full-tree read: one real workspace
+/// sat at 7.5k untracked files / 57 MB, re-read every 5s per agent.
+///
+/// Budgeting **bytes rather than file count** is what keeps the numbers honest,
+/// and is the whole reason this isn't a simple `.take(n)`. A legitimate large
+/// change is many *small* files — a framework scaffold, a codegen run, a
+/// vendored client — and 8 MB counts thousands of them exactly. The pathological
+/// case is bulk *content*, which exhausts the budget almost immediately and
+/// stops. A flat file-count cap can't tell those apart: it would have truncated
+/// a 900-file scaffold (fully countable in well under a megabyte) exactly as
+/// eagerly as a package cache, reporting a number that silently disagreed with
+/// the file count beside it.
+///
+/// When the budget does bind, `additions` is a floor. The file *count* stays
+/// exact either way — it comes from `git status`, not from these reads.
+const MAX_UNTRACKED_READ_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Slim projection for the app-wide bulk poll. Where `query` spawns ~7 git
 /// subprocesses to assemble a full `GitState`, this reads only what the
 /// shortstats badge needs: `git status` for the file count and `git diff
@@ -196,17 +225,23 @@ pub async fn shortstats(checkout_path: &Path) -> ShortStats {
         })
         .unwrap_or((0, 0));
     // Numstat misses untracked files (see `query`); count their lines too,
-    // concurrently, to keep this poll-path helper's latency flat.
-    let mut reads = tokio::task::JoinSet::new();
-    for f in &files {
-        if matches!(f.kind, StatusKind::Untracked) {
-            let root = checkout_path.to_path_buf();
-            let rel = f.path.clone();
-            reads.spawn(async move { untracked_additions(&root, &rel).await });
+    // under the shared read budget so a pathological tree can't turn this poll
+    // into a full-tree read. See MAX_UNTRACKED_READ_BYTES.
+    let rels: Vec<String> = files
+        .iter()
+        .filter(|f| matches!(f.kind, StatusKind::Untracked))
+        .map(|f| f.path.clone())
+        .collect();
+    if !rels.is_empty() {
+        let (counts, truncated) = untracked_additions(checkout_path, rels).await;
+        additions += counts.iter().sum::<u32>();
+        if truncated {
+            tracing::debug!(
+                checkout = %checkout_path.display(),
+                budget_bytes = MAX_UNTRACKED_READ_BYTES,
+                "shortstats: untracked content exceeded the read budget; additions are a floor"
+            );
         }
-    }
-    while let Some(res) = reads.join_next().await {
-        additions += res.unwrap_or(0);
     }
     ShortStats {
         additions,
@@ -214,6 +249,17 @@ pub async fn shortstats(checkout_path: &Path) -> ShortStats {
         file_count,
     }
 }
+
+/// Ceiling on how many working-tree paths `git_meta` ships per checkout.
+///
+/// These paths serve one advisory consumer — the frontend's pairwise overlap
+/// hint, which builds a `Set` per checkout and intersects every pair sharing a
+/// source repo. So an unbounded list costs twice: the IPC payload, and an
+/// O(n·m) pass across the fleet, both scaling with whatever happens to be
+/// untracked rather than with what the agent actually changed. Truncating can
+/// only cost a hint that was never promised to be exhaustive, and a real
+/// changed set is orders of magnitude under this.
+const MAX_META_FILES: usize = 500;
 
 /// Base-staleness + changed-file paths for one checkout — the advisory bulk
 /// poll behind the "base moved" chips and cross-agent overlap hints.
@@ -233,6 +279,7 @@ pub async fn git_meta(checkout_path: &Path, base: &str, base_sha: Option<&str>) 
         .unwrap_or_default()
         .into_iter()
         .map(|f| f.path)
+        .take(MAX_META_FILES)
         .collect();
     let behind = match base_sha {
         Some(sha) => rev_list_count(checkout_path, &format!("HEAD..{sha}")).await,
@@ -260,31 +307,97 @@ async fn rev_list_count(checkout_path: &Path, range: &str) -> Option<u32> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
-/// Additions for an untracked file: the line count of its on-disk contents —
-/// what `git diff --numstat` would report once the file is added. Binary,
-/// oversized, or unreadable files count 0, mirroring numstat's `-` markers.
-async fn untracked_additions(checkout_path: &Path, rel: &str) -> u32 {
-    const MAX_BYTES: u64 = 4 * 1024 * 1024;
-    let abs = checkout_path.join(rel);
-    let Ok(meta) = tokio::fs::metadata(&abs).await else {
-        return 0;
-    };
-    if !meta.is_file() || meta.len() > MAX_BYTES {
-        return 0;
-    }
-    let Ok(bytes) = tokio::fs::read(&abs).await else {
-        return 0;
-    };
-    if bytes.is_empty() || bytes.contains(&0) {
-        return 0;
-    }
-    let newlines = bytes.iter().filter(|&&b| b == b'\n').count() as u32;
-    // A final line without a trailing newline still counts as a line.
-    if bytes.ends_with(b"\n") {
-        newlines
-    } else {
-        newlines + 1
-    }
+/// Additions for a batch of untracked files (paths relative to `checkout_path`):
+/// each one's on-disk line count, i.e. what `git diff --numstat` would report
+/// once it was added. Returns counts parallel to `rels` — 0 for anything binary,
+/// oversized, unreadable, or past the budget — plus whether the budget cut the
+/// pass short.
+///
+/// Reads in the given (git status) order until [`MAX_UNTRACKED_READ_BYTES`] of
+/// content has been consumed, so the numbers are exact for any realistic change
+/// set and bounded for a pathological tree.
+///
+/// Batched and sequential on one blocking thread, rather than a task per file as
+/// this used to be. Three reasons: the budget already caps the work at a few MB,
+/// which reads faster straight through than fanned out over thousands of spawned
+/// tasks; a shared budget across racing tasks would make the total depend on
+/// completion order, so the badge would flicker between ticks; and a per-file
+/// fan-out was itself unbounded — 7.5k concurrent reads in the case that
+/// prompted all this.
+async fn untracked_additions(checkout_path: &Path, rels: Vec<String>) -> (Vec<u32>, bool) {
+    /// Beyond this a single file isn't a plausible text diff; numstat reports
+    /// `-` for those, so 0 matches it. Checked from metadata, so an oversized
+    /// file costs a stat, never a read, and never touches the budget.
+    const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+    let root = checkout_path.to_path_buf();
+    let empty = rels.len();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+
+        let mut out = vec![0u32; rels.len()];
+        let mut spent: u64 = 0;
+        let mut buf: Vec<u8> = Vec::new();
+        for (i, rel) in rels.iter().enumerate() {
+            let remaining = MAX_UNTRACKED_READ_BYTES.saturating_sub(spent);
+            if remaining == 0 {
+                return (out, true);
+            }
+            let abs = root.join(rel);
+            // Cheap pre-filter: skip an oversized file (or a non-file) without
+            // opening it. This is an optimization, not the bound — the read
+            // below enforces that, because the file can change underneath us.
+            let Ok(meta) = std::fs::metadata(&abs) else {
+                continue;
+            };
+            if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+                continue;
+            }
+            // Read through a hard ceiling rather than trusting the length we
+            // just stat'd. The agent is actively working in this tree, so a
+            // file can grow or be replaced between the `metadata` and the read;
+            // `fs::read` pre-allocates from the *current* size and would then
+            // consume the whole replacement, overshooting both this file's
+            // limit and the pass budget. `take` caps the allocation at what we
+            // are willing to read no matter what happened in between.
+            let ceiling = MAX_FILE_BYTES.min(remaining);
+            let Ok(file) = std::fs::File::open(&abs) else {
+                continue;
+            };
+            buf.clear();
+            // +1 so a file sitting exactly at the ceiling is distinguishable
+            // from one that overruns it.
+            if file.take(ceiling + 1).read_to_end(&mut buf).is_err() {
+                continue;
+            }
+            // Charge what was actually read, not what was stat'd.
+            spent += buf.len() as u64;
+            if buf.len() as u64 > ceiling {
+                // Either the file outgrew MAX_FILE_BYTES mid-read, or the
+                // budget ran out inside it. Counting a truncated prefix would
+                // report a wrong line count, so contribute nothing. Only a
+                // budget overrun ends the pass; an oversized file is skipped
+                // the way numstat's `-` marker is.
+                if ceiling == remaining {
+                    return (out, true);
+                }
+                continue;
+            }
+            if buf.is_empty() || buf.contains(&0) {
+                continue;
+            }
+            let newlines = buf.iter().filter(|&&b| b == b'\n').count() as u32;
+            // A final line without a trailing newline still counts as a line.
+            out[i] = if buf.ends_with(b"\n") {
+                newlines
+            } else {
+                newlines + 1
+            };
+        }
+        (out, false)
+    })
+    .await
+    .unwrap_or_else(|_| (vec![0; empty], false))
 }
 
 /// Build a git command for this module's state queries with `GIT_OPTIONAL_LOCKS`
@@ -639,6 +752,63 @@ fn parse_numstat(output: &str) -> HashMap<String, (u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- untracked_additions (read budget) ---
+
+    /// The property the byte budget exists to protect: a large *count* of small
+    /// files — a scaffold, a codegen run — is counted exactly. The earlier
+    /// file-count cap failed here, truncating a perfectly cheap change set and
+    /// reporting additions that disagreed with the file count beside them.
+    #[tokio::test]
+    async fn many_small_untracked_files_are_counted_exactly() {
+        let td = tempfile::tempdir().unwrap();
+        let rels: Vec<String> = (0..900)
+            .map(|i| {
+                let rel = format!("gen/file{i}.ts");
+                let abs = td.path().join(&rel);
+                std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+                // Three lines each, well under the budget in aggregate.
+                std::fs::write(&abs, "a\nb\nc\n").unwrap();
+                rel
+            })
+            .collect();
+
+        let (counts, truncated) = untracked_additions(td.path(), rels).await;
+        assert!(
+            !truncated,
+            "900 tiny files must not exhaust the read budget"
+        );
+        assert_eq!(counts.len(), 900);
+        assert_eq!(counts.iter().sum::<u32>(), 2_700);
+    }
+
+    /// The other half: bulk *content* is bounded. Reads stop once the budget is
+    /// spent, the pass reports itself truncated, and files already read still
+    /// carry their real counts (a floor, never a wrong total).
+    #[tokio::test]
+    async fn bulk_untracked_content_stops_at_the_read_budget() {
+        let td = tempfile::tempdir().unwrap();
+        // 3 MB each: individually under MAX_FILE_BYTES, collectively over the
+        // 8 MB budget on the third.
+        let line = "x".repeat(1023);
+        let body: String = std::iter::repeat_n(line.as_str(), 3 * 1024)
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let rels: Vec<String> = (0..4)
+            .map(|i| {
+                let rel = format!("blob{i}.bin");
+                std::fs::write(td.path().join(&rel), &body).unwrap();
+                rel
+            })
+            .collect();
+
+        let (counts, truncated) = untracked_additions(td.path(), rels).await;
+        assert!(truncated, "9+ MB of content must exhaust the 8 MB budget");
+        // Two whole files fit (6 MB); the third would cross the budget.
+        assert_eq!(counts.iter().filter(|&&c| c > 0).count(), 2);
+        assert_eq!(counts[0], 3 * 1024, "a file that was read is counted fully");
+        assert_eq!(counts[3], 0, "a file past the budget contributes nothing");
+    }
 
     // --- github_web_url ---
 

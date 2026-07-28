@@ -228,6 +228,137 @@ pub fn agent_scratch_dirs(home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
+/// Shared scratch root every sandboxed toolchain is *redirected into*, rather
+/// than granted at its own default location: `~/.fletch/toolchain-cache/`.
+///
+/// This is the answer to a class of bug, not a single one. A seatbelt agent runs
+/// the **host's** toolchains (unlike Docker, which owns its filesystem), and
+/// those toolchains write package caches and stores outside the checkout — bun
+/// to `~/.bun/install/cache`, cargo to `~/.cargo/registry`, go to
+/// `~/go/pkg/mod`. Denied, they either fail closed or (worse, observed in the
+/// wild) an agent "helpfully" redirects the cache *into the checkout*, where it
+/// becomes thousands of untracked files the fleet-wide git polls then walk on
+/// every tick.
+///
+/// The obvious fix — keep adding default locations to [`agent_scratch_dirs`] —
+/// loses on two counts. It never terminates (every new toolchain is a new
+/// grant), and most of those defaults are unsafe to grant whole: `~/.cargo`,
+/// `~/go`, `~/.bun` and `~/.gem` all contain PATH-resolved `bin` dirs, so each
+/// entry would need its own island analysis against invariant 1.
+///
+/// Redirecting inverts both problems. The sandbox grants exactly **one** path,
+/// forever; adding a toolchain later is an entry in [`TOOLCHAIN_CACHE_VARS`]
+/// with no policy change and no security review. And invariant 1 stops applying
+/// rather than needing to be checked: Fletch owns this layout and it is never on
+/// the user's PATH, so a relocated `CARGO_HOME` or `GEM_HOME` carrying a `bin/`
+/// cannot hijack a later host shell.
+///
+/// Shared across agents on purpose — a per-workspace cache would defeat pnpm's
+/// hardlink store, re-download a toolchain per agent, and duplicate hundreds of
+/// MB per workspace.
+///
+/// Not per-build-split (unlike [`crate::workspace::checkouts_root`]): that split
+/// exists to keep name allocation DB-authoritative, which a content cache has no
+/// stake in — dev and release sharing warm caches is a feature.
+pub fn toolchain_cache_root(home: &Path) -> PathBuf {
+    home.join(".fletch").join("toolchain-cache")
+}
+
+/// `(env var, subdir under the cache root)` for every toolchain we redirect.
+///
+/// Adding a row is the *whole* cost of supporting a new toolchain — no sandbox
+/// policy change, because [`toolchain_cache_root`] is already granted. Getting a
+/// row wrong is safe in the only direction that matters: an env var a tool
+/// ignores leaves it writing its default path, which is exactly today's
+/// behavior (fail closed), never a widened sandbox.
+///
+/// **Only ever redirect a variable whose target is purely a cache.** A variable
+/// naming a toolchain *home* — `RUSTUP_HOME`, `CARGO_HOME`, `GEM_HOME`,
+/// `GRADLE_USER_HOME`, `COMPOSER_HOME`, … — points at a directory that also
+/// holds user config and installed artifacts, so redirecting it doesn't give the
+/// toolchain a writable scratch dir, it *hides the user's existing installation*.
+/// `RUSTUP_HOME` is the clearest case: it contains the toolchains themselves and
+/// the `settings.toml` naming the default, so pointing it at a fresh empty dir
+/// leaves `cargo` with no compiler — ordinary Rust commands then fail outright,
+/// or re-download hundreds of MB. `COMPOSER_HOME` and `GRADLE_USER_HOME` are
+/// quieter versions of the same bug: they hold `auth.json` / `gradle.properties`,
+/// so redirecting silently drops registry credentials.
+///
+/// Those all previously lived in this table and have been removed. Reads are
+/// unrestricted sandbox-wide, so leaving a home alone costs nothing for an
+/// *already installed* toolchain — only writing to it fails, and failing loudly
+/// beats silently pretending the user has no Rust.
+///
+/// The cost is that toolchains with no cache-only variable are **not served at
+/// all**: `cargo` still can't fetch a crate it hasn't downloaded, and Ruby/JVM
+/// dependency installs still fail closed, exactly as before this mechanism
+/// existed. Granting a cache island under the real home
+/// (`~/.cargo/registry`) was tried and is *not* sufficient on its own — cargo
+/// also locks `~/.cargo/.package-cache`, `.package-cache-mutate` and
+/// `.global-cache`, siblings of the island, so the grant only converts a write
+/// error into a lock error. Closing that needs file-literal grants alongside the
+/// dir-oriented ones (the treatment [`CLAUDE_CREDENTIALS_FILE`] already gets),
+/// which is its own change and wants testing under a real profile.
+///
+/// Verified empirically on macOS against the installed toolchain at the time of
+/// writing: bun 1.3, npm 10.9, pnpm 10.33, yarn 1.22, deno 2.6, pip 25.3,
+/// uv 0.11, gem 3.5. The rest are documentation-derived — safe per the
+/// fail-closed note above, but unproven.
+///
+/// `pnpm` is the cautionary row: it does **not** read `PNPM_STORE_DIR` (silently
+/// ignored, store stays at the default). It takes config through npm's env
+/// convention, hence `npm_config_store_dir`.
+const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
+    // JavaScript / TypeScript
+    ("BUN_INSTALL_CACHE_DIR", "bun"),
+    ("npm_config_cache", "npm"),
+    ("npm_config_store_dir", "pnpm"), // NOT PNPM_STORE_DIR — see above
+    ("YARN_CACHE_FOLDER", "yarn"),
+    ("DENO_DIR", "deno"),
+    // Go (Rust is served by the ~/.cargo islands in `agent_scratch_dirs`:
+    // CARGO_HOME/RUSTUP_HOME would hide the user's config and toolchains.)
+    ("GOMODCACHE", "go/mod"),
+    ("GOCACHE", "go/build"),
+    // Python
+    ("PIP_CACHE_DIR", "pip"),
+    ("UV_CACHE_DIR", "uv"),
+    ("POETRY_CACHE_DIR", "poetry"),
+    // Ruby — the spec cache only; GEM_HOME is where gems are *installed*.
+    ("GEM_SPEC_CACHE", "gem/spec-cache"),
+    // PHP — the cache only; COMPOSER_HOME holds auth.json.
+    ("COMPOSER_CACHE_DIR", "composer/cache"),
+    // .NET — the global packages folder is a restore target, not a config home.
+    ("NUGET_PACKAGES", "nuget"),
+    // Elixir is absent for the same reason as Rust/Ruby/PHP homes: MIX_HOME and
+    // HEX_HOME hold archives and `hex.config` (which can carry an API key), not
+    // just cache.
+];
+
+/// The environment redirecting every toolchain in [`TOOLCHAIN_CACHE_VARS`] into
+/// `root`. Layered onto confined children (agents and Run commands alike) so
+/// both halves of the app share one warm cache instead of diverging.
+///
+/// Note what is **not** here: `XDG_DATA_HOME` and `XDG_CONFIG_HOME`. Both are
+/// load-bearing for provider state resolution ([`opencode_data_dir`],
+/// [`opencode_config_dir`], and the host-side reader in
+/// `agent::providers::opencode`), which resolves them from the *host* env —
+/// setting them for the child would move opencode's session store out from under
+/// the host reader and silently break transcript ingest. `XDG_CACHE_HOME` is
+/// safe but pointless: [`agent_scratch_dirs`] already grants `~/.cache` and
+/// `~/Library/Caches` whole, so XDG-conformant tools never fail in the first
+/// place. This table is for the toolchains that *don't* follow XDG.
+pub fn toolchain_cache_env(root: &Path) -> Vec<(String, String)> {
+    TOOLCHAIN_CACHE_VARS
+        .iter()
+        .map(|(var, subdir)| {
+            (
+                (*var).to_string(),
+                root.join(subdir).to_string_lossy().into_owned(),
+            )
+        })
+        .collect()
+}
+
 /// OpenCode's data dir: `$XDG_DATA_HOME/opencode` if set, else
 /// `~/.local/share/opencode`. This is both the dir Docker bind-mounts read-write
 /// and where `agent::opencode_locate` reads its session storage on the host, so
@@ -393,6 +524,104 @@ mod tests {
                 Some(OsStr::new("bin")),
                 "{} is a component-final bin dir — a PATH-hijack surface (invariant 1)",
                 dir.display()
+            );
+        }
+    }
+
+    /// The redirect's own invariants: one Fletch-owned root, and every variable
+    /// pointing strictly inside it. A row escaping the root would ask the
+    /// toolchain to write somewhere the profile doesn't grant — a silent
+    /// fail-closed that looks exactly like the bug this mechanism removes.
+    #[test]
+    fn toolchain_cache_env_stays_inside_the_granted_root() {
+        let home = Path::new("/Users/u");
+        let root = toolchain_cache_root(home);
+
+        // Fletch-owned, and never on the user's PATH — which is *why* rows like
+        // `CARGO_HOME`/`GEM_HOME` (whose trees contain `bin/`) are safe here
+        // when granting their real `~/.cargo`/`~/.gem` would not be.
+        assert_eq!(root, home.join(".fletch/toolchain-cache"));
+
+        let env = toolchain_cache_env(&root);
+        assert_eq!(env.len(), TOOLCHAIN_CACHE_VARS.len());
+        for (var, value) in &env {
+            let p = PathBuf::from(value);
+            assert!(
+                p.starts_with(&root) && p != root,
+                "{var} points outside the granted root: {value}"
+            );
+        }
+
+        let mut names: Vec<&str> = env.iter().map(|(v, _)| v.as_str()).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(
+            before,
+            names.len(),
+            "duplicate env var in the redirect table"
+        );
+    }
+
+    /// The redirect must never claim a variable naming a toolchain *home*.
+    ///
+    /// A home holds installed artifacts and user config, not just cache, so
+    /// pointing one at an empty dir hides the user's installation rather than
+    /// giving the toolchain scratch space. `RUSTUP_HOME` is the sharpest case —
+    /// it contains the toolchains and the `settings.toml` naming the default, so
+    /// redirecting it leaves `cargo` with no compiler. `COMPOSER_HOME` /
+    /// `GRADLE_USER_HOME` / `BUNDLE_USER_HOME` are the quiet version: they carry
+    /// registry credentials that would silently vanish.
+    ///
+    /// Every one of these was in the table at one point. Where a toolchain
+    /// still needs somewhere writable, the answer is a cache island under its
+    /// real home (plus any sibling lock files it takes) — never a redirected
+    /// home.
+    #[test]
+    fn redirect_never_claims_a_toolchain_home() {
+        const FORBIDDEN: &[&str] = &[
+            "RUSTUP_HOME",
+            "CARGO_HOME",
+            "GEM_HOME",
+            "BUNDLE_USER_HOME",
+            "GRADLE_USER_HOME",
+            "COMPOSER_HOME",
+            "MIX_HOME",
+            "HEX_HOME",
+            "DOTNET_CLI_HOME",
+        ];
+        for (var, _) in TOOLCHAIN_CACHE_VARS {
+            assert!(
+                !FORBIDDEN.contains(var),
+                "{var} names a toolchain home — redirecting it hides the user's \
+                 installed toolchain/config; grant a cache island instead"
+            );
+        }
+    }
+
+    /// The redirect must never claim a variable that provider-state resolution
+    /// depends on.
+    ///
+    /// `XDG_DATA_HOME`/`XDG_CONFIG_HOME` resolve opencode's session store and
+    /// config ([`opencode_data_dir`]/[`opencode_config_dir`]) — and the *host*
+    /// side reads them too, from the host env. Redirecting them for the child
+    /// would move opencode's store out from under the host reader and break
+    /// transcript ingest silently, with the agent still appearing to work.
+    /// `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are the same hazard for their
+    /// providers. This is a fail-*open*-looking bug with no loud symptom, so it
+    /// gets a guard rather than a comment.
+    #[test]
+    fn redirect_never_claims_a_provider_state_var() {
+        const FORBIDDEN: &[&str] = &[
+            "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME",
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+        ];
+        for (var, _) in TOOLCHAIN_CACHE_VARS {
+            assert!(
+                !FORBIDDEN.contains(var),
+                "{var} resolves provider state — redirecting it breaks transcript/auth reads"
             );
         }
     }
