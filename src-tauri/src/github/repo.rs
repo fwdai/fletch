@@ -155,7 +155,7 @@ pub async fn repo_create_and_push(
 mod tests {
     use super::*;
     use crate::github::{
-        pr_checks, pr_list, pr_live_number, pr_threads_number, pr_view, pr_view_number,
+        pr_checks, pr_checks_live, pr_list, pr_threads_number, pr_view, pr_view_number,
     };
 
     #[test]
@@ -211,30 +211,44 @@ mod tests {
         if let Some(pr) = pr_view(&repo).await.unwrap() {
             assert!(pr.number > 0);
             assert!(pr.url.starts_with("https://github.com/"));
+            // By-number state now reads over conditional REST while the branch
+            // lookup above stays on GraphQL — so this equality is also the
+            // cross-transport parity check on the two state parsers.
             let by_number = pr_view_number(&repo, None, pr.number)
                 .await
                 .unwrap()
                 .unwrap();
             assert_eq!(by_number.number, pr.number);
+            assert_eq!(by_number.state, pr.state);
+            assert_eq!(by_number.url, pr.url);
+            assert_eq!(by_number.title, pr.title);
+            // Re-read is served conditionally (304 -> cache) and must be
+            // identical — that equality is the whole point of the ETag path.
+            let again = pr_view_number(&repo, None, pr.number)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(again.number, by_number.number);
+            assert_eq!(again.state, by_number.state);
+
             let checks = pr_checks(&repo).await.unwrap();
             assert!(checks.is_some(), "checks must resolve for an existing PR");
-            // The panel's fast tick over conditional REST: state must agree
-            // with the GraphQL lookup above, transport notwithstanding.
-            let live = pr_live_number(&repo, None, pr.number)
-                .await
-                .unwrap()
-                .expect("live read must resolve for an existing PR");
-            assert_eq!(live.state.number, pr.number);
-            assert_eq!(live.state.state, pr.state);
-            assert_eq!(live.state.url, pr.url);
-            // Second read is served conditionally (304 -> cache) and must be
-            // identical — that equality is the whole point of the ETag path.
-            let again = pr_live_number(&repo, None, pr.number)
-                .await
-                .unwrap()
-                .expect("conditional re-read must resolve");
-            assert_eq!(again.state.number, live.state.number);
-            assert_eq!(again.state.state, live.state.state);
+            // The panel's CI tick over conditional REST. Only meaningful for an
+            // open PR; a settled one has no rollup to report.
+            if matches!(pr.state, PrStatus::Open) {
+                let live = pr_checks_live(&repo, None, pr.number)
+                    .await
+                    .unwrap()
+                    .expect("CI rollup must resolve for an open PR");
+                // Same commit, so the REST rollup must agree with the GraphQL
+                // one on the totals — the pagination fix is what makes this
+                // hold for commits with more than one page of checks.
+                let graphql = checks.unwrap();
+                assert_eq!(live.total, graphql.total);
+                assert_eq!(live.failed, graphql.failed);
+                assert_eq!(live.passed, graphql.passed);
+                assert_eq!(live.rollup, graphql.rollup);
+            }
 
             // The slow GraphQL tick: review threads must not error.
             let _ = pr_threads_number(&repo, None, pr.number).await.unwrap();

@@ -186,18 +186,25 @@ async fn fetch_all_checks(
     Ok(Some(items))
 }
 
-/// Fetch PR state + CI for one PR by number over conditional REST.
+/// Fetch the merge gate + CI rollup for one **open** PR by number, over
+/// conditional REST.
 ///
-/// `Ok(None)` when the slug can't be resolved, the PR is gone, or a rate-limit
-/// backoff is active — the panel then keeps its last-known values, matching
-/// every other read op's degradation contract. Checks are omitted (rather than
-/// reported empty) when the commit reads fail, so a transient error can't blank
-/// a passing rollup into a false "no checks".
-pub async fn pr_live_number(
+/// Deliberately CI-only. PR *state* is resolved by `supervisor::resolve_pr_state`
+/// instead, so this path inherits that resolver's policy rather than restating
+/// it: merged served from the database, a failed fetch degrading to the last
+/// persisted snapshot (never erasing a confirmed badge), and a discovered OPEN
+/// PR getting adopted. An earlier revision returned state here too and silently
+/// dropped all three — blanking the panel's PR card during a rate-limit pause,
+/// of all moments.
+///
+/// `Ok(None)` means "no rollup this round" — backoff, unresolvable slug, gone
+/// PR, or a failed commit read. Callers keep their last-known tint rather than
+/// rendering a false "no checks".
+pub async fn pr_checks_live(
     checkout: &Path,
     source_repo: Option<&Path>,
     number: u32,
-) -> Result<Option<PrLive>> {
+) -> Result<Option<PrChecks>> {
     if client::is_backing_off() {
         return Ok(None);
     }
@@ -209,35 +216,27 @@ pub async fn pr_live_number(
         return Ok(None);
     };
 
+    // The PR object again — `resolve_pr_state` just read this same path, so this
+    // is a conditional hit (a 304 GitHub doesn't bill). We need two fields it
+    // doesn't carry into `PrState`: the head sha to hang the check reads off,
+    // and `mergeable_state` for the merge gate. Re-reading beats threading the
+    // raw JSON through the resolver just to save one free round-trip.
     let (status, pr) = client
         .rest_get_conditional(&format!("/repos/{owner}/{repo}/pulls/{number}"))
         .await?;
     if !status.is_success() {
         return Ok(None);
     }
-    let state = parse_pr_state_rest(&pr);
-
-    // CI is only read for an open PR: a merged or closed PR's checks can never
-    // change again, and the panel doesn't render them, so the two commit reads
-    // would be pure chatter. State alone keeps flowing, which is what tells the
-    // panel the PR merged in the first place.
-    if !matches!(state.state, PrStatus::Open) {
-        return Ok(Some(PrLive {
-            state,
-            checks: None,
-        }));
-    }
-
     let Some(sha) = pr["head"]["sha"].as_str().filter(|s| !s.is_empty()) else {
-        // No head sha (a PR whose head ref is gone) — state still stands.
-        return Ok(Some(PrLive {
-            state,
-            checks: None,
-        }));
+        // A PR whose head ref is gone has no commit to read checks from.
+        return Ok(None);
     };
     let merge_state = parse_merge_state(pr["mergeable_state"].as_str().unwrap_or("unknown"));
 
-    let runs = match (
+    // Both halves must resolve: GraphQL's `statusCheckRollup` merges App
+    // check-runs with legacy commit statuses, so reporting one without the
+    // other would under-count.
+    let (Ok(Some(check_runs)), Ok(Some(statuses))) = (
         fetch_all_checks(
             &client,
             &format!("/repos/{owner}/{repo}/commits/{sha}/check-runs"),
@@ -250,20 +249,14 @@ pub async fn pr_live_number(
             "statuses",
         )
         .await,
-    ) {
-        (Ok(Some(check_runs)), Ok(Some(statuses))) => parse_commit_checks(&check_runs, &statuses),
-        _ => {
-            return Ok(Some(PrLive {
-                state,
-                checks: None,
-            }))
-        }
+    ) else {
+        return Ok(None);
     };
 
-    Ok(Some(PrLive {
-        state,
-        checks: Some(rollup_checks(merge_state, runs)),
-    }))
+    Ok(Some(rollup_checks(
+        merge_state,
+        parse_commit_checks(&check_runs, &statuses),
+    )))
 }
 
 #[cfg(test)]

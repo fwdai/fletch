@@ -218,27 +218,56 @@ async fn panel_pr_number(
     Ok(Some((number, checkout, repo.repo_path)))
 }
 
-/// The Git panel's fast tick: PR state + CI over ETag-conditional REST.
+/// The Git panel's fast tick: PR state + CI, both over ETag-conditional REST.
 ///
-/// GitHub does not count a `304 Not Modified` against the primary rate limit,
-/// so this poll is free whenever nothing has changed — which lets the panel run
-/// a tight cadence without spending the GraphQL points budget that the review
-/// threads (`get_pr_threads`) still need. Best-effort: any degradation returns
-/// `None` and the panel keeps its last-known values.
+/// GitHub does not count a `304 Not Modified` against the primary rate limit, so
+/// this poll is free whenever nothing has changed — which lets the panel run a
+/// tight cadence without spending the GraphQL points budget that the review
+/// threads (`get_pr_threads`) still need.
+///
+/// State comes from the shared `resolve_pr_state`, not a bespoke read, so this
+/// path inherits its policy rather than restating it: **merged** served from the
+/// database with no network, a failed fetch **degrading to the last persisted
+/// snapshot** instead of erasing a badge GitHub already confirmed, and a
+/// discovered OPEN PR **adopted** (bound) so later ticks stop re-discovering it.
+/// `resolve_pr_state`'s own live lookup is now conditional REST too, so routing
+/// through it costs nothing extra.
+///
+/// `Ok(None)` therefore means "this repo has no PR" — a real, renderable answer
+/// — and is no longer conflated with "the lookup failed". The frontend relies on
+/// that distinction to decide whether writing `null` is safe.
 #[tauri::command]
 pub async fn get_pr_live(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<Option<gh::PrLive>> {
-    let Some((number, checkout, source)) =
-        panel_pr_number(&supervisor, &agent_id, subdir.as_deref()).await?
+    let Some((state, _bound)) =
+        crate::supervisor::resolve_pr_state(&supervisor.workspace, &agent_id, subdir.as_deref())
+            .await
     else {
         return Ok(None);
     };
-    Ok(gh::pr_live_number(&checkout, Some(&source), number)
+    // CI only matters while the PR is open: the panel renders it for no other
+    // state, and a settled PR's checks can't change.
+    if !matches!(state.state, gh::PrStatus::Open) {
+        return Ok(Some(gh::PrLive {
+            state,
+            checks: None,
+        }));
+    }
+    let Some((repo, checkout)) =
+        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
+    else {
+        return Ok(Some(gh::PrLive {
+            state,
+            checks: None,
+        }));
+    };
+    let checks = gh::pr_checks_live(&checkout, Some(&repo.repo_path), state.number)
         .await
-        .unwrap_or(None))
+        .unwrap_or(None);
+    Ok(Some(gh::PrLive { state, checks }))
 }
 
 /// The Git panel's slow tick: unresolved review threads (Greptile / other bots

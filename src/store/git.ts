@@ -337,11 +337,17 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       const takeChecks =
         (live?.checks != null || live == null) && acceptPrWrite("prChecks", mapKey, ticket);
       if (!takeState && !takeChecks) return;
-      // Always write state (including null) to distinguish "confirmed: no PR"
-      // from "not yet fetched" — the same rule fetchPrState follows. Checks
-      // are only written when the read resolved them: a null `checks` on a
-      // present PR means the CI reads degraded, and overwriting a good rollup
-      // with null there would blank the pill on a transient error.
+      // Writing `null` state is safe here *because* the backend degrades a failed
+      // lookup to the last persisted snapshot (see `get_pr_live` /
+      // `resolve_pr_state`) rather than reporting nothing. So a null reply means
+      // "this repo has no PR", not "the fetch failed" — the distinction the
+      // panel depends on, since it treats a present null as authoritative and
+      // skips its snapshot fallback.
+      //
+      // Checks are only written when the read resolved them: a null `checks` on a
+      // present PR means the CI reads degraded (or the PR isn't open), and
+      // overwriting a good rollup there would blank the pill on a transient
+      // error.
       set((s) => ({
         prStates: takeState ? { ...s.prStates, [mapKey]: live?.state ?? null } : s.prStates,
         prChecks: takeChecks ? { ...s.prChecks, [mapKey]: live?.checks ?? null } : s.prChecks,

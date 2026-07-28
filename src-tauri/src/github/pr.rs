@@ -88,27 +88,32 @@ pub async fn pr_view_number(
     source_repo: Option<&Path>,
     number: u32,
 ) -> Result<Option<PrState>> {
+    // Read over ETag-conditional REST rather than GraphQL: this is the live
+    // lookup behind `resolve_pr_state`, which the Git panel polls every few
+    // seconds. GitHub doesn't bill a `304 Not Modified`, so an unchanged PR
+    // costs nothing — the GraphQL equivalent billed a point per tick. Only the
+    // transport changed; the resolver's policy (merged from the database,
+    // degrade to snapshot on failure, adopt a discovered OPEN PR) is untouched.
+    //
+    // A rate-limit pause: report "couldn't resolve" so callers fall back to the
+    // persisted snapshot instead of spending a request that would likely 403.
+    if client::is_backing_off() {
+        return Ok(None);
+    }
     let Some((owner, repo)) = resolve_slug(checkout, source_repo).await else {
         return Ok(None);
     };
-    let query = format!(
-        r#"query($owner:String!,$repo:String!,$number:Int!){{
-  repository(owner:$owner,name:$repo){{ pullRequest(number:$number){{ state {PR_STATE_FIELDS} }} }}
-}}"#
-    );
-    let Some(data) = graphql_opt(
-        &query,
-        json!({ "owner": owner, "repo": repo, "number": number }),
-    )
-    .await?
-    else {
+    // Background poll path: not being connected is a normal state, not an error.
+    let Ok(client) = client::Client::new() else {
         return Ok(None);
     };
-    let node = &data["repository"]["pullRequest"];
-    if node.is_null() {
+    let (status, pr) = client
+        .rest_get_conditional(&format!("/repos/{owner}/{repo}/pulls/{number}"))
+        .await?;
+    if !status.is_success() {
         return Ok(None);
     }
-    Ok(Some(parse_pr_state(node)))
+    Ok(Some(super::live::parse_pr_state_rest(&pr)))
 }
 
 /// Fetch a PR's current body text by number. `Ok(None)` when the PR can't be
