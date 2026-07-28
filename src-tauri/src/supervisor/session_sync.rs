@@ -1,7 +1,7 @@
 //! Turn-end transcript ingestion into `session_records`, plus PR-state
 //! fetch/emit for an agent's primary repo.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 use crate::agent::per_turn_descriptor;
@@ -106,7 +106,9 @@ impl Supervisor {
             // Only bound PRs are emitted app-wide: an unbound merged/closed PR
             // discovered on a recycled branch name is focused-panel display
             // (`get_pr_state`), not this agent's state.
-            let state = resolve_pr_state(&workspace, &agent_id, None)
+            // A push or turn just landed, so a brand-new PR is plausible: discover now
+            // rather than waiting on the background interval.
+            let state = resolve_pr_state(&workspace, &agent_id, None, Discovery::Forced)
                 .await
                 .and_then(|(pr, bound)| bound.then_some(pr));
             emit_pr_state(&app, &agent_id, state);
@@ -222,6 +224,64 @@ pub(crate) fn persist_pr_snapshot(
     }
 }
 
+/// Whether a repo with no bound PR may spend a branch scan looking for one.
+///
+/// Discovery is the one lookup here that can't be served by number, so it pays
+/// `branch_prs_query`'s scan — 1 GraphQL point, every call. A repo with a pushed
+/// branch and no PR (an agent mid-task: the common case) never becomes bound, so
+/// a background poll would re-scan forever: at the Git panel's 5s cadence that
+/// was ~720 points/hour, the largest single consumer left in the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Discovery {
+    /// Scan now. For paths where a push or a turn just happened, so a brand-new
+    /// PR is genuinely plausible and worth a point to catch immediately.
+    Forced,
+    /// Scan at most once per [`DISCOVERY_INTERVAL`] per repo. For background
+    /// polls, which would otherwise pay for the same negative answer every tick.
+    Throttled,
+}
+
+/// Minimum gap between branch scans for the same unbound repo under
+/// [`Discovery::Throttled`]. A PR opened outside the app (on github.com, by a
+/// teammate) is still adopted within this window, and once adopted the repo is
+/// bound and never scans again.
+const DISCOVERY_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Last throttled branch scan per `(agent_id, subdir)`. Only unbound repos land
+/// here — adoption removes the reason to scan at all — so this is bounded by the
+/// number of repos still waiting on a first PR.
+fn discovery_clock() -> &'static Mutex<HashMap<(String, String), Instant>> {
+    static CLOCK: OnceLock<Mutex<HashMap<(String, String), Instant>>> = OnceLock::new();
+    CLOCK.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// True if a throttled scan is allowed for this repo right now, recording the
+/// attempt when it is. `Forced` always passes and doesn't disturb the clock, so
+/// a push-triggered discovery can't be starved by a poll that just ran — nor
+/// reset the poll's window.
+fn may_discover(agent_id: &str, subdir: &str, discovery: Discovery) -> bool {
+    if discovery == Discovery::Forced {
+        return true;
+    }
+    let key = (agent_id.to_string(), subdir.to_string());
+    let mut clock = discovery_clock().lock();
+    match clock.get(&key) {
+        Some(last) if last.elapsed() < DISCOVERY_INTERVAL => false,
+        _ => {
+            clock.insert(key, Instant::now());
+            true
+        }
+    }
+}
+
+/// Drop a repo's discovery record — called once it binds a PR, so the entry
+/// doesn't outlive the state that made it necessary.
+fn clear_discovery(agent_id: &str, subdir: &str) {
+    discovery_clock()
+        .lock()
+        .remove(&(agent_id.to_string(), subdir.to_string()));
+}
+
 /// Resolve the current PR state for an agent's primary repo, persisting what
 /// it learns. Returns the state plus whether that PR is *bound* to the agent
 /// by number. The single implementation behind the focused panel
@@ -235,14 +295,21 @@ pub(crate) fn persist_pr_snapshot(
 ///   the checkout is broken), persist the result, and on failure degrade to
 ///   the last persisted snapshot — a failed fetch must never erase state
 ///   GitHub already confirmed.
-/// - **No bound PR**: discover one by branch name. An OPEN PR is adopted
-///   (persisted, becoming bound); a merged/closed one is returned unbound —
-///   displayable, but never claimed as this agent's, so a recycled branch
-///   name can't inherit a prior agent's PR.
+/// - **No bound PR**: discover one by branch name, subject to `discovery` (see
+///   [`Discovery`] — background polls scan on an interval, event-driven paths
+///   scan immediately). An OPEN PR is adopted (persisted, becoming bound); a
+///   merged/closed one is returned unbound — displayable, but never claimed as
+///   this agent's, so a recycled branch name can't inherit a prior agent's PR.
+///
+/// `None` therefore means "no PR to show", which now also covers "a scan was
+/// due but throttled". Callers already treat `None` as no-PR, and the badge they
+/// render comes from the persisted snapshot in the bound case, so a throttled
+/// tick shows the same thing the previous tick did.
 pub(crate) async fn resolve_pr_state(
     workspace: &WorkspaceManager,
     agent_id: &str,
     subdir: Option<&str>,
+    discovery: Discovery,
 ) -> Option<(PrState, bool)> {
     let record = workspace.agent(agent_id).ok()?;
     let repo = match subdir {
@@ -264,6 +331,8 @@ pub(crate) async fn resolve_pr_state(
         if repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str()) {
             return pr_snapshot(repo).map(|pr| (pr, true));
         }
+        // Bound: this repo never needs discovery again.
+        clear_discovery(agent_id, &repo.subdir);
         match crate::github::pr_view_number(&checkout, Some(&repo.repo_path), number as u32).await {
             Ok(Some(pr)) => {
                 persist_pr_snapshot(workspace, agent_id, &repo.subdir, &pr);
@@ -273,9 +342,16 @@ pub(crate) async fn resolve_pr_state(
             _ => pr_snapshot(repo).map(|pr| (pr, true)),
         }
     } else {
+        // Unbound: a branch scan is the only way to find a PR, and it costs a
+        // point every time. Background polls take it on an interval; push- and
+        // turn-triggered paths take it immediately.
+        if !may_discover(agent_id, &repo.subdir, discovery) {
+            return None;
+        }
         match crate::github::pr_view(&checkout).await.unwrap_or(None) {
             Some(pr) if matches!(pr.state, PrStatus::Open) => {
                 persist_pr_snapshot(workspace, agent_id, &repo.subdir, &pr);
+                clear_discovery(agent_id, &repo.subdir);
                 Some((pr, true))
             }
             Some(pr) => Some((pr, false)),
@@ -1322,6 +1398,78 @@ mod tests {
             pr_state: Some("merged".into()),
             label: None,
         }
+    }
+
+    /// A background poll takes one branch scan and then holds off, instead of
+    /// paying a GraphQL point per tick for the same "still no PR". At the Git
+    /// panel's 5s cadence this is the difference between ~720 points/hour and
+    /// ~60.
+    #[test]
+    fn throttled_discovery_scans_once_then_holds_off() {
+        let (agent, sub) = ("ag-throttle", "");
+        clear_discovery(agent, sub);
+        assert!(
+            may_discover(agent, sub, Discovery::Throttled),
+            "first scan must be allowed"
+        );
+        assert!(
+            !may_discover(agent, sub, Discovery::Throttled),
+            "second scan within the interval must be refused"
+        );
+        clear_discovery(agent, sub);
+    }
+
+    /// A push or turn just landed, so discovery must not be starved by a poll
+    /// that happened to run a moment earlier.
+    #[test]
+    fn forced_discovery_ignores_the_throttle() {
+        let (agent, sub) = ("ag-forced", "");
+        clear_discovery(agent, sub);
+        assert!(may_discover(agent, sub, Discovery::Throttled));
+        assert!(
+            may_discover(agent, sub, Discovery::Forced),
+            "an event-driven scan always proceeds"
+        );
+        assert!(
+            may_discover(agent, sub, Discovery::Forced),
+            "and does so repeatedly"
+        );
+        // Forced must also leave the poll's window intact rather than resetting
+        // it — otherwise a burst of events would let polls scan freely.
+        assert!(!may_discover(agent, sub, Discovery::Throttled));
+        clear_discovery(agent, sub);
+    }
+
+    /// The window is per repo, so one agent's checkout can't suppress another's
+    /// — including two repos of the same multi-repo agent.
+    #[test]
+    fn discovery_throttle_is_scoped_per_repo() {
+        clear_discovery("ag-1", "frontend");
+        clear_discovery("ag-1", "backend");
+        assert!(may_discover("ag-1", "frontend", Discovery::Throttled));
+        assert!(
+            may_discover("ag-1", "backend", Discovery::Throttled),
+            "a sibling repo has its own window"
+        );
+        assert!(!may_discover("ag-1", "frontend", Discovery::Throttled));
+        clear_discovery("ag-1", "frontend");
+        clear_discovery("ag-1", "backend");
+    }
+
+    /// Binding a PR clears the record: the repo will never scan again, so the
+    /// entry shouldn't outlive the state that justified it.
+    #[test]
+    fn clearing_discovery_reopens_the_window() {
+        let (agent, sub) = ("ag-clear", "");
+        clear_discovery(agent, sub);
+        assert!(may_discover(agent, sub, Discovery::Throttled));
+        assert!(!may_discover(agent, sub, Discovery::Throttled));
+        clear_discovery(agent, sub);
+        assert!(
+            may_discover(agent, sub, Discovery::Throttled),
+            "a cleared repo starts fresh"
+        );
+        clear_discovery(agent, sub);
     }
 
     /// The app-wide poll keys mirror the frontend's `gitKey`: the primary repo
