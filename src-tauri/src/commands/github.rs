@@ -145,11 +145,16 @@ pub async fn get_pr_state(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<Option<PrState>> {
-    Ok(
-        crate::supervisor::resolve_pr_state(&supervisor.workspace, &agent_id, subdir.as_deref())
-            .await
-            .map(|(pr, _bound)| pr),
+    Ok(crate::supervisor::resolve_pr_state(
+        &supervisor.workspace,
+        &agent_id,
+        subdir.as_deref(),
+        // Called after a user action (create/merge/push, a delegated git op), so
+        // a new PR is plausible right now — worth the branch scan immediately.
+        crate::supervisor::Discovery::Forced,
     )
+    .await
+    .map(|(pr, _bound)| pr))
 }
 
 /// List the open PRs for the agent's repo, for the composer's "#" mention
@@ -192,31 +197,6 @@ pub async fn get_pr_checks(
     Ok(gh::pr_checks(&checkout).await.unwrap_or(None))
 }
 
-/// Resolve the PR number for a panel read: the bound number when adoption has
-/// recorded one, else discovered once by branch. Discovery costs a 1-point
-/// GraphQL lookup and only happens for a PR opened outside the app that the
-/// app hasn't claimed yet.
-async fn panel_pr_number(
-    supervisor: &Supervisor,
-    agent_id: &str,
-    subdir: Option<&str>,
-) -> Result<Option<(u32, std::path::PathBuf, std::path::PathBuf)>> {
-    let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
-        return Ok(None);
-    };
-    if repo.branch.is_none() {
-        return Ok(None);
-    }
-    let number = match repo.pr_number {
-        Some(n) => n as u32,
-        None => match gh::pr_view(&checkout).await.unwrap_or(None) {
-            Some(pr) => pr.number,
-            None => return Ok(None),
-        },
-    };
-    Ok(Some((number, checkout, repo.repo_path)))
-}
-
 /// The Git panel's fast tick: PR state + CI, both over ETag-conditional REST.
 ///
 /// GitHub does not count a `304 Not Modified` against the primary rate limit, so
@@ -241,9 +221,15 @@ pub async fn get_pr_live(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<Option<gh::PrLive>> {
-    let Some((state, _bound)) =
-        crate::supervisor::resolve_pr_state(&supervisor.workspace, &agent_id, subdir.as_deref())
-            .await
+    let Some((state, _bound)) = crate::supervisor::resolve_pr_state(
+        &supervisor.workspace,
+        &agent_id,
+        subdir.as_deref(),
+        // A background poll: an unbound repo scans on an interval rather than
+        // paying a point every tick for the same "still no PR".
+        crate::supervisor::Discovery::Throttled,
+    )
+    .await
     else {
         return Ok(None);
     };
@@ -281,14 +267,34 @@ pub async fn get_pr_threads(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<Option<gh::PrComments>> {
-    let Some((number, checkout, source)) =
-        panel_pr_number(&supervisor, &agent_id, subdir.as_deref()).await?
+    // Same resolver as `get_pr_live`, so this shares its adoption and throttling
+    // rather than running a second branch scan of its own. Its live lookup is a
+    // conditional REST read the fast tick has already warmed, so reaching for the
+    // PR number here is free.
+    let Some((state, _bound)) = crate::supervisor::resolve_pr_state(
+        &supervisor.workspace,
+        &agent_id,
+        subdir.as_deref(),
+        crate::supervisor::Discovery::Throttled,
+    )
+    .await
     else {
         return Ok(None);
     };
-    Ok(gh::pr_threads_number(&checkout, Some(&source), number)
-        .await
-        .unwrap_or(None))
+    // Only an open PR has threads worth polling.
+    if !matches!(state.state, gh::PrStatus::Open) {
+        return Ok(None);
+    }
+    let Some((repo, checkout)) =
+        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
+    else {
+        return Ok(None);
+    };
+    Ok(
+        gh::pr_threads_number(&checkout, Some(&repo.repo_path), state.number)
+            .await
+            .unwrap_or(None),
+    )
 }
 
 /// App-wide background poll that refreshes PR state for every repo with a
