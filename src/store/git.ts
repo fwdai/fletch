@@ -75,16 +75,13 @@ export interface GitSlice {
    *  Network + GitHub-gated; silent (never surfaces an error). */
   refreshBaseFreshness: () => Promise<void>;
   fetchPrState: (agentId: string, subdir?: string) => Promise<void>;
-  /** Refresh PR state for every repo with a known PR across every agent in
-   *  one round-trip (used by the app-wide background poll). The reply is
-   *  keyed by `gitKey`, so a multi-repo agent's secondary-repo PRs land in
-   *  the store too and the sidebar badge updates without opening the panel. */
-  refreshAllPrStates: () => Promise<void>;
-  /** Refresh CI checks for every repo with an open PR in one round-trip
-   *  (used by the app-wide background poll, keyed by `gitKey` like
-   *  `refreshAllPrStates`) so the sidebar PR pill can tint pass/fail without
-   *  opening the Git panel. */
-  refreshAllPrChecks: () => Promise<void>;
+  /** The app-wide sidebar sweep: PR state + CI for every repo with a known PR
+   *  across every agent, in one batched round-trip. Keyed by `gitKey`, so a
+   *  multi-repo agent's secondary-repo PRs land in the store too and the sidebar
+   *  badge updates without opening the panel. Replaces the former separate
+   *  state and checks sweeps — one query costs what either did alone, and both
+   *  halves now come from the same instant. */
+  refreshAllPrStatus: () => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
   /** The Git panel's fast tick: PR state + CI in one backend pass over
    *  ETag-conditional REST. Free at GitHub whenever nothing changed, so it can
@@ -280,43 +277,32 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  refreshAllPrStates: async () => {
+  refreshAllPrStatus: async () => {
     const ticket = issuePrWrite();
     try {
       // Set state directly from the reply (rather than via `pr:state_changed`
       // events) so the very first poll — which usePoll fires immediately on
       // mount — can't race the store's event listener finishing its async
-      // attach during init(). Merge so agents without a known PR keep whatever
-      // state the focused-panel / per-trigger paths recorded.
-      const map = await api.refreshAllPrStates();
+      // attach during init().
+      const map = await api.refreshAllPrStatus();
       set((s) => {
+        // Merge, never replace: agents absent from the reply keep whatever the
+        // focused-panel / per-trigger paths recorded. `checks` is only written
+        // when the sweep resolved one (open PR, live fetch) — a null there means
+        // "nothing to say this round", so the last-known tint survives instead
+        // of being wiped by a snapshot-served or merged entry.
+        //
+        // Ticket-checked per key: this sweep can be slower than a focused
+        // fetchPrLive, so it must not roll a key back to what it saw earlier.
         const prStates = { ...s.prStates };
-        for (const [key, state] of Object.entries(map)) {
-          // Per-key ticket check: a slow sweep must not roll back a key that a
-          // newer focused-panel read already advanced.
-          if (acceptPrWrite("prStates", key, ticket)) prStates[key] = state;
-        }
-        return { prStates };
-      });
-    } catch {
-      // non-fatal — next poll tick will retry
-    }
-  },
-
-  refreshAllPrChecks: async () => {
-    const ticket = issuePrWrite();
-    try {
-      // Merge (like refreshAllPrStates) so the focused panel's per-agent
-      // checks poll isn't clobbered between bulk ticks. The batched reply only
-      // carries resolved rollups, so absent agents keep their last value rather
-      // than being wiped.
-      const map = await api.refreshAllPrChecks();
-      set((s) => {
         const prChecks = { ...s.prChecks };
-        for (const [key, checks] of Object.entries(map)) {
-          if (acceptPrWrite("prChecks", key, ticket)) prChecks[key] = checks;
+        for (const [key, entry] of Object.entries(map)) {
+          if (acceptPrWrite("prStates", key, ticket)) prStates[key] = entry.state;
+          if (entry.checks != null && acceptPrWrite("prChecks", key, ticket)) {
+            prChecks[key] = entry.checks;
+          }
         }
-        return { prChecks };
+        return { prStates, prChecks };
       });
     } catch {
       // non-fatal — next poll tick will retry

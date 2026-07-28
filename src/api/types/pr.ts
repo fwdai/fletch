@@ -82,6 +82,15 @@ export interface PrComments {
   unresolved: PrComment[];
 }
 
+/** One agent-repo's entry in the app-wide sidebar sweep: PR state, plus the CI
+ *  rollup when the PR is open. `checks: null` means "nothing to say this round"
+ *  — served from a snapshot, not open, or the lookup degraded — so the store
+ *  leaves the last-known tint alone rather than wiping it. */
+export interface AgentPrStatus {
+  state: PrState;
+  checks: PrChecks | null;
+}
+
 /** The Git panel's fast-tick PR read — state + CI from one backend pass over
  *  ETag-conditional REST, so both are from the same moment. `checks` is null
  *  when the CI reads didn't resolve (distinct from a rollup of zero checks), so

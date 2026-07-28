@@ -1,6 +1,6 @@
 import { invoke } from "../invoke";
 import type { Workspace } from "../types/agent";
-import type { PrChecks, PrComments, PrLive, PrState, PrSummary } from "../types/pr";
+import type { AgentPrStatus, PrChecks, PrComments, PrLive, PrState, PrSummary } from "../types/pr";
 import type { GhRepoSummary, GhStatus } from "../types/providers";
 
 export const githubApi = {
@@ -27,8 +27,7 @@ export const githubApi = {
   githubDisconnect: () => invoke<void>("github_disconnect"),
   getPrState: (agentId: string, subdir?: string) =>
     invoke<PrState | null>("get_pr_state", { agentId, subdir }),
-  refreshAllPrStates: () => invoke<Record<string, PrState | null>>("refresh_all_pr_states"),
-  refreshAllPrChecks: () => invoke<Record<string, PrChecks | null>>("refresh_all_pr_checks"),
+  refreshAllPrStatus: () => invoke<Record<string, AgentPrStatus>>("refresh_all_pr_status"),
   getPrChecks: (agentId: string, subdir?: string) =>
     invoke<PrChecks | null>("get_pr_checks", { agentId, subdir }),
   getPrLive: (agentId: string, subdir?: string) =>

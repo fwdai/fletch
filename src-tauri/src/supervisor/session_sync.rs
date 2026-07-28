@@ -298,8 +298,28 @@ pub(crate) fn pr_map_key(agent_id: &str, subdir: &str, primary: bool) -> String 
     }
 }
 
-/// Resolve PR state for *every* bound repo of every agent in one batched
-/// round-trip — the app-wide poll behind `refresh_all_pr_states`. Same
+/// One agent-repo's sidebar status: PR state, plus the CI rollup when the PR is
+/// open. `checks: None` means "nothing to say this round" — served from a
+/// snapshot, not open, or the alias didn't resolve — and the frontend leaves the
+/// last-known tint alone rather than wiping it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentPrStatus {
+    pub state: PrState,
+    pub checks: Option<crate::github::PrChecks>,
+}
+
+impl AgentPrStatus {
+    /// A state-only entry (persisted snapshot, terminal PR, or degraded fetch).
+    fn from_snapshot(state: PrState) -> Self {
+        Self {
+            state,
+            checks: None,
+        }
+    }
+}
+
+/// Resolve PR state *and* CI for every bound repo of every agent in one batched
+/// round-trip — the app-wide sidebar poll behind `refresh_all_pr_status`. Same
 /// per-repo policy as [`resolve_pr_state`], but the live lookups are collapsed
 /// into a single aliased GraphQL query instead of a per-agent fan-out:
 ///
@@ -317,14 +337,14 @@ pub(crate) fn pr_map_key(agent_id: &str, subdir: &str, primary: bool) -> String 
 /// [`pr_map_key`]: plain agent id for the primary, `"{agent_id}::{subdir}"`
 /// for secondaries — so single-repo agents produce exactly one plain-keyed
 /// entry, byte-identical to before.
-pub(crate) async fn resolve_all_pr_states(
+pub(crate) async fn resolve_all_pr_status(
     workspace: &WorkspaceManager,
     reverify_closed: bool,
-) -> std::collections::HashMap<String, PrState> {
+) -> std::collections::HashMap<String, AgentPrStatus> {
     use crate::github::{client, PrRef};
     use std::collections::HashMap;
 
-    let mut out: HashMap<String, PrState> = HashMap::new();
+    let mut out: HashMap<String, AgentPrStatus> = HashMap::new();
     let Some(ws) = workspace.current() else {
         return out;
     };
@@ -362,7 +382,7 @@ pub(crate) async fn resolve_all_pr_states(
             let fetch = !paused && !terminal && (!closed || reverify_closed);
             if !fetch {
                 if let Some(snap) = snapshot {
-                    out.insert(key, snap);
+                    out.insert(key, AgentPrStatus::from_snapshot(snap));
                 }
                 continue;
             }
@@ -388,7 +408,7 @@ pub(crate) async fn resolve_all_pr_states(
                 }),
                 None => {
                     if let Some(snap) = snapshot {
-                        out.insert(key, snap);
+                        out.insert(key, AgentPrStatus::from_snapshot(snap));
                     }
                 }
             }
@@ -400,18 +420,28 @@ pub(crate) async fn resolve_all_pr_states(
     }
 
     let refs: Vec<PrRef> = pending.iter().map(|p| p.pr_ref.clone()).collect();
-    match crate::github::pr_states_batch(&refs).await {
+    match crate::github::pr_status_batch(&refs).await {
         Ok(results) => {
             for (p, res) in pending.into_iter().zip(results) {
                 match res {
-                    Some(pr) => {
+                    Some((pr, checks)) => {
                         persist_pr_snapshot(workspace, &p.agent_id, &p.subdir, &pr);
-                        out.insert(p.key, pr);
+                        // Checks only ride along while the PR is open — that's
+                        // the only state the sidebar tints, and a PR that just
+                        // merged shouldn't ship its run list to no one.
+                        let open = matches!(pr.state, PrStatus::Open);
+                        out.insert(
+                            p.key,
+                            AgentPrStatus {
+                                state: pr,
+                                checks: open.then_some(checks),
+                            },
+                        );
                     }
                     // Not found this round / partial error — keep last-known.
                     None => {
                         if let Some(snap) = p.snapshot {
-                            out.insert(p.key, snap);
+                            out.insert(p.key, AgentPrStatus::from_snapshot(snap));
                         }
                     }
                 }
@@ -421,7 +451,7 @@ pub(crate) async fn resolve_all_pr_states(
         Err(_) => {
             for p in pending {
                 if let Some(snap) = p.snapshot {
-                    out.insert(p.key, snap);
+                    out.insert(p.key, AgentPrStatus::from_snapshot(snap));
                 }
             }
         }

@@ -9,7 +9,6 @@ use crate::error::{Error, Result};
 use crate::github::{self as gh, GhRepoSummary, GhStatus, PrState};
 use crate::new_project;
 use crate::supervisor::Supervisor;
-use crate::workspace::repo_checkout_path;
 
 use super::files::{
     agent_repo_checkout, agent_repo_checkout_opt, expand_tilde, primary_repo, primary_repo_checkout,
@@ -309,104 +308,39 @@ pub async fn get_pr_threads(
 ///
 /// Only repos with a known PR *number* are polled: discovery of a brand-new PR
 /// still rides the existing turn-end / push / git-action triggers, so this poll
-/// never fans a `gh` call out to a repo that has no PR. Resolution goes
-/// through `resolve_all_pr_states`, which collapses every live lookup into a
-/// single batched GraphQL query rather than a per-repo fan-out: by number
-/// (never branch), served straight from the persisted snapshot for merged PRs
-/// (and closed ones except on the slow re-verify tick), and degrading to that
+/// never fans a call out to a repo that has no PR. Resolution goes through
+/// `resolve_all_pr_status`, which collapses every live lookup into a single
+/// batched GraphQL query rather than a per-repo fan-out: by number (never
+/// branch), served straight from the persisted snapshot for merged PRs (and
+/// closed ones except on the slow re-verify tick), and degrading to that
 /// snapshot when GitHub is unreachable or a rate-limit backoff is active. A
 /// repo that resolves to nothing is *omitted* from the map — not written as
-/// null — so the frontend merge keeps its last-known badge instead of wiping it
-/// (same contract as `refresh_all_pr_checks`).
+/// null — so the frontend merge keeps its last-known badge instead of wiping it.
+///
+/// State and CI arrive together. They used to be two commands on two clocks
+/// (`refresh_all_pr_states` at 45s, `refresh_all_pr_checks` at 60s) polling the
+/// same PRs, which cost two GraphQL points per cycle and let the sidebar render
+/// a freshly-merged badge beside a CI tint from a cadence ago. Selecting both
+/// off the same aliased node costs the same as either alone — measured at 1
+/// point for a full 50-alias chunk — so this is strictly cheaper *and*
+/// self-consistent.
 #[tauri::command]
-pub async fn refresh_all_pr_states(
+pub async fn refresh_all_pr_status(
     supervisor: State<'_, Arc<Supervisor>>,
-) -> Result<std::collections::HashMap<String, Option<PrState>>> {
+) -> Result<std::collections::HashMap<String, crate::supervisor::AgentPrStatus>> {
     // Closed PRs are served from the DB snapshot most cycles and only re-verified
     // live on every Nth tick (they can reopen) — cheap coverage of a rare event.
     // Tick 0 (first poll after launch) re-verifies so freshly-adopted state is
     // confirmed right away.
-    let tick = PR_STATE_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tick = PR_STATUS_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let reverify_closed = tick % CLOSED_REVERIFY_EVERY == 0;
-    let states =
-        crate::supervisor::resolve_all_pr_states(&supervisor.workspace, reverify_closed).await;
-    // Only present states land in the map — an omitted agent keeps its
-    // last-known badge on the frontend merge (never wiped to null).
-    Ok(states.into_iter().map(|(id, pr)| (id, Some(pr))).collect())
+    Ok(crate::supervisor::resolve_all_pr_status(&supervisor.workspace, reverify_closed).await)
 }
 
-/// Monotonic tick for `refresh_all_pr_states`, driving the slow closed-PR
+/// Monotonic tick for `refresh_all_pr_status`, driving the slow closed-PR
 /// re-verify cadence.
-static PR_STATE_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Re-verify closed PRs live on every Nth `refresh_all_pr_states` tick.
-const CLOSED_REVERIFY_EVERY: u64 = 6;
-
-/// Refresh CI checks for every repo with an open PR across every agent, so the
-/// sidebar can tint each PR pill pass/fail without opening the Git panel.
-/// Mirror of `refresh_all_pr_states`, including its key shape (`gitKey`: plain
-/// agent id for the primary repo, `"{agent_id}::{subdir}"` for secondaries):
-/// skips archived agents and any repo without a PR, and collapses the lookups
-/// into a single batched GraphQL query rather than a per-repo fan-out.
-/// Best-effort: only a resolved rollup lands in the map (including "no checks
-/// configured"); a not-found/partial-error alias, a whole-batch failure, or an
-/// active rate-limit backoff omits the repo, so the frontend's merge keeps its
-/// last-known tint instead of wiping it — matching `fetchPrAux`'s contract.
-#[tauri::command]
-pub async fn refresh_all_pr_checks(
-    supervisor: State<'_, Arc<Supervisor>>,
-) -> Result<std::collections::HashMap<String, Option<gh::PrChecks>>> {
-    let Some(workspace) = supervisor.workspace.current() else {
-        return Ok(Default::default());
-    };
-    // Paused for rate-limit backoff → return nothing so the frontend merge keeps
-    // every repo's last-known tint instead of wiping it.
-    if gh::client::is_backing_off() {
-        return Ok(Default::default());
-    }
-
-    // Gather one (key, PR ref) per repo with a branch + PR number, resolving
-    // the slug via local git (the network cost is deferred to the single batched
-    // query below, not fanned out per repo).
-    let mut keys: Vec<String> = Vec::new();
-    let mut refs: Vec<gh::PrRef> = Vec::new();
-    for agent in workspace.agents {
-        if agent.archive.is_some() {
-            continue;
-        }
-        for (i, repo) in agent.repos.iter().enumerate() {
-            let (Some(_branch), Some(number)) = (repo.branch.as_ref(), repo.pr_number) else {
-                continue;
-            };
-            let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
-                continue;
-            };
-            let Some((owner, repo_name)) = gh::resolve_slug(&checkout, Some(&repo.repo_path)).await
-            else {
-                continue;
-            };
-            keys.push(crate::supervisor::pr_map_key(
-                &agent.id,
-                &repo.subdir,
-                i == 0,
-            ));
-            refs.push(gh::PrRef {
-                owner,
-                repo: repo_name,
-                number: number as u32,
-            });
-        }
-    }
-
-    let mut out = std::collections::HashMap::new();
-    // A whole-batch failure leaves the map empty (all repos keep last-known);
-    // per-alias `None` (PR not found / partial error) is dropped for the same
-    // reason. Only a resolved rollup — including "no checks" — is recorded.
-    if let Ok(results) = gh::pr_checks_batch(&refs).await {
-        for (key, checks) in keys.into_iter().zip(results) {
-            if let Some(checks) = checks {
-                out.insert(key, Some(checks));
-            }
-        }
-    }
-    Ok(out)
-}
+static PR_STATUS_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Re-verify closed PRs live on every Nth `refresh_all_pr_status` tick. Sized
+/// against the sweep's active cadence (20s) to keep the wall-clock interval at
+/// roughly five minutes, as it was at the old 45s cadence with a divisor of 6.
+const CLOSED_REVERIFY_EVERY: u64 = 15;

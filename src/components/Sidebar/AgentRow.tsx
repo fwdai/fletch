@@ -56,7 +56,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // Every PR across the agent's repos (live state with the persisted database
   // snapshot as fallback, so a merged badge survives restarts, offline
   // stretches, and broken checkouts), each with the CI rollup the app-wide
-  // refreshAllPrChecks poll recorded for it. Single-repo agents yield at most
+  // refreshAllPrStatus sweep recorded for it. Single-repo agents yield at most
   // one entry — exactly the old primary-only read; a multi-repo agent whose
   // only PR lives on a secondary repo still gets its badge.
   const agentPrs = useAgentPrs(agent);
