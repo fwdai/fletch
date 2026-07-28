@@ -16,7 +16,7 @@ pub use lifecycle::SpawnRequest;
 pub(crate) use pr_set::sync_pr_set_links;
 pub use run::ProjectRunConfig;
 pub(crate) use session_sync::{
-    persist_pr_snapshot, pr_map_key, resolve_all_pr_states, resolve_pr_state,
+    persist_pr_snapshot, pr_map_key, resolve_all_pr_status, resolve_pr_state, AgentPrStatus,
 };
 
 use parking_lot::Mutex;

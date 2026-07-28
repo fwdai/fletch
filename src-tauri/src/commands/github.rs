@@ -9,7 +9,6 @@ use crate::error::{Error, Result};
 use crate::github::{self as gh, GhRepoSummary, GhStatus, PrState};
 use crate::new_project;
 use crate::supervisor::Supervisor;
-use crate::workspace::repo_checkout_path;
 
 use super::files::{
     agent_repo_checkout, agent_repo_checkout_opt, expand_tilde, primary_repo, primary_repo_checkout,
@@ -193,26 +192,16 @@ pub async fn get_pr_checks(
     Ok(gh::pr_checks(&checkout).await.unwrap_or(None))
 }
 
-/// The Git panel's per-poll read: merge gate + checks + unresolved review
-/// threads in one round-trip (spec §6). Supersedes polling `get_pr_checks` and
-/// `get_pr_comments` side by side — those went through the `first:30` branch
-/// scan, under which the review-thread selection bills ~30 GraphQL points a
-/// call; off a single `pullRequest(number:)` node the pair costs 1.
-///
-/// Resolution prefers the bound PR number (one query). A repo with an open PR
-/// but no number yet — a PR opened on GitHub that adoption hasn't claimed —
-/// discovers the number via the cheap state lookup first, then reads by number:
-/// two 1-point queries rather than one 30-point scan. Best-effort throughout:
-/// any degradation returns `None` and the panel keeps its last-known values.
-#[tauri::command]
-pub async fn get_pr_detail(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    subdir: Option<String>,
-) -> Result<Option<gh::PrDetail>> {
-    let Some((repo, checkout)) =
-        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
-    else {
+/// Resolve the PR number for a panel read: the bound number when adoption has
+/// recorded one, else discovered once by branch. Discovery costs a 1-point
+/// GraphQL lookup and only happens for a PR opened outside the app that the
+/// app hasn't claimed yet.
+async fn panel_pr_number(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<Option<(u32, std::path::PathBuf, std::path::PathBuf)>> {
+    let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
         return Ok(None);
     };
     if repo.branch.is_none() {
@@ -225,11 +214,81 @@ pub async fn get_pr_detail(
             None => return Ok(None),
         },
     };
-    Ok(
-        gh::pr_detail_number(&checkout, Some(&repo.repo_path), number)
+    Ok(Some((number, checkout, repo.repo_path)))
+}
+
+/// The Git panel's fast tick: PR state + CI, both over ETag-conditional REST.
+///
+/// GitHub does not count a `304 Not Modified` against the primary rate limit, so
+/// this poll is free whenever nothing has changed — which lets the panel run a
+/// tight cadence without spending the GraphQL points budget that the review
+/// threads (`get_pr_threads`) still need.
+///
+/// State comes from the shared `resolve_pr_state`, not a bespoke read, so this
+/// path inherits its policy rather than restating it: **merged** served from the
+/// database with no network, a failed fetch **degrading to the last persisted
+/// snapshot** instead of erasing a badge GitHub already confirmed, and a
+/// discovered OPEN PR **adopted** (bound) so later ticks stop re-discovering it.
+/// `resolve_pr_state`'s own live lookup is now conditional REST too, so routing
+/// through it costs nothing extra.
+///
+/// `Ok(None)` therefore means "this repo has no PR" — a real, renderable answer
+/// — and is no longer conflated with "the lookup failed". The frontend relies on
+/// that distinction to decide whether writing `null` is safe.
+#[tauri::command]
+pub async fn get_pr_live(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<Option<gh::PrLive>> {
+    let Some((state, _bound)) =
+        crate::supervisor::resolve_pr_state(&supervisor.workspace, &agent_id, subdir.as_deref())
             .await
-            .unwrap_or(None),
-    )
+    else {
+        return Ok(None);
+    };
+    // CI only matters while the PR is open: the panel renders it for no other
+    // state, and a settled PR's checks can't change.
+    if !matches!(state.state, gh::PrStatus::Open) {
+        return Ok(Some(gh::PrLive {
+            state,
+            checks: None,
+        }));
+    }
+    let Some((repo, checkout)) =
+        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
+    else {
+        return Ok(Some(gh::PrLive {
+            state,
+            checks: None,
+        }));
+    };
+    let checks = gh::pr_checks_live(&checkout, Some(&repo.repo_path), state.number)
+        .await
+        .unwrap_or(None);
+    Ok(Some(gh::PrLive { state, checks }))
+}
+
+/// The Git panel's slow tick: unresolved review threads (Greptile / other bots
+/// / humans), flattened to each thread's root comment.
+///
+/// Stays on GraphQL because thread resolution (`isResolved`/`isOutdated`) has
+/// no REST equivalent — so unlike `get_pr_live` this one does spend points, 1
+/// per call by PR number. Polled well below the state/CI cadence to match.
+#[tauri::command]
+pub async fn get_pr_threads(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<Option<gh::PrComments>> {
+    let Some((number, checkout, source)) =
+        panel_pr_number(&supervisor, &agent_id, subdir.as_deref()).await?
+    else {
+        return Ok(None);
+    };
+    Ok(gh::pr_threads_number(&checkout, Some(&source), number)
+        .await
+        .unwrap_or(None))
 }
 
 /// App-wide background poll that refreshes PR state for every repo with a
@@ -249,104 +308,39 @@ pub async fn get_pr_detail(
 ///
 /// Only repos with a known PR *number* are polled: discovery of a brand-new PR
 /// still rides the existing turn-end / push / git-action triggers, so this poll
-/// never fans a `gh` call out to a repo that has no PR. Resolution goes
-/// through `resolve_all_pr_states`, which collapses every live lookup into a
-/// single batched GraphQL query rather than a per-repo fan-out: by number
-/// (never branch), served straight from the persisted snapshot for merged PRs
-/// (and closed ones except on the slow re-verify tick), and degrading to that
+/// never fans a call out to a repo that has no PR. Resolution goes through
+/// `resolve_all_pr_status`, which collapses every live lookup into a single
+/// batched GraphQL query rather than a per-repo fan-out: by number (never
+/// branch), served straight from the persisted snapshot for merged PRs (and
+/// closed ones except on the slow re-verify tick), and degrading to that
 /// snapshot when GitHub is unreachable or a rate-limit backoff is active. A
 /// repo that resolves to nothing is *omitted* from the map — not written as
-/// null — so the frontend merge keeps its last-known badge instead of wiping it
-/// (same contract as `refresh_all_pr_checks`).
+/// null — so the frontend merge keeps its last-known badge instead of wiping it.
+///
+/// State and CI arrive together. They used to be two commands on two clocks
+/// (`refresh_all_pr_states` at 45s, `refresh_all_pr_checks` at 60s) polling the
+/// same PRs, which cost two GraphQL points per cycle and let the sidebar render
+/// a freshly-merged badge beside a CI tint from a cadence ago. Selecting both
+/// off the same aliased node costs the same as either alone — measured at 1
+/// point for a full 50-alias chunk — so this is strictly cheaper *and*
+/// self-consistent.
 #[tauri::command]
-pub async fn refresh_all_pr_states(
+pub async fn refresh_all_pr_status(
     supervisor: State<'_, Arc<Supervisor>>,
-) -> Result<std::collections::HashMap<String, Option<PrState>>> {
+) -> Result<std::collections::HashMap<String, crate::supervisor::AgentPrStatus>> {
     // Closed PRs are served from the DB snapshot most cycles and only re-verified
     // live on every Nth tick (they can reopen) — cheap coverage of a rare event.
     // Tick 0 (first poll after launch) re-verifies so freshly-adopted state is
     // confirmed right away.
-    let tick = PR_STATE_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tick = PR_STATUS_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let reverify_closed = tick % CLOSED_REVERIFY_EVERY == 0;
-    let states =
-        crate::supervisor::resolve_all_pr_states(&supervisor.workspace, reverify_closed).await;
-    // Only present states land in the map — an omitted agent keeps its
-    // last-known badge on the frontend merge (never wiped to null).
-    Ok(states.into_iter().map(|(id, pr)| (id, Some(pr))).collect())
+    Ok(crate::supervisor::resolve_all_pr_status(&supervisor.workspace, reverify_closed).await)
 }
 
-/// Monotonic tick for `refresh_all_pr_states`, driving the slow closed-PR
+/// Monotonic tick for `refresh_all_pr_status`, driving the slow closed-PR
 /// re-verify cadence.
-static PR_STATE_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Re-verify closed PRs live on every Nth `refresh_all_pr_states` tick.
-const CLOSED_REVERIFY_EVERY: u64 = 6;
-
-/// Refresh CI checks for every repo with an open PR across every agent, so the
-/// sidebar can tint each PR pill pass/fail without opening the Git panel.
-/// Mirror of `refresh_all_pr_states`, including its key shape (`gitKey`: plain
-/// agent id for the primary repo, `"{agent_id}::{subdir}"` for secondaries):
-/// skips archived agents and any repo without a PR, and collapses the lookups
-/// into a single batched GraphQL query rather than a per-repo fan-out.
-/// Best-effort: only a resolved rollup lands in the map (including "no checks
-/// configured"); a not-found/partial-error alias, a whole-batch failure, or an
-/// active rate-limit backoff omits the repo, so the frontend's merge keeps its
-/// last-known tint instead of wiping it — matching `fetchPrAux`'s contract.
-#[tauri::command]
-pub async fn refresh_all_pr_checks(
-    supervisor: State<'_, Arc<Supervisor>>,
-) -> Result<std::collections::HashMap<String, Option<gh::PrChecks>>> {
-    let Some(workspace) = supervisor.workspace.current() else {
-        return Ok(Default::default());
-    };
-    // Paused for rate-limit backoff → return nothing so the frontend merge keeps
-    // every repo's last-known tint instead of wiping it.
-    if gh::client::is_backing_off() {
-        return Ok(Default::default());
-    }
-
-    // Gather one (key, PR ref) per repo with a branch + PR number, resolving
-    // the slug via local git (the network cost is deferred to the single batched
-    // query below, not fanned out per repo).
-    let mut keys: Vec<String> = Vec::new();
-    let mut refs: Vec<gh::PrRef> = Vec::new();
-    for agent in workspace.agents {
-        if agent.archive.is_some() {
-            continue;
-        }
-        for (i, repo) in agent.repos.iter().enumerate() {
-            let (Some(_branch), Some(number)) = (repo.branch.as_ref(), repo.pr_number) else {
-                continue;
-            };
-            let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
-                continue;
-            };
-            let Some((owner, repo_name)) = gh::resolve_slug(&checkout, Some(&repo.repo_path)).await
-            else {
-                continue;
-            };
-            keys.push(crate::supervisor::pr_map_key(
-                &agent.id,
-                &repo.subdir,
-                i == 0,
-            ));
-            refs.push(gh::PrRef {
-                owner,
-                repo: repo_name,
-                number: number as u32,
-            });
-        }
-    }
-
-    let mut out = std::collections::HashMap::new();
-    // A whole-batch failure leaves the map empty (all repos keep last-known);
-    // per-alias `None` (PR not found / partial error) is dropped for the same
-    // reason. Only a resolved rollup — including "no checks" — is recorded.
-    if let Ok(results) = gh::pr_checks_batch(&refs).await {
-        for (key, checks) in keys.into_iter().zip(results) {
-            if let Some(checks) = checks {
-                out.insert(key, Some(checks));
-            }
-        }
-    }
-    Ok(out)
-}
+static PR_STATUS_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Re-verify closed PRs live on every Nth `refresh_all_pr_status` tick. Sized
+/// against the sweep's active cadence (20s) to keep the wall-clock interval at
+/// roughly five minutes, as it was at the old 45s cadence with a divisor of 6.
+const CLOSED_REVERIFY_EVERY: u64 = 15;

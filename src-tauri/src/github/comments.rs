@@ -1,8 +1,13 @@
-//! Unresolved PR review threads: the GraphQL selection, node extractor, and
-//! the pure flattener.
+//! Unresolved PR review threads: the GraphQL selection, the by-number read,
+//! the node extractor, and the pure flattener.
+
+use std::path::Path;
 
 use serde_json::Value;
 
+use crate::error::Result;
+
+use super::query::pr_node_by_number;
 use super::types::*;
 
 /// GraphQL selection for a PR's review threads. Reused by the branch lookup
@@ -35,11 +40,27 @@ pub(crate) fn pr_comments_from_node(pr: &Value) -> PrComments {
     }
 }
 
-// There is deliberately no branch-scan variant of this read. Under
-// `branch_prs_query`'s `first:30`, PR_COMMENTS_FIELDS bills ~30 GraphQL points
-// per call — one open Git panel polling it drained the whole hourly budget.
-// Review threads are only ever read for a PR we can name, so the by-number
-// path (`pr_detail_number`, 1 point) is the only one.
+/// Fetch a PR's unresolved review threads by number — the panel's slow tick.
+///
+/// This is the one panel read that must stay on GraphQL: thread *resolution*
+/// (`isResolved`/`isOutdated`) has no REST equivalent, so the ETag-conditional
+/// REST path in `live.rs` cannot serve it. By number it costs 1 point; there is
+/// deliberately no branch-scan variant, which under `branch_prs_query`'s
+/// `first:30` billed ~30 points a call and drained the hourly budget on its own.
+///
+/// `Ok(None)` when the PR or slug can't be resolved, or while a rate-limit
+/// backoff is active.
+pub async fn pr_threads_number(
+    checkout: &Path,
+    source_repo: Option<&Path>,
+    number: u32,
+) -> Result<Option<PrComments>> {
+    let Some(node) = pr_node_by_number(checkout, source_repo, number, PR_COMMENTS_FIELDS).await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(pr_comments_from_node(&node)))
+}
 
 /// Flatten review-thread nodes into the root comment of each *unresolved,
 /// non-outdated* thread. Pure — unit tested against captured fixtures.

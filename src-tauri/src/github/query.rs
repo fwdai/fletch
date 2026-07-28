@@ -275,14 +275,22 @@ async fn pr_batch<T>(
     Ok(out)
 }
 
-/// Fetch PR state for many PRs by number in one (chunked) round-trip.
-pub(crate) async fn pr_states_batch(refs: &[PrRef]) -> Result<Vec<Option<PrState>>> {
-    pr_batch(refs, &format!("state {PR_STATE_FIELDS}"), parse_pr_state).await
-}
-
-/// Fetch the merge gate + checks for many PRs by number in one round-trip.
-pub(crate) async fn pr_checks_batch(refs: &[PrRef]) -> Result<Vec<Option<PrChecks>>> {
-    pr_batch(refs, PR_CHECKS_FIELDS, pr_checks_from_node).await
+/// Fetch PR state *and* the merge gate + checks for many PRs by number in one
+/// (chunked) round-trip — the app-wide sidebar sweep.
+///
+/// State and checks used to be two separate sweeps on two clocks. Selecting
+/// both off the same aliased `pullRequest` node costs the same as either one
+/// alone (measured: 1 point at 50 aliases, the chunk size), so merging them
+/// halves the sweep's cost and — more importantly — means the sidebar's badge
+/// and its CI tint always come from the same instant instead of drifting up to
+/// a cadence apart.
+pub(crate) async fn pr_status_batch(refs: &[PrRef]) -> Result<Vec<Option<(PrState, PrChecks)>>> {
+    pr_batch(
+        refs,
+        &format!("state {PR_STATE_FIELDS} {PR_CHECKS_FIELDS}"),
+        |node| (parse_pr_state(node), pr_checks_from_node(node)),
+    )
+    .await
 }
 
 #[cfg(test)]

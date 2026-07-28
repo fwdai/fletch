@@ -82,10 +82,20 @@ export interface PrComments {
   unresolved: PrComment[];
 }
 
-/** The Git panel's per-poll PR read — checks and review threads fetched in one
- *  backend round-trip, so they're always from the same moment. Written to the
- *  `prChecks` / `prComments` slices as a pair. */
-export interface PrDetail {
-  checks: PrChecks;
-  comments: PrComments;
+/** One agent-repo's entry in the app-wide sidebar sweep: PR state, plus the CI
+ *  rollup when the PR is open. `checks: null` means "nothing to say this round"
+ *  — served from a snapshot, not open, or the lookup degraded — so the store
+ *  leaves the last-known tint alone rather than wiping it. */
+export interface AgentPrStatus {
+  state: PrState;
+  checks: PrChecks | null;
+}
+
+/** The Git panel's fast-tick PR read — state + CI from one backend pass over
+ *  ETag-conditional REST, so both are from the same moment. `checks` is null
+ *  when the CI reads didn't resolve (distinct from a rollup of zero checks), so
+ *  a transient failure never blanks a passing tint. */
+export interface PrLive {
+  state: PrState;
+  checks: PrChecks | null;
 }

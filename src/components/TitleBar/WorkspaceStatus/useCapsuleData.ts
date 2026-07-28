@@ -17,13 +17,16 @@ export function useCapsuleData(agentId: string) {
   const prState = usePrState(agentId);
   const checks = useAppStore((s) => s.prChecks[agentId] ?? null);
   const fetchGitState = useAppStore((s) => s.fetchGitState);
-  const fetchPrChecks = useAppStore((s) => s.fetchPrChecks);
+  const fetchPrLive = useAppStore((s) => s.fetchPrLive);
 
   const prOpen = prState?.state === "open";
   const poll = useCallback(async () => {
     await fetchGitState(agentId);
-    if (prOpen) await fetchPrChecks(agentId);
-  }, [agentId, prOpen, fetchGitState, fetchPrChecks]);
+    // Same conditional-REST read the Git panel's fast tick uses: unchanged
+    // polls are 304s that GitHub doesn't bill, so the capsule's chip costs
+    // nothing to keep current (it previously spent a GraphQL point a tick).
+    if (prOpen) await fetchPrLive(agentId);
+  }, [agentId, prOpen, fetchGitState, fetchPrLive]);
   usePoll(poll, 10000, [poll]);
 
   return { shortstats, gitState, prState, checks: prOpen ? checks : null };

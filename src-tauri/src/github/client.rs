@@ -53,6 +53,11 @@ pub fn set_token(token: Option<String>) {
         *w = token.filter(|t| !t.trim().is_empty());
     }
     set_cached_login(None);
+    // Conditional-GET bodies belong to the old token's view of the world.
+    // GitHub validates every ETag itself (a token without access gets a 404,
+    // never a 304), so this isn't load-bearing for correctness — it just keeps
+    // one account's cached payloads from outliving its session.
+    etag_cache().write().unwrap().clear();
 }
 
 /// Startup-seed variant of [`set_token`]: applies only while no explicit set
@@ -106,6 +111,22 @@ pub(crate) fn set_cached_login(login: Option<String>) {
 const RATE_BUDGET_FLOOR: i64 = 50;
 /// Fallback pause when GitHub signals a secondary limit without a `Retry-After`.
 const DEFAULT_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Entries held by [`etag_cache`] before it is dropped wholesale. Generous —
+/// three paths per PR, so this only trips after hundreds of distinct PRs in
+/// one session.
+const ETAG_CACHE_MAX: usize = 512;
+
+/// Last `ETag` + response body per polled REST path, backing
+/// [`Client::rest_get_conditional`]. Process-global and token-independent: a
+/// stale entry can only produce a conditional request that GitHub answers with
+/// a fresh `200`, never a wrong body — GitHub validates the ETag, we don't.
+#[allow(clippy::type_complexity)]
+fn etag_cache() -> &'static RwLock<std::collections::HashMap<String, (String, Value)>> {
+    static CACHE: OnceLock<RwLock<std::collections::HashMap<String, (String, Value)>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(std::collections::HashMap::new()))
+}
 
 fn backoff_registry() -> &'static RwLock<Option<Instant>> {
     static BACKOFF: OnceLock<RwLock<Option<Instant>>> = OnceLock::new();
@@ -268,6 +289,62 @@ impl Client {
         let status = resp.status();
         // Some successes (e.g. 204 from PUT) have no body; treat as null.
         let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+        Ok((status, body))
+    }
+
+    /// REST GET for a *polled* path, issued conditionally against the ETag of
+    /// the last response for the same path.
+    ///
+    /// This is the cheap-polling primitive. GitHub does not count a `304 Not
+    /// Modified` against the primary rate limit, so a poll that finds nothing
+    /// changed — the common case by far — costs nothing at all. That is
+    /// something the GraphQL API cannot express at any price, and it is why the
+    /// panel's fast tick lives on REST while GraphQL keeps only the reads it
+    /// alone can serve (review-thread resolution).
+    ///
+    /// A 304 is answered from the cache and reported to the caller as the
+    /// `200` it stands in for, so endpoints need no special case. The gate is
+    /// fed on every response, conditional or not.
+    pub async fn rest_get_conditional(&self, path: &str) -> Result<(reqwest::StatusCode, Value)> {
+        let prior = etag_cache().read().unwrap().get(path).cloned();
+        let mut req = self.request(reqwest::Method::GET, format!("{API_BASE}{path}"));
+        if let Some((etag, _)) = &prior {
+            req = req.header(reqwest::header::IF_NONE_MATCH, etag.clone());
+        }
+        let resp = req.send().await.map_err(request_error)?;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+
+        if status == reqwest::StatusCode::NOT_MODIFIED {
+            observe_rate_limit(status, &headers, &Value::Null);
+            // Nothing changed: serve the cached body as a fresh 200. `prior`
+            // must exist (we only send If-None-Match when it does), but fall
+            // through to a normal miss rather than panicking if it was evicted
+            // between the read and now.
+            if let Some((_, body)) = prior {
+                return Ok((reqwest::StatusCode::OK, body));
+            }
+            return Ok((status, Value::Null));
+        }
+
+        let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+        observe_rate_limit(status, &headers, &body);
+        if status.is_success() {
+            if let Some(etag) = headers
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+            {
+                let mut cache = etag_cache().write().unwrap();
+                // Paths are per-PR, so the live set is bounded by the fleet;
+                // this only guards against unbounded growth across a long
+                // session as agents come and go. Dropping the cache costs one
+                // uncached fetch per path, never correctness.
+                if cache.len() >= ETAG_CACHE_MAX {
+                    cache.clear();
+                }
+                cache.insert(path.to_string(), (etag.to_string(), body.clone()));
+            }
+        }
         Ok((status, body))
     }
 

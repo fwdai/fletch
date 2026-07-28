@@ -24,18 +24,15 @@ export function App() {
   const fetchAllShortstats = useAppStore((s) => s.fetchAllShortstats);
   const fetchAllGitMeta = useAppStore((s) => s.fetchAllGitMeta);
   const refreshBaseFreshness = useAppStore((s) => s.refreshBaseFreshness);
-  const refreshAllPrStates = useAppStore((s) => s.refreshAllPrStates);
-  const refreshAllPrChecks = useAppStore((s) => s.refreshAllPrChecks);
+  const refreshAllPrStatus = useAppStore((s) => s.refreshAllPrStatus);
   // PR polls hit the GitHub API — skip them entirely in local-only mode
   // (no connection) so a GitHub-unaware user generates zero network chatter.
   const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
-  // Drive adaptive poll cadence: poll fast while there's something changing
-  // (an open PR, or checks still in flight) and back off hard once everything
-  // has settled, so an idle workspace of merged PRs stops hitting the API.
+  // Drive adaptive poll cadence: poll fast while there's an open PR and back off
+  // hard once everything has settled, so an idle workspace of merged PRs stops
+  // hitting the API. Checks no longer need their own signal — they ride the same
+  // sweep as state.
   const anyOpenPr = useAppStore((s) => Object.values(s.prStates).some((p) => p?.state === "open"));
-  const anyChecksPending = useAppStore((s) =>
-    Object.values(s.prChecks).some((c) => c?.rollup === "pending"),
-  );
 
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
@@ -98,31 +95,26 @@ export function App() {
     [refreshBaseFreshness, githubConnected],
   );
 
-  // App-wide poll for remote PR state (open → merged / closed, mergeability)
-  // so the sidebar PR badge tracks changes made on GitHub — a merge by a
-  // teammate, CI, or the web UI — without the user opening the Git panel. The
-  // whole sweep is now one batched `gh` call. Cadence adapts: 45s while any PR
-  // is open (a merge/close is worth catching quickly), backing off to 5min once
+  // App-wide sweep for remote PR status — state (open → merged / closed,
+  // mergeability) plus the CI rollup that tints each sidebar pill — so the
+  // sidebar tracks changes made on GitHub by a teammate, CI, or the web UI
+  // without the user opening the Git panel.
+  //
+  // One batched query covers the whole fleet, and selecting state and checks
+  // together costs what either did alone (1 point for a full 50-PR chunk), so
+  // this replaces what used to be two sweeps on two clocks — which cost double
+  // and let a freshly-merged badge sit beside a CI tint from a cadence ago.
+  //
+  // 20s while any PR is open: cheap enough to be genuinely live, and it covers
+  // in-flight checks without a separate faster tick. Backs off to 5min once
   // every PR has settled — merged PRs answer from the local snapshot anyway, so
   // the slow tick just watches for a rare reopen.
   usePoll(
     async () => {
-      if (githubConnected) await refreshAllPrStates();
+      if (githubConnected) await refreshAllPrStatus();
     },
-    anyOpenPr ? 45000 : 300000,
-    [refreshAllPrStates, githubConnected, anyOpenPr],
-  );
-
-  // App-wide poll for CI checks so each sidebar PR pill can be tinted pass/fail
-  // at a glance — one batched `gh` call. Cadence follows the checks themselves:
-  // 60s while any are in flight, 2min while PRs are open but settled (still
-  // catches a fresh push kicking off new checks), and 5min once nothing is open.
-  usePoll(
-    async () => {
-      if (githubConnected) await refreshAllPrChecks();
-    },
-    anyChecksPending ? 60000 : anyOpenPr ? 120000 : 300000,
-    [refreshAllPrChecks, githubConnected, anyChecksPending, anyOpenPr],
+    anyOpenPr ? 20000 : 300000,
+    [refreshAllPrStatus, githubConnected, anyOpenPr],
   );
 
   // Apply theme via html class; accent via CSS vars.

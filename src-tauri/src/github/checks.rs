@@ -61,10 +61,11 @@ pub async fn pr_checks(checkout: &Path) -> Result<Option<PrChecks>> {
     Ok(Some(pr_checks_from_node(pr)))
 }
 
-/// Normalize the UPPERCASE rollup payload into the spec §6 shape. Pure — unit
-/// tested against captured fixtures.
-fn parse_pr_checks(merge_state_status: &str, rollup: &[Value]) -> PrChecks {
-    let merge_state = match merge_state_status {
+/// GitHub's merge-state verdict → [`MergeState`]. Accepts either spelling:
+/// GraphQL's `mergeStateStatus` is UPPERCASE, REST's `mergeable_state` is
+/// lowercase, and both name the same states.
+pub(crate) fn parse_merge_state(raw: &str) -> MergeState {
+    match raw.to_ascii_uppercase().as_str() {
         "CLEAN" => MergeState::Clean,
         "BLOCKED" => MergeState::Blocked,
         "UNSTABLE" => MergeState::Unstable,
@@ -73,51 +74,14 @@ fn parse_pr_checks(merge_state_status: &str, rollup: &[Value]) -> PrChecks {
         "DRAFT" => MergeState::Draft,
         "HAS_HOOKS" => MergeState::HasHooks,
         _ => MergeState::Unknown,
-    };
+    }
+}
 
-    let str_of = |v: &Value, key: &str| -> Option<String> {
-        v.get(key)
-            .and_then(|x| x.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-    };
-
-    let runs: Vec<CheckRun> = rollup
-        .iter()
-        .map(|item| {
-            if item["__typename"].as_str() == Some("StatusContext") {
-                // Legacy commit status: a single `state` covers both status
-                // and conclusion.
-                let state = item["state"].as_str().unwrap_or("");
-                let (status, conclusion) = match state {
-                    "SUCCESS" => ("completed", Some("success")),
-                    "FAILURE" | "ERROR" => ("completed", Some("failure")),
-                    "EXPECTED" => ("queued", None),
-                    _ => ("in_progress", None), // PENDING
-                };
-                CheckRun {
-                    name: str_of(item, "context").unwrap_or_else(|| "status".into()),
-                    status: status.to_string(),
-                    conclusion: conclusion.map(|s| s.to_string()),
-                    required: false,
-                    url: str_of(item, "targetUrl"),
-                    started_at: str_of(item, "startedAt"),
-                    completed_at: None,
-                }
-            } else {
-                CheckRun {
-                    name: str_of(item, "name").unwrap_or_else(|| "check".into()),
-                    status: item["status"].as_str().unwrap_or("QUEUED").to_lowercase(),
-                    conclusion: str_of(item, "conclusion").map(|c| c.to_lowercase()),
-                    required: false,
-                    url: str_of(item, "detailsUrl"),
-                    started_at: str_of(item, "startedAt"),
-                    completed_at: str_of(item, "completedAt"),
-                }
-            }
-        })
-        .collect();
-
+/// Roll a normalized run list up into the spec §6 summary. Pure, and shared by
+/// both transports — the GraphQL `statusCheckRollup` parser below and the REST
+/// check-runs/statuses parser — so the pass/fail/pending arithmetic is defined
+/// and tested exactly once regardless of where the runs came from.
+pub(crate) fn rollup_checks(merge_state: MergeState, runs: Vec<CheckRun>) -> PrChecks {
     let is_failing = |r: &CheckRun| {
         matches!(
             r.conclusion.as_deref(),
@@ -163,6 +127,57 @@ fn parse_pr_checks(merge_state_status: &str, rollup: &[Value]) -> PrChecks {
         required_failing,
         runs,
     }
+}
+
+/// Normalize the UPPERCASE GraphQL rollup payload into the spec §6 shape.
+/// Pure — unit tested against captured fixtures.
+fn parse_pr_checks(merge_state_status: &str, rollup: &[Value]) -> PrChecks {
+    let merge_state = parse_merge_state(merge_state_status);
+
+    let str_of = |v: &Value, key: &str| -> Option<String> {
+        v.get(key)
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+
+    let runs: Vec<CheckRun> = rollup
+        .iter()
+        .map(|item| {
+            if item["__typename"].as_str() == Some("StatusContext") {
+                // Legacy commit status: a single `state` covers both status
+                // and conclusion.
+                let state = item["state"].as_str().unwrap_or("");
+                let (status, conclusion) = match state {
+                    "SUCCESS" => ("completed", Some("success")),
+                    "FAILURE" | "ERROR" => ("completed", Some("failure")),
+                    "EXPECTED" => ("queued", None),
+                    _ => ("in_progress", None), // PENDING
+                };
+                CheckRun {
+                    name: str_of(item, "context").unwrap_or_else(|| "status".into()),
+                    status: status.to_string(),
+                    conclusion: conclusion.map(|s| s.to_string()),
+                    required: false,
+                    url: str_of(item, "targetUrl"),
+                    started_at: str_of(item, "startedAt"),
+                    completed_at: None,
+                }
+            } else {
+                CheckRun {
+                    name: str_of(item, "name").unwrap_or_else(|| "check".into()),
+                    status: item["status"].as_str().unwrap_or("QUEUED").to_lowercase(),
+                    conclusion: str_of(item, "conclusion").map(|c| c.to_lowercase()),
+                    required: false,
+                    url: str_of(item, "detailsUrl"),
+                    started_at: str_of(item, "startedAt"),
+                    completed_at: str_of(item, "completedAt"),
+                }
+            }
+        })
+        .collect();
+
+    rollup_checks(merge_state, runs)
 }
 
 #[cfg(test)]

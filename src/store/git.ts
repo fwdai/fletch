@@ -15,6 +15,7 @@ import {
 } from "@/components/RightPanel/delegation";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { setSetting } from "@/storage/settings";
+import { acceptPrWrite, issuePrWrite, stampPrWrite } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
 
 export interface GitSlice {
@@ -74,22 +75,24 @@ export interface GitSlice {
    *  Network + GitHub-gated; silent (never surfaces an error). */
   refreshBaseFreshness: () => Promise<void>;
   fetchPrState: (agentId: string, subdir?: string) => Promise<void>;
-  /** Refresh PR state for every repo with a known PR across every agent in
-   *  one round-trip (used by the app-wide background poll). The reply is
-   *  keyed by `gitKey`, so a multi-repo agent's secondary-repo PRs land in
-   *  the store too and the sidebar badge updates without opening the panel. */
-  refreshAllPrStates: () => Promise<void>;
-  /** Refresh CI checks for every repo with an open PR in one round-trip
-   *  (used by the app-wide background poll, keyed by `gitKey` like
-   *  `refreshAllPrStates`) so the sidebar PR pill can tint pass/fail without
-   *  opening the Git panel. */
-  refreshAllPrChecks: () => Promise<void>;
+  /** The app-wide sidebar sweep: PR state + CI for every repo with a known PR
+   *  across every agent, in one batched round-trip. Keyed by `gitKey`, so a
+   *  multi-repo agent's secondary-repo PRs land in the store too and the sidebar
+   *  badge updates without opening the panel. Replaces the former separate
+   *  state and checks sweeps — one query costs what either did alone, and both
+   *  halves now come from the same instant. */
+  refreshAllPrStatus: () => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
-  /** Refresh checks + review comments together in one backend round-trip —
-   *  what the Git panel polls. Cheaper than the two fetchers side by side (the
-   *  backend reads both off a single PR node) and keeps the two slices
-   *  consistent, since they come from the same moment. */
-  fetchPrDetail: (agentId: string, subdir?: string) => Promise<void>;
+  /** The Git panel's fast tick: PR state + CI in one backend pass over
+   *  ETag-conditional REST. Free at GitHub whenever nothing changed, so it can
+   *  run at a tight cadence; supersedes polling `fetchPrState` and
+   *  `fetchPrChecks` separately, and keeps the two slices from disagreeing
+   *  since both come from the same moment. */
+  fetchPrLive: (agentId: string, subdir?: string) => Promise<void>;
+  /** The Git panel's slow tick: unresolved review threads. Stays on GraphQL
+   *  (thread resolution has no REST equivalent) and so does cost points —
+   *  hence the gentler cadence. */
+  fetchPrThreads: (agentId: string, subdir?: string) => Promise<void>;
   delegateGitAction: (
     agentId: string,
     kind: GitDelegationKind,
@@ -193,8 +196,10 @@ const fetchPrAux = async <K extends "prChecks" | "prComments">(
   subdir?: string,
 ): Promise<void> => {
   const mapKey = gitKey(agentId, subdir);
+  const ticket = issuePrWrite();
   try {
     const value = await fetch(agentId, subdir);
+    if (!acceptPrWrite(key, mapKey, ticket)) return;
     set((s) => ({ [key]: { ...s[key], [mapKey]: value } }) as Partial<GitSlice>);
   } catch {
     set((s) =>
@@ -258,39 +263,47 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   },
 
   fetchPrState: async (agentId, subdir) => {
+    const mapKey = gitKey(agentId, subdir);
+    const ticket = issuePrWrite();
     try {
       const state = await api.getPrState(agentId, subdir);
+      if (!acceptPrWrite("prStates", mapKey, ticket)) return;
       // Always write (including null) to distinguish "confirmed: no PR" from
       // "not yet fetched" (absent key). Unlike fetchGitState which guards the
       // write, PR state being null is meaningful.
-      set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: state } }));
+      set((s) => ({ prStates: { ...s.prStates, [mapKey]: state } }));
     } catch {
       // non-fatal
     }
   },
 
-  refreshAllPrStates: async () => {
+  refreshAllPrStatus: async () => {
+    const ticket = issuePrWrite();
     try {
       // Set state directly from the reply (rather than via `pr:state_changed`
       // events) so the very first poll — which usePoll fires immediately on
       // mount — can't race the store's event listener finishing its async
-      // attach during init(). Merge so agents without a known PR keep whatever
-      // state the focused-panel / per-trigger paths recorded.
-      const map = await api.refreshAllPrStates();
-      set((s) => ({ prStates: { ...s.prStates, ...map } }));
-    } catch {
-      // non-fatal — next poll tick will retry
-    }
-  },
-
-  refreshAllPrChecks: async () => {
-    try {
-      // Merge (like refreshAllPrStates) so the focused panel's per-agent
-      // checks poll isn't clobbered between bulk ticks. The batched reply only
-      // carries resolved rollups, so absent agents keep their last value rather
-      // than being wiped.
-      const map = await api.refreshAllPrChecks();
-      set((s) => ({ prChecks: { ...s.prChecks, ...map } }));
+      // attach during init().
+      const map = await api.refreshAllPrStatus();
+      set((s) => {
+        // Merge, never replace: agents absent from the reply keep whatever the
+        // focused-panel / per-trigger paths recorded. `checks` is only written
+        // when the sweep resolved one (open PR, live fetch) — a null there means
+        // "nothing to say this round", so the last-known tint survives instead
+        // of being wiped by a snapshot-served or merged entry.
+        //
+        // Ticket-checked per key: this sweep can be slower than a focused
+        // fetchPrLive, so it must not roll a key back to what it saw earlier.
+        const prStates = { ...s.prStates };
+        const prChecks = { ...s.prChecks };
+        for (const [key, entry] of Object.entries(map)) {
+          if (acceptPrWrite("prStates", key, ticket)) prStates[key] = entry.state;
+          if (entry.checks != null && acceptPrWrite("prChecks", key, ticket)) {
+            prChecks[key] = entry.checks;
+          }
+        }
+        return { prStates, prChecks };
+      });
     } catch {
       // non-fatal — next poll tick will retry
     }
@@ -298,27 +311,45 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
 
   fetchPrChecks: (agentId, subdir) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir),
 
-  fetchPrDetail: async (agentId, subdir) => {
+  fetchPrLive: async (agentId, subdir) => {
     const mapKey = gitKey(agentId, subdir);
+    const ticket = issuePrWrite();
     try {
-      const detail = await api.getPrDetail(agentId, subdir);
-      // A null detail is "confirmed unavailable" for both halves — the same
-      // meaning fetchPrAux gives a null value, so the panel drops the
-      // "checking…" placeholder rather than hanging on it.
+      const live = await api.getPrLive(agentId, subdir);
+      // One ticket, checked per slice: the panel and the title capsule both poll
+      // this for the same agent, so an older response must not land on top of a
+      // newer one (nor on top of the post-merge refresh).
+      const takeState = acceptPrWrite("prStates", mapKey, ticket);
+      const takeChecks =
+        (live?.checks != null || live == null) && acceptPrWrite("prChecks", mapKey, ticket);
+      if (!takeState && !takeChecks) return;
+      // Writing `null` state is safe here *because* the backend degrades a failed
+      // lookup to the last persisted snapshot (see `get_pr_live` /
+      // `resolve_pr_state`) rather than reporting nothing. So a null reply means
+      // "this repo has no PR", not "the fetch failed" — the distinction the
+      // panel depends on, since it treats a present null as authoritative and
+      // skips its snapshot fallback.
+      //
+      // Checks are only written when the read resolved them: a null `checks` on a
+      // present PR means the CI reads degraded (or the PR isn't open), and
+      // overwriting a good rollup there would blank the pill on a transient
+      // error.
       set((s) => ({
-        prChecks: { ...s.prChecks, [mapKey]: detail?.checks ?? null },
-        prComments: { ...s.prComments, [mapKey]: detail?.comments ?? null },
+        prStates: takeState ? { ...s.prStates, [mapKey]: live?.state ?? null } : s.prStates,
+        prChecks: takeChecks ? { ...s.prChecks, [mapKey]: live?.checks ?? null } : s.prChecks,
       }));
     } catch {
-      // Mirror fetchPrAux's failure contract per slice: degrade an absent key
-      // to null so the placeholder clears, but let a later transient error
+      // Mirror fetchPrAux's failure contract: degrade an absent key to null so
+      // the "checking…" placeholder clears, but let a later transient error
       // keep the last good value.
       set((s) => ({
         prChecks: mapKey in s.prChecks ? s.prChecks : { ...s.prChecks, [mapKey]: null },
-        prComments: mapKey in s.prComments ? s.prComments : { ...s.prComments, [mapKey]: null },
       }));
     }
   },
+
+  fetchPrThreads: (agentId, subdir) =>
+    fetchPrAux(set, agentId, "prComments", api.getPrThreads, subdir),
 
   delegateGitAction: (agentId, kind, prompt, subdir) => {
     // If the agent is already running, DON'T inject the trigger mid-turn: Claude
@@ -432,6 +463,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       await api.commitAgent(agentId, message, subdir);
       await api.pushAgent(agentId, subdir);
       const pr = await api.createPr(agentId, "", "", subdir);
+      // Authoritative: we just created this PR. Stamp it so a poll that was
+      // already in flight — and saw no PR at all — can't erase the card.
+      stampPrWrite("prStates", gitKey(agentId, subdir));
       set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: pr } }));
       await get().fetchGitState(agentId, subdir);
       return true;
@@ -461,6 +495,8 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   createPr: async (agentId, title, body, subdir) => {
     try {
       const pr = await api.createPr(agentId, title, body, subdir);
+      // Authoritative (see commitAndOpenPr): outranks any in-flight poll.
+      stampPrWrite("prStates", gitKey(agentId, subdir));
       set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: pr } }));
       return pr;
     } catch (e) {
@@ -475,8 +511,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // Refresh immediately: no backend event fires on merge, and the panel
       // should transition to the merged state as soon as GitHub reports it
       // (with --auto + pending checks the PR can legitimately stay open).
-      await get().fetchPrState(agentId, subdir);
-      await get().fetchPrChecks(agentId, subdir);
+      // One read covers state and checks; the merge just changed both, so the
+      // conditional GETs come back 200 rather than 304 here.
+      await get().fetchPrLive(agentId, subdir);
     } catch (e) {
       set({ lastError: String(e) });
     }
