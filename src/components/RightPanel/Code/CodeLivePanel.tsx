@@ -12,7 +12,6 @@ import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { useHljsTheme } from "@/util/codeTheme";
 import type { DiffLine } from "@/util/diff";
-import { usePoll } from "@/util/hooks";
 import { DiffBody, extOf, useFileDiff } from "./DiffView";
 
 interface CodeLivePanelProps {
@@ -51,7 +50,6 @@ export function CodeLivePanel({
   onOpenInEditor,
 }: CodeLivePanelProps) {
   const gitState = useAppStore((s) => s.gitStates[agent.id] ?? null);
-  const fetchGitState = useAppStore((s) => s.fetchGitState);
   // Is the agent mid-turn? Same signal the chat "thinking" spinner uses, so
   // the panel's "live" state appears and clears in lockstep with the rest of
   // the UI. Nothing is "live" once the turn ends.
@@ -59,11 +57,6 @@ export function CodeLivePanel({
   // Match the editor's syntax theme: the "quorum" palette is gated by `cq`;
   // other families color `.hljs-*` globally via a loaded stylesheet.
   const isBuiltInTheme = useHljsTheme();
-
-  // Reuse the same 1s git poll the Git tab uses; only one right-rail tab is
-  // mounted at a time, so this never double-polls.
-  const pollGitState = useMemo(() => () => fetchGitState(agent.id), [agent.id, fetchGitState]);
-  usePoll(pollGitState, 1000, [pollGitState]);
 
   const files = useMemo(() => gitState?.files ?? [], [gitState]);
   const fileSig = files.map((f) => `${f.path}#${sigOf(f)}`).join("|");

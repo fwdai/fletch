@@ -22,9 +22,9 @@ export interface GitSlice {
   /** Full git state — branch, ahead/behind, file list, totals. Keyed by
    *  `gitKey(agentId, subdir?)` (store/git.ts): the plain agent_id addresses
    *  the primary repo, `agentId::subdir` a secondary repo of a multi-repo
-   *  agent. Only populated for the focused agent (by GitPanel's 1s poll
-   *  while it's mounted). For sidebar shortstats / right-rail badges of
-   *  other agents, read from `gitShortstats` instead. */
+   *  agent. Only populated for the focused agent (by `gitSync`, for every one of
+   *  its repos). For sidebar shortstats / right-rail badges of other agents,
+   *  read from `gitShortstats` instead. */
   gitStates: Record<string, GitState>;
   /** Compact per-agent shortstats (additions / deletions / file count),
    *  keyed by agent_id. Updated for every live agent on the app-wide 5s
@@ -83,15 +83,14 @@ export interface GitSlice {
    *  halves now come from the same instant. */
   refreshAllPrStatus: () => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
-  /** The Git panel's fast tick: PR state + CI in one backend pass over
-   *  ETag-conditional REST. Free at GitHub whenever nothing changed, so it can
-   *  run at a tight cadence; supersedes polling `fetchPrState` and
-   *  `fetchPrChecks` separately, and keeps the two slices from disagreeing
-   *  since both come from the same moment. */
+  /** PR state + CI in one backend pass over ETag-conditional REST. Free at
+   *  GitHub whenever nothing changed, so it can run at a tight cadence, and both
+   *  slices come from the same moment so they can't disagree. Driven by
+   *  `gitSync` for the focused agent — not called from components. */
   fetchPrLive: (agentId: string, subdir?: string) => Promise<void>;
-  /** The Git panel's slow tick: unresolved review threads. Stays on GraphQL
-   *  (thread resolution has no REST equivalent) and so does cost points —
-   *  hence the gentler cadence. */
+  /** Unresolved review threads. Stays on GraphQL (thread resolution has no REST
+   *  equivalent) and so does cost points — hence the gentler cadence. Driven by
+   *  `gitSync`. */
   fetchPrThreads: (agentId: string, subdir?: string) => Promise<void>;
   delegateGitAction: (
     agentId: string,
@@ -208,6 +207,13 @@ const fetchPrAux = async <K extends "prChecks" | "prComments">(
   }
 };
 
+// Whether GitHub is usable. The reads below early-return on `false` so that a
+// user with no connection generates zero API chatter — the rule lives here, in
+// the data layer, rather than being re-checked by each poller. Action-driven
+// reads (`fetchPrState`, `fetchPrChecks`) are deliberately not gated: they
+// resolve against the persisted snapshot, which is still useful offline.
+const githubReady = (get: GitGet) => get().github?.authenticated ?? false;
+
 export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   gitStates: {},
   gitShortstats: {},
@@ -255,6 +261,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   },
 
   refreshBaseFreshness: async () => {
+    if (!githubReady(get)) return;
     try {
       await api.refreshBaseFreshness();
     } catch {
@@ -278,6 +285,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   },
 
   refreshAllPrStatus: async () => {
+    if (!githubReady(get)) return;
     const ticket = issuePrWrite();
     try {
       // Set state directly from the reply (rather than via `pr:state_changed`
@@ -312,13 +320,14 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   fetchPrChecks: (agentId, subdir) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir),
 
   fetchPrLive: async (agentId, subdir) => {
+    if (!githubReady(get)) return;
     const mapKey = gitKey(agentId, subdir);
     const ticket = issuePrWrite();
     try {
       const live = await api.getPrLive(agentId, subdir);
-      // One ticket, checked per slice: the panel and the title capsule both poll
-      // this for the same agent, so an older response must not land on top of a
-      // newer one (nor on top of the post-merge refresh).
+      // One ticket, checked per slice: the 20s fleet sweep writes these same
+      // keys for the focused agent, so an older response must not land on top of
+      // a newer one (nor on top of the post-merge refresh).
       const takeState = acceptPrWrite("prStates", mapKey, ticket);
       const takeChecks =
         (live?.checks != null || live == null) && acceptPrWrite("prChecks", mapKey, ticket);
@@ -348,8 +357,10 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  fetchPrThreads: (agentId, subdir) =>
-    fetchPrAux(set, agentId, "prComments", api.getPrThreads, subdir),
+  fetchPrThreads: async (agentId, subdir) => {
+    if (!githubReady(get)) return;
+    await fetchPrAux(set, agentId, "prComments", api.getPrThreads, subdir);
+  },
 
   delegateGitAction: (agentId, kind, prompt, subdir) => {
     // If the agent is already running, DON'T inject the trigger mid-turn: Claude
