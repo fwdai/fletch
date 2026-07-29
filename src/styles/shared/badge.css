@@ -106,6 +106,45 @@
   font-family: var(--font-mono);
   flex-shrink: 0;
 }
+/* autopilot mark — same weight and metrics as the a-stale cue, because it is the
+ * same kind of thing: a hint on an existing row, not an announcement. Only the
+ * two modes a human might act on are ever rendered (see AutopilotMark). */
+.agent-sub .a-autopilot {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+/* working: the accent, breathing like the row's dev-server heartbeat but without
+ * the halo — the agent's own activity cues (rail / loader / shimmer) already own
+ * the loud end of this row. */
+.agent-sub .a-autopilot.working {
+  color: var(--accent);
+}
+.agent-sub .a-autopilot.working svg {
+  animation: apBreathe 2.6s var(--ease) infinite;
+}
+@keyframes apBreathe {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* stopped: warn, not danger. Nothing is broken — autopilot did what it could and
+ * the next step is a person's. Danger stays reserved for the error badge. */
+.agent-sub .a-autopilot.stuck {
+  color: var(--warn);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-sub .a-autopilot.working svg {
+    animation: none;
+  }
+}
 .agent-sub .a-time {
   color: var(--fg-3);
   font-size: var(--fs-xs);

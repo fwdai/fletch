@@ -14,7 +14,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 import type { AgentStatus, GitState, PrState } from "@/api";
-import { DELEGATION_GIVE_UP_GRACE_MS, type Delegation } from "@/delegation";
+import {
+  DELEGATION_GIVE_UP_GRACE_MS,
+  DELEGATION_KINDS,
+  type Delegation,
+  delegationDone,
+  settlesOnIdle,
+} from "@/delegation";
 import { type DelegationEffect, planDelegationPass } from "./delegationSync";
 
 vi.mock("@/api", () => ({ api: {} }));
@@ -43,6 +49,7 @@ const EMPTY_MAPS = {
   delegationNotices: {},
   autopilot: {},
   autopilotVerdicts: {},
+  autopilotLog: {},
   unseenResults: {},
   rightPanelTabs: {},
 };
@@ -160,6 +167,31 @@ describe("planDelegationPass advances delegations wherever they live", () => {
     expect(
       plan({ a1: delegation({ kind: "fix-checks", sawRunning: true }) }, { a1: "idle" }),
     ).toEqual([{ do: "give-up", key: "a1", notice: "Agent finished — checks are re-running" }]);
+  });
+
+  it("says the same for EVERY kind that can't be observed in state", () => {
+    // The bug this pins: the notice hardcoded `fix-checks`, so a finished
+    // `resolve-comments` round — which also never resolves from state, by
+    // design — told the user to go read the chat as though it had given up.
+    for (const kind of DELEGATION_KINDS.filter(settlesOnIdle)) {
+      expect(plan({ a1: delegation({ kind, sawRunning: true }) }, { a1: "idle" })).toEqual([
+        { do: "give-up", key: "a1", notice: delegationDone(kind) },
+      ]);
+    }
+  });
+
+  it("still reports an unobservable-target kind honestly when it really did stall", () => {
+    // A kind whose target IS observable must keep the honest message — the fix
+    // must not turn every give-up into a success notice.
+    expect(
+      plan(
+        { a1: delegation({ kind: "commit", sawRunning: true }) },
+        { a1: "idle" },
+        { gitStates: { a1: git({ files: [modified] }) } },
+      ),
+    ).toEqual([
+      { do: "give-up", key: "a1", notice: "Agent finished — review the chat for details" },
+    ]);
   });
 
   it("drops a delegation whose agent was archived or discarded under it", () => {

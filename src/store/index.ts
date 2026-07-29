@@ -4,6 +4,7 @@ import { createAccountSlice } from "./account";
 import { createAppSlice } from "./app";
 import { createAppearanceSlice } from "./appearance";
 import { createAutopilotSlice } from "./autopilot";
+import { createAutopilotLogSlice } from "./autopilotLog";
 import { createComposerSlice } from "./composer";
 import { createCustomAgentsSlice } from "./customAgents";
 import { createDraftsSlice } from "./drafts";
@@ -31,6 +32,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createAccountSlice(...a),
   ...createAppearanceSlice(...a),
   ...createAutopilotSlice(...a),
+  ...createAutopilotLogSlice(...a),
   ...createProvidersSlice(...a),
   ...createCustomAgentsSlice(...a),
   ...createSkillsSlice(...a),

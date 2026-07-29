@@ -14,6 +14,7 @@ import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import { type AgentPr, useAgentPrs } from "@/util/prState";
 import { type AgentStats, AgentStatsPopover } from "./AgentStatsPopover";
+import { type AutopilotSignal, autopilotSignal, autopilotTip } from "./autopilotSignal";
 
 /** The agent rows carry nested buttons (stop/archive/discard), so they can't be
  *  a `<button>`; they use `role="button"` + this handler to stay keyboard
@@ -67,6 +68,14 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // an unknown or zero count renders nothing (never a fake 0).
   const behind = useAppStore((s) => maxBehind(s.gitMeta, agent.id));
   const unseen = useAppStore((s) => s.unseenResults[agent.id] ?? false);
+  // Autopilot across the agent's checkouts, rolled up to the one mark the row has
+  // room for (see autopilotSignal for the precedence). Until now enrollment was
+  // only visible after selecting the agent and opening the Git tab, so a fleet
+  // quietly working on itself looked identical to a fleet doing nothing. The map
+  // is selected whole — a stable reference, same as MissionControl's queue does —
+  // and the derivation runs outside the selector.
+  const autopilotStates = useAppStore((s) => s.autopilot);
+  const autopilot = autopilotSignal(autopilotStates, agent.id);
   // Dev-server state for this checkout — orthogonal to the agent's turn status,
   // so it shows as its own play chip beside the identity chip, not among the
   // activity cues (rail / loader / shimmer). Fed by the app-wide `run:state`
@@ -246,6 +255,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             {behind}
           </span>
         )}
+        <AutopilotMark signal={autopilot} />
         <span
           className="a-time"
           onMouseEnter={() => setStatsOpen(true)}
@@ -402,6 +412,27 @@ function ciTint(checks: PrChecks | null): { variant: BadgeVariant; tip: string }
     default:
       return { variant: "pr-open", tip: "" };
   }
+}
+
+/** Autopilot's mark on the row — advisory, so it decorates the sub-row it shares
+ *  with the stale/diff hints and never claims space of its own.
+ *
+ *  Only two of the five modes render at all. `working` explains motion the user
+ *  didn't start, and `stuck` is waiting on them; enrolled-and-idle is the normal
+ *  case, paused is a state they chose, and off is the default everywhere — a mark
+ *  for any of those would be noise on most rows and would train the eye to skip
+ *  the two that matter. The full state stays one click away in the Git panel. */
+function AutopilotMark({ signal }: { signal: AutopilotSignal | null }) {
+  if (!signal || (signal.mode !== "working" && signal.mode !== "stuck")) return null;
+  const tip = autopilotTip(signal);
+  return (
+    <span className={`a-autopilot ${signal.mode} tip`} data-tip={tip} aria-label={tip}>
+      <Icon name={signal.mode === "working" ? "refresh" : "wrench"} size={9} />
+      {/* The retry count only while it means something — a second or third try is
+       *  how close autopilot is to giving up, which mirrors the git-panel chip. */}
+      {signal.mode === "working" && signal.attempt != null && signal.attempt > 1 && signal.attempt}
+    </span>
+  );
 }
 
 function DiffStat({ stats }: { stats: ShortStats }) {

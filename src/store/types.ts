@@ -10,6 +10,7 @@ import type { AccountSlice } from "./account";
 import type { AppSlice } from "./app";
 import type { AppearanceSlice } from "./appearance";
 import type { AutopilotSlice } from "./autopilot";
+import type { AutopilotLogSlice } from "./autopilotLog";
 import type { ComposerSlice } from "./composer";
 import type { CustomAgentsSlice } from "./customAgents";
 import type { DraftsSlice } from "./drafts";
@@ -27,6 +28,7 @@ export type {
   AccountSlice,
   AppearanceSlice,
   AppSlice,
+  AutopilotLogSlice,
   AutopilotSlice,
   ComposerSlice,
   CustomAgentsSlice,
@@ -56,6 +58,7 @@ export type AppState = AppSlice &
   AccountSlice &
   AppearanceSlice &
   AutopilotSlice &
+  AutopilotLogSlice &
   ProvidersSlice &
   CustomAgentsSlice &
   SkillsSlice &

@@ -600,7 +600,7 @@ describe("buildReviewQueue", () => {
     cycle: null,
     attempts: {},
     barren: [],
-    stuck: { reason: "budget-spent", rung: "fix-checks", at: 1 },
+    stuck: { reason: "budget-spent", rung: "fix-checks", at: 1, blockers: "" },
     ...over,
   });
 
@@ -667,7 +667,9 @@ describe("buildReviewQueue", () => {
 
     const needsHuman = input({
       agents: [agent({ id: "a" })],
-      autopilot: { a: stuckState({ stuck: { reason: "needs-human", rung: null, at: 2 } }) },
+      autopilot: {
+        a: stuckState({ stuck: { reason: "needs-human", rung: null, at: 2, blockers: "" } }),
+      },
       dismissed,
     });
     expect(buildReviewQueue(needsHuman)).toHaveLength(1);

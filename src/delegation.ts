@@ -13,22 +13,44 @@ import type { AgentStatus, GitState, PrChecks, PrState } from "@/api";
 // named for the problem instead, so a future non-git remediation slots in
 // without renaming the machinery around it.
 
-/** One unit of work handed to the coding agent. The agent runs local mutations
- *  (commit, merge, conflict resolution) as plain in-sandbox git, and the
- *  credentialed remote actions through the app's file RPC (`open_pr` /
- *  `git_push` / `git_fetch`). The `agent:git-action` signal that confirms a
- *  local mutation arrives via the clone's `post-commit` / `post-merge` hooks
- *  (see `actionProvesKind`). */
-export type DelegationKind =
-  | "commit"
-  | "commit-push"
-  | "commit-pr"
-  | "open-pr"
-  | "push"
-  | "resolve"
-  | "update-branch"
-  | "fix-checks"
-  | "resolve-comments";
+/** Every unit of work that can be handed to the coding agent. The agent runs
+ *  local mutations (commit, merge, conflict resolution) as plain in-sandbox git,
+ *  and the credentialed remote actions through the app's file RPC (`open_pr` /
+ *  `git_push` / `git_fetch` / `reply_thread`). The `agent:git-action` signal that
+ *  confirms a local mutation arrives via the clone's `post-commit` /
+ *  `post-merge` hooks (see `actionProvesKind`).
+ *
+ *  Declared as a value, with the type derived from it, so tests that claim to
+ *  cover "every kind" actually do: a hand-maintained list beside a union
+ *  silently drifts, and the copy test had already fallen two kinds behind
+ *  (`push`, `resolve-comments`) without failing. Mirrors `COMMIT_ACTIONS` in
+ *  primaryActions.ts. */
+export const DELEGATION_KINDS = [
+  "commit",
+  "commit-push",
+  "commit-pr",
+  "open-pr",
+  "push",
+  "resolve",
+  "update-branch",
+  "fix-checks",
+  "resolve-comments",
+] as const;
+
+export type DelegationKind = (typeof DELEGATION_KINDS)[number];
+
+/** Kinds whose completion cannot be observed in git/PR state: CI takes minutes,
+ *  and GitHub reports thread resolution on its own schedule. `delegationResolved`
+ *  therefore never returns true for them, which means a settled agent is their
+ *  NORMAL ending rather than an abandonment — so the watcher must report success
+ *  and let the polling carry the story, not "review the chat for details".
+ *
+ *  Both places that care read this predicate instead of naming kinds, because
+ *  they had already drifted apart: the give-up notice special-cased `fix-checks`
+ *  only, so a finished `resolve-comments` told the user it had given up. */
+export function settlesOnIdle(kind: DelegationKind): boolean {
+  return kind === "fix-checks" || kind === "resolve-comments";
+}
 
 export interface Delegation {
   kind: DelegationKind;
@@ -250,11 +272,10 @@ export function delegationResolved(
       if (checks) return !["behind", "dirty", "unknown"].includes(checks.merge_state);
       return pr?.mergeable === "mergeable";
     case "fix-checks":
-      return false;
     case "resolve-comments":
-      // Threads only clear once GitHub reports them resolved, which the slow
-      // comments poll picks up. Like fix-checks, the caller resolves this on
-      // agent-idle and lets the polling carry the story.
+      // Not observable here — see `settlesOnIdle`, which both this and the
+      // watcher's give-up notice read so they can't disagree about which kinds
+      // end on idle.
       return false;
   }
 }

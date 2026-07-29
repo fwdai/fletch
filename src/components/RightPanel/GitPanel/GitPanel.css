@@ -1146,3 +1146,71 @@
 .ap-off:hover {
   color: var(--fg-1);
 }
+
+/* ── Autopilot history ─────────────────────────────────────────────────────
+   The receipt for a loop that ran unattended, folded under the chip. Quiet and
+   collapsed: it earns attention only when someone comes looking for it, so the
+   toggle reads as a caption and only the rows that mean trouble take colour. */
+.ap-log {
+  padding: 4px 18px 0;
+}
+.ap-log-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+}
+.ap-log-toggle:hover {
+  color: var(--fg-1);
+}
+.ap-log-toggle svg {
+  width: 11px;
+  height: 11px;
+}
+.ap-log-count {
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--bg-1);
+  color: var(--fg-3);
+}
+/* Capped so a full log scrolls inside the footer instead of pushing the action
+   bar — the primary CTA must stay reachable. */
+.ap-log-list {
+  max-height: 132px;
+  margin: 3px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border-left: 1px solid var(--bd-soft);
+}
+.ap-log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0 2px 8px;
+  color: var(--fg-2);
+}
+.ap-log-time {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+}
+.ap-log-what {
+  flex: 1;
+  min-width: 0;
+}
+.ap-log-rung {
+  flex-shrink: 0;
+  color: var(--fg-3);
+}
+.ap-log-row.o-settle .ap-log-what {
+  color: var(--success);
+}
+/* The row that ended the loop — the one a returning user is looking for. */
+.ap-log-row.o-escalate .ap-log-what {
+  color: var(--warn);
+}

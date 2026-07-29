@@ -67,7 +67,9 @@ describe("enrollment", () => {
     const store = makeStore();
     store.getState().enrollAutopilot("a1");
     store.getState().retryAutopilotCycle("a1", "fix-checks", "sig");
-    store.getState().markAutopilotStuck("a1", "budget-spent", "fix-checks", 5);
+    store
+      .getState()
+      .markAutopilotStuck("a1", "budget-spent", "fix-checks", 5, "checks-failing:test");
     expect(store.getState().autopilot.a1.stuck).not.toBeNull();
 
     store.getState().resumeAutopilot("a1");
@@ -75,6 +77,28 @@ describe("enrollment", () => {
     expect(s.stuck).toBeNull();
     expect(s.attempts).toEqual({});
     expect(s.barren).toEqual([]);
+  });
+
+  it("reviving grants a fresh budget but REMEMBERS what it already failed at", () => {
+    // Revive is autopilot noticing the world moved, not the user insisting — so
+    // unlike `resumeAutopilot` it keeps `barren`. Without that, a checkout whose
+    // world oscillates (a flaky check flipping back and forth) would get a full
+    // budget on every flip and burn agent turns re-attempting a world it has
+    // already proven it cannot change.
+    const store = makeStore();
+    store.getState().enrollAutopilot("a1");
+    store.getState().retryAutopilotCycle("a1", "fix-checks", "dead-world");
+    store.getState().markAutopilotStuck("a1", "budget-spent", "fix-checks", 5, "checks-failing:x");
+
+    store.getState().reviveAutopilot("a1");
+
+    const s = store.getState().autopilot.a1;
+    expect(s.stuck).toBeNull();
+    expect(s.attempts).toEqual({});
+    expect(s.barren).toEqual(["dead-world"]);
+    // A human insisting DOES clear it — that is the difference between the two.
+    store.getState().resumeAutopilot("a1");
+    expect(store.getState().autopilot.a1.barren).toEqual([]);
   });
 
   it("unenrolling forgets the checkout entirely", () => {
@@ -92,7 +116,7 @@ describe("enrollment", () => {
     // not resurrect an entry.
     const store = makeStore();
     store.getState().openAutopilotCycle("ghost", "fix-checks", "sig");
-    store.getState().markAutopilotStuck("ghost", "no-progress", null, 1);
+    store.getState().markAutopilotStuck("ghost", "no-progress", null, 1, "");
     expect(store.getState().autopilot.ghost).toBeUndefined();
   });
 });

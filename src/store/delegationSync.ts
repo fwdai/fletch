@@ -25,7 +25,13 @@
 
 import { useEffect } from "react";
 import type { AgentStatus, GitState, PrChecks, PrState } from "@/api";
-import { type Delegation, delegationDone, delegationResolved, delegationStep } from "@/delegation";
+import {
+  type Delegation,
+  delegationDone,
+  delegationResolved,
+  delegationStep,
+  settlesOnIdle,
+} from "@/delegation";
 import { EMPTY_AGENTS, useAppStore } from "@/store";
 import { splitCheckoutKey } from "./git";
 
@@ -105,12 +111,14 @@ export function planDelegationPass(input: DelegationPassInput): DelegationEffect
         effects.push({
           do: "give-up",
           key,
-          // `fix-checks` never resolves from state (CI takes minutes), so a
-          // settled agent is its NORMAL ending, not an abandonment — say so.
-          notice:
-            delegation.kind === "fix-checks"
-              ? delegationDone("fix-checks")
-              : "Agent finished — review the chat for details",
+          // For kinds whose completion isn't observable in state, a settled agent
+          // is the NORMAL ending, not an abandonment — say so. Keyed on
+          // `settlesOnIdle` rather than naming a kind: this used to hardcode
+          // `fix-checks`, so `resolve-comments` (which also never resolves from
+          // state) reported "review the chat" on every successful round.
+          notice: settlesOnIdle(delegation.kind)
+            ? delegationDone(delegation.kind)
+            : "Agent finished — review the chat for details",
         });
         break;
       case "wait":
