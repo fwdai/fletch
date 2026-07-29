@@ -8,7 +8,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { AgentRecord, PrChecks, PrState, PrStatus, TrackedRepo } from "@/api";
 import { useAppStore } from "@/store";
-import { gitKey } from "@/store/git";
+import { checkoutKey } from "@/store/git";
 
 const PR_STATUSES: readonly PrStatus[] = ["open", "merged", "closed"];
 
@@ -55,14 +55,14 @@ export interface AgentPr {
 
 /** Every PR across an agent's repos, in repo order (primary first). Each repo
  *  reads its own store entry — plain agent id for the primary, the suffixed
- *  `gitKey` for secondaries, both fed by the app-wide bulk polls — resolved
+ *  `checkoutKey` for secondaries, both fed by the app-wide bulk polls — resolved
  *  with the same per-repo policy as the panel sections and the PR-set strip:
  *  a present key, even a confirmed `null` (a fetch that found no PR), is
  *  authoritative; only a never-fetched key (absent = `undefined`) falls back
  *  to that repo's own persisted snapshot (a secondary never inherits the
  *  primary's). Repos without a PR drop out. */
 export function useAgentPrs(agent: AgentRecord): AgentPr[] {
-  const keys = agent.repos.map((r, i) => gitKey(agent.id, i === 0 ? undefined : r.subdir));
+  const keys = agent.repos.map((r, i) => checkoutKey(agent.id, i === 0 ? undefined : r.subdir));
   const live = useAppStore(
     useShallow((s) => keys.map((k) => (k in s.prStates ? s.prStates[k] : undefined))),
   );

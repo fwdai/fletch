@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import type { MergeState, TrackedRepo } from "@/api";
 import { deriveState } from "@/components/RightPanel/primaryActions";
 import { useAppStore } from "@/store";
-import { gitKey } from "@/store/git";
+import { checkoutKey } from "@/store/git";
 import { prSnapshot } from "@/util/prState";
 
 /** The Git panel's view of one repo's git/PR state, derived from the store.
@@ -15,10 +15,10 @@ import { prSnapshot } from "@/util/prState";
  *  `repo`/`subdir` scope the hook to one repo of a multi-repo agent: `subdir`
  *  undefined = the primary repo, read/written under the plain agent key (the
  *  one live events and bulk polls update); a secondary repo reads/writes under
- *  `gitKey(agentId, subdir)`. The returned fetchers are pre-bound to the
+ *  `checkoutKey(agentId, subdir)`. The returned fetchers are pre-bound to the
  *  scope's subdir, so callers keep passing just the agent id. */
 export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: string) {
-  const key = gitKey(agentId, subdir);
+  const key = checkoutKey(agentId, subdir);
   const gitState = useAppStore((s) => s.gitStates[key] ?? null);
   // PR state with the database-snapshot fallback (same policy as usePrState,
   // scoped to this section's repo): live store value wins; the last persisted
@@ -46,7 +46,6 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
   const fetchGitStateStore = useAppStore((s) => s.fetchGitState);
   const fetchPrStateStore = useAppStore((s) => s.fetchPrState);
   const prChecksEntry = useAppStore((s) => s.prChecks[key]);
-  const fetchPrChecksStore = useAppStore((s) => s.fetchPrChecks);
   const prCommentsEntry = useAppStore((s) => s.prComments[key]);
 
   // Subdir-bound fetchers for *actions* — a push, a merge, a delegated git op —
@@ -59,10 +58,6 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
   const fetchPrState = useCallback(
     (id: string) => fetchPrStateStore(id, subdir),
     [fetchPrStateStore, subdir],
-  );
-  const fetchPrChecks = useCallback(
-    (id: string) => fetchPrChecksStore(id, subdir),
-    [fetchPrChecksStore, subdir],
   );
   const prOpen = prState?.state === "open";
 
@@ -86,6 +81,5 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
     panelState,
     fetchGitState,
     fetchPrState,
-    fetchPrChecks,
   };
 }

@@ -42,19 +42,21 @@ byte-identical everywhere:
   `git.branch_created` / `git.pr_opened` events carry `repo`; the consumer
   (`supervisor/rpc_watch.rs`) persists branch/PR onto the matching worktree
   row, falling back to primary when the field is absent.
-- Frontend store: `gitKey(agentId, subdir?)` in `src/store/git.ts` —
+- Frontend store: `checkoutKey(agentId, subdir?)` in `src/store/git.ts` —
   `subdir ? `${agentId}::${subdir}` : agentId`. The **plain agent id is the
   primary's key** and is the only key the app-wide write paths use (bulk
   polls, `pr:state_changed` reducer in `src/store/app.ts`, sidebar badges,
-  `src/util/prState.ts`). Only the Git panel's per-repo fetches use suffixed
-  keys.
+  `src/util/prState.ts`). Suffixed keys come from the per-checkout paths:
+  `gitSync`'s tracked-checkout polls and the `delegations` map.
 - Git panel: `GitPanel` (`src/components/RightPanel/GitPanel/index.tsx`)
   orchestrates `GitRepoSection` per repo. A repo renders a section when
   "active" (changed files ∨ branch ∨ PR ∨ pinned by an in-flight delegation).
   Single-repo agents early-return the bare section — pixel-identical to the
-  old panel. Delegations (`GitDelegation` in
-  `src/components/RightPanel/delegation.ts`) carry `subdir?`; the matching
-  section's `useDelegationLifecycle` owns the lifecycle.
+  old panel. Delegations (`Delegation` in `src/delegation.ts`) are keyed by
+  `checkoutKey`, so a multi-repo agent can hold one per checkout; their
+  lifecycle belongs to `useDelegationSync` (`src/store/delegationSync.ts`),
+  mounted once at the app root — NOT to a panel section, so a delegation
+  advances whether or not its section is on screen. Sections only read it.
 
 **Non-negotiable invariants for all follow-ups:**
 
@@ -90,13 +92,13 @@ correct; the badge isn't).
   `refresh_all_pr_checks` to iterate all `agent.repos` (each entry already
   tracks `subdir`; `Pending { agent_id, subdir, … }` exists). Return maps
   keyed `agent_id -> Vec<{subdir, state}>` or flat `"{agent_id}::{subdir}"`
-  string keys — pick ONE and mirror `gitKey` exactly (`::` separator; primary
+  string keys — pick ONE and mirror `checkoutKey` exactly (`::` separator; primary
   entry keyed by plain agent id to preserve every existing consumer).
   Preserve the omit-on-unknown contract (absent ≠ null) per the doc comments
   on both commands.
 - Frontend: the poll reducers (`refreshAllPrStates` / `refreshAllPrChecks` in
   `src/store/git.ts`) merge the returned keys as-is — if the backend keys by
-  `gitKey`, no reducer change is needed beyond accepting extra keys.
+  `checkoutKey`, no reducer change is needed beyond accepting extra keys.
 - Badge UI (`src/components/Sidebar/AgentRow.tsx` + `src/util/prState.ts`):
   aggregate across the agent's repos. Suggested rendering: keep the single PR
   pill when exactly one repo has a PR (whatever repo it's on — this fixes the
@@ -117,7 +119,7 @@ correct; the badge isn't).
 (`commands.rs` "multi-repo PR tracking is out of scope here" — delete those);
 `session_sync.rs` has `pr_opened_at/pr_merged_at` timestamps persisted per
 worktree via `persist_pr_snapshot` — already per-repo, don't duplicate.
-Delegation attribution (`markGitDelegationSawOp` path) keys off
+Delegation attribution (`markDelegationActed` path) keys off
 `agent:git-action` events, not prStates — untouched.
 
 ## 2. "One task → N PRs" presented as a unit  ·  ✅ done  ·  size: M
@@ -139,7 +141,7 @@ merge order, no combined status.
 - Panel summary strip: in `MultiRepoGitPanel`, when ≥2 sections have PRs,
   render a slim strip above the sections: `2 PRs · 1 green · 1 checks running`
   with each PR number linking out. Data is already in the store under
-  `gitKey` keys.
+  `checkoutKey` keys.
 - Merge order: keep it lightweight — a static hint derived from repo order
   (primary last?) is guesswork; better to let the user merge from each
   section and skip ordering logic entirely in v1. Do NOT build cross-repo
@@ -211,7 +213,7 @@ updates only on its 5s poll.
 (`session_sync.rs` — it already calls `resolve_pr_state(…, None)`; pass the
 subdir through) and extend the `pr:state_changed` payload with optional
 `subdir`. Frontend reducer (`src/store/app.ts`, search `pr:state_changed`)
-writes under `gitKey(agent_id, subdir)`. RPC-side `EVENT_PR_OPENED` handling
+writes under `checkoutKey(agent_id, subdir)`. RPC-side `EVENT_PR_OPENED` handling
 in `rpc_watch.rs` calls `fetch_and_emit_pr_state` — pass the event's repo.
 Old events without the field keep the plain key (primary) — same
 compatibility dance as the branch events.

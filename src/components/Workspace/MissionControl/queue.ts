@@ -138,7 +138,7 @@ export const BUCKET = {
 export interface QueueInput {
   agents: readonly AgentRecord[];
   gitShortstats: Record<string, ShortStats>;
-  /** Per-checkout base staleness + changed-file paths, keyed by `gitKey`. */
+  /** Per-checkout base staleness + changed-file paths, keyed by `checkoutKey`. */
   gitMeta: Record<string, GitMeta>;
   unseenResults: Record<string, boolean>;
   prStates: Record<string, PrState | null>;
@@ -162,7 +162,7 @@ function testsEvidence(report: VerificationReport | undefined): TestsEvidence | 
   return test.outcome === "passed" ? "passed" : "failed";
 }
 
-/** Per-repo map key mirroring `store/git.ts::gitKey` — plain agent id for the
+/** Per-repo map key mirroring `store/git.ts::checkoutKey` — plain agent id for the
  *  primary repo, `agentId::subdir` for a secondary. Inlined (not imported) to
  *  keep this selector free of the store, per the module contract above. */
 function repoKey(agentId: string, subdir?: string): string {
@@ -189,7 +189,7 @@ function parseCreated(iso: string): number {
 
 /** One repo's open-PR signals for an agent. The PR maps are keyed `agentId`
  *  for the primary repo and `agentId::subdir` for secondaries (store/git.ts
- *  `gitKey`) — a multi-repo agent's failing check must surface no matter which
+ *  `checkoutKey`) — a multi-repo agent's failing check must surface no matter which
  *  repo it's on. */
 interface PrSignal {
   /** "" for the primary repo, the subdir for a secondary. */

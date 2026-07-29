@@ -1,7 +1,7 @@
 import type { ChatItem } from "@/adapters";
 import type { ForkContext } from "@/api";
-import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
 import { renderToolResult, stringifyInput } from "@/components/Workspace/messages/presenters/util";
+import { APP_ACTION_PREFIX } from "@/delegation";
 import { stripInjectedInstructions } from "@/util/instructions";
 
 // Assembles the prose a fork carries into the child agent's brief. The caller

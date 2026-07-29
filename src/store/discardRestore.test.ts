@@ -39,7 +39,8 @@ const EMPTY_MAPS = {
   gitShortstats: {},
   composerSeeds: {},
   composerDrafts: {},
-  gitDelegations: {},
+  delegations: {},
+  delegationNotices: {},
   unseenResults: {},
   rightPanelTabs: {},
 };

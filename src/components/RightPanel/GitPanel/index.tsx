@@ -1,6 +1,7 @@
 import type { AgentRecord, GitState, TrackedRepo } from "@/api";
+import type { Delegation } from "@/delegation";
 import { useAppStore } from "@/store";
-import { gitKey } from "@/store/git";
+import { checkoutKey } from "@/store/git";
 import { basename } from "@/util/format";
 import { prSnapshot } from "@/util/prState";
 import { GitRepoSection } from "./GitRepoSection";
@@ -19,20 +20,23 @@ const scopesFor = (agent: AgentRecord): RepoScope[] =>
   agent.repos.map((repo, i) => ({ repo, subdir: i === 0 ? undefined : repo.subdir }));
 
 /** A repo earns its own section once it has anything git-worthy to show:
- *  uncommitted changes, a named branch, or a bound PR. A repo targeted by the
- *  agent's in-flight delegation is pinned active regardless — its section owns
- *  the lifecycle watcher, so it must not unmount mid-delegation (e.g. when a
- *  commit empties the file list before the branch materializes). */
+ *  uncommitted changes, a named branch, or a bound PR. A repo with an in-flight
+ *  delegation stays pinned regardless, so its progress doesn't vanish mid-flight
+ *  (e.g. when a commit empties the file list before the branch materializes). */
 const repoActive = (
   scope: RepoScope,
   gitStates: Record<string, GitState>,
+  delegations: Record<string, Delegation>,
   agentId: string,
-  delegatedSubdir: string | null | undefined,
-) =>
-  (delegatedSubdir !== null && scope.subdir === delegatedSubdir) ||
-  (gitStates[gitKey(agentId, scope.subdir)]?.files.length ?? 0) > 0 ||
-  Boolean(scope.repo.branch) ||
-  scope.repo.pr_number != null;
+) => {
+  const key = checkoutKey(agentId, scope.subdir);
+  return (
+    delegations[key] != null ||
+    (gitStates[key]?.files.length ?? 0) > 0 ||
+    Boolean(scope.repo.branch) ||
+    scope.repo.pr_number != null
+  );
+};
 
 /** State-aware git panel driven by live git state from the Tauri backend.
  *  Single-repo agents render one `GitRepoSection` — exactly the panel as it
@@ -50,16 +54,12 @@ function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
   const gitStates = useAppStore((s) => s.gitStates);
   const prStates = useAppStore((s) => s.prStates);
   const prChecks = useAppStore((s) => s.prChecks);
-  // The repo scope of the agent's in-flight delegation, if any: `null` when
-  // there is no delegation (pins nothing), `undefined` when it targets the
-  // primary. Distinct sentinel needed because `undefined` is a real scope.
-  const delegatedSubdir = useAppStore((s) => {
-    const d = s.gitDelegations[agent.id];
-    return d ? d.subdir : null;
-  });
+  // Delegations are keyed per checkout, so a section just looks up its own —
+  // no sentinel needed to tell "no delegation" from "targets the primary".
+  const delegations = useAppStore((s) => s.delegations);
 
   const scopes = scopesFor(agent);
-  const active = scopes.filter((sc) => repoActive(sc, gitStates, agent.id, delegatedSubdir));
+  const active = scopes.filter((sc) => repoActive(sc, gitStates, delegations, agent.id));
   // Nothing active yet → the primary repo's section (today's empty state),
   // with no section header.
   const sections = active.length > 0 ? active : [scopes[0]];
@@ -69,7 +69,7 @@ function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
   // null, is authoritative; only a never-fetched key falls back to the repo's
   // own persisted snapshot), so the strip and the sections always agree.
   const prSet: PrSetEntry[] = scopes.flatMap((sc) => {
-    const key = gitKey(agent.id, sc.subdir);
+    const key = checkoutKey(agent.id, sc.subdir);
     const live = prStates[key];
     const pr = live !== undefined ? live : prSnapshot(sc.repo);
     return pr ? [{ repo: sc.repo, pr, checks: prChecks[key] ?? null }] : [];

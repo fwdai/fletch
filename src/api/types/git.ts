@@ -22,7 +22,7 @@ export interface ShortStats {
   file_count: number;
 }
 
-/** Advisory fleet-wide git metadata for one checkout, keyed by `gitKey` in the
+/** Advisory fleet-wide git metadata for one checkout, keyed by `checkoutKey` in the
  *  bulk `getAllGitMeta` reply. `behind` (base moved ahead of this checkout) and
  *  `files` (working-tree paths) drive the always-visible staleness chip and the
  *  cross-agent overlap hints. `behind` is null when the base tip can't be

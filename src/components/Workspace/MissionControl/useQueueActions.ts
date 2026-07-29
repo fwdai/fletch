@@ -2,18 +2,18 @@
 // backends: a workflow item decides through the workflow commands (wfApprove /
 // wfReject via the ReviewSurface modal); an ad-hoc agent item routes through the
 // SAME delegation ladder the Git panel uses (deriveState + the merge-gate +
-// delegateGitAction / mergePr). No new backend commands — and never a dead
+// delegateAction / mergePr). No new backend commands — and never a dead
 // action: any state the ladder can't map cleanly falls back to opening the
 // agent's Git tab.
 
 import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
 import { api } from "@/api";
-import { appActionMessage, type GitDelegationKind } from "@/components/RightPanel/delegation";
 import { describeMergeGate } from "@/components/RightPanel/mergeGate";
 import { deriveState, type GitCommitAction } from "@/components/RightPanel/primaryActions";
+import { appActionMessage, type DelegationKind } from "@/delegation";
 import { useAppStore } from "@/store";
-import { gitKey } from "@/store/git";
+import { checkoutKey } from "@/store/git";
 import type { ReviewItem } from "./queue";
 
 /** Composer scaffold seeded for "request changes" on an ad-hoc agent item — an
@@ -28,7 +28,7 @@ function requestChangesSeed(subdir: string | undefined): string {
 
 /** Map the user's sticky commit mode to the delegation it drives — the same
  *  triple the Git panel's `changes` state uses. */
-function commitDelegation(mode: GitCommitAction): { kind: GitDelegationKind; trigger: string } {
+function commitDelegation(mode: GitCommitAction): { kind: DelegationKind; trigger: string } {
   switch (mode) {
     case "agent-commit":
       return { kind: "commit", trigger: "commit" };
@@ -60,7 +60,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
   const seedComposer = useAppStore((s) => s.seedComposer);
   const fetchGitState = useAppStore((s) => s.fetchGitState);
   const mergePr = useAppStore((s) => s.mergePr);
-  const delegateGitAction = useAppStore((s) => s.delegateGitAction);
+  const delegateAction = useAppStore((s) => s.delegateAction);
   const setLastError = useAppStore((s) => s.setLastError);
   const dismissReviewItem = useAppStore((s) => s.dismissReviewItem);
 
@@ -83,7 +83,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
     async (agentId: string, subdir: string | undefined) => {
       await fetchGitState(agentId, subdir);
       const s = useAppStore.getState();
-      const key = gitKey(agentId, subdir);
+      const key = checkoutKey(agentId, subdir);
       const git = s.gitStates[key] ?? null;
       const pr = s.prStates[key] ?? null;
       const checks = s.prChecks[key] ?? null;
@@ -103,7 +103,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
               ? "agent-commit-push"
               : s.gitCommitAction;
           const { kind, trigger: name } = commitDelegation(mode);
-          delegateGitAction(
+          delegateAction(
             agentId,
             kind,
             trigger(name, kind === "commit-pr" ? { base } : undefined),
@@ -112,10 +112,10 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
           return;
         }
         case "pushed":
-          delegateGitAction(agentId, "open-pr", trigger("open-pr", { base }), subdir);
+          delegateAction(agentId, "open-pr", trigger("open-pr", { base }), subdir);
           return;
         case "conflicts":
-          delegateGitAction(agentId, "resolve", trigger("resolve-conflicts"), subdir);
+          delegateAction(agentId, "resolve", trigger("resolve-conflicts"), subdir);
           return;
         case "pr-open": {
           const gate = describeMergeGate(checks?.merge_state ?? null, {
@@ -127,7 +127,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
             return;
           }
           if (gate.situation === "checks-failing") {
-            delegateGitAction(
+            delegateAction(
               agentId,
               "fix-checks",
               trigger("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") }),
@@ -136,7 +136,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
             return;
           }
           if (gate.needsUpdate) {
-            delegateGitAction(agentId, "update-branch", trigger("update-branch", { base }), subdir);
+            delegateAction(agentId, "update-branch", trigger("update-branch", { base }), subdir);
             return;
           }
           break;
@@ -146,7 +146,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
       // delegate: open the tab so the decision is the user's, never a dead key.
       openAgentGit(agentId);
     },
-    [fetchGitState, delegateGitAction, mergePr, openAgentGit],
+    [fetchGitState, delegateAction, mergePr, openAgentGit],
   );
 
   // Fan-out "Update all": dispatch the existing `update-branch` delegation to
@@ -163,10 +163,10 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
           "update-branch",
           a.subdir ? { base: fanout.base, repo: a.subdir } : { base: fanout.base },
         );
-        delegateGitAction(a.agentId, "update-branch", trigger, a.subdir);
+        delegateAction(a.agentId, "update-branch", trigger, a.subdir);
       }
     },
-    [delegateGitAction],
+    [delegateAction],
   );
 
   const enter = useCallback(
