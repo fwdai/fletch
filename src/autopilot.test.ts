@@ -17,6 +17,7 @@ import {
   newEnrollment,
   RUNG_BUDGET,
   stateSignature,
+  unstagedEdits,
   verificationPassed,
 } from "@/autopilot";
 import type { LadderContext, ReadinessInput } from "@/readiness";
@@ -306,6 +307,116 @@ describe("autopilot judges a cycle in flight", () => {
   });
 });
 
+describe("the reconcile rungs", () => {
+  /** A mid-merge tree: the merge's own content is STAGED (git refuses to start a
+   *  merge with staged changes, so staged entries can only be its output), and the
+   *  unresolved files are conflicted. */
+  const midMerge = (over: Partial<GitState> = {}): ReadinessInput => ({
+    ...FAILING,
+    git: git({
+      files: [
+        { path: "a.ts", kind: "conflicted", staged: false, additions: 1, deletions: 0 },
+        { path: "b.ts", kind: "modified", staged: true, additions: 1, deletions: 0 },
+      ],
+      ...over,
+    }),
+  });
+
+  it("resolves conflicts, ahead of everything else that's wrong", () => {
+    // The PR is also failing checks and behind, but a broken tree comes first —
+    // every later rung would build on it.
+    expect(step({ readiness: midMerge() })).toMatchObject({
+      do: "dispatch",
+      rung: "resolve",
+      action: "resolve-conflicts",
+    });
+  });
+
+  it("refuses to finish a merge that would swallow the user's uncommitted work", () => {
+    // The playbook completes the merge with `git add -A`. An unstaged,
+    // non-conflicted edit is by definition the user's in-flight work (the merge's
+    // own content is staged), so this is not autopilot's merge to finish.
+    const withUserEdit = midMerge({
+      files: [
+        { path: "a.ts", kind: "conflicted", staged: false, additions: 1, deletions: 0 },
+        { path: "mine.ts", kind: "modified", staged: false, additions: 9, deletions: 0 },
+      ],
+    });
+    expect(step({ readiness: withUserEdit })).toEqual({
+      do: "escalate",
+      reason: "dirty-tree",
+      rung: "resolve",
+    });
+  });
+
+  it("updates a branch that has fallen behind its base", () => {
+    const behind = {
+      ...FAILING,
+      checks: checks({ merge_state: "behind", required_failing: ["test"] }),
+    };
+    expect(step({ readiness: behind })).toMatchObject({
+      do: "dispatch",
+      rung: "update-branch",
+      params: { base: "main" },
+    });
+  });
+
+  it("judges a reconcile on the world, not by running the tests", () => {
+    // A merge can be perfectly correct and still surface a pre-existing test
+    // failure. Verifying would answer a different question, so these rungs skip it.
+    for (const rung of ["resolve", "update-branch"] as const) {
+      expect(step({ state: state({ cycle: cycle({ rung, phase: "working" }) }) })).toEqual({
+        do: "await-evidence",
+      });
+    }
+    // And a failing local report must not condemn one.
+    expect(
+      step({
+        state: state({ cycle: cycle({ rung: "update-branch", phase: "awaiting-evidence" }) }),
+        readiness: GREEN,
+        verification: report(["test", "failed"]),
+      }),
+    ).toEqual({ do: "settle", rung: "update-branch" });
+  });
+
+  it("still runs the tests for a code fix", () => {
+    expect(step({ state: state({ cycle: cycle({ phase: "working" }) }) })).toEqual({
+      do: "verify",
+    });
+  });
+
+  it("gives a reconcile two attempts, not three", () => {
+    for (const rung of ["resolve", "update-branch"] as const) {
+      expect(RUNG_BUDGET[rung]).toBe(2);
+    }
+  });
+});
+
+describe("unstagedEdits", () => {
+  it("counts only the user's in-flight work, not the merge's own content", () => {
+    expect(unstagedEdits(null)).toBe(0);
+    expect(
+      unstagedEdits(
+        git({
+          files: [
+            // The conflict itself: autopilot's to resolve.
+            { path: "a.ts", kind: "conflicted", staged: false, additions: 1, deletions: 0 },
+            // Cleanly merged by git, already staged: also the merge's.
+            { path: "b.ts", kind: "modified", staged: true, additions: 1, deletions: 0 },
+          ],
+        }),
+      ),
+    ).toBe(0);
+    expect(
+      unstagedEdits(
+        git({
+          files: [{ path: "mine.ts", kind: "modified", staged: false, additions: 1, deletions: 0 }],
+        }),
+      ),
+    ).toBe(1);
+  });
+});
+
 describe("stateSignature", () => {
   it("changes with the commit and with the set of failures", () => {
     expect(stateSignature(FAILING)).not.toBe(stateSignature(GREEN));
@@ -322,6 +433,29 @@ describe("stateSignature", () => {
 
   it("is stable when nothing observable changed", () => {
     expect(stateSignature(FAILING)).toBe(stateSignature({ ...FAILING }));
+  });
+
+  it("tracks the conflict set, so a partial resolution counts as progress", () => {
+    // `resolve` leaves the sha untouched until the merge is completed, so without
+    // the conflicted paths an attempt that fixed two of three files would look
+    // identical to one that did nothing — and be written off as barren.
+    const conflicts = (...paths: string[]): ReadinessInput => ({
+      ...FAILING,
+      git: git({
+        files: paths.map((path) => ({
+          path,
+          kind: "conflicted" as const,
+          staged: false,
+          additions: 1,
+          deletions: 0,
+        })),
+      }),
+    });
+    expect(stateSignature(conflicts("a.ts", "b.ts"))).not.toBe(stateSignature(conflicts("a.ts")));
+    // Order of the report doesn't matter.
+    expect(stateSignature(conflicts("a.ts", "b.ts"))).toBe(
+      stateSignature(conflicts("b.ts", "a.ts")),
+    );
   });
 });
 

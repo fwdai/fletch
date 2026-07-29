@@ -29,6 +29,8 @@ export function stuckLabel(reason: StuckReason): string {
       return "Autopilot stopped — its last attempt changed nothing";
     case "needs-human":
       return "Autopilot stopped — this needs you";
+    case "dirty-tree":
+      return "Autopilot stopped — it won't commit your uncommitted changes";
     case "no-evidence":
       return "Autopilot stopped — no result came back";
   }

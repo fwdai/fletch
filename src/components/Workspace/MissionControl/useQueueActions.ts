@@ -92,6 +92,13 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
         checks: s.prChecks[key] ?? null,
         comments: s.prComments[key] ?? null,
       };
+      // Approving a checkout autopilot gave up on IS the human "try again" it was
+      // waiting for, so clear the stuck state (and its spent budget) as part of
+      // the gesture. Without this the user would retry by hand while autopilot
+      // stayed stopped forever — and `stuck` is deliberately only clearable by a
+      // human, so nothing else would ever do it.
+      if (s.autopilot[key]?.stuck) s.resumeAutopilot(key);
+
       const rung = nextRung(input, {
         base: git?.parent_branch || "main",
         commitMode: commitMode(s.gitCommitAction),
