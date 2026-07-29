@@ -117,6 +117,31 @@ pub fn multi_repo_workspace_note(repos: &[crate::workspace::TrackedRepo]) -> Opt
     ))
 }
 
+/// Per-agent heads-up for a workspace whose base branch could not be fetched
+/// from `origin` while it was being provisioned (offline, no credentials, the
+/// branch gone from the remote). Composed ahead of any custom brief by the
+/// spawn path, exactly like [`multi_repo_workspace_note`], and only for the
+/// agents that actually degraded — see `provision::BaseFreshness`.
+///
+/// The agent, not the app, delivers this: it is the surface the user is already
+/// talking to, and it knows whether the task even depends on being current. The
+/// alternative — failing the spawn — would make an offline machine unusable,
+/// and staying quiet would let the agent redo work that already landed on the
+/// base branch.
+pub fn stale_base_note(base: &str) -> String {
+    format!(
+        "## Heads-up: this workspace's base may be out of date\n\n\
+         Fletch could not reach `origin` while creating this workspace, so it started from \
+         the last copy of `{base}` present on this machine rather than the branch's current \
+         tip on the remote. Your starting commit — and `origin/{base}` inside this checkout \
+         — may be behind by an unknown amount.\n\n\
+         Tell the user this early, before doing work that depends on being up to date \
+         (anything touching recently-changed code, or a task that may already have landed \
+         on `{base}`). Once the network or GitHub credentials are back, \
+         `git fetch origin {base}` in this checkout brings it current."
+    )
+}
+
 /// The global instruction text plus an optional per-session suffix (a custom
 /// agent's standing brief). The suffix is appended *after* the global block so
 /// project/global guidance composes with the agent's role rather than replacing
@@ -328,6 +353,19 @@ mod tests {
         assert!(note.contains("args"), "must point at args.repo: {note}");
         // No redundant "frontend — frontend" suffix when label == subdir.
         assert!(!note.contains("frontend/` — frontend"), "note: {note}");
+    }
+
+    #[test]
+    fn stale_base_note_names_the_base_and_asks_the_agent_to_tell_the_user() {
+        // The whole point of the note is that the *agent* relays the
+        // degradation, so it must name the branch and say to speak up.
+        let note = stale_base_note("develop");
+        assert!(note.contains("`develop`"), "note: {note}");
+        assert!(note.contains("Tell the user"), "note: {note}");
+        assert!(
+            note.contains("git fetch origin develop"),
+            "note must give the recovery command: {note}"
+        );
     }
 
     #[test]

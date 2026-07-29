@@ -15,6 +15,18 @@ use crate::workspace::repo_checkout_path;
 
 use super::files::agent_repo_checkout_opt;
 
+/// The base branch a checkout is measured against. Every repo tracked since the
+/// spawn path started resolving a default has one recorded; the fallback only
+/// covers older rows, and asks the repo what its default actually is rather than
+/// assuming `"main"` — guessing wrong there silently reports a `master` repo as
+/// unmeasurably behind.
+async fn base_branch(repo: &crate::workspace::TrackedRepo) -> String {
+    match &repo.parent_branch {
+        Some(base) => base.clone(),
+        None => git::default_branch(&repo.repo_path).await,
+    }
+}
+
 /// Returns git state for one of the agent's checkouts — the repo whose
 /// `subdir` matches, or the primary when none is given.
 #[tauri::command]
@@ -28,8 +40,8 @@ pub async fn get_git_state(
     else {
         return Ok(None);
     };
-    let parent = repo.parent_branch.as_deref().unwrap_or("main");
-    let state = git_state::query(&checkout, parent).await?;
+    let parent = base_branch(&repo).await;
+    let state = git_state::query(&checkout, &parent).await?;
     Ok(Some(state))
 }
 
@@ -120,10 +132,14 @@ pub async fn get_all_git_meta(
             let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
                 continue;
             };
-            let base = repo.parent_branch.clone().unwrap_or_else(|| "main".into());
             let key = crate::supervisor::pr_map_key(&agent.id, &repo.subdir, i == 0);
             let source = repo.repo_path.clone();
+            // Resolved inside the task, not in this loop: the legacy-row branch
+            // shells out to git, and doing that serially would make the poll's
+            // latency scale with the fleet size instead of the slowest checkout.
+            let repo = repo.clone();
             set.spawn(async move {
+                let base = base_branch(&repo).await;
                 let base_sha = git::remote_base_sha(&source, &base).await;
                 let meta = git_state::git_meta(&checkout, &base, base_sha.as_deref()).await;
                 (key, meta)
@@ -166,8 +182,7 @@ pub async fn refresh_base_freshness(supervisor: State<'_, Arc<Supervisor>>) -> R
             continue;
         }
         for repo in &agent.repos {
-            let base = repo.parent_branch.clone().unwrap_or_else(|| "main".into());
-            seen.insert((repo.repo_path.clone(), base));
+            seen.insert((repo.repo_path.clone(), base_branch(repo).await));
         }
     }
     for (source, base) in seen {

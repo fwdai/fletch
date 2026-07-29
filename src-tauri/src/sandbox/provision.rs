@@ -12,7 +12,10 @@
 //! objects) and copies **no** objects, so a spawn costs kilobytes and
 //! milliseconds instead of a full history copy. New objects (agent commits,
 //! fetches) land in the clone's own `.git/objects`; reads of existing history
-//! fall through to the borrowed store. Because the clone lives at the normal
+//! fall through to the borrowed store. That property is what makes
+//! [`provision_at_remote_base`]'s spawn-time `git fetch` cheap and safe: only
+//! commits the source has never seen transfer, and they never touch the user's
+//! object store. Because the clone lives at the normal
 //! host path, all host-side git (diff polling, RPC commit/push,
 //! archive/restore) operates on it unchanged. For Docker the borrowed object
 //! store is mounted read-only at its identical host path (see
@@ -31,45 +34,112 @@ use crate::git;
 pub struct CheckoutSpec<'a> {
     /// The user's real repo root.
     pub source_repo: &'a Path,
-    /// Commit-ish the workspace starts from, checked out detached.
+    /// Commit-ish the workspace starts from, checked out detached. Under
+    /// [`provision_at_remote_base`] this is only the *fallback* — the base as
+    /// this machine already knows it, used when the clone can't reach `origin`.
     pub base_ref: &'a str,
     /// Workspace path (`workspace::repo_checkout_path(agent_id, subdir)`).
     pub dest: &'a Path,
 }
 
-/// Create the workspace at `spec.dest`, detached at `spec.base_ref`.
+/// Create the workspace at `spec.dest`, detached at `spec.base_ref`, taking the
+/// ref exactly as given — no fetch. For callers whose base is already an exact
+/// commit that must not move (restore's archived tip). A fresh spawn wants
+/// [`provision_at_remote_base`] instead, so its base branch is the remote's.
 ///
 /// `--shared`: objects borrowed from the source. For Docker the borrowed store
 /// is mounted RO at launch — safe for the primary workspace and any repo
 /// present when the container starts.
 pub async fn provision(spec: &CheckoutSpec<'_>) -> Result<()> {
-    clone_detached(spec, true).await
+    clone_detached(spec).await
 }
 
-/// Provision a **self-contained** clone (full object copy, no alternates),
-/// detached at `spec.base_ref`. For a repo added to an *already-running* Docker
-/// agent: the container's bind mounts are fixed at `docker run`, so a `--shared`
-/// clone's borrowed object store could never be mounted and in-container git
-/// would fail with missing objects. A self-contained clone needs no extra mount
-/// and works immediately. Seatbelt has no such constraint and uses [`provision`]
-/// (`--shared`) even for added repos — same filesystem, no mount involved.
-pub async fn provision_self_contained(spec: &CheckoutSpec<'_>) -> Result<()> {
-    clone_detached(spec, false).await
+/// Where a freshly-provisioned workspace's starting commit came from. Only
+/// [`BaseFreshness::Stale`] is a degradation, and the spawn path relays it to
+/// the agent so it can warn the user (see `instructions::stale_base_note`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseFreshness {
+    /// The base branch was fetched from `origin`: the workspace starts at its
+    /// real remote tip and its `origin/<base>` is a genuine tracking ref.
+    Fetched,
+    /// The source repo has no `origin`, so there is no fresher state to be
+    /// behind — its local refs are the only truth there is. Not a degradation.
+    NoRemote,
+    /// The fetch failed (offline, no credentials, base deleted on the remote).
+    /// The workspace fell back to `spec.base_ref`, which may be arbitrarily far
+    /// behind the branch on the remote.
+    Stale,
 }
 
-/// Shared clone-arm body for [`provision`] / [`provision_self_contained`]:
-/// clone (borrowing objects when `shared`), run the post-clone fixups, then
-/// check out `spec.base_ref` detached.
-async fn clone_detached(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
+/// Provision a workspace at the **remote** tip of `base_branch`.
+///
+/// `git clone --shared <source path>` seeds the clone's `refs/remotes/origin/*`
+/// from the source's *local* heads, and [`rewrite_origin`] then repoints
+/// `origin` at GitHub — so a fresh workspace's `origin/<base>` is a relabelled
+/// snapshot of the source's local branch, not the remote. Nothing inside the
+/// workspace ever fetches on its own, so it never self-corrects: the agent
+/// would start from, and diff against, however stale the user's local branch
+/// happened to be.
+///
+/// So fetch the base here, in the clone, while we still run host-side with the
+/// app's git credentials (the sandboxed agent has none). Cost is one ref against
+/// a mostly-shared object store: `--shared` means only commits the source has
+/// never seen transfer, and they land in the clone's own `.git/objects`, never
+/// the user's. Provisioning already runs in a background task, so the latency
+/// lands in workspace-ready time, not UI responsiveness.
+///
+/// Degrades instead of failing: an unreachable remote leaves the workspace at
+/// `spec.base_ref` (the inherited, possibly stale ref) and reports
+/// [`BaseFreshness::Stale`] rather than killing the spawn.
+///
+/// `shared` picks the object strategy, exactly as in [`clone_base`]. Pass
+/// `false` for a repo added to an *already-running* Docker agent: the
+/// container's bind mounts are fixed at `docker run`, so a `--shared` clone's
+/// borrowed object store could never be mounted and in-container git would fail
+/// with missing objects. Seatbelt has no such constraint and always shares.
+pub async fn provision_at_remote_base(
+    spec: &CheckoutSpec<'_>,
+    base_branch: &str,
+    shared: bool,
+) -> Result<BaseFreshness> {
     clone_base(spec, shared).await?;
+    let base_branch = base_branch.to_string();
     finish_clone(spec, |dest| async move {
-        git::run_git(
-            &dest,
-            &["checkout", "--detach", spec.base_ref],
-            &format!("checkout --detach {}", spec.base_ref),
-        )
-        .await?;
-        Ok(())
+        // `rewrite_origin` *removes* the clone's local-path `origin` when the
+        // source repo has no remote. There is then nothing to fetch and nothing
+        // to be stale against, so take the inherited ref without warning the
+        // agent about a repo that is its own source of truth.
+        if !has_origin(&dest).await {
+            checkout_detached(&dest, spec.base_ref).await?;
+            return Ok(BaseFreshness::NoRemote);
+        }
+        match git::fetch_fork_point(&dest, &base_branch).await {
+            Some(tip) => {
+                checkout_detached(&dest, &tip).await?;
+                Ok(BaseFreshness::Fetched)
+            }
+            None => {
+                tracing::warn!(
+                    base = %base_branch,
+                    dest = %dest.display(),
+                    fallback = %spec.base_ref,
+                    "could not fetch base from origin while provisioning; starting \
+                     from the inherited ref, which may be stale"
+                );
+                checkout_detached(&dest, spec.base_ref).await?;
+                Ok(BaseFreshness::Stale)
+            }
+        }
+    })
+    .await
+}
+
+/// Body of [`provision`]: `--shared` clone, the post-clone fixups, then check
+/// out `spec.base_ref` detached.
+async fn clone_detached(spec: &CheckoutSpec<'_>) -> Result<()> {
+    clone_base(spec, true).await?;
+    finish_clone(spec, |dest| async move {
+        checkout_detached(&dest, spec.base_ref).await
     })
     .await
 }
@@ -259,7 +329,7 @@ pub async fn teardown(dest: &Path) -> Result<()> {
 /// - `false` → `git clone --no-hardlinks`: a full, self-contained object copy
 ///   with no alternates. Used when the clone can't rely on the borrowed store
 ///   being mounted — a repo added to an already-running Docker container, whose
-///   bind mounts are fixed at `docker run` (see [`provision_self_contained`]).
+///   bind mounts are fixed at `docker run` (see [`provision_at_remote_base`]).
 ///
 /// Caveat — gc/prune on the source (`shared` only): `--shared` breaks only if
 /// the source prunes an object the clone references. Base history stays
@@ -484,6 +554,16 @@ async fn seed_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Does the clone still have an `origin` remote? False when [`rewrite_origin`]
+/// removed it because the source repo has none — the "no remote at all" state,
+/// distinct from "a remote we couldn't reach".
+async fn has_origin(repo: &Path) -> bool {
+    matches!(
+        git::git_output(repo, &["remote", "get-url", "origin"]).await,
+        Ok(out) if out.status.success()
+    )
+}
+
 /// Does `commit` resolve to a commit already present in `repo`?
 async fn commit_present(repo: &Path, commit: &str) -> bool {
     let spec = format!("{commit}^{{commit}}");
@@ -574,6 +654,111 @@ mod tests {
         run(&repo, &["commit", "-q", "-m", "second"]);
         let head = run(&repo, &["rev-parse", "HEAD"]);
         (repo, first, head)
+    }
+
+    /// The real topology: an `upstream` repo playing GitHub, a `source` clone
+    /// of it (the user's repo) that was cloned *before* upstream advanced, and
+    /// therefore a stale local `main`. Returns
+    /// (source, stale local tip, true upstream tip).
+    fn fixture_with_stale_source(dir: &Path) -> (PathBuf, String, String) {
+        let upstream = dir.join("upstream");
+        std::fs::create_dir_all(&upstream).unwrap();
+        run(&upstream, &["init", "-q", "-b", "main"]);
+        run(&upstream, &["config", "user.email", "t@example.com"]);
+        run(&upstream, &["config", "user.name", "Tester"]);
+        std::fs::write(upstream.join("a.txt"), b"one").unwrap();
+        run(&upstream, &["add", "-A"]);
+        run(&upstream, &["commit", "-q", "-m", "first"]);
+
+        let source = dir.join("source");
+        run(dir, &["clone", "-q", upstream.to_str().unwrap(), "source"]);
+        run(&source, &["config", "user.email", "t@example.com"]);
+        run(&source, &["config", "user.name", "Tester"]);
+        let stale = run(&source, &["rev-parse", "main"]);
+
+        // Upstream moves on; nothing ever pulls it into `source`.
+        std::fs::write(upstream.join("b.txt"), b"two").unwrap();
+        run(&upstream, &["add", "-A"]);
+        run(&upstream, &["commit", "-q", "-m", "second"]);
+        let fresh = run(&upstream, &["rev-parse", "main"]);
+        assert_ne!(stale, fresh);
+        (source, stale, fresh)
+    }
+
+    #[tokio::test]
+    async fn provision_at_remote_base_starts_at_the_fetched_tip_not_the_sources_local_branch() {
+        // The bug this guards: `git clone <local path>` maps the source's own
+        // *local* heads into the clone's `refs/remotes/origin/*`, and the origin
+        // rewrite then relabels them as if they came from GitHub. Without a
+        // fetch in the clone, both HEAD and `origin/main` would sit at the
+        // source's stale local `main` forever.
+        let td = tempfile::tempdir().unwrap();
+        let (source, stale, fresh) = fixture_with_stale_source(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &source,
+            base_ref: &stale,
+            dest: &dest,
+        };
+
+        let freshness = provision_at_remote_base(&spec, "main", true).await.unwrap();
+
+        assert_eq!(freshness, BaseFreshness::Fetched);
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), fresh);
+        // The tracking ref matters as much as HEAD: every later ahead/behind,
+        // rebase and PR base in this workspace reads `origin/main`.
+        assert_eq!(run(&dest, &["rev-parse", "origin/main"]), fresh);
+        // Still detached — the fetch must not put the workspace on a branch.
+        let out = std::process::Command::new("git")
+            .current_dir(&dest)
+            .args(["symbolic-ref", "-q", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "clone HEAD should be detached");
+    }
+
+    #[tokio::test]
+    async fn provision_at_remote_base_degrades_to_the_inherited_ref_when_the_fetch_fails() {
+        // Offline / no credentials / deleted branch: the spawn must still
+        // succeed, land on `spec.base_ref`, and report the degradation so the
+        // caller can tell the agent its base may be stale.
+        let td = tempfile::tempdir().unwrap();
+        let (source, stale, _fresh) = fixture_with_stale_source(td.path());
+        let unreachable = td.path().join("gone.git");
+        run(
+            &source,
+            &["remote", "set-url", "origin", unreachable.to_str().unwrap()],
+        );
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &source,
+            base_ref: &stale,
+            dest: &dest,
+        };
+
+        let freshness = provision_at_remote_base(&spec, "main", true).await.unwrap();
+
+        assert_eq!(freshness, BaseFreshness::Stale);
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), stale);
+    }
+
+    #[tokio::test]
+    async fn provision_at_remote_base_reports_no_remote_rather_than_stale() {
+        // A repo with no `origin` has no fresher state to be behind, so it must
+        // not trip the agent-facing stale-base warning.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+
+        let freshness = provision_at_remote_base(&spec, "main", true).await.unwrap();
+
+        assert_eq!(freshness, BaseFreshness::NoRemote);
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
     }
 
     #[tokio::test]
@@ -1045,7 +1230,14 @@ mod tests {
             dest: &dest,
         };
 
-        provision_self_contained(&spec).await.unwrap();
+        // No `origin` on the fixture, so there is nothing to fetch — the point
+        // here is purely the object strategy (`shared = false`).
+        assert_eq!(
+            provision_at_remote_base(&spec, "main", false)
+                .await
+                .unwrap(),
+            BaseFreshness::NoRemote
+        );
 
         // No alternates file — objects live in the clone itself.
         assert!(!dest.join(".git/objects/info/alternates").exists());

@@ -322,11 +322,18 @@ impl Supervisor {
 
         // The agent's parent branch — the base its checkout forks from and the
         // ref it later targets for PRs / ahead-behind. The base the user chose
-        // on the new-agent screen (`fork_base`) wins; absent a choice, fall back
-        // to the branch the repo was on when the user hit Spawn.
+        // on the new-agent screen (`fork_base`) wins; absent a choice, resolve
+        // the repo's *default* branch.
+        //
+        // Explicitly NOT the branch the source repo happens to have checked out.
+        // Forking a new agent onto the user's in-progress local work is never
+        // the intent, and as an implicit default it is invisible: the frontend's
+        // draft path passes a base, but every other caller silently inherited
+        // whatever the repo was on. Resolving the default here makes the rule
+        // hold structurally instead of depending on each caller remembering.
         let parent_branch = match &fork_base {
-            Some(base) if !base.trim().is_empty() => Some(base.clone()),
-            _ => git::current_branch(&repo_path).await.ok().flatten(),
+            Some(base) if !base.trim().is_empty() => base.trim().to_string(),
+            _ => git::default_branch(&repo_path).await,
         };
         let subdir = allocate_repo_subdir(&repo_path, &[]);
         // Cloned for the background fork task — `parent_branch`/`subdir` are
@@ -343,7 +350,7 @@ impl Supervisor {
             repo_path: repo_path.clone(),
             subdir: subdir.clone(),
             branch: None, // materialized at first push, named by the agent
-            parent_branch,
+            parent_branch: Some(parent_branch),
             base_sha: None,  // captured by the fork task once HEAD is known
             pr_number: None, // set when a PR is opened for this branch
             pr_url: None,
@@ -422,53 +429,57 @@ impl Supervisor {
                 return;
             }
 
-            // Fork point: prefer the freshest remote state of the parent branch
-            // (the user's chosen base, or the repo's current branch) so the agent
-            // never starts on stale local refs — as the fetched tip's SHA, which
-            // resolves the same in the source repo and in a clone-mode workspace
-            // (a symbolic `origin/<branch>` would resolve against the source's
-            // stale local head inside the clone). Best-effort — if the remote is
-            // unavailable (offline, no remote, a local-only branch, or a workflow
-            // commit-ish), resolve the ref to its local SHA, otherwise fall
-            // through to HEAD so an unresolvable base degrades instead of failing
-            // the spawn. The SHA (never the branch name) matters even in the
-            // fallback: a clone-mode workspace only has the source's HEAD branch
-            // as a local branch, so checking out any *other* branch by name
-            // trips git's remote-DWIM (an implicit `-b`), which is fatal
-            // combined with `--detach`.
+            // Fork point: the workspace fetches its base branch from `origin`
+            // itself and detaches at the tip that came back, so the agent starts
+            // from the branch as GitHub has it — see
+            // `provision::provision_at_remote_base` for why fetching in the
+            // *clone* (not the source) is what makes that true.
+            //
+            // `base_ref` is the offline fallback: the base as this machine
+            // already knows it, resolved to a local SHA and finally to HEAD so
+            // an unresolvable base degrades instead of failing the spawn. A SHA,
+            // never the branch name — a clone-mode workspace only has the
+            // source's HEAD branch as a local branch, so checking out any
+            // *other* branch by name trips git's remote-DWIM (an implicit `-b`),
+            // which is fatal combined with `--detach`.
+            let mut base_freshness = None;
             let provision_result = match &run_repo_for_task {
                 // Workflow step (§12.1): fork from `fork_base` in the run repo.
-                // `base_ref` is used as-is — step 1's `base_sha` is already in
-                // the fresh source clone, so the run-repo fetch is skipped; step
-                // N's `refs/wf/steps/<prev>` is fetched from the run repo first.
+                // `base_ref` is used as-is and never fetched from `origin` —
+                // it's a run-internal commit-ish, not a branch: step 1's
+                // `base_sha` is already in the fresh source clone, and step N's
+                // `refs/wf/steps/<prev>` is fetched from the run repo instead.
                 Some(run_repo) => {
-                    let base_ref = parent_for_fork.as_deref().unwrap_or("HEAD");
                     let spec = CheckoutSpec {
                         source_repo: &repo_path,
-                        base_ref,
+                        base_ref: &parent_for_fork,
                         dest: &primary_checkout,
                     };
                     provision::provision_forking_run_repo(&spec, run_repo).await
                 }
                 None => {
-                    let base = match &parent_for_fork {
-                        Some(b) => match git::fetch_fork_point(&repo_path, b).await {
-                            Some(sha) => Some(sha),
-                            None => git::rev_parse(&repo_path, b).await.ok(),
-                        },
-                        None => None,
-                    };
+                    let local = git::rev_parse(&repo_path, &parent_for_fork).await.ok();
                     let spec = CheckoutSpec {
                         source_repo: &repo_path,
-                        base_ref: base.as_deref().unwrap_or("HEAD"),
+                        base_ref: local.as_deref().unwrap_or("HEAD"),
                         dest: &primary_checkout,
                     };
-                    provision::provision(&spec).await
+                    provision::provision_at_remote_base(&spec, &parent_for_fork, true)
+                        .await
+                        .map(|freshness| base_freshness = Some(freshness))
                 }
             };
             if let Err(e) = provision_result {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                 return;
+            }
+            if base_freshness == Some(provision::BaseFreshness::Stale) {
+                // The workspace couldn't reach `origin`, so it starts at
+                // whatever this machine last had. Flag it so the agent's brief
+                // carries a heads-up and it can tell the user (see
+                // `start_process`) — silently working off a stale base is how
+                // an agent rebuilds something that already landed.
+                sup.stale_base.lock().insert(id_for_task.clone());
             }
 
             // Record the fork point so diffs measure against the exact starting
@@ -613,24 +624,21 @@ impl Supervisor {
         let used: Vec<String> = record.repos.iter().map(|r| r.subdir.clone()).collect();
         let subdir = allocate_repo_subdir(&repo_path, &used);
         let checkout = repo_checkout_path(agent_id, &subdir)?;
-        let parent_branch = git::current_branch(&repo_path).await.ok().flatten();
+        // Secondary repos have no base picker of their own, so they take the
+        // repo's default branch — never the branch it happens to have checked
+        // out, for the same reason the primary repo doesn't (see `spawn_agent`).
+        let parent_branch = git::default_branch(&repo_path).await;
 
-        // Fork from the freshest remote state of the parent branch (best-effort,
-        // falls back to local HEAD), then record the fork point as the diff base.
-        let base = match &parent_branch {
-            Some(b) => git::fetch_fork_point(&repo_path, b).await,
-            None => None,
-        };
+        // Fork from the base as `origin` has it, falling back to the local SHA
+        // (then HEAD) when the fetch can't happen; then record the fork point as
+        // the diff base.
+        let local = git::rev_parse(&repo_path, &parent_branch).await.ok();
         let spec = CheckoutSpec {
             source_repo: &repo_path,
-            base_ref: base.as_deref().unwrap_or("HEAD"),
+            base_ref: local.as_deref().unwrap_or("HEAD"),
             dest: &checkout,
         };
-        if self_contained {
-            provision::provision_self_contained(&spec).await?;
-        } else {
-            provision::provision(&spec).await?;
-        }
+        provision::provision_at_remote_base(&spec, &parent_branch, !self_contained).await?;
         let base_sha = git::rev_parse(&checkout, "HEAD").await.ok();
 
         // Warm the codegraph index for this additional checkout too, so a
@@ -651,7 +659,7 @@ impl Supervisor {
             repo_path: repo_path.clone(),
             subdir: subdir.clone(),
             branch: None,
-            parent_branch,
+            parent_branch: Some(parent_branch),
             base_sha,
             pr_number: None,
             pr_url: None,
@@ -906,10 +914,31 @@ impl Supervisor {
         // brief, so the agent knows about its sibling checkouts from turn one.
         // Recomputed every launch, like the rest of the instruction layers.
         let workspace_note = crate::instructions::multi_repo_workspace_note(&record.repos);
-        let brief = match (workspace_note, record.instructions.as_deref()) {
-            (Some(note), Some(brief)) => Some(format!("{note}\n\n{brief}")),
-            (Some(note), None) => Some(note),
-            (None, brief) => brief.map(str::to_string),
+        // A workspace whose base fetch failed at provision time carries a
+        // heads-up so the agent can warn the user its starting point may be
+        // behind (see `spawn_agent`). Keyed on the primary repo's base — the one
+        // the user picked and the one the flag was set for.
+        let stale_note = self
+            .stale_base
+            .lock()
+            .contains(agent_id)
+            .then(|| {
+                record
+                    .repos
+                    .first()
+                    .and_then(|r| r.parent_branch.as_deref())
+            })
+            .flatten()
+            .map(crate::instructions::stale_base_note);
+        let notes = [stale_note, workspace_note]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let brief = match (notes.is_empty(), record.instructions.as_deref()) {
+            (false, Some(brief)) => Some(format!("{notes}\n\n{brief}")),
+            (false, None) => Some(notes),
+            (true, brief) => brief.map(str::to_string),
         };
         // The codegraph playbook rides the same suffix, gated on the server
         // having really landed above — so an agent is only ever told to prefer

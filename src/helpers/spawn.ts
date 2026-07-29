@@ -1,12 +1,32 @@
-// Spawn-time helpers: resolving a custom agent's skill/MCP assignments into
-// by-value snapshots for the spawn payload, and the small retry util that
-// tolerates the brief window before a freshly-spawned agent is addressable.
+// Spawn-time helpers: resolving the base branch a new agent forks from,
+// resolving a custom agent's skill/MCP assignments into by-value snapshots for
+// the spawn payload, and the small retry util that tolerates the brief window
+// before a freshly-spawned agent is addressable.
 
+import { api } from "../api";
 import { MCP_SUPPORT, mcpAttachable } from "../data/providers";
 import type { CustomAgent } from "../storage/customAgents";
 import { type McpServerSnapshot, snapshotMcpServer } from "../storage/mcpServers";
 import type { SkillSnapshot } from "../storage/skills";
 import type { AppState } from "../store";
+
+/** The base branch a new agent forks from when the user hasn't picked one: the
+ *  repo's real default, resolved from its remote by the backend. This used to be
+ *  a hardcoded "main", which silently forked the wrong branch on a
+ *  master/develop repo — and leaving it unset was worse still, because the
+ *  backend then fell back to whatever branch the source repo happened to have
+ *  checked out. Every spawn path must pass a base.
+ *
+ *  The backend already degrades to "main" internally, so the catch here only
+ *  covers the IPC call itself failing; a base must always come back, because
+ *  spawning without one is the bug we're closing. */
+export async function resolveBaseBranch(repoPath: string): Promise<string> {
+  try {
+    return await api.repoDefaultBranch(repoPath);
+  } catch {
+    return "main";
+  }
+}
 
 /** Resolve a custom agent's skill/MCP assignments into by-value spawn
  *  snapshots, in the agent's assignment order. Dangling ids (deleted library

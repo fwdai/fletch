@@ -5,6 +5,7 @@ import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { resolveBaseBranch } from "@/helpers";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
@@ -237,14 +238,21 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
               <ProjectPicker
                 value={draft.repoPath}
                 projects={projectOptions}
-                onChange={(repoPath) => {
+                onChange={async (repoPath) => {
                   // Switching projects: the previously chosen base branch may not
-                  // exist in the new repo, so reset to main — and drop any issue
-                  // tag, which belongs to the previous project's tracker (its key
-                  // would close the wrong issue, or a dead one, from the new
-                  // repo's PR). The brief text stays: it's visible and editable,
-                  // unlike the hidden ref.
-                  updateDraft(draft.id, { repoPath, base: "main", issueRef: undefined });
+                  // exist in the new repo, so reset to the new repo's *default*
+                  // (not a hardcoded "main") — and drop any issue tag, which
+                  // belongs to the previous project's tracker (its key would
+                  // close the wrong issue, or a dead one, from the new repo's
+                  // PR). The brief text stays: it's visible and editable, unlike
+                  // the hidden ref.
+                  //
+                  // Resolved before the switch is applied, so the draft is never
+                  // momentarily pointing at a base from the previous repo — a
+                  // spawn in that window would fork from a branch this repo may
+                  // not even have. It's a local ref read, not a network call.
+                  const base = await resolveBaseBranch(repoPath);
+                  updateDraft(draft.id, { repoPath, base, issueRef: undefined });
                   setLastRepoPath(repoPath);
                 }}
               />

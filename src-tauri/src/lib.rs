@@ -1565,6 +1565,7 @@ pub fn run() {
             commands::abort_merge_agent,
             commands::delete_branch_agent,
             commands::list_repo_branches,
+            commands::repo_default_branch,
             commands::create_pr,
             commands::merge_pr,
             commands::get_pr_state,

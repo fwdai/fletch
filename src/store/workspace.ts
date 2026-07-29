@@ -19,6 +19,7 @@ import {
   providerFor,
   reduceRecords,
   repoPathFor,
+  resolveBaseBranch,
   sendWhenAgentReady,
   unsupportedManagedCommand,
 } from "@/helpers";
@@ -343,7 +344,22 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   spawn: async (view, repoPath) => {
     set({ busy: true, lastError: null });
     try {
-      const rec = await api.spawnAgent(view, repoPath);
+      // The draft path carries the base the user picked; this one has no picker,
+      // so resolve the repo's default explicitly. Passing nothing used to make
+      // the backend fall back to the source repo's currently-checked-out branch
+      // — forking a new agent onto the user's in-progress local work.
+      const base = await resolveBaseBranch(repoPath);
+      const rec = await api.spawnAgent(
+        view,
+        repoPath,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        base,
+      );
       // Apply the selection (and custom-view log seeds) immediately, ahead of the
       // guarded workspace refresh, so this user-intent state can never be dropped
       // if a concurrent refresh supersedes ours.
