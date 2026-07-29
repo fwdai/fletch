@@ -705,6 +705,17 @@ describe("autopilot stops only while it is genuinely blocked", () => {
     });
   });
 
+  it("won't spend its refreshed budget re-entering a world it already failed at", () => {
+    // The safety property behind revive granting fresh attempts: `barren` is kept,
+    // so an oscillating world (a flaky check flipping back) escalates immediately
+    // instead of burning a whole new budget on a world already proven futile.
+    const revived = state({ attempts: {}, barren: [stateSignature(FAILING)] });
+    expect(step({ state: revived, readiness: FAILING })).toMatchObject({
+      do: "escalate",
+      reason: "no-progress",
+    });
+  });
+
   it("stamps every escalation with the situation it stopped in", () => {
     // Without this the guard above has nothing to compare and autopilot could
     // never tell a cleared blocker from a persisting one.
