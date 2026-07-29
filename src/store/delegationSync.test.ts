@@ -43,6 +43,7 @@ const EMPTY_MAPS = {
   delegationNotices: {},
   autopilot: {},
   autopilotVerdicts: {},
+  autopilotLog: {},
   unseenResults: {},
   rightPanelTabs: {},
 };

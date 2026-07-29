@@ -69,6 +69,10 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   const delegationNotices = dropScopedEntries(state.delegationNotices, id);
   const autopilot = dropScopedEntries(state.autopilot, id);
   const autopilotVerdicts = dropScopedEntries(state.autopilotVerdicts, id);
+  // The activity log goes with the agent it describes: once the row is gone
+  // there is no surface left to read it from, and the durable record of what
+  // autopilot did is the transcript and the PR, not this.
+  const autopilotLog = dropScopedEntries(state.autopilotLog, id);
   const { [id]: _short, ...gitShortstats } = state.gitShortstats;
   const { [id]: _seed, ...composerSeeds } = state.composerSeeds;
   const { [id]: _draft, ...composerDrafts } = state.composerDrafts;
@@ -97,6 +101,7 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     delegationNotices,
     autopilot,
     autopilotVerdicts,
+    autopilotLog,
     unseenResults,
     rightPanelTabs,
   };
