@@ -32,6 +32,7 @@ mod probe;
 mod progress;
 pub mod setup_token;
 
+pub use cleanup::remove_agent_containers;
 pub use engine::{
     init_version_refresh_guard, set_launch_settings, DockerEngine, LaunchSettings, CPUS_SETTING,
     IMAGE_SETTING, MEMORY_SETTING, VERSION_GUARD_SETTING,

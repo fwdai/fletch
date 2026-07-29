@@ -7,6 +7,12 @@
 //! nested-root sweeps use (`sandbox/seatbelt.rs`): remove only containers
 //! whose owning pid is gone, never a live side-by-side instance's.
 //!
+//! The agent-id label answers the narrower question archive/discard asks —
+//! "is anything still running for *this* agent?" — via
+//! [`remove_agent_containers`]. The supervisor's in-memory kill handle is the
+//! primary teardown path; that label sweep is the backstop for when there is
+//! no in-memory entry left to kill (see `supervisor::disposition`).
+//!
 //! Images get the same treatment with one rule ([`sweep_stale_images`]): an
 //! image Fletch built (attributed by the `fletch.agent` label — see
 //! [`image::AGENT_IMAGE_LABEL`]) that is not one of the current expected tags
@@ -23,8 +29,13 @@ use super::{cli, engine, image, DockerProvider};
 /// Label carrying the owning Fletch instance's pid.
 pub const HOST_PID_LABEL: &str = "fletch.host-pid";
 
-/// Label carrying the agent id a container runs (attribution/debugging; the
-/// sweep keys on [`HOST_PID_LABEL`] alone).
+/// Label carrying the agent id a container runs. The startup orphan sweep
+/// keys on [`HOST_PID_LABEL`] alone (it asks "whose instance is dead?", not
+/// "which agent?"); this label is the handle for the other question —
+/// [`remove_agent_containers`] uses it to tear down one named agent's
+/// containers on archive/discard. It is also the only stable handle there is:
+/// container *names* carry a random nonce (`engine::util::container_name`),
+/// so nothing outside the launching process can reconstruct them.
 pub const AGENT_ID_LABEL: &str = "fletch.agent-id";
 
 /// `fletch.host-pid=<our pid>` — the `--label` value stamped on `docker run`.
@@ -35,6 +46,14 @@ pub fn host_pid_label() -> String {
 /// `fletch.agent-id=<agent_id>` — sibling of [`host_pid_label`].
 pub fn agent_id_label(agent_id: &str) -> String {
     format!("{AGENT_ID_LABEL}={agent_id}")
+}
+
+/// The `--filter` argument selecting one agent's containers. Built from
+/// [`agent_id_label`] so the query can never drift from what `docker run`
+/// stamped. Split out as a pure function so its argv shape is unit-testable
+/// without a daemon.
+fn agent_id_filter(agent_id: &str) -> String {
+    format!("label={}", agent_id_label(agent_id))
 }
 
 /// Listing/inspect are metadata-only; generous next to their usual
@@ -126,6 +145,63 @@ fn parse_inspect_line(line: &str) -> Option<(String, Option<i32>)> {
     Some((id.to_string(), pid))
 }
 
+/// Remove every container stamped with `fletch.agent-id=<agent_id>`, running
+/// or not. Returns the number removed.
+///
+/// The disposal counterpart to [`sweep_orphans`], and deliberately *without*
+/// its pid-liveness check: the caller has decided this specific agent is going
+/// away, so every container bearing its id is fair game — including one owned
+/// by this very live instance, which is the whole point (the supervisor may no
+/// longer hold a kill handle for it). Attribution is still exact: the label is
+/// stamped only by our own `docker run`, and it names one agent.
+///
+/// Matching on the label rather than the container name is required, not a
+/// preference — names carry a random nonce (`engine::util::container_name`),
+/// so only the launching process ever knew them.
+///
+/// Callers gate on the probe and run this off the main path (see
+/// `supervisor::disposition`), and treat every failure as non-fatal: a
+/// `docker rm` can legitimately lose a race against a `--rm` container
+/// finishing on its own, and the user's disposal intent must not hinge on the
+/// daemon's cooperation.
+pub fn remove_agent_containers(agent_id: &str) -> Result<usize> {
+    let list = cli::run_docker(
+        &["ps", "-aq", "--filter", &agent_id_filter(agent_id)],
+        QUERY_TIMEOUT,
+    )?;
+    if !list.status.success() {
+        return Err(Error::Other(format!(
+            "docker ps failed: {}",
+            String::from_utf8_lossy(&list.stderr).trim(),
+        )));
+    }
+    let ids: Vec<&str> = std::str::from_utf8(&list.stdout)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    tracing::info!(
+        agent_id,
+        count = ids.len(),
+        "removing containers of a disposed agent"
+    );
+    let mut rm_args = vec!["rm", "-f"];
+    rm_args.extend(&ids);
+    let removed = cli::run_docker(&rm_args, REMOVE_TIMEOUT)?;
+    if !removed.status.success() {
+        return Err(Error::Other(format!(
+            "docker rm failed: {}",
+            String::from_utf8_lossy(&removed.stderr).trim(),
+        )));
+    }
+    Ok(ids.len())
+}
+
 /// `docker images` line format for the image GC listings. Untagged (dangling)
 /// images print `<none>` for repository and tag.
 const IMAGES_FORMAT: &str = "{{.ID}} {{.Repository}} {{.Tag}}";
@@ -179,6 +255,8 @@ fn parse_images_line(line: &str) -> Option<ImageRow> {
 /// `fletch.agent` label that is not one of the current expected tags (the set
 /// of `image_tag(provider)` across all providers) is removed — old-hash tags
 /// from Dockerfile revisions and untagged leftovers from TTL rebuilds alike.
+/// [`RETIRED_REPOS`] extends "our namespace" backwards over providers Fletch
+/// has dropped, so retiring one doesn't strand its images.
 ///
 /// Legacy path: images built before the label existed carry no ownership
 /// proof, so they are removed only on an exact [`LEGACY_TAGS`] match — the
@@ -212,9 +290,16 @@ pub fn sweep_stale_images() -> Result<usize> {
         IMAGES_FORMAT,
     ])?;
     // Legacy pre-label images: list each Fletch-owned repo by name. (A repo
-    // argument to `docker images` matches only that exact repo.)
+    // argument to `docker images` matches only that exact repo.) Retired repos
+    // are listed too — a pre-label image doesn't stop being ours because the
+    // provider was dropped, and the arm still removes nothing that isn't an
+    // exact [`LEGACY_TAGS`] match.
     let mut legacy = Vec::new();
-    for repo in &known_repos {
+    for repo in known_repos
+        .iter()
+        .copied()
+        .chain(RETIRED_REPOS.iter().copied())
+    {
         legacy.extend(list_images(&["images", repo, "--format", IMAGES_FORMAT])?);
     }
 
@@ -223,6 +308,7 @@ pub fn sweep_stale_images() -> Result<usize> {
         &legacy,
         &current_tags,
         &known_repos,
+        RETIRED_REPOS,
         override_image.as_deref(),
     );
     if refs.is_empty() {
@@ -274,24 +360,30 @@ fn list_images(args: &[&str]) -> Result<Vec<ImageRow>> {
 /// installs). Returns deduplicated `docker rmi` refs.
 ///
 /// The label is the authority, with one belt-and-braces exception each way:
-/// a *labeled* image tagged outside `known_repos` is kept (a user re-tagged
+/// a *labeled* image tagged outside our namespace is kept (a user re-tagged
 /// our image under their own name — their tag, their call), and an *unlabeled*
 /// image is removed only on an exact [`LEGACY_TAGS`] match (the closed list of
 /// tags pre-label Fletch actually shipped — shape or namespace alone is never
 /// an ownership signal for unlabeled images). Current tags and the
 /// `docker_image` override are always kept.
 ///
+/// "Our namespace" is `known_repos` (the live providers) plus `retired_repos`
+/// ([`RETIRED_REPOS`] — providers we used to ship). Both are passed in rather
+/// than read from the constants so the rule stays testable on fixed inputs.
+///
 /// Within Fletch's repos, a labeled image is a removal candidate only under a
 /// tag Fletch itself could have written: the content-addressed shape (12
 /// lowercase hex chars — see `image::tag_for`) or no tag at all (a dangling
 /// rebuild predecessor). A human-shaped tag like `fletch-agent:backup` —
 /// a user's `docker tag` of our image — is theirs to keep: a tag a human
-/// wrote is the human's call.
+/// wrote is the human's call. Retirement changes nothing about that: a
+/// retired repo buys a row into the candidate set, not past the safety rules.
 fn image_removal_refs(
     labeled: &[ImageRow],
     legacy: &[ImageRow],
     current_tags: &HashSet<String>,
     known_repos: &HashSet<&'static str>,
+    retired_repos: &[&str],
     override_image: Option<&str>,
 ) -> Vec<String> {
     let override_image = override_image.map(str::trim).filter(|s| !s.is_empty());
@@ -310,6 +402,15 @@ fn image_removal_refs(
             || (!row.untagged() && (ov == row.named() || (row.tag == "latest" && ov == row.repo)))
     };
 
+    // A repo Fletch owns now or used to own. Retired repos count because the
+    // `fletch.agent` label has already proven the image is ours — omitting
+    // them is exactly what stranded a retired provider's still-tagged images:
+    // the legacy arm skips them (they're labeled) and this arm skipped them
+    // (their repo was no longer known), so nothing could ever reclaim them.
+    let in_our_namespace = |row: &ImageRow| {
+        known_repos.contains(row.repo.as_str()) || retired_repos.contains(&row.repo.as_str())
+    };
+
     let mut seen = HashSet::new();
     let mut refs = Vec::new();
     let mut push = |row: &ImageRow| {
@@ -320,7 +421,7 @@ fn image_removal_refs(
     };
 
     for row in labeled {
-        if !row.untagged() && !known_repos.contains(row.repo.as_str()) {
+        if !row.untagged() && !in_our_namespace(row) {
             continue; // labeled but re-tagged under a user name: never touch
         }
         if !row.untagged() && !is_content_addressed_tag(&row.tag) {
@@ -374,6 +475,25 @@ const LEGACY_TAGS: &[&str] = &[
     "fletch-agent-cursor:b84044879c26", // cursor, #369 after it (b77d973..3870598)
 ];
 
+/// Every image repo Fletch used to own — the closed list of namespaces that
+/// are ours by history rather than by [`DockerProvider::ALL`]. Bare repo
+/// names (`fletch-agent-x`), never `repo:tag`: unlike [`LEGACY_TAGS`] these
+/// images DO carry the `fletch.agent` label, so ownership is already proven
+/// and the GC needs no per-tag allowlist to act on them — the ordinary
+/// safety rules for labeled rows (content-addressed tag shape, current tags,
+/// the `docker_image` override) still apply unchanged.
+///
+/// **Add an entry whenever a [`DockerProvider`] variant is removed.** Without
+/// one, every still-tagged image under that repo is stranded on every user's
+/// disk forever, at ~0.5-1GB each: the labeled arm would skip it (repo no
+/// longer known) and the legacy arm would skip it (it's labeled). Only
+/// *untagged* rows survive a retirement today, since they never consult the
+/// repo at all.
+///
+/// Empty until the first retirement — this is forward-safety, not a live bug,
+/// and an empty list is behaviourally identical to not having one.
+const RETIRED_REPOS: &[&str] = &[];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +505,13 @@ mod tests {
             format!("fletch.host-pid={}", std::process::id()),
         );
         assert_eq!(agent_id_label("agent-42"), "fletch.agent-id=agent-42");
+        // What `remove_agent_containers` hands `docker ps --filter`: the same
+        // label expression, prefixed. Container names can't be used here (they
+        // carry a launch-time nonce), so this string is the only handle.
+        assert_eq!(
+            agent_id_filter("agent-42"),
+            "label=fletch.agent-id=agent-42",
+        );
     }
 
     #[test]
@@ -480,6 +607,7 @@ mod tests {
             &legacy,
             &current_tags,
             &known_repos,
+            &[],
             Some("ghcr.io/me/custom:1"),
         );
         assert_eq!(
@@ -492,22 +620,48 @@ mod tests {
         );
     }
 
-    /// The legacy allowlist stays well-formed: every entry names a repo the
-    /// current binary owns, under a content-addressed tag shape. (The hash
+    /// The legacy allowlist stays well-formed: every entry names a repo Fletch
+    /// owns — currently or historically ([`RETIRED_REPOS`], which the legacy
+    /// listing also covers) — under a content-addressed tag shape. (The hash
     /// values themselves are frozen history — recomputed from the embedded
     /// constants at the commits named on each entry.)
     #[test]
     fn legacy_tags_are_fletch_shaped() {
-        let known_repos: HashSet<&'static str> = DockerProvider::ALL
+        let owned: HashSet<&'static str> = DockerProvider::ALL
             .iter()
             .map(|p| image::image_repo(*p))
+            .chain(RETIRED_REPOS.iter().copied())
             .collect();
         for entry in LEGACY_TAGS {
             let (repo, tag) = entry
                 .split_once(':')
                 .expect("legacy entry must be repo:tag");
-            assert!(known_repos.contains(repo), "unknown legacy repo: {repo}");
+            assert!(owned.contains(repo), "unknown legacy repo: {repo}");
             assert!(is_content_addressed_tag(tag), "malformed legacy tag: {tag}");
+        }
+    }
+
+    /// [`RETIRED_REPOS`] holds bare repo names, not `repo:tag` — it widens the
+    /// namespace the labeled arm trusts, so a stray tag would silently match
+    /// nothing (a `docker images` repo is compared whole). Entries must also
+    /// be genuinely retired: a repo a live provider still owns belongs in
+    /// [`DockerProvider::ALL`]'s derivation, not here.
+    #[test]
+    fn retired_repos_are_bare_fletch_repo_names() {
+        let known_repos: HashSet<&'static str> = DockerProvider::ALL
+            .iter()
+            .map(|p| image::image_repo(*p))
+            .collect();
+        for repo in RETIRED_REPOS {
+            assert!(!repo.contains(':'), "retired entry must be a repo: {repo}");
+            assert!(
+                repo.starts_with("fletch-agent"),
+                "retired repo isn't a fletch namespace: {repo}",
+            );
+            assert!(
+                !known_repos.contains(repo),
+                "still-live repo listed as retired: {repo}",
+            );
         }
     }
 
@@ -546,12 +700,13 @@ mod tests {
             &[],
             &current_tags,
             &known_repos,
+            &[],
             Some("fletch-agent:aaaaaaaaaaaa"),
         );
         assert_eq!(refs, vec!["fletch-agent:bbbbbbbbbbbb".to_string()]);
 
         // Id override protects by id.
-        let refs = image_removal_refs(&labeled, &[], &current_tags, &known_repos, Some("bbb"));
+        let refs = image_removal_refs(&labeled, &[], &current_tags, &known_repos, &[], Some("bbb"));
         assert_eq!(refs, vec!["fletch-agent:aaaaaaaaaaaa".to_string()]);
 
         // A bare-repo override reads as `:latest` — and a `:latest` row in our
@@ -560,17 +715,66 @@ mod tests {
         let with_latest = vec![row("lll", "fletch-agent", "latest")];
         for ov in [Some("fletch-agent"), None] {
             assert!(
-                image_removal_refs(&with_latest, &[], &current_tags, &known_repos, ov).is_empty()
+                image_removal_refs(&with_latest, &[], &current_tags, &known_repos, &[], ov)
+                    .is_empty()
             );
         }
 
         // Blank override protects nothing (same as None).
-        let refs = image_removal_refs(&labeled, &[], &current_tags, &known_repos, Some("  "));
+        let refs = image_removal_refs(&labeled, &[], &current_tags, &known_repos, &[], Some("  "));
         assert_eq!(refs.len(), 2);
 
         // Overlapping listings dedupe to one removal ref.
-        let refs = image_removal_refs(&labeled, &labeled, &current_tags, &known_repos, None);
+        let refs = image_removal_refs(&labeled, &labeled, &current_tags, &known_repos, &[], None);
         assert_eq!(refs.len(), 2);
+    }
+
+    /// Retiring a provider must not strand its images. A labeled row under a
+    /// retired repo is reclaimable, but only on the same terms as a live one:
+    /// the content-addressed tag shape and the override still fence it, and a
+    /// repo that is neither live nor retired is still untouchable.
+    #[test]
+    fn image_gc_reclaims_retired_provider_repos() {
+        let current_tags: HashSet<String> = ["fletch-agent:cafe00000000".to_string()].into();
+        let known_repos: HashSet<&'static str> = ["fletch-agent"].into();
+        let retired: &[&str] = &["fletch-agent-pi"];
+
+        let labeled = vec![
+            // The stranding case: labeled, our old repo, our tag shape.
+            row("aaa", "fletch-agent-pi", "abc123def456"),
+            // Human-written tag in the retired repo: retirement is not a
+            // licence to delete a tag a human wrote.
+            row("bbb", "fletch-agent-pi", "backup"),
+            // Never ours: not a live repo, not a retired one.
+            row("ccc", "someones-image", "0dab1e000000"),
+            // Retired repo, but it's the user's `docker_image` override.
+            row("ddd", "fletch-agent-pi", "0dab1e000000"),
+            // Live repo, current tag: unaffected by any of this.
+            row("eee", "fletch-agent", "cafe00000000"),
+        ];
+
+        let refs = image_removal_refs(
+            &labeled,
+            &[],
+            &current_tags,
+            &known_repos,
+            retired,
+            Some("fletch-agent-pi:0dab1e000000"),
+        );
+        assert_eq!(refs, vec!["fletch-agent-pi:abc123def456".to_string()]);
+
+        // The shipped list is empty, and an empty list is a strict no-op:
+        // every one of those rows is now outside our namespace but for the
+        // live-repo one, which is the current tag.
+        assert!(image_removal_refs(
+            &labeled,
+            &[],
+            &current_tags,
+            &known_repos,
+            &[],
+            Some("fletch-agent-pi:0dab1e000000"),
+        )
+        .is_empty());
     }
 
     /// Integration: a labeled image under a Fletch repo with a non-current tag
