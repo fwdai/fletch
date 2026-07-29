@@ -92,17 +92,26 @@ pub(crate) fn branch_prs_query(inner_fields: &str) -> String {
 /// `source_repo` (same origin) when the checkout is broken or gone.
 /// `Ok(None)` when the slug or the PR can't be resolved, or while a
 /// rate-limit backoff is active.
-pub(crate) async fn pr_node_by_number(
+/// The PR node for `number`, plus the connected account's login from the SAME
+/// response.
+///
+/// `viewer` is a single node, not a connection, so selecting it costs nothing on
+/// top of the PR read — which is the point: the alternative is `auth_status()`,
+/// a second round trip, on a read that already runs on a timer. Callers that
+/// need to know "is this comment ours?" get the answer consistent with the data
+/// it applies to, rather than from a separately-cached login.
+pub(crate) async fn pr_node_and_viewer(
     checkout: &Path,
     source_repo: Option<&Path>,
     number: u32,
     inner_fields: &str,
-) -> Result<Option<Value>> {
+) -> Result<Option<(Value, Option<String>)>> {
     let Some((owner, repo)) = resolve_slug(checkout, source_repo).await else {
         return Ok(None);
     };
     let query = format!(
         r#"query($owner:String!,$repo:String!,$number:Int!){{
+  viewer{{ login }}
   repository(owner:$owner,name:$repo){{ pullRequest(number:$number){{ state {inner_fields} }} }}
   {RATE_LIMIT_PROBE}
 }}"#
@@ -116,7 +125,11 @@ pub(crate) async fn pr_node_by_number(
         return Ok(None);
     };
     let node = &data["repository"]["pullRequest"];
-    Ok((!node.is_null()).then(|| node.clone()))
+    if node.is_null() {
+        return Ok(None);
+    }
+    let login = data["viewer"]["login"].as_str().map(str::to_string);
+    Ok(Some((node.clone(), login)))
 }
 
 /// The PR a branch "belongs to": the newest open PR, else the newest PR of

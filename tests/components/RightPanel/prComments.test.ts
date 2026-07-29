@@ -3,6 +3,7 @@ import type { PrComment } from "@/api";
 import { commentLocation, formatCommentForChat } from "@/components/RightPanel/prComments";
 
 const base: PrComment = {
+  id: "PRRT_1",
   author: "x",
   is_bot: false,
   body: "Body text",
@@ -10,6 +11,7 @@ const base: PrComment = {
   line: 42,
   url: "https://github.com/o/r/pull/1#discussion_r1",
   replies: 0,
+  we_replied_last: false,
 };
 
 describe("commentLocation", () => {

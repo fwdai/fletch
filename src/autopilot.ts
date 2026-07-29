@@ -51,6 +51,7 @@ export const AUTOPILOT_RUNGS: readonly DelegationKind[] = [
   "fix-checks",
   "resolve",
   "update-branch",
+  "resolve-comments",
 ];
 
 /** Cycles one rung gets on a checkout before autopilot gives up.
@@ -63,6 +64,9 @@ export const RUNG_BUDGET: Partial<Record<DelegationKind, number>> = {
   "fix-checks": 3,
   resolve: 2,
   "update-branch": 2,
+  // Two. Each cycle posts real replies to a real conversation, so a loop that
+  // isn't converging is not just wasted tokens — it's noise in someone's inbox.
+  "resolve-comments": 2,
 };
 
 /** How a rung's cycle is judged.
@@ -82,6 +86,10 @@ export const RUNG_EVIDENCE: Partial<Record<DelegationKind, "verify" | "state">> 
   "fix-checks": "verify",
   resolve: "state",
   "update-branch": "state",
+  // Judged by the threads, not the tests. A comment round can legitimately change
+  // no code at all (answering a question, pushing back), so a test result says
+  // nothing about whether it succeeded.
+  "resolve-comments": "state",
 };
 
 /** How long to wait for evidence once the agent's turn ends. Generous: a CI run
@@ -111,6 +119,11 @@ export type StuckReason =
   | "no-progress"
   /** The ladder wants something autopilot isn't allowed to do. */
   | "needs-human"
+  /** The agent pushed back on a review comment and left the thread open. Not a
+   *  failure — a disagreement, which only a person can settle. Distinct from
+   *  `needs-human` because the next step is reading a specific thread, not
+   *  looking at the PR generally. */
+  | "disputed-review"
   /** Acting would have swallowed the user's uncommitted work. */
   | "dirty-tree"
   /** No evidence arrived within `EVIDENCE_TIMEOUT_MS`. */
@@ -153,7 +166,7 @@ export function newEnrollment(): AutopilotState {
  *  three files made real progress, and without the paths that would look
  *  identical to an attempt that did nothing. Both lists are sorted so a reordered
  *  report isn't mistaken for a change. */
-export function stateSignature({ git, checks }: ReadinessInput): string {
+export function stateSignature({ git, checks, comments }: ReadinessInput): string {
   const sha = git?.head_sha ?? "no-head";
   const failing = [...(checks?.required_failing ?? [])].sort().join(",");
   const conflicted = (git?.files ?? [])
@@ -161,7 +174,16 @@ export function stateSignature({ git, checks }: ReadinessInput): string {
     .map((f) => f.path)
     .sort()
     .join(",");
-  return `${sha}|${failing}|${conflicted}`;
+  // Thread ids for the same reason as conflicted paths: a comment round often
+  // changes no code, so without them a cycle that resolved three of five threads
+  // would be indistinguishable from one that did nothing. The `we_replied_last`
+  // flag rides along, so a thread turning into a push-back registers as progress
+  // too — it moved from "needs us" to "waiting on them".
+  const threads = (comments?.unresolved ?? [])
+    .map((t) => `${t.id}${t.we_replied_last ? "!" : ""}`)
+    .sort()
+    .join(",");
+  return `${sha}|${failing}|${conflicted}|${threads}`;
 }
 
 /** Unstaged, non-conflicted edits in the working copy.
@@ -283,7 +305,13 @@ export function autopilotStep(input: AutopilotInput): AutopilotEffect {
       // loop convinces itself there's work when there isn't.
       return { do: "wait", why: "gate-settling" };
     case "escalate":
-      return { do: "escalate", reason: "needs-human", rung: null };
+      return {
+        do: "escalate",
+        // A push-back is its own outcome: the agent did the work and disagreed,
+        // so point the user at the argument rather than at the PR in general.
+        reason: rung.blocker.kind === "review-disputed" ? "disputed-review" : "needs-human",
+        rung: null,
+      };
     default:
       // merge / ready / landed. Autopilot's job here is done; merging is a
       // decision, not a remediation, and deliberately not autopilot's to make.

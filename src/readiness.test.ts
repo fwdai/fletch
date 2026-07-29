@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { GitState, PrChecks, PrComments, PrState } from "@/api";
+import type { GitState, PrChecks, PrComment, PrComments, PrState } from "@/api";
 import { detectBlockers, type LadderContext, nextRung, type ReadinessInput } from "@/readiness";
 
 function git(over: Partial<GitState> = {}): GitState {
@@ -54,8 +54,9 @@ function checks(over: Partial<PrChecks> = {}): PrChecks {
     ...over,
   };
 }
-const comments = (n: number): PrComments => ({
+const comments = (n: number, over: Partial<PrComment> = {}): PrComments => ({
   unresolved: Array.from({ length: n }, (_, i) => ({
+    id: `t${i}`,
     author: "bot",
     is_bot: true,
     body: `c${i}`,
@@ -63,6 +64,8 @@ const comments = (n: number): PrComments => ({
     line: null,
     url: "https://x",
     replies: 0,
+    we_replied_last: false,
+    ...over,
   })),
 });
 
@@ -252,12 +255,38 @@ describe("nextRung ordering", () => {
     });
   });
 
-  it("escalates unresolved review threads rather than calling the PR ready", () => {
-    // No remediation kind exists for comments yet. Escalating is the honest
-    // answer; reporting "merge" would hide real feedback.
+  it("hands unresolved review threads to the agent, with the count", () => {
     expect(
-      rung({ pr: pr(), checks: checks({ merge_state: "clean" }), comments: comments(1) }),
-    ).toMatchObject({ do: "escalate", blocker: { kind: "review-unaddressed", count: 1 } });
+      rung({ pr: pr(), checks: checks({ merge_state: "clean" }), comments: comments(2) }),
+    ).toMatchObject({
+      do: "delegate",
+      kind: "resolve-comments",
+      params: { count: "2" },
+      blocker: { kind: "review-unaddressed", count: 2 },
+    });
+  });
+
+  it("escalates a thread it already pushed back on instead of re-arguing it", () => {
+    // We had the last word and left it open on purpose. There is no remediation
+    // for a disagreement — a person settles it.
+    expect(
+      rung({
+        pr: pr(),
+        checks: checks({ merge_state: "clean" }),
+        comments: comments(1, { we_replied_last: true }),
+      }),
+    ).toMatchObject({ do: "escalate", blocker: { kind: "review-disputed", count: 1 } });
+  });
+
+  it("works the actionable threads first when some are disputed and some aren't", () => {
+    // A mix must not stall on the disagreement: fix what can be fixed, and the
+    // disputed one surfaces once nothing else is left.
+    const mixed: PrComments = {
+      unresolved: [...comments(1, { we_replied_last: true }).unresolved, ...comments(1).unresolved],
+    };
+    expect(
+      rung({ pr: pr(), checks: checks({ merge_state: "clean" }), comments: mixed }),
+    ).toMatchObject({ do: "delegate", kind: "resolve-comments", params: { count: "1" } });
   });
 
   it("merges only on an open gate, and waits while the gate is still computing", () => {

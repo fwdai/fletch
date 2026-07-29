@@ -156,6 +156,10 @@ pub struct PrChecks {
 /// coding agent.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PrComment {
+    /// The review thread's node id — what `resolveReviewThread` /
+    /// `addPullRequestReviewThreadReply` address, so an agent can act on the
+    /// thread and not merely read it.
+    pub id: String,
     /// Comment author's login.
     pub author: String,
     /// True when the author is a GitHub App / bot (`__typename == "Bot"`).
@@ -171,6 +175,11 @@ pub struct PrComment {
     pub url: String,
     /// Replies after the root comment (thread length − 1, clamped at 0).
     pub replies: u32,
+    /// The connected account posted the last comment on this still-open thread —
+    /// i.e. we've had our say and are waiting on the human. Distinguishes a
+    /// deliberate push-back (leave open, don't re-argue) from a thread that
+    /// genuinely needs attention, without keeping any local state.
+    pub we_replied_last: bool,
 }
 
 /// Unresolved review threads for a PR. Heavier than `pr_view` — polled on the

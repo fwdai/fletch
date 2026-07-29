@@ -228,7 +228,12 @@ function collectPrSignals(agentId: string, input: QueueInput): PrSignal[] {
       repo: key === agentId ? "" : key.slice(prefix.length),
       pr,
       checks: input.prChecks[key] ?? null,
-      unresolved: (input.prComments[key] ?? null)?.unresolved.length ?? 0,
+      // Threads where WE had the last word are waiting on a person, not on
+      // anyone doing more work — counting them would leave a card sitting under
+      // an "unresolved comments" chip that nobody can clear by acting.
+      unresolved: ((input.prComments[key] ?? null)?.unresolved ?? []).filter(
+        (t) => !t.we_replied_last,
+      ).length,
     });
   }
   return out;

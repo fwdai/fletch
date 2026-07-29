@@ -93,13 +93,15 @@ export function useGitSync() {
   // reads are 304s GitHub doesn't bill, so there's nothing to back off from.
   useTrackedRepoPoll(fetchPrLive, 5000);
 
-  // Unresolved review threads — the one panel read still costing GraphQL points,
-  // so it gets the gentlest cadence, and the only one still scoped to the focused
-  // agent: no delegation kind resolves off comment threads yet, so widening this
-  // would spend points for nothing. Not filtered by PR state here: the backend
-  // returns nothing for a repo whose PR isn't open, and keeping that rule in one
-  // place beats mirroring it in the poller.
-  useFocusedRepoPoll(fetchPrThreads, 30000);
+  // Unresolved review threads — the one read still costing GraphQL points (thread
+  // resolution has no REST equivalent), so it keeps the gentlest cadence and the
+  // narrowest scope: the focused agent's repos, plus any checkout autopilot is
+  // enrolled on, because the comments rung can't act on threads it can't see.
+  // Deliberately NOT fleet-wide: that would bill points for every agent whether
+  // anything was going to use them or not. Not filtered by PR state either — the
+  // backend returns nothing for a repo whose PR isn't open, and keeping that rule
+  // in one place beats mirroring it in the poller.
+  useCommentPoll(fetchPrThreads, 30000);
 }
 
 /** The checkouts needing detail reads this tick, as `checkoutKey`s: every repo of
@@ -110,17 +112,57 @@ export function useGitSync() {
  *  closure. */
 function useTrackedCheckoutKeys(): string[] {
   return useAppStore(
-    useShallow((s) => {
-      const keys = new Set<string>(Object.keys(s.delegations));
-      const agent = s.workspace?.agents.find((a) => a.id === s.selectedAgentId);
-      if (agent) {
-        for (const [i, repo] of agent.repos.entries()) {
-          keys.add(checkoutKey(agent.id, i === 0 ? undefined : repo.subdir));
-        }
-      }
-      return [...keys].sort();
-    }),
+    useShallow((s) => [...withFocusedRepos(s, Object.keys(s.delegations))].sort()),
   );
+}
+
+/** The focused agent's repo keys unioned into `keys`. Shared by the checkout
+ *  pollers so "focused plus X" is expressed once. */
+function withFocusedRepos(
+  s: {
+    workspace: { agents: { id: string; repos: { subdir: string }[] }[] } | null;
+    selectedAgentId: string | null;
+  },
+  keys: Iterable<string>,
+): Set<string> {
+  const out = new Set<string>(keys);
+  const agent = s.workspace?.agents.find((a) => a.id === s.selectedAgentId);
+  if (agent) {
+    for (const [i, repo] of agent.repos.entries()) {
+      out.add(checkoutKey(agent.id, i === 0 ? undefined : repo.subdir));
+    }
+  }
+  return out;
+}
+
+/** Run `fetch` for the focused agent's repos plus every autopilot-enrolled
+ *  checkout — the scope for reads too expensive to run fleet-wide but useless if
+ *  the thing that acts on them can't see them. */
+function useCommentPoll(
+  fetch: (agentId: string, subdir?: string) => Promise<void>,
+  intervalMs: number,
+) {
+  const keys = useAppStore(
+    useShallow((s) =>
+      [
+        ...withFocusedRepos(
+          s,
+          Object.entries(s.autopilot)
+            .filter(([, a]) => a.enrolled)
+            .map(([key]) => key),
+        ),
+      ].sort(),
+    ),
+  );
+  const tick = useCallback(async () => {
+    await Promise.all(
+      keys.map((key) => {
+        const { agentId, subdir } = splitCheckoutKey(key);
+        return fetch(agentId, subdir);
+      }),
+    );
+  }, [keys, fetch]);
+  usePoll(tick, intervalMs, [tick]);
 }
 
 /** Run `fetch` for every tracked checkout, on `intervalMs`.
@@ -143,25 +185,5 @@ function useTrackedRepoPoll(
       }),
     );
   }, [keys, fetch]);
-  usePoll(tick, intervalMs, [tick]);
-}
-
-/** Run `fetch` for every repo of the focused agent only — for reads whose cost
- *  isn't worth paying on a checkout nobody is looking at. */
-function useFocusedRepoPoll(
-  fetch: (agentId: string, subdir?: string) => Promise<void>,
-  intervalMs: number,
-) {
-  const agentId = useAppStore((s) => s.selectedAgentId);
-  const subdirs = useAppStore(
-    useShallow((s) => {
-      const agent = s.workspace?.agents.find((a) => a.id === s.selectedAgentId);
-      return agent?.repos.map((r, i) => (i === 0 ? undefined : r.subdir)) ?? [];
-    }),
-  );
-  const tick = useCallback(async () => {
-    if (!agentId) return;
-    await Promise.all(subdirs.map((subdir) => fetch(agentId, subdir)));
-  }, [agentId, subdirs, fetch]);
   usePoll(tick, intervalMs, [tick]);
 }

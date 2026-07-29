@@ -51,3 +51,19 @@ The pull request can't merge cleanly because `base` has advanced. First refresh 
 ### fix-checks — params: `failing` (check names)
 
 CI checks are failing on this branch's pull request. Investigate the failures, fix them, commit the fix with plain git (`git add -A` && `git commit`), and push by calling the `git_push` op so the checks re-run.
+
+### resolve-comments — params: `count`
+
+Unresolved review threads on this branch's pull request need addressing. Read them with the `pr_threads` op (`{"op":"pr_threads"}`), which returns each open thread's `id`, author, `is_bot`, body, and file anchor.
+
+Judge each thread on its merits and take exactly one of three outcomes:
+
+1. **Valid — fix it.** Make the change, then `reply_thread` saying what you changed, then `resolve_thread`.
+2. **A question — answer it.** `reply_thread` with the answer, then `resolve_thread`. No code change needed.
+3. **Wrong, or you disagree — push back.** `reply_thread` explaining why, and **do NOT resolve it**. Leaving it open is how a human gets to settle the disagreement; resolving would close an argument you don't get to end alone.
+
+Resolving a thread only ever claims it is discharged. Never resolve one you disagreed with, and never resolve one you did not reply to.
+
+Skip any thread where you already had the last word — you have said your piece and are waiting on a person. If a human has replied since, engage with what they said.
+
+If your fixes changed any files, commit and push them (`git add`-ing only the files you touched, then the `git_push` op) so the pull request carries the changes your replies describe.
