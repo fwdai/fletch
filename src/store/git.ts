@@ -8,19 +8,15 @@ import {
   type ShortStats,
   type VerificationReport,
 } from "@/api";
-import {
-  type GitDelegation,
-  type GitDelegationKind,
-  gitActionProvesKind,
-} from "@/components/RightPanel/delegation";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
+import { actionProvesKind, type Delegation, type DelegationKind } from "@/delegation";
 import { setSetting } from "@/storage/settings";
 import { acceptPrWrite, issuePrWrite, stampPrWrite } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
 
 export interface GitSlice {
   /** Full git state — branch, ahead/behind, file list, totals. Keyed by
-   *  `gitKey(agentId, subdir?)` (store/git.ts): the plain agent_id addresses
+   *  `checkoutKey(agentId, subdir?)` (store/git.ts): the plain agent_id addresses
    *  the primary repo, `agentId::subdir` a secondary repo of a multi-repo
    *  agent. Only populated for the focused agent (by `gitSync`, for every one of
    *  its repos). For sidebar shortstats / right-rail badges of other agents,
@@ -32,26 +28,36 @@ export interface GitSlice {
    *  entry isn't clobbered by a slower bulk reply. */
   gitShortstats: Record<string, ShortStats>;
   /** Advisory per-checkout git metadata (base staleness + changed-file paths),
-   *  keyed by `gitKey(agentId, subdir?)`. Fed by the app-wide `getAllGitMeta`
+   *  keyed by `checkoutKey(agentId, subdir?)`. Fed by the app-wide `getAllGitMeta`
    *  poll — separate from `gitShortstats` (badge numbers) so each evolves on its
    *  own cadence. Drives the "base moved" staleness chips and overlap hints. */
   gitMeta: Record<string, GitMeta>;
-  /** PR state, keyed by `gitKey(agentId, subdir?)` — plain agent_id for the
+  /** PR state, keyed by `checkoutKey(agentId, subdir?)` — plain agent_id for the
    *  primary repo (updated by the pr:state_changed watcher event + bulk
    *  polls), `agentId::subdir` for a secondary repo. */
   prStates: Record<string, PrState | null>;
-  /** Rich PR merge-gate + checks, keyed by `gitKey(agentId, subdir?)`. Absent
+  /** Rich PR merge-gate + checks, keyed by `checkoutKey(agentId, subdir?)`. Absent
    *  key = not yet fetched; `null` = confirmed unavailable (no PR / gh
    *  failure). */
   prChecks: Record<string, PrChecks | null>;
-  /** Unresolved PR review comments, keyed by `gitKey(agentId, subdir?)`.
+  /** Unresolved PR review comments, keyed by `checkoutKey(agentId, subdir?)`.
    *  Absent = not yet fetched; `null` = confirmed unavailable (no PR / gh
    *  failure). */
   prComments: Record<string, PrComments | null>;
-  /** Active agent-delegated git action per agent (absent = none). Set when a
-   *  panel action hands control to the agent; cleared by the panel when the
-   *  watched git/PR transition lands or the agent gives up. */
-  gitDelegations: Record<string, GitDelegation>;
+  /** In-flight delegation per checkout, keyed by `checkoutKey(agentId, subdir?)`
+   *  (absent = none). Set when an action hands control to the agent; cleared by
+   *  `useDelegationSync` when the watched transition lands or the agent gives up.
+   *
+   *  Keyed per *checkout*, not per agent, because that is the scope a delegation
+   *  actually targets: a multi-repo agent can hold one in each of its checkouts,
+   *  and each is judged against its own repo's git/PR state. */
+  delegations: Record<string, Delegation>;
+  /** Transient outcome text for a settled delegation, keyed by checkout — the
+   *  "Conflicts resolved" / "Agent finished" confirmation. Written by
+   *  `useDelegationSync` (which runs app-wide, with no panel of its own) and
+   *  rendered by the matching Git panel section if one is mounted; self-expires,
+   *  so an outcome nobody was looking at simply lapses. */
+  delegationNotices: Record<string, string>;
   /** Latest turn-end verification report per agent (keyed by agent_id), from
    *  the opt-in `verify:report` event. Feeds the Mission Control card's tests
    *  chip. Absent = never verified (no chip). */
@@ -62,7 +68,7 @@ export interface GitSlice {
 
   /** Fetch full git state for one agent (used by the focused panel's poll).
    *  `subdir` targets a secondary repo of a multi-repo agent (stored under
-   *  `gitKey(agentId, subdir)`); omitted = the primary repo, plain key. */
+   *  `checkoutKey(agentId, subdir)`); omitted = the primary repo, plain key. */
   fetchGitState: (agentId: string, subdir?: string) => Promise<void>;
   /** Fetch compact shortstats for every live agent in one round-trip
    *  (used by the app-wide background poll). */
@@ -76,7 +82,7 @@ export interface GitSlice {
   refreshBaseFreshness: () => Promise<void>;
   fetchPrState: (agentId: string, subdir?: string) => Promise<void>;
   /** The app-wide sidebar sweep: PR state + CI for every repo with a known PR
-   *  across every agent, in one batched round-trip. Keyed by `gitKey`, so a
+   *  across every agent, in one batched round-trip. Keyed by `checkoutKey`, so a
    *  multi-repo agent's secondary-repo PRs land in the store too and the sidebar
    *  badge updates without opening the panel. Replaces the former separate
    *  state and checks sweeps — one query costs what either did alone, and both
@@ -92,22 +98,32 @@ export interface GitSlice {
    *  equivalent) and so does cost points — hence the gentler cadence. Driven by
    *  `gitSync`. */
   fetchPrThreads: (agentId: string, subdir?: string) => Promise<void>;
-  delegateGitAction: (
+  delegateAction: (
     agentId: string,
-    kind: GitDelegationKind,
+    kind: DelegationKind,
     prompt: string,
     /** Target checkout of a multi-repo agent; undefined = primary. */
     subdir?: string,
   ) => void;
-  markGitDelegationRunning: (agentId: string) => void;
+  /** Our turn started — arms the give-up clock. Takes a `checkoutKey`. */
+  markDelegationRunning: (key: string) => void;
   /** The agent ran a successful mutating git op `op` (backend
-   *  `agent:git-action`). Sets the causal proof only if `op` matches the
-   *  pending delegation's kind. */
-  markGitDelegationActed: (agentId: string, op: string) => void;
+   *  `agent:git-action`). Sets the causal proof on every delegation of that
+   *  agent whose kind the op belongs to.
+   *
+   *  Agent-scoped rather than checkout-scoped because the event is: the hook
+   *  reports which op ran, not which checkout ran it. That coarseness is safe —
+   *  resolution ANDs `sawGitOp` with the *per-checkout* target snapshot, so an
+   *  ack that leaks to a sibling checkout can't resolve a delegation whose own
+   *  target hasn't been reached. Making the backend event carry its checkout
+   *  would sharpen this; until then the snapshot is the real gate. */
+  markDelegationActed: (agentId: string, op: string) => void;
   /** The pre-existing turn the delegation was queued behind has settled —
-   *  drop `queued` and restart the give-up clock for our own turn. */
-  markGitDelegationDequeued: (agentId: string) => void;
-  clearGitDelegation: (agentId: string) => void;
+   *  drop `queued`, deliver the held trigger, restart the give-up clock. */
+  markDelegationDequeued: (key: string) => void;
+  clearDelegation: (key: string) => void;
+  /** Post a settled delegation's outcome for the panel to show, if mounted. */
+  noteDelegationOutcome: (key: string, text: string) => void;
   setGitCommitAction: (action: GitCommitAction) => void;
   /** Resolves to "up-to-date" | "pushed" on success, null on error. */
   pushAgent: (agentId: string, subdir?: string) => Promise<string | null>;
@@ -140,13 +156,24 @@ export interface GitSlice {
 type GitSet = Parameters<SliceCreator<GitSlice>>[0];
 type GitGet = Parameters<SliceCreator<GitSlice>>[1];
 
-/** Composite key for the per-repo git/PR maps (`gitStates`, `prStates`,
- *  `prChecks`, `prComments`). The primary repo (no `subdir`) keeps the plain
- *  agent id — the key every existing write path (background bulk polls, tauri
- *  event reducers, sidebar badges) uses — so only secondary-repo fetches get
- *  the suffixed form. */
-export function gitKey(agentId: string, subdir?: string): string {
+/** Identity of one checkout: an agent plus which of its repos. The primary repo
+ *  (no `subdir`) keeps the plain agent id — the key every existing write path
+ *  (background bulk polls, tauri event reducers, sidebar badges) uses — so only
+ *  secondary-repo fetches get the suffixed form.
+ *
+ *  Nothing about this is git-specific; it addresses "which working copy of which
+ *  agent", which is the scope every per-repo map (`gitStates`, `prStates`,
+ *  `prChecks`, `prComments`, `delegations`) is keyed by. */
+export function checkoutKey(agentId: string, subdir?: string): string {
   return subdir ? `${agentId}::${subdir}` : agentId;
+}
+
+/** Inverse of [`checkoutKey`]. Splits on the FIRST `::` so a subdir containing
+ *  the separator still round-trips — the same prefix assumption `maxBehind` and
+ *  `dropScopedEntries` already rely on. */
+export function splitCheckoutKey(key: string): { agentId: string; subdir?: string } {
+  const at = key.indexOf("::");
+  return at === -1 ? { agentId: key } : { agentId: key.slice(0, at), subdir: key.slice(at + 2) };
 }
 
 /** Max `behind` across an agent's checkouts (the `agentId` primary key plus
@@ -194,7 +221,7 @@ const fetchPrAux = async <K extends "prChecks" | "prComments">(
   fetch: (agentId: string, subdir?: string) => Promise<GitSlice[K][string]>,
   subdir?: string,
 ): Promise<void> => {
-  const mapKey = gitKey(agentId, subdir);
+  const mapKey = checkoutKey(agentId, subdir);
   const ticket = issuePrWrite();
   try {
     const value = await fetch(agentId, subdir);
@@ -214,6 +241,14 @@ const fetchPrAux = async <K extends "prChecks" | "prComments">(
 // resolve against the persisted snapshot, which is still useful offline.
 const githubReady = (get: GitGet) => get().github?.authenticated ?? false;
 
+/** How long a delegation outcome stays posted. Matches the Git panel's own
+ *  transient-notice window (`useTransientFeedback`) so the two read alike. */
+const DELEGATION_NOTICE_MS = 3500;
+
+/** Live expiry timers for `delegationNotices`, by checkout key. Module scope
+ *  because they're side-channel cleanup, not observable state. */
+const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   gitStates: {},
   gitShortstats: {},
@@ -221,7 +256,8 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   prStates: {},
   prChecks: {},
   prComments: {},
-  gitDelegations: {},
+  delegations: {},
+  delegationNotices: {},
   verificationReports: {},
   gitCommitAction: "agent-commit-pr" as GitCommitAction,
 
@@ -229,7 +265,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     try {
       const state = await api.getGitState(agentId, subdir);
       if (state) {
-        set((s) => ({ gitStates: { ...s.gitStates, [gitKey(agentId, subdir)]: state } }));
+        set((s) => ({ gitStates: { ...s.gitStates, [checkoutKey(agentId, subdir)]: state } }));
       }
     } catch {
       // non-fatal — next poll tick will retry
@@ -270,7 +306,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   },
 
   fetchPrState: async (agentId, subdir) => {
-    const mapKey = gitKey(agentId, subdir);
+    const mapKey = checkoutKey(agentId, subdir);
     const ticket = issuePrWrite();
     try {
       const state = await api.getPrState(agentId, subdir);
@@ -321,7 +357,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
 
   fetchPrLive: async (agentId, subdir) => {
     if (!githubReady(get)) return;
-    const mapKey = gitKey(agentId, subdir);
+    const mapKey = checkoutKey(agentId, subdir);
     const ticket = issuePrWrite();
     try {
       const live = await api.getPrLive(agentId, subdir);
@@ -362,19 +398,19 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     await fetchPrAux(set, agentId, "prComments", api.getPrThreads, subdir);
   },
 
-  delegateGitAction: (agentId, kind, prompt, subdir) => {
+  delegateAction: (agentId, kind, prompt, subdir) => {
     // If the agent is already running, DON'T inject the trigger mid-turn: Claude
     // coalesces a stdin message into the current turn (it wouldn't run as its
     // own turn), and the turn boundary isn't observable, so we couldn't tell our
     // turn's git ops from the in-flight turn's. Instead hold the trigger and
-    // deliver it once the agent goes idle (markGitDelegationDequeued) — then the
+    // deliver it once the agent goes idle (markDelegationDequeued) — then the
     // delegated turn runs in isolation and its git-action is unambiguously ours.
     const status = get().workspace?.agents.find((a) => a.id === agentId)?.status;
     const queued = status === "running";
     set((s) => ({
-      gitDelegations: {
-        ...s.gitDelegations,
-        [agentId]: {
+      delegations: {
+        ...s.delegations,
+        [checkoutKey(agentId, subdir)]: {
           kind,
           prompt,
           startedAt: Date.now(),
@@ -388,58 +424,78 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     if (!queued) void get().sendUserMessage(agentId, prompt);
   },
 
-  markGitDelegationRunning: (agentId) => {
+  markDelegationRunning: (key) => {
     set((s) => {
-      const d = s.gitDelegations[agentId];
+      const d = s.delegations[key];
       if (!d || d.sawRunning) return s;
-      return {
-        gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawRunning: true } },
-      };
+      return { delegations: { ...s.delegations, [key]: { ...d, sawRunning: true } } };
     });
   },
 
-  markGitDelegationActed: (agentId, op) => {
+  markDelegationActed: (agentId, op) => {
     set((s) => {
-      const d = s.gitDelegations[agentId];
-      // Ignore ops while `queued`: our trigger hasn't been delivered yet, so any
-      // git-action belongs to the turn we're waiting behind. (`delegateGitAction`
-      // defers delivery until idle, so this is reliable — by the time we drop
-      // `queued` the prior turn has ended.) Then require an op from this
-      // delegation's own playbook (kind-match), so even within our turn an
-      // unrelated mutation can't stand in. Paired with `resolved` in
-      // delegationStep, that ties success to the agent doing the requested work.
-      if (!d || d.queued || d.sawGitOp || !gitActionProvesKind(d.kind, op)) return s;
-      return {
-        gitDelegations: { ...s.gitDelegations, [agentId]: { ...d, sawGitOp: true } },
-      };
+      // Every checkout of this agent that is waiting on an op of this kind. See
+      // the interface doc for why an agent-scoped ack is sound: the per-checkout
+      // target snapshot, not this flag, is what actually resolves a delegation.
+      const next: Record<string, Delegation> = {};
+      for (const [key, d] of Object.entries(s.delegations)) {
+        const { agentId: owner } = splitCheckoutKey(key);
+        // Ignore ops while `queued`: our trigger hasn't been delivered yet, so
+        // any git-action belongs to the turn we're waiting behind.
+        // (`delegateAction` defers delivery until idle, so this is reliable — by
+        // the time we drop `queued` the prior turn has ended.) Then require an op
+        // from this delegation's own playbook (kind-match), so even within our
+        // turn an unrelated mutation can't stand in. Paired with `resolved` in
+        // delegationStep, that ties success to the agent doing the work asked.
+        if (owner !== agentId || d.queued || d.sawGitOp || !actionProvesKind(d.kind, op)) continue;
+        next[key] = { ...d, sawGitOp: true };
+      }
+      if (Object.keys(next).length === 0) return s;
+      return { delegations: { ...s.delegations, ...next } };
     });
   },
 
-  markGitDelegationDequeued: (agentId) => {
+  markDelegationDequeued: (key) => {
     // The turn we were queued behind has ended — NOW deliver the held trigger so
     // our delegated turn runs in isolation, and start the give-up clock from
     // here. Capture the prompt inside the atomic flip so only the call that
     // actually dequeues sends (no double-delivery from repeated effect ticks).
+    const { agentId } = splitCheckoutKey(key);
     let toSend: string | null = null;
     set((s) => {
-      const d = s.gitDelegations[agentId];
+      const d = s.delegations[key];
       if (!d?.queued) return s;
       toSend = d.prompt;
       return {
-        gitDelegations: {
-          ...s.gitDelegations,
-          [agentId]: { ...d, queued: false, startedAt: Date.now() },
-        },
+        delegations: { ...s.delegations, [key]: { ...d, queued: false, startedAt: Date.now() } },
       };
     });
     if (toSend !== null) void get().sendUserMessage(agentId, toSend);
   },
 
-  clearGitDelegation: (agentId) => {
+  clearDelegation: (key) => {
     set((s) => {
-      const { [agentId]: _dropped, ...rest } = s.gitDelegations;
-      return { gitDelegations: rest };
+      const { [key]: _dropped, ...rest } = s.delegations;
+      return { delegations: rest };
     });
+  },
+
+  noteDelegationOutcome: (key, text) => {
+    set((s) => ({ delegationNotices: { ...s.delegationNotices, [key]: text } }));
+    // Self-expiring: the notice is a confirmation, not state. Clearing on a timer
+    // (rather than on the next render) keeps it visible long enough to read when a
+    // panel IS mounted, and harmlessly lapses when none is.
+    clearTimeout(noticeTimers.get(key));
+    noticeTimers.set(
+      key,
+      setTimeout(() => {
+        noticeTimers.delete(key);
+        set((s) => {
+          const { [key]: _expired, ...rest } = s.delegationNotices;
+          return { delegationNotices: rest };
+        });
+      }, DELEGATION_NOTICE_MS),
+    );
   },
 
   setGitCommitAction: (action) => {
@@ -476,8 +532,8 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       const pr = await api.createPr(agentId, "", "", subdir);
       // Authoritative: we just created this PR. Stamp it so a poll that was
       // already in flight — and saw no PR at all — can't erase the card.
-      stampPrWrite("prStates", gitKey(agentId, subdir));
-      set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: pr } }));
+      stampPrWrite("prStates", checkoutKey(agentId, subdir));
+      set((s) => ({ prStates: { ...s.prStates, [checkoutKey(agentId, subdir)]: pr } }));
       await get().fetchGitState(agentId, subdir);
       return true;
     } catch (e) {
@@ -507,8 +563,8 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     try {
       const pr = await api.createPr(agentId, title, body, subdir);
       // Authoritative (see commitAndOpenPr): outranks any in-flight poll.
-      stampPrWrite("prStates", gitKey(agentId, subdir));
-      set((s) => ({ prStates: { ...s.prStates, [gitKey(agentId, subdir)]: pr } }));
+      stampPrWrite("prStates", checkoutKey(agentId, subdir));
+      set((s) => ({ prStates: { ...s.prStates, [checkoutKey(agentId, subdir)]: pr } }));
       return pr;
     } catch (e) {
       set({ lastError: String(e) });

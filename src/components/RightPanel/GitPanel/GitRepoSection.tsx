@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import type { AgentRecord, TrackedRepo } from "@/api";
-import { delegationLabel } from "@/components/RightPanel/delegation";
+import { delegationLabel } from "@/delegation";
 import { useAppStore } from "@/store";
+import { checkoutKey } from "@/store/git";
 import { ActionBar } from "./ActionBar";
 import { ChangesList } from "./ChangesList";
 import { CommitComposer } from "./CommitComposer";
@@ -9,7 +10,6 @@ import { ClosedPRCard, ConflictCard, PRCard } from "./cards";
 import { EmptyState } from "./EmptyState";
 import { useActionBarModel } from "./hooks/useActionBarModel";
 import { useCommitDraft } from "./hooks/useCommitDraft";
-import { useDelegationLifecycle } from "./hooks/useDelegationLifecycle";
 import { useGitActions } from "./hooks/useGitActions";
 import { useGitPanelData } from "./hooks/useGitPanelData";
 import { useTransientFeedback } from "./hooks/useTransientFeedback";
@@ -20,13 +20,15 @@ import { StatusHeader } from "./StatusHeader";
  *  the whole panel. `subdir` is undefined for the agent's primary repo (index
  *  0) — that section reads/writes the plain agent-keyed store entries that
  *  live events and bulk polls update — and the checkout's directory name for
- *  secondaries, which read/write under `gitKey(agentId, subdir)`.
+ *  secondaries, which read/write under `checkoutKey(agentId, subdir)`.
  *
  *  The component is a thin orchestrator: live reads + polling live in
  *  `useGitPanelData`, the commit draft in `useCommitDraft`, busy/notice in
- *  `useTransientFeedback`, the agent-handoff lifecycle in
- *  `useDelegationLifecycle`, the dispatch table in `useGitActions`, and the
- *  split-button model in `useActionBarModel`. */
+ *  `useTransientFeedback`, the dispatch table in `useGitActions`, and the
+ *  split-button model in `useActionBarModel`. The agent-handoff lifecycle is
+ *  NOT here — it belongs to `useDelegationSync` at the app root, so a
+ *  delegation completes whether or not this section is on screen; the section
+ *  only reads the delegation to render it. */
 export function GitRepoSection({
   agent,
   repo,
@@ -46,26 +48,19 @@ export function GitRepoSection({
     panelState,
     fetchGitState,
     fetchPrState,
-    fetchPrChecks,
   } = useGitPanelData(agent.id, repo, subdir);
 
   const { busy, runBusy, notice, showNotice } = useTransientFeedback(agent.id);
   const { override, msg, setMsg, commitRef, customActive, openOverride, revertOverride } =
     useCommitDraft(agent.id, panelState);
 
-  // Delegations are agent-keyed but repo-scoped: the section whose scope
-  // matches the delegation's target watches its lifecycle against THIS repo's
-  // state; other sections only read it for display.
-  const delegation = useDelegationLifecycle({
-    agentId: agent.id,
-    agentStatus: agent.status,
-    gitState,
-    prState,
-    checks,
-    showNotice,
-    fetchPrChecks,
-    subdir,
-  });
+  // This checkout's in-flight delegation, for display only — the lifecycle that
+  // clears it runs at the app root. Its settled outcome arrives the same way:
+  // `useDelegationSync` posts it to the store (it has no panel to write to), and
+  // we merge it with this section's own action notices.
+  const key = checkoutKey(agent.id, subdir);
+  const delegation = useAppStore((s) => s.delegations[key]);
+  const delegationNotice = useAppStore((s) => s.delegationNotices[key]);
 
   // Selected file in the changes list — kept valid across polls (fall back to
   // the first file when the selection disappears).
@@ -199,7 +194,7 @@ export function GitRepoSection({
           statusExtra={primary.statusExtra}
           busy={busy}
           delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
-          notice={notice}
+          notice={notice ?? delegationNotice ?? null}
           panelState={panelState}
           pushedLink={pushedLink}
           aheadCount={aheadCount}

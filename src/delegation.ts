@@ -1,13 +1,25 @@
 import type { AgentStatus, GitState, PrChecks, PrState } from "@/api";
 
-/** One agent-delegated git action: the user clicked a panel action whose
- *  judgment part (message, description, conflict edits) belongs to the
- *  coding agent. The agent runs local mutations (commit, merge, conflict
- *  resolution) as plain in-sandbox git, and the credentialed remote actions
- *  through the app's file RPC (`open_pr` / `git_push` / `git_fetch`). The
- *  `agent:git-action` signal that confirms a local mutation arrives via the
- *  clone's `post-commit` / `post-merge` hooks (see `gitActionProvesKind`). */
-export type GitDelegationKind =
+// ── Delegation: handing one unit of work to the coding agent ───────────────
+// A delegation is "the agent takes it from here" — the judgment part of an
+// action (a commit message, a PR description, conflict edits, a test fix)
+// belongs to the agent, and the app watches for the transition that proves it
+// landed. The mechanism is deliberately NOT git-specific: what varies per kind
+// is how the work is detected and remediated, not the lifecycle around it.
+//
+// Today every kind happens to be a git/GitHub action, and the `*_git_*` op
+// names below are honestly git-shaped. What is *not* git-shaped — the
+// dispatch/turn/verdict lifecycle, the causality proof, the give-up clock — is
+// named for the problem instead, so a future non-git remediation slots in
+// without renaming the machinery around it.
+
+/** One unit of work handed to the coding agent. The agent runs local mutations
+ *  (commit, merge, conflict resolution) as plain in-sandbox git, and the
+ *  credentialed remote actions through the app's file RPC (`open_pr` /
+ *  `git_push` / `git_fetch`). The `agent:git-action` signal that confirms a
+ *  local mutation arrives via the clone's `post-commit` / `post-merge` hooks
+ *  (see `actionProvesKind`). */
+export type DelegationKind =
   | "commit"
   | "commit-push"
   | "commit-pr"
@@ -17,8 +29,8 @@ export type GitDelegationKind =
   | "update-branch"
   | "fix-checks";
 
-export interface GitDelegation {
-  kind: GitDelegationKind;
+export interface Delegation {
+  kind: DelegationKind;
   /** The `[app-action]` trigger to deliver to the agent. Held here (not sent
    *  immediately) when the delegation is `queued`, so it can be delivered once
    *  the agent is idle — see `queued`. */
@@ -32,7 +44,7 @@ export interface GitDelegation {
   sawRunning: boolean;
   /** The agent ran a successful git op matching THIS delegation's kind during
    *  our turn — the backend's ground-truth `agent:git-action` signal, filtered
-   *  by `gitActionProvesKind`. This is the causal link a snapshot can't provide:
+   *  by `actionProvesKind`. This is the causal link a snapshot can't provide:
    *  it distinguishes a target the agent reached from one already satisfied by a
    *  manual action or pre-existing state. Ignored while `queued` (those ops
    *  belong to the turn we're waiting behind), which is sound because we don't
@@ -47,9 +59,11 @@ export interface GitDelegation {
   queued: boolean;
   /** Which checkout of a multi-repo agent the delegation targets: a
    *  `TrackedRepo.subdir` for a secondary repo, undefined for the primary.
-   *  The matching panel section watches the lifecycle against ITS repo's
-   *  git/PR state; the trigger message carries the same scope as `repo="…"`
-   *  so the agent works in that sibling checkout. */
+   *  Delegations are stored under `checkoutKey(agentId, subdir)`, so this is
+   *  the same scope the store key encodes — kept on the record so the trigger
+   *  message can carry it as `repo="…"` and the agent works in that sibling
+   *  checkout. The lifecycle is evaluated against THAT checkout's git/PR
+   *  state (see `delegationResolved`). */
   subdir?: string;
 }
 
@@ -69,7 +83,7 @@ export const DELEGATION_GIVE_UP_GRACE_MS = 15_000;
 export type DelegationStep = "resolve" | "wait" | "dequeue" | "mark-running" | "give-up";
 
 export function delegationStep(
-  delegation: GitDelegation,
+  delegation: Delegation,
   status: AgentStatus,
   resolved: boolean,
   now: number,
@@ -99,7 +113,7 @@ export function delegationStep(
  *  belong to the delegation's own playbook. Resolution still ANDs this with the
  *  target snapshot, so listing every op a kind touches (not just the final one)
  *  is safe — the snapshot gates the actual completion. */
-export function gitActionProvesKind(kind: GitDelegationKind, op: string): boolean {
+export function actionProvesKind(kind: DelegationKind, op: string): boolean {
   switch (kind) {
     case "commit":
       return op === "git_commit";
@@ -148,7 +162,7 @@ export function appActionMessage(name: string, params?: Record<string, string>):
 }
 
 /** Footer status line while the agent holds control. */
-export function delegationLabel(kind: GitDelegationKind): string {
+export function delegationLabel(kind: DelegationKind): string {
   switch (kind) {
     case "commit":
       return "Agent is writing the commit message…";
@@ -170,7 +184,7 @@ export function delegationLabel(kind: GitDelegationKind): string {
 }
 
 /** Success notice once the watched transition lands. */
-export function delegationDone(kind: GitDelegationKind): string {
+export function delegationDone(kind: DelegationKind): string {
   switch (kind) {
     case "commit":
       return "Agent committed your changes";
@@ -191,12 +205,13 @@ export function delegationDone(kind: GitDelegationKind): string {
   }
 }
 
-/** Whether the git/PR transition this delegation is waiting for has landed.
- *  Pure — the panel evaluates it against each poll tick. `fix-checks` is the
- *  exception: CI re-runs take minutes, so the caller resolves it as soon as
- *  the agent goes idle and lets the checks polling carry the story from there. */
+/** Whether the transition this delegation is waiting for has landed. Pure —
+ *  `useDelegationSync` evaluates it against every poll tick, using the state of
+ *  the delegation's OWN checkout. `fix-checks` is the exception: CI re-runs take
+ *  minutes, so the watcher resolves it as soon as the agent goes idle and lets
+ *  the checks polling carry the story from there. */
 export function delegationResolved(
-  kind: GitDelegationKind,
+  kind: DelegationKind,
   git: GitState | null,
   pr: PrState | null,
   checks: PrChecks | null,

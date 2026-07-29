@@ -2,17 +2,17 @@ import { describe, expect, it } from "vitest";
 import type { GitState, PrChecks, PrState } from "@/api";
 import {
   APP_ACTION_PREFIX,
+  actionProvesKind,
   appActionMessage,
   DELEGATION_GIVE_UP_GRACE_MS,
+  type Delegation,
   delegationDone,
   delegationLabel,
   delegationResolved,
   delegationStep,
-  type GitDelegation,
-  gitActionProvesKind,
-} from "@/components/RightPanel/delegation";
+} from "@/delegation";
 
-function d(over: Partial<GitDelegation> = {}): GitDelegation {
+function d(over: Partial<Delegation> = {}): Delegation {
   return {
     kind: "commit",
     prompt: "[app-action] commit",
@@ -176,7 +176,7 @@ describe("delegationStep", () => {
   });
 
   it("after dequeue, an idle gap before our turn starts is tolerated within the grace window", () => {
-    // markGitDelegationDequeued resets startedAt, so `now` is near it again.
+    // markDelegationDequeued resets startedAt, so `now` is near it again.
     expect(delegationStep(d(), "idle", false, soon)).toBe("wait");
     expect(delegationStep(d(), "idle", false, late)).toBe("give-up");
   });
@@ -193,28 +193,28 @@ describe("delegationStep", () => {
   });
 });
 
-describe("gitActionProvesKind", () => {
+describe("actionProvesKind", () => {
   it("accepts only ops that belong to the kind's own playbook", () => {
-    expect(gitActionProvesKind("commit", "git_commit")).toBe(true);
-    expect(gitActionProvesKind("push", "git_push")).toBe(true);
-    expect(gitActionProvesKind("open-pr", "open_pr")).toBe(true);
-    expect(gitActionProvesKind("update-branch", "git_update_branch")).toBe(true);
-    expect(gitActionProvesKind("resolve", "git_commit")).toBe(true);
+    expect(actionProvesKind("commit", "git_commit")).toBe(true);
+    expect(actionProvesKind("push", "git_push")).toBe(true);
+    expect(actionProvesKind("open-pr", "open_pr")).toBe(true);
+    expect(actionProvesKind("update-branch", "git_update_branch")).toBe(true);
+    expect(actionProvesKind("resolve", "git_commit")).toBe(true);
     // Multi-op kinds accept any op they touch (resolved gates real completion).
-    expect(gitActionProvesKind("commit-push", "git_commit")).toBe(true);
-    expect(gitActionProvesKind("commit-push", "git_push")).toBe(true);
-    expect(gitActionProvesKind("commit-pr", "git_commit")).toBe(true);
-    expect(gitActionProvesKind("commit-pr", "open_pr")).toBe(true);
+    expect(actionProvesKind("commit-push", "git_commit")).toBe(true);
+    expect(actionProvesKind("commit-push", "git_push")).toBe(true);
+    expect(actionProvesKind("commit-pr", "git_commit")).toBe(true);
+    expect(actionProvesKind("commit-pr", "open_pr")).toBe(true);
   });
 
   it("rejects an unrelated op so a foreign queued turn can't prove the action", () => {
     // The reported bug: a `commit` delegation queued behind a turn that pushes
     // or opens a PR must NOT treat those as proof its commit ran.
-    expect(gitActionProvesKind("commit", "git_push")).toBe(false);
-    expect(gitActionProvesKind("commit", "open_pr")).toBe(false);
-    expect(gitActionProvesKind("push", "git_commit")).toBe(false);
-    expect(gitActionProvesKind("open-pr", "git_commit")).toBe(false);
-    expect(gitActionProvesKind("update-branch", "git_push")).toBe(false);
+    expect(actionProvesKind("commit", "git_push")).toBe(false);
+    expect(actionProvesKind("commit", "open_pr")).toBe(false);
+    expect(actionProvesKind("push", "git_commit")).toBe(false);
+    expect(actionProvesKind("open-pr", "git_commit")).toBe(false);
+    expect(actionProvesKind("update-branch", "git_push")).toBe(false);
   });
 });
 

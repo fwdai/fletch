@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { applyPolicy, getAdapter } from "@/adapters";
 import type { AgentRecord } from "@/api";
-import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
+import { APP_ACTION_PREFIX } from "@/delegation";
 import { useAppStore } from "@/store";
 import { stripInjectedInstructions } from "@/util/instructions";
 import type { ChatTurn } from "../ChatNav";

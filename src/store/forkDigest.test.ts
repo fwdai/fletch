@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { ChatItem } from "@/adapters";
-import { APP_ACTION_PREFIX } from "@/components/RightPanel/delegation";
+import { APP_ACTION_PREFIX } from "@/delegation";
 import { forkContextDigest, serializeForkItem } from "./forkDigest";
 
 const user = (text: string): ChatItem => ({ kind: "user_message", text });

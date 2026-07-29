@@ -1,8 +1,8 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
 import type { PrChecks, PrComment } from "@/api";
-import { appActionMessage, type GitDelegationKind } from "@/components/RightPanel/delegation";
 import { formatCommentForChat } from "@/components/RightPanel/prComments";
+import { appActionMessage, type DelegationKind } from "@/delegation";
 import { useAppStore } from "@/store";
 
 // Actions that push to / read from GitHub. In local/offline mode these are
@@ -77,7 +77,7 @@ export function useGitActions(ctx: GitActionsCtx) {
   const discardChanges = useAppStore((s) => s.discardChanges);
   const abortMerge = useAppStore((s) => s.abortMerge);
   const deleteBranch = useAppStore((s) => s.deleteBranch);
-  const delegateGitAction = useAppStore((s) => s.delegateGitAction);
+  const delegateAction = useAppStore((s) => s.delegateAction);
   const seedComposer = useAppStore((s) => s.seedComposer);
   const openGithubConnect = useAppStore((s) => s.openGithubConnect);
 
@@ -86,10 +86,10 @@ export function useGitActions(ctx: GitActionsCtx) {
   // file RPC. The panel tracks the delegation until the matching transition —
   // scoped to this section's repo, so this section's watcher owns it.
   const delegate = useCallback(
-    (kind: GitDelegationKind, prompt: string) => {
-      delegateGitAction(agentId, kind, prompt, subdir);
+    (kind: DelegationKind, prompt: string) => {
+      delegateAction(agentId, kind, prompt, subdir);
     },
-    [agentId, subdir, delegateGitAction],
+    [agentId, subdir, delegateAction],
   );
 
   // Trigger builder scoped to this section's repo: a secondary section adds

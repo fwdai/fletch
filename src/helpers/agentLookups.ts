@@ -40,7 +40,7 @@ export function draftNames(drafts: DraftAgent[]): string[] {
 
 /** Drop an agent's entries from a repo-scoped map: the plain `id` key (the
  *  primary repo) plus any `id::subdir` composite keys a multi-repo agent's
- *  per-repo fetches and bulk polls wrote (see `gitKey` in store/git). */
+ *  per-repo fetches and bulk polls wrote (see `checkoutKey` in store/git). */
 function dropScopedEntries<T>(map: Record<string, T>, id: string): Record<string, T> {
   const prefix = `${id}::`;
   return Object.fromEntries(
@@ -59,16 +59,17 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   const { [id]: _busy, ...managedBusy } = state.managedBusy;
   const { [id]: _started, ...turnStartedAt } = state.turnStartedAt;
   const { [id]: _usage, ...usage } = state.usage;
-  // The git/PR maps are repo-scoped: a multi-repo agent also holds
-  // `id::subdir` keys, which must not outlive it.
+  // The git/PR/delegation maps are checkout-scoped: a multi-repo agent also
+  // holds `id::subdir` keys, which must not outlive it.
   const gitStates = dropScopedEntries(state.gitStates, id);
   const prStates = dropScopedEntries(state.prStates, id);
   const prChecks = dropScopedEntries(state.prChecks, id);
   const prComments = dropScopedEntries(state.prComments, id);
+  const delegations = dropScopedEntries(state.delegations, id);
+  const delegationNotices = dropScopedEntries(state.delegationNotices, id);
   const { [id]: _short, ...gitShortstats } = state.gitShortstats;
   const { [id]: _seed, ...composerSeeds } = state.composerSeeds;
   const { [id]: _draft, ...composerDrafts } = state.composerDrafts;
-  const { [id]: _delegation, ...gitDelegations } = state.gitDelegations;
   // Drop the unseen-results flag too: otherwise archiving/discarding an agent
   // that finished while unviewed leaves an orphaned key behind with no row to
   // select, which would keep the app-icon badge count nonzero forever.
@@ -90,7 +91,8 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     prComments,
     composerSeeds,
     composerDrafts,
-    gitDelegations,
+    delegations,
+    delegationNotices,
     unseenResults,
     rightPanelTabs,
   };

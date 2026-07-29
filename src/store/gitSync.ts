@@ -13,8 +13,15 @@
 // Two scopes, because they genuinely differ:
 //
 //   fleet    — every agent, cheap projections for the sidebar.
-//   focused  — the selected agent's repos, the detail the panel and title
-//              capsule render.
+//   tracked  — the checkouts something is actively watching: the selected
+//              agent's repos (the panel and title capsule render them) plus any
+//              checkout with an in-flight delegation, wherever it lives.
+//
+// That second half matters: `useDelegationSync` decides a delegation is done by
+// comparing its target against fresh state, so a delegation on an unfocused
+// agent needs its checkout polled too — otherwise the watcher sees a stale
+// snapshot, never observes the transition, and reports a finished job as
+// abandoned.
 //
 // Cadences differ per domain on purpose: 1s is right for a diff the user is
 // watching and absurd for a fleet-wide PR sweep. What's centralized is *who
@@ -24,6 +31,7 @@ import { useCallback } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store";
 import { usePoll } from "@/util/hooks";
+import { checkoutKey, splitCheckoutKey } from "./git";
 
 /** Mount once, at the app root. */
 export function useGitSync() {
@@ -70,40 +78,81 @@ export function useGitSync() {
   const anyOpenPr = useAppStore((s) => Object.values(s.prStates).some((p) => p?.state === "open"));
   usePoll(refreshAllPrStatus, anyOpenPr ? 20000 : 300000, [refreshAllPrStatus, githubConnected]);
 
-  // ── focused agent ─────────────────────────────────────────────────────────
+  // ── tracked checkouts ─────────────────────────────────────────────────────
 
   // Full git state — branch, ahead/behind, file list. 1s while the right pane is
   // showing it (the user is watching a diff); slower when it's collapsed, where
   // only the title capsule reads it. Local git, but each call forks a process,
-  // so the distinction is worth one ternary.
+  // so the distinction is worth one ternary. Delegated checkouts ride the same
+  // tick: a delegation's target transition (clean tree, branch pushed, conflicts
+  // gone) is only visible in this read.
   const panelVisible = useAppStore((s) => !s.rightCollapsed && !s.activeDraftId);
-  useFocusedRepoPoll(fetchGitState, panelVisible ? 1000 : 10000);
+  useTrackedRepoPoll(fetchGitState, panelVisible ? 1000 : 10000);
 
   // PR state + CI in one backend pass over ETag-conditional REST. Unchanged
   // reads are 304s GitHub doesn't bill, so there's nothing to back off from.
-  useFocusedRepoPoll(fetchPrLive, 5000);
+  useTrackedRepoPoll(fetchPrLive, 5000);
 
   // Unresolved review threads — the one panel read still costing GraphQL points,
-  // so it gets the gentlest cadence. Not filtered by PR state here: the backend
+  // so it gets the gentlest cadence, and the only one still scoped to the focused
+  // agent: no delegation kind resolves off comment threads yet, so widening this
+  // would spend points for nothing. Not filtered by PR state here: the backend
   // returns nothing for a repo whose PR isn't open, and keeping that rule in one
   // place beats mirroring it in the poller.
   useFocusedRepoPoll(fetchPrThreads, 30000);
 }
 
-/** Run `fetch` for every repo of the focused agent, on `intervalMs`.
+/** The checkouts needing detail reads this tick, as `checkoutKey`s: every repo of
+ *  the focused agent, plus every checkout holding a delegation. Deduped, so a
+ *  delegated focused repo is fetched once, and sorted so the shallow compare sees
+ *  a stable array across unrelated store writes — `usePoll` holds whatever
+ *  callback it was last given, so an unstable one would keep firing a stale
+ *  closure. */
+function useTrackedCheckoutKeys(): string[] {
+  return useAppStore(
+    useShallow((s) => {
+      const keys = new Set<string>(Object.keys(s.delegations));
+      const agent = s.workspace?.agents.find((a) => a.id === s.selectedAgentId);
+      if (agent) {
+        for (const [i, repo] of agent.repos.entries()) {
+          keys.add(checkoutKey(agent.id, i === 0 ? undefined : repo.subdir));
+        }
+      }
+      return [...keys].sort();
+    }),
+  );
+}
+
+/** Run `fetch` for every tracked checkout, on `intervalMs`.
  *
- *  Covering *all* of the agent's repos — not just the ones a panel section
- *  happens to render — is what retired `GitPanel`'s `pollDormant`. No-ops when
- *  nothing is selected, so callers need no guard of their own. */
+ *  Covering *all* of the focused agent's repos — not just the ones a panel
+ *  section happens to render — is what retired `GitPanel`'s `pollDormant`;
+ *  covering delegated checkouts too is what lets `useDelegationSync` watch a
+ *  delegation the user has navigated away from. No-ops when there's nothing to
+ *  track, so callers need no guard of their own. */
+function useTrackedRepoPoll(
+  fetch: (agentId: string, subdir?: string) => Promise<void>,
+  intervalMs: number,
+) {
+  const keys = useTrackedCheckoutKeys();
+  const tick = useCallback(async () => {
+    await Promise.all(
+      keys.map((key) => {
+        const { agentId, subdir } = splitCheckoutKey(key);
+        return fetch(agentId, subdir);
+      }),
+    );
+  }, [keys, fetch]);
+  usePoll(tick, intervalMs, [tick]);
+}
+
+/** Run `fetch` for every repo of the focused agent only — for reads whose cost
+ *  isn't worth paying on a checkout nobody is looking at. */
 function useFocusedRepoPoll(
   fetch: (agentId: string, subdir?: string) => Promise<void>,
   intervalMs: number,
 ) {
   const agentId = useAppStore((s) => s.selectedAgentId);
-  // Each repo as the `subdir` the fetchers take (undefined = primary).
-  // Shallow-compared so the tick keeps a stable identity across unrelated
-  // store writes — `usePoll` holds whatever callback it was last given, so an
-  // unstable one would keep firing a stale closure.
   const subdirs = useAppStore(
     useShallow((s) => {
       const agent = s.workspace?.agents.find((a) => a.id === s.selectedAgentId);
