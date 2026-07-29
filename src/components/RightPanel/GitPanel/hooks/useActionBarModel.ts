@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { GitState, MergeState, PrChecks, PrState } from "@/api";
 import type { SplitActionItem } from "@/components/RightPanel/GitPanel/SplitAction";
-import { describeMergeGate } from "@/components/RightPanel/mergeGate";
 import {
   type ActionTone,
   type GitPanelState,
@@ -9,6 +8,7 @@ import {
   primaryFor,
   secondaryFor,
 } from "@/components/RightPanel/primaryActions";
+import { describeMergeGate } from "@/mergeGate";
 import { useAppStore } from "@/store";
 
 /** Builds the split-button model for the current state: the action counts, the
@@ -47,6 +47,12 @@ export function useActionBarModel(input: {
 
   const behind = gitState?.behind ?? 0;
   const mergeable = prState?.mergeable ?? "unknown";
+  // The merge gate's `checksFailed` means *failing required checks* — the count
+  // that decides agent-fixable vs. a pure review gate. This used to pass
+  // `checks.failed` (every failing run), which is a different number the moment a
+  // rerun double-counts, and disagreed with what Mission Control passed. Both now
+  // derive it the same way; `readiness.ts` owns the definition.
+  const checksFailed = checks?.required_failing.length ?? 0;
 
   const counts = {
     files: gitState?.files.length ?? 0,
@@ -58,7 +64,7 @@ export function useActionBarModel(input: {
     customActive,
     mergeable,
     mergeState,
-    checksFailed: checks?.failed ?? 0,
+    checksFailed,
     commitAction: gitCommitAction,
     prOpen,
     githubConnected,
@@ -100,7 +106,7 @@ export function useActionBarModel(input: {
   // holds a delegation, and when Merge is selected but the merge gate isn't
   // open. Gate semantics live in describeMergeGate (spec §6).
   const { mergeAllowed } = describeMergeGate(checks ? mergeState : null, {
-    checksFailed: checks?.failed ?? 0,
+    checksFailed,
     mergeable,
   });
   const mainDisabled =

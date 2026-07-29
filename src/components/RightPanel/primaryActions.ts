@@ -1,6 +1,6 @@
 import type { GitState, Mergeable, MergeState, PrState } from "@/api";
 import type { IconName } from "@/components/Icon";
-import { describeMergeGate } from "./mergeGate";
+import { describeMergeGate } from "@/mergeGate";
 
 /** Derived git panel state — computed from live GitState, not stored. */
 export type GitPanelState =

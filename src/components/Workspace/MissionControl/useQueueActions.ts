@@ -1,17 +1,17 @@
 // MissionControl/useQueueActions.ts — the action layer (§3/§4). One surface, two
 // backends: a workflow item decides through the workflow commands (wfApprove /
 // wfReject via the ReviewSurface modal); an ad-hoc agent item routes through the
-// SAME delegation ladder the Git panel uses (deriveState + the merge-gate +
-// delegateAction / mergePr). No new backend commands — and never a dead
-// action: any state the ladder can't map cleanly falls back to opening the
+// shared remediation ladder (`readiness.ts`) that the Git panel classifies from
+// too — this surface holds no copy of it. No new backend commands, and never a
+// dead action: any rung that isn't an agent's to run falls back to opening the
 // agent's Git tab.
 
 import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
 import { api } from "@/api";
-import { describeMergeGate } from "@/components/RightPanel/mergeGate";
-import { deriveState, type GitCommitAction } from "@/components/RightPanel/primaryActions";
-import { appActionMessage, type DelegationKind } from "@/delegation";
+import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
+import { appActionMessage } from "@/delegation";
+import { type LadderContext, nextRung } from "@/readiness";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import type { ReviewItem } from "./queue";
@@ -26,16 +26,16 @@ function requestChangesSeed(subdir: string | undefined): string {
   return `Please make the following changes${scope} before this is ready:\n\n- `;
 }
 
-/** Map the user's sticky commit mode to the delegation it drives — the same
- *  triple the Git panel's `changes` state uses. */
-function commitDelegation(mode: GitCommitAction): { kind: DelegationKind; trigger: string } {
-  switch (mode) {
+/** The panel's sticky commit setting as the ladder's neutral triple — the ladder
+ *  is kept free of panel vocabulary so it can move to Rust unchanged. */
+function commitMode(action: GitCommitAction): LadderContext["commitMode"] {
+  switch (action) {
     case "agent-commit":
-      return { kind: "commit", trigger: "commit" };
+      return "commit";
     case "agent-commit-push":
-      return { kind: "commit-push", trigger: "commit-push" };
+      return "commit-push";
     default:
-      return { kind: "commit-pr", trigger: "commit-pr" };
+      return "commit-pr";
   }
 }
 
@@ -75,8 +75,9 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
   );
 
   // The ad-hoc "approve" ladder: pull authoritative git/PR state (the queue only
-  // holds compact shortstats), classify it exactly as the Git panel does, and
-  // delegate the matching action — or open the tab when there's no clean move.
+  // holds compact shortstats), then ask the shared ladder what to do. The
+  // classification lives in `readiness.ts`, so this surface and the Git panel
+  // cannot disagree about what's wrong — they used to, each having its own copy.
   // `subdir` scopes everything to the repo whose signal the card shows — a
   // secondary repo's failing PR must never dispatch an action on the primary.
   const approveAgent = useCallback(
@@ -85,66 +86,37 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
       const s = useAppStore.getState();
       const key = checkoutKey(agentId, subdir);
       const git = s.gitStates[key] ?? null;
-      const pr = s.prStates[key] ?? null;
-      const checks = s.prChecks[key] ?? null;
-      const base = git?.parent_branch || "main";
-      // Trigger builder scoped to this repo: a secondary adds `repo="<subdir>"`
-      // so the agent works in that sibling checkout, not the primary (mirrors
-      // useGitActions' trigger).
-      const trigger = (name: string, params?: Record<string, string>) =>
-        appActionMessage(name, subdir ? { ...params, repo: subdir } : params);
-      const state = deriveState(git, pr);
-      switch (state) {
-        case "changes": {
-          // With a PR already open, "open PR" degrades to "push" — that's what
-          // updates the existing PR (mirrors primaryActions' changes state).
-          const mode: GitCommitAction =
-            pr?.state === "open" && s.gitCommitAction === "agent-commit-pr"
-              ? "agent-commit-push"
-              : s.gitCommitAction;
-          const { kind, trigger: name } = commitDelegation(mode);
+      const input = {
+        git,
+        pr: s.prStates[key] ?? null,
+        checks: s.prChecks[key] ?? null,
+        comments: s.prComments[key] ?? null,
+      };
+      const rung = nextRung(input, {
+        base: git?.parent_branch || "main",
+        commitMode: commitMode(s.gitCommitAction),
+      });
+
+      switch (rung.do) {
+        case "delegate":
+          // Scope the trigger to this repo: a secondary adds `repo="<subdir>"` so
+          // the agent works in that sibling checkout, not the primary (mirrors
+          // useGitActions' trigger).
           delegateAction(
             agentId,
-            kind,
-            trigger(name, kind === "commit-pr" ? { base } : undefined),
+            rung.kind,
+            appActionMessage(rung.action, subdir ? { ...rung.params, repo: subdir } : rung.params),
             subdir,
           );
           return;
-        }
-        case "pushed":
-          delegateAction(agentId, "open-pr", trigger("open-pr", { base }), subdir);
+        case "merge":
+          await mergePr(agentId, subdir);
           return;
-        case "conflicts":
-          delegateAction(agentId, "resolve", trigger("resolve-conflicts"), subdir);
-          return;
-        case "pr-open": {
-          const gate = describeMergeGate(checks?.merge_state ?? null, {
-            checksFailed: checks?.required_failing.length ?? 0,
-            mergeable: pr?.mergeable ?? "unknown",
-          });
-          if (gate.mergeAllowed) {
-            await mergePr(agentId, subdir);
-            return;
-          }
-          if (gate.situation === "checks-failing") {
-            delegateAction(
-              agentId,
-              "fix-checks",
-              trigger("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") }),
-              subdir,
-            );
-            return;
-          }
-          if (gate.needsUpdate) {
-            delegateAction(agentId, "update-branch", trigger("update-branch", { base }), subdir);
-            return;
-          }
-          break;
-        }
+        default:
+          // escalate / wait / landed / ready — nothing to delegate. Open the tab
+          // so the decision is the user's, never a dead key.
+          openAgentGit(agentId);
       }
-      // clean / merged / pr-closed / review-required / loading — nothing to
-      // delegate: open the tab so the decision is the user's, never a dead key.
-      openAgentGit(agentId);
     },
     [fetchGitState, delegateAction, mergePr, openAgentGit],
   );
