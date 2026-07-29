@@ -39,7 +39,7 @@ export const AUTOPILOT_LOG_LIMIT = 20;
  *  the cycle's own outcome already says how it went. */
 export type AutopilotOutcome = Extract<
   AutopilotEffect["do"],
-  "dispatch" | "settle" | "retry" | "escalate"
+  "dispatch" | "settle" | "retry" | "escalate" | "revive"
 >;
 
 /** One thing autopilot did, in the terms a user would ask about it: what

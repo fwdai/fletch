@@ -19,7 +19,8 @@ const working = (attempt = 1) =>
     cycle: { rung: "fix-checks", attempt, signature: "s", phase: "working", phaseSince: 0 },
   });
 
-const stuck = (reason: StuckReason) => state({ stuck: { reason, rung: "fix-checks", at: 1 } });
+const stuck = (reason: StuckReason) =>
+  state({ stuck: { reason, rung: "fix-checks", at: 1, blockers: "" } });
 
 describe("autopilotSignal", () => {
   it("is absent when the agent has no enrolled checkout", () => {

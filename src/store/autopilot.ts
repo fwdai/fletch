@@ -57,13 +57,23 @@ export interface AutopilotSlice {
   /** The cycle failed with budget left: clear it, count the attempt, and record
    *  a barren signature when the world didn't move. */
   retryAutopilotCycle: (key: string, rung: DelegationKind, barren: string | null) => void;
-  /** Hand the checkout back to the human. */
+  /** Hand the checkout back to the user. `blockers` is the situation that
+   *  stopped it, so `autopilotStep` can tell when that situation has passed. */
   markAutopilotStuck: (
     key: string,
     reason: StuckReason,
     rung: DelegationKind | null,
     now: number,
+    blockers: string,
   ) => void;
+  /** The situation that stopped it has changed — start looking again.
+   *
+   *  Distinct from `resumeAutopilot`: this is autopilot noticing the world moved,
+   *  not the user insisting. It grants a fresh budget (a new situation deserves
+   *  its own attempts) but KEEPS `barren`, so a world autopilot has already
+   *  proven it cannot change stays refused even if the checkout oscillates back
+   *  to it. A human saying "try again" clears barren too. */
+  reviveAutopilot: (key: string) => void;
   /** Store the local verification that will judge this cycle. */
   recordAutopilotVerdict: (key: string, report: VerificationReport) => void;
 }
@@ -191,8 +201,11 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set) => ({
       barren: barren && !s.barren.includes(barren) ? [...s.barren, barren] : s.barren,
     })),
 
-  markAutopilotStuck: (key, reason, rung, now) =>
-    patch(set, key, (s) => ({ ...s, cycle: null, stuck: { reason, rung, at: now } })),
+  markAutopilotStuck: (key, reason, rung, now, blockers) =>
+    patch(set, key, (s) => ({ ...s, cycle: null, stuck: { reason, rung, at: now, blockers } })),
+
+  reviveAutopilot: (key) =>
+    patch(set, key, (s) => ({ ...s, stuck: null, cycle: null, attempts: {} })),
 
   recordAutopilotVerdict: (key, report) =>
     set((s) => ({ autopilotVerdicts: { ...s.autopilotVerdicts, [key]: report } })),

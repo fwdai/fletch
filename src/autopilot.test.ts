@@ -18,16 +18,18 @@ import {
   type AutopilotInput,
   type AutopilotState,
   autopilotStep,
+  blockerFingerprint,
   type Cycle,
   EVIDENCE_TIMEOUT_MS,
   failedCheckNames,
   newEnrollment,
   RUNG_BUDGET,
+  type StuckReason,
   stateSignature,
   unstagedEdits,
   verificationPassed,
 } from "@/autopilot";
-import type { LadderContext, ReadinessInput } from "@/readiness";
+import { detectBlockers, type LadderContext, type ReadinessInput } from "@/readiness";
 
 const NOW = 1_000_000;
 
@@ -92,6 +94,11 @@ const GREEN: ReadinessInput = {
 
 const LADDER: LadderContext = { base: "main", commitMode: "commit-pr" };
 
+/** The blocker fingerprint of FAILING — the situation a stuck fixture stopped in.
+ *  Stamping it means "stays stuck" tests assert the world is UNCHANGED, which is
+ *  the actual precondition for staying stopped. */
+const STUCK_ON = blockerFingerprint(detectBlockers(FAILING));
+
 const state = (over: Partial<AutopilotState> = {}): AutopilotState => ({
   ...newEnrollment(),
   ...over,
@@ -133,7 +140,11 @@ describe("autopilot refuses to act", () => {
     // paused or handed-back checkout into another dispatch.
     expect(step({ state: state({ paused: true }) })).toEqual({ do: "wait", why: "paused" });
     expect(
-      step({ state: state({ stuck: { reason: "budget-spent", rung: "fix-checks", at: NOW } }) }),
+      step({
+        state: state({
+          stuck: { reason: "budget-spent", rung: "fix-checks", at: NOW, blockers: STUCK_ON },
+        }),
+      }),
     ).toEqual({ do: "wait", why: "stuck" });
   });
 
@@ -159,7 +170,7 @@ describe("autopilot refuses to act", () => {
         files: [{ path: "a.ts", kind: "modified", staged: false, additions: 1, deletions: 0 }],
       }),
     };
-    expect(step({ readiness: dirty })).toEqual({
+    expect(step({ readiness: dirty })).toMatchObject({
       do: "escalate",
       reason: "needs-human",
       rung: "commit-push",
@@ -180,7 +191,7 @@ describe("autopilot refuses to act", () => {
 
   it("escalates a human-only gate instead of retrying it", () => {
     const reviewGate = { ...FAILING, checks: checks({ merge_state: "blocked" }) };
-    expect(step({ readiness: reviewGate })).toEqual({
+    expect(step({ readiness: reviewGate })).toMatchObject({
       do: "escalate",
       reason: "needs-human",
       rung: null,
@@ -209,7 +220,7 @@ describe("autopilot opens a cycle", () => {
     // Checked BEFORE the budget: a repeat of a barren world is futile even with
     // attempts to spare.
     const s = state({ barren: [stateSignature(FAILING)] });
-    expect(step({ state: s })).toEqual({
+    expect(step({ state: s })).toMatchObject({
       do: "escalate",
       reason: "no-progress",
       rung: "fix-checks",
@@ -218,7 +229,7 @@ describe("autopilot opens a cycle", () => {
 
   it("stops when the rung's budget is spent", () => {
     const s = state({ attempts: { "fix-checks": RUNG_BUDGET["fix-checks"] } });
-    expect(step({ state: s })).toEqual({
+    expect(step({ state: s })).toMatchObject({
       do: "escalate",
       reason: "budget-spent",
       rung: "fix-checks",
@@ -272,7 +283,7 @@ describe("autopilot judges a cycle in flight", () => {
       cycle: cycle({ phase: "awaiting-evidence" }),
       barren: [stateSignature(FAILING)],
     });
-    expect(step({ state: s })).toEqual({
+    expect(step({ state: s })).toMatchObject({
       do: "escalate",
       reason: "no-progress",
       rung: "fix-checks",
@@ -291,7 +302,9 @@ describe("autopilot judges a cycle in flight", () => {
   });
 
   it("gives up when the failing cycle was the last one in the budget", () => {
-    expect(inFlight({ phase: "awaiting-evidence", attempt: RUNG_BUDGET["fix-checks"] })).toEqual({
+    expect(
+      inFlight({ phase: "awaiting-evidence", attempt: RUNG_BUDGET["fix-checks"] }),
+    ).toMatchObject({
       do: "escalate",
       reason: "budget-spent",
       rung: "fix-checks",
@@ -310,7 +323,7 @@ describe("autopilot judges a cycle in flight", () => {
         { phase: "awaiting-evidence", phaseSince: NOW - EVIDENCE_TIMEOUT_MS - 1 },
         { readiness: computing },
       ),
-    ).toEqual({ do: "escalate", reason: "no-evidence", rung: "fix-checks" });
+    ).toMatchObject({ do: "escalate", reason: "no-evidence", rung: "fix-checks" });
   });
 });
 
@@ -349,7 +362,7 @@ describe("the reconcile rungs", () => {
         { path: "mine.ts", kind: "modified", staged: false, additions: 9, deletions: 0 },
       ],
     });
-    expect(step({ readiness: withUserEdit })).toEqual({
+    expect(step({ readiness: withUserEdit })).toMatchObject({
       do: "escalate",
       reason: "dirty-tree",
       rung: "resolve",
@@ -429,11 +442,13 @@ describe("the review-comments rung", () => {
     // We replied last and left it open on purpose. Re-dispatching would post a
     // duplicate reply into a real person's conversation every cycle. The reason is
     // its own kind: the next step is reading that thread, not eyeballing the PR.
-    expect(step({ readiness: withThreads(thread("t1", { we_replied_last: true })) })).toEqual({
-      do: "escalate",
-      reason: "disputed-review",
-      rung: null,
-    });
+    expect(step({ readiness: withThreads(thread("t1", { we_replied_last: true })) })).toMatchObject(
+      {
+        do: "escalate",
+        reason: "disputed-review",
+        rung: null,
+      },
+    );
   });
 
   it("engages again once the human answers", () => {
@@ -586,5 +601,144 @@ describe("portability to Rust", () => {
 
   it("reads no clock or randomness, so a pass is reproducible from its inputs", () => {
     expect(code).not.toMatch(/Date\.now|new Date|Math\.random/);
+  });
+});
+
+describe("autopilot stops only while it is genuinely blocked", () => {
+  // It stops because it needs the user — a dirty tree it won't commit over, a
+  // review gate, a thread it pushed back on, a fix it failed to land. Every one
+  // of those clears OUTSIDE Fletch. Latching on the reason alone meant autopilot
+  // never noticed and abandoned the checkout for good, so the next failing check
+  // went unhandled too.
+
+  const stuckOn = (readiness: ReadinessInput, reason: StuckReason = "budget-spent") =>
+    state({
+      stuck: {
+        reason,
+        rung: "fix-checks",
+        at: NOW,
+        blockers: blockerFingerprint(detectBlockers(readiness)),
+      },
+    });
+
+  it("stays stopped while the same thing is still blocking it", () => {
+    expect(step({ state: stuckOn(FAILING), readiness: FAILING })).toEqual({
+      do: "wait",
+      why: "stuck",
+    });
+  });
+
+  it("picks the checkout back up once that thing is gone", () => {
+    // The user fixed the failing check themselves. Sitting out now would mean
+    // abandoning the checkout over a problem that no longer exists.
+    expect(step({ state: stuckOn(FAILING), readiness: GREEN })).toEqual({ do: "revive" });
+  });
+
+  it("picks it back up when the blocker changes rather than clears", () => {
+    // A different failing check is a different situation — autopilot has not
+    // tried and failed at this one.
+    const otherFailure = {
+      ...FAILING,
+      checks: checks({ merge_state: "blocked", required_failing: ["lint"] }),
+    };
+    expect(step({ state: stuckOn(FAILING), readiness: otherFailure })).toEqual({ do: "revive" });
+  });
+
+  it("resumes after the user commits the work it refused to commit over", () => {
+    // The dirty-tree stop, which is the case whose copy most clearly implies
+    // autopilot will carry on once you have committed.
+    const dirty = {
+      ...FAILING,
+      git: git({
+        files: [{ path: "a.ts", kind: "modified", staged: false, additions: 1, deletions: 0 }],
+      }),
+    };
+    expect(step({ state: stuckOn(dirty, "dirty-tree"), readiness: dirty })).toEqual({
+      do: "wait",
+      why: "stuck",
+    });
+    // Committed: the tree is clean and the checks are the only thing left.
+    expect(step({ state: stuckOn(dirty, "dirty-tree"), readiness: FAILING })).toEqual({
+      do: "revive",
+    });
+  });
+
+  it("resumes after a reviewer approves, which moves nothing but the gate", () => {
+    // The case a state-signature comparison would MISS: an approval changes no
+    // commit, no check and no thread. Comparing blockers is what catches it.
+    const gated = { ...FAILING, checks: checks({ merge_state: "blocked" }) };
+    expect(step({ state: stuckOn(gated, "needs-human"), readiness: gated })).toEqual({
+      do: "wait",
+      why: "stuck",
+    });
+    expect(step({ state: stuckOn(gated, "needs-human"), readiness: GREEN })).toEqual({
+      do: "revive",
+    });
+  });
+
+  it("resumes after the user settles a thread it pushed back on", () => {
+    const disputed: ReadinessInput = {
+      ...GREEN,
+      comments: {
+        unresolved: [
+          {
+            id: "t1",
+            author: "alice",
+            is_bot: false,
+            body: "no",
+            path: null,
+            line: null,
+            url: "https://x",
+            replies: 2,
+            we_replied_last: true,
+          },
+        ],
+      },
+    };
+    expect(step({ state: stuckOn(disputed, "disputed-review"), readiness: disputed })).toEqual({
+      do: "wait",
+      why: "stuck",
+    });
+    // Thread resolved on GitHub → it drops out of `unresolved` entirely.
+    expect(step({ state: stuckOn(disputed, "disputed-review"), readiness: GREEN })).toEqual({
+      do: "revive",
+    });
+  });
+
+  it("stamps every escalation with the situation it stopped in", () => {
+    // Without this the guard above has nothing to compare and autopilot could
+    // never tell a cleared blocker from a persisting one.
+    const escalation = step({ state: state({ attempts: { "fix-checks": 3 } }) });
+    expect(escalation).toMatchObject({ do: "escalate" });
+    expect(escalation).toHaveProperty("blockers", blockerFingerprint(detectBlockers(FAILING)));
+  });
+
+  it("still refuses to act while paused, whatever the world does", () => {
+    // Paused is the user's explicit instruction, so unlike `stuck` it is NOT
+    // conditional on anything.
+    expect(step({ state: state({ paused: true }), readiness: GREEN })).toEqual({
+      do: "wait",
+      why: "paused",
+    });
+  });
+});
+
+describe("blockerFingerprint", () => {
+  it("distinguishes which instance of a blocker, not just its kind", () => {
+    const fp = (names: string[]) =>
+      blockerFingerprint(
+        detectBlockers({
+          ...FAILING,
+          checks: checks({ merge_state: "blocked", required_failing: names }),
+        }),
+      );
+    expect(fp(["test"])).not.toBe(fp(["lint"]));
+    // Order of CI's report is not a change.
+    expect(fp(["test", "lint"])).toBe(fp(["lint", "test"]));
+  });
+
+  it("is empty when nothing is blocking, so a cleared world never matches", () => {
+    expect(blockerFingerprint(detectBlockers(GREEN))).toBe("");
+    expect(blockerFingerprint(detectBlockers(FAILING))).not.toBe("");
   });
 });

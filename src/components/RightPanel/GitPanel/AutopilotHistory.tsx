@@ -39,6 +39,11 @@ export function eventLabel(entry: AutopilotLogEntry): string {
       return "Didn't work — trying again";
     case "escalate":
       return entry.reason ? stuckLabel(entry.reason) : "Autopilot stopped";
+    case "revive":
+      // Phrased as what changed, not as a state flag: the user did something
+      // outside Fletch (committed, approved, settled a thread) and autopilot
+      // noticed. Saying so is the whole reason this row exists.
+      return "Picked it back up — what was blocking it changed";
   }
 }
 

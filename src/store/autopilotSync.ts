@@ -181,7 +181,13 @@ async function apply(
       return;
     case "escalate":
       log({ outcome: "escalate", rung: effect.rung, reason: effect.reason });
-      s.markAutopilotStuck(key, effect.reason, effect.rung, now);
+      s.markAutopilotStuck(key, effect.reason, effect.rung, now, effect.blockers);
+      return;
+    case "revive":
+      // Recorded, because "it picked this back up on its own" is exactly the kind
+      // of unattended action the audit trail exists to explain.
+      log({ outcome: "revive", rung: null });
+      s.reviveAutopilot(key);
       return;
     case "wait":
       return;

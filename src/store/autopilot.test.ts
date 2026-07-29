@@ -67,7 +67,9 @@ describe("enrollment", () => {
     const store = makeStore();
     store.getState().enrollAutopilot("a1");
     store.getState().retryAutopilotCycle("a1", "fix-checks", "sig");
-    store.getState().markAutopilotStuck("a1", "budget-spent", "fix-checks", 5);
+    store
+      .getState()
+      .markAutopilotStuck("a1", "budget-spent", "fix-checks", 5, "checks-failing:test");
     expect(store.getState().autopilot.a1.stuck).not.toBeNull();
 
     store.getState().resumeAutopilot("a1");
@@ -92,7 +94,7 @@ describe("enrollment", () => {
     // not resurrect an entry.
     const store = makeStore();
     store.getState().openAutopilotCycle("ghost", "fix-checks", "sig");
-    store.getState().markAutopilotStuck("ghost", "no-progress", null, 1);
+    store.getState().markAutopilotStuck("ghost", "no-progress", null, 1, "");
     expect(store.getState().autopilot.ghost).toBeUndefined();
   });
 });

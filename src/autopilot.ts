@@ -32,7 +32,13 @@
 
 import type { GitState, VerificationReport } from "@/api";
 import type { DelegationKind } from "@/delegation";
-import { type LadderContext, nextRung, type ReadinessInput } from "@/readiness";
+import {
+  type Blocker,
+  detectBlockers,
+  type LadderContext,
+  nextRung,
+  type ReadinessInput,
+} from "@/readiness";
 
 /** Rungs autopilot may run on its own, this slice.
  *
@@ -141,9 +147,20 @@ export interface AutopilotState {
   attempts: Partial<Record<DelegationKind, number>>;
   /** Signatures that have already produced a cycle with no progress. */
   barren: string[];
-  /** Set when autopilot handed the checkout back. Sticky: it took a human to get
-   *  here, it takes a human to leave, so it can't quietly resume retrying. */
-  stuck: { reason: StuckReason; rung: DelegationKind | null; at: number } | null;
+  /** Set when autopilot handed the checkout back because it could not proceed
+   *  without the user.
+   *
+   *  `blockers` is the situation that stopped it (see `blockerFingerprint`).
+   *  While the situation holds, autopilot stays stopped — re-running would just
+   *  fail the same way. Once it changes, autopilot picks the checkout back up on
+   *  its own: the user has done whatever was needed, and continuing to sit out
+   *  would mean abandoning the checkout over a problem that no longer exists. */
+  stuck: {
+    reason: StuckReason;
+    rung: DelegationKind | null;
+    at: number;
+    blockers: string;
+  } | null;
 }
 
 /** Fresh state for a newly enrolled checkout. */
@@ -184,6 +201,44 @@ export function stateSignature({ git, checks, comments }: ReadinessInput): strin
     .sort()
     .join(",");
   return `${sha}|${failing}|${conflicted}|${threads}`;
+}
+
+/** A fingerprint of WHY autopilot is blocked — the blocker kinds plus the detail
+ *  that distinguishes one instance from another.
+ *
+ *  This is what makes `stuck` self-clearing. Autopilot stops when it genuinely
+ *  cannot proceed without the user (a dirty tree it won't commit over, a review
+ *  gate, a thread it pushed back on, a fix it failed to land three times), and
+ *  every one of those clears OUTSIDE Fletch — you commit, the reviewer approves,
+ *  you settle the argument. Latching on the reason alone meant autopilot never
+ *  noticed, and quietly stopped helping that checkout for good; the next failing
+ *  check went unhandled too.
+ *
+ *  Deliberately NOT `stateSignature`: that one answers "did the last cycle change
+ *  anything" and excludes the merge gate on purpose, because the gate flickers
+ *  through `unknown` while CI recomputes and would read as false progress. Here
+ *  the question is different — "does the reason I stopped still apply" — and a
+ *  review approval moves nothing but the gate, so the blocker set is the right
+ *  thing to compare. Two questions, two fingerprints. */
+export function blockerFingerprint(blockers: Blocker[]): string {
+  return blockers
+    .map((b) => {
+      switch (b.kind) {
+        // Payloads that identify WHICH instance, so a different failure or a
+        // different conflict reads as a new situation rather than the old one.
+        case "checks-failing":
+          return `${b.kind}:${[...b.checks].sort().join(",")}`;
+        case "conflicted":
+          return `${b.kind}:${[...b.paths].sort().join(",")}`;
+        case "review-unaddressed":
+        case "review-disputed":
+          return `${b.kind}:${b.count}`;
+        default:
+          return b.kind;
+      }
+    })
+    .sort()
+    .join("|");
 }
 
 /** Unstaged, non-conflicted edits in the working copy.
@@ -229,8 +284,17 @@ export type AutopilotEffect =
   /** The cycle failed but budget remains. Clear it, count the attempt, and
    *  record `barren` (when non-null) so a repeat of that world gives up. */
   | { do: "retry"; rung: DelegationKind; barren: string | null }
-  /** Hand back to the human. */
-  | { do: "escalate"; reason: StuckReason; rung: DelegationKind | null }
+  /** Hand back to the user, recording the situation that stopped it so autopilot
+   *  can tell when that situation has passed. */
+  | {
+      do: "escalate";
+      reason: StuckReason;
+      rung: DelegationKind | null;
+      blockers: string;
+    }
+  /** The situation that stopped it has changed — clear `stuck` and start looking
+   *  again. */
+  | { do: "revive" }
   /** Nothing to do this tick. */
   | { do: "wait"; why: WaitReason };
 
@@ -256,10 +320,26 @@ export interface AutopilotInput {
  *  ladder result. */
 export function autopilotStep(input: AutopilotInput): AutopilotEffect {
   const { state, readiness, ladder, agentBusy, delegationInFlight } = input;
+  // Every escalation records the situation it stopped in, so the guard above can
+  // tell later whether it still applies.
+  const stop = (reason: StuckReason, rung: DelegationKind | null): AutopilotEffect => ({
+    do: "escalate",
+    reason,
+    rung,
+    blockers: blockerFingerprint(detectBlockers(readiness)),
+  });
 
   if (!state?.enrolled) return { do: "wait", why: "not-enrolled" };
   if (state.paused) return { do: "wait", why: "paused" };
-  if (state.stuck) return { do: "wait", why: "stuck" };
+  if (state.stuck) {
+    // Stay stopped only while the situation that stopped us still holds. Autopilot
+    // stops because it needs the user, and the user acts OUTSIDE Fletch — so the
+    // signal that it may proceed is the blockers changing, not a click.
+    if (blockerFingerprint(detectBlockers(readiness)) === state.stuck.blockers) {
+      return { do: "wait", why: "stuck" };
+    }
+    return { do: "revive" };
+  }
 
   if (state.cycle) return judgeCycle(state.cycle, input);
 
@@ -276,21 +356,21 @@ export function autopilotStep(input: AutopilotInput): AutopilotEffect {
       if (!AUTOPILOT_RUNGS.includes(rung.kind)) {
         // A real action, just not one autopilot may take (a commit; a conflict
         // resolution until that slice lands). The human decides.
-        return { do: "escalate", reason: "needs-human", rung: rung.kind };
+        return stop("needs-human", rung.kind);
       }
       // Finishing a merge stages everything (`git add -A`), so unstaged edits
       // alongside the conflict are the user's in-flight work and would be swept
       // into the merge commit. Not autopilot's merge to finish.
       if (rung.kind === "resolve" && unstagedEdits(readiness.git) > 0) {
-        return { do: "escalate", reason: "dirty-tree", rung: rung.kind };
+        return stop("dirty-tree", rung.kind);
       }
       const signature = stateSignature(readiness);
       // Refuse to re-enter a world we already failed to change.
       if (state.barren.includes(signature)) {
-        return { do: "escalate", reason: "no-progress", rung: rung.kind };
+        return stop("no-progress", rung.kind);
       }
       if ((state.attempts[rung.kind] ?? 0) >= (RUNG_BUDGET[rung.kind] ?? 0)) {
-        return { do: "escalate", reason: "budget-spent", rung: rung.kind };
+        return stop("budget-spent", rung.kind);
       }
       return {
         do: "dispatch",
@@ -305,18 +385,32 @@ export function autopilotStep(input: AutopilotInput): AutopilotEffect {
       // loop convinces itself there's work when there isn't.
       return { do: "wait", why: "gate-settling" };
     case "escalate":
-      return {
-        do: "escalate",
-        // A push-back is its own outcome: the agent did the work and disagreed,
-        // so point the user at the argument rather than at the PR in general.
-        reason: rung.blocker.kind === "review-disputed" ? "disputed-review" : "needs-human",
-        rung: null,
-      };
+      // A push-back is its own outcome: the agent did the work and disagreed, so
+      // point the user at the argument rather than at the PR in general.
+      return stop(
+        rung.blocker.kind === "review-disputed" ? "disputed-review" : "needs-human",
+        null,
+      );
     default:
       // merge / ready / landed. Autopilot's job here is done; merging is a
       // decision, not a remediation, and deliberately not autopilot's to make.
       return { do: "wait", why: "nothing-to-do" };
   }
+}
+
+/** An escalation stamped with the situation it stopped in — the `judgeCycle` half
+ *  of `autopilotStep`'s local `stop`. */
+function stopIn(
+  input: AutopilotInput,
+  reason: StuckReason,
+  rung: DelegationKind | null,
+): AutopilotEffect {
+  return {
+    do: "escalate",
+    reason,
+    rung,
+    blockers: blockerFingerprint(detectBlockers(input.readiness)),
+  };
 }
 
 /** Judge a cycle already in flight. Split out so `autopilotStep` reads as the
@@ -339,10 +433,10 @@ function judgeCycle(cycle: Cycle, input: AutopilotInput): AutopilotEffect {
     // A second barren cycle on the same world means retrying is futile, not
     // unlucky — stop before spending the rest of the budget on it.
     if (barren && (state?.barren.includes(barren) ?? false)) {
-      return { do: "escalate", reason: "no-progress", rung: cycle.rung };
+      return stopIn(input, "no-progress", cycle.rung);
     }
     if (cycle.attempt >= (RUNG_BUDGET[cycle.rung] ?? 0)) {
-      return { do: "escalate", reason: "budget-spent", rung: cycle.rung };
+      return stopIn(input, "budget-spent", cycle.rung);
     }
     return { do: "retry", rung: cycle.rung, barren };
   };
@@ -360,7 +454,7 @@ function judgeCycle(cycle: Cycle, input: AutopilotInput): AutopilotEffect {
   // the cycle is better called inconclusive than successful.
   if (rung.do === "wait") {
     if (now - cycle.phaseSince > EVIDENCE_TIMEOUT_MS) {
-      return { do: "escalate", reason: "no-evidence", rung: cycle.rung };
+      return stopIn(input, "no-evidence", cycle.rung);
     }
     return { do: "wait", why: "awaiting-evidence" };
   }
