@@ -47,6 +47,22 @@ pub fn run_state(
 /// checkouts have no step budget to draw from.
 const VERIFY_TIMEOUT_SECS: u64 = 900;
 
+/// Releases an agent's `verify_inflight` slot however `run_verification` returns
+/// — including the `?` early exits below, which a manual `remove` would leak.
+struct VerifyGuard {
+    supervisor: Arc<Supervisor>,
+    agent_id: String,
+}
+
+impl Drop for VerifyGuard {
+    fn drop(&mut self) {
+        self.supervisor
+            .verify_inflight
+            .lock()
+            .remove(&self.agent_id);
+    }
+}
+
 /// Run the project's deterministic checks — install → test → lint — in an
 /// agent's checkout and return a [`crate::verify::VerificationReport`]. Resolves
 /// the target repo via `subdir` (primary when `None`) and layers the project's
@@ -59,6 +75,27 @@ pub async fn run_verification(
     subdir: Option<String>,
 ) -> Result<crate::verify::VerificationReport> {
     let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
+    // Serialize against the turn-end verification (`trigger_turn_end_verification`)
+    // and any other in-flight run for this agent. Both drive the same install /
+    // test / lint commands in the agent's checkout, so two at once race on the
+    // working tree and on whatever build cache the project shares — and only the
+    // turn-end path used to guard itself, leaving this command free to collide
+    // with it. Autopilot calls this after every cycle, so the collision went from
+    // theoretical to routine.
+    //
+    // Coarse on purpose: the key is the agent, not the checkout, because two
+    // checkouts of one agent still contend for CPU and for a shared dependency
+    // cache. Refusing is better than queueing here — the caller (Run panel or
+    // autopilot) can retry, and neither wants to block on a 15-minute test run.
+    if !supervisor.verify_inflight.lock().insert(agent_id.clone()) {
+        return Err(crate::error::Error::Other(format!(
+            "verification already running for agent {agent_id}"
+        )));
+    }
+    let _guard = VerifyGuard {
+        supervisor: supervisor.inner().clone(),
+        agent_id: agent_id.clone(),
+    };
     // Project-scoped command overrides (mirrors the tests gate's `run.test` /
     // `run.install`, plus `run.lint`). Empty project_id → detection only.
     let project_id = supervisor

@@ -41,6 +41,8 @@ const EMPTY_MAPS = {
   composerDrafts: {},
   delegations: {},
   delegationNotices: {},
+  autopilot: {},
+  autopilotVerdicts: {},
   unseenResults: {},
   rightPanelTabs: {},
 };

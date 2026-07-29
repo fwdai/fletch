@@ -14,6 +14,7 @@ import { UpdateToast } from "./components/UpdateToast";
 import { Workspace } from "./components/Workspace";
 import { ACCENT_VALUES } from "./data/providers";
 import { useAppStore } from "./store";
+import { useAutopilotSync } from "./store/autopilotSync";
 import { useDelegationSync } from "./store/delegationSync";
 import { useGitSync } from "./store/gitSync";
 import { useGlobalShortcuts } from "./util/shortcuts";
@@ -62,6 +63,8 @@ export function App() {
   // …and so does every in-flight delegation's lifecycle, so one running on an
   // agent the user has navigated away from still completes.
   useDelegationSync();
+  // …and the autopilot loop for checkouts the user enrolled.
+  useAutopilotSync();
 
   // Apply theme via html class; accent via CSS vars.
   useEffect(() => {

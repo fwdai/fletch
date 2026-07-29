@@ -4,6 +4,7 @@ import { delegationLabel } from "@/delegation";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import { ActionBar } from "./ActionBar";
+import { AutopilotChip } from "./AutopilotChip";
 import { ChangesList } from "./ChangesList";
 import { CommitComposer } from "./CommitComposer";
 import { ClosedPRCard, ConflictCard, PRCard } from "./cards";
@@ -187,6 +188,8 @@ export function GitRepoSection({
             onSubmit={() => runAction(effectiveKey)}
           />
         )}
+
+        <AutopilotChip agentId={agent.id} subdir={subdir} />
 
         <ActionBar
           statusKind={primary.statusKind}

@@ -9,6 +9,7 @@ import type { StateCreator } from "zustand";
 import type { AccountSlice } from "./account";
 import type { AppSlice } from "./app";
 import type { AppearanceSlice } from "./appearance";
+import type { AutopilotSlice } from "./autopilot";
 import type { ComposerSlice } from "./composer";
 import type { CustomAgentsSlice } from "./customAgents";
 import type { DraftsSlice } from "./drafts";
@@ -26,6 +27,7 @@ export type {
   AccountSlice,
   AppearanceSlice,
   AppSlice,
+  AutopilotSlice,
   ComposerSlice,
   CustomAgentsSlice,
   DockerBuildProgress,
@@ -53,6 +55,7 @@ export type AppState = AppSlice &
   UiSlice &
   AccountSlice &
   AppearanceSlice &
+  AutopilotSlice &
   ProvidersSlice &
   CustomAgentsSlice &
   SkillsSlice &
