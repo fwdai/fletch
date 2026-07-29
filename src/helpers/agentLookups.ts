@@ -67,6 +67,8 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   const prComments = dropScopedEntries(state.prComments, id);
   const delegations = dropScopedEntries(state.delegations, id);
   const delegationNotices = dropScopedEntries(state.delegationNotices, id);
+  const autopilot = dropScopedEntries(state.autopilot, id);
+  const autopilotVerdicts = dropScopedEntries(state.autopilotVerdicts, id);
   const { [id]: _short, ...gitShortstats } = state.gitShortstats;
   const { [id]: _seed, ...composerSeeds } = state.composerSeeds;
   const { [id]: _draft, ...composerDrafts } = state.composerDrafts;
@@ -93,6 +95,8 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     composerDrafts,
     delegations,
     delegationNotices,
+    autopilot,
+    autopilotVerdicts,
     unseenResults,
     rightPanelTabs,
   };

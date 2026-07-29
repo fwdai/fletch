@@ -58,6 +58,7 @@ import { getAllSettings } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { notify } from "@/util/notify";
 import { playAgentDone } from "@/util/sound";
+import { AUTOPILOT_SETTING, parseAutopilotEnrollment } from "./autopilot";
 import { interruptedAgents } from "./interrupted";
 import { stampPrWrite } from "./prWriteOrder";
 import { refreshWorkspace } from "./refreshWorkspace";
@@ -163,6 +164,11 @@ export const hydrateSettings = async (set: AppSet) => {
       // Admin unlocks the Developer settings section in production. Opt-in:
       // only an explicit "true" in the `admin` settings row grants it.
       admin: s.admin === "true",
+      // Autopilot enrollment (checkout key → paused). Only the user's intent is
+      // persisted; cycles and budgets always start fresh — an in-flight cycle's
+      // agent turn doesn't survive a restart either, so resuming one would mean
+      // judging a turn that never finished.
+      autopilot: parseAutopilotEnrollment(s[AUTOPILOT_SETTING]),
     });
   } catch {
     // First launch or DB not ready — defaults are fine.

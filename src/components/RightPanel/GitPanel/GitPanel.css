@@ -1077,3 +1077,72 @@
 .git-pr-set-chip:hover .ag-badge {
   filter: brightness(1.15);
 }
+
+/* ── Autopilot chip ────────────────────────────────────────────────────────
+   Sits in the footer above the action bar, next to the action it automates.
+   Quiet by default (off is the norm) and only takes on colour once it is
+   actually doing something or has stopped needing you. */
+.git-autopilot {
+  gap: 6px;
+  padding: 10px 18px 0;
+}
+.ap-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.ap-chip:hover {
+  color: var(--fg-1);
+  border-color: var(--bd-2);
+}
+.ap-chip svg {
+  width: 12px;
+  height: 12px;
+}
+/* On but idle: enrolled and watching, nothing to do — stated, not shouted. */
+.ap-chip.m-idle {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+/* Working: a turn is in flight. The spin marks it as live rather than stuck. */
+.ap-chip.m-working {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.ap-chip.m-working svg {
+  animation: ap-spin 1.6s linear infinite;
+}
+@keyframes ap-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ap-chip.m-paused {
+  color: var(--fg-3);
+}
+/* Stopped and waiting on a human — the one state that should catch the eye. */
+.ap-chip.m-stuck {
+  color: var(--warn, #d08770);
+  border-color: currentColor;
+}
+.ap-attempt {
+  opacity: 0.7;
+}
+.ap-off {
+  padding: 3px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+}
+.ap-off:hover {
+  color: var(--fg-1);
+}
