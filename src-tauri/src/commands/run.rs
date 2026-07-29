@@ -56,7 +56,10 @@ struct VerifyGuard {
 
 impl Drop for VerifyGuard {
     fn drop(&mut self) {
-        self.supervisor.verify_inflight.lock().remove(&self.agent_id);
+        self.supervisor
+            .verify_inflight
+            .lock()
+            .remove(&self.agent_id);
     }
 }
 
