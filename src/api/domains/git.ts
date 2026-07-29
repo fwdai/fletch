@@ -30,4 +30,9 @@ export const gitApi = {
   deleteBranchAgent: (agentId: string, subdir?: string) =>
     invoke<void>("delete_branch_agent", { agentId, subdir }),
   listRepoBranches: (repoPath: string) => invoke<string[]>("list_repo_branches", { repoPath }),
+  /** The repo's default branch, resolved from its remote — what the new-agent
+   *  screen pre-selects as the base. Never the branch the user currently has
+   *  checked out, and never a hardcoded "main" (which forks the wrong branch on
+   *  a master/develop repo). Infallible backend-side; falls back to "main". */
+  repoDefaultBranch: (repoPath: string) => invoke<string>("repo_default_branch", { repoPath }),
 };

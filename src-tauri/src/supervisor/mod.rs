@@ -95,6 +95,15 @@ pub struct Supervisor {
     /// at the next turn boundary (per-turn agents, or claude paused on a tool
     /// gate). In-memory only — see `message_queue`.
     pub message_queue: Mutex<MessageQueue>,
+    /// Agent ids whose workspace could not fetch its base branch from `origin`
+    /// at provision time, so it started from the ref inherited from the source
+    /// clone — possibly far behind the branch on the remote. Read at launch to
+    /// fold a heads-up into the agent's brief (see
+    /// `instructions::stale_base_note`) so it can tell the user, rather than
+    /// silently doing work against a stale base. In-memory and advisory: an app
+    /// restart clears it, which is fine — the warning is only useful while the
+    /// workspace is new.
+    pub stale_base: Mutex<HashSet<String>>,
     /// Agent ids whose current turn was stopped by the user. The dying process
     /// still converges on the Idle transition, so this flag lets the turn-end
     /// flush distinguish a natural completion (flush queued follow-ups) from a
@@ -139,6 +148,7 @@ impl Supervisor {
             deleting_projects: Mutex::new(HashSet::new()),
             respawn_pending: Mutex::new(HashSet::new()),
             message_queue: Mutex::new(MessageQueue::new()),
+            stale_base: Mutex::new(HashSet::new()),
             interrupted: Mutex::new(HashSet::new()),
             sync_health: Arc::new(Mutex::new(HashMap::new())),
             verify_inflight: Arc::new(Mutex::new(HashSet::new())),

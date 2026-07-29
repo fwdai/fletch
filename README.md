@@ -7,7 +7,7 @@
 
 ### A new kind of IDE for agentic engineering.
 
-Run Claude Code, Codex, Cursor, OpenCode and more in parallel, each in an isolated sandbox, chained into deterministic workflows that plan, build, review, and test.
+Run Claude Code, Codex, Cursor, OpenCode and more in sealed workspaces, each with its own repo clone and a served index of your codebase, chained into deterministic workflows that plan, build, review, and test.
 
 [![Download for macOS](https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon%20%26%20Intel-111?style=for-the-badge&logo=apple)](https://fletch.sh)
 
@@ -47,6 +47,8 @@ If you want to fire off a dozen agents and merge whatever comes back, there are 
 ## What you get
 
 **Real isolation.** Every agent gets its own full clone of your repo (shared git objects make spawning effectively free), sandboxed by macOS Seatbelt by default or by an opt-in Docker container per agent. Either way, an agent can't touch your repo, your machine, or another agent's work.
+
+**Agents that know your codebase.** Isolation has a cost nobody mentions: an agent alone in a fresh clone has to rediscover your project by grepping. So Fletch indexes your repo's symbols and call graph and serves it to every agent as an MCP server — an agent asks where a symbol is defined and what calls it instead of reading files until it finds out. The index is built in a throwaway mirror clone and copied into each workspace, so nothing is ever written to your repo, and a file watcher keeps it current as the agent edits. Built on [codegraph](https://github.com/colbymchenry/codegraph), which Fletch vendors and drives rather than reimplements. Best-effort by design: if indexing fails, the agent falls back to searching files and the run continues. On by default, with a toggle in Settings.
 
 **Deterministic workflows.** Define a pipeline once (architect, coder, reviewer, tester) and launch it on any task. Steps hand context forward, loops repeat _review → fix_ until a verdict says done, parallel blocks fan work out and join it back. Control flow belongs to the engine, not to an LLM: gates are checked, budgets (turns, iterations, wall-clock, tokens) are enforced, every pause names its cause, and runs survive an app restart. Workflows are shareable YAML.
 

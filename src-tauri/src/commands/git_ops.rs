@@ -79,6 +79,16 @@ pub async fn list_repo_branches(repo_path: String) -> Result<Vec<String>> {
     git::list_local_branches(Path::new(&repo_path)).await
 }
 
+/// The repo's default branch — what the new-agent screen pre-selects as the
+/// base, instead of assuming `"main"` (which silently forks the wrong branch on
+/// a `master`/`develop` repo). Resolved from the repo's remote, never from the
+/// branch the user currently has checked out; see `git::default_branch`.
+/// Infallible by construction — falls back to `"main"` on its own.
+#[tauri::command]
+pub async fn repo_default_branch(repo_path: String) -> Result<String> {
+    Ok(git::default_branch(Path::new(&repo_path)).await)
+}
+
 /// Force-delete the agent's local branch from its parent repository.
 /// Used by the merged-state UI to clean up after a PR lands. Safe-noops
 /// if the branch is already gone (matches `git::branch_delete` semantics).
@@ -113,6 +123,12 @@ pub async fn rebase_agent(
     subdir: Option<String>,
 ) -> Result<()> {
     let (repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    let base = repo.parent_branch.as_deref().unwrap_or("main");
-    git::rebase_onto(&checkout, base).await
+    // `parent_branch` is always recorded at spawn now; the fallback only covers
+    // rows written before that, and resolves the repo's real default rather than
+    // assuming `"main"`.
+    let base = match repo.parent_branch.as_deref() {
+        Some(b) => b.to_string(),
+        None => git::default_branch(&repo.repo_path).await,
+    };
+    git::rebase_onto(&checkout, &base).await
 }

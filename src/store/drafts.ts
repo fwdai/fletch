@@ -5,6 +5,7 @@ import { discoverCommands } from "@/data/slashCommands";
 import {
   draftNames,
   expandSlashCommand,
+  resolveBaseBranch,
   resolveSkillInvocation,
   sendWhenAgentReady,
   snapshotAgentDeliverables,
@@ -143,7 +144,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       provider: selection.provider,
       model: selection.model,
       customAgentId,
-      base: "main",
+      base: await resolveBaseBranch(repoPath),
     };
     set((s) => ({
       drafts: [draft, ...s.drafts],
@@ -167,7 +168,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       provider: selection.provider,
       model: selection.model,
       customAgentId,
-      base: "main",
+      base: await resolveBaseBranch(repoPath),
       issueRef: issue.key,
     };
     // Seed the composer for this draft (read as its initial text on mount) with

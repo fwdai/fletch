@@ -306,6 +306,9 @@ impl Supervisor {
             }
         }
         self.interrupted.lock().remove(agent_id);
+        // The stale-base warning belongs to one provisioning of one workspace:
+        // a restore re-provisions from scratch and re-decides for itself.
+        self.stale_base.lock().remove(agent_id);
         self.shells.lock().remove(agent_id);
         if let Some(run) = self.runs.lock().remove(agent_id) {
             run.stop();
