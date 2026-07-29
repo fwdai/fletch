@@ -59,6 +59,7 @@ function checks(over: Partial<PrChecks>): PrChecks {
 
 const comments = (n: number): PrComments => ({
   unresolved: Array.from({ length: n }, (_, i) => ({
+    id: `t${i}`,
     author: "bot",
     is_bot: true,
     body: `c${i}`,
@@ -66,6 +67,7 @@ const comments = (n: number): PrComments => ({
     line: null,
     url: `u${i}`,
     replies: 0,
+    we_replied_last: false,
   })),
 });
 

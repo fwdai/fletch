@@ -57,8 +57,13 @@ export type Blocker =
    *  masquerading as a fact. The local verifier (`verify.rs`) *does* know the
    *  difference — when its report becomes an input, the split can be real. */
   | { kind: "checks-failing"; checks: string[] }
-  /** Review threads nobody has addressed. */
+  /** Review threads waiting on us: nobody has replied, or the human answered our
+   *  last word and it's our turn again. */
   | { kind: "review-unaddressed"; count: number }
+  /** Open threads where WE had the last word — the agent pushed back and left
+   *  them open on purpose. Nothing more to do here; a person has to settle the
+   *  disagreement, so the ladder escalates rather than re-arguing. */
+  | { kind: "review-disputed"; count: number }
   /** A human has to approve. Not agent-fixable — the ladder escalates. */
   | { kind: "review-required" }
   /** Still a draft, so it isn't really proposed yet. Human-owned. */
@@ -136,8 +141,14 @@ export function detectBlockers({ git, pr, checks, comments }: ReadinessInput): B
         // the failing names are informational, not blocking.
         break;
     }
-    const unresolved = comments?.unresolved.length ?? 0;
-    if (unresolved > 0) blockers.push({ kind: "review-unaddressed", count: unresolved });
+    // Split by who holds the conversation. A thread we replied to last is a
+    // deliberate push-back awaiting a human; treating it as "unaddressed" would
+    // make the agent re-argue the same point every cycle.
+    const threads = comments?.unresolved ?? [];
+    const ours = threads.filter((t) => t.we_replied_last).length;
+    const theirs = threads.length - ours;
+    if (theirs > 0) blockers.push({ kind: "review-unaddressed", count: theirs });
+    if (ours > 0) blockers.push({ kind: "review-disputed", count: ours });
   }
 
   return blockers;
@@ -261,11 +272,21 @@ export function nextRung(input: ReadinessInput, ctx: LadderContext): Rung {
   const human = find("review-required") ?? find("draft") ?? find("proposal-closed");
   if (human) return { do: "escalate", blocker: human };
 
-  // No rung addresses review threads yet — the delegation kind and its playbook
-  // arrive with the comments slice. Escalating (rather than silently treating a
-  // commented PR as ready) keeps the honest answer: a human should look.
-  const comments = find("review-unaddressed");
-  if (comments) return { do: "escalate", blocker: comments };
+  const unaddressed = find("review-unaddressed");
+  if (unaddressed) {
+    return {
+      do: "delegate",
+      kind: "resolve-comments",
+      action: "resolve-comments",
+      params: { count: String(unaddressed.count) },
+      blocker: unaddressed,
+    };
+  }
+
+  // Only threads we already pushed back on remain. There is no remediation for a
+  // disagreement — the whole point of leaving them open is that a person decides.
+  const disputed = find("review-disputed");
+  if (disputed) return { do: "escalate", blocker: disputed };
 
   // Only an open proposal HAS a merge gate. Consulting it otherwise reads
   // GitHub's "not computed yet" as "still resolving" and parks forever on a

@@ -30,7 +30,7 @@ pub use client::{git_auth_env, seed_token, set_token, TOKEN_SETTING};
 pub(crate) use closes::with_closes_trailer;
 
 pub use checks::*;
-pub use comments::pr_threads_number;
+pub use comments::{pr_reply_thread, pr_resolve_thread, pr_threads_number};
 pub use issues::*;
 pub use live::*;
 pub use pr::*;

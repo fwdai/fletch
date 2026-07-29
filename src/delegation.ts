@@ -27,7 +27,8 @@ export type DelegationKind =
   | "push"
   | "resolve"
   | "update-branch"
-  | "fix-checks";
+  | "fix-checks"
+  | "resolve-comments";
 
 export interface Delegation {
   kind: DelegationKind;
@@ -132,6 +133,12 @@ export function actionProvesKind(kind: DelegationKind, op: string): boolean {
       return op === "open_pr";
     case "push":
       return op === "git_push";
+    case "resolve-comments":
+      // Any thread action proves the turn engaged with the review. Resolution
+      // still gates completion (no threads left needing us), so accepting a bare
+      // reply here is safe — and necessary, since a turn that only pushed back is
+      // a legitimate outcome that resolves nothing.
+      return op === "reply_thread" || op === "resolve_thread";
     case "update-branch":
       // Proven only by an actual base merge: a clean merge fires the clone's
       // post-merge hook, and a conflicted merge's completing commit is a merge
@@ -180,6 +187,8 @@ export function delegationLabel(kind: DelegationKind): string {
       return "Agent is updating the branch…";
     case "fix-checks":
       return "Agent is fixing the failing checks…";
+    case "resolve-comments":
+      return "Agent is working through the review comments…";
   }
 }
 
@@ -202,6 +211,8 @@ export function delegationDone(kind: DelegationKind): string {
       return "Branch updated";
     case "fix-checks":
       return "Agent finished — checks are re-running";
+    case "resolve-comments":
+      return "Review comments addressed";
   }
 }
 
@@ -239,6 +250,11 @@ export function delegationResolved(
       if (checks) return !["behind", "dirty", "unknown"].includes(checks.merge_state);
       return pr?.mergeable === "mergeable";
     case "fix-checks":
+      return false;
+    case "resolve-comments":
+      // Threads only clear once GitHub reports them resolved, which the slow
+      // comments poll picks up. Like fix-checks, the caller resolves this on
+      // agent-idle and lets the polling carry the story.
       return false;
   }
 }

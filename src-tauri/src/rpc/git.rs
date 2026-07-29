@@ -31,7 +31,10 @@ pub const EVENT_ACTION_DONE: &str = "git.action_done";
 /// (status, fetch) and the test ops (echo/ping) are excluded so they never read
 /// as a completed delegation.
 fn is_mutating_op(op: &str) -> bool {
-    matches!(op, "git_push" | "open_pr")
+    matches!(
+        op,
+        "git_push" | "open_pr" | "reply_thread" | "resolve_thread"
+    )
 }
 
 /// The local-git action names a delegation hook may report. Kept to a closed
@@ -185,6 +188,16 @@ impl GitDispatcher {
             // (post-commit / post-merge). Not a mutation the host performs —
             // it only relays that the agent's native git action ran.
             "signal_git_action" => self.signal_git_action(id, args),
+            // Review-thread actions. Both need the host's token, so the agent
+            // can't call GitHub itself. Kept as two ops rather than one
+            // "address this thread" because the outcomes genuinely differ: a
+            // fix or an answer replies AND resolves, while a push-back replies
+            // and deliberately leaves the thread open for the human to settle.
+            // Read side: the agent needs each thread's node id (and who wrote
+            // it) before it can reply to or resolve anything.
+            "pr_threads" => (self.pr_threads(id, args).await, Vec::new()),
+            "reply_thread" => (self.reply_thread(id, args).await, Vec::new()),
+            "resolve_thread" => (self.resolve_thread(id, args).await, Vec::new()),
             "echo" => (self.echo(id, args).await, Vec::new()),
             "ping" => (
                 Response::ok(id, 0, "pong".to_string(), String::new()),
@@ -213,6 +226,58 @@ impl GitDispatcher {
             ));
         }
         (resp, effects)
+    }
+
+    /// The open review threads on this checkout's pull request, as JSON. Two
+    /// round trips (resolve the PR by branch, then read its threads) — fine for a
+    /// once-per-turn agent read, unlike the panel's poll which is given a number.
+    async fn pr_threads(&self, id: &str, args: &Value) -> Response {
+        let t = match self.target(id, args) {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        let number = match crate::github::pr_view(&t.cwd).await {
+            Ok(Some(pr)) => pr.number,
+            Ok(None) => return Response::err(id, "pr_threads: no pull request for this branch"),
+            Err(e) => return Response::err(id, format!("pr_threads: {e}")),
+        };
+        match crate::github::pr_threads_number(&t.cwd, None, number).await {
+            Ok(Some(threads)) => match serde_json::to_string_pretty(&threads.unresolved) {
+                Ok(json) => Response::ok(id, 0, json, String::new()),
+                Err(e) => Response::err(id, format!("pr_threads: {e}")),
+            },
+            Ok(None) => Response::ok(id, 0, "[]".to_string(), String::new()),
+            Err(e) => Response::err(id, format!("pr_threads: {e}")),
+        }
+    }
+
+    /// Post a reply on a review thread. Every outcome carries one — a fix says
+    /// what changed, an answer answers, a push-back gives its reasoning — so this
+    /// is the audit trail for work nobody watched happen.
+    async fn reply_thread(&self, id: &str, args: &Value) -> Response {
+        let (Some(thread), Some(body)) = (
+            args.get("thread").and_then(|v| v.as_str()),
+            args.get("body").and_then(|v| v.as_str()),
+        ) else {
+            return Response::err(id, "reply_thread requires `thread` and `body`");
+        };
+        match crate::github::pr_reply_thread(thread, body).await {
+            Ok(()) => Response::ok(id, 0, "replied".to_string(), String::new()),
+            Err(e) => Response::err(id, format!("reply_thread: {e}")),
+        }
+    }
+
+    /// Mark a review thread resolved. Only ever a claim that the thread is
+    /// discharged; a disagreement must be left open, which is why this is
+    /// separate from `reply_thread` instead of a flag on it.
+    async fn resolve_thread(&self, id: &str, args: &Value) -> Response {
+        let Some(thread) = args.get("thread").and_then(|v| v.as_str()) else {
+            return Response::err(id, "resolve_thread requires `thread`");
+        };
+        match crate::github::pr_resolve_thread(thread).await {
+            Ok(()) => Response::ok(id, 0, "resolved".to_string(), String::new()),
+            Err(e) => Response::err(id, format!("resolve_thread: {e}")),
+        }
     }
 
     async fn echo(&self, id: &str, args: &Value) -> Response {

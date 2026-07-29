@@ -6,7 +6,14 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { CheckOutcome, GitState, PrChecks, PrState, VerificationReport } from "@/api";
+import type {
+  CheckOutcome,
+  GitState,
+  PrChecks,
+  PrComment,
+  PrState,
+  VerificationReport,
+} from "@/api";
 import {
   type AutopilotInput,
   type AutopilotState,
@@ -389,6 +396,87 @@ describe("the reconcile rungs", () => {
     for (const rung of ["resolve", "update-branch"] as const) {
       expect(RUNG_BUDGET[rung]).toBe(2);
     }
+  });
+});
+
+describe("the review-comments rung", () => {
+  const thread = (id: string, over: Partial<PrComment> = {}): PrComment => ({
+    id,
+    author: "greptileai",
+    is_bot: true,
+    body: "Consider the null case",
+    path: "a.ts",
+    line: 1,
+    url: "https://x",
+    replies: 0,
+    we_replied_last: false,
+    ...over,
+  });
+  const withThreads = (...t: PrComment[]): ReadinessInput => ({
+    ...GREEN,
+    comments: { unresolved: t },
+  });
+
+  it("works threads that are waiting on us, with the count", () => {
+    expect(step({ readiness: withThreads(thread("t1"), thread("t2")) })).toMatchObject({
+      do: "dispatch",
+      rung: "resolve-comments",
+      params: { count: "2" },
+    });
+  });
+
+  it("never re-argues a thread it already pushed back on, and says so specifically", () => {
+    // We replied last and left it open on purpose. Re-dispatching would post a
+    // duplicate reply into a real person's conversation every cycle. The reason is
+    // its own kind: the next step is reading that thread, not eyeballing the PR.
+    expect(step({ readiness: withThreads(thread("t1", { we_replied_last: true })) })).toEqual({
+      do: "escalate",
+      reason: "disputed-review",
+      rung: null,
+    });
+  });
+
+  it("engages again once the human answers", () => {
+    // `we_replied_last` flips false when they reply after us — new input, our turn.
+    expect(step({ readiness: withThreads(thread("t1", { replies: 2 })) })).toMatchObject({
+      do: "dispatch",
+      rung: "resolve-comments",
+    });
+  });
+
+  it("is judged by the threads, not by the tests", () => {
+    // A comment round can legitimately change no code — answering a question,
+    // pushing back — so a failing test result says nothing about whether it worked.
+    expect(
+      step({ state: state({ cycle: cycle({ rung: "resolve-comments", phase: "working" }) }) }),
+    ).toEqual({ do: "await-evidence" });
+    expect(
+      step({
+        state: state({ cycle: cycle({ rung: "resolve-comments", phase: "awaiting-evidence" }) }),
+        readiness: GREEN,
+        verification: report(["test", "failed"]),
+      }),
+    ).toEqual({ do: "settle", rung: "resolve-comments" });
+  });
+
+  it("counts a push-back as progress, not as a barren cycle", () => {
+    // The thread went from "needs us" to "waiting on them". No code moved and the
+    // thread is still open, so without the signature tracking that flag this would
+    // look like a cycle that achieved nothing.
+    const before = withThreads(thread("t1"));
+    const after = withThreads(thread("t1", { we_replied_last: true }));
+    expect(stateSignature(before)).not.toBe(stateSignature(after));
+  });
+
+  it("counts a partial round as progress", () => {
+    // Three threads down to one: real work, even though the sha may not have moved.
+    const before = withThreads(thread("t1"), thread("t2"), thread("t3"));
+    const after = withThreads(thread("t3"));
+    expect(stateSignature(before)).not.toBe(stateSignature(after));
+  });
+
+  it("gets two attempts — each one posts into a real conversation", () => {
+    expect(RUNG_BUDGET["resolve-comments"]).toBe(2);
   });
 });
 

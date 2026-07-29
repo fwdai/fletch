@@ -64,6 +64,9 @@ export interface PrChecks {
 
 /** One unresolved PR review thread, flattened to its root comment. */
 export interface PrComment {
+  /** The review thread's node id — what the agent's `reply_thread` /
+   *  `resolve_thread` ops address. */
+  id: string;
   author: string;
   /** Author is a GitHub App / bot (Greptile, CodeRabbit, …). Bots phrase
    *  their comments for an AI already, so the panel inserts them as-is;
@@ -75,6 +78,12 @@ export interface PrComment {
   url: string;
   /** Replies after the root comment. */
   replies: number;
+  /** We posted the last comment on this still-open thread: we've had our say and
+   *  are waiting on the human. Set when the agent pushed back on a comment and
+   *  deliberately left it open — read off GitHub rather than tracked locally, so
+   *  it survives a restart and can tell "waiting on them" from "they answered,
+   *  engage again". */
+  we_replied_last: boolean;
 }
 
 /** Unresolved review threads for a PR — polled on the slow checks cadence. */
