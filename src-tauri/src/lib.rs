@@ -1363,6 +1363,16 @@ pub fn run() {
 
             let db_for_wf = db.clone();
             let workspace = Arc::new(WorkspaceManager::new(db));
+
+            // Drop RPC mailboxes left by agents that are gone. Teardown removes
+            // them now, but installs predating that carry one leaked dir per
+            // agent ever spawned. Runs before anything spawns, so every mailbox
+            // present is either a live agent's or an orphan.
+            match workspace.live_agent_ids() {
+                Ok(live) => crate::rpc::sweep_orphan_mailboxes(&live),
+                Err(e) => tracing::warn!(error = %e, "skipping rpc mailbox sweep"),
+            }
+
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
 

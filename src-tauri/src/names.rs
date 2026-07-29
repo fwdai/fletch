@@ -330,11 +330,11 @@ pub fn allocate(used: &HashSet<String>) -> String {
             return candidate.to_string();
         }
     }
-    // Every random pick collided. With a ~300-name pool this is vanishingly
-    // rare unless `used` is large — and `used` folds in every on-disk checkout
-    // across all builds sharing the root, so hitting this points at namespace
-    // saturation or a pile-up of orphaned dirs. Log loudly with the set size so
-    // the cause is diagnosable rather than a silent `-2`.
+    // Every random pick collided. `used` is only the caller's live agents (plus
+    // any open drafts), so against a ~300-name pool this should be vanishingly
+    // rare — reaching it means `used` is far larger than the live agent count
+    // and something is over-reserving names. Log the set size so that shows up
+    // as a number rather than a silent `-2`.
     let base = pick_random();
     let mut n: u32 = 2;
     loop {

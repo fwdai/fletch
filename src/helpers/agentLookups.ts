@@ -25,13 +25,17 @@ export function needsSessionIdRefresh(workspace: Workspace | null, agentId: stri
   return !!agent && !agent.session_id;
 }
 
-/** Names already taken by real or draft agents — passed to the backend
- *  name allocator so picks avoid collisions. */
-export function usedNames(workspace: Workspace | null, drafts: DraftAgent[]): Set<string> {
-  const used = new Set<string>();
-  for (const a of workspace?.agents ?? []) used.add(a.name);
-  for (const d of drafts) used.add(d.name);
-  return used;
+/** Names held by open drafts — the only reserved names the backend can't see
+ *  for itself, since a draft isn't persisted until it spawns. Everything else
+ *  taken is a live agent, which `allocate_draft_name` reads from the DB.
+ *
+ *  This used to also fold in `workspace.agents`, but that list carries archived
+ *  agents (History reads the same one), so every archive permanently burned a
+ *  slot in the ~300-name pool and pushed new workspaces onto `-2` suffixes.
+ *  Sending agents at all was the mistake — the DB already knows which are
+ *  live, so the frontend no longer gets a say. */
+export function draftNames(drafts: DraftAgent[]): string[] {
+  return drafts.map((d) => d.name);
 }
 
 /** Drop an agent's entries from a repo-scoped map: the plain `id` key (the

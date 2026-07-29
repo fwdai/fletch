@@ -4,6 +4,26 @@
 use super::*;
 
 impl WorkspaceManager {
+    /// Ids of every live (non-archived) agent in this build's DB — the set of
+    /// names that are actually reserved. Archived agents have had their
+    /// checkout and mailbox torn down, so their name is free to reuse.
+    ///
+    /// The one definition of "taken", shared by the draft-name preview
+    /// (`allocate_draft_name`) and the startup mailbox sweep. Callers never
+    /// assemble this set themselves — a caller-supplied set is how archived
+    /// agents once leaked into name allocation and saturated the pool.
+    /// `add_agent_allocating` runs the same query, but inline, because it must
+    /// read inside its own `IMMEDIATE` transaction to stay serialized.
+    pub fn live_agent_ids(&self) -> Result<HashSet<String>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE archived_at IS NULL")?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
+
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;

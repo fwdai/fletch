@@ -153,6 +153,75 @@ pub fn ensure_mailbox(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Remove one agent's mailbox. Called from teardown (archive / discard)
+/// alongside the checkout removal, so a mailbox's lifetime matches the agent's
+/// rather than accumulating one dead dir per agent ever spawned. Best-effort
+/// and idempotent: an already-absent dir is success, and any other error is the
+/// caller's to log — a surviving mailbox is wasted disk, never a correctness
+/// problem (`ensure_mailbox` recreates and re-chmods at the next spawn).
+pub fn remove_mailbox(agent_id: &str) -> Result<()> {
+    let dir = mailbox_dir(agent_id)?;
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Other(format!(
+            "remove rpc mailbox {}: {e}",
+            dir.display()
+        ))),
+    }
+}
+
+/// Startup sweep: drop every mailbox that doesn't belong to a live agent.
+///
+/// Teardown removes an agent's mailbox from now on, but installs predating that
+/// carry one leaked dir per agent ever spawned, and a crash between spawn and
+/// teardown can still leak one. `live` is this build's non-archived agent ids
+/// (see `WorkspaceManager::live_agent_ids`) — the same set the name allocator
+/// treats as reserved, so the two never disagree about who's alive.
+///
+/// Skipped when `RPC_ROOT_ENV` is set: that's the nested-Fletch redirect, whose
+/// pid-keyed roots are reclaimed by `sandbox::cleanup_nested_rpc_roots`, and
+/// whose live agents belong to a different build's DB than `live`.
+pub fn sweep_orphan_mailboxes(live: &HashSet<String>) {
+    if std::env::var_os(RPC_ROOT_ENV)
+        .filter(|v| !v.is_empty())
+        .is_some()
+    {
+        return;
+    }
+    let Ok(root) = rpc_root() else { return };
+    sweep_orphan_mailboxes_in(&root, live);
+}
+
+/// Testable core of [`sweep_orphan_mailboxes`]: within `root`, remove every
+/// subdir whose name isn't in `live`. Split out so tests don't have to mutate
+/// the process-global `RPC_ROOT_ENV` (which the public fn treats as "skip"),
+/// mirroring `workspace::paths::migrate_checkouts_root_in`. A missing root, a
+/// non-dir entry, and a per-entry failure are all skipped rather than fatal.
+pub(crate) fn sweep_orphan_mailboxes_in(root: &Path, live: &HashSet<String>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if live.contains(&name) || !entry.path().is_dir() {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(e) => {
+                tracing::warn!(agent_id = %name, error = %e, "orphan rpc mailbox removal failed")
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!(removed, live = live.len(), "swept orphan rpc mailboxes");
+    }
+}
+
 /// Process every pending request file once: parse -> dispatch -> write
 /// response -> delete the request. Driven on a fixed tick by the per-agent
 /// watcher. Errors on a single request are logged and isolated — one bad file
@@ -324,6 +393,67 @@ mod tests {
 
     fn write_request(requests: &Path, name: &str, body: &str) {
         std::fs::write(requests.join(name), body).unwrap();
+    }
+
+    fn live(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn sweep_removes_only_mailboxes_without_a_live_agent() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        for name in ["everest", "yellowstone", "gobi"] {
+            ensure_mailbox(&root.join(name)).unwrap();
+        }
+
+        sweep_orphan_mailboxes_in(root, &live(&["everest"]));
+
+        assert!(root.join("everest").is_dir(), "live mailbox was removed");
+        assert!(!root.join("yellowstone").exists());
+        assert!(!root.join("gobi").exists());
+    }
+
+    #[test]
+    fn sweep_removes_a_mailbox_with_pending_traffic_in_it() {
+        // A crashed agent leaves request/response files behind; the sweep must
+        // still clear the dir rather than trip on a non-empty removal.
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        let dir = root.join("gobi");
+        ensure_mailbox(&dir).unwrap();
+        write_request(&dir.join("requests"), "abc.json", r#"{"op":"echo"}"#);
+
+        sweep_orphan_mailboxes_in(root, &HashSet::new());
+
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn sweep_leaves_stray_files_and_a_missing_root_alone() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        std::fs::write(root.join("notes.txt"), "not a mailbox").unwrap();
+
+        sweep_orphan_mailboxes_in(root, &HashSet::new());
+        sweep_orphan_mailboxes_in(&root.join("does-not-exist"), &HashSet::new());
+
+        assert!(
+            root.join("notes.txt").is_file(),
+            "non-dir entry was removed"
+        );
+    }
+
+    #[test]
+    fn sweep_is_idempotent() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        ensure_mailbox(&root.join("gobi")).unwrap();
+
+        sweep_orphan_mailboxes_in(root, &HashSet::new());
+        sweep_orphan_mailboxes_in(root, &HashSet::new());
+
+        assert!(!root.join("gobi").exists());
     }
 
     struct MockDispatcher;
