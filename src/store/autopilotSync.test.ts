@@ -36,6 +36,7 @@ vi.mock("@/store", () => ({
 }));
 
 import { createAutopilotSlice } from "./autopilot";
+import { createAutopilotLogSlice } from "./autopilotLog";
 import { autopilotPass } from "./autopilotSync";
 import { checkoutKey, createGitSlice } from "./git";
 import type { AppState } from "./types";
@@ -107,6 +108,9 @@ function makeStore({ autopilot, agents }: Fixture) {
       ({
         ...createGitSlice(...a),
         ...createAutopilotSlice(...a),
+        // The applier records every meaningful effect to the audit log, so the
+        // store it runs against needs that slice too.
+        ...createAutopilotLogSlice(...a),
       }) as AppState,
   );
   const per = <T>(value: T) => Object.fromEntries(Object.keys(autopilot).map((k) => [k, value]));
@@ -318,5 +322,73 @@ describe("autopilotPass drops an enrollment whose agent is gone", () => {
 
     expect(store.getState().autopilot).toEqual({});
     expect(sendUserMessage).not.toHaveBeenCalled();
+  });
+});
+
+// ── audit log wiring ─────────────────────────────────────────────────────────
+// The log slice is tested in isolation (autopilotLog.test.ts); what is only
+// testable here is that the applier actually FEEDS it, with the attempt number
+// read at the point it is correct. A dispatch has no cycle until
+// `openAutopilotCycle` creates one, so logging too early records `undefined`.
+
+describe("autopilotPass records what it did", () => {
+  it("logs a dispatch with the attempt number of the cycle it just opened", async () => {
+    const { store } = makeStore({
+      autopilot: { [key.primary]: state() },
+      agents: { a1: "idle" },
+    });
+
+    await autopilotPass([key.primary], new Set());
+
+    const log = store.getState().autopilotLog[key.primary];
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({ outcome: "dispatch", rung: "fix-checks", attempt: 1 });
+    expect(log[0].at).toBeGreaterThan(0);
+  });
+
+  it("carries the attempt number forward, so a retry reads as the try it was", async () => {
+    // Second cycle on the same rung: the entry has to say #2, which is the whole
+    // reason the attempt is read from the cycle rather than counted in the log.
+    const { store } = makeStore({
+      autopilot: { [key.primary]: state({ attempts: { "fix-checks": 1 } }) },
+      agents: { a1: "idle" },
+    });
+
+    await autopilotPass([key.primary], new Set());
+
+    expect(store.getState().autopilotLog[key.primary][0]).toMatchObject({
+      outcome: "dispatch",
+      attempt: 2,
+    });
+  });
+
+  it("logs an escalation with the reason that stopped it", async () => {
+    // Budget spent: the pass escalates instead of dispatching, and the log has to
+    // record WHY — that reason is the only explanation the user ever gets.
+    const { store } = makeStore({
+      autopilot: { [key.primary]: state({ attempts: { "fix-checks": 3 } }) },
+      agents: { a1: "idle" },
+    });
+
+    await autopilotPass([key.primary], new Set());
+
+    expect(store.getState().autopilotLog[key.primary][0]).toMatchObject({
+      outcome: "escalate",
+      reason: "budget-spent",
+      rung: "fix-checks",
+    });
+  });
+
+  it("stays silent on a tick with nothing to do", async () => {
+    // `wait` is most ticks. Logging them would bury the handful of entries that
+    // explain what actually happened.
+    const { store } = makeStore({
+      autopilot: { [key.primary]: state() },
+      agents: { a1: "running" },
+    });
+
+    await autopilotPass([key.primary], new Set());
+
+    expect(store.getState().autopilotLog[key.primary]).toBeUndefined();
   });
 });

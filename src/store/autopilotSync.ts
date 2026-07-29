@@ -19,6 +19,7 @@ import { type AutopilotEffect, autopilotStep } from "@/autopilot";
 import { appActionMessage } from "@/delegation";
 import { useAppStore } from "@/store";
 import { usePoll } from "@/util/hooks";
+import type { AutopilotLogEntry } from "./autopilotLog";
 import { splitCheckoutKey } from "./git";
 
 /** How often to evaluate enrolled checkouts. Slower than the git poll on
@@ -118,9 +119,21 @@ async function apply(
   verifying: Set<string>,
 ) {
   const s = useAppStore.getState();
+  // Log the four effects a user would want to know about (see `autopilotLog`).
+  // `wait` is most ticks and would bury them; `verify` / `await-evidence` are
+  // steps inside a cycle whose outcome already reports how it went. Each call
+  // sits where the attempt number is correct — a dispatch has no cycle until
+  // `openAutopilotCycle` creates one, while settle/retry read the cycle the
+  // action they precede is about to clear. Stamped with the pass's `now` rather
+  // than a fresh clock read, so an entry's time matches the decision behind it.
+  const log = (entry: Omit<AutopilotLogEntry, "at">) =>
+    useAppStore.getState().recordAutopilotEvent(key, { at: now, ...entry });
+  const attemptNow = () => useAppStore.getState().autopilot[key]?.cycle?.attempt;
+
   switch (effect.do) {
     case "dispatch": {
       s.openAutopilotCycle(key, effect.rung, effect.signature);
+      log({ outcome: "dispatch", rung: effect.rung, attempt: attemptNow() });
       // Same trigger construction the panel and Mission Control use, including
       // the `repo=` scope for a secondary checkout.
       s.delegateAction(
@@ -159,12 +172,15 @@ async function apply(
       return;
     }
     case "settle":
+      log({ outcome: "settle", rung: effect.rung, attempt: attemptNow() });
       s.settleAutopilotCycle(key, effect.rung);
       return;
     case "retry":
+      log({ outcome: "retry", rung: effect.rung, attempt: attemptNow() });
       s.retryAutopilotCycle(key, effect.rung, effect.barren);
       return;
     case "escalate":
+      log({ outcome: "escalate", rung: effect.rung, reason: effect.reason });
       s.markAutopilotStuck(key, effect.reason, effect.rung, now);
       return;
     case "wait":
