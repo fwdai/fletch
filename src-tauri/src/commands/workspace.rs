@@ -11,14 +11,27 @@ use crate::new_project;
 use crate::supervisor::Supervisor;
 use crate::workspace::{ProjectDeleteResult, Workspace};
 
-/// Allocate a fresh name from the place pool for a draft agent. The frontend
-/// passes the names already taken (live agents + other open drafts); the
-/// per-build DB is authoritative for the rest, so there's nothing else to fold
-/// in. This is only a preview — `add_agent_allocating` is authoritative at create.
+/// Allocate a fresh name from the place pool for a draft agent.
+///
+/// Not a throwaway preview: a draft carries its name into `spawn_agent`, which
+/// pins it via `add_agent` (see `lifecycle.rs`), so whatever this returns is
+/// the agent's real name — `add_agent_allocating` only runs for the draft-less
+/// path. The reserved set is therefore load-bearing, and the DB owns it:
+/// `live_agent_ids` supplies the live agents, and the caller passes *only*
+/// `drafts` — the open, unpersisted drafts, the one piece of state the frontend
+/// has that the DB can't see.
+///
+/// Deliberately not "caller passes everything that's taken": that let a
+/// frontend set that also counted archived agents saturate the ~300-name pool
+/// and push roughly a quarter of new workspaces onto a `-2` suffix.
 #[tauri::command]
-pub fn allocate_draft_name(used: Vec<String>) -> String {
-    let reserved: std::collections::HashSet<String> = used.into_iter().collect();
-    names::allocate(&reserved)
+pub fn allocate_draft_name(
+    supervisor: State<'_, Arc<Supervisor>>,
+    drafts: Vec<String>,
+) -> Result<String> {
+    let mut reserved = supervisor.workspace.live_agent_ids()?;
+    reserved.extend(drafts);
+    Ok(names::allocate(&reserved))
 }
 
 /// Pin a folder as a workspace project. A folder that isn't a git repository

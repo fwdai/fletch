@@ -110,5 +110,7 @@ export const agentsApi = {
   restoreAgent: (agentId: string) => invoke<void>("restore_agent", { agentId }),
   addRepoToAgent: (agentId: string, repoPath: string) =>
     invoke<TrackedRepo>("add_repo_to_agent", { agentId, repoPath }),
-  allocateDraftName: (used: string[]) => invoke<string>("allocate_draft_name", { used }),
+  /** Name for a new draft. Pass only the *open drafts'* names — the backend
+   *  reads live agents from the DB itself, so callers can't over-reserve. */
+  allocateDraftName: (drafts: string[]) => invoke<string>("allocate_draft_name", { drafts }),
 };

@@ -500,6 +500,12 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
     // Remove the parent dir (may still hold orphan files if any checkout
     // removal failed). Best-effort, retried + logged (see `remove_agent_dir`).
     let _ = remove_agent_dir(agent_id, op).await;
+
+    // The agent's RPC mailbox dies with it — nothing will ever read from it
+    // again, and leaving it behind leaks one dir per agent ever spawned.
+    if let Err(e) = crate::rpc::remove_mailbox(agent_id) {
+        tracing::warn!(agent_id, op, error = %e, "rpc mailbox removal failed");
+    }
 }
 
 /// Remove an agent's parent checkout dir, retrying briefly. Returns `true` once
@@ -536,8 +542,8 @@ async fn remove_agent_dir(agent_id: &str, op: &str) -> bool {
             Err(e) => {
                 tracing::error!(
                     agent_id, op, path = %parent.display(), error = %e,
-                    "checkout dir removal failed after retries; it now orphans the agent \
-                     name in the on-disk namespace the allocator consults"
+                    "checkout dir removal failed after retries; the dir is wasted disk \
+                     until the next spawn reuses this name and provision clears it"
                 );
                 return false;
             }

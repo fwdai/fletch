@@ -3,11 +3,11 @@ import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
 import { discoverCommands } from "@/data/slashCommands";
 import {
+  draftNames,
   expandSlashCommand,
   resolveSkillInvocation,
   sendWhenAgentReady,
   snapshotAgentDeliverables,
-  usedNames,
 } from "@/helpers";
 import { setSetting } from "@/storage/settings";
 import { refreshWorkspace } from "./refreshWorkspace";
@@ -118,22 +118,14 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
 
   // ── drafts ─────────────────────────────────────────────────────────────────
   createDraft: async (repoPath) => {
-    const {
-      workspace,
-      drafts,
-      newDraftProvider,
-      newDraftModel,
-      newDraftCustomAgentId,
-      modelsByAgent,
-    } = get();
-    const used = [...usedNames(workspace, drafts)];
+    const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
     // Name allocation is a backend call; if it fails there's no draft to
     // create. Surface it in the global error banner and bail rather than
     // leaving an unhandled rejection for the fire-and-forget callers (⌘N,
     // the sidebar +, the Home screen) and a silently dead click.
     let name: string;
     try {
-      name = await api.allocateDraftName(used);
+      name = await api.allocateDraftName(draftNames(drafts));
     } catch (e) {
       get().setLastError(`Couldn't start a new agent: ${String(e)}`);
       return;
@@ -162,16 +154,8 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   },
 
   startWorkFromIssue: async (repoPath, issue) => {
-    const {
-      workspace,
-      drafts,
-      newDraftProvider,
-      newDraftModel,
-      newDraftCustomAgentId,
-      modelsByAgent,
-    } = get();
-    const used = [...usedNames(workspace, drafts)];
-    const name = await api.allocateDraftName(used);
+    const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
+    const name = await api.allocateDraftName(draftNames(drafts));
     const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
     const customAgentId = get().customAgents.some((a) => a.id === newDraftCustomAgentId)
       ? newDraftCustomAgentId
@@ -239,10 +223,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   },
 
   rerollDraftName: async (id) => {
-    const { workspace, drafts } = get();
-    const used = usedNames(workspace, drafts);
-    // Keep the current name in `used` so the allocator picks a different one.
-    const next = await api.allocateDraftName([...used]);
+    // This draft's current name stays in the list, so the allocator is forced
+    // to pick a different one.
+    const next = await api.allocateDraftName(draftNames(get().drafts));
     set((s) => ({
       drafts: s.drafts.map((d) => (d.id === id ? { ...d, name: next } : d)),
     }));

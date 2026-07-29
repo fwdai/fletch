@@ -2059,3 +2059,53 @@ fn add_agent_allocating_assigns_distinct_live_names() {
     assert!(!a.id.is_empty() && !b.id.is_empty());
     assert_ne!(a.id, b.id, "two live agents must not share a name");
 }
+
+/// `live_agent_ids` is the single definition of "this name is taken", shared by
+/// the draft-name preview and the startup mailbox sweep. Archiving must free the
+/// name: counting archived agents is what saturated the ~300-name pool and
+/// pushed new workspaces onto `-2` suffixes.
+#[test]
+fn live_agent_ids_covers_live_agents_and_frees_archived_ones() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+
+    for id in ["yosemite", "dolomites"] {
+        let mut rec = new_agent_record(
+            id.into(),
+            id.into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        wm.add_agent(&mut rec).unwrap();
+    }
+
+    assert_eq!(
+        wm.live_agent_ids().unwrap(),
+        HashSet::from(["yosemite".to_string(), "dolomites".to_string()]),
+    );
+
+    wm.archive_agent(
+        "dolomites",
+        ArchiveMetadata {
+            archived_at: "2026-07-29T12:00:00+00:00".into(),
+            repos: vec![],
+            diff_stats: DiffStats {
+                additions: 0,
+                deletions: 0,
+            },
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        wm.live_agent_ids().unwrap(),
+        HashSet::from(["yosemite".to_string()]),
+        "archiving must release the name back to the pool"
+    );
+    // The archived agent is still readable (History shows it) — it just no
+    // longer reserves its name.
+    assert!(wm.agent("dolomites").unwrap().archive.is_some());
+}
