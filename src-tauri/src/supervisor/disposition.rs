@@ -7,7 +7,9 @@ use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 use crate::git;
+use crate::sandbox::docker;
 use crate::sandbox::provision::{self, CheckoutSpec};
+use crate::sandbox::EngineKind;
 use crate::workspace::{
     agent_parent_dir, repo_checkout_path, AgentRecord, AgentStatus, ArchiveMetadata,
     ArchivedRepoSnapshot, DiffStats, TrackedRepo,
@@ -41,6 +43,7 @@ impl Supervisor {
         }
 
         self.detach_runtime(agent_id);
+        reap_agent_containers(agent_id, Some(&record), "archive");
 
         // Snapshot SHAs + diff stats before any destructive step, then tear
         // down the checkouts/branches (best-effort — a single git failure
@@ -244,6 +247,7 @@ impl Supervisor {
         let repos = record.as_ref().map(|r| r.repos.clone()).unwrap_or_default();
 
         self.detach_runtime(agent_id);
+        reap_agent_containers(agent_id, record.as_ref(), "discard");
         teardown_agent_checkouts(agent_id, &repos, "discard").await;
 
         self.workspace.remove_agent(agent_id)?;
@@ -408,6 +412,59 @@ async fn choose_restore_branch_name(repo_path: &Path, desired: &str) -> String {
             format!("{desired}-restored-{bumps}")
         };
     }
+}
+
+/// Best-effort teardown of any container still bearing this agent's
+/// `fletch.agent-id` label. The container counterpart to
+/// [`teardown_agent_checkouts`], and like it, failures never abort disposal —
+/// the caller's intent is to get rid of the agent.
+///
+/// Why it exists: `Supervisor::detach_runtime` reaches the container only
+/// *indirectly*, through the in-memory `agents` entry — no entry, no
+/// `KillHandle`, no docker command at all. `docker run --rm` covers the
+/// ordinary exit and the startup pid-liveness sweep covers a crashed instance,
+/// but neither makes disposal itself self-sufficient. The label sweep does:
+/// it needs nothing but the agent id. (Container names can't serve here —
+/// they carry a launch-time nonce, see `docker::engine::util::container_name`
+/// — which is why the id label exists.)
+///
+/// Three gates, cheapest first:
+/// 1. The stamped engine. A seatbelt agent never had a container, so it never
+///    pays for a probe. `record: None` (discard tolerates a missing row)
+///    can't prove that, so it looks — the label match is exact, so looking
+///    costs nothing but the query.
+/// 2. [`docker::availability`] — a machine with no Docker installed must
+///    never see a docker invocation, the same precedent
+///    `docker::sweep_orphans_at_startup` sets.
+/// 3. Off the caller's path entirely. `spawn_blocking` rather than a bare
+///    thread: `cli::run_docker` is a blocking process wait (up to the probe's
+///    2s plus the sweep's own timeouts) issued from inside the tokio runtime,
+///    which is precisely the blocking pool's job — and unlike the startup
+///    sweep, which runs before any runtime is a given, we always have one
+///    here. Detached on purpose: archive must not wait on a Docker
+///    round-trip to report success to the user.
+fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'static str) {
+    if record.map(stamped_engine) == Some(EngineKind::SandboxExec) {
+        return;
+    }
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        if !matches!(
+            docker::availability(),
+            docker::DockerAvailability::Available { .. }
+        ) {
+            return;
+        }
+        match docker::remove_agent_containers(&agent_id) {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::info!(agent_id = %agent_id, op, removed = n, "removed agent containers")
+            }
+            Err(e) => {
+                tracing::warn!(agent_id = %agent_id, op, error = %e, "agent container removal failed")
+            }
+        }
+    });
 }
 
 /// Best-effort teardown of every tracked repo's checkout + branch, plus the
