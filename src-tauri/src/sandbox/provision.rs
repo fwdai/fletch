@@ -119,6 +119,20 @@ pub async fn provision_at_remote_base(
                 Ok(BaseFreshness::Fetched)
             }
             None => {
+                // No fallback to degrade to: the fetch failed *and* this
+                // machine has never seen the base (`git::base_tip` found
+                // nothing, so the caller passed the bare branch name). Say that
+                // plainly — the alternative reads as a raw `rev-parse` failure,
+                // and opening somewhere arbitrary is what this whole function
+                // exists to prevent.
+                if !commit_present(&dest, spec.base_ref).await {
+                    return Err(Error::Git(format!(
+                        "could not fetch `{base_branch}` from origin, and this machine has \
+                         no copy of it to fall back to — there is no commit to open the \
+                         workspace at. Connect to the network, or pick a base branch this \
+                         repo already has."
+                    )));
+                }
                 tracing::warn!(
                     base = %base_branch,
                     dest = %dest.display(),
@@ -740,6 +754,41 @@ mod tests {
 
         assert_eq!(freshness, BaseFreshness::Stale);
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), stale);
+    }
+
+    #[tokio::test]
+    async fn provision_at_remote_base_errors_when_offline_with_no_local_copy_of_the_base() {
+        // The fetch fails *and* this machine has never seen the base, so
+        // `git::base_tip` found nothing and the caller passed the bare branch
+        // name. There is no commit to open at. Failing here is the point: the
+        // spawn path used to substitute `HEAD` — the source repo's checked-out
+        // branch — which opened the workspace on an unrelated branch and then
+        // told the agent it was on the base.
+        let td = tempfile::tempdir().unwrap();
+        let (source, _stale, _fresh) = fixture_with_stale_source(td.path());
+        let unreachable = td.path().join("gone.git");
+        run(
+            &source,
+            &["remote", "set-url", "origin", unreachable.to_str().unwrap()],
+        );
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &source,
+            // What the caller passes when `base_tip` returns `None`.
+            base_ref: "develop",
+            dest: &dest,
+        };
+
+        let err = provision_at_remote_base(&spec, "develop", true)
+            .await
+            .expect_err("no fetch and no local copy must not silently pick a commit");
+
+        let msg = err.to_string();
+        assert!(msg.contains("develop"), "error should name the base: {msg}");
+        assert!(
+            msg.contains("no copy of it"),
+            "error should explain why, not read as a raw rev-parse failure: {msg}"
+        );
     }
 
     #[tokio::test]

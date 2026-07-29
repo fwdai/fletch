@@ -117,6 +117,38 @@ pub async fn default_branch(repo: &Path) -> String {
     "main".to_string()
 }
 
+/// This machine's best-known tip for `base` — what a fresh workspace opens at
+/// when it can't reach `origin`.
+///
+/// Prefers `origin/<base>` over the local head. The tracking ref is the fresher
+/// of the two: the app advances it on a background sweep
+/// (`refresh_base_freshness`), while a local branch only moves when the user
+/// checks it out and pulls. It is also the one that exists at all in a
+/// single-branch clone, or for a default branch resolved from `origin/HEAD`
+/// that was never checked out locally.
+///
+/// `None` means this machine has genuinely never seen `base`. Callers must not
+/// paper over that with `HEAD`: that is the currently-checked-out branch, which
+/// has nothing to do with `base` and is exactly what [`default_branch`] exists
+/// to avoid. Substituting it would open the workspace on an unrelated feature
+/// branch *and* report it as `base` — a wrong answer delivered confidently.
+/// Prefer failing the spawn.
+pub async fn base_tip(repo: &Path, base: &str) -> Option<String> {
+    // Full refnames, so a branch called e.g. `origin` can't make the short form
+    // ambiguous, and so a tag never satisfies a branch lookup.
+    for refname in [
+        format!("refs/remotes/origin/{base}"),
+        format!("refs/heads/{base}"),
+    ] {
+        if let Ok(sha) = rev_parse(repo, &refname).await {
+            if !sha.is_empty() {
+                return Some(sha);
+            }
+        }
+    }
+    None
+}
+
 /// Inside an existing checkout, create a new branch at the current
 /// commit and check it out (`git checkout -b <branch>`). Used to
 /// promote a detached-HEAD checkout onto a named branch once the
@@ -416,5 +448,93 @@ mod tests {
             .unwrap();
 
         assert_eq!(default_branch(&repo).await, "main");
+    }
+
+    /// `base_tip` prefers the remote-tracking ref: the app advances it on a
+    /// background sweep, so it is the fresher of the two, and it is the only one
+    /// that exists for a base the user never checked out locally.
+    #[tokio::test]
+    async fn base_tip_prefers_the_tracking_ref_over_the_local_head() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        commit_all(repo, "first").await.unwrap();
+        let local = rev_parse(repo, "HEAD").await.unwrap();
+
+        // A tracking ref that has moved ahead of the local branch.
+        std::fs::write(repo.join("b.txt"), b"y").unwrap();
+        commit_all(repo, "second").await.unwrap();
+        let ahead = rev_parse(repo, "HEAD").await.unwrap();
+        run_git(
+            repo,
+            &["update-ref", "refs/remotes/origin/main", &ahead],
+            "seed tracking ref",
+        )
+        .await
+        .unwrap();
+        run_git(
+            repo,
+            &["update-ref", "refs/heads/main", &local],
+            "rewind local main",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(base_tip(repo, "main").await, Some(ahead));
+    }
+
+    #[tokio::test]
+    async fn base_tip_falls_back_to_the_local_head() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        commit_all(repo, "first").await.unwrap();
+        let head = rev_parse(repo, "HEAD").await.unwrap();
+        run_git(
+            repo,
+            &["update-ref", "refs/heads/main", &head],
+            "seed local main",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(base_tip(repo, "main").await, Some(head));
+    }
+
+    /// Regression guard for the spawn path: a base this machine has never seen
+    /// must resolve to `None`, NOT to whatever branch happens to be checked out.
+    /// Returning a tip here would open the workspace on an unrelated branch and
+    /// then report it as the base — the failure `base_tip` exists to prevent.
+    #[tokio::test]
+    async fn base_tip_is_none_for_an_unknown_base_even_with_a_branch_checked_out() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        init_repo(repo).await.unwrap();
+        config(repo, "user.email", "t@example.com").await;
+        config(repo, "user.name", "Tester").await;
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        commit_all(repo, "first").await.unwrap();
+        run_git(
+            repo,
+            &["checkout", "-q", "-b", "feature"],
+            "checkout feature",
+        )
+        .await
+        .unwrap();
+        let checked_out = rev_parse(repo, "HEAD").await.unwrap();
+
+        let got = base_tip(repo, "develop").await;
+        assert_eq!(got, None, "unknown base must not resolve");
+        assert_ne!(
+            got,
+            Some(checked_out),
+            "must never hand back the checked-out branch"
+        );
     }
 }

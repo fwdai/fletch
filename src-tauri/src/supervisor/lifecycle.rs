@@ -458,10 +458,16 @@ impl Supervisor {
                     provision::provision_forking_run_repo(&spec, run_repo).await
                 }
                 None => {
-                    let local = git::rev_parse(&repo_path, &parent_for_fork).await.ok();
+                    // Offline fallback: the base as this machine already knows
+                    // it, never `HEAD` — that is the source repo's checked-out
+                    // branch, unrelated to the base the user picked (see
+                    // `git::base_tip`). With no local copy at all, pass the
+                    // branch name so an unreachable `origin` fails the spawn
+                    // instead of opening somewhere arbitrary.
+                    let fallback = git::base_tip(&repo_path, &parent_for_fork).await;
                     let spec = CheckoutSpec {
                         source_repo: &repo_path,
-                        base_ref: local.as_deref().unwrap_or("HEAD"),
+                        base_ref: fallback.as_deref().unwrap_or(&parent_for_fork),
                         dest: &primary_checkout,
                     };
                     provision::provision_at_remote_base(&spec, &parent_for_fork, true)
@@ -629,13 +635,14 @@ impl Supervisor {
         // out, for the same reason the primary repo doesn't (see `spawn_agent`).
         let parent_branch = git::default_branch(&repo_path).await;
 
-        // Fork from the base as `origin` has it, falling back to the local SHA
-        // (then HEAD) when the fetch can't happen; then record the fork point as
-        // the diff base.
-        let local = git::rev_parse(&repo_path, &parent_branch).await.ok();
+        // Fork from the base as `origin` has it, falling back to this machine's
+        // best-known tip for that branch when the fetch can't happen — never
+        // `HEAD`, which is an unrelated branch (see `git::base_tip`). Then
+        // record the fork point as the diff base.
+        let fallback = git::base_tip(&repo_path, &parent_branch).await;
         let spec = CheckoutSpec {
             source_repo: &repo_path,
-            base_ref: local.as_deref().unwrap_or("HEAD"),
+            base_ref: fallback.as_deref().unwrap_or(&parent_branch),
             dest: &checkout,
         };
         provision::provision_at_remote_base(&spec, &parent_branch, !self_contained).await?;
