@@ -43,6 +43,12 @@ use super::DockerProvider;
 /// pass a tracing forwarder to log build output, or `&|_| {}` to ignore it.
 pub type Progress<'a> = &'a (dyn Fn(&str) + Send + Sync);
 
+/// The base every provider image builds on (enforced by a test over
+/// [`image_spec`]). Named as a constant rather than left implicit in the five
+/// Dockerfile literals because the reclamation path needs to know which tag a
+/// `--pull` is able to move under us — see [`reap_superseded_base`].
+pub const BASE_IMAGE: &str = "node:22-slim";
+
 /// The agent container image. Debian-slim keeps apt available for the tools
 /// claude needs at runtime (`git`, `rg`, `jq`, `procps` for /proc-based
 /// process introspection) while staying small; node 22 is claude-code's
@@ -265,6 +271,10 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(600);
 /// Quick metadata lookups (`docker image inspect`).
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// `docker rmi` on a superseded base: local layer deletion, I/O-bound but not
+/// network-bound. Same bound `cleanup`'s removals use.
+const REMOVE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// The content-addressed tag for a provider's embedded image.
 pub fn image_tag(provider: DockerProvider) -> String {
     let spec = image_spec(provider);
@@ -428,9 +438,124 @@ fn run_build(
         std::fs::set_permissions(&entrypoint_path, std::fs::Permissions::from_mode(0o755))?;
     }
 
+    // Every build passes `--pull`, which can move [`BASE_IMAGE`] onto a newer
+    // digest and orphan the image we were previously building on. Snapshot the
+    // id we're starting from so a successful build can attribute — and reclaim
+    // — whatever it displaced (see [`reap_superseded_base`]).
+    let base_before = base_image_id();
+
     let args = build_args(tag, ctx.path(), no_cache);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    cli::run_docker_streaming(&args, BUILD_TIMEOUT, on_line)
+    cli::run_docker_streaming(&args, BUILD_TIMEOUT, on_line)?;
+
+    reap_superseded_base(base_before.as_deref());
+    Ok(())
+}
+
+/// Base image ids a `--pull` has displaced and that are still awaiting
+/// removal. A freshly orphaned base is usually *not* removable at the moment we
+/// notice it: the other providers' images were built on it and hold a child
+/// reference until they rebuild too. So the id is parked here and retried after
+/// every subsequent build — precisely when such a reference is most likely to
+/// have just been dropped.
+///
+/// In-memory by choice: a missed reclaim costs one base image until some later
+/// run pulls again and retries, which doesn't justify a storage surface.
+static SUPERSEDED_BASES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Cap on [`SUPERSEDED_BASES`]. One pending id per provider image is the
+/// realistic worst case; past that, the oldest is dropped rather than retried
+/// for the life of the process.
+const MAX_SUPERSEDED_BASES: usize = 8;
+
+/// The local image id currently behind [`BASE_IMAGE`], or `None` when it isn't
+/// pulled yet (first build on a clean machine) or the daemon can't answer.
+fn base_image_id() -> Option<String> {
+    let out = cli::run_docker(
+        &["image", "inspect", "--format", "{{.Id}}", BASE_IMAGE],
+        INSPECT_TIMEOUT,
+    )
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!id.is_empty()).then_some(id)
+}
+
+/// Park `before` for reclamation when the build moved the base off it. Pure
+/// over the queue so the dedupe and the [`MAX_SUPERSEDED_BASES`] cap are
+/// unit-testable without a daemon. Returns whether anything was queued.
+fn queue_superseded(pending: &mut Vec<String>, before: Option<&str>, after: Option<&str>) -> bool {
+    // A missing side means we can't prove a displacement happened: no base
+    // pulled yet (first build), or an inspect the daemon didn't answer. Both
+    // are "do nothing" — the same under-reclaim bias the image GC takes.
+    let (Some(before), Some(after)) = (before, after) else {
+        return false;
+    };
+    if before == after || pending.iter().any(|id| id == before) {
+        return false;
+    }
+    if pending.len() == MAX_SUPERSEDED_BASES {
+        pending.remove(0);
+    }
+    pending.push(before.to_string());
+    true
+}
+
+/// Reclaim the base images our `--pull`s have displaced. `before` is the id
+/// [`BASE_IMAGE`] resolved to when the build that just succeeded started.
+///
+/// This covers the one thing Fletch orphans that its image GC structurally
+/// cannot see: a superseded base carries no [`AGENT_IMAGE_LABEL`] (the label
+/// lives in our Dockerfile *above* the `FROM`, so only our own image gets it)
+/// and sits in no Fletch-owned repo, so neither arm of
+/// `cleanup::image_removal_refs` can attribute it — it would sit untagged and
+/// unreferenced forever. Here we can attribute it: we recorded the id before
+/// the pull and watched it move.
+///
+/// `docker rmi` runs WITHOUT `-f`, and that is the entire safety story. The
+/// daemon refuses while anything still references the image — one of our
+/// not-yet-rebuilt provider images, or something of the user's we know nothing
+/// about. A refusal is the expected case rather than an error, and simply
+/// leaves the id parked for a later retry.
+fn reap_superseded_base(before: Option<&str>) {
+    let mut pending = SUPERSEDED_BASES.lock().unwrap();
+    if queue_superseded(&mut pending, before, base_image_id().as_deref()) {
+        tracing::debug!(
+            target: "fletch::docker",
+            base = BASE_IMAGE,
+            superseded = %before.unwrap_or_default(),
+            "--pull moved the base image; queued the predecessor for reclamation",
+        );
+    }
+    pending.retain(|id| match image_exists(id) {
+        // Already gone — reclaimed by an earlier pass, the user, or another
+        // tool. Stop tracking it.
+        Ok(false) => false,
+        // Daemon hiccup: keep it and retry after the next build rather than
+        // silently forgetting an image we know we orphaned.
+        Err(_) => true,
+        Ok(true) => {
+            let removed = cli::run_docker(&["rmi", id], REMOVE_TIMEOUT)
+                .map(|out| out.status.success())
+                .unwrap_or(false);
+            if removed {
+                tracing::info!(
+                    target: "fletch::docker",
+                    image = %id,
+                    "removed the base image a --pull superseded",
+                );
+            } else {
+                tracing::debug!(
+                    target: "fletch::docker",
+                    image = %id,
+                    "superseded base still referenced; will retry after the next build",
+                );
+            }
+            !removed
+        }
+    });
 }
 
 /// `docker build` argv for `tag` from context `ctx`. `--pull` on every build,
@@ -762,6 +887,67 @@ fn image_exists(tag: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every provider image builds on [`BASE_IMAGE`]. This is the invariant
+    /// [`reap_superseded_base`] rests on: it only ever inspects and reclaims
+    /// that one tag, so a spec that quietly moved to a different base would
+    /// orphan images nothing reclaims.
+    #[test]
+    fn every_spec_builds_on_the_declared_base() {
+        let from = format!("FROM {BASE_IMAGE}\n");
+        for provider in DockerProvider::ALL {
+            assert!(
+                image_spec(provider).dockerfile.starts_with(&from),
+                "{provider:?} must build FROM {BASE_IMAGE}",
+            );
+        }
+    }
+
+    /// The reclamation queue's rules: only a *proven* displacement is queued
+    /// (both ids known and different), never twice, and the queue is capped.
+    #[test]
+    fn superseded_base_queueing() {
+        let mut pending = Vec::new();
+
+        // An unmoved base is not a displacement.
+        assert!(!queue_superseded(
+            &mut pending,
+            Some("sha256:a"),
+            Some("sha256:a")
+        ));
+        // Neither is a missing side — no base pulled yet, or an inspect the
+        // daemon didn't answer.
+        assert!(!queue_superseded(&mut pending, None, Some("sha256:b")));
+        assert!(!queue_superseded(&mut pending, Some("sha256:a"), None));
+        assert!(pending.is_empty());
+
+        // A genuine move queues the predecessor, exactly once.
+        assert!(queue_superseded(
+            &mut pending,
+            Some("sha256:a"),
+            Some("sha256:b")
+        ));
+        assert!(!queue_superseded(
+            &mut pending,
+            Some("sha256:a"),
+            Some("sha256:c")
+        ));
+        assert_eq!(pending, vec!["sha256:a".to_string()]);
+
+        // The cap holds, dropping the oldest rather than growing forever.
+        for i in 0..MAX_SUPERSEDED_BASES {
+            queue_superseded(
+                &mut pending,
+                Some(&format!("sha256:x{i}")),
+                Some("sha256:new"),
+            );
+        }
+        assert_eq!(pending.len(), MAX_SUPERSEDED_BASES);
+        assert!(
+            !pending.contains(&"sha256:a".to_string()),
+            "the oldest entry should have been evicted",
+        );
+    }
 
     #[test]
     fn tag_is_content_addressed() {
