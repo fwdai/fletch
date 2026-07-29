@@ -10,6 +10,7 @@ import type {
   VerificationReport,
   WfRun,
 } from "@/api";
+import type { AutopilotState } from "@/autopilot";
 import { BUCKET, buildReviewQueue, type QueueInput } from "./queue";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -114,6 +115,7 @@ function input(over: Partial<QueueInput>): QueueInput {
     prChecks: {},
     prComments: {},
     verificationReports: {},
+    autopilot: {},
     runs: [],
     dismissed: {},
     ...over,
@@ -584,5 +586,88 @@ describe("buildReviewQueue", () => {
     );
     expect(q).toHaveLength(1);
     expect(q[0].fanout?.agents.map((a) => a.agentId)).toEqual(["live"]);
+  });
+
+  // ── autopilot escalation ──────────────────────────────────────────────────
+  // An enrolled checkout that gave up is the one signal autopilot can't surface
+  // itself: it has stopped, so if the queue doesn't raise its hand nothing does.
+
+  const stuckState = (over: Partial<AutopilotState> = {}): AutopilotState => ({
+    enrolled: true,
+    paused: false,
+    cycle: null,
+    attempts: {},
+    barren: [],
+    stuck: { reason: "budget-spent", rung: "fix-checks", at: 1 },
+    ...over,
+  });
+
+  it("raises a card when autopilot gave up, with nothing else wrong", () => {
+    const q = buildReviewQueue(
+      input({ agents: [agent({ id: "a" })], autopilot: { a: stuckState() } }),
+    );
+    expect(q).toHaveLength(1);
+    expect(q[0].reasons).toEqual(["autopilot-stuck"]);
+    expect(q[0].autopilotStuck).toEqual({ reason: "budget-spent", rung: "fix-checks" });
+  });
+
+  it("raises it for a secondary checkout too", () => {
+    // A stuck autopilot on `a::web` deserves the same card as one on the primary.
+    const q = buildReviewQueue(
+      input({ agents: [agent({ id: "a" })], autopilot: { "a::web": stuckState() } }),
+    );
+    expect(q).toHaveLength(1);
+    expect(q[0].reasons).toEqual(["autopilot-stuck"]);
+  });
+
+  it("stays quiet for a checkout that is enrolled but running fine", () => {
+    // Enrolled-and-working is the normal state; it must never generate a card.
+    const q = buildReviewQueue(
+      input({
+        agents: [agent({ id: "a" })],
+        autopilot: { a: stuckState({ stuck: null }) },
+      }),
+    );
+    expect(q).toHaveLength(0);
+  });
+
+  it("ignores a stuck record on a checkout that was un-enrolled", () => {
+    const q = buildReviewQueue(
+      input({
+        agents: [agent({ id: "a" })],
+        autopilot: { a: stuckState({ enrolled: false }) },
+      }),
+    );
+    expect(q).toHaveLength(0);
+  });
+
+  it("dedupes onto one card alongside the reason autopilot choked on", () => {
+    const q = buildReviewQueue(
+      input({
+        agents: [repoAgent("a", "/repo")],
+        prStates: { a: openPr(7) },
+        prChecks: { a: checks({}) },
+        autopilot: { a: stuckState() },
+      }),
+    );
+    expect(q).toHaveLength(1);
+    expect(q[0].reasons).toEqual(["autopilot-stuck", "checks-failing"]);
+  });
+
+  it("resurfaces a dismissed card when autopilot stops for a DIFFERENT reason", () => {
+    // Dismissing "stopped: budget spent" must not also hide a later "stopped:
+    // needs you" — a different reason is a different decision.
+    const spent = input({ agents: [agent({ id: "a" })], autopilot: { a: stuckState() } });
+    const first = buildReviewQueue(spent);
+    const dismissed = { [first[0].id]: first[0].signature };
+
+    expect(buildReviewQueue({ ...spent, dismissed })).toHaveLength(0);
+
+    const needsHuman = input({
+      agents: [agent({ id: "a" })],
+      autopilot: { a: stuckState({ stuck: { reason: "needs-human", rung: null, at: 2 } }) },
+      dismissed,
+    });
+    expect(buildReviewQueue(needsHuman)).toHaveLength(1);
   });
 });

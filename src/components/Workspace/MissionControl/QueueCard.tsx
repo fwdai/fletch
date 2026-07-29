@@ -12,6 +12,9 @@ const REASON_LABEL: Record<ReviewReason, string> = {
   "unseen-results": "New results to review",
   "checks-failing": "Checks failing",
   "unresolved-comments": "Unresolved comments",
+  // Phrased as what happened, not as an error: autopilot tried and handed it
+  // back, so the next move is the user's.
+  "autopilot-stuck": "Autopilot stopped",
 };
 
 function reasonLine(item: ReviewItem): string {

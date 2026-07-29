@@ -107,6 +107,11 @@ async function apply(
       );
       return;
     }
+    case "await-evidence":
+      // A state-judged rung (a reconcile): nothing to run, the world just needs
+      // time to settle. Start the phase clock so the evidence timeout applies.
+      s.advanceAutopilotCycle(key, "awaiting-evidence", now);
+      return;
     case "verify": {
       // Enter `awaiting-evidence` first: the phase clock starts now, and the
       // effect is idempotent from here even if the verify call is slow or fails.

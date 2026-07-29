@@ -30,7 +30,7 @@
 // Portable to Rust on the same terms as `readiness.ts` — pure, no framework, no
 // clock of its own (`now` is a parameter). Enforced by `autopilot.test.ts`.
 
-import type { VerificationReport } from "@/api";
+import type { GitState, VerificationReport } from "@/api";
 import type { DelegationKind } from "@/delegation";
 import { type LadderContext, nextRung, type ReadinessInput } from "@/readiness";
 
@@ -47,11 +47,42 @@ import { type LadderContext, nextRung, type ReadinessInput } from "@/readiness";
  *  with uncommitted edits correctly does nothing. That also keeps `fix-checks`
  *  off a dirty tree — its playbook runs `git add -A`, which would otherwise
  *  sweep the user's in-flight edits into the agent's fix commit. */
-export const AUTOPILOT_RUNGS: readonly DelegationKind[] = ["fix-checks"];
+export const AUTOPILOT_RUNGS: readonly DelegationKind[] = [
+  "fix-checks",
+  "resolve",
+  "update-branch",
+];
 
-/** Cycles one rung gets on a checkout before autopilot gives up. Three is enough
- *  for "the fix needed a second look" and short of "this is not converging". */
-export const RUNG_BUDGET: Partial<Record<DelegationKind, number>> = { "fix-checks": 3 };
+/** Cycles one rung gets on a checkout before autopilot gives up.
+ *
+ *  `fix-checks` gets three — a fix often needs a second look, and three is short
+ *  of "not converging". The reconcile rungs get two: a merge either goes in or it
+ *  needs a judgement call about intent that the second failure has already shown
+ *  the agent isn't making. */
+export const RUNG_BUDGET: Partial<Record<DelegationKind, number>> = {
+  "fix-checks": 3,
+  resolve: 2,
+  "update-branch": 2,
+};
+
+/** How a rung's cycle is judged.
+ *
+ *  `verify` — run the project's own tests/lints and believe them. Right for
+ *    `fix-checks`, where success means "the code works now" and a local run
+ *    answers that in seconds instead of a CI round trip.
+ *  `state` — judge on the world alone. Right for the reconcile rungs, where
+ *    success is structural ("no conflict markers left", "no longer behind") and
+ *    running tests would answer a *different* question — a merge can be perfectly
+ *    correct and still surface a pre-existing test failure, which must not read
+ *    as "the merge didn't work".
+ *
+ *  Rungs default to `state`, the conservative choice: it never invents a failure
+ *  the world doesn't show. */
+export const RUNG_EVIDENCE: Partial<Record<DelegationKind, "verify" | "state">> = {
+  "fix-checks": "verify",
+  resolve: "state",
+  "update-branch": "state",
+};
 
 /** How long to wait for evidence once the agent's turn ends. Generous: a CI run
  *  can legitimately take many minutes, and a false "no evidence" wastes a whole
@@ -80,6 +111,8 @@ export type StuckReason =
   | "no-progress"
   /** The ladder wants something autopilot isn't allowed to do. */
   | "needs-human"
+  /** Acting would have swallowed the user's uncommitted work. */
+  | "dirty-tree"
   /** No evidence arrived within `EVIDENCE_TIMEOUT_MS`. */
   | "no-evidence";
 
@@ -109,15 +142,38 @@ export function newEnrollment(): AutopilotState {
  *  signature faced the same world, so whatever happened between them changed
  *  nothing that matters.
  *
- *  Deliberately coarse: the head commit plus the sorted failing-check names. The
- *  sha moves whenever the agent commits at all, so a fix that changed code but
- *  not the outcome still counts as progress and earns another attempt; only a
- *  cycle that moved neither code nor failures reads as barren. Sorted so CI
- *  reordering its checks isn't mistaken for a change. */
+ *  Deliberately coarse: the head commit, the sorted failing-check names, and the
+ *  sorted conflicted paths. The sha moves whenever the agent commits at all, so a
+ *  fix that changed code but not the outcome still counts as progress and earns
+ *  another attempt; only a cycle that moved neither code, nor failures, nor the
+ *  conflict set reads as barren.
+ *
+ *  Conflicted paths are in here for the `resolve` rung, whose whole job leaves the
+ *  sha untouched until the merge is completed: an attempt that resolved two of
+ *  three files made real progress, and without the paths that would look
+ *  identical to an attempt that did nothing. Both lists are sorted so a reordered
+ *  report isn't mistaken for a change. */
 export function stateSignature({ git, checks }: ReadinessInput): string {
   const sha = git?.head_sha ?? "no-head";
   const failing = [...(checks?.required_failing ?? [])].sort().join(",");
-  return `${sha}|${failing}`;
+  const conflicted = (git?.files ?? [])
+    .filter((f) => f.kind === "conflicted")
+    .map((f) => f.path)
+    .sort()
+    .join(",");
+  return `${sha}|${failing}|${conflicted}`;
+}
+
+/** Unstaged, non-conflicted edits in the working copy.
+ *
+ *  The guard for the `resolve` rung. Its playbook finishes the merge with
+ *  `git add -A`, so anything the user was editing gets swept into the merge
+ *  commit. Mid-merge the tree legitimately holds the merge's own content — but as
+ *  *staged* entries, because git refuses to start a merge with staged changes.
+ *  So unstaged non-conflicted edits are exactly the user's in-flight work, and
+ *  their presence means this is not autopilot's merge to finish. */
+export function unstagedEdits(git: GitState | null): number {
+  return (git?.files ?? []).filter((f) => !f.staged && f.kind !== "conflicted").length;
 }
 
 export type WaitReason =
@@ -143,6 +199,9 @@ export type AutopilotEffect =
     }
   /** The turn ended: run local verification and enter `awaiting-evidence`. */
   | { do: "verify" }
+  /** The turn ended on a state-judged rung: enter `awaiting-evidence` without
+   *  running anything. The world is the evidence; it just needs time to settle. */
+  | { do: "await-evidence" }
   /** The cycle worked. Clear it and reset the rung's budget. */
   | { do: "settle"; rung: DelegationKind }
   /** The cycle failed but budget remains. Clear it, count the attempt, and
@@ -197,6 +256,12 @@ export function autopilotStep(input: AutopilotInput): AutopilotEffect {
         // resolution until that slice lands). The human decides.
         return { do: "escalate", reason: "needs-human", rung: rung.kind };
       }
+      // Finishing a merge stages everything (`git add -A`), so unstaged edits
+      // alongside the conflict are the user's in-flight work and would be swept
+      // into the merge commit. Not autopilot's merge to finish.
+      if (rung.kind === "resolve" && unstagedEdits(readiness.git) > 0) {
+        return { do: "escalate", reason: "dirty-tree", rung: rung.kind };
+      }
       const signature = stateSignature(readiness);
       // Refuse to re-enter a world we already failed to change.
       if (state.barren.includes(signature)) {
@@ -234,8 +299,9 @@ function judgeCycle(cycle: Cycle, input: AutopilotInput): AutopilotEffect {
   if (cycle.phase === "working") {
     // Still the agent's turn, or its delegation is still being tracked.
     if (agentBusy || delegationInFlight) return { do: "wait", why: "awaiting-evidence" };
-    // The turn ended. Get a fast local verdict rather than waiting out CI.
-    return { do: "verify" };
+    // The turn ended. A code fix gets a fast local verdict; a reconcile is judged
+    // by the world it was meant to change (see `RUNG_EVIDENCE`).
+    return RUNG_EVIDENCE[cycle.rung] === "verify" ? { do: "verify" } : { do: "await-evidence" };
   }
 
   // ── awaiting-evidence ──
@@ -253,9 +319,13 @@ function judgeCycle(cycle: Cycle, input: AutopilotInput): AutopilotEffect {
     return { do: "retry", rung: cycle.rung, barren };
   };
 
-  // Local verification is the cheap, decisive signal: if the project's own tests
-  // and lints fail, the fix did not work, whatever CI hasn't said yet.
-  if (verification && !verificationPassed(verification)) return failed();
+  // Local verification is the cheap, decisive signal for a code fix: if the
+  // project's own tests and lints fail, the fix did not work, whatever CI hasn't
+  // said yet. Only consulted for rungs judged that way — a reconcile can be
+  // correct and still surface a pre-existing failure.
+  if (RUNG_EVIDENCE[cycle.rung] === "verify" && verification && !verificationPassed(verification)) {
+    return failed();
+  }
 
   const rung = nextRung(readiness, ladder);
   // CI still resolving — no verdict available. Hold, unless we've held so long
