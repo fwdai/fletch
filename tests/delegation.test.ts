@@ -5,6 +5,7 @@ import {
   actionProvesKind,
   appActionMessage,
   DELEGATION_GIVE_UP_GRACE_MS,
+  DELEGATION_KINDS,
   type Delegation,
   delegationDone,
   delegationLabel,
@@ -246,15 +247,9 @@ describe("appActionMessage", () => {
 
 describe("copy", () => {
   it("has a label and done message for every kind", () => {
-    for (const k of [
-      "commit",
-      "commit-push",
-      "commit-pr",
-      "open-pr",
-      "resolve",
-      "update-branch",
-      "fix-checks",
-    ] as const) {
+    // Iterating DELEGATION_KINDS, not a hand-written list — the hand-written one
+    // had silently fallen two kinds behind while still claiming "every kind".
+    for (const k of DELEGATION_KINDS) {
       expect(delegationLabel(k).length).toBeGreaterThan(0);
       expect(delegationDone(k).length).toBeGreaterThan(0);
     }
