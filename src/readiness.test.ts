@@ -119,10 +119,19 @@ describe("detectBlockers", () => {
     expect(kinds(input({ git: git({ unpushed: 2 }), pr: pr(), checks: checks() }))).toEqual([
       "unpushed",
     ]);
-    // Merged/closed is not "unsubmitted" — there is nothing left to propose. A
-    // closed proposal is its own blocker (see below), a merged one is done.
-    expect(kinds(input({ pr: pr({ state: "merged" }) }))).toEqual([]);
-    expect(kinds(input({ pr: pr({ state: "closed" }) }))).not.toContain("unsubmitted");
+    // A merged proposal covers the work that landed, `ahead` and all — nothing
+    // left to propose. A closed one is its own blocker (see below); replacing it
+    // is a human call, never a silent re-submit.
+    expect(kinds(input({ git: git({ ahead: 3 }), pr: pr({ state: "merged" }) }))).toEqual([]);
+    expect(kinds(input({ git: git({ unpushed: 2 }), pr: pr({ state: "closed" }) }))).not.toContain(
+      "unsubmitted",
+    );
+    // But commits made *after* the merge need a follow-up proposal. Only
+    // `unpushed` can see them — `ahead` above is stale-base noise.
+    expect(kinds(input({ git: git({ unpushed: 2 }), pr: pr({ state: "merged" }) }))).toEqual([
+      "unpushed",
+      "unsubmitted",
+    ]);
   });
 
   it("maps the merge gate onto diverged / checks / review / draft", () => {
@@ -309,6 +318,21 @@ describe("nextRung ordering", () => {
     expect(rung({ pr: pr({ state: "merged" }) })).toEqual({ do: "landed" });
     // Clean tree, nothing pushed anywhere, no proposal to make.
     expect(rung({ git: git({ ahead: 0 }) })).toEqual({ do: "ready" });
+  });
+
+  it("keeps climbing after a merge — landed is not the end of the workspace", () => {
+    const merged = pr({ state: "merged" });
+    // Uncommitted work → commit it, and (no open proposal now) open a follow-up.
+    expect(rung({ git: git({ files: [file("modified")] }), pr: merged })).toMatchObject({
+      do: "delegate",
+      kind: "commit-pr",
+      params: { base: "main" },
+    });
+    // Already committed → straight to the follow-up proposal.
+    expect(rung({ git: git({ unpushed: 1 }), pr: merged })).toMatchObject({
+      do: "delegate",
+      kind: "open-pr",
+    });
   });
 
   it("is total — every combination yields a rung", () => {

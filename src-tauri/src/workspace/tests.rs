@@ -1196,6 +1196,131 @@ fn pr_snapshot_persists_and_loads() {
     assert_eq!(merged_at, Some(2_000));
 }
 
+/// A merged PR doesn't end the workspace: the agent keeps working in the same
+/// worktree and opens a follow-up PR. Binding that new number must drop the
+/// merged PR's display snapshot and stamps, or `resolve_pr_state` short-circuits
+/// the inherited `merged` state and renders "merged #<new>" — with the previous
+/// PR's url and title — with no fetch left to correct it.
+#[test]
+fn binding_a_follow_up_pr_clears_the_merged_snapshot() {
+    let db = test_db();
+    let wm = WorkspaceManager::new(db.clone());
+    seed_repo(&db, "/r");
+
+    let mut rec = new_agent_record(
+        "denali".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "task".into(),
+        AgentView::Custom,
+    );
+    let id = rec.id.clone();
+    wm.add_agent(&mut rec).unwrap();
+    let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+
+    let merged = crate::github::PrState {
+        number: 42,
+        url: "https://github.com/o/r/pull/42".into(),
+        title: "feat: first".into(),
+        state: crate::github::PrStatus::Merged,
+        mergeable: crate::github::MergeableState::Unknown,
+        opened_at: Some(1_000),
+        merged_at: Some(2_000),
+    };
+    wm.set_repo_pr_snapshot(&id, &subdir, &merged).unwrap();
+
+    // Re-binding the SAME number is the ordinary path — it must keep the
+    // snapshot, so a poll never blanks a badge it just confirmed.
+    wm.set_repo_pr_number(&id, &subdir, 42).unwrap();
+    let repo = wm.agent(&id).unwrap().repos[0].clone();
+    assert_eq!(repo.pr_state.as_deref(), Some("merged"));
+    assert_eq!(repo.pr_title.as_deref(), Some("feat: first"));
+
+    // The agent opens a follow-up PR (the delegated `open_pr` path, which binds
+    // a number and nothing else).
+    wm.set_repo_pr_number(&id, &subdir, 43).unwrap();
+    let repo = wm.agent(&id).unwrap().repos[0].clone();
+    assert_eq!(repo.pr_number, Some(43));
+    assert_eq!(
+        repo.pr_state, None,
+        "the new PR must not inherit 'merged' — that state is served with no network"
+    );
+    assert_eq!(repo.pr_url, None, "url would link to the previous PR");
+    assert_eq!(repo.pr_title, None, "title would name the previous PR");
+    let conn = db.lock();
+    let (opened, merged_at): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT pr_opened_at, pr_merged_at FROM worktrees WHERE workspace_id = ?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(opened, None);
+    assert_eq!(
+        merged_at, None,
+        "an open PR carrying the previous PR's merge stamp reads as already landed"
+    );
+}
+
+/// The direct in-app path (`create_pr` → `set_repo_pr_snapshot`) opens a
+/// follow-up PR without going through `set_repo_pr_number`, so the times must
+/// not COALESCE across the identity change either.
+#[test]
+fn a_follow_up_snapshot_does_not_inherit_the_previous_merge_stamp() {
+    let db = test_db();
+    let wm = WorkspaceManager::new(db.clone());
+    seed_repo(&db, "/r");
+
+    let mut rec = new_agent_record(
+        "denali".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "task".into(),
+        AgentView::Custom,
+    );
+    let id = rec.id.clone();
+    wm.add_agent(&mut rec).unwrap();
+    let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+
+    let merged = crate::github::PrState {
+        number: 42,
+        url: "https://github.com/o/r/pull/42".into(),
+        title: "feat: first".into(),
+        state: crate::github::PrStatus::Merged,
+        mergeable: crate::github::MergeableState::Unknown,
+        opened_at: Some(1_000),
+        merged_at: Some(2_000),
+    };
+    wm.set_repo_pr_snapshot(&id, &subdir, &merged).unwrap();
+
+    let follow_up = crate::github::PrState {
+        number: 43,
+        url: "https://github.com/o/r/pull/43".into(),
+        title: "feat: second".into(),
+        state: crate::github::PrStatus::Open,
+        mergeable: crate::github::MergeableState::Mergeable,
+        opened_at: Some(3_000),
+        merged_at: None,
+    };
+    wm.set_repo_pr_snapshot(&id, &subdir, &follow_up).unwrap();
+
+    let repo = wm.agent(&id).unwrap().repos[0].clone();
+    assert_eq!(repo.pr_number, Some(43));
+    assert_eq!(repo.pr_state.as_deref(), Some("open"));
+    let conn = db.lock();
+    let (opened, merged_at): (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT pr_opened_at, pr_merged_at FROM worktrees WHERE workspace_id = ?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(opened, Some(3_000));
+    assert_eq!(merged_at, None, "PR #43 is open, not merged at 2_000");
+}
+
 #[test]
 fn agent_status_transitions() {
     let db = test_db();

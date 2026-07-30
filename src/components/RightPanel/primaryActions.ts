@@ -1,6 +1,7 @@
 import type { GitState, Mergeable, MergeState, PrState } from "@/api";
 import type { IconName } from "@/components/Icon";
 import { describeMergeGate } from "@/mergeGate";
+import { hasWorkSinceMerge } from "@/readiness";
 
 /** Derived git panel state — computed from live GitState, not stored. */
 export type GitPanelState =
@@ -15,11 +16,17 @@ export type GitPanelState =
 
 /** Map live git + PR state to the panel state. Uncommitted changes outrank
  *  an open PR — the user's in-flight work is the actionable thing; the PR
- *  (and Merge) stays one click away in the menu and the status chip. */
+ *  (and Merge) stays one click away in the menu and the status chip.
+ *
+ *  A merged PR is not terminal for the workspace, only for that PR: the agent
+ *  goes on working in the same worktree and opens follow-up PRs. So `merged`
+ *  claims the panel only while nothing has happened since the merge — otherwise
+ *  it would hide the new work behind an Archive button (the merged state renders
+ *  no file list and offers no way to commit). */
 export function deriveState(git: GitState | null, pr: PrState | null): GitPanelState {
   if (!git) return "loading";
   if (git.files.some((f) => f.kind === "conflicted")) return "conflicts";
-  if (pr?.state === "merged") return "merged";
+  if (pr?.state === "merged" && !hasWorkSinceMerge(git)) return "merged";
   if (git.files.length > 0) return "changes";
   if (pr?.state === "open") return "pr-open";
   if (pr?.state === "closed") return "pr-closed";

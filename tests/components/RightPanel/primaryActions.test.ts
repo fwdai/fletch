@@ -42,9 +42,27 @@ describe("deriveState", () => {
     expect(deriveState(git(), pr())).toBe("pr-open");
   });
 
-  it("conflicts and merged still take precedence over changes", () => {
+  it("conflicts still take precedence over changes", () => {
     expect(deriveState(git({ files: [file("conflicted")] }), pr())).toBe("conflicts");
-    expect(deriveState(git({ files: [file("modified")] }), pr({ state: "merged" }))).toBe("merged");
+    expect(deriveState(git({ files: [file("conflicted")] }), pr({ state: "merged" }))).toBe(
+      "conflicts",
+    );
+  });
+
+  it("merged claims the panel only while nothing has happened since the merge", () => {
+    const merged = pr({ state: "merged" });
+    expect(deriveState(git(), merged)).toBe("merged");
+    // A squash-merge leaves `ahead > 0` against a stale local base with nothing
+    // new in the tree — that must NOT read as follow-up work.
+    expect(deriveState(git({ ahead: 3 }), merged)).toBe("merged");
+  });
+
+  it("keeps working after a merge: follow-up work moves the panel off merged", () => {
+    const merged = pr({ state: "merged" });
+    // New edits → the file list and a commit CTA come back...
+    expect(deriveState(git({ files: [file("modified")] }), merged)).toBe("changes");
+    // ...and once committed, "pushed" offers the follow-up PR.
+    expect(deriveState(git({ unpushed: 1 }), merged)).toBe("pushed");
   });
 });
 
