@@ -67,6 +67,7 @@ export function useActionBarModel(input: {
     checksFailed,
     commitAction: gitCommitAction,
     prOpen,
+    prMerged: prState?.state === "merged",
     githubConnected,
     // A local-only repo (no origin) can't push/PR until published. GitState is
     // null while loading — assume an origin then so the CTA doesn't flicker to

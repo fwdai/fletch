@@ -72,6 +72,21 @@ export type Blocker =
    *  human call, so this escalates rather than silently reading as ready. */
   | { kind: "proposal-closed" };
 
+/** Local work that appeared *after* a merge — the signal that "merged" is
+ *  history rather than this workspace's current state. A merged PR doesn't end a
+ *  workspace: the agent keeps working in the same worktree and opens follow-up
+ *  PRs, so every derivation asks this before letting `merged` speak.
+ *
+ *  Deliberately local-only. `ahead` is NOT consulted: it is measured against the
+ *  base branch, which stays stale until the next fetch, so a squash-merge leaves
+ *  `ahead > 0` with nothing new in the tree — reading that as new work would
+ *  claim follow-up work the moment every PR lands. Uncommitted files and commits
+ *  the origin branch doesn't have are both true the instant they happen and
+ *  false right after a merge. */
+export function hasWorkSinceMerge(git: GitState): boolean {
+  return git.files.length > 0 || git.unpushed > 0;
+}
+
 export interface ReadinessInput {
   /** Null while the first read is in flight — reported as `unknown`, never as
    *  "nothing wrong". */
@@ -106,9 +121,13 @@ export function detectBlockers({ git, pr, checks, comments }: ReadinessInput): B
   if (git.unpushed > 0) blockers.push({ kind: "unpushed", commits: git.unpushed });
 
   const prOpen = pr?.state === "open";
-  // A merged or closed proposal is not "unsubmitted" — there is nothing to
-  // propose. Only work that exists and was never proposed counts.
-  if (!pr && git.ahead > 0) blockers.push({ kind: "unsubmitted" });
+  // Work no proposal covers. With no PR at all, "ahead of base" is the measure.
+  // After a merge the same work needs a *follow-up* proposal, but `ahead` can't
+  // see it (see `hasWorkSinceMerge`) — only commits the origin branch lacks
+  // prove work appeared since. A closed proposal is its own blocker below:
+  // replacing it is a human call, not a silent re-submit.
+  const unproposed = pr == null ? git.ahead > 0 : pr.state === "merged" && git.unpushed > 0;
+  if (unproposed) blockers.push({ kind: "unsubmitted" });
   if (pr?.state === "closed") blockers.push({ kind: "proposal-closed" });
 
   if (prOpen) {
@@ -199,7 +218,10 @@ export function nextRung(input: ReadinessInput, ctx: LadderContext): Rung {
   const { git, pr, checks } = input;
   // No read yet: acting on absent state would be acting on a guess.
   if (!git) return { do: "wait", why: "unknown-state" };
-  if (pr?.state === "merged") return { do: "landed" };
+  // Landed is only terminal while nothing new has appeared since the merge;
+  // otherwise the ladder keeps climbing and the follow-up work gets committed,
+  // pushed and proposed like any other.
+  if (pr?.state === "merged" && !hasWorkSinceMerge(git)) return { do: "landed" };
 
   const blockers = detectBlockers(input);
   const find = <K extends Blocker["kind"]>(kind: K) =>

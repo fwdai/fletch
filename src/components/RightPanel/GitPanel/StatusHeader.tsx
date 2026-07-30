@@ -57,21 +57,23 @@ export function describeHeader(
   checksFailed: number,
 ): HeaderInfo {
   const n = pr?.number;
+  // Keep the bound PR's GitHub link reachable from the header while new work
+  // takes over the panel — whether that PR is still open (a push updates it) or
+  // already merged (this is follow-up work, and the merged PR is its context).
+  const prLink = pr?.state === "open" || pr?.state === "merged";
   switch (state) {
     case "loading":
       return { kind: "neutral", text: "Loading…" };
-    // With an open PR, keep its GitHub link reachable from the header even
-    // while new uncommitted changes take over the panel.
     case "changes":
       return {
         kind: "changes",
         pill: "Uncommitted",
         text: branch,
         diff: true,
-        ext: pr?.state === "open",
+        ext: prLink,
       };
     case "pushed":
-      return { kind: "info", pill: "Pushed", text: branch };
+      return { kind: "info", pill: "Pushed", text: branch, ext: prLink };
     case "conflicts":
       return { kind: "att", pill: "Conflicts", text: branch, sub: `← ${base}` };
     case "pr-open": {

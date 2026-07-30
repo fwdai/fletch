@@ -42,9 +42,50 @@ describe("deriveState", () => {
     expect(deriveState(git(), pr())).toBe("pr-open");
   });
 
-  it("conflicts and merged still take precedence over changes", () => {
+  it("conflicts still take precedence over changes", () => {
     expect(deriveState(git({ files: [file("conflicted")] }), pr())).toBe("conflicts");
-    expect(deriveState(git({ files: [file("modified")] }), pr({ state: "merged" }))).toBe("merged");
+    expect(deriveState(git({ files: [file("conflicted")] }), pr({ state: "merged" }))).toBe(
+      "conflicts",
+    );
+  });
+
+  it("merged claims the panel only while nothing has happened since the merge", () => {
+    const merged = pr({ state: "merged" });
+    expect(deriveState(git(), merged)).toBe("merged");
+    // A squash-merge leaves `ahead > 0` against a stale local base with nothing
+    // new in the tree — that must NOT read as follow-up work.
+    expect(deriveState(git({ ahead: 3 }), merged)).toBe("merged");
+  });
+
+  it("keeps working after a merge: follow-up work moves the panel off merged", () => {
+    const merged = pr({ state: "merged" });
+    // New edits → the file list and a commit CTA come back...
+    expect(deriveState(git({ files: [file("modified")] }), merged)).toBe("changes");
+    // ...and once committed, "pushed" offers the follow-up PR.
+    expect(deriveState(git({ unpushed: 1 }), merged)).toBe("pushed");
+  });
+});
+
+describe("pushed state after a merge", () => {
+  it("counts and names follow-up commits honestly, never as 'no PR yet'", () => {
+    // `ahead` still includes the 3 commits that landed in #7 — the local base
+    // doesn't move until the next fetch — and those ARE pushed. Only the 1
+    // unpushed commit is new work, and the PR isn't missing, it merged.
+    const p = primaryFor("pushed", { ...base, ahead: 4, unpushed: 1, prMerged: true });
+    expect(p.key).toBe("agent-open-pr");
+    expect(p.statusLabel).toBe("1 new commit since PR #7");
+    expect(
+      primaryFor("pushed", { ...base, ahead: 9, unpushed: 2, prMerged: true }).statusLabel,
+    ).toBe("2 new commits since PR #7");
+  });
+
+  it("leaves the no-PR-yet copy alone when nothing has merged", () => {
+    expect(primaryFor("pushed", { ...base, ahead: 1 }).statusLabel).toBe(
+      "1 commit pushed, no PR yet",
+    );
+    expect(primaryFor("pushed", { ...base, ahead: 3 }).statusLabel).toBe(
+      "3 commits pushed, no PR yet",
+    );
   });
 });
 

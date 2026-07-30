@@ -209,10 +209,30 @@ impl WorkspaceManager {
     /// Written when a PR is created through the app or adopted from an OPEN
     /// out-of-band PR. Overwrites unconditionally — the latest PR opened for
     /// the branch is the one we track.
+    ///
+    /// Binding a *different* number clears the display snapshot and lifecycle
+    /// stamps, because they describe the PR being replaced. This matters most
+    /// after a merge: `resolve_pr_state` short-circuits a `merged` snapshot with
+    /// no network (merges don't un-happen), so a follow-up PR that inherited
+    /// `pr_state = 'merged'` would render as "merged #<new>" with the previous
+    /// PR's url and title, forever, with no fetch left to correct it. Cleared
+    /// columns read as "never fetched" instead, and the next resolve fills them
+    /// in from GitHub. Re-binding the same number is a no-op, so the ordinary
+    /// path keeps its snapshot.
     pub fn set_repo_pr_number(&self, agent_id: &str, subdir: &str, pr_number: i64) -> Result<()> {
         let conn = self.db.lock();
+        // SQLite evaluates SET expressions against the pre-update row, so each
+        // `pr_number IS ?1` compares the number being replaced. `IS` (not `=`)
+        // so a first bind, where the old number is NULL, also counts as a change.
         conn.execute(
-            "UPDATE worktrees SET pr_number = ?1 WHERE workspace_id = ?2 AND subdir = ?3",
+            "UPDATE worktrees
+                SET pr_number    = ?1,
+                    pr_url       = CASE WHEN pr_number IS ?1 THEN pr_url       ELSE NULL END,
+                    pr_title     = CASE WHEN pr_number IS ?1 THEN pr_title     ELSE NULL END,
+                    pr_state     = CASE WHEN pr_number IS ?1 THEN pr_state     ELSE NULL END,
+                    pr_opened_at = CASE WHEN pr_number IS ?1 THEN pr_opened_at ELSE NULL END,
+                    pr_merged_at = CASE WHEN pr_number IS ?1 THEN pr_merged_at ELSE NULL END
+              WHERE workspace_id = ?2 AND subdir = ?3",
             rusqlite::params![pr_number, agent_id, subdir],
         )?;
         Ok(())
@@ -228,7 +248,10 @@ impl WorkspaceManager {
     /// (url / title / state), and GitHub's own lifecycle times. One write per
     /// fetch keeps the database the durable source of truth the UI can render
     /// from when GitHub or the checkout is unavailable. Times COALESCE so an
-    /// earlier-observed value is never erased by a payload that omits it.
+    /// earlier-observed value is never erased by a payload that omits it — but
+    /// only for the PR they describe: a follow-up PR bound into the same
+    /// checkout (the workspace kept working after a merge) takes the payload's
+    /// times as they are, so it can't inherit the previous PR's merge stamp.
     pub fn set_repo_pr_snapshot(
         &self,
         agent_id: &str,
@@ -238,8 +261,10 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         conn.execute(
             "UPDATE worktrees SET pr_number = ?1, pr_url = ?2, pr_title = ?3, pr_state = ?4,
-                                  pr_opened_at = COALESCE(?5, pr_opened_at),
-                                  pr_merged_at = COALESCE(?6, pr_merged_at)
+                                  pr_opened_at = CASE WHEN pr_number IS ?1
+                                                 THEN COALESCE(?5, pr_opened_at) ELSE ?5 END,
+                                  pr_merged_at = CASE WHEN pr_number IS ?1
+                                                 THEN COALESCE(?6, pr_merged_at) ELSE ?6 END
              WHERE workspace_id = ?7 AND subdir = ?8",
             rusqlite::params![
                 pr.number as i64,

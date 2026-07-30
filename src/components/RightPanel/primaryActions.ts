@@ -1,6 +1,7 @@
 import type { GitState, Mergeable, MergeState, PrState } from "@/api";
 import type { IconName } from "@/components/Icon";
 import { describeMergeGate } from "@/mergeGate";
+import { hasWorkSinceMerge } from "@/readiness";
 
 /** Derived git panel state — computed from live GitState, not stored. */
 export type GitPanelState =
@@ -15,11 +16,17 @@ export type GitPanelState =
 
 /** Map live git + PR state to the panel state. Uncommitted changes outrank
  *  an open PR — the user's in-flight work is the actionable thing; the PR
- *  (and Merge) stays one click away in the menu and the status chip. */
+ *  (and Merge) stays one click away in the menu and the status chip.
+ *
+ *  A merged PR is not terminal for the workspace, only for that PR: the agent
+ *  goes on working in the same worktree and opens follow-up PRs. So `merged`
+ *  claims the panel only while nothing has happened since the merge — otherwise
+ *  it would hide the new work behind an Archive button (the merged state renders
+ *  no file list and offers no way to commit). */
 export function deriveState(git: GitState | null, pr: PrState | null): GitPanelState {
   if (!git) return "loading";
   if (git.files.some((f) => f.kind === "conflicted")) return "conflicts";
-  if (pr?.state === "merged") return "merged";
+  if (pr?.state === "merged" && !hasWorkSinceMerge(git)) return "merged";
   if (git.files.length > 0) return "changes";
   if (pr?.state === "open") return "pr-open";
   if (pr?.state === "closed") return "pr-closed";
@@ -93,6 +100,11 @@ export interface ActionCounts {
   /** Changes state: a PR is already open for this branch — "open PR" is
    *  meaningless (push updates it) and Merge belongs in the menu. */
   prOpen?: boolean;
+  /** The bound PR has merged, so anything here is follow-up work. Changes the
+   *  pushed state's copy: `ahead` still counts the commits that landed (the
+   *  local base stays stale until the next fetch), and "no PR yet" would read
+   *  as "never had one". */
+  prMerged?: boolean;
   /** Whether GitHub is connected (a valid app token). When false, any
    *  push/PR action is replaced by "Connect GitHub" — local work still runs. */
   githubConnected?: boolean;
@@ -143,6 +155,7 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
     files = 0,
     ahead = 0,
     behind = 0,
+    unpushed = 0,
     prNumber,
     base = "main",
     customActive = false,
@@ -151,6 +164,7 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
     checksFailed = 0,
     commitAction = "agent-commit-pr",
     prOpen = false,
+    prMerged = false,
   } = counts ?? {};
   const prLabel = prNumber != null ? `PR #${prNumber}` : "PR";
 
@@ -217,8 +231,16 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
         key: "agent-open-pr",
         label: "Open PR",
         icon: "pr",
-        statusLabel:
-          ahead === 1 ? "1 commit pushed, no PR yet" : `${ahead} commits pushed, no PR yet`,
+        // Follow-up work after a merge needs its own count and phrasing: the
+        // landed commits are still in `ahead` (the local base doesn't move until
+        // the next fetch) and they ARE pushed, so only the unpushed ones are new
+        // — and the PR isn't missing, it merged. `unpushed > 0` is exactly how
+        // this state was reached (see `hasWorkSinceMerge`).
+        statusLabel: prMerged
+          ? `${unpushed === 1 ? "1 new commit" : `${unpushed} new commits`} since ${prLabel}`
+          : ahead === 1
+            ? "1 commit pushed, no PR yet"
+            : `${ahead} commits pushed, no PR yet`,
         statusKind: "info",
       };
     }
