@@ -164,7 +164,10 @@ impl Supervisor {
         let app = app.clone();
         let agent_id = agent_id.to_string();
         tauri::async_runtime::spawn(async move {
-            tracing::info!(agent_id, "reviving a resting session to deliver a held message");
+            tracing::info!(
+                agent_id,
+                "reviving a resting session to deliver a held message"
+            );
             if let Err(e) = self.clone().resume_agent(app.clone(), &agent_id).await {
                 // The status is already Error with this reason (set inside the
                 // resume), so the user sees why; the message stays queued and a
@@ -580,7 +583,10 @@ mod tests {
         let mut record = record_with_status("yosemite", AgentStatus::Idle);
         sup.workspace.add_agent(&mut record).unwrap();
 
-        assert!(sup.live_status("yosemite").is_none(), "no runtime state yet");
+        assert!(
+            sup.live_status("yosemite").is_none(),
+            "no runtime state yet"
+        );
         assert!(sup.needs_revive("yosemite"));
     }
 
