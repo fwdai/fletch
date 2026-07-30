@@ -367,6 +367,7 @@ pub(super) fn mark_user_turn_started(
     // A new turn is starting, so any prior stop is moot: clear the interrupt
     // flag so this turn's natural completion flushes queued follow-ups.
     sup.interrupted.lock().remove(agent_id);
+    sup.heuristic_idle.lock().remove(agent_id);
     if let Some(activity) = sup.activities.lock().get_mut(agent_id) {
         activity.reset_for_new_turn();
     }

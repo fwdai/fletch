@@ -780,6 +780,9 @@ impl Supervisor {
             *entry
         };
 
+        // A fresh process/view must never inherit a recoverable-idle marker
+        // from the native process it replaced.
+        self.heuristic_idle.lock().remove(&agent_id_str);
         self.activities.lock().insert(
             agent_id_str.clone(),
             build_activity(&record, effective_fresh),
@@ -1407,6 +1410,14 @@ fn make_output_handler(
             activity.observe_bytes(&bytes);
         }
 
+        // Native mode has no structured turn-end event, so its Idle transition
+        // is necessarily inferred from PTY silence. If bytes arrive afterwards,
+        // that inference was early: restore the live status immediately instead
+        // of leaving the sidebar idle while output continues.
+        if !bytes.is_empty() && sup.heuristic_idle.lock().remove(&agent_id) {
+            transition_active(&sup, &app, &agent_id, AgentStatus::Running);
+        }
+
         emit_agent_output(&app, &agent_id, bytes);
     }
 }
@@ -1584,6 +1595,29 @@ fn spawn_turn_watchdog(sup: Arc<Supervisor>, app: AppHandle, agent_id: String, g
                 .unwrap_or(false);
 
             if ended {
+                // Output may land after the check above. Recheck under the
+                // activity lock to narrow that handoff window; if bytes land
+                // later, the output handler's heuristic-idle recovery is the
+                // final authority.
+                let still_ended = sup
+                    .activities
+                    .lock()
+                    .get(&agent_id)
+                    .map(|a| a.turn_ended())
+                    .unwrap_or(false);
+                if !still_ended {
+                    continue;
+                }
+                // Managed/per-turn detectors only end on explicit provider
+                // events. The remaining silence-based detector is native PTY,
+                // whose conclusion can be disproved by later output.
+                let native_heuristic = sup
+                    .workspace
+                    .agent(&agent_id)
+                    .is_ok_and(|record| matches!(record.view, AgentView::Native));
+                if native_heuristic {
+                    sup.heuristic_idle.lock().insert(agent_id.clone());
+                }
                 transition_active(&sup, &app, &agent_id, AgentStatus::Idle);
             }
         }
