@@ -72,13 +72,22 @@ function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
     const key = checkoutKey(agent.id, sc.subdir);
     const live = prStates[key];
     const pr = live !== undefined ? live : prSnapshot(sc.repo);
-    return pr ? [{ repo: sc.repo, pr, checks: prChecks[key] ?? null }] : [];
+    return pr
+      ? [
+          {
+            key: sc.repo.subdir,
+            context: sc.repo.label ?? basename(sc.repo.repo_path),
+            pr,
+            checks: prChecks[key] ?? null,
+          },
+        ]
+      : [];
   });
 
   return (
     <div className="git-multi">
       {/* ≥2 PRs → the "one task, N PRs" strip presents the set as a unit. */}
-      {prSet.length >= 2 && <PrSetStrip entries={prSet} />}
+      {prSet.length >= 2 && <PrSetStrip heading={`${prSet.length} PRs`} entries={prSet} />}
       {sections.map((sc) => (
         <section key={sc.repo.subdir} className="git-repo-sect">
           {active.length > 0 && (

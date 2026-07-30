@@ -1128,6 +1128,136 @@ fn pr_number_persists_and_resets_on_name_reuse() {
     assert_eq!(wm.agent(&reused_id).unwrap().repos[0].pr_number, None);
 }
 
+/// A checkout accumulates every PR it has held, not just the current binding:
+/// a workspace that keeps working after a merge opens follow-ups, and the
+/// merged PR's identity is cleared off the `worktrees` row when the next one
+/// binds. The history log is what keeps it — the panel's "Earlier" strip and
+/// the Pulse "PRs opened" series both read it.
+#[test]
+fn pr_history_accumulates_across_rebinds() {
+    let db = test_db();
+    let wm = WorkspaceManager::new(db.clone());
+    seed_repo(&db, "/r");
+
+    let mut rec = new_agent_record(
+        "denali".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "task".into(),
+        AgentView::Custom,
+    );
+    let id = rec.id.clone();
+    wm.add_agent(&mut rec).unwrap();
+    let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+
+    assert!(
+        wm.repo_pr_history(&id, &subdir).unwrap().is_empty(),
+        "a fresh checkout has proposed nothing"
+    );
+
+    let first_open = crate::github::PrState {
+        number: 42,
+        url: "https://github.com/o/r/pull/42".into(),
+        title: "feat: first".into(),
+        state: crate::github::PrStatus::Open,
+        mergeable: crate::github::MergeableState::Mergeable,
+        opened_at: Some(1_000),
+        merged_at: None,
+    };
+    wm.set_repo_pr_snapshot(&id, &subdir, &first_open).unwrap();
+
+    // The same PR merging updates its row in place rather than adding one.
+    let first_merged = crate::github::PrState {
+        state: crate::github::PrStatus::Merged,
+        opened_at: None, // a payload that omits it must not erase the stamp
+        merged_at: Some(2_000),
+        ..first_open.clone()
+    };
+    wm.set_repo_pr_snapshot(&id, &subdir, &first_merged)
+        .unwrap();
+    let history = wm.repo_pr_history(&id, &subdir).unwrap();
+    assert_eq!(history.len(), 1, "one PR seen twice is one row");
+    assert!(matches!(history[0].state, crate::github::PrStatus::Merged));
+    assert_eq!(
+        history[0].opened_at,
+        Some(1_000),
+        "COALESCE keeps the stamp"
+    );
+    assert_eq!(history[0].merged_at, Some(2_000));
+
+    // A follow-up PR binds. The worktrees row moves on; history keeps both.
+    let second = crate::github::PrState {
+        number: 43,
+        url: "https://github.com/o/r/pull/43".into(),
+        title: "feat: second".into(),
+        state: crate::github::PrStatus::Open,
+        mergeable: crate::github::MergeableState::Mergeable,
+        opened_at: Some(3_000),
+        merged_at: None,
+    };
+    wm.set_repo_pr_snapshot(&id, &subdir, &second).unwrap();
+
+    let history = wm.repo_pr_history(&id, &subdir).unwrap();
+    assert_eq!(history.len(), 2);
+    // Newest number first, so the panel's strip reads most-recent-first.
+    assert_eq!(history[0].number, 43);
+    assert_eq!(history[1].number, 42);
+    assert_eq!(history[1].title, "feat: first");
+    assert!(
+        matches!(history[1].state, crate::github::PrStatus::Merged),
+        "the merged PR keeps its own state, not the follow-up's"
+    );
+    assert_eq!(
+        history[1].url, "https://github.com/o/r/pull/42",
+        "each row keeps its own url — the bug that made a follow-up link to the merged PR"
+    );
+    // The current binding is unchanged by history-keeping.
+    assert_eq!(wm.agent(&id).unwrap().repos[0].pr_number, Some(43));
+}
+
+/// History is per checkout: one repo of a multi-repo agent can't see another's
+/// PRs, and neither can a different agent.
+#[test]
+fn pr_history_is_scoped_to_its_checkout() {
+    let db = test_db();
+    let wm = WorkspaceManager::new(db.clone());
+    seed_repo(&db, "/r");
+
+    let mut rec = new_agent_record(
+        "denali".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "task".into(),
+        AgentView::Custom,
+    );
+    let id = rec.id.clone();
+    wm.add_agent(&mut rec).unwrap();
+    let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+
+    let pr = crate::github::PrState {
+        number: 42,
+        url: "u".into(),
+        title: "t".into(),
+        state: crate::github::PrStatus::Merged,
+        mergeable: crate::github::MergeableState::Unknown,
+        opened_at: Some(1_000),
+        merged_at: Some(2_000),
+    };
+    wm.set_repo_pr_snapshot(&id, &subdir, &pr).unwrap();
+
+    assert_eq!(wm.repo_pr_history(&id, &subdir).unwrap().len(), 1);
+    assert!(
+        wm.repo_pr_history(&id, "other-repo").unwrap().is_empty(),
+        "a sibling checkout has its own history"
+    );
+    assert!(
+        wm.repo_pr_history("ag-other", &subdir).unwrap().is_empty(),
+        "another agent's checkout has its own history"
+    );
+}
+
 /// A successful PR fetch persists the full snapshot (number, url, title,
 /// state, times) and it loads back on the repo record — the database copy
 /// the UI falls back to when GitHub or the checkout is unavailable. A

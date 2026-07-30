@@ -1582,6 +1582,7 @@ pub fn run() {
             commands::refresh_all_pr_status,
             commands::get_pr_checks,
             commands::get_pr_live,
+            commands::get_pr_history,
             commands::get_pr_threads,
             commands::open_agent_shell,
             commands::close_agent_shell,

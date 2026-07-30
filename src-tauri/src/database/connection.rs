@@ -58,6 +58,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0022_repo_label.sql"),
     include_str!("../../migrations/0023_workspace_issue_ref.sql"),
     include_str!("../../migrations/0024_wf_run_issue_ref.sql"),
+    include_str!("../../migrations/0025_worktree_pr_history.sql"),
 ];
 
 pub(crate) fn get_migrations() -> Migrations<'static> {

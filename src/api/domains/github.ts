@@ -32,6 +32,8 @@ export const githubApi = {
     invoke<PrChecks | null>("get_pr_checks", { agentId, subdir }),
   getPrLive: (agentId: string, subdir?: string) =>
     invoke<PrLive | null>("get_pr_live", { agentId, subdir }),
+  getPrHistory: (agentId: string, subdir?: string) =>
+    invoke<PrState[]>("get_pr_history", { agentId, subdir }),
   getPrThreads: (agentId: string, subdir?: string) =>
     invoke<PrComments | null>("get_pr_threads", { agentId, subdir }),
   createPr: (agentId: string, title: string, body: string, subdir?: string) =>

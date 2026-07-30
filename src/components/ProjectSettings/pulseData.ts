@@ -63,10 +63,14 @@ export async function loadPulseActivity(
        GROUP BY day`,
       [projectId, sinceMs],
     ),
+    // Every PR the project's checkouts have opened — from the history log, not
+    // `worktrees.pr_*`. Those columns hold only a checkout's CURRENT binding, so
+    // a workspace that merged and then opened a follow-up counted once, and the
+    // earlier PR's `pr_opened_at` was overwritten out of the series entirely.
     dbQuery<{ day: string; n: number }>(
-      `SELECT date(wt.pr_opened_at/1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS n
-       FROM worktrees wt JOIN workspaces w ON w.id = wt.workspace_id
-       WHERE w.project_id = ? AND wt.pr_opened_at >= ?
+      `SELECT date(p.opened_at/1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS n
+       FROM worktree_prs p JOIN workspaces w ON w.id = p.workspace_id
+       WHERE w.project_id = ? AND p.opened_at >= ?
        GROUP BY day`,
       [projectId, sinceMs],
     ),
