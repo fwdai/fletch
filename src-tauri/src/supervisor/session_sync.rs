@@ -231,6 +231,11 @@ pub(crate) fn persist_pr_snapshot(
 /// branch and no PR (an agent mid-task: the common case) never becomes bound, so
 /// a background poll would re-scan forever: at the Git panel's 5s cadence that
 /// was ~720 points/hour, the largest single consumer left in the app.
+///
+/// A repo bound to a *merged* PR reads the same distinction (see
+/// `resolve_pr_state`): `Forced` scans for a follow-up PR, `Throttled` stays on
+/// the free snapshot. So the mode means the same thing in both cases — "is a new
+/// PR plausible enough right now to spend a point looking for it".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Discovery {
     /// Scan now. For paths where a push or a turn just happened, so a brand-new
@@ -244,12 +249,12 @@ pub enum Discovery {
 /// Minimum gap between branch scans for the same unbound repo under
 /// [`Discovery::Throttled`]. A PR opened outside the app (on github.com, by a
 /// teammate) is still adopted within this window, and once adopted the repo is
-/// bound and never scans again.
+/// bound and scans only on the `Forced` follow-up path.
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Last throttled branch scan per `(agent_id, subdir)`. Only unbound repos land
-/// here — adoption removes the reason to scan at all — so this is bounded by the
-/// number of repos still waiting on a first PR.
+/// here — a bound repo's scans are all `Forced`, which never touches the clock —
+/// so this is bounded by the number of repos still waiting on a first PR.
 fn discovery_clock() -> &'static Mutex<HashMap<(String, String), Instant>> {
     static CLOCK: OnceLock<Mutex<HashMap<(String, String), Instant>>> = OnceLock::new();
     CLOCK.get_or_init(|| Mutex::new(HashMap::new()))
@@ -274,6 +279,20 @@ fn may_discover(agent_id: &str, subdir: &str, discovery: Discovery) -> bool {
     }
 }
 
+/// Whether a branch scan's result supersedes a merged binding — i.e. it is a
+/// genuine follow-up PR rather than the merged one we already hold.
+///
+/// Only an OPEN PR qualifies. `pick_branch_pr` prefers the newest open PR and
+/// falls back to the newest of any state, so a branch with a follow-up scans to
+/// that follow-up, and a branch without one scans back to the merged PR itself.
+/// The number guard makes the second case explicit rather than relying on "a
+/// merged PR can never read OPEN" — an adoption that re-bound the number we
+/// already have would clear its own snapshot columns (see
+/// `set_repo_pr_number`'s identity rule) for no reason.
+fn supersedes_merged(scanned: &PrState, bound: i64) -> bool {
+    matches!(scanned.state, PrStatus::Open) && scanned.number as i64 != bound
+}
+
 /// Drop a repo's discovery record — called once it binds a PR, so the entry
 /// doesn't outlive the state that made it necessary.
 fn clear_discovery(agent_id: &str, subdir: &str) {
@@ -290,11 +309,13 @@ fn clear_discovery(agent_id: &str, subdir: &str) {
 ///
 /// - **Bound PR** (`pr_number` recorded): a persisted `merged` state returns
 ///   straight from the database — merges don't un-happen, so no network or
-///   git access is spent re-confirming them. Otherwise fetch by number
-///   (resolving owner/repo from the checkout, or from the source repo when
-///   the checkout is broken), persist the result, and on failure degrade to
-///   the last persisted snapshot — a failed fetch must never erase state
-///   GitHub already confirmed.
+///   git access is spent re-confirming them. The one exception is a `Forced`
+///   resolve, which scans the branch for a *follow-up* PR: a merged PR ends
+///   that PR, not the workspace, and an open one found there is adopted in its
+///   place. Otherwise fetch by number (resolving owner/repo from the checkout,
+///   or from the source repo when the checkout is broken), persist the result,
+///   and on failure degrade to the last persisted snapshot — a failed fetch
+///   must never erase state GitHub already confirmed.
 /// - **No bound PR**: discover one by branch name, subject to `discovery` (see
 ///   [`Discovery`] — background polls scan on an interval, event-driven paths
 ///   scan immediately). An OPEN PR is adopted (persisted, becoming bound); a
@@ -329,9 +350,33 @@ pub(crate) async fn resolve_pr_state(
         // reopened, so it stays on the live-fetch path (and keeps costing a
         // poll per cycle) to catch that transition.
         if repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str()) {
+            // …unless a follow-up PR may have appeared. A merged PR doesn't end
+            // the workspace: the agent keeps working in the same worktree and
+            // opens further PRs, and without this the repo stays bound to the
+            // merged one forever — a follow-up opened out-of-band (on
+            // github.com, by a teammate) is never adopted, because the return
+            // above precedes every scan.
+            //
+            // Gated on `Forced`, which already means "a push or a turn just
+            // landed, so a brand-new PR is genuinely plausible and worth a
+            // point". Background polls keep the free short-circuit, so this adds
+            // nothing to the steady state — the cost tracks user/agent activity
+            // in a merged workspace, not a timer.
+            if discovery == Discovery::Forced {
+                if let Some(found) = crate::github::pr_view(&checkout).await.unwrap_or(None) {
+                    if supersedes_merged(&found, number) {
+                        persist_pr_snapshot(workspace, agent_id, &repo.subdir, &found);
+                        return Some((found, true));
+                    }
+                }
+            }
+            // No scan, nothing newer, or the scan didn't resolve — the merged
+            // snapshot stands. Never `None`: a failed lookup must not blank a
+            // state GitHub already confirmed.
             return pr_snapshot(repo).map(|pr| (pr, true));
         }
-        // Bound: this repo never needs discovery again.
+        // Bound to a live PR: a by-number fetch tells us everything a branch
+        // scan could, so no throttled scan is owed and the record can go.
         clear_discovery(agent_id, &repo.subdir);
         match crate::github::pr_view_number(&checkout, Some(&repo.repo_path), number as u32).await {
             Ok(Some(pr)) => {
@@ -1456,8 +1501,42 @@ mod tests {
         clear_discovery("ag-1", "backend");
     }
 
-    /// Binding a PR clears the record: the repo will never scan again, so the
-    /// entry shouldn't outlive the state that justified it.
+    /// Only an OPEN PR takes a merged binding's place. `pick_branch_pr` scans a
+    /// branch back to its merged PR when there's no follow-up, and adopting that
+    /// would re-bind the number we already hold — clearing its own snapshot
+    /// columns (see `set_repo_pr_number`) to replace merged state with merged
+    /// state.
+    #[test]
+    fn only_an_open_follow_up_supersedes_a_merged_binding() {
+        let pr = |number: u32, state: PrStatus| PrState {
+            number,
+            url: format!("https://github.com/o/r/pull/{number}"),
+            title: "t".into(),
+            state,
+            mergeable: MergeableState::Unknown,
+            opened_at: None,
+            merged_at: None,
+        };
+        assert!(
+            supersedes_merged(&pr(43, PrStatus::Open), 42),
+            "an open follow-up is the workspace's current PR"
+        );
+        assert!(
+            !supersedes_merged(&pr(42, PrStatus::Merged), 42),
+            "the scan found the PR we already hold"
+        );
+        assert!(
+            !supersedes_merged(&pr(43, PrStatus::Closed), 42),
+            "a closed follow-up is never claimed as the binding"
+        );
+        assert!(
+            !supersedes_merged(&pr(43, PrStatus::Merged), 42),
+            "a second merged PR is history too, not the current state"
+        );
+    }
+
+    /// Binding a PR clears the record: the repo is owed no further throttled
+    /// scan, so the entry shouldn't outlive the state that justified it.
     #[test]
     fn clearing_discovery_reopens_the_window() {
         let (agent, sub) = ("ag-clear", "");
