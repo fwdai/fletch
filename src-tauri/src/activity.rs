@@ -9,16 +9,9 @@
 //! shapes. Adding gemini / codex / etc. means writing new impls
 //! against this trait, not touching the supervisor.
 
-use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-
-/// Backstop threshold for the silence-based fallback. Generous on
-/// purpose — explicit turn-end signals (e.g. claude's `result` event)
-/// should fire well within this window. If they don't, the watchdog
-/// catches it.
-const MANAGED_SILENCE_BACKSTOP: Duration = Duration::from_secs(30);
 
 /// Native-mode silence threshold. Claude's TUI emits continuous
 /// redraw bytes (spinners, progress lines) while it's working, so a
@@ -47,31 +40,19 @@ pub trait Activity: Send {
 /// Custom view: agents that stream structured events and signal end-of-turn
 /// with one specific event. The turn-end *signal* is the only thing that
 /// varies between providers, so it's injected as a predicate; the rest of the
-/// state machine (trust the explicit signal, fall back to silence if it never
-/// fires) is shared. Construct via the provider helpers below.
+/// state machine trusts only that explicit signal. Construct via the provider
+/// helpers below.
 pub struct ManagedActivity {
-    last_event_at: Option<Instant>,
     explicit_turn_end: bool,
     /// Returns true for the event that marks the end of a turn.
     is_turn_end: fn(&Value) -> bool,
-    /// Whether to track outstanding tool calls (Claude-shaped streams only).
-    /// A long, quiet tool call (a build, a test run) emits no events while it
-    /// runs, so the silence backstop would otherwise wrongly flag the turn as
-    /// ended mid-tool. While a tool is outstanding we suppress that backstop.
-    track_tools: bool,
-    /// `tool_use` ids seen without a matching `tool_result` yet. Non-empty
-    /// means a tool is mid-flight, so silence is expected, not turn-end.
-    outstanding_tools: HashSet<String>,
 }
 
 impl ManagedActivity {
     fn new(is_turn_end: fn(&Value) -> bool) -> Self {
         Self {
-            last_event_at: None,
             explicit_turn_end: false,
             is_turn_end,
-            track_tools: false,
-            outstanding_tools: HashSet::new(),
         }
     }
 
@@ -79,9 +60,7 @@ impl ManagedActivity {
     /// `result` event. Cursor emits Claude-shaped stream-json, so it shares
     /// this detector.
     pub fn claude() -> Self {
-        let mut a = Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("result"));
-        a.track_tools = true;
-        a
+        Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("result"))
     }
 
     /// Codex (`codex exec --json`) ends a turn with `turn.completed`. (The
@@ -118,12 +97,9 @@ impl Activity for ManagedActivity {
     fn observe_event(&mut self, event: &Value) {
         // Subagent (sidechain) events carry the spawning Task/Agent tool's id in
         // a top-level `parent_tool_use_id`. They belong to a nested turn, not the
-        // main one: a subagent's `result` must not end the main turn, and its
-        // tool_use/tool_result pairs must not touch the main turn's outstanding
-        // set. Ignore them entirely here — the main agent's own Task tool call
-        // stays in `outstanding_tools` until its real `tool_result`, which keeps
-        // `turn_ended()` false while the subagent runs. (The frontend mirrors
-        // this via `parent_tool_use_id` routing in reduce.ts.)
+        // main one: a subagent's `result` must not end the main turn. Ignore
+        // sidechain events entirely here. (The frontend mirrors this via
+        // `parent_tool_use_id` routing in reduce.ts.)
         if event
             .get("parent_tool_use_id")
             .and_then(|v| v.as_str())
@@ -131,73 +107,28 @@ impl Activity for ManagedActivity {
         {
             return;
         }
-        self.last_event_at = Some(Instant::now());
         if (self.is_turn_end)(event) {
             self.explicit_turn_end = true;
-        }
-        if self.track_tools {
-            self.track_tool_lifecycle(event);
         }
     }
 
     fn turn_ended(&self) -> bool {
-        if self.explicit_turn_end {
-            return true;
-        }
-        // A tool call is in flight (e.g. a long build/test). It emits no events
-        // while it runs, so the silence below is expected — not a finished turn.
-        if !self.outstanding_tools.is_empty() {
-            return false;
-        }
-        self.last_event_at
-            .map(|t| t.elapsed() >= MANAGED_SILENCE_BACKSTOP)
-            .unwrap_or(false)
+        // Structured providers define an explicit terminal event. Silence is
+        // not completion: reasoning, tools, and provider-side work can all be
+        // quiet for an arbitrary amount of time before more events arrive.
+        self.explicit_turn_end
     }
 
     fn reset_for_new_turn(&mut self) {
-        self.last_event_at = Some(Instant::now());
         self.explicit_turn_end = false;
-        self.outstanding_tools.clear();
-    }
-}
-
-impl ManagedActivity {
-    /// Track Claude-shaped tool calls: an `assistant` message's `tool_use`
-    /// blocks open a tool; the matching `user` message's `tool_result` blocks
-    /// close it. Used only to know whether silence is "waiting on a tool" vs
-    /// "turn done".
-    fn track_tool_lifecycle(&mut self, event: &Value) {
-        let Some(kind) = event.get("type").and_then(|v| v.as_str()) else {
-            return;
-        };
-        let blocks = event
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array());
-        let Some(blocks) = blocks else { return };
-        for block in blocks {
-            match (kind, block.get("type").and_then(|v| v.as_str())) {
-                ("assistant", Some("tool_use")) => {
-                    if let Some(id) = block.get("id").and_then(|v| v.as_str()) {
-                        self.outstanding_tools.insert(id.to_string());
-                    }
-                }
-                ("user", Some("tool_result")) => {
-                    if let Some(id) = block.get("tool_use_id").and_then(|v| v.as_str()) {
-                        self.outstanding_tools.remove(id);
-                    }
-                }
-                _ => {}
-            }
-        }
     }
 }
 
 /// Native view: claude runs in a PTY rendering its full TUI. There's
 /// no clean external turn-end event, so we use the silence between
 /// PTY chunks. Claude's TUI animates its "working" state with
-/// frequent redraws, so silence longer than the threshold is a
-/// dependable signal that the prompt is back to idle.
+/// frequent redraws, so silence longer than the threshold is our best
+/// available heuristic. The supervisor corrects it if output resumes.
 pub struct ClaudeNativeActivity {
     last_byte_at: Option<Instant>,
 }
@@ -249,29 +180,22 @@ mod tests {
     }
 
     #[test]
-    fn managed_suppresses_silence_while_tool_outstanding() {
+    fn managed_non_terminal_events_never_end_turn() {
         let mut a = ManagedActivity::claude();
-        // Assistant opens a tool call; no result yet.
         a.observe_event(&serde_json::json!({
             "type": "assistant",
             "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash"}]}
         }));
-        // Simulate a long, quiet tool run well past the silence backstop.
-        a.last_event_at = Some(Instant::now() - MANAGED_SILENCE_BACKSTOP - Duration::from_secs(5));
-        // Tool still outstanding → silence must NOT be read as turn-end.
         assert!(!a.turn_ended());
-        // Tool result arrives → tool closed; silence now genuinely means idle.
         a.observe_event(&serde_json::json!({
             "type": "user",
             "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1"}]}
         }));
-        a.last_event_at = Some(Instant::now() - MANAGED_SILENCE_BACKSTOP - Duration::from_secs(5));
-        assert!(a.turn_ended());
+        assert!(!a.turn_ended());
     }
 
     #[test]
-    fn managed_result_ends_even_with_outstanding_tool() {
-        // An explicit turn-end always wins over outstanding-tool suppression.
+    fn managed_result_ends_after_tool_activity() {
         let mut a = ManagedActivity::claude();
         a.observe_event(&serde_json::json!({
             "type": "assistant",
@@ -293,20 +217,18 @@ mod tests {
 
         // The subagent runs, emitting its own tool cycle and finally a `result`,
         // all tagged with the spawning tool's id. None of it must end the main
-        // turn or leak into the main outstanding-tool set.
+        // turn.
         a.observe_event(&serde_json::json!({
             "type": "assistant",
             "parent_tool_use_id": "toolu_task",
             "message": {"content": [{"type": "tool_use", "id": "toolu_sub", "name": "Bash"}]}
         }));
-        assert_eq!(a.outstanding_tools.len(), 1); // only the main Task call
         a.observe_event(&serde_json::json!({
             "type": "result",
             "parent_tool_use_id": "toolu_task",
             "subtype": "success"
         }));
-        // Subagent's result must NOT end the main turn — the Task call is still
-        // outstanding.
+        // Subagent's result must NOT end the main turn.
         assert!(!a.turn_ended());
 
         // The main agent finally gets the Task tool_result, then ends its turn.
@@ -316,30 +238,6 @@ mod tests {
         }));
         a.observe_event(&serde_json::json!({"type": "result", "subtype": "success"}));
         assert!(a.turn_ended());
-    }
-
-    #[test]
-    fn managed_reset_clears_outstanding_tools() {
-        let mut a = ManagedActivity::claude();
-        a.observe_event(&serde_json::json!({
-            "type": "assistant",
-            "message": {"content": [{"type": "tool_use", "id": "toolu_1"}]}
-        }));
-        assert!(!a.outstanding_tools.is_empty());
-        a.reset_for_new_turn();
-        assert!(a.outstanding_tools.is_empty());
-    }
-
-    #[test]
-    fn codex_does_not_track_tools() {
-        // Only the Claude-shaped detector tracks tool lifecycle; others ignore
-        // the (foreign-shaped) blocks entirely.
-        let mut a = ManagedActivity::codex();
-        a.observe_event(&serde_json::json!({
-            "type": "assistant",
-            "message": {"content": [{"type": "tool_use", "id": "x"}]}
-        }));
-        assert!(a.outstanding_tools.is_empty());
     }
 
     #[test]

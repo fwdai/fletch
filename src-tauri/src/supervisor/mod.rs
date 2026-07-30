@@ -68,6 +68,11 @@ pub struct Supervisor {
     pub agents: Mutex<HashMap<String, Arc<Agent>>>,
     pub generations: Mutex<HashMap<String, u64>>,
     pub activities: Mutex<HashMap<String, Box<dyn Activity>>>,
+    /// Native PTY turns whose silence heuristic most recently moved them to
+    /// Idle. A later byte proves that heuristic was early; the output handler
+    /// consumes this marker and restores Running. Structured providers never
+    /// enter this set because their terminal events are authoritative.
+    pub heuristic_idle: Mutex<HashSet<String>>,
     /// In-memory source of truth for live runtime status
     /// (Spawning/Running/Idle). The DB only persists durable
     /// dispositions, so a resting record loaded from it derives `Idle`;
@@ -140,6 +145,7 @@ impl Supervisor {
             agents: Mutex::new(HashMap::new()),
             generations: Mutex::new(HashMap::new()),
             activities: Mutex::new(HashMap::new()),
+            heuristic_idle: Mutex::new(HashSet::new()),
             statuses: Mutex::new(HashMap::new()),
             native_inputs: Mutex::new(HashMap::new()),
             shells: Mutex::new(HashMap::new()),
