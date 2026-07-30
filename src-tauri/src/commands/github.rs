@@ -157,6 +157,31 @@ pub async fn get_pr_state(
     .map(|(pr, _bound)| pr))
 }
 
+/// Every PR this checkout has held, newest number first — the panel's earlier-PRs
+/// strip. A pure database read (no network, no git): the history log is written
+/// by `set_repo_pr_snapshot`, so this only reports what a fetch already confirmed.
+/// An unknown subdir or a repo-less agent reads as an empty history rather than
+/// an error — the strip simply doesn't render.
+#[tauri::command]
+pub fn get_pr_history(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<Vec<PrState>> {
+    let record = supervisor.workspace.agent(&agent_id)?;
+    let repo = match subdir.as_deref() {
+        Some(s) => record.repos.iter().find(|r| r.subdir == s),
+        // Default to the primary, matching every other PR command's shape.
+        None => record.repos.first(),
+    };
+    let Some(repo) = repo else {
+        return Ok(vec![]);
+    };
+    supervisor
+        .workspace
+        .repo_pr_history(&agent_id, &repo.subdir)
+}
+
 /// List the open PRs for the agent's repo, for the composer's "#" mention
 /// autocomplete. Capped at 50 — the picker filters and shows a handful.
 #[tauri::command]

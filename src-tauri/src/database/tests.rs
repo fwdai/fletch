@@ -169,6 +169,63 @@ fn upgrading_an_older_schema_backs_it_up_first() {
     assert_eq!(version, 1);
 }
 
+/// The PR-history migration seeds itself from the bindings already on disk, so
+/// an upgrading install starts with history rather than with today. Without the
+/// backfill the Project Pulse "PRs opened" series — which now reads the log —
+/// would blank every past day until each PR happened to be re-fetched. A binding
+/// with no persisted state carries no renderable snapshot and is skipped.
+#[test]
+fn pr_history_migration_backfills_existing_bindings() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    // One migration short of the history table: the state an existing install
+    // upgrades from.
+    let before = MIGRATIONS.len() - 1;
+    get_migrations().to_version(&mut conn, before).unwrap();
+
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO repos (id, project_id, path, created_at) VALUES ('r', 'p', '/r', 0);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w', 'p', 'ws', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, created_at,
+                                pr_number, pr_url, pr_title, pr_state, pr_opened_at, pr_merged_at)
+              VALUES ('wt1', 'w', 'r', 'repo', 0,
+                      42, 'https://x/42', 'feat: landed', 'merged', 1000, 2000);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w2', 'p', 'ws2', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, created_at, pr_number, pr_state)
+              VALUES ('wt2', 'w2', 'r', 'repo', 0, 99, NULL);",
+    )
+    .unwrap();
+    drop(conn);
+
+    init(dir.path()).unwrap();
+
+    let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
+    let (n, url, state, opened, merged): (i64, String, String, i64, i64) = conn
+        .query_row(
+            "SELECT number, url, state, opened_at, merged_at FROM worktree_prs
+              WHERE workspace_id = 'w' AND subdir = 'repo'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (n, state.as_str(), opened, merged),
+        (42, "merged", 1000, 2000)
+    );
+    assert_eq!(url, "https://x/42");
+
+    // The state-less binding is not invented into history.
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM worktree_prs WHERE workspace_id = 'w2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0, "no persisted state means no renderable snapshot");
+}
+
 #[test]
 fn fresh_init_creates_no_backup() {
     let dir = tempfile::tempdir().unwrap();

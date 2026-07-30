@@ -14,7 +14,9 @@ import { useActionBarModel } from "./hooks/useActionBarModel";
 import { useCommitDraft } from "./hooks/useCommitDraft";
 import { useGitActions } from "./hooks/useGitActions";
 import { useGitPanelData } from "./hooks/useGitPanelData";
+import { usePrHistory } from "./hooks/usePrHistory";
 import { useTransientFeedback } from "./hooks/useTransientFeedback";
+import { PrSetStrip } from "./PrSetStrip";
 import { StatusHeader } from "./StatusHeader";
 
 /** One repo's worth of git panel: the full header / body / footer stack,
@@ -137,6 +139,11 @@ export function GitRepoSection({
   const showFiles = panelState === "changes" || panelState === "conflicts";
   const showCommit = panelState === "changes" && !delegation;
 
+  // The PRs this checkout held before the current one — a workspace that kept
+  // working after a merge has them. Each is a linked pill, so landed work stays
+  // reachable once the header has moved on to the follow-up.
+  const priorPrs = usePrHistory(agent.id, prState?.number ?? null, subdir);
+
   return (
     <div className="git-wrap">
       {/* ── color-coded status header: the at-a-glance state signal ── */}
@@ -149,6 +156,24 @@ export function GitRepoSection({
         mergeState={mergeState}
         checksFailed={checks?.failed ?? 0}
       />
+
+      {/* Earlier PRs of this checkout, once it has any — merged work stays one
+          click away after the panel moves on to the follow-up. */}
+      {priorPrs.length > 0 && (
+        <PrSetStrip
+          heading="Earlier"
+          entries={priorPrs.map((pr) => ({
+            key: String(pr.number),
+            // Backfilled rows can carry an empty title (the pre-history schema
+            // stored no snapshot until a fetch succeeded) — fall back to the
+            // number so the tooltip never reads as a bare " · merged".
+            context: pr.title || `PR #${pr.number}`,
+            pr,
+            // Settled PRs have no live CI to show; the pill reads its state.
+            checks: null,
+          }))}
+        />
+      )}
 
       {/* ── scrollable body: the changes are the focus ── */}
       <div className={`git-body ${busy ? "busy" : ""}`}>
