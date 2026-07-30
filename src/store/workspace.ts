@@ -20,7 +20,6 @@ import {
   reduceRecords,
   repoPathFor,
   resolveBaseBranch,
-  sendWhenAgentReady,
   unsupportedManagedCommand,
 } from "@/helpers";
 import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
@@ -521,30 +520,25 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
               }),
         };
       });
-      try {
-        const enqueued = await api.sendUserMessage(id, turnId, sendText, attachments);
-        // Only a genuinely-held message wears the badge; a delivered one stays a
-        // plain bubble. Match by turnId — agent output may have appended since.
-        if (wasBusy && enqueued) {
-          set((state) => ({
-            managedLogs: {
-              ...state.managedLogs,
-              [id]: (state.managedLogs[id] ?? []).map((it) =>
-                it.kind === "queued_message" && it.turnId === turnId ? { ...it, queued: true } : it,
-              ),
-            },
-          }));
-        }
-      } catch (e) {
-        if (String(e).includes("agent not found")) {
-          // Dead idle agent (finished its prior task) — resume the
-          // process in --resume mode, then deliver the message once ready.
-          // Not busy, so it lands as a new turn (never queued) — no badge.
-          await api.resumeAgent(id);
-          await sendWhenAgentReady(() => api.sendUserMessage(id, turnId, sendText, attachments));
-        } else {
-          throw e;
-        }
+      // A dead session (one whose process exited when it last went idle, or any
+      // session after an app restart) needs no special handling here: the
+      // backend revives it in --resume mode and delivers this message onto the
+      // fresh process. That used to live here, keyed off an "agent not found"
+      // error, but the backend no longer surfaces one — it holds the message
+      // instead — and keeping the revive there covers every other sender
+      // (autopilot, delegation, drafts) rather than just this one.
+      const enqueued = await api.sendUserMessage(id, turnId, sendText, attachments);
+      // Only a genuinely-held message wears the badge; a delivered one stays a
+      // plain bubble. Match by turnId — agent output may have appended since.
+      if (wasBusy && enqueued) {
+        set((state) => ({
+          managedLogs: {
+            ...state.managedLogs,
+            [id]: (state.managedLogs[id] ?? []).map((it) =>
+              it.kind === "queued_message" && it.turnId === turnId ? { ...it, queued: true } : it,
+            ),
+          },
+        }));
       }
     } catch (e) {
       set((state) => ({
