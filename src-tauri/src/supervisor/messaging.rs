@@ -67,7 +67,9 @@ impl Supervisor {
                     // the (already-persisted) turn: the respawn's post-restart
                     // flush, or this flush once the restart lands, delivers it
                     // onto the fresh process — which is the intent, since the
-                    // message then runs under the new config (CQ3-C).
+                    // message then runs under the new config (CQ3-C). If there
+                    // was no teardown to race and simply no process at all, the
+                    // revive below is what picks the message up.
                     tracing::warn!(error = %e, agent_id, "deliver-now raced a teardown; re-queueing");
                     self.persist_and_enqueue(agent_id, msg);
                     flush_queued(&self, app, agent_id)?
@@ -106,7 +108,81 @@ impl Supervisor {
                 self.is_busy(agent_id) || flush_queued(&self, app, agent_id)?
             }
         };
+        // Every arm above holds the message rather than dropping it, but holding
+        // only helps if something will eventually come along to deliver it. When
+        // no process is live at all there is no such boundary — the session is
+        // resting after an app restart, or its process exited when it last went
+        // idle — so revive it and flush. Without this the message sits in the
+        // queue until the user gives up: the spinner runs, no turn ever starts,
+        // and each retry only grows the backlog.
+        if queued && self.needs_revive(agent_id) {
+            self.clone().revive_and_flush(app, agent_id);
+        }
         Ok(queued)
+    }
+
+    /// Whether a *held* message needs its session revived before anything can
+    /// deliver it. True only when no live process exists **and** nothing is
+    /// already on its way to producing one:
+    ///
+    /// - a `Spawning` agent is excluded — its own `start_process` drains the
+    ///   queue when the process comes up (see `start_process`), and reviving
+    ///   underneath it would race that spawn;
+    /// - a project mid-deletion is excluded — nothing may be started under it
+    ///   (the same guard `respawn_agent_preserving_session` applies), and
+    ///   `deliver_as_turn` rejects for that reason too, so the hold there is
+    ///   deliberate rather than a missing process.
+    ///
+    /// A session-preserving respawn briefly presents as "no live process" while
+    /// it tears the old one down. Reviving into that window is harmless: the
+    /// revive waits on the same `agent_lifecycle` lock the respawn holds, then
+    /// finds the agent already restored and returns without spawning.
+    fn needs_revive(&self, agent_id: &str) -> bool {
+        if matches!(self.live_status(agent_id), Some(AgentStatus::Spawning)) {
+            return false;
+        }
+        if self.agents.lock().contains_key(agent_id) {
+            return false;
+        }
+        match self.workspace.agent(agent_id) {
+            Ok(record) => !self.deleting_projects.lock().contains(&record.project_id),
+            Err(_) => false,
+        }
+    }
+
+    /// Restart the agent's process in `--resume` mode and deliver whatever is
+    /// queued onto it. Fire-and-forget: `send_user_message` is synchronous and
+    /// already reported the message as held, so the caller isn't kept waiting on
+    /// a spawn — the `Spawning` status event tells the frontend what's happening
+    /// and the flushed turn tells it when the agent picked the message up.
+    ///
+    /// Safe to fire more than once (a user sending twice in a row): `resume_agent`
+    /// serializes on `agent_lifecycle` and no-ops once the agent is live, and
+    /// `flush_queued` drains under the queue lock, so a second call finds nothing
+    /// left to send rather than double-delivering.
+    fn revive_and_flush(self: Arc<Self>, app: &AppHandle, agent_id: &str) {
+        let app = app.clone();
+        let agent_id = agent_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            tracing::info!(
+                agent_id,
+                "reviving a resting session to deliver a held message"
+            );
+            if let Err(e) = self.clone().resume_agent(app.clone(), &agent_id).await {
+                // The status is already Error with this reason (set inside the
+                // resume), so the user sees why; the message stays queued and a
+                // later successful revive still delivers it.
+                tracing::warn!(error = %e, agent_id, "revive for a held message failed");
+                return;
+            }
+            // `start_process` drains the queue itself on the spawn-completion
+            // Idle, so this is usually a no-op. It still matters when the revive
+            // no-oped because a concurrent respawn had already restored the
+            // agent — then nobody else owns this message.
+            if let Err(e) = flush_queued(&self, &app, &agent_id) {
+                tracing::warn!(error = %e, agent_id, "post-revive queue flush failed");
+            }
+        });
     }
 
     /// Inject a message into the running turn over the managed agent's open
@@ -495,5 +571,72 @@ mod tests {
         assert_eq!(turns[0].turn_id, "turn-1");
         assert_eq!(turns[0].text, "hello");
         assert_eq!(turns[0].native_id, None);
+    }
+
+    /// The regression this guards: after an app restart no process is live and
+    /// the supervisor holds no runtime status at all, so a held message has
+    /// nobody to deliver it. That state must ask for a revive — otherwise the
+    /// message sits queued forever while the composer spins.
+    #[test]
+    fn a_resting_session_with_no_live_process_asks_for_a_revive() {
+        let sup = test_supervisor();
+        let mut record = record_with_status("yosemite", AgentStatus::Idle);
+        sup.workspace.add_agent(&mut record).unwrap();
+
+        assert!(
+            sup.live_status("yosemite").is_none(),
+            "no runtime state yet"
+        );
+        assert!(sup.needs_revive("yosemite"));
+    }
+
+    /// The same holds once the agent's process has exited within this run: the
+    /// live status lingers at Idle but the `agents` map no longer has a handle.
+    #[test]
+    fn an_exited_process_still_asks_for_a_revive() {
+        let sup = test_supervisor();
+        let mut record = record_with_status("yosemite", AgentStatus::Idle);
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.statuses
+            .lock()
+            .insert("yosemite".to_string(), AgentStatus::Idle);
+
+        assert!(sup.needs_revive("yosemite"));
+    }
+
+    /// A spawn already in flight owns the delivery — `start_process` drains the
+    /// queue when it completes. Reviving here would race that spawn.
+    #[test]
+    fn a_spawning_agent_does_not_ask_for_a_revive() {
+        let sup = test_supervisor();
+        let mut record = record_with_status("yosemite", AgentStatus::Spawning);
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.statuses
+            .lock()
+            .insert("yosemite".to_string(), AgentStatus::Spawning);
+
+        assert!(!sup.needs_revive("yosemite"));
+    }
+
+    /// Nothing may be started under a project being deleted — the hold there is
+    /// deliberate (`deliver_as_turn` rejects for that reason), not a missing
+    /// process.
+    #[test]
+    fn an_agent_in_a_deleting_project_does_not_ask_for_a_revive() {
+        let sup = test_supervisor();
+        let mut record = record_with_status("yosemite", AgentStatus::Idle);
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.deleting_projects
+            .lock()
+            .insert(sup.workspace.agent("yosemite").unwrap().project_id);
+
+        assert!(!sup.needs_revive("yosemite"));
+    }
+
+    /// An unknown agent has nothing to revive.
+    #[test]
+    fn an_unknown_agent_does_not_ask_for_a_revive() {
+        let sup = test_supervisor();
+        assert!(!sup.needs_revive("nowhere"));
     }
 }
