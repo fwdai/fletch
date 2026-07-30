@@ -66,6 +66,29 @@ describe("deriveState", () => {
   });
 });
 
+describe("pushed state after a merge", () => {
+  it("counts and names follow-up commits honestly, never as 'no PR yet'", () => {
+    // `ahead` still includes the 3 commits that landed in #7 — the local base
+    // doesn't move until the next fetch — and those ARE pushed. Only the 1
+    // unpushed commit is new work, and the PR isn't missing, it merged.
+    const p = primaryFor("pushed", { ...base, ahead: 4, unpushed: 1, prMerged: true });
+    expect(p.key).toBe("agent-open-pr");
+    expect(p.statusLabel).toBe("1 new commit since PR #7");
+    expect(
+      primaryFor("pushed", { ...base, ahead: 9, unpushed: 2, prMerged: true }).statusLabel,
+    ).toBe("2 new commits since PR #7");
+  });
+
+  it("leaves the no-PR-yet copy alone when nothing has merged", () => {
+    expect(primaryFor("pushed", { ...base, ahead: 1 }).statusLabel).toBe(
+      "1 commit pushed, no PR yet",
+    );
+    expect(primaryFor("pushed", { ...base, ahead: 3 }).statusLabel).toBe(
+      "3 commits pushed, no PR yet",
+    );
+  });
+});
+
 describe("changes-state sticky commit action", () => {
   it("defaults to Commit & open PR", () => {
     const p = primaryFor("changes", { files: 2 });

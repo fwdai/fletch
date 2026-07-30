@@ -100,6 +100,11 @@ export interface ActionCounts {
   /** Changes state: a PR is already open for this branch — "open PR" is
    *  meaningless (push updates it) and Merge belongs in the menu. */
   prOpen?: boolean;
+  /** The bound PR has merged, so anything here is follow-up work. Changes the
+   *  pushed state's copy: `ahead` still counts the commits that landed (the
+   *  local base stays stale until the next fetch), and "no PR yet" would read
+   *  as "never had one". */
+  prMerged?: boolean;
   /** Whether GitHub is connected (a valid app token). When false, any
    *  push/PR action is replaced by "Connect GitHub" — local work still runs. */
   githubConnected?: boolean;
@@ -150,6 +155,7 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
     files = 0,
     ahead = 0,
     behind = 0,
+    unpushed = 0,
     prNumber,
     base = "main",
     customActive = false,
@@ -158,6 +164,7 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
     checksFailed = 0,
     commitAction = "agent-commit-pr",
     prOpen = false,
+    prMerged = false,
   } = counts ?? {};
   const prLabel = prNumber != null ? `PR #${prNumber}` : "PR";
 
@@ -224,8 +231,16 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
         key: "agent-open-pr",
         label: "Open PR",
         icon: "pr",
-        statusLabel:
-          ahead === 1 ? "1 commit pushed, no PR yet" : `${ahead} commits pushed, no PR yet`,
+        // Follow-up work after a merge needs its own count and phrasing: the
+        // landed commits are still in `ahead` (the local base doesn't move until
+        // the next fetch) and they ARE pushed, so only the unpushed ones are new
+        // — and the PR isn't missing, it merged. `unpushed > 0` is exactly how
+        // this state was reached (see `hasWorkSinceMerge`).
+        statusLabel: prMerged
+          ? `${unpushed === 1 ? "1 new commit" : `${unpushed} new commits`} since ${prLabel}`
+          : ahead === 1
+            ? "1 commit pushed, no PR yet"
+            : `${ahead} commits pushed, no PR yet`,
         statusKind: "info",
       };
     }
