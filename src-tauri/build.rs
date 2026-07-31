@@ -5,10 +5,14 @@
 // so we also load a repo-root `.env` here and forward these keys into the
 // compile. A value already present in the environment always wins, so CI is
 // unaffected and a developer can still override `.env` with a shell export.
-const CONFIG_KEYS: [&str; 3] = [
+const CONFIG_KEYS: [&str; 5] = [
     "QUORUM_GITHUB_CLIENT_ID",
     "QUORUM_GOOGLE_CLIENT_ID",
     "QUORUM_GOOGLE_CLIENT_SECRET",
+    // PostHog carries both usage telemetry and in-app feedback (see
+    // `telemetry.rs`), so a local build needs these to exercise either.
+    "QUORUM_POSTHOG_KEY",
+    "QUORUM_POSTHOG_HOST",
 ];
 
 fn main() {

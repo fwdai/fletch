@@ -1,0 +1,163 @@
+/* ── Send-feedback modal ──────────────────────────────────────────── */
+/* Same shell as the New Project modal (see NewProject.css) — centered, own
+   entry keyframe so the animated transform keeps its centering. Sits above the
+   Scrim's z-index 400, matching the GitHub connect modal's layer. */
+.fb-modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 460px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
+  z-index: 401;
+  animation: fb-modal-in 0.18s var(--ease);
+}
+@keyframes fb-modal-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 6px)) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.fb-h {
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--bd);
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.fb-h svg {
+  color: var(--accent);
+}
+.fb-h span {
+  flex: 1;
+}
+.fb-close {
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  color: var(--fg-2);
+}
+.fb-close:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+
+.fb-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  overflow-y: auto;
+}
+.fb-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fb-label {
+  font-weight: 500;
+  color: var(--fg-2);
+}
+.fb-opt {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+/* Composes onto `.set-text` (the app's shared input skin), overriding the
+   fixed-height input sizing for a resizable prose box. */
+.fb-textarea {
+  height: auto;
+  min-height: 120px;
+  padding: 10px 12px;
+  line-height: var(--lh-normal);
+  resize: vertical;
+  font-family: var(--font-sans);
+}
+.fb-hint {
+  color: var(--fg-2);
+}
+.fb-hint.e {
+  color: var(--danger);
+}
+
+/* Screenshot attachment */
+.fb-shot-empty {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.fb-shot {
+  gap: 10px;
+  padding: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+}
+.fb-shot-thumb {
+  width: 64px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--bd);
+  background: var(--bg-0);
+}
+.fb-shot-meta {
+  flex: 1;
+  min-width: 0;
+}
+.fb-shot-name {
+  color: var(--fg-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fb-shot-size {
+  color: var(--fg-3);
+}
+
+.fb-error {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+}
+.fb-error-t {
+  font-weight: 600;
+}
+.fb-link {
+  align-self: flex-start;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.fb-note {
+  color: var(--fg-3);
+}
+.fb-actions {
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+.fb-done {
+  gap: 8px;
+  padding: 18px 4px;
+  color: var(--fg-0);
+}
+.fb-done svg {
+  color: var(--success);
+}

@@ -36,6 +36,7 @@ import {
   Layers,
   LayoutGrid,
   Map as MapIcon,
+  MessageSquare,
   Minus,
   Moon,
   MoreHorizontal,
@@ -158,6 +159,7 @@ const ICON_COMPONENTS = {
   clock: Clock,
   hand: Hand,
   grip: GripVertical,
+  feedback: MessageSquare,
 } satisfies Record<string, ComponentType<IconComponentProps>>;
 
 // Originally rendered with fill="currentColor". Setting fill on the root SVG

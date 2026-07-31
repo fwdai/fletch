@@ -43,7 +43,13 @@ type OnboardingCommon = {
 };
 
 /** Every renderer-emitted event, with its exact property shape. Adding an
- *  event means adding a line here first. */
+ *  event means adding a line here first.
+ *
+ *  One event is deliberately not here: `feedback_submitted` (see
+ *  `docs/feedback.md`). It goes through `api.submitFeedback`, because it must be
+ *  awaited to report failure, must ignore the telemetry consent gate, and
+ *  carries a screenshot — none of which `track`'s fire-and-forget contract
+ *  covers. */
 interface EventMap {
   // ── onboarding funnel ────────────────────────────────────────────────────
   /** A step came on screen. The whole drop-off curve is derivable from this. */

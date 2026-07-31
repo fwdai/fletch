@@ -9,6 +9,7 @@ export function SidebarFooter() {
   const setTheme = useAppStore((s) => s.setTheme);
   const account = useAppStore((s) => s.account);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
+  const openFeedback = useAppStore((s) => s.openFeedback);
   const isDark = theme === "dark";
 
   const fullName = account ? `${account.firstName} ${account.lastName}`.trim() : "";
@@ -36,6 +37,9 @@ export function SidebarFooter() {
           <div className="ue">{sub}</div>
         </div>
       </button>
+      <IconButton tip="Send feedback" onClick={openFeedback} aria-label="Send feedback">
+        <Icon name="feedback" />
+      </IconButton>
       <IconButton
         tip={isDark ? "Light theme (⌘⇧L)" : "Dark theme (⌘⇧L)"}
         onClick={() => setTheme(isDark ? "light" : "dark")}
