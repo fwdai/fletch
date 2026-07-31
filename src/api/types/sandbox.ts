@@ -43,5 +43,11 @@ export interface IsolationReport {
 export interface PublishApproval {
   id: string;
   agent_id: string;
+  /** `"git_push"` | `"open_pr"`. The UI needs the op, not just `detail`'s prose:
+   *  autopilot's standing authorization covers pushes only. */
+  op: string;
+  /** Tracked repo subdir the publish targets; absent for the primary checkout.
+   *  Authorization is per-checkout, so this completes the `checkoutKey`. */
+  repo?: string;
   detail: string;
 }

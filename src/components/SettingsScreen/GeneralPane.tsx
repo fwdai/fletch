@@ -178,7 +178,7 @@ export function GeneralPane() {
       <SetGroup label="Sandbox">
         <SetRow
           title="Ask before publishing"
-          sub="Require your approval each time an agent pushes a branch or opens a pull request. Agents already can't push the branch their work is reviewed against, and your credentials never enter their sandbox. Leave this off if you use autopilot: it publishes while nobody is watching, so a prompt would stall it."
+          sub="Require your approval each time an agent decides to publish. What you already asked for is not re-asked: autopilot keeps running, and a Git-panel action you clicked goes straight through. Agents already can't push the branch their work is reviewed against, and your credentials never enter their sandbox."
         >
           <SetToggle
             on={publishConfirmation}

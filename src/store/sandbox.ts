@@ -1,5 +1,7 @@
 import { api, type ContainerAuthStatus, type DockerProbe, type PublishApproval } from "@/api";
 import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preferences";
+import { checkoutKey } from "./git";
+import { publishPreAuthorized } from "./publishApproval";
 import type { SliceCreator } from "./types";
 
 /** Live state of the embedded docker image build (first docker spawn). `null`
@@ -47,7 +49,13 @@ export interface SandboxSlice {
   setSandboxEngine: (engine: SandboxEngine) => Promise<void>;
   /** Turn the publish-approval prompt on or off (backend-owned setting). */
   setPublishConfirmation: (enabled: boolean) => Promise<void>;
-  /** Queue a publish the backend is waiting on (from the event listener). */
+  /** Handle a publish the backend is blocked on: answer it immediately when the
+   *  user already authorized it, otherwise queue it for the prompt. Owns the
+   *  decision so it is testable without a rendered listener — and the decision is
+   *  what keeps an unattended autopilot run from stalling on a prompt. */
+  receivePublishApproval: (request: PublishApproval) => void;
+  /** Queue a publish for the prompt. Prefer `receivePublishApproval`, which
+   *  applies the pre-authorization policy first. */
   queuePublishApproval: (request: PublishApproval) => void;
   /** Answer the queued request `id` and drop it from the queue. */
   answerPublishApproval: (id: string, approved: boolean) => Promise<void>;
@@ -107,6 +115,23 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   setPublishConfirmation: async (enabled) => {
     await api.setPublishConfirmation(enabled);
     set({ publishConfirmation: enabled });
+  },
+
+  receivePublishApproval: (request) => {
+    const key = checkoutKey(request.agent_id, request.repo);
+    const s = get();
+    if (publishPreAuthorized(request.op, key, s)) {
+      void s.answerPublishApproval(request.id, true);
+      return;
+    }
+    // Prompting a checkout autopilot is actively driving should be unreachable
+    // (the branch above covers it) and would stall that run at the backend's
+    // timeout, so say so loudly rather than let it expire quietly.
+    const driving = s.autopilot[key];
+    if (driving?.enrolled && !driving.paused) {
+      console.error("publish approval prompted while autopilot is driving", { key, request });
+    }
+    s.queuePublishApproval(request);
   },
 
   queuePublishApproval: (request) =>

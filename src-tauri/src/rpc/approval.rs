@@ -6,10 +6,17 @@
 //! credentials never enter the sandbox and the destination is constrained, but
 //! until now an agent pushed under the user's identity without asking.
 //!
-//! **Off by default**, because prompting conflicts with unattended operation:
-//! autopilot exists to work while nobody is watching, and a prompt would hang it
-//! until the timeout and then deny. Turning it on is a deliberate trade of
-//! unattended publishing for a gate — see [`SETTING`].
+//! **Off by default** — a product choice, not a technical limit. When it is on,
+//! publishing the user already authorized is answered without a prompt: the UI
+//! recognises an autopilot-driven push (enrollment is standing consent) and a live
+//! Git-panel delegation (the click is the consent), so neither an unattended run
+//! nor a button press waits on a dialog. See `store/publishApproval.ts`; that
+//! policy lives in the UI because the state it reads — autopilot enrollment,
+//! delegation liveness — is frontend-owned.
+//!
+//! The gate is nonetheless a secondary control: an agent has unrestricted network
+//! access, so it does not need `git_push` to exfiltrate. What this protects is
+//! *attribution* — a branch or pull request appearing to come from the user.
 //!
 //! Shape: the dispatcher [`request`]s approval and awaits a one-shot; the UI
 //! answers through the `answer_publish_approval` command. Every path that does
@@ -29,7 +36,13 @@ use tokio::sync::oneshot;
 /// so an install that has never seen this setting keeps today's behaviour.
 pub const SETTING: &str = "publish_confirmation";
 
-/// The event the UI listens for. Payload: `{ id, agent_id, op, detail }`.
+/// The event the UI listens for. Payload:
+/// `{ id, agent_id, op, repo, detail }`.
+///
+/// `op` and `repo` are what let the UI decide whether the user already
+/// authorized this publish: authorization is per-checkout (autopilot enrollment,
+/// a Git-panel delegation), and autopilot only ever needs `git_push`. Without
+/// both, the UI would have to infer them from `detail`'s prose.
 pub const EVENT_REQUESTED: &str = "publish:approval-requested";
 
 /// How long an unanswered request waits before being denied. Generous enough for
@@ -72,6 +85,8 @@ pub fn enabled() -> bool {
 pub async fn refuse_unless_approved(
     app: &AppHandle,
     agent_id: &str,
+    op: &str,
+    repo: Option<&str>,
     detail: &str,
 ) -> Option<String> {
     if !enabled() {
@@ -81,7 +96,13 @@ pub async fn refuse_unless_approved(
     if app
         .emit(
             EVENT_REQUESTED,
-            json!({ "id": id, "agent_id": agent_id, "detail": detail }),
+            json!({
+                "id": id,
+                "agent_id": agent_id,
+                "op": op,
+                "repo": repo,
+                "detail": detail,
+            }),
         )
         .is_err()
     {

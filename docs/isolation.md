@@ -197,9 +197,16 @@ anything that isn't an explicit approval — no window listening, a dismissed
 prompt, nobody answering within 120s — resolves to *denied*, so the gate cannot
 fail open.
 
-It is off by default because it conflicts with unattended operation: autopilot
-exists to work while nobody is watching, and a prompt would stall it until the
-timeout and then refuse. Enabling it trades unattended publishing for the gate.
+Turning it on does not disturb what you already asked for. A push from a checkout
+enrolled in autopilot, and any publish covered by a Git-panel action you clicked,
+are recognised as already authorized and answered without a prompt
+(`store/publishApproval.ts`) — so an unattended run keeps running and a button
+press doesn't ask twice. Only a publish the agent decided on by itself prompts.
+
+It is off by default as a product choice rather than a technical limit, and it is
+worth being clear that it is a *secondary* control: with network egress
+unrestricted (see below), an agent never needed `git_push` to exfiltrate. What the
+gate protects is attribution — a branch or pull request appearing to come from you.
 
 **So the caveat that remains, by default:** for its *own* branch, an agent pushes
 and opens a pull request under your GitHub identity without asking. Credentials

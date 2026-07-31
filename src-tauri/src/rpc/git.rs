@@ -121,7 +121,12 @@ impl GitDispatcher {
     /// Fails **closed** when the gate is on but this dispatcher has no window to
     /// ask through: publishing unasked is exactly what the gate exists to prevent,
     /// so an unaskable session refuses instead.
-    async fn refuse_unless_publish_approved(&self, detail: &str) -> Option<String> {
+    async fn refuse_unless_publish_approved(
+        &self,
+        op: &str,
+        repo: Option<&str>,
+        detail: &str,
+    ) -> Option<String> {
         if !approval::enabled() {
             return None;
         }
@@ -131,7 +136,7 @@ impl GitDispatcher {
                  session has no window to ask through"
             ));
         };
-        approval::refuse_unless_approved(app, agent_id, detail).await
+        approval::refuse_unless_approved(app, agent_id, op, repo, detail).await
     }
 
     /// Seed the agent's live issue ref (the one it was spawned from, if any)
@@ -417,10 +422,11 @@ impl GitDispatcher {
             return (Response::err(id, why), effects);
         }
         if let Some(why) = self
-            .refuse_unless_publish_approved(&format!(
-                "open a pull request from {branch} into {}",
-                t.base_branch
-            ))
+            .refuse_unless_publish_approved(
+                "open_pr",
+                t.subdir.as_deref(),
+                &format!("open a pull request from {branch} into {}", t.base_branch),
+            )
             .await
         {
             return (Response::err(id, why), effects);
@@ -482,7 +488,11 @@ impl GitDispatcher {
         };
 
         if let Some(why) = self
-            .refuse_unless_publish_approved(&format!("push {branch}"))
+            .refuse_unless_publish_approved(
+                "git_push",
+                t.subdir.as_deref(),
+                &format!("push {branch}"),
+            )
             .await
         {
             return (Response::err(id, why), effects);
