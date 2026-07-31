@@ -4,6 +4,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { SetSeg } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
+import { TextArea, TextInput } from "@/components/ui/TextInput";
 import { MCP_SUPPORT, mcpAttachable, PROVIDERS } from "@/data/providers";
 import type { NewCustomAgent } from "@/storage/customAgents";
 import { useAppStore } from "@/store";
@@ -140,8 +141,7 @@ export function AgentEditor({
             Description
             <span className="ca-field-hint">A short role tagline, shown in the picker</span>
           </label>
-          <input
-            className="set-text text-base"
+          <TextInput
             placeholder="e.g. Plans before coding · writes PLAN.md"
             value={form.description}
             onChange={(e) => set({ description: e.target.value })}
@@ -202,8 +202,8 @@ export function AgentEditor({
             Instructions
             <span className="ca-field-hint">The standing system prompt for this agent</span>
           </label>
-          <textarea
-            className="set-text ca-textarea text-base"
+          <TextArea
+            className="ca-textarea"
             value={form.instructions}
             placeholder="Describe this agent's role, how it should work, and what it should hand off…"
             onChange={(e) => set({ instructions: e.target.value })}

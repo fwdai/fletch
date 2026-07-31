@@ -1,81 +1,9 @@
-/* ── Send-feedback modal ──────────────────────────────────────────── */
-/* Same shell as the New Project modal (see NewProject.css) — centered, own
-   entry keyframe so the animated transform keeps its centering. Sits above the
-   Scrim's z-index 400, matching the GitHub connect modal's layer. */
-.fb-modal {
-  position: fixed;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 460px;
-  max-width: calc(100vw - 48px);
-  max-height: calc(100vh - 96px);
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-2);
-  border: 1px solid var(--bd);
-  border-radius: var(--r-md);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
-  z-index: 401;
-  animation: fb-modal-in 0.18s var(--ease);
-}
-@keyframes fb-modal-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, calc(-50% + 6px)) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-}
+/* ── Send-feedback modal ────────────────────────────────────────────
+   Shell, header, body and body vocabulary (`.modal-field`, `.modal-label`,
+   `.modal-error`, `.modal-actions`, …) come from the shared `Modal` primitive
+   (see ui/Modal.css); what's left here is the form's own content. */
 
-.fb-h {
-  gap: 8px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--bd);
-  font-weight: 600;
-  color: var(--fg-0);
-}
-.fb-h svg {
-  color: var(--accent);
-}
-.fb-h span {
-  flex: 1;
-}
-.fb-close {
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--r-sm);
-  color: var(--fg-2);
-}
-.fb-close:hover {
-  background: var(--hover);
-  color: var(--fg-0);
-}
-
-.fb-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px;
-  overflow-y: auto;
-}
-.fb-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.fb-label {
-  font-weight: 500;
-  color: var(--fg-2);
-}
-.fb-opt {
-  color: var(--fg-3);
-  font-weight: 400;
-}
-/* Composes onto `.set-text` (the app's shared input skin), overriding the
+/* Composes onto `.ui-input` (the shared `TextArea` skin), overriding the
    fixed-height input sizing for a resizable prose box. */
 .fb-textarea {
   height: auto;
@@ -126,32 +54,13 @@
   color: var(--fg-3);
 }
 
-.fb-error {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
-  border-radius: var(--r-sm);
-  padding: 8px 10px;
-}
+/* The bold lede inside a `.modal-error` box. */
 .fb-error-t {
   font-weight: 600;
-}
-.fb-link {
-  align-self: flex-start;
-  color: var(--accent);
-  text-decoration: underline;
 }
 
 .fb-note {
   color: var(--fg-3);
-}
-.fb-actions {
-  gap: 8px;
-  justify-content: flex-end;
-  margin-top: 2px;
 }
 .fb-done {
   gap: 8px;

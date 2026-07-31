@@ -1,0 +1,12 @@
+/* ── Spinner ──────────────────────────────────────────────────────────
+ * The app's one rotating-icon busy indicator (Spinner.tsx). Scoped to the icon
+ * that carries the class — never `button svg`, which would also spin a button's
+ * unrelated leading icon. */
+.ui-spin {
+  animation: ui-spin 0.9s linear infinite;
+}
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

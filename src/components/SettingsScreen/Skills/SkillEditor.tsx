@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
+import { TextArea, TextInput } from "@/components/ui/TextInput";
 import type { NewSkill } from "@/storage/skills";
 
 export function SkillEditor({
@@ -57,8 +58,7 @@ export function SkillEditor({
               opens the document
             </span>
           </label>
-          <input
-            className="set-text text-base"
+          <TextInput
             placeholder="e.g. How we review pull requests"
             value={form.description}
             onChange={(e) => set({ description: e.target.value })}
@@ -72,8 +72,8 @@ export function SkillEditor({
               Markdown, given to the agent as a file it reads when the task matches
             </span>
           </label>
-          <textarea
-            className="set-text ca-textarea text-base"
+          <TextArea
+            className="ca-textarea"
             value={form.body}
             placeholder="Write the instructions, steps, or reference material for this skill…"
             onChange={(e) => set({ body: e.target.value })}

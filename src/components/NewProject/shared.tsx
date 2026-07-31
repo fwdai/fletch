@@ -1,5 +1,9 @@
 import type { GhStatus } from "@/api";
 import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
+import { DeviceCode } from "@/components/ui/DeviceCode";
+import { ModalBody } from "@/components/ui/Modal";
+import { Spinner } from "@/components/ui/Spinner";
 import { useGithubConnect } from "@/util/useGithubConnect";
 
 /** Shared state passed from the modal shell to each view. */
@@ -24,8 +28,8 @@ export function DestRow({
   const sep = parent.includes("\\") ? "\\" : "/";
   const trimmed = parent.replace(/[/\\]+$/, "");
   return (
-    <div className="np-field">
-      <label>Location</label>
+    <div className="modal-field">
+      <label className="modal-label text-sm">Location</label>
       <button className="np-dest flex-center" onClick={onPick}>
         <Icon name="folder" size={14} />
         {parent ? (
@@ -53,25 +57,29 @@ export function DestRow({
 export function ConnectGitHub({ what }: { what: string }) {
   const { connect, cancel, device, error, busy } = useGithubConnect(undefined, "new_project");
   return (
-    <div className="np-body">
+    <ModalBody>
       <div className="np-gate flex-center">
         <Icon name="github" size={22} />
         {device ? (
           <>
             <div className="np-gate-t text-base">Finish signing in in your browser</div>
-            <div className="np-gate-code text-2xl">{device.userCode}</div>
-            <div className="np-gate-s text-sm">{device.verificationUri}</div>
-            <button className="np-link text-sm" onClick={cancel}>
+            <DeviceCode code={device.userCode} verificationUri={device.verificationUri} />
+            <Button variant="link" size="sm" onClick={cancel}>
               Cancel
-            </button>
+            </Button>
           </>
         ) : error ? (
           <>
             <div className="np-gate-t text-base">Sign-in failed</div>
             <div className="np-gate-s text-sm">{error}</div>
-            <button className="np-primary flex-center text-base" onClick={() => void connect()}>
+            <Button
+              variant="primary"
+              size="lg"
+              className="np-gate-cta"
+              onClick={() => void connect()}
+            >
               Try again
-            </button>
+            </Button>
           </>
         ) : (
           <>
@@ -80,24 +88,26 @@ export function ConnectGitHub({ what }: { what: string }) {
               Fletch works fully offline for local projects. Connect GitHub when you want to clone,
               push, or open pull requests.
             </div>
-            <button
-              className="np-primary flex-center text-base"
+            <Button
+              variant="primary"
+              size="lg"
+              className="np-gate-cta"
               disabled={!!busy}
               onClick={() => void connect()}
             >
               {busy ? (
                 <>
-                  <Icon name="refresh" size={13} /> Connecting…
+                  <Spinner /> Connecting…
                 </>
               ) : (
                 <>
                   <Icon name="github" size={14} /> Connect GitHub
                 </>
               )}
-            </button>
+            </Button>
           </>
         )}
       </div>
-    </div>
+    </ModalBody>
   );
 }

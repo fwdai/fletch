@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
-import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
-import { CopyButton } from "@/components/ui/CopyButton";
-import { Scrim } from "@/components/ui/Scrim";
+import { DeviceCode } from "@/components/ui/DeviceCode";
+import { Modal, ModalBody } from "@/components/ui/Modal";
+import { Spinner } from "@/components/ui/Spinner";
 import { useAppStore } from "@/store";
 import { useGithubConnect } from "@/util/useGithubConnect";
 
@@ -43,53 +43,38 @@ export function GithubConnectModal() {
   };
 
   return (
-    <>
-      <Scrim onClose={onClose} zIndex={400} />
-      <div className="ghc-modal" role="dialog" aria-modal="true">
-        <div className="ghc-h flex-center text-base">
-          <Icon name="github" size={15} />
-          <span>Connect GitHub</span>
-          <button className="ghc-close flex-center" aria-label="Close" onClick={onClose}>
-            <Icon name="close" size={14} />
-          </button>
-        </div>
-
-        <div className="ghc-body">
-          {device ? (
-            <>
-              <div className="ghc-lede text-sm">
-                Finish signing in in the browser tab that just opened, then enter this code:
-              </div>
-              <div className="ghc-code-row flex-center">
-                <span className="ghc-code text-2xl">{device.userCode}</span>
-                <CopyButton text={device.userCode} />
-              </div>
-              <div className="ghc-uri mono text-sm">{device.verificationUri}</div>
-              <Button variant="outline" size="sm" onClick={onClose}>
-                Cancel
-              </Button>
-            </>
-          ) : error ? (
-            <>
-              <div className="ghc-title text-base">Couldn’t connect</div>
-              <div className="ghc-err text-sm">{error}</div>
-              <div className="ghc-actions flex-center">
-                <Button variant="primary" disabled={!!busy} onClick={() => void connect()}>
-                  Try again
-                </Button>
-                <Button variant="outline" onClick={onClose}>
-                  Close
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="ghc-lede flex-center text-sm">
-              <Icon name="refresh" size={14} className="ghc-spin" />
-              Starting GitHub sign-in…
+    <Modal icon="github" title="Connect GitHub" onClose={onClose} size="sm" layer="overlay">
+      <ModalBody center>
+        {device ? (
+          <>
+            <div className="ghc-lede text-sm">
+              Finish signing in in the browser tab that just opened, then enter this code:
             </div>
-          )}
-        </div>
-      </div>
-    </>
+            <DeviceCode code={device.userCode} verificationUri={device.verificationUri} />
+            <Button variant="outline" size="sm" onClick={onClose}>
+              Cancel
+            </Button>
+          </>
+        ) : error ? (
+          <>
+            <div className="ghc-title text-base">Couldn’t connect</div>
+            <div className="modal-error text-sm">{error}</div>
+            <div className="modal-actions">
+              <Button variant="primary" disabled={!!busy} onClick={() => void connect()}>
+                Try again
+              </Button>
+              <Button variant="outline" onClick={onClose}>
+                Close
+              </Button>
+            </div>
+          </>
+        ) : (
+          <div className="ghc-lede flex-center text-sm">
+            <Spinner size={14} />
+            Starting GitHub sign-in…
+          </div>
+        )}
+      </ModalBody>
+    </Modal>
   );
 }

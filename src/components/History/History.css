@@ -1,51 +1,6 @@
-/* ─── history overlay ───────────────────────────────────────────── */
-.history-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  -webkit-backdrop-filter: blur(2px);
-  backdrop-filter: blur(2px);
-  z-index: var(--z-overlay);
-  display: flex;
-  flex-direction: column;
-  animation: hovIn 0.18s var(--ease);
-}
-.theme-light .history-overlay {
-  background: rgba(40, 40, 40, 0.35);
-}
-@keyframes hovIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-.history-sheet {
-  margin: 36px auto;
-  width: min(1180px, calc(100vw - 64px));
-  max-height: calc(100vh - 72px);
-  background: var(--bg-1);
-  border: 1px solid var(--bd-strong);
-  border-radius: var(--r-lg);
-  box-shadow: 0 36px 96px rgba(0, 0, 0, 0.5);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-  animation: hsIn 0.22s var(--ease);
-}
-@keyframes hsIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.99);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
+/* ─── history sheet ─────────────────────────────────────────────────
+ * The overlay + sheet shell come from the shared `ModalSheet` primitive (see
+ * components/ui/Modal.css); what's left here is the history list itself. */
 
 /* search header */
 .hh {

@@ -5,7 +5,8 @@
 
 import { useState } from "react";
 import { Icon } from "../../../components/Icon";
-import { Scrim } from "../../../components/ui/Scrim";
+import { Button } from "../../../components/ui/Button";
+import { Modal, ModalBody, ModalFooter } from "../../../components/ui/Modal";
 import type { AgentResolution, ImportReport, Spec } from "../../spec";
 import { type AgentChoice, applyResolutions, initialChoices } from "./resolve";
 
@@ -76,65 +77,54 @@ export function ImportDialog({
     setChoices((prev) => ({ ...prev, [alias]: c }));
 
   return (
-    <>
-      <Scrim onClose={onCancel} zIndex={300} />
-      <div className="wf-imp-modal" role="dialog" aria-modal="true">
-        <div className="wf-imp-h">
-          <Icon name="upload" size={15} />
-          <span>Import “{report.spec.name}”</span>
-          <button className="wf-imp-close flex-center" aria-label="Close" onClick={onCancel}>
-            <Icon name="close" size={14} />
-          </button>
+    <Modal icon="upload" title={`Import “${report.spec.name}”`} onClose={onCancel} size="lg">
+      <ModalBody>
+        <p className="wf-imp-lead">
+          Resolve each agent this workflow uses. Mapping to one of your agents reuses its local
+          configuration; otherwise the specification embedded in the file is used as-is for this
+          workflow.
+        </p>
+
+        <div className="wf-imp-agents">
+          {report.agents.map((r) => (
+            <AgentRow
+              key={r.alias}
+              r={r}
+              choice={choices[r.alias] ?? "embed"}
+              onChoice={(c) => setChoice(r.alias, c)}
+            />
+          ))}
         </div>
 
-        <div className="wf-imp-body">
-          <p className="wf-imp-lead">
-            Resolve each agent this workflow uses. Mapping to one of your agents reuses its local
-            configuration; otherwise the specification embedded in the file is used as-is for this
-            workflow.
-          </p>
-
-          <div className="wf-imp-agents">
-            {report.agents.map((r) => (
-              <AgentRow
-                key={r.alias}
-                r={r}
-                choice={choices[r.alias] ?? "embed"}
-                onChoice={(c) => setChoice(r.alias, c)}
-              />
-            ))}
-          </div>
-
-          {report.warnings.length > 0 && (
-            <div className="wf-imp-warns">
-              <div className="wf-imp-warns-h">
-                <Icon name="hand" size={13} /> {report.warnings.length} warning
-                {report.warnings.length === 1 ? "" : "s"}
-              </div>
-              <ul>
-                {report.warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
+        {report.warnings.length > 0 && (
+          <div className="wf-imp-warns">
+            <div className="wf-imp-warns-h">
+              <Icon name="hand" size={13} /> {report.warnings.length} warning
+              {report.warnings.length === 1 ? "" : "s"}
             </div>
-          )}
+            <ul>
+              {report.warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
-          {error && <div className="wf-imp-err">{error}</div>}
-        </div>
+        {error && <div className="modal-error text-sm">{error}</div>}
+      </ModalBody>
 
-        <div className="wf-imp-foot">
-          <button className="btn-t" onClick={onCancel} disabled={saving}>
-            Cancel
-          </button>
-          <button
-            className="btn-t primary"
-            onClick={() => onImport(applyResolutions(report, choices))}
-            disabled={saving}
-          >
-            {saving ? "Importing…" : "Import workflow"}
-          </button>
-        </div>
-      </div>
-    </>
+      <ModalFooter>
+        <Button variant="ghost" onClick={onCancel} disabled={saving}>
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          onClick={() => onImport(applyResolutions(report, choices))}
+          disabled={saving}
+        >
+          {saving ? "Importing…" : "Import workflow"}
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 }

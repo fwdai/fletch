@@ -1,0 +1,32 @@
+/* ── Text input skin ──────────────────────────────────────────────────
+ * The app's one text-field appearance, worn by `TextInput` and `TextArea`
+ * (TextInput.tsx) — reach for those rather than applying this by hand.
+ *
+ * Was `.set-text` in SettingsScreen.css; it outgrew that home once the modals
+ * adopted it. Height/padding overrides for prose boxes compose on top via
+ * `className` (`.ca-textarea`, `.fb-textarea`), so this must stay ahead of them
+ * in app.css's import order. */
+.ui-input {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--bd);
+  background: var(--bg-0);
+  color: var(--fg-0);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.ui-input::placeholder {
+  color: var(--fg-3);
+}
+.ui-input:focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 90%);
+}
+.ui-input.invalid {
+  border-color: color-mix(in oklch, var(--danger), transparent 40%);
+}
+.ui-input.invalid:focus {
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--danger), transparent 88%);
+}

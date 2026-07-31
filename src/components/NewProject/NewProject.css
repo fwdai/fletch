@@ -54,113 +54,16 @@
   margin-top: 2px;
 }
 
-/* ── New Project modal ────────────────────────────────────────────── */
-.np-modal {
-  position: fixed;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 460px;
-  max-width: calc(100vw - 48px);
-  max-height: calc(100vh - 96px);
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-2);
-  border: 1px solid var(--bd);
-  border-radius: var(--r-md);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
-  z-index: 301;
-  /* Own keyframe (not ddIn): the animated transform must keep the
-     translate(-50%,-50%) centering, or it jumps from the corner to center. */
-  animation: np-modal-in 0.18s var(--ease);
-}
-@keyframes np-modal-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, calc(-50% + 6px)) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-}
-.np-modal-h {
-  gap: 8px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--bd);
-  font-weight: 600;
-  color: var(--fg-0);
-}
-.np-modal-h svg {
-  color: var(--accent);
-}
-.np-modal-h span {
-  flex: 1;
-}
-.np-close {
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--r-sm);
-  color: var(--fg-2);
-}
-.np-close:hover {
-  background: var(--hover);
-  color: var(--fg-0);
-}
+/* ── New Project modal ──────────────────────────────────────────────
+   Shell, header, body and body vocabulary (`.modal-field`, `.modal-label`,
+   `.modal-error`, `.modal-actions`, …) come from the shared `Modal` primitive
+   (see ui/Modal.css); what's left here is this modal's own content. */
 
-.np-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px;
-  overflow-y: auto;
-}
-.np-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.np-field > label {
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  color: var(--fg-2);
-}
-.np-field .np-opt {
-  color: var(--fg-3);
-  font-weight: 400;
-}
-.np-field input {
-  height: 34px;
-  padding: 0 10px;
-  background: var(--bg-1);
-  border: 1px solid var(--bd);
-  border-radius: var(--r-sm);
-  color: var(--fg-0);
-}
-.np-field input:focus {
-  border-color: var(--accent);
-  outline: none;
-}
 .np-hint {
   color: var(--fg-2);
 }
-.np-hint.e,
-.np-error {
+.np-hint.e {
   color: var(--danger);
-}
-.np-error {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
-  border-radius: var(--r-sm);
-  padding: 8px 10px;
-}
-.np-link {
-  align-self: flex-start;
-  color: var(--accent);
-}
-.np-link:hover {
-  text-decoration: underline;
 }
 
 /* Destination chooser */
@@ -288,37 +191,6 @@
 }
 
 /* Actions + gate */
-.np-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 2px;
-}
-.np-primary {
-  gap: 7px;
-  height: 34px;
-  padding: 0 16px;
-  background: var(--accent);
-  color: var(--btn-fg-dark);
-  border-radius: var(--r-sm);
-  font-weight: 600;
-}
-.theme-light .np-primary {
-  color: var(--btn-fg-light);
-}
-.np-primary:disabled {
-  opacity: 0.5;
-}
-.np-primary:not(:disabled):hover {
-  background: oklch(from var(--accent) calc(l + 0.04) c h);
-}
-.np-primary svg {
-  animation: np-spin 1s linear infinite;
-}
-@keyframes np-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 .np-gate {
   flex-direction: column;
   gap: 8px;
@@ -336,6 +208,11 @@
   line-height: var(--lh-normal);
   max-width: 320px;
 }
+/* Extra separation between the gate's copy and its CTA, on top of the
+   column gap. Layout only — the button's skin is `<Button variant="primary">`. */
+.np-gate-cta {
+  margin-top: 8px;
+}
 .np-gate code {
   background: var(--bg-1);
   border: 1px solid var(--bd);
@@ -343,14 +220,4 @@
   padding: 1px 5px;
   font-size: var(--fs-sm);
   color: var(--fg-0);
-}
-/* Device-flow user code shown while connecting from the New Project gate. */
-.np-gate-code {
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  color: var(--fg-0);
-  font-variant-numeric: tabular-nums;
-}
-.np-gate .np-primary {
-  margin-top: 8px;
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
 
@@ -101,8 +102,8 @@ function DockerAdvanced() {
     <SetGroup label="Docker sandbox" last>
       {DOCKER_FIELDS.map((f) => (
         <SetRow key={f.key} title={f.title} sub={f.sub}>
-          <input
-            className="set-text text-base mono"
+          <TextInput
+            mono
             value={draft[f.key]}
             placeholder={f.placeholder}
             spellCheck={false}

@@ -1,6 +1,9 @@
 import { useState } from "react";
-import { Icon } from "@/components/Icon";
 import { Segmented } from "@/components/Settings/Segmented";
+import { Button } from "@/components/ui/Button";
+import { ModalBody } from "@/components/ui/Modal";
+import { Spinner } from "@/components/ui/Spinner";
+import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
 import { isValidRepoName } from "@/util/repoSpec";
 import { DestRow, type NewProjectShared } from "./shared";
@@ -43,10 +46,10 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
   };
 
   return (
-    <div className="np-body">
-      <div className="np-field">
-        <label>Project name</label>
-        <input
+    <ModalBody>
+      <div className="modal-field">
+        <label className="modal-label text-sm">Project name</label>
+        <TextInput
           autoFocus
           placeholder="my-new-project"
           value={name}
@@ -58,8 +61,8 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
       </div>
 
       {connected ? (
-        <div className="np-field">
-          <label>Visibility</label>
+        <div className="modal-field">
+          <label className="modal-label text-sm">Visibility</label>
           <Segmented
             value={visibility}
             onChange={setVisibility}
@@ -70,7 +73,7 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
           />
         </div>
       ) : (
-        <div className="np-field">
+        <div className="modal-field">
           <div className="np-hint text-sm">
             Creating a local project. Connect GitHub later to publish it — you can keep working with
             agents, commits, and history offline until then.
@@ -78,11 +81,11 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
         </div>
       )}
 
-      <div className="np-field">
-        <label>
-          Description <span className="np-opt">(optional)</span>
+      <div className="modal-field">
+        <label className="modal-label text-sm">
+          Description <span className="modal-opt">(optional)</span>
         </label>
-        <input
+        <TextInput
           placeholder="What is this project?"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
@@ -91,25 +94,21 @@ export function CreateView({ shared, onDone }: { shared: NewProjectShared; onDon
 
       <DestRow parent={parent} onPick={pickParent} name={nameOk ? name.trim() : undefined} />
 
-      {error && <div className="np-error text-sm">{error}</div>}
+      {error && <div className="modal-error text-sm">{error}</div>}
 
-      <div className="np-actions">
-        <button
-          className="np-primary flex-center text-base"
-          disabled={!canCreate}
-          onClick={onCreate}
-        >
+      <div className="modal-actions">
+        <Button variant="primary" size="lg" disabled={!canCreate} onClick={onCreate}>
           {busy ? (
             <>
-              <Icon name="refresh" size={13} /> Creating…
+              <Spinner /> Creating…
             </>
           ) : connected ? (
             "Create & publish"
           ) : (
             "Create project"
           )}
-        </button>
+        </Button>
       </div>
-    </div>
+    </ModalBody>
   );
 }

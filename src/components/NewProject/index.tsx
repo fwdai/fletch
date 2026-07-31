@@ -1,5 +1,4 @@
-import { Icon } from "@/components/Icon";
-import { Scrim } from "@/components/ui/Scrim";
+import { Modal } from "@/components/ui/Modal";
 import { CloneView } from "./CloneView";
 import { CreateView } from "./CreateView";
 import { useNewProject } from "./useNewProject";
@@ -12,22 +11,16 @@ export function NewProject({ mode, onClose }: { mode: NewProjectMode; onClose: (
   const shared = useNewProject();
 
   return (
-    <>
-      <Scrim onClose={onClose} zIndex={300} />
-      <div className="np-modal" role="dialog" aria-modal="true">
-        <div className="np-modal-h flex-center text-base">
-          <Icon name={mode === "clone" ? "github" : "sparkle"} size={15} />
-          <span>{mode === "clone" ? "Clone from GitHub" : "Create new project"}</span>
-          <button className="np-close flex-center" aria-label="Close" onClick={onClose}>
-            <Icon name="close" size={14} />
-          </button>
-        </div>
-        {mode === "clone" ? (
-          <CloneView shared={shared} onDone={onClose} />
-        ) : (
-          <CreateView shared={shared} onDone={onClose} />
-        )}
-      </div>
-    </>
+    <Modal
+      icon={mode === "clone" ? "github" : "sparkle"}
+      title={mode === "clone" ? "Clone from GitHub" : "Create new project"}
+      onClose={onClose}
+    >
+      {mode === "clone" ? (
+        <CloneView shared={shared} onDone={onClose} />
+      ) : (
+        <CreateView shared={shared} onDone={onClose} />
+      )}
+    </Modal>
   );
 }

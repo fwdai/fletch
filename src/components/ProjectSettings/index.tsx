@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { api } from "@/api";
 import { Icon } from "@/components/Icon";
 import { loadRunOverrides, type SetupRow, toSetupRows } from "@/components/RunConfig";
+import { IconButton } from "@/components/ui/IconButton";
 import { Loader } from "@/components/ui/Loader";
+import { ModalSheet } from "@/components/ui/Modal";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
 import { DeleteSection } from "./DeleteSection";
@@ -68,61 +70,44 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
     };
   }, [repoPath]);
 
-  // Close on Escape.
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    document.addEventListener("keydown", h);
-    return () => document.removeEventListener("keydown", h);
-  }, [close]);
-
   return (
-    <div className="ps-overlay" onClick={close}>
-      <div
-        className="ps-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Project settings"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="ps-head">
-          <div className="ps-id">
-            <div className="ps-title text-lg truncate">{name}</div>
-            <div className="ps-path mono text-xs truncate">
-              {projectRepoCount > 1 ? `${projectRepoCount} repositories` : repoPath}
-            </div>
+    <ModalSheet onClose={close} label="Project settings" fill>
+      <div className="ps-head">
+        <div className="ps-id">
+          <div className="ps-title text-lg truncate">{name}</div>
+          <div className="ps-path mono text-xs truncate">
+            {projectRepoCount > 1 ? `${projectRepoCount} repositories` : repoPath}
           </div>
-          <button className="ps-x iflex-center" onClick={close} aria-label="Close">
-            <Icon name="close" size={13} />
-          </button>
         </div>
-
-        <div className="ps-content">
-          {error ? (
-            <div className="ps-state text-sm">Couldn’t load project settings.</div>
-          ) : !loaded ? (
-            <div className="ps-state iflex-center text-sm">
-              <Loader variant="inherit" /> Loading…
-            </div>
-          ) : (
-            <div className="ps-sections">
-              <ProjectPulse projectId={loaded.projectId} />
-              <GeneralSection projectId={loaded.projectId} currentName={name} />
-              <RunEnvSection
-                projectId={loaded.projectId}
-                rows={loaded.rows}
-                ecosystem={loaded.ecosystem}
-                initialOverrides={loaded.overrides}
-              />
-              <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
-              <LinearSection projectId={loaded.projectId} />
-              <VerifySection projectId={loaded.projectId} />
-              <DeleteSection projectId={loaded.projectId} projectName={name} />
-            </div>
-          )}
-        </div>
+        <IconButton onClick={close} aria-label="Close">
+          <Icon name="close" />
+        </IconButton>
       </div>
-    </div>
+
+      <div className="ps-content">
+        {error ? (
+          <div className="ps-state text-sm">Couldn’t load project settings.</div>
+        ) : !loaded ? (
+          <div className="ps-state iflex-center text-sm">
+            <Loader variant="inherit" /> Loading…
+          </div>
+        ) : (
+          <div className="ps-sections">
+            <ProjectPulse projectId={loaded.projectId} />
+            <GeneralSection projectId={loaded.projectId} currentName={name} />
+            <RunEnvSection
+              projectId={loaded.projectId}
+              rows={loaded.rows}
+              ecosystem={loaded.ecosystem}
+              initialOverrides={loaded.overrides}
+            />
+            <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
+            <LinearSection projectId={loaded.projectId} />
+            <VerifySection projectId={loaded.projectId} />
+            <DeleteSection projectId={loaded.projectId} projectName={name} />
+          </div>
+        )}
+      </div>
+    </ModalSheet>
   );
 }

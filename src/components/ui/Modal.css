@@ -1,0 +1,186 @@
+/* ── Modal ────────────────────────────────────────────────────────────
+ * One shell for every modal in the app, in two shapes:
+ *
+ *   `.modal`       — centered card (New Project, Feedback, GitHub / container
+ *                    connect, workflow import). Width variants `sm` / `lg`.
+ *   `.modal-sheet` — wide sheet inside `.modal-overlay` (History, Project
+ *                    Settings). `fill` pins it to full viewport height.
+ *
+ * Both are driven by the `Modal` / `ModalSheet` primitives in Modal.tsx —
+ * reach for those instead of re-applying these classes by hand.
+ *
+ * Layering stays inline on the element (`Modal` picks it from its `layer`
+ * prop), matching `Scrim`. */
+
+.modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 460px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-md);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
+  /* Own keyframe (not ddIn): the animated transform must keep the
+     translate(-50%, -50%) centering, or the card flies in from the corner. */
+  animation: modal-in 0.18s var(--ease);
+}
+.modal.sm {
+  width: 380px;
+}
+.modal.lg {
+  width: 520px;
+}
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 6px)) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+/* header — accent icon, title, close */
+.modal-h {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--bd);
+  font-weight: 600;
+  color: var(--fg-0);
+}
+/* Direct child only: the leading title icon. A descendant selector here would
+   also tint the close button's glyph, which pinned it to the accent color and
+   left `IconButton`'s hover state with nothing to change. */
+.modal-h > svg {
+  color: var(--accent);
+}
+.modal-h > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* body — the scrolling content column between header and footer */
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  overflow-y: auto;
+}
+/* Centered variant: short, prose-y dialogs (the connect flows). */
+.modal-body.center {
+  align-items: center;
+  gap: 12px;
+  padding: 20px 16px 22px;
+  text-align: center;
+}
+
+/* footer — action row pinned below the scroll area */
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--bd);
+}
+
+/* ── body content vocabulary ──────────────────────────────────────────
+ * The pieces a modal body is built from. Text size stays in JSX via the
+ * `.text-*` classes (see styles/shared/type.css), so none of these set
+ * font-size. */
+
+/* A labelled control: label stacked over its input / picker / hint. */
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.modal-label {
+  font-weight: 500;
+  color: var(--fg-2);
+}
+/* An "(optional)" aside inside a label. */
+.modal-opt {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+/* Danger-tinted failure box. `align-self: stretch` keeps it full width inside a
+   `.modal-body.center` column, which would otherwise shrink it to its text. */
+.modal-error {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: stretch;
+  padding: 8px 10px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: var(--r-sm);
+  line-height: var(--lh-snug);
+}
+/* Action row that scrolls with the body, unlike the pinned `.modal-foot`. */
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+/* ── Sheet ────────────────────────────────────────────────────────────
+ * The wide overlay sheet: a dimmed full-viewport backdrop with a large card
+ * inside. The backdrop borrows `.ui-scrim`'s appearance so every modal
+ * backdrop in the app reads identically. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+}
+.modal-sheet {
+  margin: 36px auto;
+  width: min(1180px, calc(100vw - 64px));
+  max-height: calc(100vh - 72px);
+  background: var(--bg-1);
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--r-lg);
+  box-shadow: 0 36px 96px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  animation: modal-sheet-in 0.22s var(--ease);
+}
+.theme-light .modal-sheet {
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.18);
+}
+/* Fixed full height, so a section short on content leaves the area below it
+   empty rather than shrinking the sheet (Project Settings). */
+.modal-sheet.fill {
+  height: calc(100vh - 72px);
+}
+@keyframes modal-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

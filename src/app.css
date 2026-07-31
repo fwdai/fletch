@@ -39,6 +39,9 @@
 @import "./components/ProjectSettings/ProjectSettings.css";
 @import "./components/Stats/Stats.css";
 @import "./components/RightPanel/FilePanel/FilePanel.css";
+/* Ahead of SettingsScreen.css (its former home) and of CustomAgents.css /
+   Feedback.css, whose prose-box classes compose on top of `.ui-input`. */
+@import "./components/ui/TextInput.css";
 @import "./components/SettingsScreen/SettingsScreen.css";
 @import "./styles/shared/error-boundary.css";
 @import "./components/ProviderReadiness/ProviderReadiness.css";
@@ -46,5 +49,8 @@
 @import "./components/ui/Loader.css";
 @import "./components/ui/Select.css";
 @import "./components/ui/Scrim.css";
+@import "./components/ui/Modal.css";
+@import "./components/ui/Spinner.css";
+@import "./components/ui/DeviceCode.css";
 @import "./components/ReviewSurface/ReviewSurface.css";
 @import "./components/Feedback/Feedback.css";

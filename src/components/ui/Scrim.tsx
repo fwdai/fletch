@@ -1,12 +1,12 @@
-import { useEffect } from "react";
+import { useEscape } from "./useEscape";
 
 /** Full-viewport scrim that closes a popover on click or Escape. Used for
- *  new-project, settings, model-picker, etc.
+ *  new-project, settings, model-picker, etc. — and, through `Modal`, by every
+ *  centered modal dialog.
  *
  *  Invisible by default — popovers shouldn't dim the app behind them. Pass
- *  `blur` for the dimmed, blurred backdrop the centered modals use; that's the
- *  same recipe `.ps-overlay` (Project Settings) and `.history-overlay`
- *  hand-roll, and those predate this prop and can adopt it. */
+ *  `blur` for the dimmed, blurred backdrop the centered modals use; `.modal-sheet`'s
+ *  overlay wears the same `.ui-scrim` class for that recipe. */
 export function Scrim({
   onClose,
   zIndex = 199,
@@ -16,13 +16,7 @@ export function Scrim({
   zIndex?: number;
   blur?: boolean;
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEscape(onClose);
   return (
     <div
       className={blur ? "ui-scrim" : undefined}

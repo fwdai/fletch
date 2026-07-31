@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
 
 interface Props {
   /** Keys already listed (from `.env` or configured) — for duplicate rejection. */
@@ -61,13 +63,9 @@ export function AddVarForm({ existingKeys, onAdd }: Props) {
 
   if (!open) {
     return (
-      <button
-        type="button"
-        className="ev-add-btn iflex-center text-sm"
-        onClick={() => setOpen(true)}
-      >
+      <Button variant="dashed" size="sm" className="ev-add-btn" onClick={() => setOpen(true)}>
         <Icon name="plus" size={13} /> Add variable
-      </button>
+      </Button>
     );
   }
 
@@ -91,17 +89,12 @@ export function AddVarForm({ existingKeys, onAdd }: Props) {
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !busy && submit()}
         />
-        <button type="button" className="ps-btn" onClick={submit} disabled={busy}>
+        <Button variant="outline" size="lg" onClick={submit} disabled={busy}>
           Add
-        </button>
-        <button
-          type="button"
-          className="ev-add-cancel iflex-center"
-          aria-label="Cancel"
-          onClick={cancel}
-        >
-          <Icon name="close" size={14} />
-        </button>
+        </Button>
+        <IconButton size="lg" variant="outline" aria-label="Cancel" onClick={cancel}>
+          <Icon name="close" />
+        </IconButton>
       </div>
       {error && <div className="ev-add-err text-xs">{error}</div>}
     </div>

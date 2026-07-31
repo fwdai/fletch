@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Avatar } from "@/components/Avatar";
 import { Button } from "@/components/ui/Button";
+import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
 import { accountInitials } from "@/util/format";
 import { DevToolsStatus } from "./DevToolsStatus";
@@ -71,8 +72,7 @@ export function AccountPane() {
           <div className="set-form-grid">
             <label className="set-field">
               <span className="set-field-label text-sm">First name</span>
-              <input
-                className="set-text text-base"
+              <TextInput
                 value={firstName}
                 placeholder="Ada"
                 spellCheck={false}
@@ -84,8 +84,7 @@ export function AccountPane() {
             </label>
             <label className="set-field">
               <span className="set-field-label text-sm">Last name</span>
-              <input
-                className="set-text text-base"
+              <TextInput
                 value={lastName}
                 placeholder="Lovelace"
                 spellCheck={false}
@@ -98,8 +97,8 @@ export function AccountPane() {
           </div>
           <label className="set-field">
             <span className="set-field-label text-sm">Email</span>
-            <input
-              className={`set-text text-base ${emailValid ? "" : "invalid"}`}
+            <TextInput
+              invalid={!emailValid}
               type="email"
               value={email}
               placeholder="ada@example.com"

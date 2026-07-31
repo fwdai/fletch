@@ -1,8 +1,8 @@
 /* ── Scrim ────────────────────────────────────────────────────────── */
 /* Dimmed + blurred backdrop for centered modals: `<Scrim blur />`. Positioning
    and z-index stay inline on the element (the caller picks the layer); this is
-   appearance only. Values match the hand-rolled `.ps-overlay` /
-   `.history-overlay` so every modal backdrop reads identically. */
+   appearance only. `.modal-overlay` (the sheet backdrop) wears this class too,
+   so every modal backdrop in the app reads identically. */
 .ui-scrim {
   background: rgba(0, 0, 0, 0.55);
   -webkit-backdrop-filter: blur(2px);

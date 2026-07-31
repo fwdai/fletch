@@ -3,8 +3,14 @@ import type { CSSProperties, MouseEvent, ReactNode } from "react";
 interface Props {
   children: ReactNode;
   onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
-  /** Standard / small / extra-small. Drives `.btn-i` modifier classes. */
-  size?: "md" | "sm" | "xs";
+  /** Large / standard / small / extra-small. Drives `.btn-i` modifier classes.
+   *  `lg` (34px) pairs with an input row; the rest are toolbar sizes. */
+  size?: "lg" | "md" | "sm" | "xs";
+  /** `outline` adds a border so the button reads as a control beside an input,
+   *  rather than a bare glyph in a toolbar. */
+  variant?: "plain" | "outline";
+  /** Destructive action — neutral until hovered, then tinted red. */
+  danger?: boolean;
   /** Adds the `active` class — used for "open" affordance on a toggle. */
   active?: boolean;
   /** Text rendered in the CSS-only tooltip above the button. */
@@ -24,6 +30,8 @@ export function IconButton({
   children,
   onClick,
   size = "md",
+  variant = "plain",
+  danger,
   active,
   tip,
   tipDown,
@@ -36,7 +44,9 @@ export function IconButton({
   const cls = [
     "btn-i",
     "iflex-center",
-    size === "sm" ? "sm" : size === "xs" ? "xs" : "",
+    size === "md" ? "" : size,
+    variant === "outline" ? "outline" : "",
+    danger ? "danger" : "",
     active ? "active" : "",
     tip ? "tip" : "",
     className ?? "",

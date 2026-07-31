@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { RepositoriesField } from "./RepositoriesField";
 
@@ -71,14 +72,14 @@ export function GeneralSection({ projectId, currentName }: Props) {
             }}
             onBlur={() => void saveName()}
           />
-          <button
-            type="button"
-            className="ps-btn"
+          <Button
+            variant="outline"
+            size="lg"
             disabled={!dirty || saving}
             onClick={() => void saveName()}
           >
             {saving ? "Saving…" : "Save"}
-          </button>
+          </Button>
         </div>
         <p className="ps-hint text-xs">Shown in the sidebar. Independent of the folder name.</p>
       </div>
