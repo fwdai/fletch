@@ -130,22 +130,15 @@ fn rpc_root() -> Result<PathBuf> {
     Ok(rpc_root_in(&base))
 }
 
-/// Apply the per-build split to a mailbox base — the exact mirror of
-/// `workspace::paths::checkouts_root_in`, and split out for the same reasons:
-/// testable without mutating the process-global override, and the override and
-/// default paths share one "append the build subpath" step so neither can drift
-/// into bypassing the split.
+/// Apply the per-build split (see [`crate::build_state_subpath`]) to a mailbox
+/// base. The exact mirror of `workspace::paths::checkouts_root_in`, split out
+/// for the same reasons: testable without mutating the process-global override,
+/// and the override and default paths share one "append the build subpath" step
+/// so neither can drift into bypassing the split.
 ///
-/// The split is load-bearing, not hygiene. Each build has its own DB, so
-/// [`sweep_orphan_mailboxes`] removing every dir it can't account for would,
-/// from a shared root, delete the *other* build's live mailboxes — stranding a
-/// running agent whose `$FLETCH_RPC_DIR` has just vanished mid-turn. And since
-/// the two name allocators draw from one pool, a name live in both builds would
-/// map to a single mailbox that both watchers poll, so either build's dispatcher
-/// could execute the other's request against the wrong checkout. An exclusive
-/// root per build rules out both. Nothing migrates: a mailbox is per-spawn
-/// state, so a pre-split dir is simply an orphan the release build sweeps.
-pub(crate) fn rpc_root_in(base: &Path) -> PathBuf {
+/// Nothing migrates on upgrade — a mailbox is per-spawn state, so a pre-split
+/// dir is just an orphan the release build sweeps.
+fn rpc_root_in(base: &Path) -> PathBuf {
     base.join(crate::build_state_subpath("rpc"))
 }
 
@@ -199,9 +192,9 @@ pub fn remove_mailbox(agent_id: &str) -> Result<()> {
 /// treats as reserved, so the two never disagree about who's alive.
 ///
 /// "Doesn't belong to a live agent" is only sound because the root is
-/// per-build (see [`rpc_root_in`]): every mailbox under it was created by an
-/// agent in the DB `live` came from. A root shared with another build would put
-/// that build's live agents outside `live` and delete their mailboxes.
+/// per-build (`rpc_root_in`): every mailbox under it was created by an agent in
+/// the DB `live` came from. Sharing a root with another build would put that
+/// build's live agents outside `live` and delete their mailboxes mid-turn.
 ///
 /// Skipped when `RPC_ROOT_ENV` is set: that's the nested-Fletch redirect, whose
 /// pid-keyed roots are reclaimed by `sandbox::cleanup_nested_rpc_roots`, and
@@ -425,41 +418,32 @@ mod tests {
 
     #[test]
     fn mailbox_root_is_split_per_build() {
-        // A shared base (`~/.fletch`, or a `$FLETCH_RPC_ROOT` redirect two
-        // builds could both be pointed at) must not bypass the split — the
-        // mailbox root is what keeps one build's housekeeping and name
-        // allocation off another build's live agents.
+        // A shared base — `~/.fletch`, or one `$FLETCH_RPC_ROOT` redirect two
+        // builds are both pointed at — must not bypass the split. Tests compile
+        // with debug_assertions on.
         let base = Path::new("/tmp/shared-base");
-        let root = rpc_root_in(base);
-        assert!(root.starts_with(base));
-        // Tests compile with debug_assertions on.
-        if cfg!(debug_assertions) {
-            assert_eq!(root, base.join("dev").join("rpc"));
-        } else {
-            assert_eq!(root, base.join("rpc"));
-        }
+        assert_eq!(rpc_root_in(base), base.join("dev").join("rpc"));
     }
 
     #[test]
     fn sweep_cannot_reach_another_builds_live_mailboxes() {
-        // The regression: a debug instance's startup sweep used to run over the
-        // one flat `~/.fletch/rpc`, so every release-build agent — absent from
-        // the debug DB's `live` set — lost its mailbox, including agents with a
-        // turn in flight. Per-build roots put them out of reach.
+        // The regression: a debug instance's startup sweep ran over the one flat
+        // `~/.fletch/rpc`, so every release-build agent — absent from the debug
+        // DB's `live` set — lost its mailbox, including agents with a turn in
+        // flight. Per-build roots put them out of reach.
         let td = tempfile::tempdir().unwrap();
-        let base = td.path();
-        let release = base.join("rpc");
-        let debug = base.join("dev").join("rpc");
-        ensure_mailbox(&release.join("pilbara")).unwrap();
-        ensure_mailbox(&debug.join("bromo")).unwrap();
+        let ours = rpc_root_in(td.path());
+        let theirs = td.path().join("rpc"); // the release install's, same base
+        ensure_mailbox(&ours.join("bromo")).unwrap();
+        ensure_mailbox(&theirs.join("pilbara")).unwrap();
 
-        sweep_orphan_mailboxes_in(&debug, &live(&["bromo"]));
+        sweep_orphan_mailboxes_in(&ours, &live(&["bromo"]));
 
         assert!(
-            release.join("pilbara").is_dir(),
+            theirs.join("pilbara").is_dir(),
             "another build's live mailbox was swept"
         );
-        assert!(debug.join("bromo").is_dir());
+        assert!(ours.join("bromo").is_dir());
     }
 
     #[test]

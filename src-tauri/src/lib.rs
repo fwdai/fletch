@@ -74,14 +74,15 @@ pub(crate) fn data_dir() -> PathBuf {
 
 /// The per-build path segment for a kind of on-disk state under a shared base
 /// (`~/.fletch`, or an override root): `<leaf>` for release, `dev/<leaf>` for
-/// debug — the same `dev` split [`data_dir`] applies to app data.
+/// debug — the same `dev` split [`data_dir`] applies to app data. Release keeps
+/// the historical flat segment, so existing installs need no migration.
 ///
-/// Every root a *live* agent's state hangs off must go through this. A debug
-/// instance and a release install have separate DBs but one filesystem, and
-/// their name allocators draw from the same pool, so any shared root lets one
-/// build's startup housekeeping delete — or one build's agent collide with —
-/// the other's live state. Release keeps the historical flat segment, so
-/// existing installs need no migration.
+/// Every root a *live* agent's state hangs off must go through this: a debug
+/// instance and a release install have separate DBs but one filesystem, so from
+/// a shared root each build's startup housekeeping sees the other's live state
+/// as garbage — and their name allocators, drawing from one pool, can hand both
+/// builds the same agent id. The `dev` prefix makes the two roots siblings, not
+/// nested, so neither build's sweep can even see the other's.
 pub(crate) fn build_state_subpath(leaf: &str) -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from("dev").join(leaf)
