@@ -208,6 +208,11 @@
   line-height: var(--lh-normal);
   max-width: 320px;
 }
+/* Extra separation between the gate's copy and its CTA, on top of the
+   column gap. Layout only — the button's skin is `<Button variant="primary">`. */
+.np-gate-cta {
+  margin-top: 8px;
+}
 .np-gate code {
   background: var(--bg-1);
   border: 1px solid var(--bd);

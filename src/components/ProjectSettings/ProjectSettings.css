@@ -65,9 +65,6 @@
   margin-top: 8px;
   color: var(--danger);
 }
-.ps-delete-section .btn-t {
-  flex-shrink: 0;
-}
 .ps-delete-confirm {
   width: 100%;
   display: flex;

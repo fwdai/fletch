@@ -72,7 +72,12 @@ export function ConnectGitHub({ what }: { what: string }) {
           <>
             <div className="np-gate-t text-base">Sign-in failed</div>
             <div className="np-gate-s text-sm">{error}</div>
-            <Button variant="primary" size="lg" onClick={() => void connect()}>
+            <Button
+              variant="primary"
+              size="lg"
+              className="np-gate-cta"
+              onClick={() => void connect()}
+            >
               Try again
             </Button>
           </>
@@ -83,7 +88,13 @@ export function ConnectGitHub({ what }: { what: string }) {
               Fletch works fully offline for local projects. Connect GitHub when you want to clone,
               push, or open pull requests.
             </div>
-            <Button variant="primary" size="lg" disabled={!!busy} onClick={() => void connect()}>
+            <Button
+              variant="primary"
+              size="lg"
+              className="np-gate-cta"
+              disabled={!!busy}
+              onClick={() => void connect()}
+            >
               {busy ? (
                 <>
                   <Spinner /> Connecting…

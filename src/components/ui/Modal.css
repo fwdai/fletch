@@ -58,7 +58,10 @@
   font-weight: 600;
   color: var(--fg-0);
 }
-.modal-h svg {
+/* Direct child only: the leading title icon. A descendant selector here would
+   also tint the close button's glyph, which pinned it to the accent color and
+   left `IconButton`'s hover state with nothing to change. */
+.modal-h > svg {
   color: var(--accent);
 }
 .modal-h > span {
