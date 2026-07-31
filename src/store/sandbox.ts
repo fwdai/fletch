@@ -1,4 +1,4 @@
-import { api, type ContainerAuthStatus, type DockerProbe } from "@/api";
+import { api, type ContainerAuthStatus, type DockerProbe, type PublishApproval } from "@/api";
 import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preferences";
 import type { SliceCreator } from "./types";
 
@@ -31,10 +31,26 @@ export interface SandboxSlice {
   dockerImage: string;
   dockerMemory: string;
   dockerCpus: string;
+  /** Whether an agent must get the user's approval before publishing. Mirrors
+   *  the backend-owned `publish_confirmation` setting. Off by default: autopilot
+   *  publishes unattended, and a prompt would hang it until the decision
+   *  timeout. */
+  publishConfirmation: boolean;
+  /** Publishes waiting on the user, oldest first. Two agents can be waiting at
+   *  once, so this is a queue rather than a single slot; the prompt shows the
+   *  head. Unanswered requests are denied backend-side after a timeout, so a
+   *  dropped entry fails closed. */
+  pendingPublishApprovals: PublishApproval[];
 
   /** Persist a new engine choice via the backend, which validates docker
    *  against a live daemon probe — reverts the store on refusal. */
   setSandboxEngine: (engine: SandboxEngine) => Promise<void>;
+  /** Turn the publish-approval prompt on or off (backend-owned setting). */
+  setPublishConfirmation: (enabled: boolean) => Promise<void>;
+  /** Queue a publish the backend is waiting on (from the event listener). */
+  queuePublishApproval: (request: PublishApproval) => void;
+  /** Answer the queued request `id` and drop it from the queue. */
+  answerPublishApproval: (id: string, approved: boolean) => Promise<void>;
   /** Re-probe Docker availability into `dockerProbe` (settings pane open).
    *  Returns the probe result so callers can poll until the daemon answers. */
   refreshDockerProbe: () => Promise<DockerProbe>;
@@ -85,6 +101,25 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   dockerImage: "",
   dockerMemory: "",
   dockerCpus: "",
+  publishConfirmation: false,
+  pendingPublishApprovals: [],
+
+  setPublishConfirmation: async (enabled) => {
+    await api.setPublishConfirmation(enabled);
+    set({ publishConfirmation: enabled });
+  },
+
+  queuePublishApproval: (request) =>
+    set((s) => ({ pendingPublishApprovals: [...s.pendingPublishApprovals, request] })),
+
+  answerPublishApproval: async (id, approved) => {
+    // Drop it first: the prompt must not linger if the command throws, and a
+    // request the backend has already timed out is a no-op there anyway.
+    set((s) => ({
+      pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
+    }));
+    await api.answerPublishApproval(id, approved);
+  },
 
   setSandboxEngine: (engine) =>
     // The backend command persists the `sandbox_engine` setting AND updates its

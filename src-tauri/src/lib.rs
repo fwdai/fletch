@@ -651,6 +651,39 @@ fn describe_sandbox_isolation() -> Vec<sandbox::IsolationReport> {
         .collect()
 }
 
+/// Whether an agent must get the user's approval before publishing.
+#[tauri::command]
+fn get_publish_confirmation() -> bool {
+    rpc::approval::enabled()
+}
+
+/// Turn the publish-approval prompt on or off.
+///
+/// Off by default and deliberately so: autopilot publishes while nobody is
+/// watching, and a prompt would hang it until the decision timeout and then
+/// refuse. Turning this on trades unattended publishing for a gate.
+#[tauri::command]
+fn set_publish_confirmation(enabled: bool, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(
+            &conn,
+            rpc::approval::SETTING,
+            if enabled { "true" } else { "false" },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    rpc::approval::set_enabled(enabled);
+    Ok(())
+}
+
+/// Record the user's answer to one publish-approval prompt. An id that already
+/// timed out is ignored, so a late answer can never publish anything.
+#[tauri::command]
+fn answer_publish_approval(id: String, approved: bool) {
+    rpc::approval::answer(&id, approved);
+}
+
 /// Change the sandbox engine stamped onto *new* agents. Docker is validated
 /// against a live daemon probe before being accepted, so a success here means
 /// the choice is actionable. Persists to `settings` and updates the in-memory
@@ -1279,6 +1312,13 @@ pub fn run() {
             // MCP injection doesn't happen until a later successful install
             // (retried next launch or when the user re-toggles).
             {
+                // Seed the publish-approval mirror the same way: the git dispatcher
+                // reads it on the spawn path, where there is no DB handle.
+                rpc::approval::set_enabled(rpc::approval::parse_enabled(
+                    database::get_setting(&db.lock(), rpc::approval::SETTING).as_deref(),
+                ));
+            }
+            {
                 let enabled = codegraph::parse_enabled(
                     database::get_setting(&db.lock(), codegraph::SETTING).as_deref(),
                 );
@@ -1570,6 +1610,9 @@ pub fn run() {
             get_sandbox_engine,
             set_sandbox_engine,
             describe_sandbox_isolation,
+            get_publish_confirmation,
+            set_publish_confirmation,
+            answer_publish_approval,
             probe_docker_engine,
             get_container_auth_status,
             set_container_auth_token,

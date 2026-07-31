@@ -1,6 +1,6 @@
 import type { SandboxEngine } from "@/storage/preferences";
 import { invoke } from "../invoke";
-import type { ContainerAuthStatus, DockerProbe } from "../types/sandbox";
+import type { ContainerAuthStatus, DockerProbe, IsolationReport } from "../types/sandbox";
 
 export const sandboxApi = {
   // Sandbox engine selection. The setting is backend-owned (snake_case
@@ -9,6 +9,18 @@ export const sandboxApi = {
   getSandboxEngine: () => invoke<SandboxEngine>("get_sandbox_engine"),
   setSandboxEngine: (engine: SandboxEngine) => invoke<void>("set_sandbox_engine", { engine }),
   probeDockerEngine: () => invoke<DockerProbe>("probe_docker_engine"),
+  // What each engine actually guarantees, for the picker (`sandbox::guarantees`).
+  describeSandboxIsolation: () => invoke<IsolationReport[]>("describe_sandbox_isolation"),
+  // Whether an agent must get the user's approval before publishing. Backend-owned
+  // (`publish_confirmation`); off by default because autopilot publishes
+  // unattended and a prompt would hang it until the decision timeout.
+  getPublishConfirmation: () => invoke<boolean>("get_publish_confirmation"),
+  setPublishConfirmation: (enabled: boolean) =>
+    invoke<void>("set_publish_confirmation", { enabled }),
+  // Answer one prompt. A request that already timed out is ignored backend-side,
+  // so a late answer can never publish anything.
+  answerPublishApproval: (id: string, approved: boolean) =>
+    invoke<void>("answer_publish_approval", { id, approved }),
   // Anthropic auth for containerized agents. Docker-only: seatbelt agents keep
   // the user's own claude login. The token is backend-owned
   // (`claude_container_token` in the backend secret store, written by the

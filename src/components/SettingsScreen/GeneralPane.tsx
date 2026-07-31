@@ -55,6 +55,8 @@ export function GeneralPane() {
   const telemetryEnabled = useAppStore((s) => s.telemetryEnabled);
   const setTelemetryEnabled = useAppStore((s) => s.setTelemetryEnabled);
   const codeIndexingEnabled = useAppStore((s) => s.codeIndexingEnabled);
+  const publishConfirmation = useAppStore((s) => s.publishConfirmation);
+  const setPublishConfirmation = useAppStore((s) => s.setPublishConfirmation);
   const setCodeIndexingEnabled = useAppStore((s) => s.setCodeIndexingEnabled);
   const revealLogs = useAppStore((s) => s.revealLogs);
   const sandboxEngine = useAppStore((s) => s.sandboxEngine);
@@ -174,6 +176,15 @@ export function GeneralPane() {
       </SetGroup>
 
       <SetGroup label="Sandbox">
+        <SetRow
+          title="Ask before publishing"
+          sub="Require your approval each time an agent pushes a branch or opens a pull request. Agents already can't push the branch their work is reviewed against, and your credentials never enter their sandbox. Leave this off if you use autopilot: it publishes while nobody is watching, so a prompt would stall it."
+        >
+          <SetToggle
+            on={publishConfirmation}
+            onClick={() => setPublishConfirmation(!publishConfirmation)}
+          />
+        </SetRow>
         <SetRow
           title="Engine"
           sub="Applies to new agents; existing ones keep their engine. Docker runs agents in a Linux container, so builds and tests run on Linux."

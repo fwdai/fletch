@@ -20,6 +20,7 @@ import {
   onAgentView,
   onDockerBuildProgress,
   onPrStateChanged,
+  onPublishApprovalRequested,
   onRunPort,
   onRunState,
   onSessionRecordsAppended,
@@ -145,6 +146,11 @@ export const hydrateSettings = async (set: AppSet) => {
       // Backend-owned like telemetry_enabled (snake_case, written by the
       // `set_sandbox_engine` Rust command) — read it, never setSetting it.
       sandboxEngine: parseSandboxEngine(s.sandbox_engine),
+      // Publish approval is opt-*in*, unlike the two above: autopilot publishes
+      // unattended, so defaulting it on would hang every unattended run until
+      // the decision timeout. Backend-owned (`set_publish_confirmation`), so only
+      // an explicit "true" enables — matching `rpc::approval::parse_enabled`.
+      publishConfirmation: s.publish_confirmation === "true",
       // Advanced docker launch knobs — backend-owned (snake_case, written by
       // `set_docker_launch_settings`), so read them here and never setSetting.
       // Blank = unset (launch defaults apply).
@@ -428,6 +434,13 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // small ping after either operation; we reload the workspace.
   await onWorkspaceChanged(async () => {
     await refreshWorkspace(set);
+  });
+
+  await onPublishApprovalRequested((request) => {
+    // The backend is blocked on this until it is answered or its own timeout
+    // denies it, so queue rather than replace: dropping one would strand an
+    // agent's turn for the full decision window.
+    get().queuePublishApproval(request);
   });
 
   await onPrStateChanged((e) => {
