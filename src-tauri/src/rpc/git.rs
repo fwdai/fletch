@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use super::caps::AgentCaps;
 use super::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
 /// App-side ceiling on a single op. A hung command surfaces as an error
@@ -79,16 +80,23 @@ pub struct GitDispatcher {
     /// PR body for the *primary* checkout, so merging the PR closes the
     /// issue. `None` for dispatchers built without `with_close_issue`.
     issue_agent: Option<String>,
+    /// What this agent may ask the host to publish. Stamped at construction —
+    /// i.e. at spawn — and never re-read, so a later policy change cannot widen
+    /// a running agent (see [`crate::rpc::caps`]).
+    caps: AgentCaps,
 }
 
 impl GitDispatcher {
-    pub fn new(cwd: PathBuf, base_branch: String) -> Self {
+    /// `caps` is required rather than defaulted: it is the only argument whose
+    /// wrong value is a security bug, so a new call site must state it.
+    pub fn new(cwd: PathBuf, base_branch: String, caps: AgentCaps) -> Self {
         Self {
             cwd,
             base_branch,
             default_subdir: None,
             repos: std::collections::HashMap::new(),
             issue_agent: None,
+            caps,
         }
     }
 
@@ -177,6 +185,11 @@ impl RpcDispatcher for GitDispatcher {
 
 impl GitDispatcher {
     async fn dispatch_inner(&self, id: &str, op: &str, args: &Value) -> (Response, Vec<RpcEvent>) {
+        // The op-level gate, before any work: a grant that forbids publishing
+        // stops here rather than part-way through a push.
+        if let Some(why) = self.caps.refuses(op) {
+            return (Response::err(id, why), Vec::new());
+        }
         let (resp, mut effects) = match op {
             "open_pr" => self.open_pr(id, args).await,
             "git_push" => self.git_push(id, args).await,
@@ -366,6 +379,9 @@ impl GitDispatcher {
             }
         };
 
+        if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
+            return (Response::err(id, why), effects);
+        }
         if let Err(e) = crate::git::push(&t.cwd, &branch, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
@@ -421,6 +437,13 @@ impl GitDispatcher {
                 }
             },
         };
+
+        // The branch-level gate: `branch` may have come from the checkout's HEAD
+        // rather than the request, so this is the earliest point it is known —
+        // and it must precede the push, force or not.
+        if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
+            return (Response::err(id, why), effects);
+        }
 
         // `args.force` opts into `--force-with-lease` for pushing a rewritten
         // history (e.g. after the agent rebased its branch). Lease-based so a
@@ -582,7 +605,11 @@ mod tests {
     }
 
     fn dispatcher(cwd: &Path) -> GitDispatcher {
-        GitDispatcher::new(cwd.to_path_buf(), "main".to_string())
+        GitDispatcher::new(
+            cwd.to_path_buf(),
+            "main".to_string(),
+            AgentCaps::interactive(),
+        )
     }
 
     #[tokio::test]
@@ -728,6 +755,9 @@ mod tests {
         std::fs::write(repo.join("a.txt"), b"x").unwrap();
         run_git(&repo, &["add", "-A"]);
         run_git(&repo, &["commit", "-q", "-m", "init"]);
+        // An agent's own branch — pushing the review base is refused outright
+        // now (`rpc::caps`), which would mask the missing-remote error under test.
+        run_git(&repo, &["checkout", "-q", "-b", "fix/no-remote"]);
 
         let rpc_dir = td.path().join("rpc");
         ensure_mailbox(&rpc_dir).unwrap();
@@ -746,6 +776,61 @@ mod tests {
         let err = v["error"].as_str().unwrap();
         assert!(!err.contains("unknown op"), "got: {err}");
         assert!(err.contains("push failed"), "got: {err}");
+    }
+
+    /// The hole `rpc::caps` closes, at the layer that used to have it: an agent
+    /// sitting on the review base pushed straight onto it, because `git_push`
+    /// validated nothing. A real remote is attached, so a regression here would
+    /// actually publish — the refusal must come *before* the push.
+    #[tokio::test]
+    async fn git_push_refuses_the_review_base() {
+        let td = tempfile::tempdir().unwrap();
+        let remote = td.path().join("remote.git");
+        run_git(
+            td.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+
+        let rpc_dir = td.path().join("rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "p1.json",
+            r#"{"id":"p1","op":"git_push","args":{"force":true}}"#,
+        );
+        process_pending(&rpc_dir, &dispatcher(&repo)).await;
+
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(rpc_dir.join("responses/p1.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            v["ok"], false,
+            "pushing the review base must be refused: {v}"
+        );
+        assert!(v["error"].as_str().unwrap().contains("refusing to publish"));
+        // Nothing reached the remote: the refusal precedes the push, so `force`
+        // could not have rewritten anything.
+        let refs = std::process::Command::new("git")
+            .args(["--git-dir", remote.to_str().unwrap(), "for-each-ref"])
+            .output()
+            .expect("git");
+        assert!(
+            String::from_utf8_lossy(&refs.stdout).trim().is_empty(),
+            "the remote must have no refs"
+        );
     }
 
     #[tokio::test]
@@ -842,6 +927,9 @@ mod tests {
         std::fs::write(repo.join("a.txt"), b"x").unwrap();
         run_git(&repo, &["add", "-A"]);
         run_git(&repo, &["commit", "-q", "-m", "init"]);
+        // An agent's own branch: the force-push behaviour under test is only
+        // reachable on a branch that isn't the review base.
+        run_git(&repo, &["checkout", "-q", "-b", "fix/diverged"]);
 
         let rpc_dir = td.path().join("rpc");
         ensure_mailbox(&rpc_dir).unwrap();
@@ -890,13 +978,13 @@ mod tests {
             .unwrap();
         let remote_head = std::process::Command::new("git")
             .current_dir(&remote)
-            .args(["rev-parse", "refs/heads/main"])
+            .args(["rev-parse", "refs/heads/fix/diverged"])
             .output()
             .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&local.stdout).trim(),
             String::from_utf8_lossy(&remote_head.stdout).trim(),
-            "remote main should match the rewritten local HEAD"
+            "the remote branch should match the rewritten local HEAD"
         );
     }
 
@@ -997,10 +1085,11 @@ mod tests {
         // A dirty file only in `b`, so the two checkouts are distinguishable.
         std::fs::write(b.join("x.txt"), b"x").unwrap();
 
-        let disp = GitDispatcher::new(a.clone(), "main".into()).with_repos(vec![
-            ("a".into(), a.clone(), "main".into()),
-            ("b".into(), b.clone(), "main".into()),
-        ]);
+        let disp = GitDispatcher::new(a.clone(), "main".into(), AgentCaps::interactive())
+            .with_repos(vec![
+                ("a".into(), a.clone(), "main".into()),
+                ("b".into(), b.clone(), "main".into()),
+            ]);
 
         let (resp, _fx) = disp
             .dispatch_inner("s1", "git_status", &json!({"repo": "b"}))
@@ -1035,10 +1124,11 @@ mod tests {
             run_git(repo, &["checkout", "-q", "--detach"]);
         }
 
-        let disp = GitDispatcher::new(a.clone(), "main".into()).with_repos(vec![
-            ("a".into(), a.clone(), "main".into()),
-            ("b".into(), b.clone(), "main".into()),
-        ]);
+        let disp = GitDispatcher::new(a.clone(), "main".into(), AgentCaps::interactive())
+            .with_repos(vec![
+                ("a".into(), a.clone(), "main".into()),
+                ("b".into(), b.clone(), "main".into()),
+            ]);
 
         // Targeting the sibling: the branch event must name `b`, so the
         // supervisor records the branch on b's worktree row, not the primary's.
@@ -1083,11 +1173,8 @@ mod tests {
         std::fs::create_dir_all(&a).unwrap();
         run_git(&a, &["init", "-q", "-b", "main"]);
 
-        let disp = GitDispatcher::new(a.clone(), "main".into()).with_repos(vec![(
-            "a".into(),
-            a.clone(),
-            "main".into(),
-        )]);
+        let disp = GitDispatcher::new(a.clone(), "main".into(), AgentCaps::interactive())
+            .with_repos(vec![("a".into(), a.clone(), "main".into())]);
         let (resp, fx) = disp
             .dispatch_inner("p", "git_push", &json!({"repo": "nope"}))
             .await;

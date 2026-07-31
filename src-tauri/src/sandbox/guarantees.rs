@@ -114,8 +114,11 @@ impl Guarantee {
             // Push/PR never run in the sandbox — they are brokered host-side
             // (`crate::rpc::git`), so no credential enters an agent's process.
             (Self::HostHeldCredentials, _) => Coverage::Partial(
-                "credentials stay host-side, but the brokered git_push and open_pr ops are not \
-                 yet gated by a capability check or a confirmation prompt",
+                "credentials stay host-side, and the brokered publish ops are capability-gated \
+                 (crate::rpc::caps): a workflow step agent cannot publish at all, and no agent \
+                 can push the branch its work is reviewed against. Still ungated: an agent \
+                 publishes its own branch and opens a pull request under your identity without \
+                 asking first",
             ),
         }
     }

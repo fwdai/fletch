@@ -161,12 +161,24 @@ cannot go quietly unstated the way a doc caveat can. The
   (`rpc/git.rs`, ops `git_push`, `open_pr`, `git_fetch`). Credentials never enter
   the sandbox.
 
-**The one caveat to state loudly:** the brokered `git_push` and `open_pr` ops
-currently run **without a confirmation prompt** (`rpc/git.rs`). An agent that
-decides to push a branch or open a PR can do so under your GitHub identity
-without asking first. Credentials stay out of the sandbox, but publication is
-not gated. Choose the tasks and repositories you point agents at accordingly.
-(The README states this same caveat; keep the two in sync.)
+**What publication *is* gated by.** Every brokered op is checked against the
+agent's **capability grant**, stamped when it spawns and never re-read, so a
+later policy change can't widen an agent already running (`rpc/caps.rs`):
+
+- **No agent can push the branch its work is reviewed against**, nor a
+  conventional trunk (`main`, `master`) whatever a repo declares as its base.
+  Before this grant existed `git_push` validated nothing, so an agent sitting on
+  the base pushed straight onto it — and `args.force` made that a lease-guarded
+  force-push.
+- **A workflow step agent cannot publish at all.** A run publishes through its
+  own `wf/`-guarded finalize; a step publishing directly would bypass that guard.
+
+**The caveat that remains:** for its *own* branch, an agent still pushes and
+opens a pull request **without a confirmation prompt**, under your GitHub
+identity. Credentials stay out of the sandbox and the destination is now
+constrained, but the act of publishing is not yet something you approve. Choose
+the tasks and repositories you point agents at accordingly. (The README states
+this same caveat; keep the two in sync.)
 
 ## Why not linked git worktrees
 
