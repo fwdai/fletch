@@ -19,7 +19,7 @@ function FeedbackModal({ onClose }: { onClose: () => void }) {
   const state = useFeedback(onClose);
 
   return (
-    <Modal icon="feedback" title="Send feedback" onClose={onClose} layer="overlay" dim>
+    <Modal icon="feedback" title="Send feedback" onClose={onClose} layer="overlay">
       <FeedbackForm state={state} onClose={onClose} />
     </Modal>
   );

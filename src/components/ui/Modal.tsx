@@ -23,30 +23,31 @@ interface ModalProps {
   onClose: () => void;
   size?: ModalSize;
   layer?: ModalLayer;
-  /** Dim + blur the app behind the card (see `Scrim`'s `blur`). */
-  dim?: boolean;
   className?: string;
   /** Body + footer — compose from `ModalBody` / `ModalFooter`. */
   children: ReactNode;
 }
 
-/** Centered modal dialog: scrim + card + the standard icon/title/close header.
- *  Closes on scrim click and on Escape (both via `Scrim`). The caller owns
- *  whether it's mounted at all — this renders unconditionally. */
+/** Centered modal dialog: dimmed scrim + card + the standard icon/title/close
+ *  header. Closes on scrim click and on Escape (both via `Scrim`). The caller
+ *  owns whether it's mounted at all — this renders unconditionally.
+ *
+ *  The backdrop always dims: a modal blocks the app behind it, and saying so is
+ *  the point. Something that shouldn't dim isn't a modal — that's a popover, so
+ *  reach for a bare `Scrim` (invisible by default) plus your own container. */
 export function Modal({
   icon,
   title,
   onClose,
   size = "md",
   layer = "popover",
-  dim = false,
   className,
   children,
 }: ModalProps) {
   const z = LAYER_Z[layer];
   return (
     <>
-      <Scrim onClose={onClose} zIndex={z} blur={dim} />
+      <Scrim onClose={onClose} zIndex={z} blur />
       <div
         className={["modal", size === "md" ? "" : size, className].filter(Boolean).join(" ")}
         // The card sits one step above its own scrim.
