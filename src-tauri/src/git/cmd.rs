@@ -62,6 +62,11 @@ pub(crate) async fn git_output_env(
     args: &[&str],
     env: &[(String, String)],
 ) -> Result<std::process::Output> {
+    // The wildcard half of the hardening: refuse an agent checkout whose config
+    // would execute a program. Checked here rather than per call site for the same
+    // reason the `-c` overrides live at the spawn seam — an opt-in guard is one a
+    // future caller forgets.
+    super::hardening::refuse_steerable_config(dir).await?;
     let mut cmd = crate::git_dist::command(dir);
     cmd.args(args).kill_on_drop(true);
     for (k, v) in env {

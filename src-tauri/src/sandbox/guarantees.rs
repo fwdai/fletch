@@ -86,11 +86,15 @@ impl Guarantee {
 
             // Policy invariant 3 (`super::policy::GIT_EXEC_CONFIG_FILES`).
             (Self::WithheldGitConfig, SandboxExec) => Coverage::Enforced,
-            (Self::WithheldGitConfig, Docker) => Coverage::Unenforced(
-                "the checkout is bind-mounted read-write, so an agent can write its own \
-                 .git/config; only the fixed-name overrides in git::hardening apply. Nested \
-                 read-only binds would block direct writes but not a rename — Docker mounts \
-                 follow the inode, unlike seatbelt's path rules",
+            (Self::WithheldGitConfig, Docker) => Coverage::Partial(
+                "the checkout is bind-mounted read-write, so an agent can still write its own \
+                 .git/config — nested read-only binds would stop a direct write but not a \
+                 rename, because Docker mounts follow the inode where seatbelt's path rules do \
+                 not. Instead host-side git refuses to run in a checkout whose config would \
+                 execute a program (crate::git::hardening), which is engine-independent. That \
+                 refusal sits at the git::cmd helper seam, so the few callers that build a \
+                 command directly — push and fetch, which do not run filters or textconv — are \
+                 not covered by it",
             ),
 
             // Seatbelt denies the app-data dir explicitly; Docker never mounts it.
@@ -222,10 +226,16 @@ mod tests {
             Guarantee::WithheldGitConfig.coverage(SandboxExec),
             Coverage::Enforced
         );
-        assert!(matches!(
+        // Asserted as "not fully enforced" rather than as one exact variant: the
+        // property being pinned is the *asymmetry*, and Docker's coverage here has
+        // already moved once (Unenforced → Partial, once the engine-independent
+        // config refusal landed). Should it ever reach Enforced, this failing is
+        // the correct outcome — the asymmetry would be gone and the claim's whole
+        // treatment wants rethinking.
+        assert_ne!(
             Guarantee::WithheldGitConfig.coverage(Docker),
-            Coverage::Unenforced(_)
-        ));
+            Coverage::Enforced
+        );
         assert_eq!(
             Guarantee::ConfinedReads.coverage(Docker),
             Coverage::Enforced
