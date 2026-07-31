@@ -107,15 +107,15 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
         selectedRunId: result.deleted_run_ids.includes(state.selectedRunId ?? "")
           ? null
           : state.selectedRunId,
-        projectSettingsRepoPath: null,
+        projectScreenRepoPath: null,
       };
     });
   },
 
   relocateProject: async (oldPath, newPath) => {
     const ws = await api.relocateRepo(oldPath, newPath);
-    // Keep the project's manual sidebar position, and repoint the open settings
-    // modal (keyed by repo path) at the new location so it doesn't go stale.
+    // Keep the project's manual sidebar position, and repoint the open project
+    // screen (keyed by repo path) at the new location so it doesn't go stale.
     remapProjectOrder(oldPath, newPath);
     // Drafts are keyed by repo path; carry any in-progress composer over to the
     // new location so it follows the move instead of being dropped from the view.
@@ -123,7 +123,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
       workspace: ws,
       drafts: state.drafts.map((d) => (d.repoPath === oldPath ? { ...d, repoPath: newPath } : d)),
     }));
-    if (get().projectSettingsRepoPath === oldPath) get().openProjectSettings(newPath);
+    if (get().projectScreenRepoPath === oldPath) get().openProjectScreen(newPath);
   },
 
   revealLogs: async () => {
