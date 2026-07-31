@@ -113,21 +113,33 @@ impl Response {
 /// a sandbox-writable root instead — see `sandbox::nested_rpc_root`.
 pub const RPC_ROOT_ENV: &str = "FLETCH_RPC_ROOT";
 
-/// `<root>/<agent-id>/` — the agent's private mailbox root. `<root>` is
-/// `$FLETCH_RPC_ROOT` when set and non-empty, else `~/.fletch/rpc`.
+/// `<root>/<agent-id>/` — the agent's private mailbox root. `<root>` is this
+/// build's mailbox root under `~/.fletch` (or under `$FLETCH_RPC_ROOT` when set
+/// and non-empty): `rpc/` for release, `dev/rpc/` for debug.
 pub fn mailbox_dir(agent_id: &str) -> Result<PathBuf> {
     Ok(rpc_root()?.join(agent_id))
 }
 
 fn rpc_root() -> Result<PathBuf> {
-    match std::env::var_os(RPC_ROOT_ENV).filter(|v| !v.is_empty()) {
-        Some(root) => Ok(PathBuf::from(root)),
-        None => {
-            let home = dirs::home_dir()
-                .ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-            Ok(home.join(".fletch").join("rpc"))
-        }
-    }
+    let base = match std::env::var_os(RPC_ROOT_ENV).filter(|v| !v.is_empty()) {
+        Some(root) => PathBuf::from(root),
+        None => dirs::home_dir()
+            .ok_or_else(|| Error::Other("HOME directory not available".into()))?
+            .join(".fletch"),
+    };
+    Ok(rpc_root_in(&base))
+}
+
+/// Apply the per-build split (see [`crate::build_state_subpath`]) to a mailbox
+/// base. The exact mirror of `workspace::paths::checkouts_root_in`, split out
+/// for the same reasons: testable without mutating the process-global override,
+/// and the override and default paths share one "append the build subpath" step
+/// so neither can drift into bypassing the split.
+///
+/// Nothing migrates on upgrade — a mailbox is per-spawn state, so a pre-split
+/// dir is just an orphan the release build sweeps.
+fn rpc_root_in(base: &Path) -> PathBuf {
+    base.join(crate::build_state_subpath("rpc"))
 }
 
 /// Create the mailbox and its `requests/`/`responses/` subdirs. Idempotent;
@@ -178,6 +190,11 @@ pub fn remove_mailbox(agent_id: &str) -> Result<()> {
 /// teardown can still leak one. `live` is this build's non-archived agent ids
 /// (see `WorkspaceManager::live_agent_ids`) — the same set the name allocator
 /// treats as reserved, so the two never disagree about who's alive.
+///
+/// "Doesn't belong to a live agent" is only sound because the root is
+/// per-build (`rpc_root_in`): every mailbox under it was created by an agent in
+/// the DB `live` came from. Sharing a root with another build would put that
+/// build's live agents outside `live` and delete their mailboxes mid-turn.
 ///
 /// Skipped when `RPC_ROOT_ENV` is set: that's the nested-Fletch redirect, whose
 /// pid-keyed roots are reclaimed by `sandbox::cleanup_nested_rpc_roots`, and
@@ -397,6 +414,36 @@ mod tests {
 
     fn live(names: &[&str]) -> HashSet<String> {
         names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn mailbox_root_is_split_per_build() {
+        // A shared base — `~/.fletch`, or one `$FLETCH_RPC_ROOT` redirect two
+        // builds are both pointed at — must not bypass the split. Tests compile
+        // with debug_assertions on.
+        let base = Path::new("/tmp/shared-base");
+        assert_eq!(rpc_root_in(base), base.join("dev").join("rpc"));
+    }
+
+    #[test]
+    fn sweep_cannot_reach_another_builds_live_mailboxes() {
+        // The regression: a debug instance's startup sweep ran over the one flat
+        // `~/.fletch/rpc`, so every release-build agent — absent from the debug
+        // DB's `live` set — lost its mailbox, including agents with a turn in
+        // flight. Per-build roots put them out of reach.
+        let td = tempfile::tempdir().unwrap();
+        let ours = rpc_root_in(td.path());
+        let theirs = td.path().join("rpc"); // the release install's, same base
+        ensure_mailbox(&ours.join("bromo")).unwrap();
+        ensure_mailbox(&theirs.join("pilbara")).unwrap();
+
+        sweep_orphan_mailboxes_in(&ours, &live(&["bromo"]));
+
+        assert!(
+            theirs.join("pilbara").is_dir(),
+            "another build's live mailbox was swept"
+        );
+        assert!(ours.join("bromo").is_dir());
     }
 
     #[test]
