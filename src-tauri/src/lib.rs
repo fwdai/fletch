@@ -72,6 +72,24 @@ pub(crate) fn data_dir() -> PathBuf {
     }
 }
 
+/// The per-build path segment for a kind of on-disk state under a shared base
+/// (`~/.fletch`, or an override root): `<leaf>` for release, `dev/<leaf>` for
+/// debug — the same `dev` split [`data_dir`] applies to app data.
+///
+/// Every root a *live* agent's state hangs off must go through this. A debug
+/// instance and a release install have separate DBs but one filesystem, and
+/// their name allocators draw from the same pool, so any shared root lets one
+/// build's startup housekeeping delete — or one build's agent collide with —
+/// the other's live state. Release keeps the historical flat segment, so
+/// existing installs need no migration.
+pub(crate) fn build_state_subpath(leaf: &str) -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from("dev").join(leaf)
+    } else {
+        PathBuf::from(leaf)
+    }
+}
+
 /// Fletch's log directory. On macOS this is `~/Library/Logs/<BUNDLE_ID>`
 /// (with a `dev` subfolder under debug builds, mirroring `data_dir`) — the
 /// platform convention, where Console.app indexes per-app logs. Elsewhere (the

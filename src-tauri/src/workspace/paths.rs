@@ -67,16 +67,11 @@ pub(super) fn checkouts_root_in(base: &Path) -> PathBuf {
 
 /// The workspaces path segment(s) under the checkouts base (`~/.fletch` or the
 /// `$FLETCH_WORKSPACES_ROOT` override), split per build so a debug instance
-/// never shares the checkout namespace with a release install. Release
-/// keeps the historical flat `workspaces/` (so existing installs need no
-/// migration); debug builds get a sibling `dev/workspaces/` root, mirroring the
-/// `dev` split `data_dir` already uses for app data.
+/// never shares the checkout namespace with a release install: flat
+/// `workspaces/` for release, `dev/workspaces/` for debug. See
+/// [`crate::build_state_subpath`], which `rpc::rpc_root_in` shares.
 pub(super) fn build_workspaces_subpath() -> PathBuf {
-    if cfg!(debug_assertions) {
-        PathBuf::from("dev").join("workspaces")
-    } else {
-        PathBuf::from("workspaces")
-    }
+    crate::build_state_subpath("workspaces")
 }
 
 /// Env var overriding the tools root (default `~/.fletch/tools`). Same style as
