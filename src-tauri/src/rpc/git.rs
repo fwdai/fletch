@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use super::approval;
 use super::caps::AgentCaps;
 use super::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
@@ -84,6 +85,11 @@ pub struct GitDispatcher {
     /// i.e. at spawn — and never re-read, so a later policy change cannot widen
     /// a running agent (see [`crate::rpc::caps`]).
     caps: AgentCaps,
+    /// Handle + agent id used to ask the user to approve a publish. `None` for
+    /// dispatchers built without [`GitDispatcher::with_approval`] (tests), where
+    /// the gate being enabled is a refusal rather than a silent pass — see
+    /// `refuse_unless_publish_approved`.
+    approval: Option<(tauri::AppHandle, String)>,
 }
 
 impl GitDispatcher {
@@ -97,7 +103,35 @@ impl GitDispatcher {
             repos: std::collections::HashMap::new(),
             issue_agent: None,
             caps,
+            approval: None,
         }
+    }
+
+    /// Bind this dispatcher to the window it can ask for publish approval through.
+    /// Separate from `with_close_issue` even though both carry the agent id: that
+    /// one seeds an issue ref, this one is the human-in-the-loop channel, and
+    /// coupling them would make either hard to change alone.
+    pub fn with_approval(mut self, app: tauri::AppHandle, agent_id: &str) -> Self {
+        self.approval = Some((app, agent_id.to_string()));
+        self
+    }
+
+    /// Why this publish may not proceed unapproved, if so.
+    ///
+    /// Fails **closed** when the gate is on but this dispatcher has no window to
+    /// ask through: publishing unasked is exactly what the gate exists to prevent,
+    /// so an unaskable session refuses instead.
+    async fn refuse_unless_publish_approved(&self, detail: &str) -> Option<String> {
+        if !approval::enabled() {
+            return None;
+        }
+        let Some((app, agent_id)) = &self.approval else {
+            return Some(format!(
+                "not publishing ({detail}): publish confirmation is enabled but this \
+                 session has no window to ask through"
+            ));
+        };
+        approval::refuse_unless_approved(app, agent_id, detail).await
     }
 
     /// Seed the agent's live issue ref (the one it was spawned from, if any)
@@ -382,6 +416,15 @@ impl GitDispatcher {
         if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
             return (Response::err(id, why), effects);
         }
+        if let Some(why) = self
+            .refuse_unless_publish_approved(&format!(
+                "open a pull request from {branch} into {}",
+                t.base_branch
+            ))
+            .await
+        {
+            return (Response::err(id, why), effects);
+        }
         if let Err(e) = crate::git::push(&t.cwd, &branch, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
@@ -437,6 +480,13 @@ impl GitDispatcher {
                 }
             },
         };
+
+        if let Some(why) = self
+            .refuse_unless_publish_approved(&format!("push {branch}"))
+            .await
+        {
+            return (Response::err(id, why), effects);
+        }
 
         // The branch-level gate: `branch` may have come from the checkout's HEAD
         // rather than the request, so this is the earliest point it is known —

@@ -70,12 +70,24 @@ Independently, every host-side git invocation carries hardening overrides that
 neutralise the fixed-name equivalents (`git/hardening.rs`), applied at git's
 single spawn seam rather than per call site.
 
-Two limits to state plainly. This carve-out is **seatbelt-only today**: under
-Docker the checkout is bind-mounted read-write at its host path, so a
-Docker-engine agent can still write its own `.git/config` and only the
-fixed-name overrides apply. And the **Run panel deliberately does not carry it**
-— `npm install` on a husky project legitimately writes `core.hooksPath`, and Run
-is already the weaker boundary by design.
+Withholding the write is **seatbelt-only**: under Docker the checkout is
+bind-mounted read-write at its host path, and nested read-only binds would stop a
+direct write but not a rename, because Docker mounts follow the inode where
+seatbelt's path rules do not. So a second, **engine-independent** check backs it
+up: before running git in an agent checkout, Fletch reads that checkout's local
+config and **refuses if any setting would execute a program** — matched on
+`(section, leaf)` with the subsection ignored, so `filter.<any-name>.clean` is
+caught even though the driver name is chosen by the agent's own `.gitattributes`
+and can never be enumerated (`git/hardening.rs`). It reads whatever config git is
+about to read, so it doesn't care how that config got there. Scoped to agent
+checkouts: a user's own repository legitimately carries these keys — husky sets
+`core.hooksPath`, git-lfs sets `filter.lfs.*` — and isn't agent-writable anyway.
+
+Two limits to state plainly. The refusal sits at the `git::cmd` helper seam, so
+the few callers that build a git command directly (push and fetch, which run no
+filters or textconv) are outside it. And the **Run panel deliberately carries
+neither half** — `npm install` on a husky project legitimately writes
+`core.hooksPath`, and Run is already the weaker boundary by design.
 
 ### What the Docker container mounts
 
@@ -173,12 +185,22 @@ later policy change can't widen an agent already running (`rpc/caps.rs`):
 - **A workflow step agent cannot publish at all.** A run publishes through its
   own `wf/`-guarded finalize; a step publishing directly would bypass that guard.
 
-**The caveat that remains:** for its *own* branch, an agent still pushes and
-opens a pull request **without a confirmation prompt**, under your GitHub
-identity. Credentials stay out of the sandbox and the destination is now
-constrained, but the act of publishing is not yet something you approve. Choose
-the tasks and repositories you point agents at accordingly. (The README states
-this same caveat; keep the two in sync.)
+**Approving the act itself** is available but **off by default**
+(`rpc/approval.rs`, Settings › General › "Ask before publishing"). Turned on,
+every push and PR waits for you, naming the specific act ("push fix/login"), and
+anything that isn't an explicit approval — no window listening, a dismissed
+prompt, nobody answering within 120s — resolves to *denied*, so the gate cannot
+fail open.
+
+It is off by default because it conflicts with unattended operation: autopilot
+exists to work while nobody is watching, and a prompt would stall it until the
+timeout and then refuse. Enabling it trades unattended publishing for the gate.
+
+**So the caveat that remains, by default:** for its *own* branch, an agent pushes
+and opens a pull request under your GitHub identity without asking. Credentials
+stay out of the sandbox and the destination is constrained, but the act is not
+gated unless you enable it. Choose the tasks and repositories you point agents at
+accordingly. (The README states this same caveat; keep the two in sync.)
 
 ## Why not linked git worktrees
 

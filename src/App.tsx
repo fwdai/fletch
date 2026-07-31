@@ -6,6 +6,7 @@ import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectSettings } from "./components/ProjectSettings";
+import { PublishApproval } from "./components/PublishApproval";
 import { RightPanel } from "./components/RightPanel";
 import { Settings } from "./components/Settings";
 import { SettingsScreen } from "./components/SettingsScreen";
@@ -155,6 +156,7 @@ export function App() {
 
       <UpdateToast />
       <DockerBuildToast />
+      <PublishApproval />
     </div>
   );
 }

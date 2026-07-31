@@ -15,7 +15,7 @@ import type {
 import type { PrStateChangedEvent } from "./types/pr";
 import type { AgentInstallEvent } from "./types/providers";
 import type { RunOutputEvent, RunPortEvent, RunStateEvent } from "./types/run";
-import type { DockerBuildEvent } from "./types/sandbox";
+import type { DockerBuildEvent, PublishApproval } from "./types/sandbox";
 import type {
   SessionRecordsAppendedEvent,
   SessionSyncHealthEvent,
@@ -138,6 +138,13 @@ export function onRunState(cb: (e: RunStateEvent) => void): Promise<UnlistenFn> 
 
 export function onRunPort(cb: (e: RunPortEvent) => void): Promise<UnlistenFn> {
   return listen<RunPortEvent>("run:port", (event) => cb(event.payload));
+}
+
+/** An agent is waiting for the user to approve one publish. Only fires when the
+ *  `publish_confirmation` setting is on; unanswered requests are denied backend
+ *  side after a timeout, so ignoring one is safe. */
+export function onPublishApprovalRequested(cb: (e: PublishApproval) => void): Promise<UnlistenFn> {
+  return listen<PublishApproval>("publish:approval-requested", (event) => cb(event.payload));
 }
 
 /** Fires per line (and at start/finish/failure) while the embedded docker agent
