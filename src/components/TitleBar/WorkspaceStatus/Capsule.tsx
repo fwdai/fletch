@@ -4,9 +4,10 @@ import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import { SandboxBadge } from "@/components/ui";
 import { useAppStore } from "@/store";
-import { dotStatus } from "./derive";
+import { agentDotStatus } from "./derive";
 import { ChecksChip, GitBadge } from "./GitBadge";
 import { Popover } from "./Popover";
+import { ProjectPill } from "./ProjectPill";
 import { StatusDot } from "./StatusDot";
 import { useCapsuleData } from "./useCapsuleData";
 
@@ -27,12 +28,9 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
   const toggleRight = useAppStore((s) => s.toggleRight);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
-  const openProjectScreen = useAppStore((s) => s.openProjectScreen);
   const { shortstats, gitState, prState, checks } = useCapsuleData(agent.id);
 
-  const working = agent.status === "running" || agent.status === "spawning";
-  const awaiting = working && !!pending && Object.keys(pending).length > 0;
-  const status = dotStatus(agent.status, awaiting);
+  const status = agentDotStatus(agent.status, pending);
 
   const openDiff = useCallback(() => {
     setRightPanelTab(agent.id, "git");
@@ -46,20 +44,7 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
 
   return (
     <div className="ws-cap-wrap">
-      {hasProject && (
-        <>
-          <button
-            type="button"
-            className="ws-cap ws-cap-proj"
-            title="Open project page"
-            onClick={() => openProjectScreen(repoPath)}
-          >
-            <StatusDot status={status} />
-            <span className="ws-proj-name">{projectName}</span>
-          </button>
-          <span className="ws-slash">/</span>
-        </>
-      )}
+      {hasProject && <ProjectPill repoPath={repoPath} name={projectName} status={status} />}
       <div className="ws-cap-main">
         <div className="ws-cap" tabIndex={0}>
           <span className="ws-ctx">

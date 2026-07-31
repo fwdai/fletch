@@ -4,7 +4,6 @@
  * (status dot + agent name + git/PR badge) that reveals a details popover
  * on hover/focus. Plain/home variants share the tokens. */
 .ws-cap-wrap {
-  position: relative;
   -webkit-app-region: no-drag;
   display: flex;
   align-items: center;

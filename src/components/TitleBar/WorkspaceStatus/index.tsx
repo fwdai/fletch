@@ -1,7 +1,8 @@
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
 import { Capsule } from "./Capsule";
-import { dotStatus } from "./derive";
+import { agentDotStatus } from "./derive";
+import { ProjectPill } from "./ProjectPill";
 import { StatusDot } from "./StatusDot";
 
 /** The center of the title bar. Adapts to context: the active agent's live
@@ -34,9 +35,7 @@ export function WorkspaceStatus() {
   // to this project; a draft (or no relevant selection) reads idle.
   if (projectScreenRepoPath) {
     const onProject = agent?.repos[0]?.repo_path === projectScreenRepoPath;
-    const working = agent?.status === "running" || agent?.status === "spawning";
-    const awaiting = !!working && !!agent && Object.keys(pending[agent.id] ?? {}).length > 0;
-    const status = agent && onProject ? dotStatus(agent.status, awaiting) : "idle";
+    const status = agent && onProject ? agentDotStatus(agent.status, pending[agent.id]) : "idle";
     return (
       <div className="ws-plain">
         <StatusDot status={status} />
@@ -109,22 +108,10 @@ function DraftCapsule({
   repoPath: string | null;
   projectName: string | null;
 }) {
-  const openProjectScreen = useAppStore((s) => s.openProjectScreen);
   return (
     <div className="ws-cap-wrap">
       {repoPath && projectName && (
-        <>
-          <button
-            type="button"
-            className="ws-cap ws-cap-proj"
-            title="Open project page"
-            onClick={() => openProjectScreen(repoPath)}
-          >
-            <StatusDot status="idle" />
-            <span className="ws-proj-name">{projectName}</span>
-          </button>
-          <span className="ws-slash">/</span>
-        </>
+        <ProjectPill repoPath={repoPath} name={projectName} status="idle" />
       )}
       <div className="ws-cap static">
         <span className="ws-ctx">
