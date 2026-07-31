@@ -746,7 +746,15 @@ impl Supervisor {
         // closing trailer to the primary repo's PR body (a mid-session
         // composer pick replaces the seed).
         let close_issue = record.issue_ref.clone().filter(|s| !s.trim().is_empty());
-        let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch)
+        // A run-owned step agent must never publish: the run's own finalize is
+        // the only push path for a workflow, and it is `wf/`-namespace guarded.
+        // Stamped here, at spawn, so a later policy change can't widen an agent
+        // that is already running (`rpc::caps`).
+        let caps = match &record.owner_run_id {
+            Some(_) => rpc::caps::AgentCaps::run_owned(),
+            None => rpc::caps::AgentCaps::interactive(),
+        };
+        let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch, caps)
             .with_repos(repo_targets)
             .with_close_issue(agent_id, close_issue);
         // A run-owned step agent also gets the workflow comms ops (wf_report /

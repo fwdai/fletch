@@ -1,5 +1,6 @@
 pub mod docker;
 mod engine;
+pub mod guarantees;
 pub mod policy;
 pub mod provision;
 mod seatbelt;
@@ -12,6 +13,7 @@ use crate::error::{Error, Result};
 
 pub use docker::{availability as docker_availability, DockerAvailability};
 pub use engine::{AgentLaunchCtx, EngineKind, KillHandle, LaunchPlan, SandboxEngine};
+pub use guarantees::{describe as describe_isolation, IsolationReport};
 pub use policy::{toolchain_cache_env, toolchain_cache_root};
 pub use seatbelt::{
     build_run_profile, cleanup_nested_checkouts_roots, cleanup_nested_rpc_roots,

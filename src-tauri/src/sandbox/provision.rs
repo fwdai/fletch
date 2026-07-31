@@ -492,10 +492,13 @@ async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
 /// host relays an `agent:git-action` event — exactly what the panel's
 /// delegation tracking consumes.
 ///
-/// Contained by construction: host-side git (diff polling, push, PR, fetch)
-/// runs with `core.hooksPath=/dev/null` (`git::no_hooks_env`), so these hooks
-/// never fire on the host — only on the agent's sandboxed git, where any command
-/// they run is already inside the sandbox. The hook is best-effort and always
+/// Contained by two independent mechanisms. Every host-side git invocation
+/// carries `core.hooksPath=/dev/null` from the spawn seam
+/// (`git::hardening`), so these hooks never fire on the host — only on the
+/// agent's sandboxed git, where any command they run is already inside the
+/// sandbox. And `.git/hooks` is denied writable to the agent in the first place
+/// (`sandbox::policy::GIT_EXEC_CONFIG_DIRS`), so the payload cannot be replaced
+/// after this install. The hook is best-effort and always
 /// exits 0, so a missing mailbox or a slow write can never fail the agent's
 /// commit. Installed only for clones (this is the clone-arm path); a linked
 /// worktree's hooks live in the user's real repo and must never be touched.

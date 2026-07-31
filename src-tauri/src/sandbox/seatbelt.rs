@@ -129,6 +129,39 @@ fn deny_app_data_dir(home_s: &str) -> String {
     )
 }
 
+/// SBPL deny carving every repository's git-executable configuration back out
+/// of the writable checkout grant — policy invariant 3
+/// ([`policy::GIT_EXEC_CONFIG_FILES`] / [`policy::GIT_EXEC_CONFIG_DIRS`]).
+///
+/// A **pattern**, not an enumeration of the agent's repos: a repo can be added
+/// to a live workspace, so the rule has to cover checkouts that don't exist yet.
+/// `(/.*)?` lets the repo sit at the writable root or any depth beneath it.
+///
+/// Like [`deny_app_data_dir`] this MUST follow the `(allow file-write* …)`
+/// block — SBPL is last-match-wins.
+fn deny_git_exec_config(root: &str) -> String {
+    let alternation = |names: &[&str]| {
+        names
+            .iter()
+            .map(|n| sbpl_regex_escape(n))
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    let root = sbpl_regex_escape(root);
+    let files = alternation(policy::GIT_EXEC_CONFIG_FILES);
+    let dirs = alternation(policy::GIT_EXEC_CONFIG_DIRS);
+    format!(
+        ";; Invariant 3: a repo's own config names programs git executes (hooks,\n\
+         ;; clean/smudge filters, textconv, merge drivers), so an agent-writable\n\
+         ;; .git/config is host code execution the moment Fletch runs git on the\n\
+         ;; checkout. `.gitattributes` stays writable on purpose — it is tracked\n\
+         ;; source, and inert while it cannot define the driver it names.\n\
+         (deny file-write*\n  \
+         (regex #\"^{root}(/.*)?/\\.git/({files})$\")\n  \
+         (regex #\"^{root}(/.*)?/\\.git/({dirs})(/|$)\"))"
+    )
+}
+
 /// Toolchain + broad-state dirs the Run panel additionally grants so real
 /// project builds succeed. These hold package caches, downloaded toolchains,
 /// and — for some — PATH-resolved binaries (`~/.cargo/bin`, `~/go/bin`,
@@ -469,6 +502,13 @@ pub fn build_profile(
     // touch any Fletch data dir, dev or otherwise.
     let deny_app_data = deny_app_data_dir(&home_s);
 
+    // Invariant 3, agent profile only. The Run profile deliberately does NOT
+    // carry this: Run executes real project toolchains, and `npm install` on a
+    // husky project legitimately writes `core.hooksPath`. Run is already
+    // documented as the weaker boundary (see `RUN_TOOLCHAIN_DIRS`), so the
+    // asymmetry follows the existing split rather than inventing one.
+    let deny_git_config = deny_git_exec_config(&writable_root.to_string_lossy());
+
     Ok(format!(
         r#"(version 1)
 (allow default)
@@ -486,6 +526,8 @@ pub fn build_profile(
 {policy_dirs})
 
 {deny_app_data}
+
+{deny_git_config}
 
 {DEVICE_WRITE_RULES}
 "#
@@ -651,6 +693,112 @@ mod tests {
         // macOS-native per-user state dirs, needed by the agents' toolchains.
         assert!(profile.contains("/Library/Caches"));
         assert!(profile.contains("/Library/Application Support"));
+    }
+
+    /// Policy invariant 3: the agent profile carves every repo's git-executable
+    /// config back out of the writable checkout — and does so as a *pattern*, so
+    /// a repo added to a live workspace is covered too. `.gitattributes` stays
+    /// writable: it is tracked source, and inert while it cannot define the
+    /// driver it names.
+    #[test]
+    fn agent_profile_denies_git_exec_config_but_not_gitattributes() {
+        let td = tempfile::tempdir().unwrap();
+        let (root, rpc, home) = (
+            td.path().join("agent-parent"),
+            td.path().join("rpc"),
+            td.path().join("home"),
+        );
+        for d in [&root, &rpc, &home] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let escaped = sbpl_regex_escape(&canonical_root.to_string_lossy());
+
+        // Scoped to this agent's writable root, never a bare `.git` pattern that
+        // would also deny the user's own repositories.
+        assert!(
+            profile.contains(&format!(
+                r#"^{escaped}(/.*)?/\.git/(config|config\.worktree)$"#
+            )),
+            "profile must deny the git config files under the writable root"
+        );
+        assert!(
+            profile.contains(&format!(r#"^{escaped}(/.*)?/\.git/(hooks|info)(/|$)"#)),
+            "profile must deny the git hook/info subtrees under the writable root"
+        );
+        // The deny must follow the allow block — SBPL is last-match-wins, so an
+        // earlier deny would simply be overridden by the checkout grant.
+        let allow = profile
+            .find("(allow file-write*")
+            .expect("write allow block");
+        let deny = profile.find(r"/\.git/(config").expect("git config deny");
+        assert!(
+            allow < deny,
+            "the deny must come after the write allow block"
+        );
+        // Both patterns stay scoped *inside* a `.git/` dir. The trailing slash is
+        // load-bearing: `\.git` alone would prefix-match the tracked
+        // `.gitattributes`, which must stay writable.
+        for scoped in [r"/\.git/(config", r"/\.git/(hooks"] {
+            assert!(profile.contains(scoped), "{scoped} must stay .git/-scoped");
+        }
+    }
+
+    /// Manual/local acceptance check (macOS-only, `#[ignore]`d so it's off the
+    /// Linux CI path — and it cannot run inside Fletch's own sandbox, where a
+    /// nested `sandbox_apply` is refused). The test above proves the profile
+    /// *text*; only this proves the kernel enforces it. Run with:
+    ///   cargo test --lib seatbelt_denies_writing_git_config -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn seatbelt_denies_writing_git_config() {
+        let td = tempfile::tempdir().unwrap();
+        let (root, rpc, home) = (
+            td.path().join("agent-parent"),
+            td.path().join("rpc"),
+            td.path().join("home"),
+        );
+        let repo = root.join("repo");
+        for d in [&rpc, &home, &repo.join(".git/hooks")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+
+        // `sh -c 'printf x > <path>'` under the profile: exit 0 means the write
+        // landed, non-zero means the sandbox refused it.
+        let write_allowed = |path: &std::path::Path| {
+            std::process::Command::new(SANDBOX_EXEC)
+                .args(profile_args(&profile))
+                .args(["/bin/sh", "-c", &format!("printf x > {}", path.display())])
+                .status()
+                .expect("sandbox-exec")
+                .success()
+        };
+
+        assert!(
+            write_allowed(&repo.join("src.rs")),
+            "the checkout itself must stay writable — the profile is broken, not strict"
+        );
+        for denied in [
+            repo.join(".git/config"),
+            repo.join(".git/config.worktree"),
+            repo.join(".git/hooks/post-commit"),
+            repo.join(".git/info/attributes"),
+        ] {
+            assert!(!write_allowed(&denied), "{} was writable", denied.display());
+        }
+        // The tracked attributes file is working-tree source: still writable.
+        assert!(
+            write_allowed(&repo.join(".gitattributes")),
+            ".gitattributes is tracked source and must stay writable"
+        );
+        // A repo created *after* launch is covered too — the rule is a pattern,
+        // not an enumeration of the workspace's repos.
+        let late = root.join("added-later");
+        std::fs::create_dir_all(late.join(".git")).unwrap();
+        assert!(!write_allowed(&late.join(".git/config")));
     }
 
     /// Both profiles grant the redirected toolchain cache root. If the agent

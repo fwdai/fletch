@@ -5,20 +5,17 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 
-use super::cmd::{
-    git_output, git_output_env, identity_env, merge_git_env, no_hooks_env, output_timed, run_git,
-    run_git_env,
-};
+use super::cmd::{git_output, git_output_env, identity_env, merge_git_env, output_timed, run_git};
 
 /// Push the detached `HEAD` to `refs/heads/<branch>` on `origin`, creating the
 /// remote branch without needing a local one (so it never collides with a
-/// linked worktree's checkout). Same auth + hook-disabling env as [`push`], so
-/// the https transport authenticates with the app's token and a workspace
-/// `pre-push` hook can't fire on the host.
+/// linked worktree's checkout). Same auth as [`push`], so the https transport
+/// authenticates with the app's token; a workspace `pre-push` hook cannot fire
+/// because hooks are neutralised at the spawn seam (`git::hardening`).
 pub async fn push_head_to_branch(checkout: &Path, branch: &str) -> Result<()> {
     let mut cmd = crate::git_dist::command(checkout);
     cmd.args(["push", "origin", &format!("HEAD:refs/heads/{branch}")]);
-    for (k, v) in merge_git_env(&[&crate::github::git_auth_env(), &no_hooks_env()]) {
+    for (k, v) in crate::github::git_auth_env() {
         cmd.env(k, v);
     }
     let out = output_timed(&mut cmd, "git push").await?;
@@ -55,10 +52,9 @@ pub async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> 
         cmd.args(["--force-with-lease", "--force-if-includes"]);
     }
     cmd.args(["origin", branch]);
-    // Auth for the https transport *and* hook-disabling — `pre-push` fires on
-    // the host, so a workspace-planted hook must not run. Merge so neither
-    // set's `GIT_CONFIG_COUNT` clobbers the other.
-    for (k, v) in merge_git_env(&[&crate::github::git_auth_env(), &no_hooks_env()]) {
+    // Auth for the https transport. `pre-push` would fire on the host, but
+    // hooks are already neutralised at the spawn seam (`git::hardening`).
+    for (k, v) in crate::github::git_auth_env() {
         cmd.env(k, v);
     }
     let out = output_timed(&mut cmd, "git push").await?;
@@ -87,12 +83,10 @@ pub async fn pull(checkout: &Path) -> Result<()> {
     let mut cmd = crate::git_dist::command(checkout);
     cmd.args(["pull"]);
     // Auth for the https transport; identity because a pull may create a merge
-    // commit; no-hooks because the merge fires `post-merge`/`prepare-commit-msg`
-    // on the host. Merge so the auth and no-hooks `GIT_CONFIG_*` sets don't
-    // clobber each other (identity uses plain env vars and passes through).
+    // commit. Merge so the auth `GIT_CONFIG_*` set and the identity vars don't
+    // clobber each other. Merge hooks are neutralised at the spawn seam.
     for (k, v) in merge_git_env(&[
         &crate::github::git_auth_env(),
-        &no_hooks_env(),
         &identity_env(checkout).await,
     ]) {
         cmd.env(k, v);
@@ -120,7 +114,7 @@ pub async fn pull(checkout: &Path) -> Result<()> {
 pub async fn fetch_base(source_repo: &Path, base: &str) -> Result<()> {
     let mut cmd = crate::git_dist::command(source_repo);
     cmd.args(["fetch", "--quiet", "origin", base]);
-    for (k, v) in merge_git_env(&[&crate::github::git_auth_env(), &no_hooks_env()]) {
+    for (k, v) in crate::github::git_auth_env() {
         cmd.env(k, v);
     }
     let out = output_timed(&mut cmd, "git fetch base").await?;
@@ -161,27 +155,19 @@ pub async fn remote_base_sha(source_repo: &Path, base: &str) -> Option<String> {
 /// base has moved ahead. Aborts the rebase on conflict so the checkout is never
 /// left mid-rebase — the caller surfaces the error.
 pub async fn rebase_onto(checkout: &Path, base: &str) -> Result<()> {
-    // Rebasing rewrites commits, which needs a committer identity; it also
-    // fires `pre-rebase`/`post-rewrite`, so disable workspace hooks too.
-    let env = merge_git_env(&[&identity_env(checkout).await, &no_hooks_env()]);
+    // Rebasing rewrites commits, which needs a committer identity. Its
+    // `pre-rebase`/`post-rewrite` hooks are neutralised at the spawn seam.
+    let env = identity_env(checkout).await;
     let out = git_output_env(checkout, &["rebase", base], &env).await?;
     if !out.status.success() {
         let conflict = String::from_utf8_lossy(&out.stderr).trim().to_string();
         // Don't leave the checkout mid-rebase. `rebase --abort` checks out the
-        // original HEAD, firing `post-checkout` — so it too must run with hooks
-        // disabled, else the failure path reopens the very host-execution hole
-        // the success path closes. If the abort *itself* fails or times out, the
-        // checkout is stuck mid-rebase and needs manual recovery — surface that
-        // alongside the original conflict rather than silently swallowing it and
-        // reporting only the conflict.
-        if let Err(abort_err) = run_git_env(
-            checkout,
-            &["rebase", "--abort"],
-            &no_hooks_env(),
-            "rebase --abort",
-        )
-        .await
-        {
+        // original HEAD, firing `post-checkout` — neutralised at the spawn seam
+        // like every other invocation. If the abort *itself* fails or times out,
+        // the checkout is stuck mid-rebase and needs manual recovery — surface
+        // that alongside the original conflict rather than silently swallowing it
+        // and reporting only the conflict.
+        if let Err(abort_err) = run_git(checkout, &["rebase", "--abort"], "rebase --abort").await {
             return Err(Error::Git(format!(
                 "rebase onto {base} failed: {conflict}; the checkout is left \
                  mid-rebase because cleanup also failed ({abort_err}) — run \
@@ -197,7 +183,7 @@ pub async fn rebase_onto(checkout: &Path, base: &str) -> Result<()> {
 /// Errors if there is nothing to commit or if git is unhappy.
 pub async fn commit(checkout: &Path, message: &str) -> Result<()> {
     run_git(checkout, &["add", "-A"], "add -A").await?;
-    let env = merge_git_env(&[&identity_env(checkout).await, &no_hooks_env()]);
+    let env = identity_env(checkout).await;
     let out = git_output_env(checkout, &["commit", "-m", message], &env).await?;
     if !out.status.success() {
         return Err(Error::Git(format!(

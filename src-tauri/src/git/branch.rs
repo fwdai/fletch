@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 
-use super::cmd::{apply_github_auth, git_output, no_hooks_env, run_git, run_git_env};
+use super::cmd::{apply_github_auth, git_output, run_git};
 
 /// Hard cap on the spawn-time `git fetch`. A fetch over a hung SSH/TCP
 /// connection can otherwise block for the OS keep-alive window (75–120s), far
@@ -155,11 +155,11 @@ pub async fn base_tip(repo: &Path, base: &str) -> Option<String> {
 /// first user message gives us a slug.
 pub async fn checkout_new_branch(checkout: &Path, branch: &str) -> Result<()> {
     // `checkout` fires `post-checkout`, which would run on the host against an
-    // agent-writable workspace — disable workspace hooks for this invocation.
-    run_git_env(
+    // agent-writable workspace. Neutralised at the spawn seam for every git
+    // invocation (`git::hardening`), so no per-call env is needed here.
+    run_git(
         checkout,
         &["checkout", "-b", branch],
-        &no_hooks_env(),
         &format!("checkout -b {branch}"),
     )
     .await?;

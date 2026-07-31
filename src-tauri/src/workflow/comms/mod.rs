@@ -82,12 +82,6 @@ pub(super) fn is_comms_op(op: &str) -> bool {
     cap_for_op(op).is_some() || op == "wf_decide" || op == "wf_compose"
 }
 
-/// Credentialed publish ops a run-owned agent must never reach (§15): the
-/// engine's `wf/`-guarded finalize is the only push path for workflow runs.
-pub(super) fn is_publish_op(op: &str) -> bool {
-    matches!(op, "git_push" | "open_pr")
-}
-
 /// Human-readable verb for a rejection message.
 fn op_verb(op: &str) -> &'static str {
     match op {
@@ -352,22 +346,11 @@ impl RpcDispatcher for WorkflowCommsDispatcher {
                         Vec::new(),
                     ),
                 }
-            } else if is_publish_op(op) {
-                // §15: run-owned step agents never publish. The engine's
-                // finalize is the only push path (and it is `wf/`-namespace
-                // guarded); the plain GitDispatcher would push any branch or
-                // open a PR with the host's credentials, so deny these
-                // outright rather than fall through. `git_fetch` stays
-                // available for base refreshes.
-                (
-                    Response::err(
-                        id,
-                        "workflow step agents cannot push or open PRs; the run \
-                         publishes its wf/ branch when it finalizes",
-                    ),
-                    Vec::new(),
-                )
             } else {
+                // §15's publish denial is not re-implemented here: the
+                // GitDispatcher a run-owned agent is built with carries
+                // `AgentCaps::run_owned()`, so it refuses git_push/open_pr
+                // itself (`rpc::caps`). One mechanism, checked once.
                 self.git.dispatch(id, op, args).await
             }
         })

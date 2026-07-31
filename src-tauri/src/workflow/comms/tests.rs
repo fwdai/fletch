@@ -12,18 +12,6 @@ use std::collections::BTreeMap;
 // ── caps matrix (spec §10.1) ──────────────────────────────────────────
 
 #[test]
-fn publish_ops_are_denied_for_run_owned_agents() {
-    // §15: the dispatcher short-circuits these before the GitDispatcher
-    // fallthrough — a step agent can never push or open a PR with host
-    // credentials. `git_fetch` (and unknown ops) still fall through.
-    assert!(is_publish_op("git_push"));
-    assert!(is_publish_op("open_pr"));
-    assert!(!is_publish_op("git_fetch"));
-    assert!(!is_publish_op("wf_report"));
-    assert!(!is_publish_op("echo"));
-}
-
-#[test]
 fn cap_for_op_maps_the_three_comms_ops() {
     assert_eq!(cap_for_op("wf_report"), Some(CommsCap::Report));
     assert_eq!(cap_for_op("wf_ask"), Some(CommsCap::Ask));

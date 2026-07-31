@@ -56,6 +56,27 @@ refreshed auth), and `~/.claude.json`. Fletch's own application-data directory
 write**, so a confined agent can neither exfiltrate nor forge app state
 (`sandbox/seatbelt.rs`).
 
+One carve-out runs the other way, inside the writable checkout: each
+repository's **git-executable configuration** — `.git/config`,
+`.git/config.worktree`, `.git/hooks/`, `.git/info/` — is denied write
+(`sandbox/policy.rs`, invariant 3). Git resolves hooks, clean/smudge filters,
+textconv programs and merge drivers from those paths, so an agent-writable
+`.git/config` is a *host* code-execution primitive: Fletch runs git on the
+checkout constantly (diff polling, workflow boundary commits, merge
+integration), and a planted `filter.*.clean` executes on the next `git add`. The
+tracked `.gitattributes` stays writable — it is source an agent legitimately
+edits, and an attribute naming a driver is inert while it cannot define one.
+Independently, every host-side git invocation carries hardening overrides that
+neutralise the fixed-name equivalents (`git/hardening.rs`), applied at git's
+single spawn seam rather than per call site.
+
+Two limits to state plainly. This carve-out is **seatbelt-only today**: under
+Docker the checkout is bind-mounted read-write at its host path, so a
+Docker-engine agent can still write its own `.git/config` and only the
+fixed-name overrides apply. And the **Run panel deliberately does not carry it**
+— `npm install` on a husky project legitimately writes `core.hooksPath`, and Run
+is already the weaker boundary by design.
+
 ### What the Docker container mounts
 
 Only the agent's writable root and its RPC mailbox are mounted read-write, at
@@ -108,6 +129,15 @@ After either clone, three fixups run (`sandbox/provision.rs`):
 
 Stated plainly, because the trust anchor earns trust by naming its limits.
 
+Each claim below is also a value in `sandbox/guarantees.rs`, carrying its
+**per-engine coverage** — `enforced`, `partial`, or `unenforced` with the reason.
+That matrix, not this prose, is authoritative for *which engine* delivers what:
+the engines are not equally capable and neither is a superset of the other, so
+"which engine am I on" does not by itself answer "what am I protected from". The
+compiler forces every claim to declare coverage for every engine, so the gap
+cannot go quietly unstated the way a doc caveat can. The
+`describe_sandbox_isolation` command returns the matrix for display.
+
 **An agent CAN:**
 
 - **Read your disk — under seatbelt.** The seatbelt profile confines writes, not
@@ -131,12 +161,24 @@ Stated plainly, because the trust anchor earns trust by naming its limits.
   (`rpc/git.rs`, ops `git_push`, `open_pr`, `git_fetch`). Credentials never enter
   the sandbox.
 
-**The one caveat to state loudly:** the brokered `git_push` and `open_pr` ops
-currently run **without a confirmation prompt** (`rpc/git.rs`). An agent that
-decides to push a branch or open a PR can do so under your GitHub identity
-without asking first. Credentials stay out of the sandbox, but publication is
-not gated. Choose the tasks and repositories you point agents at accordingly.
-(The README states this same caveat; keep the two in sync.)
+**What publication *is* gated by.** Every brokered op is checked against the
+agent's **capability grant**, stamped when it spawns and never re-read, so a
+later policy change can't widen an agent already running (`rpc/caps.rs`):
+
+- **No agent can push the branch its work is reviewed against**, nor a
+  conventional trunk (`main`, `master`) whatever a repo declares as its base.
+  Before this grant existed `git_push` validated nothing, so an agent sitting on
+  the base pushed straight onto it — and `args.force` made that a lease-guarded
+  force-push.
+- **A workflow step agent cannot publish at all.** A run publishes through its
+  own `wf/`-guarded finalize; a step publishing directly would bypass that guard.
+
+**The caveat that remains:** for its *own* branch, an agent still pushes and
+opens a pull request **without a confirmation prompt**, under your GitHub
+identity. Credentials stay out of the sandbox and the destination is now
+constrained, but the act of publishing is not yet something you approve. Choose
+the tasks and repositories you point agents at accordingly. (The README states
+this same caveat; keep the two in sync.)
 
 ## Why not linked git worktrees
 
@@ -209,6 +251,14 @@ and this document should be corrected.
   `docker run --rm --init`, the identical-host-path mounts, the read-only
   borrowed object store, and the invariants that keep the source `.git` and your
   credentials out of the container.
+- `src-tauri/src/sandbox/guarantees.rs` — the claim/coverage matrix: what each
+  engine actually guarantees, and the stated reason wherever coverage is less
+  than complete. Authoritative for per-engine coverage.
+- `src-tauri/src/sandbox/policy.rs` — the engine-independent write policy and its
+  invariants, including invariant 3 (git-executable config is never
+  agent-writable).
+- `src-tauri/src/git/hardening.rs` — the overrides every host-side git invocation
+  carries, applied at git's single spawn seam.
 - `src-tauri/src/sandbox/provision.rs` — how a workspace comes into existence:
   the two clone strategies, origin rewrite, hook install, and identity seeding.
 - `src-tauri/src/rpc/git.rs` — the host-side broker for `git_push`, `open_pr`,

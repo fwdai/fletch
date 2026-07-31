@@ -23,6 +23,8 @@ use crate::error::{Error, Result};
 /// Past it, the file is treated as malformed: answered with an error and removed.
 const STALE_REQUEST_AGE: Duration = Duration::from_secs(5);
 
+#[path = "rpc/caps.rs"]
+pub mod caps;
 #[path = "rpc/git.rs"]
 pub mod git;
 

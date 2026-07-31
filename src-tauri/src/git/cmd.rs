@@ -121,24 +121,12 @@ pub(crate) fn apply_github_auth(cmd: &mut Command) {
     }
 }
 
-/// Env that makes a host-side git invocation ignore the workspace's own
-/// hooks. Agent workspaces are agent-writable, so a hostile `.git/hooks/*`
-/// would otherwise execute on the host when Fletch runs commit/push/merge.
-/// `/dev/null` is not a directory, so git finds no hooks and runs none.
-pub(crate) fn no_hooks_env() -> Vec<(String, String)> {
-    vec![
-        ("GIT_CONFIG_COUNT".into(), "1".into()),
-        ("GIT_CONFIG_KEY_0".into(), "core.hooksPath".into()),
-        ("GIT_CONFIG_VALUE_0".into(), "/dev/null".into()),
-    ]
-}
-
 /// Combine several env-var sets into one, correctly re-indexing any
 /// `GIT_CONFIG_*` entries. Each set uses git's env-config convention
 /// (`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`), so
 /// setting two such sets blindly would let the second `GIT_CONFIG_COUNT`
 /// shadow the first and silently drop a config entry — exactly the trap when
-/// `git_auth_env()` and `no_hooks_env()` are both needed. This walks each
+/// `git_auth_env()` and `identity_env()` are both needed. This walks each
 /// set's declared count, re-emits its key/value pairs under fresh contiguous
 /// indices, and writes a single `GIT_CONFIG_COUNT` equal to the total.
 /// Non-`GIT_CONFIG_*` vars (e.g. the identity `GIT_AUTHOR_*`) pass through
@@ -231,13 +219,15 @@ mod tests {
         None
     }
 
-    #[test]
-    fn no_hooks_env_points_hookspath_at_dev_null() {
-        let env = no_hooks_env();
-        assert_eq!(
-            config_value_for(&env, "core.hooksPath").as_deref(),
-            Some("/dev/null")
-        );
+    /// A one-entry `GIT_CONFIG_*` set — the shape every caller of
+    /// [`merge_git_env`] contributes, and the shape whose blind concatenation
+    /// silently drops entries.
+    fn config_set(key: &str, value: &str) -> Vec<(String, String)> {
+        vec![
+            ("GIT_CONFIG_COUNT".into(), "1".into()),
+            ("GIT_CONFIG_KEY_0".into(), key.into()),
+            ("GIT_CONFIG_VALUE_0".into(), value.into()),
+        ]
     }
 
     #[test]
@@ -245,20 +235,11 @@ mod tests {
         // Two GIT_CONFIG_* sets that both declare COUNT=1 with KEY_0/VALUE_0.
         // Merged blindly one would clobber the other; the merge must keep both
         // under distinct indices and report the total count.
-        let auth = vec![
-            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
-            (
-                "GIT_CONFIG_KEY_0".to_string(),
-                "http.https://github.com/.extraheader".to_string(),
-            ),
-            (
-                "GIT_CONFIG_VALUE_0".to_string(),
-                "AUTHORIZATION: basic abc123".to_string(),
-            ),
-        ];
-        let merged = merge_git_env(&[&auth, &no_hooks_env()]);
+        let auth = config_set("http.https://github.com/.extraheader", "basic abc123");
+        let other = config_set("core.autocrlf", "false");
+        let merged = merge_git_env(&[&auth, &other]);
 
-        // COUNT equals the total across both sets.
+        // COUNT equals the total across both sets, and only one COUNT survives.
         assert_eq!(
             merged
                 .iter()
@@ -266,7 +247,6 @@ mod tests {
                 .map(|(_, v)| v.as_str()),
             Some("2")
         );
-        // There is exactly one COUNT entry (the second set's didn't survive).
         assert_eq!(
             merged
                 .iter()
@@ -274,14 +254,14 @@ mod tests {
                 .count(),
             1
         );
-        // Both config entries are present with distinct indices.
-        assert_eq!(
-            config_value_for(&merged, "core.hooksPath").as_deref(),
-            Some("/dev/null")
-        );
+        // Both config entries survive, under distinct indices.
         assert_eq!(
             config_value_for(&merged, "http.https://github.com/.extraheader").as_deref(),
-            Some("AUTHORIZATION: basic abc123")
+            Some("basic abc123")
+        );
+        assert_eq!(
+            config_value_for(&merged, "core.autocrlf").as_deref(),
+            Some("false")
         );
     }
 
@@ -293,7 +273,7 @@ mod tests {
             ("GIT_AUTHOR_NAME".to_string(), "Tester".to_string()),
             ("GIT_AUTHOR_EMAIL".to_string(), "t@example.com".to_string()),
         ];
-        let merged = merge_git_env(&[&identity, &no_hooks_env()]);
+        let merged = merge_git_env(&[&identity, &config_set("core.autocrlf", "false")]);
         assert!(merged
             .iter()
             .any(|(k, v)| k == "GIT_AUTHOR_NAME" && v == "Tester"));
@@ -301,19 +281,8 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "GIT_AUTHOR_EMAIL" && v == "t@example.com"));
         assert_eq!(
-            config_value_for(&merged, "core.hooksPath").as_deref(),
-            Some("/dev/null")
-        );
-    }
-
-    #[test]
-    fn push_env_disables_hooks() {
-        // A live remote is impractical here; assert instead that push's env
-        // carries `core.hooksPath=/dev/null` (merged alongside any auth).
-        let merged = merge_git_env(&[&crate::github::git_auth_env(), &no_hooks_env()]);
-        assert_eq!(
-            config_value_for(&merged, "core.hooksPath").as_deref(),
-            Some("/dev/null")
+            config_value_for(&merged, "core.autocrlf").as_deref(),
+            Some("false")
         );
     }
 }

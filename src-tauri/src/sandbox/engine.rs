@@ -10,6 +10,12 @@ pub enum EngineKind {
 }
 
 impl EngineKind {
+    /// Every engine Fletch ships. The authority for "iterate the engines" —
+    /// notably [`super::guarantees`], which must state each engine's coverage of
+    /// each guarantee, so an engine added here without a coverage declaration
+    /// fails to compile.
+    pub const ALL: &'static [Self] = &[Self::SandboxExec, Self::Docker];
+
     /// The `sandbox_engine` settings-value spelling for this kind. Shared with
     /// the frontend's `SandboxEngine` type, so both sides agree on the wire
     /// strings.
@@ -142,7 +148,7 @@ mod tests {
 
     #[test]
     fn engine_kind_setting_round_trips() {
-        for kind in [EngineKind::SandboxExec, EngineKind::Docker] {
+        for &kind in EngineKind::ALL {
             assert_eq!(EngineKind::from_setting(kind.as_setting()), Some(kind));
         }
     }
