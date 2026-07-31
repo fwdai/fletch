@@ -1,0 +1,21 @@
+/* ── DeviceCode ───────────────────────────────────────────────────────
+ * OAuth device-flow code display (DeviceCode.tsx). One appearance for every
+ * "type this code in the browser" step — the New Project gate and the GitHub
+ * connect modal previously had their own, drifting on letter-spacing. */
+.device-code-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.device-code {
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--fg-0);
+  /* Fixed-width digits: the code is read off the screen character by character. */
+  font-variant-numeric: tabular-nums;
+}
+.device-code-uri {
+  color: var(--fg-3);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}

@@ -42,6 +42,28 @@
   width: 16px;
   height: 16px;
 }
+/* Pairs with a 34px input row (an inline form's cancel affordance). */
+.btn-i.lg {
+  width: 34px;
+  height: 34px;
+}
+/* Bordered icon button — reads as a control next to an input, rather than as a
+   bare glyph in a toolbar. */
+.btn-i.outline {
+  border: 1px solid var(--bd-soft);
+  color: var(--fg-3);
+}
+.btn-i.outline:hover:not(:disabled) {
+  border-color: var(--bd);
+  color: var(--fg-1);
+  background: none;
+}
+/* Destructive icon action: neutral until hovered, so a list of rows doesn't
+   read as a wall of red. */
+.btn-i.danger:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--danger);
+}
 
 .btn-t {
   gap: 6px;
@@ -93,4 +115,66 @@
 }
 .btn-t.primary svg {
   opacity: 1;
+}
+.btn-t.primary:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* ── sizes ── */
+.btn-t.sm-t {
+  height: 26px;
+  padding: 0 10px;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+/* Pairs with a 34px input row — dialog CTAs and settings form buttons. */
+.btn-t.lg-t {
+  height: 34px;
+  padding: 0 16px;
+}
+
+/* ── link ──
+ * Accent text that behaves like a button. No box: it hugs its label, so it sits
+ * inline in prose or as a secondary action under a form. Must come after the
+ * size rules — it drops the height/padding they set. */
+.btn-t.link {
+  height: auto;
+  padding: 0;
+  align-self: flex-start;
+  background: none;
+  border-color: transparent;
+  color: var(--accent);
+}
+.btn-t.link:hover {
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* ── dashed ──
+ * "Add another one" affordance: an outline that reads as a placeholder slot
+ * rather than a committed control. */
+.btn-t.dashed {
+  border-style: dashed;
+  border-color: var(--bd-soft);
+  color: var(--fg-2);
+}
+.btn-t.dashed:hover {
+  border-color: var(--bd);
+  color: var(--fg-0);
+  background: var(--hover);
+}
+
+/* ── danger ── */
+.btn-t.danger {
+  color: var(--danger);
+}
+.btn-t.outline.danger:hover {
+  border-color: color-mix(in oklch, var(--danger), transparent 55%);
+  background: color-mix(in oklch, var(--danger), transparent 92%);
+  color: var(--danger);
+}
+.btn-t.ghost.danger:hover {
+  background: color-mix(in oklch, var(--danger), transparent 92%);
 }

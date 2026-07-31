@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type LinearTeam } from "@/api";
+import { Button } from "@/components/ui/Button";
 import {
   deleteProjectSetting,
   getProjectSettings,
@@ -134,14 +135,14 @@ export function LinearSection({ projectId }: { projectId: string }) {
                 }
               }}
             />
-            <button
-              type="button"
-              className="ps-btn"
+            <Button
+              variant="outline"
+              size="lg"
               disabled={!apiKey.trim() || connecting}
               onClick={() => void connect()}
             >
               {connecting ? "Connecting…" : "Connect"}
-            </button>
+            </Button>
           </div>
           <p className="ps-section-lead text-sm">
             Create one in Linear under Settings → Security &amp; access → API keys. The key is
@@ -154,9 +155,9 @@ export function LinearSection({ projectId }: { projectId: string }) {
             <span className="ps-label text-sm">
               Connected{linear?.user ? ` as ${linear.user}` : ""}
             </span>
-            <button type="button" className="ps-btn" onClick={() => void disconnect()}>
+            <Button variant="outline" size="lg" onClick={() => void disconnect()}>
               Disconnect
-            </button>
+            </Button>
           </div>
           <div className="ps-field">
             <label className="ps-label text-sm" htmlFor="ps-linear-team">

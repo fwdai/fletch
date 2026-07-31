@@ -19,9 +19,9 @@ export function ScreenshotField({ state }: { state: FeedbackState }) {
   const busy = status === "sending";
 
   return (
-    <div className="fb-field">
-      <span className="fb-label text-sm">
-        Screenshot <span className="fb-opt">optional</span>
+    <div className="modal-field">
+      <span className="modal-label text-sm">
+        Screenshot <span className="modal-opt">optional</span>
       </span>
 
       {shot ? (

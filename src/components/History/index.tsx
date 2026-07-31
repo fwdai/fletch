@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Loader } from "@/components/ui/Loader";
+import { ModalSheet } from "@/components/ui/Modal";
 import { useAppStore } from "@/store";
 import { basename, firstLine } from "@/util/format";
 
@@ -14,6 +15,7 @@ export function History() {
   const [focusedIndex, setFocusedIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
+  const close = useCallback(() => toggleHistory(false), [toggleHistory]);
 
   // Mutable refs so document-level handler always sees latest values
   const filteredRef = useRef<AgentRecord[]>([]);
@@ -63,16 +65,14 @@ export function History() {
     rows[focusedIndex]?.scrollIntoView({ block: "nearest" });
   }, [focusedIndex, filtered]);
 
-  // Keyboard: Esc, ↑↓ navigation, Enter to restore
+  // Keyboard: ↑↓ navigation, Enter to restore. Escape is `ModalSheet`'s.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const f = filteredRef.current;
       const idx = focusedIndexRef.current;
       const restoring = restoringIdRef.current;
 
-      if (e.key === "Escape") {
-        toggleHistory(false);
-      } else if (e.key === "ArrowDown") {
+      if (e.key === "ArrowDown") {
         e.preventDefault();
         setFocusedIndex(Math.min(idx + 1, f.length - 1));
       } else if (e.key === "ArrowUp") {
@@ -97,7 +97,7 @@ export function History() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [toggleHistory, restore]);
+  }, [restore]);
 
   const onRowClick = async (id: string) => {
     if (restoringId) return;
@@ -110,130 +110,128 @@ export function History() {
   };
 
   return (
-    <div className="history-overlay" onClick={() => toggleHistory(false)}>
-      <div className="history-sheet" ref={sheetRef} onClick={(e) => e.stopPropagation()}>
-        {/* Search header */}
-        <div className="hh">
-          <div className="hh-search flex-center text-base">
-            <Icon name="search" size={16} />
-            <input
-              className="text-base"
-              autoFocus
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search sessions…"
-            />
-          </div>
-        </div>
-
-        {/* Scrollable list */}
-        <div className="history-list" ref={listRef}>
-          {filtered.length === 0 ? (
-            <div className="h-empty text-base">
-              {query ? "No matches" : "No archived sessions yet"}
-            </div>
-          ) : (
-            (() => {
-              let flatIdx = 0;
-              return groups.map(({ label, items }) => (
-                <div key={label}>
-                  <div className="hg-h">
-                    <span className="hg-d text-sm">{label}</span>
-                    <span className="hg-n text-sm">{items.length}</span>
-                  </div>
-                  {items.map((a) => {
-                    const myIdx = flatIdx++;
-                    if (!a.archive) return null;
-                    const archive = a.archive;
-                    const primary = archive.repos[0];
-                    const repoLabel = primary ? basename(primary.repo_path) : a.name;
-                    const branchLabel = primary?.branch_name ?? null;
-                    const task = firstLine(a.task || "Untitled session", 96);
-                    const adds = archive.diff_stats.additions;
-                    const dels = archive.diff_stats.deletions;
-                    const showStats = adds > 0 || dels > 0;
-                    const when = formatHistoryTime(archive.archived_at);
-                    const isRestoring = restoringId === a.id;
-                    const isFocused = focusedIndex === myIdx;
-
-                    return (
-                      <button
-                        key={a.id}
-                        className={`hrow flex-center archived text-base${isFocused ? " focused" : ""}`}
-                        onClick={() => onRowClick(a.id)}
-                        onMouseEnter={() => setFocusedIndex(myIdx)}
-                        disabled={!!restoringId}
-                        // Dim the other rows during a restore, but keep the active
-                        // row at full opacity so its spinner stays visible (a
-                        // parent opacity would otherwise cap the child rule).
-                        style={{ opacity: !isRestoring && restoringId ? 0.5 : undefined }}
-                      >
-                        <span className="hr-status iflex-center">
-                          <Icon name="dot" size={6} />
-                        </span>
-                        <span className="hr-project truncate text-base">{repoLabel}</span>
-                        <span className="hr-sep text-base">/</span>
-                        <span className="hr-title truncate text-base">{task}</span>
-                        {branchLabel && (
-                          <>
-                            <span className="hr-dot text-base">·</span>
-                            <span className="hr-branch truncate text-sm">{branchLabel}</span>
-                          </>
-                        )}
-                        <span className="hr-spacer" />
-                        {showStats && (
-                          <span className="hr-diff iflex-center text-sm">
-                            <span className="add">+{adds}</span>
-                            <span className="rem">-{dels}</span>
-                          </span>
-                        )}
-                        <span className="hr-date text-sm">{when}</span>
-                        <span
-                          className={`hr-goto iflex-center text-sm${isRestoring ? " restoring" : ""}`}
-                        >
-                          {isRestoring ? (
-                            <>
-                              <Loader variant="inherit" />
-                              Restoring…
-                            </>
-                          ) : (
-                            <>
-                              <svg
-                                width="11"
-                                height="11"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              >
-                                <polyline points="9 18 15 12 9 6" />
-                              </svg>
-                              Restore
-                            </>
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ));
-            })()
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="history-foot flex-center text-xs">
-          <span>
-            <kbd className="kbd">Esc</kbd> <span className="dim">to close</span>
-          </span>
-          <span>
-            <kbd className="kbd">↵</kbd> <span className="dim">to restore</span>
-          </span>
+    <ModalSheet ref={sheetRef} onClose={close} label="Session history">
+      {/* Search header */}
+      <div className="hh">
+        <div className="hh-search flex-center text-base">
+          <Icon name="search" size={16} />
+          <input
+            className="text-base"
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search sessions…"
+          />
         </div>
       </div>
-    </div>
+
+      {/* Scrollable list */}
+      <div className="history-list" ref={listRef}>
+        {filtered.length === 0 ? (
+          <div className="h-empty text-base">
+            {query ? "No matches" : "No archived sessions yet"}
+          </div>
+        ) : (
+          (() => {
+            let flatIdx = 0;
+            return groups.map(({ label, items }) => (
+              <div key={label}>
+                <div className="hg-h">
+                  <span className="hg-d text-sm">{label}</span>
+                  <span className="hg-n text-sm">{items.length}</span>
+                </div>
+                {items.map((a) => {
+                  const myIdx = flatIdx++;
+                  if (!a.archive) return null;
+                  const archive = a.archive;
+                  const primary = archive.repos[0];
+                  const repoLabel = primary ? basename(primary.repo_path) : a.name;
+                  const branchLabel = primary?.branch_name ?? null;
+                  const task = firstLine(a.task || "Untitled session", 96);
+                  const adds = archive.diff_stats.additions;
+                  const dels = archive.diff_stats.deletions;
+                  const showStats = adds > 0 || dels > 0;
+                  const when = formatHistoryTime(archive.archived_at);
+                  const isRestoring = restoringId === a.id;
+                  const isFocused = focusedIndex === myIdx;
+
+                  return (
+                    <button
+                      key={a.id}
+                      className={`hrow flex-center archived text-base${isFocused ? " focused" : ""}`}
+                      onClick={() => onRowClick(a.id)}
+                      onMouseEnter={() => setFocusedIndex(myIdx)}
+                      disabled={!!restoringId}
+                      // Dim the other rows during a restore, but keep the active
+                      // row at full opacity so its spinner stays visible (a
+                      // parent opacity would otherwise cap the child rule).
+                      style={{ opacity: !isRestoring && restoringId ? 0.5 : undefined }}
+                    >
+                      <span className="hr-status iflex-center">
+                        <Icon name="dot" size={6} />
+                      </span>
+                      <span className="hr-project truncate text-base">{repoLabel}</span>
+                      <span className="hr-sep text-base">/</span>
+                      <span className="hr-title truncate text-base">{task}</span>
+                      {branchLabel && (
+                        <>
+                          <span className="hr-dot text-base">·</span>
+                          <span className="hr-branch truncate text-sm">{branchLabel}</span>
+                        </>
+                      )}
+                      <span className="hr-spacer" />
+                      {showStats && (
+                        <span className="hr-diff iflex-center text-sm">
+                          <span className="add">+{adds}</span>
+                          <span className="rem">-{dels}</span>
+                        </span>
+                      )}
+                      <span className="hr-date text-sm">{when}</span>
+                      <span
+                        className={`hr-goto iflex-center text-sm${isRestoring ? " restoring" : ""}`}
+                      >
+                        {isRestoring ? (
+                          <>
+                            <Loader variant="inherit" />
+                            Restoring…
+                          </>
+                        ) : (
+                          <>
+                            <svg
+                              width="11"
+                              height="11"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <polyline points="9 18 15 12 9 6" />
+                            </svg>
+                            Restore
+                          </>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ));
+          })()
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="history-foot flex-center text-xs">
+        <span>
+          <kbd className="kbd">Esc</kbd> <span className="dim">to close</span>
+        </span>
+        <span>
+          <kbd className="kbd">↵</kbd> <span className="dim">to restore</span>
+        </span>
+      </div>
+    </ModalSheet>
   );
 }
 

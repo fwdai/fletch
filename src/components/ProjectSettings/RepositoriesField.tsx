@@ -2,6 +2,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import type { ProjectRef } from "@/api";
 import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
 
@@ -74,9 +76,15 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
         ))}
       </div>
 
-      <button type="button" className="ps-btn ps-repo-add" disabled={busy} onClick={onAttach}>
+      <Button
+        variant="outline"
+        size="lg"
+        className="ps-repo-add"
+        disabled={busy}
+        onClick={onAttach}
+      >
         Attach repository…
-      </button>
+      </Button>
       <p className="ps-hint text-xs">
         Attach more repositories to group a frontend, a backend, and more under one project — they
         can live anywhere on disk. Labels name each repository inside the project; new agents
@@ -158,20 +166,20 @@ function RepoRow({
           {repo.path}
         </div>
       </div>
-      <button type="button" className="ps-repo-act text-sm" disabled={busy} onClick={onRelocate}>
+      <Button variant="link" size="sm" disabled={busy} onClick={onRelocate}>
         Change…
-      </button>
+      </Button>
       {detachable && (
-        <button
-          type="button"
-          className="ps-repo-x iflex-center tip"
-          data-tip="Detach from project"
+        <IconButton
+          size="sm"
+          danger
+          tip="Detach from project"
           aria-label={`Detach ${repo.path}`}
           disabled={busy}
           onClick={onDetach}
         >
-          <Icon name="close" size={12} />
-        </button>
+          <Icon name="close" />
+        </IconButton>
       )}
     </div>
   );

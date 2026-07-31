@@ -1,15 +1,17 @@
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
 
-export type ButtonVariant = "ghost" | "outline" | "primary";
+export type ButtonVariant = "ghost" | "outline" | "primary" | "link" | "dashed";
 
 interface Props {
   children: ReactNode;
-  /** Visual style. Maps to the `.btn-t` variant classes in icon-button.css. */
+  /** Visual style. Maps to the `.btn-t` variant classes in icon-button.css.
+   *  `link` is a boxless accent label (underlines on hover) for a secondary
+   *  action in prose; `dashed` is the "add another" placeholder affordance. */
   variant: ButtonVariant;
   /** Danger tint — composes with `ghost`/`outline`. */
   danger?: boolean;
-  /** `sm` applies the compact `.sm-t` sizing. */
-  size?: "md" | "sm";
+  /** `sm` compacts to `.sm-t`; `lg` grows to 34px to sit beside an input row. */
+  size?: "md" | "sm" | "lg";
   onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
   /** Text for the CSS-only hover tooltip. */
   tip?: string;
@@ -38,7 +40,7 @@ export function Button({
     "iflex-center",
     variant,
     danger ? "danger" : "",
-    size === "sm" ? "sm-t" : "",
+    size === "sm" ? "sm-t" : size === "lg" ? "lg-t" : "",
     tip ? "tip" : "",
     className,
   ]

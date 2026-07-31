@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Icon } from "@/components/Icon";
 import { SetSeg } from "@/components/SettingsScreen/primitives";
 import { Button } from "@/components/ui/Button";
+import { TextArea, TextInput } from "@/components/ui/TextInput";
 import type { McpTransport, NewMcpServer } from "@/storage/mcpServers";
 
 const TRANSPORTS: { value: McpTransport; label: string }[] = [
@@ -82,8 +83,8 @@ export function ServerEditor({
                   Full command line, split on spaces (quoting isn't supported)
                 </span>
               </label>
-              <input
-                className="set-text text-base mono"
+              <TextInput
+                mono
                 placeholder="npx -y @modelcontextprotocol/server-github"
                 value={form.command}
                 onChange={(e) => set({ command: e.target.value })}
@@ -94,8 +95,9 @@ export function ServerEditor({
                 Environment
                 <span className="ca-field-hint">KEY=VALUE, one per line</span>
               </label>
-              <textarea
-                className="set-text ca-textarea text-base mono"
+              <TextArea
+                mono
+                className="ca-textarea"
                 value={form.env}
                 placeholder={"GITHUB_TOKEN=ghp_…"}
                 onChange={(e) => set({ env: e.target.value })}
@@ -108,8 +110,8 @@ export function ServerEditor({
               <label className="set-field-label text-sm">
                 URL <span className="ca-req">*</span>
               </label>
-              <input
-                className="set-text text-base mono"
+              <TextInput
+                mono
                 placeholder="https://mcp.example.com/mcp"
                 value={form.url}
                 onChange={(e) => set({ url: e.target.value })}
@@ -120,8 +122,9 @@ export function ServerEditor({
                 Headers
                 <span className="ca-field-hint">Name: value, one per line</span>
               </label>
-              <textarea
-                className="set-text ca-textarea text-base mono"
+              <TextArea
+                mono
+                className="ca-textarea"
                 value={form.headers}
                 placeholder={"Authorization: Bearer …"}
                 onChange={(e) => set({ headers: e.target.value })}

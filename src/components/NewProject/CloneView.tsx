@@ -1,5 +1,8 @@
 import { useState } from "react";
-import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
+import { ModalBody } from "@/components/ui/Modal";
+import { Spinner } from "@/components/ui/Spinner";
+import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
 import { parseRepoSpec } from "@/util/repoSpec";
 import { RepoList } from "./RepoList";
@@ -40,44 +43,44 @@ export function CloneView({ shared, onDone }: { shared: NewProjectShared; onDone
   };
 
   return (
-    <div className="np-body">
+    <ModalBody>
       {pasteMode ? (
-        <div className="np-field">
-          <label>Repository URL or owner/repo</label>
-          <input
+        <div className="modal-field">
+          <label className="modal-label text-sm">Repository URL or owner/repo</label>
+          <TextInput
             autoFocus
             placeholder="https://github.com/owner/repo  ·  owner/repo"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
           />
-          <button className="np-link text-sm" onClick={() => setPasteMode(false)}>
+          <Button variant="link" size="sm" onClick={() => setPasteMode(false)}>
             Pick from my repositories instead
-          </button>
+          </Button>
         </div>
       ) : (
         <>
           <RepoList selected={selected} onSelect={setSelected} />
-          <button className="np-link text-sm" onClick={() => setPasteMode(true)}>
+          <Button variant="link" size="sm" onClick={() => setPasteMode(true)}>
             Paste a URL instead
-          </button>
+          </Button>
         </>
       )}
 
       <DestRow parent={parent} onPick={pickParent} name={parsed.name} />
 
-      {error && <div className="np-error text-sm">{error}</div>}
+      {error && <div className="modal-error text-sm">{error}</div>}
 
-      <div className="np-actions">
-        <button className="np-primary flex-center text-base" disabled={!canClone} onClick={onClone}>
+      <div className="modal-actions">
+        <Button variant="primary" size="lg" disabled={!canClone} onClick={onClone}>
           {busy ? (
             <>
-              <Icon name="refresh" size={13} /> Cloning…
+              <Spinner /> Cloning…
             </>
           ) : (
             "Clone repository"
           )}
-        </button>
+        </Button>
       </div>
-    </div>
+    </ModalBody>
   );
 }

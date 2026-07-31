@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { CopyButton } from "@/components/ui/CopyButton";
-import { Scrim } from "@/components/ui/Scrim";
+import { Modal, ModalBody } from "@/components/ui/Modal";
+import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
 import { useClaudeSetup } from "@/util/useClaudeSetup";
 import { SetRow } from "./primitives";
@@ -88,42 +89,37 @@ function ContainerAuthModal({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <>
-      <Scrim onClose={close} zIndex={400} />
-      <div className="ghc-modal" role="dialog" aria-modal="true">
-        <div className="ghc-h flex-center text-base">
-          <Icon name="cube" size={15} />
-          <span>Connect Claude for containers</span>
-          <button className="ghc-close flex-center" aria-label="Close" onClick={close}>
-            <Icon name="close" size={14} />
-          </button>
-        </div>
+    <Modal
+      icon="cube"
+      title="Connect Claude for containers"
+      onClose={close}
+      size="sm"
+      layer="overlay"
+    >
+      <ModalBody center>
+        {manual ? (
+          <ManualPaste onClose={onClose} onBack={() => setManual(false)} />
+        ) : (
+          <AutoConnect phase={phase} url={url} error={error} connect={connect} submit={submit} />
+        )}
 
-        <div className="ghc-body">
-          {manual ? (
-            <ManualPaste onClose={onClose} onBack={() => setManual(false)} />
-          ) : (
-            <AutoConnect phase={phase} url={url} error={error} connect={connect} submit={submit} />
-          )}
-
-          <div className="ghc-actions flex-center">
-            {!manual && phase === "idle" && (
-              <Button variant="ghost" onClick={() => setManual(true)}>
-                Paste a token manually
-              </Button>
-            )}
-            {status === "stored-token" && (
-              <Button variant="outline" disabled={busy} onClick={() => void clear()}>
-                Clear token
-              </Button>
-            )}
-            <Button variant="outline" onClick={close}>
-              {phase === "success" ? "Done" : "Cancel"}
+        <div className="modal-actions">
+          {!manual && phase === "idle" && (
+            <Button variant="ghost" onClick={() => setManual(true)}>
+              Paste a token manually
             </Button>
-          </div>
+          )}
+          {status === "stored-token" && (
+            <Button variant="outline" disabled={busy} onClick={() => void clear()}>
+              Clear token
+            </Button>
+          )}
+          <Button variant="outline" onClick={close}>
+            {phase === "success" ? "Done" : "Cancel"}
+          </Button>
         </div>
-      </div>
-    </>
+      </ModalBody>
+    </Modal>
   );
 }
 
@@ -162,7 +158,7 @@ function AutoConnect({
           Connect your Claude account so containerized agents can authenticate. This opens your
           browser once to sign in — no copy-paste.
         </div>
-        <div className="ghc-actions flex-center">
+        <div className="modal-actions">
           <Button variant="primary" onClick={connect}>
             Connect Claude
           </Button>
@@ -178,8 +174,9 @@ function AutoConnect({
           Finish signing in, then paste the code from your browser here.
         </div>
         {urlRow}
-        <input
-          className="set-cauth-input mono text-sm"
+        <TextInput
+          mono
+          className="set-cauth-input"
           type="text"
           placeholder="Paste code here"
           value={code}
@@ -189,7 +186,7 @@ function AutoConnect({
             if (e.key === "Enter" && code.trim()) submit(code);
           }}
         />
-        <div className="ghc-actions flex-center">
+        <div className="modal-actions">
           <Button variant="primary" disabled={!code.trim()} onClick={() => submit(code)}>
             Submit code
           </Button>
@@ -210,8 +207,8 @@ function AutoConnect({
   if (phase === "error") {
     return (
       <>
-        <div className="ghc-err text-sm">{error ?? "Something went wrong."}</div>
-        <div className="ghc-actions flex-center">
+        <div className="modal-error text-sm">{error ?? "Something went wrong."}</div>
+        <div className="modal-actions">
           <Button variant="primary" onClick={connect}>
             Try again
           </Button>
@@ -260,8 +257,9 @@ function ManualPaste({ onClose, onBack }: { onClose: () => void; onBack: () => v
         <span className="mono text-sm">{SETUP_COMMAND}</span>
         <CopyButton text={SETUP_COMMAND} />
       </div>
-      <input
-        className="set-cauth-input mono text-sm"
+      <TextInput
+        mono
+        className="set-cauth-input"
         type="password"
         placeholder="sk-ant-oat…"
         value={token}
@@ -274,8 +272,8 @@ function ManualPaste({ onClose, onBack }: { onClose: () => void; onBack: () => v
           if (e.key === "Enter" && token.trim() && !busy) void save();
         }}
       />
-      {error && <div className="ghc-err text-sm">{error}</div>}
-      <div className="ghc-actions flex-center">
+      {error && <div className="modal-error text-sm">{error}</div>}
+      <div className="modal-actions">
         <Button variant="primary" disabled={busy || !token.trim()} onClick={() => void save()}>
           Save token
         </Button>

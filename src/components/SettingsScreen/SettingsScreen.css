@@ -408,30 +408,8 @@
   color: var(--fg-1);
   font-weight: 500;
 }
-.set-text {
-  height: 36px;
-  padding: 0 12px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--bd);
-  background: var(--bg-0);
-  color: var(--fg-0);
-  transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
-}
-.set-text::placeholder {
-  color: var(--fg-3);
-}
-.set-text:focus {
-  border-color: var(--accent-line);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 90%);
-}
-.set-text.invalid {
-  border-color: color-mix(in oklch, var(--danger), transparent 40%);
-}
-.set-text.invalid:focus {
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--danger), transparent 88%);
-}
+/* The text-field skin that used to live here is now `.ui-input`, shared by the
+   `TextInput` / `TextArea` primitives (see components/ui/TextInput.css). */
 .set-field-error {
   color: var(--danger);
 }
@@ -442,10 +420,6 @@
 }
 .set-saved {
   color: var(--success);
-}
-.btn-t.primary:disabled {
-  opacity: 0.45;
-  pointer-events: none;
 }
 
 /* ── GITHUB CONNECTION ───────────────────────────────────────────────── */
@@ -496,19 +470,10 @@
   border-radius: var(--r-sm);
   color: var(--fg-1);
 }
+/* The token field uses the shared `TextInput` primitive; it only needs to fill
+   the dialog's centered column. */
 .set-cauth-input {
   width: 100%;
-  height: 28px;
-  padding: 0 10px;
-  color: var(--fg-0);
-  background: var(--bg-1);
-  border: 1px solid var(--bd);
-  border-radius: var(--r-sm);
-  outline: none;
-  transition: border-color 0.12s;
-}
-.set-cauth-input:focus {
-  border-color: var(--accent);
 }
 /* Consent URL surfaced during the automated flow (fallback to the CLI's own
    browser-open); mono + single-line with the tail elided so a ~250-char URL
@@ -781,29 +746,8 @@
 .set-prov-detail-actions .grow {
   flex: 1;
 }
-.btn-t.sm-t {
-  height: 26px;
-  padding: 0 10px;
-  font-size: var(--fs-sm);
-  white-space: nowrap;
-}
-.btn-t.danger {
-  color: var(--danger);
-}
-.btn-i.danger {
-  color: var(--danger);
-}
-.btn-i.danger:hover {
-  background: color-mix(in oklch, var(--danger), transparent 88%);
-}
-.btn-t.outline.danger:hover {
-  border-color: color-mix(in oklch, var(--danger), transparent 55%);
-  background: color-mix(in oklch, var(--danger), transparent 92%);
-  color: var(--danger);
-}
-.btn-t.ghost.danger:hover {
-  background: color-mix(in oklch, var(--danger), transparent 92%);
-}
+/* Button/IconButton variant rules now live together in
+   styles/shared/icon-button.css. */
 
 .set-prov.available {
   background: var(--bg-1);
