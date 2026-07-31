@@ -424,6 +424,9 @@ impl GitDispatcher {
             }
         };
 
+        if let Some(resp) = refuse_option_like_branch(id, "open_pr", &branch) {
+            return (resp, effects);
+        }
         if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
             return (Response::err(id, why), effects);
         }
@@ -493,6 +496,9 @@ impl GitDispatcher {
             },
         };
 
+        if let Some(resp) = refuse_option_like_branch(id, "git_push", &branch) {
+            return (resp, effects);
+        }
         if let Some(why) = self
             .refuse_unless_publish_approved(
                 "git_push",
@@ -578,6 +584,19 @@ fn approval_repo<'a>(subdir: Option<&'a str>, primary: Option<&str>) -> Option<&
 
 fn arg_branch(args: &Value) -> Option<String> {
     arg_branch_named(args, "branch")
+}
+
+/// Refuse a branch name git could reinterpret as an option (leading `-`). The
+/// resolved branch comes from the agent-writable `.git/HEAD`; the `git::push`
+/// primitive already neutralises injection by pushing a fully-qualified refspec,
+/// but the same string also flows into `pr_create` (the PR head) and event
+/// payloads — so reject it up front here (parity with `git_fetch`) so an agent
+/// that planted an option-named HEAD fails loudly instead of silently creating a
+/// junk remote branch or PR.
+fn refuse_option_like_branch(id: &str, op: &str, branch: &str) -> Option<Response> {
+    branch
+        .starts_with('-')
+        .then(|| Response::err(id, format!("{op}: refusing option-like branch {branch:?}")))
 }
 
 /// Read a boolean flag arg by key, defaulting to `false` when absent or not a
@@ -776,6 +795,49 @@ mod tests {
             effects.is_empty(),
             "a rejected signal must emit nothing, got: {effects:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn git_push_refuses_option_named_head_branch() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+
+        // Plant an option-named branch and repoint HEAD at it directly, as an
+        // agent with full control of its own `.git` would. `current_branch` then
+        // resolves the injected option string.
+        let head = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        let sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        std::fs::write(repo.join(".git/refs/heads/--mirror"), format!("{sha}\n")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/--mirror\n").unwrap();
+
+        let disp = dispatcher(&repo);
+        let (resp, fx) = disp.dispatch_inner("p", "git_push", &Value::Null).await;
+        // Refused at the broker (parity with git_fetch) before any git runs, so
+        // the option-named string never reaches a push at all.
+        assert!(
+            !resp.ok,
+            "an option-named HEAD must be refused before any push: {resp:?}"
+        );
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("option-like"),
+            "error must name the refusal, got: {:?}",
+            resp.error
+        );
+        assert!(fx.is_empty(), "a refused push must emit nothing: {fx:?}");
     }
 
     #[tokio::test]
