@@ -92,9 +92,9 @@ impl Guarantee {
                  rename, because Docker mounts follow the inode where seatbelt's path rules do \
                  not. Instead host-side git refuses to run in a checkout whose config would \
                  execute a program (crate::git::hardening), which is engine-independent. That \
-                 refusal sits at the git::cmd helper seam, so the few callers that build a \
-                 command directly — push and fetch, which do not run filters or textconv — are \
-                 not covered by it",
+                 refusal covers every command that can trigger one: the git::cmd helper seam \
+                 plus the read and pull paths that build a command directly. push and fetch are \
+                 deliberately outside it, running no filter, textconv or merge driver",
             ),
 
             // Seatbelt denies the app-data dir explicitly; Docker never mounts it.
