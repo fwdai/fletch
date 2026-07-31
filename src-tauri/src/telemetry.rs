@@ -12,6 +12,15 @@
 //! send nothing. Identity is a random per-install UUID (never the account
 //! email); event properties carry only categorical values, never paths, repo
 //! names, branches, or prompts.
+//!
+//! **One documented carve-out**, [`send_now`]: user-submitted feedback (see
+//! `commands::submit_feedback`). It rides this pipeline because it's the same
+//! transport, but it ignores the consent gate, awaits its result, and may carry
+//! free text the user typed — including a contact email they chose to leave in
+//! the field. That's an explicit Send press with a stated destination, not
+//! passive analytics, so the consent flag (which governs *usage* tracking) must
+//! not silence it. Identity is still the anonymous UUID: nothing here calls
+//! `$identify`, so the email is one event property and never a person profile.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
@@ -82,14 +91,9 @@ pub fn init(distinct_id: String, enabled: bool, version: String) {
     });
 }
 
-/// Record an event. No-op when telemetry is uninitialized or consent is off.
-/// Sends fire-and-forget so the caller never blocks on the network.
-pub fn track(event: &str, props: Value) {
-    let Some(tel) = TELEMETRY.get() else { return };
-    if !tel.enabled.load(Ordering::Relaxed) {
-        return;
-    }
-
+/// The capture body for one event: the super-props plus the anonymous identity,
+/// overlaid with the caller's props (so a caller can override a super-prop).
+fn build_body(tel: &Telemetry, event: &str, props: Value) -> Value {
     let mut properties = tel.super_props.clone();
     properties.insert("distinct_id".into(), json!(tel.distinct_id));
     if let Some(obj) = props.as_object() {
@@ -98,37 +102,90 @@ pub fn track(event: &str, props: Value) {
         }
     }
 
-    let body = json!({
+    json!({
         "api_key": tel.api_key,
         "event": event,
         "properties": Value::Object(properties),
-    });
+    })
+}
 
-    // `Client` is internally ref-counted, so cloning just shares the pool.
-    let client = tel.client.clone();
-    let url = tel.capture_url.clone();
-    // Register the task before spawning so a `flush` racing this call always
-    // sees it. `tel` is a `&'static`, so the task can decrement on completion.
-    tel.inflight.fetch_add(1, Ordering::SeqCst);
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = client
-            .post(&url)
-            .json(&body)
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-        {
-            tracing::debug!(error = %e, "telemetry: send failed");
-        }
-        if tel.inflight.fetch_sub(1, Ordering::SeqCst) == 1 {
+/// Keeps the in-flight counter honest across both send paths. Registering
+/// happens on the caller's thread — before any `spawn` — so a `flush` racing a
+/// `track` always sees the send; the decrement rides `Drop`, so a task cancelled
+/// during runtime teardown still releases its slot.
+struct InflightGuard(&'static Telemetry);
+
+impl InflightGuard {
+    fn register(tel: &'static Telemetry) -> Self {
+        tel.inflight.fetch_add(1, Ordering::SeqCst);
+        Self(tel)
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        if self.0.inflight.fetch_sub(1, Ordering::SeqCst) == 1 {
             // `notify_one`, not `notify_waiters`: it stores a permit when no
             // waiter is registered yet, so a `flush` that completes its counter
             // check just before this fires still wakes on its next `.await`
             // instead of stalling until the timeout. Safe because there is at
             // most one flush caller (app exit).
-            tel.idle.notify_one();
+            self.0.idle.notify_one();
+        }
+    }
+}
+
+/// POST one capture body. Non-2xx is an error, not a silent success — the only
+/// caller that surfaces it is [`send_now`], but `track` logs it too.
+async fn post(tel: &Telemetry, body: Value) -> Result<(), String> {
+    // `Client` is internally ref-counted, so cloning just shares the pool.
+    let response = tel
+        .client
+        .clone()
+        .post(&tel.capture_url)
+        .json(&body)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    let status = response.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(format!("capture endpoint returned {status}"))
+    }
+}
+
+/// Record an event. No-op when telemetry is uninitialized or consent is off.
+/// Sends fire-and-forget so the caller never blocks on the network.
+pub fn track(event: &str, props: Value) {
+    let Some(tel) = TELEMETRY.get() else { return };
+    if !tel.enabled.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let body = build_body(tel, event, props);
+    let guard = InflightGuard::register(tel);
+    tauri::async_runtime::spawn(async move {
+        let _guard = guard;
+        if let Err(e) = post(tel, body).await {
+            tracing::debug!(error = %e, "telemetry: send failed");
         }
     });
+}
+
+/// Send an event the user explicitly asked to send (feedback), awaiting the
+/// result so the UI can report success or failure instead of pretending.
+///
+/// Deliberately **ignores the consent flag** — see the carve-out in this
+/// module's docs. Still hard-gated on a baked-in PostHog key: an unconfigured
+/// build has nowhere to send, and says so rather than swallowing the message.
+pub async fn send_now(event: &str, props: Value) -> Result<(), String> {
+    let Some(tel) = TELEMETRY.get() else {
+        return Err("this build has no feedback endpoint configured".into());
+    };
+    let _guard = InflightGuard::register(tel);
+    post(tel, build_body(tel, event, props)).await
 }
 
 /// Wait up to `timeout` for in-flight sends to drain. Called on app exit so the

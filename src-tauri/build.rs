@@ -5,10 +5,16 @@
 // so we also load a repo-root `.env` here and forward these keys into the
 // compile. A value already present in the environment always wins, so CI is
 // unaffected and a developer can still override `.env` with a shell export.
-const CONFIG_KEYS: [&str; 3] = [
+const CONFIG_KEYS: [&str; 4] = [
     "QUORUM_GITHUB_CLIENT_ID",
     "QUORUM_GOOGLE_CLIENT_ID",
     "QUORUM_GOOGLE_CLIENT_SECRET",
+    // Gates the whole PostHog pipeline — usage telemetry AND in-app feedback
+    // (see `telemetry.rs`). Without it a local build can only ever exercise the
+    // "no endpoint configured" path. `QUORUM_POSTHOG_HOST` is deliberately not
+    // forwarded: it already defaults to PostHog US cloud, and a self-hosted
+    // instance is a CI-env concern, not a local-dev one.
+    "QUORUM_POSTHOG_KEY",
 ];
 
 fn main() {

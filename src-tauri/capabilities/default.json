@@ -13,6 +13,7 @@
     "core:event:default",
     "dialog:default",
     "fs:allow-read-text-file",
+    "fs:allow-read-file",
     "fs:allow-write-text-file",
     "notification:default",
     "shell:default",

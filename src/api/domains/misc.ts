@@ -24,4 +24,16 @@ export const miscApi = {
   // event names and property shapes honest.
   trackEvent: (event: string, props: Record<string, unknown>) =>
     invoke<void>("track_event", { event, props }),
+  /** Send one piece of user feedback (sidebar footer → feedback modal). Not a
+   *  `trackEvent`: feedback is consent-independent, awaited, and carries a
+   *  screenshot, so it has its own command. Rejects with a presentable message
+   *  when the send fails, so the modal can offer its mailto fallback instead of
+   *  faking success. See docs/feedback.md. */
+  submitFeedback: (p: {
+    message: string;
+    contactEmail?: string | null;
+    /** Base64 JPEG, already downscaled by `util/image.ts`. */
+    screenshotBase64?: string | null;
+    source?: string;
+  }) => invoke<void>("submit_feedback", p),
 };

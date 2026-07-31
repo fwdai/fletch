@@ -28,6 +28,10 @@ export interface UiSlice {
    *  panel) can start signing in on the first click instead of detouring
    *  through Settings. */
   githubConnectOpen: boolean;
+  /** Send-feedback modal, opened from the sidebar footer. Lives in the store
+   *  (not local state) because the trigger is in `SidebarFooter` while the
+   *  modal mounts at app root, like every other centered modal. */
+  feedbackOpen: boolean;
   /** First-run onboarding overlay. `onboardingComplete` is persisted (DB
    *  settings); the overlay auto-opens for new users on init and is
    *  re-openable any time from Settings › General. */
@@ -75,6 +79,9 @@ export interface UiSlice {
   /** Open / close the GitHub connect modal (the device flow starts on open). */
   openGithubConnect: () => void;
   closeGithubConnect: () => void;
+  /** Open / close the send-feedback modal. */
+  openFeedback: () => void;
+  closeFeedback: () => void;
   /** Open the onboarding overlay (e.g. "Replay tour" from Settings). */
   openOnboarding: () => void;
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
@@ -107,6 +114,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   settingsSection: "general" as SettingsSection,
   settingsIntent: null,
   githubConnectOpen: false,
+  feedbackOpen: false,
   onboardingOpen: false,
   onboardingComplete: false,
   historyOpen: false,
@@ -138,6 +146,8 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   clearSettingsIntent: () => set({ settingsIntent: null }),
   openGithubConnect: () => set({ githubConnectOpen: true }),
   closeGithubConnect: () => set({ githubConnectOpen: false }),
+  openFeedback: () => set({ feedbackOpen: true }),
+  closeFeedback: () => set({ feedbackOpen: false }),
   openOnboarding: () => set({ onboardingOpen: true }),
   closeOnboarding: () => {
     const firstCompletion = !get().onboardingComplete;

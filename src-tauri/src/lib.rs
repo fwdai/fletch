@@ -1668,6 +1668,7 @@ pub fn run() {
             commands::start_docker_desktop,
             commands::detect_editors,
             commands::open_in_editor,
+            commands::submit_feedback,
         ])
         .build(tauri::generate_context!())
         .expect("error while building fletch")
