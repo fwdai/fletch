@@ -605,6 +605,12 @@ async fn run_git_command(
     args: &[&str],
     env: &[(String, String)],
 ) -> Response {
+    // Built directly rather than through `git::cmd`, so the config guard has to be
+    // applied here: `git_status` runs clean filters to decide whether a file
+    // changed, which would execute a planted one.
+    if let Err(e) = crate::git::hardening::refuse_steerable_config(cwd).await {
+        return Response::err(id, e.to_string());
+    }
     let mut cmd = crate::git_dist::command(cwd);
     cmd.args(args)
         .stdin(Stdio::null())

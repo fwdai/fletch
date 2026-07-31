@@ -93,6 +93,11 @@ pub enum StatusKind {
 
 /// Query the read-only git state for a checkout.
 pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState> {
+    // These reads build commands directly rather than through `git::cmd`, so they
+    // don't inherit its config guard — `git diff`/`git status` here would run a
+    // planted textconv or clean filter. Guarded at the module's public surface, so
+    // the internal helpers below stay plain.
+    crate::git::hardening::refuse_steerable_config(checkout_path).await?;
     // 1. Branch name
     let branch = match crate::git::current_branch(checkout_path).await {
         Ok(Some(b)) => b,
@@ -214,6 +219,15 @@ const MAX_UNTRACKED_READ_BYTES: u64 = 8 * 1024 * 1024;
 /// single git invocation. Failures degrade to zeroes rather than dropping the
 /// agent, matching the badge's "no news is zero" contract.
 pub async fn shortstats(checkout_path: &Path) -> ShortStats {
+    // `git status`/`--numstat` run clean filters and textconv, so a poisoned
+    // checkout reports zeroes rather than executing them (see `query`).
+    if !crate::git::hardening::config_is_safe(checkout_path).await {
+        return ShortStats {
+            additions: 0,
+            deletions: 0,
+            file_count: 0,
+        };
+    }
     let (status, numstat) = tokio::join!(run_status(checkout_path), run_numstat(checkout_path));
     let files = status.map(|o| parse_porcelain(&o)).unwrap_or_default();
     let file_count = files.len() as u32;
@@ -273,6 +287,15 @@ const MAX_META_FILES: usize = 500;
 /// origin / no fetch yet), so staleness degrades to unknown rather than a fake
 /// zero. File paths always come straight from the checkout's `git status`.
 pub async fn git_meta(checkout_path: &Path, base: &str, base_sha: Option<&str>) -> GitMeta {
+    // Same reason as `shortstats`. `files` is already documented as empty when the
+    // tree is unreadable, so this needs no new state to express itself.
+    if !crate::git::hardening::config_is_safe(checkout_path).await {
+        return GitMeta {
+            base: base.to_string(),
+            behind: None,
+            files: Vec::new(),
+        };
+    }
     let files = run_status(checkout_path)
         .await
         .map(|o| parse_porcelain(&o))

@@ -83,11 +83,16 @@ about to read, so it doesn't care how that config got there. Scoped to agent
 checkouts: a user's own repository legitimately carries these keys — husky sets
 `core.hooksPath`, git-lfs sets `filter.lfs.*` — and isn't agent-writable anyway.
 
-Two limits to state plainly. The refusal sits at the `git::cmd` helper seam, so
-the few callers that build a git command directly (push and fetch, which run no
-filters or textconv) are outside it. And the **Run panel deliberately carries
-neither half** — `npm install` on a husky project legitimately writes
-`core.hooksPath`, and Run is already the weaker boundary by design.
+The refusal covers every command that can trigger an executable setting: the
+`git::cmd` helper seam that `run_git`/`git_output` funnel through, plus the paths
+that build a git command directly *and* run a trigger — `git_state`'s three public
+reads (status/diff/numstat run clean filters and textconv) and `pull` (a merge runs
+merge drivers). `push` and `fetch` build directly too and are deliberately outside
+it: neither runs a filter, textconv or merge driver.
+
+One limit to state plainly: the **Run panel deliberately carries neither half** —
+`npm install` on a husky project legitimately writes `core.hooksPath`, and Run is
+already the weaker boundary by design.
 
 ### What the Docker container mounts
 
