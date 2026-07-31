@@ -437,10 +437,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   });
 
   await onPublishApprovalRequested((request) => {
-    // The backend is blocked on this until it is answered or its own timeout
-    // denies it, so queue rather than replace: dropping one would strand an
-    // agent's turn for the full decision window.
-    get().queuePublishApproval(request);
+    // The backend blocks on this until it is answered or its timeout denies it —
+    // see `receivePublishApproval`, which decides whether to answer or prompt.
+    get().receivePublishApproval(request);
   });
 
   await onPrStateChanged((e) => {

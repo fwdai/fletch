@@ -26,6 +26,16 @@
 //! defence, but it is seatbelt-only and rename-bypassable under Docker. (2) is
 //! engine-independent: it reads whatever config git is about to read, so it does
 //! not care how that config got there.
+//!
+//! (1) sits at one seam because it can — it is infallible, so `git_dist` applies
+//! it to every spawn. (2) is async and fallible, so it cannot live there without
+//! making every git spawn fallible; it is applied at `git::cmd`'s shared helper
+//! (which `run_git` / `git_output` / `run_git_env` all funnel through) plus the
+//! four paths that build a command directly *and* run a triggering command:
+//! `git_state`'s three public reads (diff/status/numstat → textconv, clean
+//! filters) and `git::transport::pull` (merge → merge drivers). `push` and
+//! `fetch` build directly too and are deliberately not guarded: neither runs a
+//! filter, textconv or merge driver.
 
 use std::path::Path;
 
@@ -118,6 +128,22 @@ pub(crate) async fn refuse_steerable_config(dir: &Path) -> Result<()> {
         return Ok(());
     };
     refuse_steerable_config_under(dir, &root).await
+}
+
+/// Whether git may be run in `dir` — [`refuse_steerable_config`] for callers whose
+/// signature cannot carry an error (the best-effort git *reads*, which report an
+/// unreadable checkout as empty rather than failing).
+///
+/// Logs the refusal, because returning "no changes" for a poisoned checkout is
+/// otherwise indistinguishable from a clean tree.
+pub(crate) async fn config_is_safe(dir: &Path) -> bool {
+    match refuse_steerable_config(dir).await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, "skipping git read in this checkout");
+            false
+        }
+    }
 }
 
 /// Pure-seam core of [`refuse_steerable_config`], taking the checkouts root

@@ -92,9 +92,9 @@ impl Guarantee {
                  rename, because Docker mounts follow the inode where seatbelt's path rules do \
                  not. Instead host-side git refuses to run in a checkout whose config would \
                  execute a program (crate::git::hardening), which is engine-independent. That \
-                 refusal sits at the git::cmd helper seam, so the few callers that build a \
-                 command directly — push and fetch, which do not run filters or textconv — are \
-                 not covered by it",
+                 refusal covers every command that can trigger one: the git::cmd helper seam \
+                 plus the read and pull paths that build a command directly. push and fetch are \
+                 deliberately outside it, running no filter, textconv or merge driver",
             ),
 
             // Seatbelt denies the app-data dir explicitly; Docker never mounts it.
@@ -121,10 +121,12 @@ impl Guarantee {
                 "credentials stay host-side, and the brokered publish ops are capability-gated \
                  (crate::rpc::caps): a workflow step agent cannot publish at all, and no agent \
                  can push the branch its work is reviewed against. Approval for the act itself \
-                 (crate::rpc::approval) is available but OFF by default — autopilot publishes \
-                 while nobody is watching, so defaulting it on would stall every unattended run. \
-                 Until it is enabled, an agent publishes its own branch under your identity \
-                 without asking",
+                 (crate::rpc::approval) is available but OFF by default, so until it is enabled an \
+                 agent publishes its own branch under your identity without asking. Enabling it \
+                 does not disturb autopilot or a clicked Git action — both are recognised as \
+                 already authorized — but it remains a secondary control either way: with egress \
+                 unrestricted, an agent never needed git_push to exfiltrate, so what this gains is \
+                 attribution, not confidentiality",
             ),
         }
     }

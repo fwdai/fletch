@@ -1,5 +1,7 @@
 import { api, type ContainerAuthStatus, type DockerProbe, type PublishApproval } from "@/api";
 import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preferences";
+import { checkoutKey } from "./git";
+import { autopilotIsDriving, publishPreAuthorized } from "./publishApproval";
 import type { SliceCreator } from "./types";
 
 /** Live state of the embedded docker image build (first docker spawn). `null`
@@ -47,8 +49,11 @@ export interface SandboxSlice {
   setSandboxEngine: (engine: SandboxEngine) => Promise<void>;
   /** Turn the publish-approval prompt on or off (backend-owned setting). */
   setPublishConfirmation: (enabled: boolean) => Promise<void>;
-  /** Queue a publish the backend is waiting on (from the event listener). */
-  queuePublishApproval: (request: PublishApproval) => void;
+  /** Handle a publish the backend is blocked on: answer it immediately when the
+   *  user already authorized it, otherwise queue it for the prompt. Owns the
+   *  decision so it is testable without a rendered listener — and the decision is
+   *  what keeps an unattended autopilot run from stalling on a prompt. */
+  receivePublishApproval: (request: PublishApproval) => void;
   /** Answer the queued request `id` and drop it from the queue. */
   answerPublishApproval: (id: string, approved: boolean) => Promise<void>;
   /** Re-probe Docker availability into `dockerProbe` (settings pane open).
@@ -109,8 +114,26 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     set({ publishConfirmation: enabled });
   },
 
-  queuePublishApproval: (request) =>
-    set((s) => ({ pendingPublishApprovals: [...s.pendingPublishApprovals, request] })),
+  receivePublishApproval: (request) => {
+    const key = checkoutKey(request.agent_id, request.repo);
+    const s = get();
+    if (publishPreAuthorized(request.op, key, s)) {
+      // Not awaited: the listener is synchronous and the backend is blocked on the
+      // answer, so surface a failed IPC rather than dropping it silently.
+      s.answerPublishApproval(request.id, true).catch((err) =>
+        console.error("failed to auto-approve a pre-authorized publish", { key, err }),
+      );
+      return;
+    }
+    // A *push* prompted while autopilot is driving is unreachable (the branch above
+    // covers it) and would stall that run at the backend's timeout, so say so
+    // loudly. `open_pr` is not covered by enrollment on purpose, so a prompt for one
+    // is expected and must not be reported as a fault.
+    if (request.op === "git_push" && autopilotIsDriving(s.autopilot[key])) {
+      console.error("publish approval prompted while autopilot is driving", { key, request });
+    }
+    set((prev) => ({ pendingPublishApprovals: [...prev.pendingPublishApprovals, request] }));
+  },
 
   answerPublishApproval: async (id, approved) => {
     // Drop it first: the prompt must not linger if the command throws, and a

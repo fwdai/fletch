@@ -121,7 +121,12 @@ impl GitDispatcher {
     /// Fails **closed** when the gate is on but this dispatcher has no window to
     /// ask through: publishing unasked is exactly what the gate exists to prevent,
     /// so an unaskable session refuses instead.
-    async fn refuse_unless_publish_approved(&self, detail: &str) -> Option<String> {
+    async fn refuse_unless_publish_approved(
+        &self,
+        op: &str,
+        repo: Option<&str>,
+        detail: &str,
+    ) -> Option<String> {
         if !approval::enabled() {
             return None;
         }
@@ -131,7 +136,13 @@ impl GitDispatcher {
                  session has no window to ask through"
             ));
         };
-        approval::refuse_unless_approved(app, agent_id, detail).await
+        // Normalised to the form the UI keys by: `None` for the primary checkout.
+        // The frontend leaves the primary unsuffixed (`checkoutKey(agent, undefined)`),
+        // so sending the primary's own subdir name would build a key that no
+        // autopilot enrollment matches — and a missed match means an unattended push
+        // waits on a prompt nobody answers.
+        let repo = approval_repo(repo, self.default_subdir.as_deref());
+        approval::refuse_unless_approved(app, agent_id, op, repo, detail).await
     }
 
     /// Seed the agent's live issue ref (the one it was spawned from, if any)
@@ -417,10 +428,11 @@ impl GitDispatcher {
             return (Response::err(id, why), effects);
         }
         if let Some(why) = self
-            .refuse_unless_publish_approved(&format!(
-                "open a pull request from {branch} into {}",
-                t.base_branch
-            ))
+            .refuse_unless_publish_approved(
+                "open_pr",
+                t.subdir.as_deref(),
+                &format!("open a pull request from {branch} into {}", t.base_branch),
+            )
             .await
         {
             return (Response::err(id, why), effects);
@@ -482,7 +494,11 @@ impl GitDispatcher {
         };
 
         if let Some(why) = self
-            .refuse_unless_publish_approved(&format!("push {branch}"))
+            .refuse_unless_publish_approved(
+                "git_push",
+                t.subdir.as_deref(),
+                &format!("push {branch}"),
+            )
             .await
         {
             return (Response::err(id, why), effects);
@@ -553,6 +569,13 @@ impl GitDispatcher {
     }
 }
 
+/// A target's subdir as the UI keys it: `None` when it *is* the primary, which the
+/// frontend addresses without a suffix. Pure so the mapping is testable — getting
+/// it wrong strands an unattended publish rather than failing loudly.
+fn approval_repo<'a>(subdir: Option<&'a str>, primary: Option<&str>) -> Option<&'a str> {
+    subdir.filter(|s| Some(*s) != primary)
+}
+
 fn arg_branch(args: &Value) -> Option<String> {
     arg_branch_named(args, "branch")
 }
@@ -605,6 +628,12 @@ async fn run_git_command(
     args: &[&str],
     env: &[(String, String)],
 ) -> Response {
+    // Built directly rather than through `git::cmd`, so the config guard has to be
+    // applied here: `git_status` runs clean filters to decide whether a file
+    // changed, which would execute a planted one.
+    if let Err(e) = crate::git::hardening::refuse_steerable_config(cwd).await {
+        return Response::err(id, e.to_string());
+    }
     let mut cmd = crate::git_dist::command(cwd);
     cmd.args(args)
         .stdin(Stdio::null())
@@ -826,6 +855,18 @@ mod tests {
         let err = v["error"].as_str().unwrap();
         assert!(!err.contains("unknown op"), "got: {err}");
         assert!(err.contains("push failed"), "got: {err}");
+    }
+
+    /// The primary checkout must go over the wire as `None`, because the UI keys
+    /// the primary without a suffix. A regression here builds a key no autopilot
+    /// enrollment matches, so an unattended push would wait on a prompt.
+    #[test]
+    fn the_primary_checkout_is_reported_as_no_repo() {
+        assert_eq!(approval_repo(Some("app"), Some("app")), None);
+        // A secondary repo keeps its name — that is how the UI scopes to it.
+        assert_eq!(approval_repo(Some("web"), Some("app")), Some("web"));
+        // No repos registered (tests, legacy call sites): nothing to normalise.
+        assert_eq!(approval_repo(None, None), None);
     }
 
     /// The hole `rpc::caps` closes, at the layer that used to have it: an agent

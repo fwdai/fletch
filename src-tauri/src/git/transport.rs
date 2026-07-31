@@ -80,6 +80,11 @@ pub async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> 
 /// Pull latest from the tracking remote branch.
 /// Requires `push -u` to have been called first to establish an upstream.
 pub async fn pull(checkout: &Path) -> Result<()> {
+    // A pull merges, so it runs `merge.<name>.driver` — a wildcard key the `-c`
+    // overrides cannot neutralise by name. This builds its command directly, so it
+    // needs the config guard explicitly; `push`/`fetch` above do not, because
+    // neither runs a filter, textconv or merge driver.
+    super::hardening::refuse_steerable_config(checkout).await?;
     let mut cmd = crate::git_dist::command(checkout);
     cmd.args(["pull"]);
     // Auth for the https transport; identity because a pull may create a merge
