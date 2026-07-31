@@ -41,6 +41,14 @@
 //!    *subdirs* (e.g. `~/.config/opencode`), never the root — so an agent can't
 //!    poison `~/.config/git` (`core.hooksPath`), `~/.config/fish`,
 //!    `~/.config/gh` (aliases carry shell commands), etc.
+//! 3. **No agent-writable path is git-executable config**
+//!    ([`GIT_EXEC_CONFIG_FILES`] / [`GIT_EXEC_CONFIG_DIRS`]). A repository's own
+//!    `.git/config` names programs git runs — hooks, clean/smudge filters,
+//!    textconv, merge drivers — so inside the agent's *writable root* it is a
+//!    host code-execution primitive, triggered by Fletch's own host-side git.
+//!    Unlike invariants 1 and 2 this one is a **deny inside a grant** (the shape
+//!    [`super::seatbelt`]'s app-data rule already uses), because the checkout as
+//!    a whole must stay writable.
 //!
 //! Claude's config dir gets a third treatment that is really invariant 2
 //! applied to `~/.claude` itself. `~/.claude` *is* a config root — its
@@ -141,6 +149,37 @@ pub fn claude_write_island_dirs(config_dir: &Path) -> Vec<PathBuf> {
         .map(|s| config_dir.join(s))
         .collect()
 }
+
+/// Files under a repository's `.git` that git reads **executable
+/// configuration** from: `core.hooksPath`, `filter.<n>.clean/smudge`,
+/// `diff.<n>.textconv`, `merge.<n>.driver`, `core.fsmonitor`, `core.sshCommand`
+/// and friends all name programs git will run. Inside an agent-writable
+/// checkout that makes the config a host code-execution primitive, reachable
+/// the moment Fletch runs git there — which it does constantly (diff polling,
+/// workflow boundary commits, merge integration).
+///
+/// Agents keep full write access to `.gitattributes`: it is tracked source they
+/// legitimately edit, and an attribute naming a driver is inert unless the
+/// *config* defines it. Withholding the config alone therefore closes the whole
+/// attributes-driven class without touching the working tree — the reason this
+/// policy is expressed as paths rather than as a list of forbidden config keys,
+/// which cannot be enumerated (the driver name is chosen by the attribute).
+pub const GIT_EXEC_CONFIG_FILES: &[&str] = &[
+    "config",          // the repository config itself
+    "config.worktree", // the same keys, honored under `extensions.worktreeConfig`
+];
+
+/// Subtrees under a repository's `.git` that git resolves executables from —
+/// the directory counterpart of [`GIT_EXEC_CONFIG_FILES`], denied whole because
+/// nothing an agent legitimately does writes here.
+///
+/// Residual: a submodule's `.git/modules/<name>/config` is not covered. Fletch
+/// does not provision submodules, and covering them wants its own rule rather
+/// than a looser pattern here.
+pub const GIT_EXEC_CONFIG_DIRS: &[&str] = &[
+    "hooks", // what `core.hooksPath` resolves to by default
+    "info",  // `info/attributes` — the untracked twin of `.gitattributes`
+];
 
 /// Class-1 host-persistence dirs a single `provider` must write on the host:
 /// its session store, auth, and config. Docker mounts exactly these read-write
@@ -525,6 +564,34 @@ mod tests {
                 "{} is a component-final bin dir — a PATH-hijack surface (invariant 1)",
                 dir.display()
             );
+        }
+    }
+
+    /// Invariant 3's entries must be safe for an engine to join onto a `.git`
+    /// dir or splice into a regex: single path segments, no traversal, no
+    /// absolute paths. A `../` or a leading `/` here would silently widen a
+    /// deny rule into the wrong subtree — or, in the regex engine, escape the
+    /// checkout the rule is scoped to.
+    #[test]
+    fn git_exec_config_entries_are_plain_single_segments() {
+        let all = GIT_EXEC_CONFIG_FILES
+            .iter()
+            .chain(GIT_EXEC_CONFIG_DIRS.iter());
+        for name in all {
+            assert_eq!(
+                Path::new(name).components().count(),
+                1,
+                "{name} must be a single path segment"
+            );
+            assert!(
+                !name.starts_with('/') && !name.contains(".."),
+                "{name} must be relative and traversal-free"
+            );
+        }
+        // Disjoint: an entry denied as a file and a subtree would emit two
+        // overlapping rules, and the overlap would hide which one is load-bearing.
+        for f in GIT_EXEC_CONFIG_FILES {
+            assert!(!GIT_EXEC_CONFIG_DIRS.contains(f), "{f} is in both lists");
         }
     }
 

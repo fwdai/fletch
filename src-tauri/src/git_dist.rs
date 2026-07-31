@@ -169,7 +169,7 @@ pub fn command(dir: &Path) -> tokio::process::Command {
 /// Synchronous sibling of [`command`] — for the rare caller outside an async
 /// context. The Run sandbox builder resolves the target's git common dir while
 /// assembling the profile (a sync path, before the PTY spawns), so it can't
-/// await. Same resolved binary + env; bare `git` fallback when nothing resolves.
+/// await. Same resolved binary, env, and hardening.
 pub fn std_command(dir: &Path) -> std::process::Command {
     let mut cmd = match resolve() {
         Some(bin) => {
@@ -181,14 +181,19 @@ pub fn std_command(dir: &Path) -> std::process::Command {
         }
         None => std::process::Command::new("git"),
     };
-    cmd.current_dir(dir);
+    cmd.current_dir(dir)
+        .args(crate::git::hardening::config_overrides());
     cmd
 }
 
 /// [`command`] without a cwd — for the rare op whose target dir doesn't exist
 /// yet (`git init <path>`).
+///
+/// This and [`std_command`] are the two seams where every git invocation picks
+/// up [`crate::git::hardening`]'s overrides, so a repository's own config can
+/// never steer host-side git — including from call sites written later.
 pub fn bare_command() -> tokio::process::Command {
-    match resolve() {
+    let mut cmd = match resolve() {
         Some(bin) => {
             let mut cmd = tokio::process::Command::new(&bin.program);
             for (k, v) in &bin.env {
@@ -197,7 +202,9 @@ pub fn bare_command() -> tokio::process::Command {
             cmd
         }
         None => tokio::process::Command::new("git"),
-    }
+    };
+    cmd.args(crate::git::hardening::config_overrides());
+    cmd
 }
 
 /// Extra env for spawned agent/terminal children so *their* `git status` /

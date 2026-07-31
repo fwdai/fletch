@@ -56,6 +56,27 @@ refreshed auth), and `~/.claude.json`. Fletch's own application-data directory
 write**, so a confined agent can neither exfiltrate nor forge app state
 (`sandbox/seatbelt.rs`).
 
+One carve-out runs the other way, inside the writable checkout: each
+repository's **git-executable configuration** — `.git/config`,
+`.git/config.worktree`, `.git/hooks/`, `.git/info/` — is denied write
+(`sandbox/policy.rs`, invariant 3). Git resolves hooks, clean/smudge filters,
+textconv programs and merge drivers from those paths, so an agent-writable
+`.git/config` is a *host* code-execution primitive: Fletch runs git on the
+checkout constantly (diff polling, workflow boundary commits, merge
+integration), and a planted `filter.*.clean` executes on the next `git add`. The
+tracked `.gitattributes` stays writable — it is source an agent legitimately
+edits, and an attribute naming a driver is inert while it cannot define one.
+Independently, every host-side git invocation carries hardening overrides that
+neutralise the fixed-name equivalents (`git/hardening.rs`), applied at git's
+single spawn seam rather than per call site.
+
+Two limits to state plainly. This carve-out is **seatbelt-only today**: under
+Docker the checkout is bind-mounted read-write at its host path, so a
+Docker-engine agent can still write its own `.git/config` and only the
+fixed-name overrides apply. And the **Run panel deliberately does not carry it**
+— `npm install` on a husky project legitimately writes `core.hooksPath`, and Run
+is already the weaker boundary by design.
+
 ### What the Docker container mounts
 
 Only the agent's writable root and its RPC mailbox are mounted read-write, at

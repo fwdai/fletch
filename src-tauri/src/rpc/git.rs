@@ -456,10 +456,7 @@ impl GitDispatcher {
                 format!("git_fetch: refusing option-like ref {branch:?}"),
             );
         }
-        let auth = crate::git::merge_git_env(&[
-            &crate::github::git_auth_env(),
-            &crate::git::no_hooks_env(),
-        ]);
+        let auth = crate::github::git_auth_env();
         let resp = run_git_command(id, &cwd, &["fetch", "origin", &branch], &auth).await;
         // `run_git_command` reports `ok: true` for any git that *ran*, carrying a
         // non-zero result only in `exit_code`. For fetch that's a trap: a missing

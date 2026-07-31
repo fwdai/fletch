@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::error::{Error, Result};
 
 use super::branch::rev_parse;
-use super::cmd::{git_output_env, identity_env, merge_git_env, no_hooks_env, run_git, run_git_env};
+use super::cmd::{git_output_env, identity_env, merge_git_env, run_git, run_git_env};
 
 /// `git init` a fresh repository at `path` (created if absent). Used by the
 /// New Project "create" flow before seeding an initial commit.
@@ -36,7 +36,7 @@ pub async fn init_repo(path: &Path) -> Result<()> {
 pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
     run_git(repo, &["add", "-A"], "add -A").await?;
 
-    let env = merge_git_env(&[&identity_env(repo).await, &no_hooks_env()]);
+    let env = identity_env(repo).await;
     let out = git_output_env(repo, &["commit", "-m", message], &env).await?;
     if !out.status.success() {
         // `git commit` writes the common "nothing to commit, working tree
@@ -72,26 +72,25 @@ pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
 
     // Seed the temp index from HEAD, then stage every working-tree change
     // (adds/mods/dels, honoring .gitignore) into it — the snapshot tree.
-    let stage_env = merge_git_env(&[&index_env, &no_hooks_env()]);
     run_git_env(
         checkout,
         &["read-tree", "HEAD"],
-        &stage_env,
+        &index_env,
         "fork snapshot read-tree",
     )
     .await?;
-    run_git_env(checkout, &["add", "-A"], &stage_env, "fork snapshot add").await?;
+    run_git_env(checkout, &["add", "-A"], &index_env, "fork snapshot add").await?;
     let tree = run_git_env(
         checkout,
         &["write-tree"],
-        &stage_env,
+        &index_env,
         "fork snapshot write-tree",
     )
     .await?;
     let tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
 
     // commit-tree writes no hooks but needs an identity, same fallback as commit.
-    let commit_env = merge_git_env(&[&index_env, &identity_env(checkout).await, &no_hooks_env()]);
+    let commit_env = merge_git_env(&[&index_env, &identity_env(checkout).await]);
     let commit = run_git_env(
         checkout,
         &[
@@ -127,21 +126,8 @@ pub async fn carry_worktree(dest: &Path, source: &Path, snapshot: &str, base: &s
     // Materialize the snapshot exactly (adds/mods/dels), then move HEAD + index
     // back to base, leaving the working tree — so the delta reads as unstaged
     // working-tree changes, exactly like the parent's uncommitted state.
-    let env = no_hooks_env();
-    run_git_env(
-        dest,
-        &["reset", "--hard", snapshot],
-        &env,
-        "carry reset --hard",
-    )
-    .await?;
-    run_git_env(
-        dest,
-        &["reset", "--mixed", base],
-        &env,
-        "carry reset --mixed",
-    )
-    .await?;
+    run_git(dest, &["reset", "--hard", snapshot], "carry reset --hard").await?;
+    run_git(dest, &["reset", "--mixed", base], "carry reset --mixed").await?;
     Ok(())
 }
 
@@ -171,7 +157,7 @@ pub async fn worktree_prune(repo: &Path) -> Result<()> {
 /// identity fallback like every other commit-creating op.
 pub async fn commit_initial(repo: &Path) -> Result<()> {
     run_git(repo, &["add", "-A"], "add -A").await?;
-    let env = merge_git_env(&[&identity_env(repo).await, &no_hooks_env()]);
+    let env = identity_env(repo).await;
     let out = git_output_env(
         repo,
         &["commit", "--allow-empty", "-m", "Initial commit"],

@@ -7,6 +7,7 @@ mod branch;
 mod cmd;
 mod diff;
 mod files;
+pub(crate) mod hardening;
 mod transport;
 mod worktree;
 
