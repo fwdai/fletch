@@ -617,6 +617,24 @@ fn get_sandbox_engine() -> String {
     sandbox::selected_engine_kind().as_setting().to_string()
 }
 
+/// What a sandbox engine actually guarantees — `engine` (a `sandbox_engine`
+/// spelling) or, when absent, whichever engine new agents currently get.
+///
+/// The two engines are not equally capable, and each is stronger than the other
+/// on a different claim, so "which engine am I on" doesn't answer "what am I
+/// protected from". This makes the coverage matrix
+/// (`sandbox::guarantees`) readable rather than something a user has to infer
+/// from release notes.
+#[tauri::command]
+fn describe_sandbox_isolation(engine: Option<String>) -> Result<sandbox::IsolationReport, String> {
+    let kind = match engine {
+        Some(value) => sandbox::EngineKind::from_setting(&value)
+            .ok_or_else(|| format!("unknown sandbox engine: {value}"))?,
+        None => sandbox::selected_engine_kind(),
+    };
+    Ok(sandbox::describe_isolation(kind))
+}
+
 /// Change the sandbox engine stamped onto *new* agents. Docker is validated
 /// against a live daemon probe before being accepted, so a success here means
 /// the choice is actionable. Persists to `settings` and updates the in-memory
@@ -1535,6 +1553,7 @@ pub fn run() {
             track_event,
             get_sandbox_engine,
             set_sandbox_engine,
+            describe_sandbox_isolation,
             probe_docker_engine,
             get_container_auth_status,
             set_container_auth_token,

@@ -129,6 +129,15 @@ After either clone, three fixups run (`sandbox/provision.rs`):
 
 Stated plainly, because the trust anchor earns trust by naming its limits.
 
+Each claim below is also a value in `sandbox/guarantees.rs`, carrying its
+**per-engine coverage** — `enforced`, `partial`, or `unenforced` with the reason.
+That matrix, not this prose, is authoritative for *which engine* delivers what:
+the engines are not equally capable and neither is a superset of the other, so
+"which engine am I on" does not by itself answer "what am I protected from". The
+compiler forces every claim to declare coverage for every engine, so the gap
+cannot go quietly unstated the way a doc caveat can. The
+`describe_sandbox_isolation` command returns the matrix for display.
+
 **An agent CAN:**
 
 - **Read your disk — under seatbelt.** The seatbelt profile confines writes, not
@@ -230,6 +239,14 @@ and this document should be corrected.
   `docker run --rm --init`, the identical-host-path mounts, the read-only
   borrowed object store, and the invariants that keep the source `.git` and your
   credentials out of the container.
+- `src-tauri/src/sandbox/guarantees.rs` — the claim/coverage matrix: what each
+  engine actually guarantees, and the stated reason wherever coverage is less
+  than complete. Authoritative for per-engine coverage.
+- `src-tauri/src/sandbox/policy.rs` — the engine-independent write policy and its
+  invariants, including invariant 3 (git-executable config is never
+  agent-writable).
+- `src-tauri/src/git/hardening.rs` — the overrides every host-side git invocation
+  carries, applied at git's single spawn seam.
 - `src-tauri/src/sandbox/provision.rs` — how a workspace comes into existence:
   the two clone strategies, origin rewrite, hook install, and identity seeding.
 - `src-tauri/src/rpc/git.rs` — the host-side broker for `git_push`, `open_pr`,
