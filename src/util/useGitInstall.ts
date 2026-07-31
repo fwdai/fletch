@@ -5,6 +5,7 @@
 
 import { useCallback, useState } from "react";
 import { api, type ToolStatus } from "@/api";
+import { track } from "./track";
 import { type GitDistState, useGitDist } from "./useGitDist";
 
 export interface GitInstall {
@@ -30,12 +31,22 @@ export function useGitInstall(git: ToolStatus | null, recheck: () => void): GitI
   const [installingGit, setInstallingGit] = useState(false);
   const installGit = useCallback(() => {
     setInstallingGit(true);
+    track("git_install_started", {});
     // Progress + failure reason arrive via git-dist:state; the final recheck
     // covers the case where the bootstrap already settled before mount (no
     // further events) yet the retry succeeded.
+    //
+    // The two-arm `then` reports the outcome and absorbs the rejection (as the
+    // old `.catch(() => {})` did), so `finally` still runs and nothing escapes
+    // unhandled. It measures whether the install *call* completed, which is the
+    // signal we want: a user stuck without git is one who never gets past the
+    // git step at all.
     void api
       .gitDistInstall()
-      .catch(() => {})
+      .then(
+        () => track("git_install_succeeded", {}),
+        () => track("git_install_failed", {}),
+      )
       .finally(() => {
         setInstallingGit(false);
         recheck();

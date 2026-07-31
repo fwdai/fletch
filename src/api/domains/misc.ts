@@ -15,7 +15,13 @@ export const miscApi = {
   // index in the background (install + per-repo mirror). Backend-owned.
   setCodeIndexingEnabled: (enabled: boolean) =>
     invoke<void>("set_code_indexing_enabled", { enabled }),
-  // Emit the deferred first `app_opened` once onboarding completes — i.e. after
-  // the data-sharing disclosure has been shown. See `track_app_opened` (Rust).
+  // Emit the deferred first `app_opened` once the onboarding overlay (which
+  // carries the data-sharing disclosure) is on screen. Idempotent per process.
+  // See `track_app_opened` (Rust).
   trackAppOpened: () => invoke<void>("track_app_opened"),
+  // Raise a renderer-observed product event. Don't call this directly — go
+  // through the typed `track()` in `@/util/track`, which is the gate that keeps
+  // event names and property shapes honest.
+  trackEvent: (event: string, props: Record<string, unknown>) =>
+    invoke<void>("track_event", { event, props }),
 };

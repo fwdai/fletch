@@ -120,7 +120,8 @@ export function WelcomeStep({
           >
             Privacy Policy
           </a>
-          . Your code never leaves your machine.
+          . Your code never leaves your machine. Fletch shares anonymous usage data to improve the
+          app — turn it off anytime in Settings › General.
         </p>
       </div>
     </div>

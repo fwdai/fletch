@@ -563,13 +563,50 @@ async fn warm_codegraph_index(repos: Vec<(String, PathBuf)>) {
     }
 }
 
-/// Emit the deferred first `app_opened`. The frontend calls this once, when the
-/// user finishes onboarding (after the data-sharing disclosure on the final
-/// step). On a fresh install `setup` skips the launch-time `app_opened`, so this
-/// is the first such event — sent only once consent has been disclosed.
+/// Send `app_opened` at most once per process.
+///
+/// Two callers race for it: `setup` at launch (for an already-onboarded
+/// install) and the `track_app_opened` command when the onboarding overlay
+/// mounts (for a fresh install, where the launch-time send is deferred until
+/// the data-sharing disclosure is on screen). Replaying onboarding from
+/// Settings › Developer puts both in play within one run, so without this flag
+/// that replay would double-count the launch.
+fn send_app_opened() {
+    static SENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if SENT.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    telemetry::track("app_opened", json!({}));
+}
+
+/// Emit the deferred first `app_opened`. The frontend calls this when the
+/// onboarding overlay mounts on a *fresh install* — the welcome step carries
+/// the data-sharing disclosure, so the event lands only once consent has been
+/// disclosed. On a fresh install `setup` skips the launch-time `app_opened`, so
+/// this is the first such event.
+///
+/// Safe to call spuriously: `send_app_opened` collapses repeat calls, so a
+/// StrictMode double-mount, the belt-and-braces call from `closeOnboarding`,
+/// and an onboarding replay are all no-ops.
 #[tauri::command]
 fn track_app_opened() {
-    telemetry::track("app_opened", json!({}));
+    send_app_opened();
+}
+
+/// Emit a product event raised by the renderer — the onboarding funnel and the
+/// activation-path moments that only the frontend can observe (a step viewed, a
+/// device-flow sign-in abandoned, a project added). Backend-observable events
+/// (`agent_spawned`, `pr_opened`, `turn_completed`) stay in the backend.
+///
+/// Consent and identity are enforced downstream by `telemetry::track`, so this
+/// is a no-op when the user has opted out.
+///
+/// `props` must stay categorical — counts, enums, booleans. Never pass paths,
+/// repo/branch names, prompts, or raw error strings: the frontend helper
+/// (`src/util/track.ts`) is the typed gate that keeps call sites honest.
+#[tauri::command]
+fn track_event(event: String, props: Option<serde_json::Value>) {
+    telemetry::track(&event, props.unwrap_or_else(|| json!({})));
 }
 
 /// The persisted sandbox engine selection (`"sandbox-exec"` | `"docker"`).
@@ -1337,12 +1374,13 @@ pub fn run() {
                 (distinct_id, enabled, onboarded, prev)
             };
             telemetry::init(distinct_id, telemetry_enabled, version.clone());
-            // On a fresh install the first `app_opened` is deferred until
-            // onboarding completes (see the `track_app_opened` command), so no
-            // event is sent before the user has seen the data-sharing disclosure.
-            // Once onboarded, every launch reports `app_opened` here as usual.
+            // On a fresh install the first `app_opened` is deferred until the
+            // onboarding overlay is on screen (see the `track_app_opened`
+            // command) — its welcome step carries the data-sharing disclosure,
+            // so no event is sent before the user has been told. Once onboarded,
+            // every launch reports `app_opened` here as usual.
             if onboarding_complete {
-                telemetry::track("app_opened", json!({}));
+                send_app_opened();
             }
             if let Some(prev) = prev_version {
                 if !prev.is_empty() && prev != version {
@@ -1494,6 +1532,7 @@ pub fn run() {
             set_telemetry_enabled,
             set_code_indexing_enabled,
             track_app_opened,
+            track_event,
             get_sandbox_engine,
             set_sandbox_engine,
             probe_docker_engine,

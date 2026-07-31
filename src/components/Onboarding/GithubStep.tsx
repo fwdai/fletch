@@ -15,7 +15,7 @@ export function GithubStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
   const { ghConnected, gh, recheck } = setup;
   // Own device-flow instance: on success re-run the shared checks so the
   // footer's Continue enables without leaving the step.
-  const { connect, cancel, device, error, busy } = useGithubConnect(recheck);
+  const { connect, cancel, device, error, busy } = useGithubConnect(recheck, "onboarding_github");
 
   let card: React.ReactNode;
   if (ghConnected) {

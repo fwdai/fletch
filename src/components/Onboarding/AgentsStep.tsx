@@ -12,6 +12,7 @@ import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { installCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
+import { track } from "@/util/track";
 import { ExBar } from "./exhibits";
 import { CopyCmd, DocsLink, SetupStep } from "./SetupBits";
 import type { OnboardingSetup } from "./useSetup";
@@ -44,8 +45,13 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
 
   const install = (id: ProviderId) => {
     setInstalls((m) => ({ ...m, [id]: { phase: "running" } }));
+    // At least one agent CLI is the hard gate on this step, so a failing
+    // one-click install is a dead stop. Provider id only — the installer's
+    // error text is a raw shell message and never leaves the machine.
+    track("agent_cli_install_started", { provider: id });
     void api.installAgent(id).then(
       async () => {
+        track("agent_cli_install_succeeded", { provider: id });
         // The install itself succeeded — the probe refresh is best-effort.
         // If it throws, clear the tile anyway rather than masking a good
         // install as "failed"; the 4s auto-poll picks the binary up.
@@ -55,7 +61,10 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
           return rest;
         });
       },
-      (err) => setInstalls((m) => ({ ...m, [id]: { phase: "failed", error: String(err) } })),
+      (err) => {
+        track("agent_cli_install_failed", { provider: id });
+        setInstalls((m) => ({ ...m, [id]: { phase: "failed", error: String(err) } }));
+      },
     );
   };
 
