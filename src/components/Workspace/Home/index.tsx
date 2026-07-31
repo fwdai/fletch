@@ -1,7 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
-import { Icon } from "@/components/Icon";
-import { IconButton } from "@/components/ui/IconButton";
+import { PanelToggle } from "@/components/PanelToggle";
 import { useAppStore } from "@/store";
 import { ActionCard } from "./ActionCard";
 import { greeting } from "./greeting";
@@ -14,8 +13,6 @@ import { greeting } from "./greeting";
  *  action — nothing decorative. */
 export function Home() {
   const workspace = useAppStore((s) => s.workspace);
-  const leftCollapsed = useAppStore((s) => s.leftCollapsed);
-  const toggleLeft = useAppStore((s) => s.toggleLeft);
   const createDraft = useAppStore((s) => s.createDraft);
   const addWorkspaceRepo = useAppStore((s) => s.addWorkspaceRepo);
   const setLastRepoPath = useAppStore((s) => s.setLastRepoPath);
@@ -90,12 +87,7 @@ export function Home() {
   return (
     <div className="pane center">
       <div className="center-h flex-center">
-        <IconButton
-          tip={leftCollapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
-          onClick={toggleLeft}
-        >
-          <Icon name="sidebarL" />
-        </IconButton>
+        <PanelToggle side="left" />
       </div>
 
       <div className="home-wrap flex-center fade-in">

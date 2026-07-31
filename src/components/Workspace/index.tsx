@@ -1,8 +1,8 @@
 import { useState } from "react";
 import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
+import { PanelToggle } from "@/components/PanelToggle";
 import { Button } from "@/components/ui/Button";
-import { IconButton } from "@/components/ui/IconButton";
 import { providerLabel } from "@/data/providers";
 import { EMPTY_AGENTS, useAppStore } from "@/store";
 import { RunView } from "@/workflows/run/RunView";
@@ -24,8 +24,6 @@ export function Workspace() {
   const selectedRunId = useAppStore((s) => s.selectedRunId);
   const drafts = useAppStore((s) => s.drafts);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
-  const leftCollapsed = useAppStore((s) => s.leftCollapsed);
-  const toggleLeft = useAppStore((s) => s.toggleLeft);
   const missionControl = useAppStore((s) => s.features.missionControl);
   const nativeView = useAppStore((s) => s.features.nativeView);
 
@@ -50,12 +48,7 @@ export function Workspace() {
     return (
       <div className="pane center">
         <div className="center-h flex-center">
-          <IconButton
-            tip={leftCollapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
-            onClick={toggleLeft}
-          >
-            <Icon name="sidebarL" />
-          </IconButton>
+          <PanelToggle side="left" />
         </div>
         <Placeholder title="Loading…" body="Connecting to Fletch…" />
       </div>

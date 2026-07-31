@@ -1,5 +1,6 @@
 import type { AgentRecord, AgentStatus, DiffStats } from "@/api";
 import { Icon } from "@/components/Icon";
+import { PanelToggle } from "@/components/PanelToggle";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { formatAge } from "@/util/format";
@@ -47,10 +48,6 @@ export function WorkspaceHeader({ agent }: Props) {
   const nativeView = useAppStore((s) => s.features.nativeView);
   const railOpen = useAppStore((s) => s.transcriptRailOpen);
   const toggleRail = useAppStore((s) => s.toggleTranscriptRail);
-  const leftCollapsed = useAppStore((s) => s.leftCollapsed);
-  const rightCollapsed = useAppStore((s) => s.rightCollapsed);
-  const toggleLeft = useAppStore((s) => s.toggleLeft);
-  const toggleRight = useAppStore((s) => s.toggleRight);
   const now = useMinuteClock();
   // Use shortstats (5s app-wide poll) rather than full git state, since
   // the header shows shortstats regardless of which right-rail tab is
@@ -65,12 +62,7 @@ export function WorkspaceHeader({ agent }: Props) {
 
   return (
     <div className="center-h flex-center">
-      <IconButton
-        tip={leftCollapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
-        onClick={toggleLeft}
-      >
-        <Icon name="sidebarL" />
-      </IconButton>
+      <PanelToggle side="left" />
 
       <div className="task">
         <div className="t-name">
@@ -120,13 +112,7 @@ export function WorkspaceHeader({ agent }: Props) {
         tip="Fork this workspace and conversation"
       />
 
-      <IconButton
-        active={!rightCollapsed}
-        tip={rightCollapsed ? "Show panel (⌘/)" : "Hide panel (⌘/)"}
-        onClick={toggleRight}
-      >
-        <Icon name="sidebarR" />
-      </IconButton>
+      <PanelToggle side="right" />
     </div>
   );
 }

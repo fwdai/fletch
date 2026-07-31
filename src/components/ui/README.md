@@ -36,6 +36,13 @@ Tooltips are CSS-only: pass `tip="…"` (and `tipDown` where supported) — it s
 - Rows, cards, and tabs that happen to be `<button>` for keyboard access are not
   buttons in this sense — they keep their own classes (`.np-item`, `.np-repo`,
   `.hrow`, `.np-dest`, `.dd-item`).
+- **`active` is for states that are off by default.** It paints the button with
+  `var(--accent)`, which only reads as a signal if the unaccented state is the
+  common one — `active={open}` on a popover trigger, not `active={!collapsed}` on
+  a rail that's open by default (that's just a permanently orange button
+  competing with the accents that mean something). When several call sites render
+  the same control, give it a shared component rather than repeating the
+  `IconButton` — see `components/PanelToggle` for the two side rails.
 - Import directly (`import { Badge } from "../ui/Badge"`) or via the barrel
   (`import { Badge } from "../ui"`).
 
