@@ -157,6 +157,27 @@ describe("receivePublishApproval", () => {
     expect(s.getState().pendingPublishApprovals).toHaveLength(1);
   });
 
+  it("answers a primary-checkout push, which arrives with no repo", () => {
+    // The regression this guards: the backend used to send the primary's own
+    // subdir name, while the UI keys the primary WITHOUT a suffix. The resulting
+    // key matched no enrollment, so every single-repo autopilot push would have
+    // waited on a prompt. `approval_repo` normalises it to absent.
+    const s = store({ autopilot: { [KEY]: enrolled() } });
+    (s.getState().receivePublishApproval as Recv)(request({ repo: undefined }));
+    expect(answerPublishApproval).toHaveBeenCalledWith("r1", true);
+    expect(s.getState().pendingPublishApprovals).toEqual([]);
+  });
+
+  it("scopes to a secondary checkout when one is named", () => {
+    const s = store({ autopilot: { [SECOND_REPO]: enrolled() } });
+    (s.getState().receivePublishApproval as Recv)(request({ repo: "web" }));
+    expect(answerPublishApproval).toHaveBeenCalledWith("r1", true);
+    // ...and the primary's own enrollment must not cover it.
+    const other = store({ autopilot: { [KEY]: enrolled() } });
+    (other.getState().receivePublishApproval as Recv)(request({ repo: "web" }));
+    expect(other.getState().pendingPublishApprovals).toHaveLength(1);
+  });
+
   it("queues a pull request even while autopilot is driving", () => {
     const s = store({ autopilot: { [KEY]: enrolled() } });
     (s.getState().receivePublishApproval as Recv)(request({ op: "open_pr" }));

@@ -201,21 +201,15 @@ mod tests {
         assert_eq!(rx_second.await, Ok(true));
     }
 
+    // No test toggles `set_enabled` here on purpose: it is process-global, and a
+    // parallel git-dispatcher test observing it as ON would see the fail-closed
+    // refusal (no approval channel in tests) and fail. The mirror is a plain
+    // AtomicBool; asserting its round-trip is not worth that hazard.
+
     /// An unknown id is ignored rather than panicking — a late answer for an
     /// already-timed-out request is expected, not exceptional.
     #[test]
     fn answering_an_unknown_request_is_a_no_op() {
         answer("never-registered", true);
-    }
-
-    /// The in-memory mirror is what the dispatcher reads (it has no DB handle),
-    /// so a write that doesn't land there would leave the gate off however the
-    /// setting is stored. Restores the default, since the mirror is process-wide.
-    #[test]
-    fn the_mirror_round_trips() {
-        set_enabled(true);
-        assert!(enabled());
-        set_enabled(false);
-        assert!(!enabled());
     }
 }

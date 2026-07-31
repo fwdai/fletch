@@ -136,6 +136,12 @@ impl GitDispatcher {
                  session has no window to ask through"
             ));
         };
+        // Normalised to the form the UI keys by: `None` for the primary checkout.
+        // The frontend leaves the primary unsuffixed (`checkoutKey(agent, undefined)`),
+        // so sending the primary's own subdir name would build a key that no
+        // autopilot enrollment matches — and a missed match means an unattended push
+        // waits on a prompt nobody answers.
+        let repo = approval_repo(repo, self.default_subdir.as_deref());
         approval::refuse_unless_approved(app, agent_id, op, repo, detail).await
     }
 
@@ -563,6 +569,13 @@ impl GitDispatcher {
     }
 }
 
+/// A target's subdir as the UI keys it: `None` when it *is* the primary, which the
+/// frontend addresses without a suffix. Pure so the mapping is testable — getting
+/// it wrong strands an unattended publish rather than failing loudly.
+fn approval_repo<'a>(subdir: Option<&'a str>, primary: Option<&str>) -> Option<&'a str> {
+    subdir.filter(|s| Some(*s) != primary)
+}
+
 fn arg_branch(args: &Value) -> Option<String> {
     arg_branch_named(args, "branch")
 }
@@ -842,6 +855,18 @@ mod tests {
         let err = v["error"].as_str().unwrap();
         assert!(!err.contains("unknown op"), "got: {err}");
         assert!(err.contains("push failed"), "got: {err}");
+    }
+
+    /// The primary checkout must go over the wire as `None`, because the UI keys
+    /// the primary without a suffix. A regression here builds a key no autopilot
+    /// enrollment matches, so an unattended push would wait on a prompt.
+    #[test]
+    fn the_primary_checkout_is_reported_as_no_repo() {
+        assert_eq!(approval_repo(Some("app"), Some("app")), None);
+        // A secondary repo keeps its name — that is how the UI scopes to it.
+        assert_eq!(approval_repo(Some("web"), Some("app")), Some("web"));
+        // No repos registered (tests, legacy call sites): nothing to normalise.
+        assert_eq!(approval_repo(None, None), None);
     }
 
     /// The hole `rpc::caps` closes, at the layer that used to have it: an agent

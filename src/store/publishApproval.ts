@@ -30,7 +30,7 @@ export interface PublishAuthorityState {
  *
  *  A *paused* enrollment is not consent: autopilot dispatches nothing while
  *  paused, so a publish arriving then did not come from it. */
-function autopilotIsDriving(state: AutopilotState | undefined): boolean {
+export function autopilotIsDriving(state: AutopilotState | undefined): boolean {
   return state?.enrolled === true && !state.paused;
 }
 
