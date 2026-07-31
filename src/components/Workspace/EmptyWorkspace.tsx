@@ -4,6 +4,7 @@ import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
+import { PanelToggle } from "@/components/PanelToggle";
 import { IconButton } from "@/components/ui/IconButton";
 import { resolveBaseBranch } from "@/helpers";
 import { getLinearTeamId } from "@/storage/projectSettings";
@@ -44,8 +45,6 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
     if (!projectId) return 1;
     return projectRefs.filter((r) => r.project_id === projectId).length;
   }, [projectRefs, draft.repoPath]);
-  const toggleLeft = useAppStore((s) => s.toggleLeft);
-  const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const runLocalCommand = useAppStore((s) => s.runLocalCommand);
 
   // The project this draft targets — keys the remembered composer mode + default
@@ -103,12 +102,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   return (
     <div className="pane center">
       <div className="center-h flex-center">
-        <IconButton
-          tip={leftCollapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
-          onClick={toggleLeft}
-        >
-          <Icon name="sidebarL" />
-        </IconButton>
+        <PanelToggle side="left" />
         <div className="task" style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <span
             style={{

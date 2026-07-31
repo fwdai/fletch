@@ -6,7 +6,7 @@
 
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
-import { IconButton } from "@/components/ui/IconButton";
+import { PanelToggle } from "@/components/PanelToggle";
 import { useAppStore } from "@/store";
 import { AllClear } from "./AllClear";
 import { FanoutCard } from "./FanoutCard";
@@ -18,8 +18,6 @@ import { useReviewQueue } from "./useReviewQueue";
 import { WorkflowReviewModal } from "./WorkflowReviewModal";
 
 export function MissionControl() {
-  const leftCollapsed = useAppStore((s) => s.leftCollapsed);
-  const toggleLeft = useAppStore((s) => s.toggleLeft);
   const agentCount = useAppStore((s) => s.workspace?.agents.length ?? 0);
 
   const items = useReviewQueue();
@@ -37,12 +35,7 @@ export function MissionControl() {
   return (
     <div className="pane center fade-in">
       <div className="center-h flex-center">
-        <IconButton
-          tip={leftCollapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
-          onClick={toggleLeft}
-        >
-          <Icon name="sidebarL" />
-        </IconButton>
+        <PanelToggle side="left" />
         <div className="task">
           <div className="t-name">
             <Icon name="layers" size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />

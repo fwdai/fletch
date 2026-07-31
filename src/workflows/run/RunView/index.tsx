@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AgentRecord, GateEvidence, WfStepExec } from "../../../api";
 import { Icon } from "../../../components/Icon";
-import { IconButton } from "../../../components/ui/IconButton";
+import { PanelToggle } from "../../../components/PanelToggle";
 import { ChatView } from "../../../components/Workspace/ChatView";
 import { useAppStore } from "../../../store";
 import { resolveAlias } from "../../shared";
@@ -28,8 +28,6 @@ import { useRunDetail } from "./useRunDetail";
 export function RunView({ id }: { id: string }) {
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
-  const toggleLeft = useAppStore((s) => s.toggleLeft);
-  const leftCollapsed = useAppStore((s) => s.leftCollapsed);
   const selectRun = useAppStore((s) => s.selectRun);
   const focusedStepAgentId = useAppStore((s) => s.focusedStepAgentId);
   const clearFocusedStepAgent = useAppStore((s) => s.clearFocusedStepAgent);
@@ -136,9 +134,7 @@ export function RunView({ id }: { id: string }) {
     return (
       <div className="pane center">
         <div className="center-h">
-          <IconButton tip="Toggle sidebar (⌘B)" onClick={toggleLeft}>
-            <Icon name="sidebarL" />
-          </IconButton>
+          <PanelToggle side="left" />
         </div>
         <div className="empty-msg" style={{ margin: "auto" }}>
           <div className="et">Loading run…</div>
@@ -151,9 +147,7 @@ export function RunView({ id }: { id: string }) {
     return (
       <div className="pane center">
         <div className="center-h">
-          <IconButton tip="Toggle sidebar (⌘B)" onClick={toggleLeft}>
-            <Icon name="sidebarL" />
-          </IconButton>
+          <PanelToggle side="left" />
         </div>
         <div className="empty-msg" style={{ margin: "auto", maxWidth: 320 }}>
           <div className="et">Run not found</div>
@@ -171,12 +165,7 @@ export function RunView({ id }: { id: string }) {
   return (
     <div className="pane center wf-run">
       <div className="center-h">
-        <IconButton
-          tip={leftCollapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
-          onClick={toggleLeft}
-        >
-          <Icon name="sidebarL" />
-        </IconButton>
+        <PanelToggle side="left" />
         <div className="task">
           <div className="t-name">
             <Icon name="combine" size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />
