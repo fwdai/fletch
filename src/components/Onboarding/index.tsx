@@ -6,9 +6,11 @@
 // transitions, progress rail, and keyboard nav carry over from the original
 // tour; the exhibits now sit beside real controls.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "@/api";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
+import { track } from "@/util/track";
 import { useGithubConnect } from "@/util/useGithubConnect";
 import { AgentsStep } from "./AgentsStep";
 import { Ambient } from "./Ambient";
@@ -28,10 +30,16 @@ const RAIL_LEN = 4; // welcome..agents (the ready handoff is excluded)
 
 export function Onboarding() {
   const closeOnboarding = useAppStore((s) => s.closeOnboarding);
+  const onboardingComplete = useAppStore((s) => s.onboardingComplete);
 
   const [idx, setIdx] = useState(0);
   const [phase, setPhase] = useState<"in" | "out">("in");
   const [ready, setReady] = useState(false);
+
+  // Is this the real first run, or a replay from Settings › Developer? Frozen
+  // at mount: `closeOnboarding` flips `onboardingComplete` to true, and the
+  // terminal event must not report itself as a replay on the way out.
+  const firstRun = useRef(!onboardingComplete).current;
 
   const step = STEPS[idx];
 
@@ -42,6 +50,25 @@ export function Onboarding() {
     const id = window.setTimeout(() => setReady(true), 40);
     return () => window.clearTimeout(id);
   }, [idx]);
+
+  // On a fresh install the backend defers the first `app_opened` to here: the
+  // welcome step carries the data-sharing disclosure, so this is the earliest
+  // point at which telemetry has been disclosed. Firing it on mount (rather
+  // than at completion, as before) is what makes the drop-off events below
+  // meaningful — a user who quits at step 02 is exactly who we want to see.
+  //
+  // Only on a real first run: an already-onboarded user got their `app_opened`
+  // at launch, so a replay must not send a second one. (`send_app_opened` in
+  // Rust also collapses repeats, which covers StrictMode's double-mount.)
+  useEffect(() => {
+    if (firstRun) void api.trackAppOpened();
+  }, [firstRun]);
+
+  // The funnel. One event per step reveal gives the whole drop-off curve;
+  // the skip/abandon/complete events below say *how* each user left.
+  useEffect(() => {
+    track("onboarding_step_viewed", { step: STEPS[idx], index: idx, first_run: firstRun });
+  }, [idx, firstRun]);
 
   const go = useCallback(
     (next: number) => {
@@ -77,6 +104,32 @@ export function Onboarding() {
           : false;
   const showNext = step === "git" || step === "github" || step === "agents";
 
+  // Exactly one terminal event per onboarding session, whichever exit the user
+  // takes: Esc, ✕, and "Enter Fletch" all funnel through `leave`. A ref (not
+  // state) guards it, so a second call during the closing render can't
+  // double-count. `completed` carries what the user actually finished with —
+  // the handoff is reachable with gaps via Skip, so the flags are the point.
+  const leftRef = useRef(false);
+  const leave = useCallback(
+    (reason: "completed" | "abandoned") => {
+      if (!leftRef.current) {
+        leftRef.current = true;
+        if (reason === "completed") {
+          track("onboarding_completed", {
+            git_ready: setup.gitReady,
+            gh_connected: setup.ghConnected,
+            agents_detected: setup.detected,
+            first_run: firstRun,
+          });
+        } else {
+          track("onboarding_abandoned", { step, first_run: firstRun });
+        }
+      }
+      closeOnboarding();
+    },
+    [closeOnboarding, step, firstRun, setup.gitReady, setup.ghConnected, setup.detected],
+  );
+
   // Shared device-flow sign-in. On success advance off the welcome step; the
   // hook persists the profile and refreshes the account + GitHub connection.
   // The requirement checks re-run so a GitHub sign-in pre-passes step 02.
@@ -91,12 +144,19 @@ export function Onboarding() {
     device,
     error: authError,
     busy,
-  } = useGithubConnect(onSignedIn);
+  } = useGithubConnect(onSignedIn, "onboarding_welcome");
   const onAuth = useCallback((provider: string) => void connect(provider), [connect]);
 
   // Handoff: just drop into the real app. Its empty state prompts the user to
   // add their first repo from the sidebar — no auto-picker.
-  const onEnter = useCallback(() => closeOnboarding(), [closeOnboarding]);
+  const onEnter = useCallback(() => leave("completed"), [leave]);
+
+  // A step's own opt-out ("I use GitLab…", "Set up later"), distinct from the
+  // title-bar Skip: it declines one requirement rather than the whole flow.
+  const skipStep = useCallback(() => {
+    track("onboarding_step_skipped", { step, first_run: firstRun });
+    next();
+  }, [next, step, firstRun]);
 
   // keyboard navigation
   useEffect(() => {
@@ -104,7 +164,7 @@ export function Onboarding() {
       const tag = (e.target as HTMLElement | null)?.tagName;
       const inField = tag === "TEXTAREA" || tag === "INPUT";
       if (e.key === "Escape") {
-        closeOnboarding();
+        leave(step === "ready" ? "completed" : "abandoned");
       } else if (e.key === "Enter" && step === "welcome" && !busy) {
         onAuth("github");
       } else if ((e.key === "ArrowRight" || e.key === "Enter") && showNext && !inField) {
@@ -118,7 +178,7 @@ export function Onboarding() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, busy, step, showNext, canContinue, next, back]);
+  }, [idx, busy, step, showNext, canContinue, next, back, leave]);
 
   let content = null;
   if (step === "welcome")
@@ -132,8 +192,8 @@ export function Onboarding() {
         <WelcomeStep onAuth={onAuth} busy={busy} />
       );
   else if (step === "git") content = <GitStep setup={setup} />;
-  else if (step === "github") content = <GithubStep setup={setup} onSkip={next} />;
-  else if (step === "agents") content = <AgentsStep setup={setup} onSkip={next} />;
+  else if (step === "github") content = <GithubStep setup={setup} onSkip={skipStep} />;
+  else if (step === "agents") content = <AgentsStep setup={setup} onSkip={skipStep} />;
   else if (step === "ready") content = <ReadyStep setup={setup} onEnter={onEnter} />;
 
   const showBack = idx > 0;
@@ -153,7 +213,13 @@ export function Onboarding() {
             </span>
           )}
           {step !== "ready" && (
-            <button className="ob-skip text-sm" onClick={() => go(STEPS.length - 1)}>
+            <button
+              className="ob-skip text-sm"
+              onClick={() => {
+                track("onboarding_skipped", { step, first_run: firstRun });
+                go(STEPS.length - 1);
+              }}
+            >
               Skip
             </button>
           )}
@@ -161,7 +227,7 @@ export function Onboarding() {
             className="ob-close"
             title="Close (Esc)"
             aria-label="Close onboarding"
-            onClick={() => closeOnboarding()}
+            onClick={() => leave(step === "ready" ? "completed" : "abandoned")}
           >
             <Icon name="close" size={15} />
           </button>

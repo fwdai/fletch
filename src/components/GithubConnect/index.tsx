@@ -14,7 +14,7 @@ import { useGithubConnect } from "@/util/useGithubConnect";
 export function GithubConnectModal() {
   const open = useAppStore((s) => s.githubConnectOpen);
   const close = useAppStore((s) => s.closeGithubConnect);
-  const { connect, cancel, device, error, busy } = useGithubConnect(close);
+  const { connect, cancel, device, error, busy } = useGithubConnect(close, "connect_gate");
 
   // Kick off the flow once per open. We deliberately depend on `open` alone and
   // reach `connect` through a ref: `connect`'s identity changes on every `busy`

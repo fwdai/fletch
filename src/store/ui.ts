@@ -143,9 +143,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     const firstCompletion = !get().onboardingComplete;
     set({ onboardingOpen: false, onboardingComplete: true });
     setSetting("onboardingComplete", "true");
-    // On a fresh install the backend defers the first `app_opened` until now, so
-    // the event lands only after the data-sharing disclosure shown during
-    // onboarding has been seen. Fire it once, on the first completion.
+    // Safety net. On a fresh install the backend defers the first `app_opened`
+    // to the onboarding overlay's mount (the welcome step carries the
+    // data-sharing disclosure) — see `Onboarding/index.tsx`. This covers the
+    // case where onboarding is marked complete without that mount ever having
+    // happened; `track_app_opened` is idempotent, so the normal path is a no-op
+    // here rather than a double count.
     if (firstCompletion) void api.trackAppOpened();
   },
   toggleHistory: (open) =>

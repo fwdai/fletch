@@ -51,7 +51,7 @@ export function DestRow({
  *  the device flow inline: on success the store's `github` flips and the
  *  parent view re-renders to the real form — no dialog reopen. */
 export function ConnectGitHub({ what }: { what: string }) {
-  const { connect, cancel, device, error, busy } = useGithubConnect();
+  const { connect, cancel, device, error, busy } = useGithubConnect(undefined, "new_project");
   return (
     <div className="np-body">
       <div className="np-gate flex-center">

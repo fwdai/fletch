@@ -2,6 +2,7 @@ import { api } from "@/api";
 import { dropAgentEntries } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
+import { track } from "@/util/track";
 import type { SliceCreator } from "./types";
 
 export interface ReposSlice {
@@ -44,8 +45,13 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
   addWorkspaceRepo: async (path) => {
     set({ busy: true, lastError: null });
     try {
+      const first = (get().workspace?.projects.length ?? 0) === 0;
       const ws = await api.addWorkspaceRepo(path);
       set({ workspace: ws });
+      // Activation: onboarding hands off to an empty sidebar, so the first
+      // project is the moment a new user actually starts. Method + first only —
+      // never the path.
+      track("project_added", { method: "existing", first });
     } catch (e) {
       set({ lastError: String(e) });
     } finally {
@@ -130,13 +136,18 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
 
   cloneRepo: async (spec, destParent) => {
     // The new project appears in the sidebar via the refreshed workspace.
-    // Errors propagate to the caller (the modal) for inline display.
+    // Errors propagate to the caller (the modal) for inline display — and skip
+    // the event, so `project_added` only ever means a project that landed.
+    const first = (get().workspace?.projects.length ?? 0) === 0;
     const ws = await api.cloneRepo(spec, destParent);
     set({ workspace: ws });
+    track("project_added", { method: "clone", first });
   },
 
   createRepo: async (name, destParent, isPrivate, description, publish) => {
+    const first = (get().workspace?.projects.length ?? 0) === 0;
     const ws = await api.createRepo(name, destParent, isPrivate, description, publish);
     set({ workspace: ws });
+    track("project_added", { method: "create", first });
   },
 });
