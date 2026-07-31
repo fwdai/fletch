@@ -2,9 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/api";
 import { Icon } from "@/components/Icon";
 import { loadRunOverrides, type SetupRow, toSetupRows } from "@/components/RunConfig";
-import { IconButton } from "@/components/ui/IconButton";
 import { Loader } from "@/components/ui/Loader";
-import { ModalSheet } from "@/components/ui/Modal";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
 import { DeleteSection } from "./DeleteSection";
@@ -22,12 +20,13 @@ interface Loaded {
   overrides: Record<string, string>;
 }
 
-/** Project Settings modal. A centered overlay (mirrors the History sheet) for
- *  editing per-project defaults — chiefly the run configuration every agent in
- *  the project inherits. Sections stack in one scrollable page. Keyed by the
- *  sidebar's repo path; resolves the project_id and detected run config on open. */
-export function ProjectSettings({ repoPath }: { repoPath: string }) {
-  const close = useAppStore((s) => s.closeProjectSettings);
+/** Full-screen project page. Rendered in place of the workspace panes while
+ *  `projectScreenRepoPath` is set (mirrors SettingsScreen). One scrollable
+ *  page: activity pulse + per-project settings every agent in the project
+ *  inherits. Keyed by the project's primary repo path; resolves the
+ *  project_id and detected run config on open. */
+export function ProjectScreen({ repoPath }: { repoPath: string }) {
+  const close = useAppStore((s) => s.closeProjectScreen);
   const projects = useAppStore((s) => s.workspace?.projects);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,17 +70,18 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
   }, [repoPath]);
 
   return (
-    <ModalSheet onClose={close} label="Project settings" fill>
+    <div className="proj-screen">
       <div className="ps-head">
+        <button type="button" className="ps-back flex-center text-base" onClick={close}>
+          <Icon name="chevL" size={13} />
+          <span>Back to app</span>
+        </button>
         <div className="ps-id">
           <div className="ps-title text-lg truncate">{name}</div>
           <div className="ps-path mono text-xs truncate">
             {projectRepoCount > 1 ? `${projectRepoCount} repositories` : repoPath}
           </div>
         </div>
-        <IconButton onClick={close} aria-label="Close">
-          <Icon name="close" />
-        </IconButton>
       </div>
 
       <div className="ps-content">
@@ -108,6 +108,6 @@ export function ProjectSettings({ repoPath }: { repoPath: string }) {
           </div>
         )}
       </div>
-    </ModalSheet>
+    </div>
   );
 }

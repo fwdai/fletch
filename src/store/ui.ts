@@ -44,10 +44,10 @@ export interface UiSlice {
   /** When in history mode, the archived agent whose chat preview is
    *  being shown. `null` = list view. */
   selectedHistoryAgentId: string | null;
-  /** Project Settings modal: a centered overlay (History-style) for editing
-   *  per-project defaults. Keyed by the sidebar's repo path — the modal
-   *  resolves the project_id on open. Open iff non-null. */
-  projectSettingsRepoPath: string | null;
+  /** Full-screen project page (settings + pulse). Replaces the workspace
+   *  panes while non-null, like the settings screen. Keyed by the project's
+   *  primary repo path — the screen resolves the project_id on open. */
+  projectScreenRepoPath: string | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   /** Show the structured transcript rail beside the native view's terminal.
@@ -88,9 +88,9 @@ export interface UiSlice {
   closeOnboarding: () => void;
   toggleHistory: (open?: boolean) => void;
   selectHistoryAgent: (id: string | null) => void;
-  /** Open the Project Settings modal for a sidebar repo group. */
-  openProjectSettings: (repoPath: string) => void;
-  closeProjectSettings: () => void;
+  /** Open the full-screen project page for a sidebar repo group. */
+  openProjectScreen: (repoPath: string) => void;
+  closeProjectScreen: () => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   toggleTranscriptRail: () => void;
@@ -119,7 +119,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   onboardingComplete: false,
   historyOpen: false,
   selectedHistoryAgentId: null,
-  projectSettingsRepoPath: null,
+  projectScreenRepoPath: null,
   leftCollapsed: false,
   rightCollapsed: false,
   transcriptRailOpen: true,
@@ -136,10 +136,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       settingsScreenOpen: true,
       settingsSection: section ?? s.settingsSection,
       settingsIntent: intent ?? null,
-      // The full screen takes over — dismiss the quick popover behind it and
-      // any selected workflow run (its main view would be hidden anyway).
+      // The full screen takes over — dismiss the quick popover behind it, any
+      // selected workflow run (its main view would be hidden anyway), and the
+      // project screen (only one full-screen surface at a time).
       settingsOpen: false,
       selectedRunId: null,
+      projectScreenRepoPath: null,
     })),
   closeSettingsScreen: () => set({ settingsScreenOpen: false }),
   setSettingsSection: (section) => set({ settingsSection: section }),
@@ -169,8 +171,15 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       return next ? { historyOpen: true } : { historyOpen: false, selectedHistoryAgentId: null };
     }),
   selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
-  openProjectSettings: (repoPath) => set({ projectSettingsRepoPath: repoPath }),
-  closeProjectSettings: () => set({ projectSettingsRepoPath: null }),
+  openProjectScreen: (repoPath) =>
+    set({
+      projectScreenRepoPath: repoPath,
+      // Same takeover rules as the settings screen: one full-screen surface
+      // at a time, and a hidden run view shouldn't stay selected.
+      settingsScreenOpen: false,
+      selectedRunId: null,
+    }),
+  closeProjectScreen: () => set({ projectScreenRepoPath: null }),
   toggleLeft: () =>
     set((s) => {
       const leftCollapsed = !s.leftCollapsed;

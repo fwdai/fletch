@@ -1,10 +1,17 @@
 /* ═══ workspace status capsule ═══════════════════════════════════════
- * The functional center of the title bar. Adapted from the title-bar spec:
- * a hoverable pill (status dot + project/agent + git/PR badge) that reveals a
- * details popover on hover/focus. Plain/home variants share the tokens. */
+ * The functional center of the title bar, split in two pills: the project
+ * pill (a link to the full-screen project page) and the workspace pill
+ * (status dot + agent name + git/PR badge) that reveals a details popover
+ * on hover/focus. Plain/home variants share the tokens. */
 .ws-cap-wrap {
-  position: relative;
   -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+/* right segment — hover/focus anchor for the popover + caret */
+.ws-cap-main {
+  position: relative;
   display: flex;
 }
 
@@ -27,10 +34,23 @@
     box-shadow 0.14s var(--ease);
 }
 .ws-cap:not(.static):hover,
-.ws-cap-wrap:focus-within .ws-cap:not(.static) {
+.ws-cap-main:focus-within .ws-cap:not(.static) {
   background: var(--bg-1);
   border-color: var(--bd-soft);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+
+/* the project pill — same skin, but it's a button that opens the project page */
+.ws-cap-proj {
+  gap: 7px;
+  padding: 0 9px;
+  cursor: pointer;
+}
+
+/* the separator between the project and workspace pills */
+.ws-slash {
+  color: var(--fg-3);
+  font-size: 12px;
 }
 
 .ws-ctx {
@@ -45,9 +65,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ws-slash {
-  color: var(--fg-3);
-  font-size: 12px;
+.ws-cap-proj:hover .ws-proj-name {
+  color: var(--fg-0);
 }
 .ws-agent-name {
   color: var(--fg-0);
@@ -230,7 +249,7 @@
     transform 0.14s var(--ease),
     color 0.14s;
 }
-.ws-cap-wrap:hover .ws-caret {
+.ws-cap-main:hover .ws-caret {
   color: var(--fg-2);
   transform: translateY(1px);
 }
@@ -267,8 +286,8 @@
   top: -9px;
   height: 9px;
 }
-.ws-cap-wrap:hover .ws-pop,
-.ws-cap-wrap:focus-within .ws-pop,
+.ws-cap-main:hover .ws-pop,
+.ws-cap-main:focus-within .ws-pop,
 .ws-pop:hover {
   opacity: 1;
   visibility: visible;

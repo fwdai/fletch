@@ -1,16 +1,44 @@
-/* ─── project settings modal ─────────────────────────────────────────
- * The overlay + sheet shell come from the shared `ModalSheet` primitive
- * (`<ModalSheet fill>`, see components/ui/Modal.css) — same surface the
- * History sheet uses. What's left here is this modal's own content. */
+/* ─── project screen ─────────────────────────────────────────────────
+ * Full-screen project page (mirrors `.set-screen`): replaces the workspace
+ * panes while `projectScreenRepoPath` is set. A header row (back button +
+ * project identity) above one scrollable page of sections. */
+.proj-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-1);
+}
 
-/* header — project identity */
+/* header — back + project identity */
 .ps-head {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 18px 20px 16px 24px;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 24px;
   border-bottom: 1px solid var(--bd-soft);
   flex-shrink: 0;
+}
+.ps-back {
+  gap: 9px;
+  white-space: nowrap;
+  padding: 8px 10px;
+  margin-left: -10px;
+  border-radius: var(--r-sm);
+  color: var(--fg-2);
+  font-weight: 500;
+  transition: var(--transition-ui);
+}
+.ps-back:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.ps-back svg {
+  transition: transform 0.15s var(--ease);
+}
+.ps-back:hover svg {
+  transform: translateX(-2px);
 }
 .ps-id {
   flex: 1;

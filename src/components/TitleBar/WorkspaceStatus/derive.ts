@@ -23,6 +23,17 @@ export function dotStatus(status: AgentStatus, awaiting: boolean): DotStatus {
   return "idle";
 }
 
+/** [`dotStatus`] fed straight from store state: `pending` is the agent's
+ *  `pendingToolUse` entry, and a question only counts as awaiting while the
+ *  agent is actually working. */
+export function agentDotStatus(
+  status: AgentStatus,
+  pending: Record<string, string> | undefined,
+): DotStatus {
+  const working = status === "running" || status === "spawning";
+  return dotStatus(status, working && Object.keys(pending ?? {}).length > 0);
+}
+
 export type PrBadge = "open" | "draft" | "conflicts" | "merged" | "closed";
 
 export const PR_META: Record<PrBadge, { label: string; icon: IconName; cls: string }> = {

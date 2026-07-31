@@ -55,7 +55,7 @@ export function ProjectGroup({
   const selectDraft = useAppStore((s) => s.selectDraft);
   const selectRun = useAppStore((s) => s.selectRun);
   const createDraft = useAppStore((s) => s.createDraft);
-  const openProjectSettings = useAppStore((s) => s.openProjectSettings);
+  const openProjectScreen = useAppStore((s) => s.openProjectScreen);
 
   const count = agents.length + drafts.length + runs.length;
 
@@ -66,7 +66,7 @@ export function ProjectGroup({
 
   function onOpenSettings(e: React.MouseEvent) {
     e.stopPropagation();
-    openProjectSettings(repoPath);
+    openProjectScreen(repoPath);
   }
 
   const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";

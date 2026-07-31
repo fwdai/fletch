@@ -5,7 +5,7 @@ import { Feedback } from "./components/Feedback";
 import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
 import { Onboarding } from "./components/Onboarding";
-import { ProjectSettings } from "./components/ProjectSettings";
+import { ProjectScreen } from "./components/ProjectScreen";
 import { PublishApproval } from "./components/PublishApproval";
 import { RightPanel } from "./components/RightPanel";
 import { Settings } from "./components/Settings";
@@ -44,7 +44,7 @@ export function App() {
   const historyOpen = useAppStore((s) => s.historyOpen);
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
   const onboardingOpen = useAppStore((s) => s.onboardingOpen);
-  const projectSettingsRepoPath = useAppStore((s) => s.projectSettingsRepoPath);
+  const projectScreenRepoPath = useAppStore((s) => s.projectScreenRepoPath);
   // Count of agents that finished a turn while the user wasn't looking at them
   // (set on completion, cleared when the agent is opened). This is the same
   // signal behind the sidebar "new" dots — mirror it onto the app icon badge.
@@ -93,6 +93,8 @@ export function App() {
       <div className="main">
         {settingsScreenOpen ? (
           <SettingsScreen />
+        ) : projectScreenRepoPath ? (
+          <ProjectScreen repoPath={projectScreenRepoPath} />
         ) : (
           <>
             <div
@@ -139,7 +141,6 @@ export function App() {
       </div>
 
       {historyOpen && <History />}
-      {projectSettingsRepoPath && <ProjectSettings repoPath={projectSettingsRepoPath} />}
       <Settings />
       {onboardingOpen && <Onboarding />}
       <GithubConnectModal />
