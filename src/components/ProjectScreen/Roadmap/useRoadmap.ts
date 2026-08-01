@@ -240,9 +240,9 @@ export function useRoadmap(repoPath: string) {
   /** Edit a row. Throws, like `addItem` — its caller is the same form. */
   const editItem = useCallback(
     async (id: string, patch: RoadmapItemPatch) => {
-      const row = await api.roadmapUpdateItem(id, patch);
-      upsert(row);
-      return row;
+      const { item } = await api.roadmapUpdateItem(id, patch);
+      upsert(item);
+      return item;
     },
     [upsert],
   );
@@ -261,9 +261,9 @@ export function useRoadmap(repoPath: string) {
   const moveItem = useCallback(
     (id: string, to: Horizon) =>
       guarded(async () => {
-        const row = await api.roadmapUpdateItem(id, { horizon: to });
-        upsert(row);
-        markLanded([row.code]);
+        const { item } = await api.roadmapUpdateItem(id, { horizon: to });
+        upsert(item);
+        markLanded([item.code]);
       }),
     [guarded, markLanded, upsert],
   );
@@ -291,9 +291,9 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         const codes: string[] = [];
         for (const id of ids) {
-          const row = await api.roadmapUpdateItem(id, { status: "open" });
-          upsert(row);
-          codes.push(row.code);
+          const { item } = await api.roadmapUpdateItem(id, { status: "open" });
+          upsert(item);
+          codes.push(item.code);
         }
         markLanded(codes);
       }),
@@ -303,24 +303,47 @@ export function useRoadmap(repoPath: string) {
   /** Hand items to the drainer: `open → queued`. From here the Rust side owns
    *  the item — it picks the oldest queued item whose dependencies have landed,
    *  resolves a workflow, and launches a run. Queueing something it can't run
-   *  yet is fine and deliberate: it waits, and says why on the card. */
+   *  yet is fine and deliberate: it waits, and says why on the card.
+   *
+   *  Conditional on `open` for symmetry with [`unqueueItems`]: a row that already
+   *  moved on (the PM re-proposed it, another window queued it) is reported as it
+   *  is rather than dragged back to `queued`. */
   const queueItems = useCallback(
     (ids: string[]) =>
       guarded(async () => {
-        for (const id of ids) upsert(await api.roadmapUpdateItem(id, { status: "queued" }));
+        for (const id of ids) {
+          // Any note this row carries is about its previous life ("Back on the
+          // board — its run failed."), not about the queued one, and the `queued`
+          // row coming back won't clear it — `upsert` only drops notes for rows
+          // that left the queue. Dropped *before* the write, so the note the
+          // drainer emits on the resulting nudge is the one left standing.
+          dropNote(id);
+          const { item } = await api.roadmapUpdateItem(id, { status: "queued" }, "open");
+          upsert(item);
+        }
       }),
-    [guarded, upsert],
+    [dropNote, guarded, upsert],
   );
 
   /** Take an item back off the queue before it's dispatched (`queued → open`).
-   *  Racing the drainer is safe: it re-reads the row under the connection lock
-   *  immediately before claiming it, so this either lands first (and the item
-   *  is skipped) or lands after, against an already-`active` row — which the
-   *  board draws as running, because it is. */
+   *
+   *  Conditional on `queued`, because racing the drainer is *not* safe: it claims
+   *  `queued → active` under the connection lock and only then writes the
+   *  launched run's id onto the row, so a blind `→ open` landing in between would
+   *  leave a live run tied to an item nothing ever settles (the drainer settles
+   *  `active` items only) — the run would finish invisibly while holding the
+   *  project's queue slot, and the item would sit `open` forever.
+   *
+   *  A miss means the drainer got there first. That is not an error to shout
+   *  about: the click was simply a moment late, so the row that comes back
+   *  (`active`) is upserted and the board draws it as running, because it is. */
   const unqueueItems = useCallback(
     (ids: string[]) =>
       guarded(async () => {
-        for (const id of ids) upsert(await api.roadmapUpdateItem(id, { status: "open" }));
+        for (const id of ids) {
+          const { item } = await api.roadmapUpdateItem(id, { status: "open" }, "queued");
+          upsert(item);
+        }
       }),
     [guarded, upsert],
   );

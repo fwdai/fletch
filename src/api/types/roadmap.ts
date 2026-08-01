@@ -85,6 +85,18 @@ export interface RoadmapQueueNote {
   note: string;
 }
 
+/** The result of a patch: the stored row, and whether this patch is what stored
+ *  it.
+ *
+ *  `applied` is false only for a *conditional* update (`expectStatus`) whose
+ *  precondition missed — the row had already moved on, so nothing was written and
+ *  nothing was broadcast. `item` is then the row as it actually is, which is what
+ *  the caller should put on the board: its own snapshot was the stale one. */
+export interface RoadmapItemUpdate {
+  applied: boolean;
+  item: RoadmapItem;
+}
+
 /** A partial update. An omitted key is left alone; an explicit `null` on a
  *  nullable column clears it — so `{ size: null }` unsets the size while `{}`
  *  changes nothing. `code` and `project_id` are not patchable. */

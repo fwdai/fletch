@@ -198,6 +198,21 @@ pub struct ItemPatch {
     pub pr_number: Option<Option<i64>>,
 }
 
+/// The outcome of a patch: the stored row, and whether the patch was the thing
+/// that stored it.
+///
+/// `applied` is false only when the caller asked for a *conditional* update
+/// (`expect_status`) and the row had already moved on — a queue action racing the
+/// drainer's claim. The row still comes back, because the caller's board is what
+/// was wrong: showing it the truth is more useful than an error it would have to
+/// invent a message for.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ItemUpdate {
+    pub applied: bool,
+    /// The patched row when `applied`, the row as it actually is otherwise.
+    pub item: RoadmapItem,
+}
+
 /// Keep a double-`Option` field's `null` distinct from its absence. Serde's
 /// stock `Option` deserializer folds JSON `null` into the *outer* `None`, which
 /// would make "clear this column" unreachable from the frontend — the patch

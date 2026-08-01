@@ -89,10 +89,44 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
 /// Apply a partial update and return the stored row. An empty patch is a no-op
 /// that still returns the row (and still bumps nothing), so callers can send a
 /// patch built from a form without special-casing "nothing changed".
+///
+/// Unconditional: the `SET` lands whatever the row currently says. Use
+/// [`update_where_status`] for a *transition*, where applying the patch on top of
+/// a status somebody else already moved would be wrong.
 pub fn update(
     conn: &Connection,
     id: &str,
     patch: &ItemPatch,
+) -> rusqlite::Result<Option<RoadmapItem>> {
+    apply(conn, id, patch, None)
+}
+
+/// Apply a partial update only while the row is still in `expected`, and return
+/// the stored row — or `None` when the precondition missed (or the row is gone).
+///
+/// The precondition rides the `UPDATE`'s own `WHERE`, so the check and the write
+/// are one statement and nothing can slip between them. That is what makes a
+/// status *transition* safe to express from a client holding a stale snapshot:
+/// an unqueue (`queued → open`) issued a moment after the drainer claimed the
+/// item (`queued → active`) matches no row and is dropped, rather than flipping a
+/// live run's item back onto the board.
+pub fn update_where_status(
+    conn: &Connection,
+    id: &str,
+    expected: ItemStatus,
+    patch: &ItemPatch,
+) -> rusqlite::Result<Option<RoadmapItem>> {
+    apply(conn, id, patch, Some(expected))
+}
+
+/// The one implementation behind [`update`] and [`update_where_status`]: build
+/// the `SET` list from the patch, optionally carry a status precondition, and
+/// read the row back.
+fn apply(
+    conn: &Connection,
+    id: &str,
+    patch: &ItemPatch,
+    expected: Option<ItemStatus>,
 ) -> rusqlite::Result<Option<RoadmapItem>> {
     // Built as (column, value) pairs so the SQL only ever contains literal
     // column names written here — never caller-supplied identifiers.
@@ -149,23 +183,43 @@ pub fn update(
         set("pr_number", Box::new(v));
     }
 
-    if !sets.is_empty() {
-        let assignments: Vec<String> = sets
-            .iter()
-            .enumerate()
-            .map(|(i, col)| format!("{col} = ?{}", i + 1))
-            .collect();
-        let n = vals.len();
-        vals.push(Box::new(now_millis()));
-        vals.push(Box::new(id.to_string()));
-        let sql = format!(
-            "UPDATE roadmap_items SET {}, updated_at = ?{} WHERE id = ?{}",
-            assignments.join(", "),
-            n + 1,
-            n + 2
-        );
-        let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| v.as_ref()).collect();
-        conn.execute(&sql, refs.as_slice())?;
+    if sets.is_empty() {
+        // Nothing to write, but a precondition still has to be honoured: an
+        // empty patch against a row that has moved on is a miss, not a no-op.
+        let row = get(conn, id)?;
+        return Ok(match expected {
+            Some(status) => row.filter(|r| r.status == status),
+            None => row,
+        });
+    }
+
+    let assignments: Vec<String> = sets
+        .iter()
+        .enumerate()
+        .map(|(i, col)| format!("{col} = ?{}", i + 1))
+        .collect();
+    let n = vals.len();
+    vals.push(Box::new(now_millis()));
+    vals.push(Box::new(id.to_string()));
+    let guard = match expected {
+        Some(status) => {
+            vals.push(Box::new(status.as_str()));
+            format!(" AND status = ?{}", n + 3)
+        }
+        None => String::new(),
+    };
+    let sql = format!(
+        "UPDATE roadmap_items SET {}, updated_at = ?{} WHERE id = ?{}{guard}",
+        assignments.join(", "),
+        n + 1,
+        n + 2
+    );
+    let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| v.as_ref()).collect();
+    let changed = conn.execute(&sql, refs.as_slice())?;
+    // A guarded update that matched nothing is a missed precondition — the
+    // caller must be able to tell that from "applied", so don't hand back a row.
+    if expected.is_some() && changed == 0 {
+        return Ok(None);
     }
     get(conn, id)
 }
@@ -518,6 +572,95 @@ mod tests {
             "second delete is a no-op"
         );
         assert!(list(&conn, &p).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_conditional_update_applies_only_while_the_status_still_holds() {
+        // The unqueue race: the drainer claims `queued → active` under the
+        // connection lock, and the click that says `queued → open` arrives a
+        // moment later off a stale board. A blind SET would flip the row back to
+        // `open` while a run is being launched against it.
+        let conn = test_conn();
+        let p = project(&conn, "p1", "fletch");
+        let item = create(
+            &conn,
+            &p,
+            &NewItem {
+                title: "queue me".into(),
+                status: Some(ItemStatus::Queued),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Hit: the row still says `queued`, so the transition lands.
+        let unqueued = update_where_status(
+            &conn,
+            &item.id,
+            ItemStatus::Queued,
+            &ItemPatch {
+                status: Some(ItemStatus::Open),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(unqueued.status, ItemStatus::Open);
+
+        // The drainer claims it.
+        let claimed = update(
+            &conn,
+            &item.id,
+            &ItemPatch {
+                status: Some(ItemStatus::Active),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        // Miss: the same click, replayed against the claimed row. Nothing is
+        // written — not the status, not `updated_at` — and `None` is what tells
+        // the command layer to emit nothing and report the row as it is.
+        assert!(update_where_status(
+            &conn,
+            &item.id,
+            ItemStatus::Queued,
+            &ItemPatch {
+                status: Some(ItemStatus::Open),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(get(&conn, &item.id).unwrap().unwrap(), claimed);
+
+        // An empty patch honours the precondition too, rather than reporting a
+        // success the caller would read as "the transition happened".
+        assert!(
+            update_where_status(&conn, &item.id, ItemStatus::Queued, &ItemPatch::default())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            update_where_status(&conn, &item.id, ItemStatus::Active, &ItemPatch::default())
+                .unwrap()
+                .is_some()
+        );
+
+        // And a row that is gone is a miss, not an error.
+        assert!(delete(&conn, &item.id).unwrap());
+        assert!(update_where_status(
+            &conn,
+            &item.id,
+            ItemStatus::Active,
+            &ItemPatch {
+                status: Some(ItemStatus::Open),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]

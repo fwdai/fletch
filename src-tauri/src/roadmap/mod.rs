@@ -34,7 +34,7 @@ use parking_lot::Mutex;
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter};
 
-use types::{ItemPatch, NewItem, RoadmapItem};
+use types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
 
 /// The app's single connection. Public because the PM agent's RPC dispatcher
 /// (`rpc::roadmap`) writes the same table from outside this module and takes
@@ -90,21 +90,61 @@ pub async fn roadmap_create_item(
 /// Patch an item. Absent fields are left alone; an explicit `null` clears a
 /// nullable one (see [`ItemPatch`]). `code` and `project_id` are not patchable —
 /// a code that moved would break every reference to it.
+///
+/// `expect_status` makes the write *conditional*: the patch lands only while the
+/// row still says that, and a miss returns `applied: false` with the row as it
+/// actually is — nothing written, nothing emitted. That is how a status
+/// transition sent from a client snapshot stays safe against the drainer, which
+/// claims `queued → active` under this same lock: an unqueue that arrives a
+/// moment late is dropped instead of flipping a live run's item back onto the
+/// board (which would orphan the run — see [`drainer`]). Omitting it keeps the
+/// unconditional behaviour every other caller wants (a retitle, a horizon move).
 #[tauri::command]
 pub async fn roadmap_update_item(
     id: String,
     patch: ItemPatch,
+    expect_status: Option<ItemStatus>,
     app: AppHandle,
     db: tauri::State<'_, Db>,
-) -> Result<RoadmapItem, String> {
-    let updated = {
+) -> Result<ItemUpdate, String> {
+    let outcome = {
         let conn = db.lock();
-        store::update(&conn, &id, &patch).map_err(|e| e.to_string())?
+        match expect_status {
+            Some(expected) => {
+                match store::update_where_status(&conn, &id, expected, &patch)
+                    .map_err(|e| e.to_string())?
+                {
+                    Some(item) => Some(ItemUpdate {
+                        applied: true,
+                        item,
+                    }),
+                    // Missed the precondition. Read the current row under the
+                    // same guard the failed update ran in, so what the caller
+                    // gets back is the state that beat it.
+                    None => store::get(&conn, &id)
+                        .map_err(|e| e.to_string())?
+                        .map(|item| ItemUpdate {
+                            applied: false,
+                            item,
+                        }),
+                }
+            }
+            None => store::update(&conn, &id, &patch)
+                .map_err(|e| e.to_string())?
+                .map(|item| ItemUpdate {
+                    applied: true,
+                    item,
+                }),
+        }
     };
-    let updated = updated.ok_or_else(|| format!("roadmap item {id} no longer exists"))?;
-    emit_item(&app, &updated);
-    drainer::nudge();
-    Ok(updated)
+    let outcome = outcome.ok_or_else(|| format!("roadmap item {id} no longer exists"))?;
+    // A miss changed nothing, so there is nothing to announce and nothing new
+    // for the drainer to look at.
+    if outcome.applied {
+        emit_item(&app, &outcome.item);
+        drainer::nudge();
+    }
+    Ok(outcome)
 }
 
 /// Delete an item. Silent when the row is already gone — the caller's intent

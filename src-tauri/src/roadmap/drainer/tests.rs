@@ -289,6 +289,82 @@ fn pr_numbers_come_off_the_url_or_not_at_all() {
     assert_eq!(pr_number_from_url(""), None);
 }
 
+// ───────────────────────────── crash recovery ───────────────────────────
+
+/// A migrated in-memory DB, as the app opens the real file.
+fn test_conn() -> Connection {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    crate::database::get_migrations()
+        .to_latest(&mut conn)
+        .unwrap();
+    conn
+}
+
+/// A roadmap-dispatched run for `item_id`, in `status`, created at `created_at`.
+fn run(conn: &Connection, id: &str, item_id: &str, status: &str, created_at: i64) {
+    conn.execute(
+        "INSERT INTO wf_run (id, name, spec_json, task, project_id, repo_path, run_dir, branch,
+                             base_sha, status, budgets_json, spent_json, created_at, updated_at,
+                             roadmap_item_id)
+         VALUES (?1, 'n', '{}', 't', 'p1', '/r', '/d', 'wf/x', 'sha', ?2, '{}', '{}', ?3, ?3, ?4)",
+        rusqlite::params![id, status, created_at, item_id],
+    )
+    .unwrap();
+}
+
+#[test]
+fn recovery_adopts_only_a_live_run() {
+    // The item is `active` with `run_id` NULL — a claim whose launch never wrote
+    // back. The newest back-linked run is a *terminal* one from a previous
+    // cycle: adopting it would settle this claim against last cycle's outcome
+    // (resurrecting a merged-or-dead PR as `in_review`). Only the live run may
+    // be adopted.
+    let conn = test_conn();
+    run(&conn, "old-done", "id-FLT-100", "done", 10);
+    run(&conn, "live", "id-FLT-100", "running", 20);
+    assert_eq!(
+        dispatched_run_id(&conn, "id-FLT-100"),
+        Some("live".to_string())
+    );
+
+    // Newest is terminal and nothing live remains: the claim's run never
+    // started, which is the release path — not an adoption.
+    run(&conn, "newest-failed", "id-FLT-101", "failed", 30);
+    run(&conn, "older-canceled", "id-FLT-101", "canceled", 20);
+    assert_eq!(dispatched_run_id(&conn, "id-FLT-101"), None);
+
+    // No back-link at all is the same answer.
+    assert_eq!(dispatched_run_id(&conn, "id-FLT-999"), None);
+}
+
+// ───────────────────────────── note dedup ───────────────────────────────
+
+#[test]
+fn a_note_repeats_when_the_row_moved_and_stays_quiet_when_it_didnt() {
+    let mut said: HashMap<String, SaidNote> = HashMap::new();
+    let blocked = item("FLT-100", 10);
+    let note = "Waiting on FLT-099";
+
+    // First time it's said, and then it's silent — a permanently blocked item
+    // must not re-emit the same string every tick.
+    assert!(record_note(&mut said, &blocked, note));
+    assert!(!record_note(&mut said, &blocked, note));
+
+    // Unqueue + re-queue bumps `updated_at` (every write does), and the note is
+    // recomputed to the same string. It has to be said again: the user is
+    // looking at a card that has no explanation on it any more.
+    let requeued = RoadmapItem {
+        updated_at: blocked.updated_at + 1,
+        ..blocked.clone()
+    };
+    assert!(record_note(&mut said, &requeued, note));
+    assert!(!record_note(&mut said, &requeued, note));
+
+    // A different reason is always news, version or no version.
+    assert!(record_note(&mut said, &requeued, "Waiting on FLT-098"));
+}
+
 // ───────────────────────────── the brief ────────────────────────────────
 
 #[test]

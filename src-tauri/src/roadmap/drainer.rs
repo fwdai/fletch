@@ -28,7 +28,12 @@
 //! before [`WorkflowService::launch`] is awaited. That also makes the *claim*
 //! atomic: the drainer re-reads the item and flips `queued → active` inside one
 //! guard, so an unqueue that races the tick either lands before the claim (and
-//! the item is skipped) or after it (and finds an `active` row).
+//! the item is skipped) or after it — and one that lands after is *refused*,
+//! because the queue actions go through `roadmap_update_item`'s conditional path
+//! (`expect_status`, i.e. [`store::update_where_status`]). A blind
+//! `active → open` there would orphan the run this tick is about to launch: the
+//! `run_id` write-back would land on an `open` row and [`settle_project`], which
+//! only looks at `active` items, would never settle it.
 //!
 //! # Surfacing why an item isn't moving
 //!
@@ -36,13 +41,15 @@
 //! so on the card rather than sitting silent. Rather than add a `blocked_note`
 //! column for a fact that is only true until the next tick, the drainer emits a
 //! transient `roadmap:queue-note` event ([`QueueNote`]) the board renders inline
-//! on the row. Notes are de-duplicated in memory, so a permanently blocked item
-//! doesn't re-emit the same string every fifteen seconds.
+//! on the row. Notes are de-duplicated in memory *per row version* (see [`say`]),
+//! so a permanently blocked item doesn't re-emit the same string every fifteen
+//! seconds, while an item the user touched hears its explanation again.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -102,6 +109,15 @@ pub struct QueueNote {
     pub code: String,
     pub note: String,
 }
+
+/// What was last said about one item: the note, and the `updated_at` of the row
+/// version it was computed from. Both halves are the dedup key — see [`say`].
+type SaidNote = (String, i64);
+
+/// The drainer's note-dedup memory, by item id. Behind a mutex because each tick
+/// body runs in its own task (panic containment, see [`spawn`]) and the map has
+/// to outlive any one of them; never held across an `.await`.
+type SaidNotes = Mutex<HashMap<String, SaidNote>>;
 
 // ───────────────────────────── pure decisions ───────────────────────────
 
@@ -300,14 +316,29 @@ struct Plan {
 pub fn spawn(app: AppHandle, db: Db, service: Arc<crate::workflow::scheduler::WorkflowService>) {
     tauri::async_runtime::spawn(async move {
         // A note is re-emitted only when it changes, so a permanently blocked
-        // item says its piece once instead of every tick.
-        let mut said: HashMap<String, String> = HashMap::new();
+        // item says its piece once instead of every tick. Shared rather than
+        // owned by this loop because each tick runs in its own task.
+        let said: Arc<SaidNotes> = Arc::new(Mutex::new(HashMap::new()));
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(TICK) => {}
                 _ = signal().notified() => {}
             }
-            tick(&app, &db, &service, &mut said).await;
+            // Panic containment (as the scheduler's drive tasks do): the tick
+            // body runs in its own task, so a panic anywhere inside it comes
+            // back as a `JoinError` here instead of unwinding this loop.
+            // Autonomous dispatch has to survive one bad row — silently dead
+            // until the next app start is the worst possible failure mode for a
+            // queue nobody is watching.
+            let ticked = {
+                let (app, db, service, said) =
+                    (app.clone(), db.clone(), service.clone(), said.clone());
+                tauri::async_runtime::spawn(async move { tick(&app, &db, &service, &said).await })
+                    .await
+            };
+            if ticked.is_err() {
+                tracing::error!("roadmap drainer tick panicked — queue processing continues");
+            }
         }
     });
 }
@@ -316,7 +347,7 @@ async fn tick(
     app: &AppHandle,
     db: &Db,
     service: &Arc<crate::workflow::scheduler::WorkflowService>,
-    said: &mut HashMap<String, String>,
+    said: &SaidNotes,
 ) {
     for project_id in projects_with_work(db) {
         settle_project(app, db, &project_id, said);
@@ -364,11 +395,12 @@ struct Settled {
 /// An item with *neither* is a claim whose launch never finished writing back —
 /// the app died between `launch` (which inserts the run with the back-link) and
 /// the drainer's `run_id` write. The back-link is what makes that recoverable:
-/// the run is found by item id and adopted. Only if there is no run at all is
-/// the item released. This can't misfire on a launch that is merely still in
-/// flight: the drainer is one task, and `dispatch` is awaited inside the tick,
-/// so a tick never observes its own pending launch.
-fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &mut HashMap<String, String>) {
+/// the run is found by item id and adopted, provided it is still live (see
+/// [`dispatched_run_id`] for why a terminal one is always stale). Only if there
+/// is no such run is the item released. This can't misfire on a launch that is
+/// merely still in flight: the drainer is one task, and `dispatch` is awaited
+/// inside the tick, so a tick never observes its own pending launch.
+fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) {
     let settled: Vec<Settled> = {
         let conn = db.lock();
         let items = match store::list(&conn, project_id) {
@@ -483,13 +515,27 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &mut HashMap
     }
 }
 
-/// The run dispatched for this item, newest first — the reverse of the item's
-/// own `run_id`, read through the `wf_run.roadmap_item_id` back-link. This is
-/// what makes a crash between `launch` and the drainer's write-back
+/// The *live* run dispatched for this item, newest first — the reverse of the
+/// item's own `run_id`, read through the `wf_run.roadmap_item_id` back-link. This
+/// is what makes a crash between `launch` and the drainer's write-back
 /// recoverable; see [`settle_project`].
+///
+/// Terminal runs are excluded (the same live statuses the concurrency cap
+/// counts), because for a claimed item with no `run_id` a terminal back-linked
+/// run is *always* stale: a run that completed legitimately had its item settled
+/// — with `run_id` written — before it went terminal. So a newest-but-terminal
+/// back-link means this claim's run never started, and adopting it would settle
+/// the item against a previous cycle's outcome (resurrecting a dead PR as
+/// `in_review`, or shipping an item on the strength of last week's run). Falling
+/// through to `None` puts it on the existing "its run never started" release
+/// path, which is the truth.
 fn dispatched_run_id(conn: &Connection, item_id: &str) -> Option<String> {
     conn.query_row(
-        "SELECT id FROM wf_run WHERE roadmap_item_id = ?1 ORDER BY created_at DESC LIMIT 1",
+        &format!(
+            "SELECT id FROM wf_run
+              WHERE roadmap_item_id = ?1 AND status IN ({LIVE_RUN_STATUSES})
+              ORDER BY created_at DESC LIMIT 1"
+        ),
         [item_id],
         |r| r.get::<_, String>(0),
     )
@@ -551,12 +597,7 @@ enum Claim {
 /// Decide what to dispatch for this project and *claim* it. Returns the plan
 /// for a claimed item — already flipped to `active`, so neither a second tick
 /// nor another writer can pick it up.
-fn claim_next(
-    app: &AppHandle,
-    db: &Db,
-    project_id: &str,
-    said: &mut HashMap<String, String>,
-) -> Option<Plan> {
+fn claim_next(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) -> Option<Plan> {
     let claim = {
         let conn = db.lock();
         plan_and_claim(&conn, project_id)
@@ -851,12 +892,19 @@ fn emit_note(app: &AppHandle, note: &QueueNote) {
     let _ = app.emit("roadmap:queue-note", note);
 }
 
-/// Emit a note unless the same one was the last thing said about this item.
-fn say(app: &AppHandle, said: &mut HashMap<String, String>, item: &RoadmapItem, note: &str) {
-    if said.get(&item.id).map(String::as_str) == Some(note) {
+/// Emit a note unless the same thing was already said about this same version of
+/// the row.
+///
+/// The dedup key is the note *and* the row's `updated_at`, never the note alone.
+/// A blocked item nobody touches keeps both, so it stays quiet tick after tick —
+/// which is the point of the dedup. But an item that was unqueued and re-queued
+/// has a bumped `updated_at` (every write bumps it), so the identical string is
+/// said again: recomputing "Waiting on FLT-100" for a row the user just put back
+/// on the queue and swallowing it would leave the card with no explanation at all.
+fn say(app: &AppHandle, said: &SaidNotes, item: &RoadmapItem, note: &str) {
+    if !record_note(&mut said.lock(), item, note) {
         return;
     }
-    said.insert(item.id.clone(), note.to_string());
     emit_note(
         app,
         &QueueNote {
@@ -867,8 +915,20 @@ fn say(app: &AppHandle, said: &mut HashMap<String, String>, item: &RoadmapItem, 
     );
 }
 
-fn forget(said: &mut HashMap<String, String>, item_id: &str) {
-    said.remove(item_id);
+/// Remember a note against the row version it describes, and report whether it
+/// still needs emitting. Split out of [`say`] so the rule is testable without an
+/// `AppHandle`.
+fn record_note(said: &mut HashMap<String, SaidNote>, item: &RoadmapItem, note: &str) -> bool {
+    let entry = (note.to_string(), item.updated_at);
+    if said.get(&item.id) == Some(&entry) {
+        return false;
+    }
+    said.insert(item.id.clone(), entry);
+    true
+}
+
+fn forget(said: &SaidNotes, item_id: &str) {
+    said.lock().remove(item_id);
 }
 
 #[cfg(test)]
