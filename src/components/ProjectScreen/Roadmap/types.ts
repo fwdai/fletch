@@ -4,18 +4,19 @@
 // `@/api` (src/api/types/roadmap.ts, mirroring src-tauri/src/roadmap/types.rs)
 // and is re-exported here so the folder keeps importing from one place. What is
 // defined here is what the *screen* adds on top: the display row the board
-// draws (which can be a persisted item or a not-yet-real proposal), the change
-// set a proposal carries, and the product map (still mock).
+// draws, and the product map (still mock).
+//
+// A PM proposal is not a separate kind of row: `roadmap_propose` persists it
+// with `status: "proposed"`, so a ghost on the board is an ordinary item that
+// hasn't been accepted yet.
 
 import type { Horizon, ItemSize, ItemSource, ItemStatus, RoadmapItem } from "@/api";
 
 export type { Horizon, ItemSize, ItemSource, ItemStatus, RoadmapItem } from "@/api";
 
-/** A row as the board draws it. Persisted items reach it through
- *  [`toBoardItem`]; a proposal the PM hasn't had accepted yet has no row in the
- *  database, so it arrives as one of these directly (a "ghost"). Fields the
- *  board can do without are optional, because an unaccepted proposal is allowed
- *  to be less complete than a stored item. */
+/** A row as the board draws it — a persisted item flattened by [`toBoardItem`],
+ *  with the DTO's nulls collapsed to `undefined` so the card can test each
+ *  field with one `if`. */
 export interface BoardItem {
   /** Short human id ("FLT-142"). Unique per project, and the board's row key. */
   code: string;
@@ -36,10 +37,8 @@ export interface BoardItem {
   epic?: string;
   /** Agent working it — only meaningful while `status === "active"`. */
   agent?: string;
-  /** The stored row, when there is one. Absent on a ghost, which is exactly
-   *  what gates the edit / delete / send-to-agent affordances: they all need
-   *  something real to act on. */
-  item?: RoadmapItem;
+  /** The stored row behind this card — what every mutation addresses. */
+  item: RoadmapItem;
 }
 
 /** Adapt a persisted row for the board. The DTO's nulls become `undefined` so
@@ -73,16 +72,6 @@ export interface MapDomain {
   items: number;
   heat: "hot" | "warm" | "cool";
 }
-
-// ── what the PM proposes ─────────────────────────────────────────────
-
-/** A single edit the PM proposes to the board. Nothing is applied until the
- *  user accepts the proposal that carries it — the rule the whole surface is
- *  built around. Applied by `useRoadmap.applyChanges`; the tool that produces
- *  them lands in the next slice. */
-export type ProposalChange =
-  | { kind: "add"; item: BoardItem }
-  | { kind: "move"; code: string; from: Horizon; to: Horizon; why: string };
 
 export const SIZE_HINT: Record<ItemSize, string> = {
   XS: "a few minutes",

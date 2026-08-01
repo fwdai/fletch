@@ -29,6 +29,8 @@ pub mod approval;
 pub mod caps;
 #[path = "rpc/git.rs"]
 pub mod git;
+#[path = "rpc/roadmap.rs"]
+pub mod roadmap;
 
 /// One request from the agent. The `id` is carried in the filename (the pairing
 /// key), so it's not parsed from the body here; `args` defaults to null when

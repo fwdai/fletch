@@ -15,13 +15,12 @@ import { ProductMap } from "./ProductMap";
 type Editing = { item: RoadmapItem | null; horizon: Horizon };
 
 /** The board the PM agent maintains: horizon groups of expandable items, with
- *  a proposal's additions rendered inline as ghost rows. Sibling tab shows the
- *  product map the agent reasons against. */
+ *  the PM's outstanding proposals rendered inline as ghost rows in the horizon
+ *  they'd land in. Sibling tab shows the product map the agent reasons against. */
 export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: string }) {
   const {
     items,
     ghosts,
-    moves,
     map,
     shipped,
     tab,
@@ -36,7 +35,8 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
     clearError,
     addItem,
     editItem,
-    removeItem,
+    removeItems,
+    acceptItems,
   } = roadmap;
 
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -55,8 +55,6 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
     box.scrollTop = Math.max(0, top - box.clientHeight / 3);
   }, [focusCode]);
 
-  const ghostCodes = new Set(ghosts.map((g) => g.code));
-  const movedCodes = new Set(moves.map((m) => m.code));
   /** Nothing on the board at all — not even a pending proposal. */
   const blank = !loading && items.length === 0 && ghosts.length === 0;
   const openNew = (horizon: Horizon) => setEditing({ item: null, horizon });
@@ -113,6 +111,37 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
         </div>
       )}
 
+      {/* One proposal is ruled on from its own card; a batch gets a single bar,
+          so accepting six tickets isn't six trips down the board. It sits above
+          the scroller rather than inside it — the ghosts it acts on can be in
+          three different horizons. */}
+      {tab === "roadmap" && ghosts.length > 1 && (
+        <div className="rm-props flex-center text-xs">
+          <span className="rm-props-n iflex-center mono">
+            <Icon name="sparkle" size={11} />
+            {ghosts.length} proposed
+          </span>
+          <span className="rm-props-hint truncate">
+            Nothing is on the roadmap until you say so.
+          </span>
+          <span className="grow" />
+          <button
+            type="button"
+            className="rm-props-x"
+            onClick={() => removeItems(ghosts.map((g) => g.item.id))}
+          >
+            Discard all
+          </button>
+          <button
+            type="button"
+            className="rm-props-ok iflex-center"
+            onClick={() => acceptItems(ghosts.map((g) => g.item.id))}
+          >
+            <Icon name="check" size={11} /> Accept all
+          </button>
+        </div>
+      )}
+
       <div className="rm-board-scroll" ref={scroll}>
         {tab === "map" ? (
           <ProductMap map={map} />
@@ -136,24 +165,26 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
               >
                 {rowsFor.map((it) => {
                   const row = it.item;
+                  // A proposed row is on the board but not *of* it yet: it is
+                  // ruled on rather than edited or sent to an agent.
+                  const ghost = it.status === "proposed";
                   return (
                     <ItemCard
                       key={it.code}
                       item={it}
                       repoPath={repoPath}
-                      // A row the PM has only proposed isn't real yet, whether
-                      // it's a pending ghost in this session or a `proposed`
-                      // row someone else's session wrote.
-                      ghost={ghostCodes.has(it.code) || it.status === "proposed"}
+                      ghost={ghost}
                       open={openCodes.has(it.code)}
                       landed={landed.has(it.code)}
-                      focused={focusCode === it.code || movedCodes.has(it.code)}
+                      focused={focusCode === it.code}
                       onToggle={() => toggleItem(it.code)}
                       onEdit={
-                        row && !readOnly
-                          ? () => setEditing({ item: row, horizon: row.horizon })
-                          : undefined
+                        ghost || readOnly
+                          ? undefined
+                          : () => setEditing({ item: row, horizon: row.horizon })
                       }
+                      onAccept={ghost && !readOnly ? () => acceptItems([row.id]) : undefined}
+                      onDiscard={ghost && !readOnly ? () => removeItems([row.id]) : undefined}
                       cardRef={(el) => {
                         rows.current[it.code] = el;
                       }}
@@ -172,7 +203,7 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
           horizon={editing.horizon}
           onClose={() => setEditing(null)}
           onSave={(draft) => (editRow ? editItem(editRow.id, draft) : addItem(draft))}
-          onDelete={editRow ? () => removeItem(editRow.id) : undefined}
+          onDelete={editRow ? () => removeItems([editRow.id]) : undefined}
         />
       )}
     </aside>
