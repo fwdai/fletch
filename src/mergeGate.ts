@@ -20,7 +20,7 @@ export type MergeGateSituation =
   | "conflicts" // dirty — conflicts with base, update the branch
   | "draft" // draft — mark ready on GitHub before it can merge
   | "computing" // unknown/has_hooks, or no-checks + mergeable unknown — still resolving
-  | "no-conflicts"; // no checks data, `mergeable` says mergeable → no conflicts (not an all-clear)
+  | "no-conflicts"; // no checks data, `mergeable` says mergeable → no conflicts, but CI unknown → not merge-ready (never an all-clear)
 
 /** Shared severity. A subset of `StatusKind`/`HeaderKind` so every surface can
  *  derive its own tone class from one decision. */
@@ -92,10 +92,16 @@ export function describeMergeGate(
       // never a false "can't merge — update your branch".
       switch (mergeable) {
         case "mergeable":
+          // No conflict — but that says nothing about CI, and with no
+          // `merge_state` we have zero check knowledge. "No conflict" is not
+          // "safe to merge" (required checks could be failing or unrun), so this
+          // is deliberately NOT merge-ready: `mergeAllowed` stays false until a
+          // real gate confirms it. The surfaces still say "no conflicts" — an
+          // honest, not-an-all-clear signal — off the `no-conflicts` situation.
           return {
             situation: "no-conflicts",
             tone: "info",
-            mergeAllowed: true,
+            mergeAllowed: false,
             needsUpdate: false,
           };
         case "conflicting":
