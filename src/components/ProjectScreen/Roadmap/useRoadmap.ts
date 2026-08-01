@@ -3,8 +3,9 @@
 //
 // The board is persisted, per project, in `roadmap_items` (src-tauri/src/roadmap).
 // This hook loads it once for the current project and then keeps it live off the
-// `roadmap:item` / `roadmap:item-deleted` events, upserting the full row by id —
-// the same fetch-once-then-upsert shape `useRuns` uses.
+// `roadmap:item` / `roadmap:item-deleted` events, upserting the full row by id.
+// The load subscribes before it fetches and replays anything that arrived in
+// between (see boardSync.ts), because this board has writers other than the user.
 //
 // The PM conversation is NOT here: it is a real agent chat, owned by the Thread
 // column (see Thread/usePmChats.ts). What the two share is this contract — the
@@ -27,6 +28,7 @@ import {
   type RoadmapItemPatch,
 } from "@/api";
 import { useAppStore } from "@/store";
+import { applyBoardEvent, createBoardSync } from "./boardSync";
 import { PRODUCT_MAP } from "./mockData";
 import type { Horizon } from "./types";
 import { toBoardItem } from "./types";
@@ -84,13 +86,14 @@ export function useRoadmap(repoPath: string) {
   /** Upsert a row by id, appending new ones — the backend lists oldest-first
    *  and a new row is the newest, so append keeps the two in the same order. */
   const upsert = useCallback((row: RoadmapItem) => {
-    setRows((prev) =>
-      prev.some((r) => r.id === row.id)
-        ? prev.map((r) => (r.id === row.id ? row : r))
-        : [...prev, row],
-    );
+    setRows((prev) => applyBoardEvent(prev, { kind: "upsert", row }));
   }, []);
 
+  // Load the board: subscribe first, buffer during the fetch, then replay — so a
+  // row the PM proposes while the board is loading cannot be lost. Rows change
+  // from more than this screen (the PM agent's own writes, and later the run
+  // queue), so the board follows the event rather than only its own command
+  // results; the ordering the sequencer buys us is spelled out in boardSync.ts.
   useEffect(() => {
     if (!projectId) {
       setRows([]);
@@ -99,36 +102,44 @@ export function useRoadmap(repoPath: string) {
     }
     let alive = true;
     setLoading(true);
-    api
-      .roadmapListItems(projectId)
-      .then((items) => {
-        if (!alive) return;
-        setRows(items);
-        setLoading(false);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        setError(String(e));
-        setLoading(false);
-      });
 
-    // Rows change from more than this screen (the PM agent's own writes, and
-    // later the run queue), so the board follows the event rather than only
-    // its own command results.
+    // Unmounting mid-load must not write state, so every commit goes through
+    // the same `alive` gate the fetch does.
+    const sync = createBoardSync((update) => {
+      if (alive) setRows(update);
+    });
     const off = onRoadmapItem((row) => {
       if (row.project_id !== projectId) return;
-      upsert(row);
+      sync.push({ kind: "upsert", row });
     });
-    const offDeleted = onRoadmapItemDeleted((id) => {
-      setRows((prev) => prev.filter((r) => r.id !== id));
-    });
+    const offDeleted = onRoadmapItemDeleted((id) => sync.push({ kind: "delete", id }));
+
+    void (async () => {
+      // Registration has to be awaited, not just started: an event emitted
+      // before `listen` resolves never reaches us at all.
+      await Promise.all([off, offDeleted]);
+      if (!alive) return;
+      try {
+        const items = await api.roadmapListItems(projectId);
+        if (!alive) return;
+        sync.settle(items);
+        setLoading(false);
+      } catch (e) {
+        if (!alive) return;
+        // No snapshot to replay over — settle anyway so later events still
+        // apply instead of piling up in the buffer.
+        sync.settle();
+        setError(String(e));
+        setLoading(false);
+      }
+    })();
 
     return () => {
       alive = false;
       void off.then((f) => f());
       void offDeleted.then((f) => f());
     };
-  }, [projectId, upsert, workspaceReady]);
+  }, [projectId, workspaceReady]);
 
   /** Light up rows for a moment after they land, then clear only those — a
    *  later landing must not have its highlight cut short by an earlier timer. */
