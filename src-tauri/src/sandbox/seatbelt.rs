@@ -162,6 +162,58 @@ fn deny_git_exec_config(root: &str) -> String {
     )
 }
 
+/// SBPL deny carving each non-claude provider's command-defining config back out
+/// of its whole-root grant — policy invariant 2 as a *deny-inside-grant*
+/// ([`policy::provider_exec_config_denials`]), the same shape as
+/// [`deny_git_exec_config`] (invariant 3).
+///
+/// [`policy::provider_state_dirs`] grants `~/.codex`, `~/.cursor`, `~/.gemini`,
+/// `~/.pi` and opencode's config dir *whole*, because the root holds the session
+/// store / auth the CLI rewrites every turn. But each root also holds config that
+/// names programs the CLI runs on the host (MCP `command`s, hook/notify programs)
+/// and dirs it auto-loads as code (plugins/extensions). Writing one is host code
+/// execution the next time that CLI runs *outside* the sandbox, so those are
+/// denied write here while the rest of the root stays writable. Files are denied
+/// exact — a temp-then-`rename` still lands a `file-write*` on the final path;
+/// auto-loaded dirs are denied whole.
+///
+/// Each path is emitted in both its literal and existing-prefix-resolved form,
+/// exactly as [`subpath_grants`] emits the grants these sit inside, so the deny
+/// lands on the same path the grant re-allowed even when a root is a symlink.
+/// MUST follow the `(allow file-write* …)` block — SBPL is last-match-wins.
+fn deny_provider_exec_config(home: &Path) -> String {
+    let policy::ProviderExecConfig { files, dirs } = policy::provider_exec_config_denials(home);
+    let mut clauses: Vec<String> = Vec::new();
+    for (kind, paths) in [("literal", &files), ("subpath", &dirs)] {
+        for p in paths {
+            for form in [p.to_path_buf(), policy::resolve_existing_prefix(p)] {
+                let line = format!("  ({kind} {})", sbpl_string(&form.to_string_lossy()));
+                if !clauses.contains(&line) {
+                    clauses.push(line);
+                }
+            }
+        }
+    }
+    // Defensive: an empty clause list would make `(deny file-write*)` match
+    // everything and brick the sandbox. `provider_exec_config_denials` is never
+    // empty, but fail safe rather than emit a catch-all deny.
+    if clauses.is_empty() {
+        return String::new();
+    }
+    format!(
+        ";; Invariant 2 (deny-inside-grant): each non-claude provider's config root\n\
+         ;; is granted whole for per-turn session/auth state, but the files that\n\
+         ;; name programs the CLI runs on the host (MCP command=, hook/notify) and\n\
+         ;; the dirs it auto-loads as code (plugins/extensions) must not be\n\
+         ;; agent-writable — writing one is host code execution the next time that\n\
+         ;; CLI runs outside the sandbox. Files denied exact (a temp-then-rename\n\
+         ;; still writes the final path); dirs denied whole. Last-match-wins, so\n\
+         ;; this follows the allow block.\n\
+         (deny file-write*\n{})",
+        clauses.join("\n")
+    )
+}
+
 /// Toolchain + broad-state dirs the Run panel additionally grants so real
 /// project builds succeed. These hold package caches, downloaded toolchains,
 /// and — for some — PATH-resolved binaries (`~/.cargo/bin`, `~/go/bin`,
@@ -509,6 +561,12 @@ pub fn build_profile(
     // asymmetry follows the existing split rather than inventing one.
     let deny_git_config = deny_git_exec_config(&writable_root.to_string_lossy());
 
+    // Invariant 2 for the non-claude provider config roots (agent profile only,
+    // like `deny_git_config`): deny their command-defining config back out of the
+    // whole-root grants in `policy_dirs` above. Run deliberately doesn't carry it,
+    // same reasoning as the git deny.
+    let deny_provider_config = deny_provider_exec_config(&home);
+
     Ok(format!(
         r#"(version 1)
 (allow default)
@@ -528,6 +586,8 @@ pub fn build_profile(
 {deny_app_data}
 
 {deny_git_config}
+
+{deny_provider_config}
 
 {DEVICE_WRITE_RULES}
 "#
@@ -799,6 +859,47 @@ mod tests {
         let late = root.join("added-later");
         std::fs::create_dir_all(late.join(".git")).unwrap();
         assert!(!write_allowed(&late.join(".git/config")));
+    }
+
+    /// Invariant 2's deny-inside-grant, at the profile level: each non-claude
+    /// provider's command-defining config is denied write while its root stays
+    /// granted. Without it, an agent poisons e.g. `~/.gemini/settings.json`
+    /// (`mcpServers`) and gets host code execution the next time gemini runs
+    /// outside the sandbox.
+    #[test]
+    fn agent_profile_denies_provider_exec_config_but_keeps_roots_writable() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("agent-parent");
+        let rpc = td.path().join("rpc");
+        let home = td.path().join("home");
+        for d in [&root, &rpc, &home] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let home = std::fs::canonicalize(&home).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+
+        let denied = policy::provider_exec_config_denials(&home);
+        assert!(!denied.files.is_empty() && !denied.dirs.is_empty());
+        // Every command-defining file/dir is denied write in the emitted profile.
+        for p in denied.files.iter().chain(denied.dirs.iter()) {
+            let s = sbpl_string(&p.to_string_lossy());
+            assert!(
+                profile.contains(&format!("(literal {s})"))
+                    || profile.contains(&format!("(subpath {s})")),
+                "profile must deny provider exec-config {}",
+                p.display()
+            );
+        }
+        // …while the provider roots themselves stay granted (deny-inside-grant, not
+        // a root withdrawal), so per-turn session/auth state writes keep working.
+        for root_dir in [home.join(".gemini"), home.join(".cursor"), home.join(".pi")] {
+            let s = sbpl_string(&root_dir.to_string_lossy());
+            assert!(
+                profile.contains(&format!("(subpath {s})")),
+                "provider root {} must stay granted",
+                root_dir.display()
+            );
+        }
     }
 
     /// Both profiles grant the redirected toolchain cache root. If the agent

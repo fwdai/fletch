@@ -41,6 +41,24 @@
 //!    *subdirs* (e.g. `~/.config/opencode`), never the root — so an agent can't
 //!    poison `~/.config/git` (`core.hooksPath`), `~/.config/fish`,
 //!    `~/.config/gh` (aliases carry shell commands), etc.
+//!
+//!    A provider's *own* config root is the subtler case invariant 2 also has to
+//!    answer. `~/.codex`, `~/.cursor`, `~/.gemini`, `~/.pi` and opencode's config
+//!    dir are each granted **whole** by [`provider_state_dirs`] — the root holds
+//!    the session store / auth the CLI rewrites every turn, with no clean island
+//!    split that keeps those writable while excising config — yet each also holds
+//!    a file that names programs the CLI runs on the *host*: codex `config.toml`
+//!    (`[mcp_servers.*] command`, `notify`), gemini `settings.json` (`mcpServers`)
+//!    and, co-located under `~/.gemini`, antigravity's `config/mcp_config.json` /
+//!    `plugins/`, cursor `mcp.json` (`mcpServers`), opencode's config `mcp` +
+//!    auto-loaded `plugin/`, pi `agent/settings.json`. Writing one is host code
+//!    execution the moment that CLI next runs *outside* the sandbox. Those paths
+//!    are carved back out as a **deny-inside-grant** ([`provider_exec_config_denials`],
+//!    emitted by the seatbelt [`super::seatbelt`] `deny_provider_exec_config`
+//!    overlay) — the invariant-3 shape, not the write-island narrowing — so the
+//!    root keeps its writable state while its command-defining config can't be
+//!    poisoned. Claude, whose config root *does* split cleanly, gets the island
+//!    treatment instead (below).
 //! 3. **No agent-writable path is git-executable config**
 //!    ([`GIT_EXEC_CONFIG_FILES`] / [`GIT_EXEC_CONFIG_DIRS`]). A repository's own
 //!    `.git/config` names programs git runs — hooks, clean/smudge filters,
@@ -199,6 +217,13 @@ pub const GIT_EXEC_CONFIG_DIRS: &[&str] = &[
 /// sandbox's resolved write path. Codex's and opencode's env relocations
 /// (`$CODEX_HOME`, `$XDG_*`), by contrast, ARE resolved here — both engines
 /// need the same dir, with no engine-specific handling on top.
+///
+/// Every non-claude root here is granted *whole* but has its command-defining
+/// config (MCP `command`s, hook/notify programs, auto-loaded plugins) denied back
+/// out by [`provider_exec_config_denials`] + the seatbelt overlay — invariant 2
+/// as a deny-inside-grant, so the writable state survives while the poisoning
+/// surface does not. Claude, by contrast, withholds the root and grants only
+/// islands.
 pub fn provider_state_dirs(provider: &str, home: &Path) -> Vec<PathBuf> {
     match provider {
         // Not the `~/.claude` root — only its writable islands (config-poisoning
@@ -236,6 +261,104 @@ pub fn all_provider_state_dirs(home: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// A provider's command-defining config within its otherwise-writable state
+/// root: the deny-overlay's targets. `files` are exact config files — an agent
+/// write, *including a temp-then-`rename` over the target*, is a `file-write*`
+/// on the final path, so a file-exact deny closes the whole write; `dirs` are
+/// subtrees a provider auto-loads as *code* (plugins/extensions). Both are
+/// absolute and anchored to the same resolved roots [`provider_state_dirs`]
+/// grants, so every entry lands strictly inside a writable grant — a
+/// deny-inside-grant, never a no-op nor a deny of a whole root.
+pub struct ProviderExecConfig {
+    pub files: Vec<PathBuf>,
+    pub dirs: Vec<PathBuf>,
+}
+
+/// Invariant 2 for the **non-claude** providers, as a *deny-inside-grant* (the
+/// [`GIT_EXEC_CONFIG_FILES`] / `deny_git_exec_config` shape) rather than claude's
+/// write-island narrowing.
+///
+/// [`provider_state_dirs`] grants each non-claude provider its config *root*
+/// whole — the root holds the session store / auth the CLI rewrites every turn,
+/// and (unlike claude) there is no clean island split that keeps those writable
+/// while excising config. But every one of those roots also holds a path that
+/// names programs the CLI executes on the host. A prompt-injected agent that
+/// writes one gets code execution as the user the next time that CLI runs
+/// *outside* the sandbox, so the root stays writable and these paths are carved
+/// back out by the seatbelt overlay — exactly as `.git/config` is carved out of
+/// the writable checkout (invariant 3).
+///
+/// The surfaces, each grounded in the CLI's documented config layout and in how
+/// Fletch already drives that CLI's MCP delivery (`crate::agent_profile`):
+///   - **codex** (`$CODEX_HOME`/`~/.codex`) — `config.toml` (`[mcp_servers.*]
+///     command`, the `notify` program, custom model-provider commands).
+///   - **gemini** (`~/.gemini`) — `settings.json` (`mcpServers`) and the
+///     auto-loaded `extensions/` (each extension carries its own `mcpServers`).
+///     `~/.gemini` also backs **antigravity** (it co-locates here, covered by the
+///     gemini grant), whose MCP surface is `config/mcp_config.json` and
+///     `plugins/<name>/mcp_config.json` — denied here too.
+///   - **cursor** (`~/.cursor`) — `mcp.json` (`mcpServers`). cursor-agent reads
+///     MCP config only from this ambient global path (see `agent_profile`), so
+///     the deny is the ownership guarantee that comment defers to.
+///   - **opencode** (config dir) — `opencode.json`/`opencode.jsonc` (local `mcp`
+///     server `command`s) and the auto-loaded `plugin/` dir. The opencode *data*
+///     dir stays writable (blob store + `auth.json` the host reader tails).
+///   - **pi** (`~/.pi`) — `agent/settings.json`. See the residual note.
+///
+/// Deliberately conservative: over-denying only removes *write* access to config
+/// (reads stay open via `allow default`, so existing MCP/extensions still load
+/// and run), never a grant — the failure mode is a visible write-denial, never a
+/// widened sandbox. Documented residuals it does NOT close, left for follow-up
+/// rather than guessed at:
+///   - **pi** — the least-documented layout of the five. `agent/settings.json`
+///     covers the settings file, but pi's extension system (`pi install`) writes
+///     installed extensions somewhere under `~/.pi`; that install dir is not yet
+///     enumerated, so an agent that runs `pi install` can still stage code a
+///     later host `pi` runs. pi may also rewrite `agent/settings.json` itself on
+///     a settings change; denied, that fails closed (visible), not silently.
+///   - **gemini** `commands/` — gemini-cli custom commands can shell out via
+///     `!{…}`; they execute only on invocation, so they're a lower-severity
+///     surface not carved out here.
+///   - **opencode** — its `command/`/`agent/` config subdirs, and any executable
+///     it caches under the writable *data* dir, are not covered; the finding's
+///     `mcp`/`plugin` config surfaces are.
+pub fn provider_exec_config_denials(home: &Path) -> ProviderExecConfig {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    // codex — only `config.toml` names executables; auth.json, sessions/,
+    // history.jsonl are pure state and stay writable.
+    files.push(codex_home_dir(home).join("config.toml"));
+
+    // gemini (and antigravity, which shares `~/.gemini`) — settings.json carries
+    // `mcpServers`, extensions/ is auto-loaded; antigravity adds
+    // config/mcp_config.json + plugins/. oauth_creds.json / google_accounts.json
+    // / tmp/ / antigravity-cli/cache/ are state and stay writable.
+    let gemini = home.join(".gemini");
+    files.push(gemini.join("settings.json"));
+    files.push(gemini.join("config").join("mcp_config.json"));
+    dirs.push(gemini.join("extensions"));
+    dirs.push(gemini.join("plugins"));
+
+    // cursor — mcp.json carries `mcpServers`; projects/ (the transcript store the
+    // host reader tails) and cli-config.json (auth) stay writable.
+    files.push(home.join(".cursor").join("mcp.json"));
+
+    // pi — agent/settings.json; agent/auth.json and agent/sessions/ stay
+    // writable. See the residual note on the extension-install dir.
+    files.push(home.join(".pi").join("agent").join("settings.json"));
+
+    // opencode — the *config* dir. The config file names local `mcp` server
+    // `command`s, and plugin/ is auto-loaded as code. The data dir (blob store +
+    // auth.json) is a separate grant and stays writable.
+    let oc_config = opencode_config_dir(home);
+    files.push(oc_config.join("opencode.json"));
+    files.push(oc_config.join("opencode.jsonc"));
+    dirs.push(oc_config.join("plugin"));
+
+    ProviderExecConfig { files, dirs }
 }
 
 /// Class-2 host-scratch dirs a host-FS-sharing engine (seatbelt) must
@@ -563,6 +686,72 @@ mod tests {
                 Some(OsStr::new("bin")),
                 "{} is a component-final bin dir — a PATH-hijack surface (invariant 1)",
                 dir.display()
+            );
+        }
+    }
+
+    /// Invariant 2's *deny-inside-grant* half — the class this security fix adds.
+    /// Every non-claude provider's config root is granted whole (invariant 2
+    /// can't withhold it without breaking the CLI's per-turn state writes), so the
+    /// command-defining config inside it MUST be carved back out. This encodes the
+    /// class: each denial sits strictly inside a granted root (a real carve-out,
+    /// never a no-op deny of an ungranted path nor an over-broad deny of a whole
+    /// root), claude is left to its islands, and the finding's surfaces are all
+    /// covered — so a future provider that grants a config root without denying
+    /// its executable config fails here before it can reach a sandbox profile.
+    #[test]
+    fn provider_exec_config_denials_are_carved_from_granted_roots() {
+        let home = Path::new("/Users/u");
+        let grants = all_provider_state_dirs(home);
+        let ProviderExecConfig { files, dirs } = provider_exec_config_denials(home);
+
+        assert!(
+            !files.is_empty() && !dirs.is_empty(),
+            "the overlay must carve out both files and auto-loaded dirs"
+        );
+
+        for p in files.iter().chain(dirs.iter()) {
+            // (i) Strictly inside a granted provider root — a deny-inside-grant.
+            assert!(
+                grants.iter().any(|root| p.starts_with(root) && p != root),
+                "{} must sit strictly inside a granted provider root (else the \
+                 deny is a no-op or clobbers a whole root)",
+                p.display()
+            );
+            // (ii) Claude is handled by write-islands, not this overlay.
+            assert!(
+                !p.starts_with(home.join(".claude")),
+                "claude uses write-islands, not the deny-overlay: {}",
+                p.display()
+            );
+        }
+
+        // (iii) The finding's command-defining surfaces are all covered. The
+        // env-relocatable roots (`$CODEX_HOME`, `$XDG_CONFIG_HOME`) are asserted
+        // via the same resolvers the fn uses, so a CI runner's own env can't
+        // perturb them (mirrors `provider_state_dirs_cover_each_provider`).
+        for expected in [
+            codex_home_dir(home).join("config.toml"),
+            home.join(".gemini/settings.json"),
+            home.join(".gemini/config/mcp_config.json"),
+            home.join(".cursor/mcp.json"),
+            home.join(".pi/agent/settings.json"),
+            opencode_config_dir(home).join("opencode.json"),
+        ] {
+            assert!(
+                files.contains(&expected),
+                "missing exec-config file deny {}",
+                expected.display()
+            );
+        }
+        for expected in [
+            home.join(".gemini/extensions"),
+            opencode_config_dir(home).join("plugin"),
+        ] {
+            assert!(
+                dirs.contains(&expected),
+                "missing exec-config dir deny {}",
+                expected.display()
             );
         }
     }
