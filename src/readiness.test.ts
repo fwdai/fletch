@@ -312,6 +312,11 @@ describe("nextRung ordering", () => {
       do: "wait",
       why: "gate-computing",
     });
+    // No checks read, but `mergeable` says no conflict: that reports conflict
+    // presence only, NOT CI status, so it must NOT auto-merge off zero check
+    // knowledge — required checks could be failing or unrun. Nothing blocking,
+    // nothing merge-ready either → `ready`, for a human to decide.
+    expect(rung({ pr: pr({ mergeable: "mergeable" }) })).toEqual({ do: "ready" });
   });
 
   it("reports a landed proposal, and a clean local tree with nothing to do", () => {

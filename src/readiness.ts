@@ -322,7 +322,10 @@ export function nextRung(input: ReadinessInput, ctx: LadderContext): Rung {
     mergeable: pr.mergeable,
   });
   if (gate.situation === "computing") return { do: "wait", why: "gate-computing" };
-  // Every gate that forbids merging has already surfaced as a blocker above, so
-  // this is a defensive total-function fallback, not an expected path.
+  // Nothing blocking, but merge is only offered when the gate positively opens.
+  // The one expected non-open path here is `no-conflicts` (no `merge_state`, so
+  // conflicts are absent but CI is unknown): not a blocker, yet not merge-ready
+  // either — fall to `ready` so a human decides rather than auto-merging blind.
+  // Every other merge-forbidding gate has already surfaced as a blocker above.
   return gate.mergeAllowed ? { do: "merge" } : { do: "ready" };
 }
