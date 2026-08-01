@@ -109,8 +109,8 @@ impl WorkspaceManager {
 
         // The workspace is the durable work-area (identity + task metadata).
         tx.execute(
-            "INSERT INTO workspaces (id, project_id, name, task, created_at, sandbox_engine, owner_run_id, issue_ref)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO workspaces (id, project_id, name, task, created_at, sandbox_engine, owner_run_id, issue_ref, purpose)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 record.id,
                 project_id,
@@ -120,6 +120,7 @@ impl WorkspaceManager {
                 record.sandbox_engine,
                 record.owner_run_id,
                 record.issue_ref,
+                record.purpose,
             ],
         )?;
 

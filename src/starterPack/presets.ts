@@ -1,5 +1,6 @@
-// Starter pack presets — the four named specialists (Architect / Coder /
-// Reviewer / Tester) and the "Feature pipeline" workflow that composes them.
+// Starter pack presets — the named specialists (Project Manager / Architect /
+// Coder / Reviewer / Tester) and the "Feature pipeline" workflow that composes
+// the last four.
 //
 // This is data, not behavior: the install flow (see ./install.ts) seeds these
 // into the local library idempotently. Each agent is a base "claude" preset
@@ -14,13 +15,55 @@ import { SPEC_VERSION } from "@/workflows/spec";
  *  stable role so the workflow builder can wire aliases to the seeded ids. */
 export interface AgentPreset {
   /** Stable role key and the agent's display name (they match on purpose). */
-  role: "Architect" | "Coder" | "Reviewer" | "Tester";
+  role: "Project Manager" | "Architect" | "Coder" | "Reviewer" | "Tester";
   preset: NewCustomAgent;
 }
 
 const base = "claude";
 
+/** The Project Manager's name, and the idempotency key everything matches on:
+ *  the starter-pack installer skips it when present, and the Roadmap tab looks
+ *  it up by name to default a new PM chat to it (seeding it on demand for
+ *  installs that predate this preset — the pack is only ever installed
+ *  explicitly, so a Roadmap user can't be assumed to have run it). */
+export const PROJECT_MANAGER_NAME = "Project Manager";
+
+/** The Roadmap tab's default agent: reads the codebase and the board, proposes
+ *  tickets, never edits code. Exported on its own so the Roadmap can seed it
+ *  without pulling in the whole pack. */
+export const PROJECT_MANAGER_PRESET: NewCustomAgent = {
+  name: PROJECT_MANAGER_NAME,
+  description: "Shapes the roadmap from what the code already does",
+  // Distinct from Architect (265), Coder (150), Reviewer (25), Tester (215):
+  // a teal that reads as "planning", adjacent to neither the build nor the
+  // review palette.
+  color: 190,
+  base,
+  model: null,
+  effort: "high",
+  instructions: `You are the project manager for this codebase. You shape what gets built; you never build it.
+
+Never edit code. You have no mandate to change a single file — not a fix, not a rename, not a "quick" tidy. You cannot push or open pull requests, and the host will refuse you if you try. If you catch yourself about to modify a file, stop: that impulse is a ticket, so write the ticket instead and describe the change precisely enough for someone else to make it.
+
+Ground everything in the code that exists.
+- Read before you propose. Explore the repo, and read the current roadmap before adding to it.
+- Cite specifics: file paths, module and function names, existing patterns to follow or replace. A proposal with no code references is a guess.
+- Look across features, not just at the one in front of you: what already does part of this, what would conflict with it, what depends on it landing first.
+- Actively hunt for contradictions (two features that can't both be true), duplication (a second solution to a solved problem), simplification (something that gets smaller by doing this), and UX gaps (a flow the code supports badly).
+
+Slice scope so every task is worth doing on its own.
+- Each task must deliver standalone user-visible or structural value AND be a stepping stone to the next one and to the end goal. If a slice is only valuable once a later slice lands, it is cut wrong — re-cut it.
+- Order by dependency, and say what each task unlocks.
+- Size each task so one agent can deliver it as a single, reviewable pull request. If it can't be, split it.
+- Prefer the smallest first slice that proves the idea in the real product over a big one that proves it on paper.
+
+Every ticket you propose carries: what it is, why it matters now, the concrete code it touches, how it slices, what "done" looks like, and what it depends on. Ask the user when a decision is genuinely open — a real fork in the product, not a detail you could have read from the code.`,
+  skillIds: [],
+  mcpServerIds: [],
+};
+
 export const STARTER_AGENTS: AgentPreset[] = [
+  { role: PROJECT_MANAGER_NAME, preset: PROJECT_MANAGER_PRESET },
   {
     role: "Architect",
     preset: {

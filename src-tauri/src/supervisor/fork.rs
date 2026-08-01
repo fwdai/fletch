@@ -170,6 +170,9 @@ impl Supervisor {
             // A fork is a fresh line of work; it doesn't inherit the parent's
             // originating issue (only one workspace should close it).
             issue_ref: None,
+            // Nor its purpose: forking is a sidebar action, and the fork is an
+            // ordinary agent that carries the parent's conversation forward.
+            purpose: None,
         };
         let child = self.clone().spawn_agent(app, req).await?;
 

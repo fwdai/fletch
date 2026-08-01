@@ -253,6 +253,11 @@ pub struct SpawnRequest {
     /// set by the Home inbox's "Start work". Persisted on the workspace so the
     /// agent's PR closes it. `None` for a spawn not tied to an issue.
     pub issue_ref: Option<String>,
+    /// What this workspace is for, when a surface other than the sidebar owns
+    /// it (`crate::workspace::PURPOSE_ROADMAP_PM`). Persisted on the record; it
+    /// hides the workspace from the sidebar and narrows its capability grant.
+    /// `None` for a normal user or workflow spawn.
+    pub purpose: Option<String>,
 }
 
 impl Supervisor {
@@ -279,6 +284,7 @@ impl Supervisor {
             owner_run_id,
             carry_from,
             issue_ref,
+            purpose,
         } = req;
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -395,6 +401,10 @@ impl Supervisor {
         // Carry the originating issue (Home inbox "Start work") onto the record
         // so the git dispatcher can close it from the agent's PR.
         record.issue_ref = issue_ref;
+        // Tag a workspace owned by a surface other than the sidebar (a Roadmap
+        // PM chat) so it's hidden from the sidebar, listed by that surface, and
+        // stamped with the narrower capability grant below.
+        record.purpose = purpose;
         // Insert first: on the auto path this both allocates the id and writes
         // the row under one lock, so `record.id` is final only afterward. A
         // pinned name goes through `add_agent`, where a clash is a real error.
@@ -754,9 +764,13 @@ impl Supervisor {
         // the only push path for a workflow, and it is `wf/`-namespace guarded.
         // Stamped here, at spawn, so a later policy change can't widen an agent
         // that is already running (`rpc::caps`).
-        let caps = match &record.owner_run_id {
-            Some(_) => rpc::caps::AgentCaps::run_owned(),
-            None => rpc::caps::AgentCaps::interactive(),
+        // An advisory chat (the Roadmap PM) must never publish either: its
+        // whole mandate is to read the codebase and propose tickets, so the
+        // grant matches the mandate rather than relying on the brief to hold.
+        let caps = match (record.purpose.as_deref(), record.owner_run_id.as_deref()) {
+            (Some(crate::workspace::PURPOSE_ROADMAP_PM), _) => rpc::caps::AgentCaps::advisory(),
+            (_, Some(_)) => rpc::caps::AgentCaps::run_owned(),
+            _ => rpc::caps::AgentCaps::interactive(),
         };
         let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch, caps)
             .with_repos(repo_targets)

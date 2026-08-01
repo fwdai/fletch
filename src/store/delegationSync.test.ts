@@ -52,6 +52,7 @@ const EMPTY_MAPS = {
   autopilotLog: {},
   unseenResults: {},
   rightPanelTabs: {},
+  offSidebarAgents: {},
 };
 
 const NOW = 100_000;

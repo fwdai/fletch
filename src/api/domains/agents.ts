@@ -27,6 +27,10 @@ export const agentsApi = {
      *  set by the Home inbox's "Start work". Persisted so the agent's PR closes
      *  it. `undefined` for a spawn not tied to an issue. */
     issueRef?: string,
+    /** Tags a workspace owned by a surface other than the sidebar (see
+     *  `ROADMAP_PM_PURPOSE`): it is hidden from the sidebar and spawned with a
+     *  narrower capability grant. `undefined` for a normal spawn. */
+    purpose?: string,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
       view,
@@ -41,7 +45,13 @@ export const agentsApi = {
       mcpServers: mcpServers ?? null,
       forkBase: forkBase ?? null,
       issueRef: issueRef ?? null,
+      purpose: purpose ?? null,
     }),
+  /** A project's purpose-tagged chats, newest first (see `ROADMAP_PM_PURPOSE`).
+   *  These never appear in the workspace snapshot, so the surface that owns
+   *  them lists them here; the records are ordinary agents otherwise. */
+  listProjectChats: (projectId: string, purpose: string) =>
+    invoke<AgentRecord[]>("list_project_chats", { projectId, purpose }),
   /** Fork an existing workspace into a new one, seeding its worktree (`code`)
    *  and conversation (`context`) independently. For `context.kind ===
    *  "up_to_message"`, `prompt` is the 0-based ordinal of a navigable user

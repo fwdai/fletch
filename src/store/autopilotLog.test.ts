@@ -179,4 +179,5 @@ const EMPTY_MAPS = {
   autopilotLog: {},
   unseenResults: {},
   rightPanelTabs: {},
+  offSidebarAgents: {},
 };

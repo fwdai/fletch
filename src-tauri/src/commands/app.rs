@@ -24,6 +24,20 @@ pub fn wf_run_agents(run_id: String, supervisor: State<'_, Arc<Supervisor>>) -> 
     supervisor.run_agents(&run_id)
 }
 
+/// A project's purpose-tagged chats, newest first — today the Roadmap tab's
+/// project-manager chats (`purpose = "roadmap-pm"`). Like run-owned agents these
+/// are hidden from `get_workspace`, so the surface that owns them lists them
+/// here; the records are ordinary `AgentRecord`s, addressable by id for
+/// transcripts, sends and resumes.
+#[tauri::command]
+pub fn list_project_chats(
+    project_id: String,
+    purpose: String,
+    supervisor: State<'_, Arc<Supervisor>>,
+) -> Vec<AgentRecord> {
+    supervisor.project_chats(&project_id, &purpose)
+}
+
 /// Reveal Fletch's log folder in the OS file manager so a user can attach
 /// logs to a bug report. Creates the folder if no session has written to it
 /// yet. Fletch ships macOS-only (sandbox-exec), but the CI build runs on

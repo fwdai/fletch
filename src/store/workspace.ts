@@ -89,6 +89,20 @@ export interface WorkspaceSlice {
   focusedStepAgentId: string | null;
   /** Pending "promote to workflow" seed: the builder opens pre-filled from it. */
   promoteSeed: PromoteSeed | null;
+  /** Records for agents the workspace snapshot deliberately omits — today the
+   *  Roadmap tab's PM chats, which are hidden from the sidebar (see
+   *  `ROADMAP_PM_PURPOSE`) and fetched by the surface that owns them.
+   *
+   *  They still run through the same per-agent store machinery as any other
+   *  chat (managedLogs, transcript loads, sends), and that machinery resolves an
+   *  agent's provider and repo BY ID — so without registering them here, a
+   *  hidden chat's transcript would be reduced with the default adapter instead
+   *  of its own. Keyed by agent id; the owning surface keeps it current. */
+  offSidebarAgents: Record<string, AgentRecord>;
+  /** Publish (or refresh) off-sidebar records as their owning surface loads
+   *  them. Merged by id; entries are pruned when the agent is discarded, along
+   *  with the rest of its per-agent state (see `dropAgentEntries`). */
+  registerOffSidebarAgents: (agents: AgentRecord[]) => void;
   managedLogs: Record<string, ChatItem[]>;
   /** Question tools the agent is paused on, awaiting a human answer.
    *  Keyed by agent id, then by the tool_use id of the held `AskUserQuestion`
@@ -237,6 +251,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   selectedRunId: null,
   focusedStepAgentId: null,
   promoteSeed: null,
+  offSidebarAgents: {},
   managedLogs: {},
   pendingToolUse: {},
   transcriptLoading: {},
@@ -250,6 +265,17 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   usage: {},
   runPhases: {},
   runPorts: {},
+
+  registerOffSidebarAgents: (agents) =>
+    set((state) => ({
+      offSidebarAgents: agents.reduce(
+        (acc, a) => {
+          acc[a.id] = a;
+          return acc;
+        },
+        { ...state.offSidebarAgents },
+      ),
+    })),
 
   selectAgent: (id) =>
     set((state) => {

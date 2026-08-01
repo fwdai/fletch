@@ -56,6 +56,41 @@ export function snapshotAgentDeliverables(
   };
 }
 
+/** Everything a custom agent contributes to a spawn payload, resolved by value:
+ *  its standing brief plus its skill/MCP snapshots. */
+export interface AgentSpawnProfile {
+  /** The selected agent's id, but only when it still resolves to a live preset
+   *  — a dangling id must not be stamped on the session, where it would render
+   *  as an identity nothing can look up. */
+  customAgentId: string | undefined;
+  instructions: string | undefined;
+  skills: SkillSnapshot[] | undefined;
+  mcpServers: McpServerSnapshot[] | undefined;
+}
+
+/** Resolve a selected custom agent into its by-value spawn payload. Snapshotted
+ *  rather than referenced, so editing or deleting the preset never reaches a
+ *  running session; a blank brief injects nothing (the backend treats it as a
+ *  no-op) and an unknown/absent id resolves to a plain provider spawn.
+ *
+ *  Shared by every spawn surface — the sidebar draft launch and the Roadmap
+ *  tab's PM chats — so a new one can't quietly drop the skills or MCP servers
+ *  the user attached to their agent. */
+export function resolveAgentSpawnProfile(
+  state: Pick<AppState, "skills" | "mcpServers" | "customAgents">,
+  customAgentId: string | undefined,
+  provider: string,
+): AgentSpawnProfile {
+  const custom = customAgentId ? state.customAgents.find((a) => a.id === customAgentId) : undefined;
+  const { skills, mcpServers } = snapshotAgentDeliverables(state, custom, provider);
+  return {
+    customAgentId: custom?.id,
+    instructions: custom?.instructions?.trim() ? custom.instructions : undefined,
+    skills,
+    mcpServers,
+  };
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function sendWhenAgentReady(send: () => Promise<unknown>) {

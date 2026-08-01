@@ -85,7 +85,19 @@ export interface AgentRecord {
   /** The GitHub issue this workspace was started from (bare issue number as
    *  text), set by the Home inbox's "Start work". Null for a normal spawn. */
   issue_ref?: string | null;
+  /** What this workspace is for, when a surface other than the sidebar owns it
+   *  (see [`ROADMAP_PM_PURPOSE`]). Null — the normal case — is a sidebar agent.
+   *  Tagged workspaces are absent from the `get_workspace` snapshot entirely;
+   *  they arrive through `listProjectChats`. */
+  purpose?: string | null;
 }
+
+/** `workspaces.purpose` for a Roadmap project-manager chat — a manual chat that
+ *  lives only on a project's Roadmap tab, never in the sidebar (which is for
+ *  feature-development agents and workflow runs). Mirrors the backend's
+ *  `workspace::PURPOSE_ROADMAP_PM`; the backend also denies these workspaces the
+ *  publish ops, so a PM chat can read the code but never ship it. */
+export const ROADMAP_PM_PURPOSE = "roadmap-pm";
 
 /** A pinned repo joined with its owning project. `name` is the project's
  *  user-editable display name (defaults to the folder basename, survives

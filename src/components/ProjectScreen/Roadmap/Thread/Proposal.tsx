@@ -10,7 +10,14 @@ const HEADLINE = {
 
 /** The commit point: everything the PM wants to change to the board, and the
  *  two buttons that make it real or drop it. Until one is pressed the board
- *  only shows these as ghosts. */
+ *  only shows these as ghosts.
+ *
+ *  Currently unmounted: the thread is a real agent transcript now, and the PM
+ *  has no way to raise a proposal until the `roadmap_propose` RPC tool lands in
+ *  the next slice. That slice renders this card inline in the transcript and
+ *  wires its buttons to `useRoadmap.applyChanges` — the accept path it was
+ *  built against, and the reason it stays here rather than being deleted and
+ *  re-invented. */
 export function Proposal({
   note,
   changes,

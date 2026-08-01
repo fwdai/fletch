@@ -5,14 +5,24 @@
 import type { Workspace } from "../api";
 import type { AppState, DraftAgent } from "../store";
 
+/** An agent's record, wherever it lives: the sidebar snapshot, or the
+ *  off-sidebar registry for chats the snapshot deliberately omits (Roadmap PM
+ *  chats — see `registerOffSidebarAgents`). Every by-id lookup goes through
+ *  here, so hidden chats get the same provider-correct treatment as any other:
+ *  falling back to the default adapter would silently mis-render a codex or
+ *  cursor chat's transcript. */
+function agentRecord(state: AppState, agentId: string) {
+  return state.workspace?.agents.find((a) => a.id === agentId) ?? state.offSidebarAgents[agentId];
+}
+
 export function providerFor(state: AppState, agentId: string): string | undefined {
-  return state.workspace?.agents.find((a) => a.id === agentId)?.provider;
+  return agentRecord(state, agentId)?.provider;
 }
 
 /** The primary repo path for an agent (`repos[0]`), used to scope
  *  project-level slash-command discovery. Undefined for an unknown agent. */
 export function repoPathFor(state: AppState, agentId: string): string | undefined {
-  return state.workspace?.agents.find((a) => a.id === agentId)?.repos[0]?.repo_path;
+  return agentRecord(state, agentId)?.repos[0]?.repo_path;
 }
 
 /** A per-turn agent captures its session id on its first turn (e.g. agy reads
@@ -83,7 +93,12 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   // Drop the remembered right-rail tab so an archived/discarded agent's UI
   // state doesn't outlive it as a stale key for the rest of the session.
   const { [id]: _tab, ...rightPanelTabs } = state.rightPanelTabs;
+  // An off-sidebar record (a Roadmap PM chat) is per-agent state like the rest:
+  // once the agent is gone, keeping it would leave a lookup resolving to a
+  // workspace that no longer exists.
+  const { [id]: _offSidebar, ...offSidebarAgents } = state.offSidebarAgents;
   return {
+    offSidebarAgents,
     managedLogs,
     transcriptLoading,
     transcriptLoaded,

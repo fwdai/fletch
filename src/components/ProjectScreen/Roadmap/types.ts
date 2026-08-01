@@ -4,11 +4,10 @@
 // `@/api` (src/api/types/roadmap.ts, mirroring src-tauri/src/roadmap/types.rs)
 // and is re-exported here so the folder keeps importing from one place. What is
 // defined here is what the *screen* adds on top: the display row the board
-// draws (which can be a persisted item or a not-yet-real proposal), the product
-// map, and the PM conversation — all three still fed by `mockData.ts`.
+// draws (which can be a persisted item or a not-yet-real proposal), the change
+// set a proposal carries, and the product map (still mock).
 
 import type { Horizon, ItemSize, ItemSource, ItemStatus, RoadmapItem } from "@/api";
-import type { UIAnswer, UIQuestion } from "@/components/Workspace/messages/UserInput/parse";
 
 export type { Horizon, ItemSize, ItemSource, ItemStatus, RoadmapItem } from "@/api";
 
@@ -75,55 +74,15 @@ export interface MapDomain {
   heat: "hot" | "warm" | "cool";
 }
 
-// ── the PM conversation ──────────────────────────────────────────────
-
-/** One line of the repo check the PM runs before writing anything down.
- *  `ok` — capability found, `warn` — nothing covers it / a hazard,
- *  `dep` — it links to something already on the board. */
-export type FindingKind = "ok" | "warn" | "dep";
-
-export interface Finding {
-  kind: FindingKind;
-  /** May contain `backticked` spans, rendered as inline code. */
-  text: string;
-}
+// ── what the PM proposes ─────────────────────────────────────────────
 
 /** A single edit the PM proposes to the board. Nothing is applied until the
- *  user accepts the proposal that carries it. */
+ *  user accepts the proposal that carries it — the rule the whole surface is
+ *  built around. Applied by `useRoadmap.applyChanges`; the tool that produces
+ *  them lands in the next slice. */
 export type ProposalChange =
   | { kind: "add"; item: BoardItem }
   | { kind: "move"; code: string; from: Horizon; to: Horizon; why: string };
-
-/** The follow-up the PM plays once a question is answered. */
-export interface AnsweredBeat {
-  text: string;
-  note: string;
-  changes: ProposalChange[];
-}
-
-/** A thread message without its id — the shape mock data and the runtime
- *  script are authored in. `useRoadmap` stamps an id on push. */
-export type PmBody =
-  | { kind: "user"; body: string }
-  | { kind: "text"; body: string }
-  | { kind: "thinking"; body: string }
-  | { kind: "probe"; summary: string; findings: Finding[] }
-  | { kind: "question"; question: UIQuestion; answered: AnsweredBeat; answer?: UIAnswer | null }
-  | {
-      kind: "proposal";
-      note: string;
-      changes: ProposalChange[];
-      resolved?: "accepted" | "discarded" | null;
-    }
-  | { kind: "landed"; codes: string[] };
-
-export type PmMessage = { id: string } & PmBody;
-
-/** A canned exchange: what the user says, and what the PM plays back. */
-export interface ScriptBeat {
-  prompt: string;
-  msgs: PmBody[];
-}
 
 export const SIZE_HINT: Record<ItemSize, string> = {
   XS: "a few minutes",
@@ -138,12 +97,6 @@ export const HORIZONS: { id: Horizon; label: string; note: string }[] = [
   { id: "next", label: "Next", note: "queued" },
   { id: "later", label: "Later", note: "backlog" },
 ];
-
-export const FINDING_TAG: Record<FindingKind, string> = {
-  ok: "found",
-  warn: "watch",
-  dep: "links",
-};
 
 export const HEAT_LABEL: Record<MapDomain["heat"], string> = {
   hot: "active",

@@ -18,7 +18,11 @@
   flex: 1;
 }
 
-/* ── left column: the PM conversation ── */
+/* ── left column: the PM conversation ──
+   A real agent chat: the transcript, its rows and its working strip are the
+   workspace pane's (see Chat.css), re-measured for a half-width column. Only
+   the chrome around them — the header that switches chats, and the empty state
+   that starts the first one — belongs to this file. */
 .rm-thread {
   flex: 1;
   min-width: 0;
@@ -32,30 +36,35 @@
   overflow-y: auto;
   padding: 22px 0 10px;
 }
-.rm-thread-col {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 0 28px;
+.rm-chat {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 20px;
 }
-/* The transcript skins carry their own bottom margin; the column's gap owns
-   spacing here. */
-.rm-thread-col .m-user,
-.rm-thread-col .m-agent {
-  margin-bottom: 0;
+/* The transcript's own column is sized for the full workspace pane; here it
+   shares the screen with the board. */
+.rm-thread .chat-inner {
+  max-width: 640px;
+  padding: 0 28px;
+}
+.rm-thread .chat-scroll {
+  padding-top: 20px;
 }
 
-/* PM identity card — sets the tone once, then gets out of the way. */
-.rm-pm {
-  gap: 11px;
-  padding-bottom: 2px;
+/* ── header: who you're talking to, and which conversation ── */
+.rm-thread-head {
+  flex-shrink: 0;
+  gap: 9px;
+  padding: 10px 16px 10px 20px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.rm-thread-head .grow {
+  flex: 1;
 }
 .rm-pm-badge {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   flex-shrink: 0;
   border-radius: var(--r-md);
   color: var(--accent);
@@ -66,61 +75,162 @@
   color: var(--fg-0);
   font-weight: 600;
 }
-.rm-pm-s {
-  margin-top: 1px;
+
+/* chat switcher */
+.rm-picker {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+}
+.rm-picker-btn {
+  gap: 7px;
+  max-width: 100%;
+  padding: 3px 7px;
+  border-radius: var(--r-sm);
+  color: var(--fg-0);
+  background: transparent;
+  transition: background 0.14s;
+}
+.rm-picker-btn:hover {
+  background: var(--hover);
+}
+.rm-picker-t {
+  min-width: 0;
+  font-weight: 600;
+}
+.rm-picker-n,
+.rm-picker-row-m {
+  flex-shrink: 0;
   color: var(--fg-3);
 }
-
-/* The PM's repo-check summary is the substance of the row, not a tool
-   argument — let it wrap rather than ellipsize at the column's width. */
-.rm-thread-col .m-tool .t-arg {
-  white-space: normal;
-  text-overflow: clip;
-  line-height: var(--lh-snug);
+.rm-picker-menu {
+  position: absolute;
+  z-index: 200;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 320px;
+  max-width: 80vw;
+  padding: 5px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
 }
-
-/* findings inside the collapsed repo check */
-.rm-findings {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.rm-picker-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+.rm-picker-row {
+  gap: 4px;
+  padding-right: 4px;
+  border-radius: var(--r-sm);
+}
+.rm-picker-row:hover {
+  background: var(--hover);
+}
+.rm-picker-row.active {
+  background: var(--accent-soft);
+}
+.rm-picker-pick {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
+  padding: 7px 8px;
+  text-align: left;
+  background: transparent;
 }
-.rm-findings li {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  line-height: var(--lh-normal);
+.rm-picker-row-t {
+  color: var(--fg-0);
+}
+.rm-picker-del {
+  flex-shrink: 0;
+  padding: 3px 7px;
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid var(--danger);
+  border-radius: var(--r-xs);
+}
+.rm-picker-new {
+  width: 100%;
+  gap: 7px;
+  margin-top: 4px;
+  padding: 8px;
   color: var(--fg-1);
+  background: transparent;
+  border-top: 1px solid var(--bd-soft);
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
+}
+.rm-picker-new:hover {
+  color: var(--fg-0);
+  background: var(--hover);
+}
+
+/* ── starting a chat ── */
+.rm-newchat {
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.rm-newchat-anchor {
+  position: relative;
+  flex-shrink: 0;
+}
+.rm-newchat-pop {
+  position: absolute;
+  z-index: 200;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 300px;
+  padding: 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
+}
+.rm-newchat-h {
+  margin-bottom: 10px;
+  line-height: var(--lh-normal);
+  color: var(--fg-3);
   text-wrap: pretty;
 }
-.rm-f-tag {
-  flex-shrink: 0;
-  width: 42px;
-  margin-top: 1px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+/* The empty state's invitation is wider than the board's, because it has to
+   say what the agent will and won't do before anyone talks to it. */
+.rm-thread-blank {
+  max-width: 400px;
+  margin-top: 8%;
+}
+.rm-thread-blank .rm-newchat {
+  margin-top: 6px;
+}
+.rm-thread-state {
+  flex: 1;
+  gap: 8px;
+  justify-content: center;
+  padding: 12% 32px 0;
+  text-align: center;
+  align-self: center;
   color: var(--fg-3);
+  text-wrap: pretty;
 }
-.rm-findings li.f-ok .rm-f-tag {
-  color: var(--success);
+.rm-thread-err {
+  flex-shrink: 0;
+  gap: 10px;
+  padding: 7px 16px 7px 20px;
+  color: var(--danger);
+  background: color-mix(in oklch, var(--danger), var(--bg-1) 92%);
+  border-bottom: 1px solid var(--bd-soft);
 }
-.rm-findings li.f-warn .rm-f-tag {
-  color: var(--warn);
+.rm-thread-err-t {
+  flex: 1;
+  min-width: 0;
 }
-.rm-findings li.f-dep .rm-f-tag {
-  color: var(--info);
-}
-.rm-f-t code {
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-  padding: 1px 5px;
-  background: var(--hover);
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-xs);
+.rm-thread-err-x {
+  flex-shrink: 0;
+  color: inherit;
+  background: transparent;
+  text-decoration: underline;
 }
 
 /* ── proposal: the commit point ── */
@@ -202,21 +312,6 @@
   color: var(--fg-3);
 }
 
-/* "FLT-142 · FLT-149 on the board" — jumps the board to the row. */
-.rm-landed {
-  gap: 7px;
-  flex-wrap: wrap;
-  color: var(--fg-3);
-}
-.rm-landed-code {
-  color: var(--accent);
-  border-bottom: 1px solid var(--accent-line);
-}
-.rm-landed-code:hover {
-  color: var(--fg-0);
-  border-color: var(--fg-0);
-}
-
 /* ── composer ── */
 .rm-composer-wrap {
   flex-shrink: 0;
@@ -226,38 +321,15 @@
   gap: 9px;
   padding: 8px 28px 18px;
 }
-.rm-composer-wrap .composer {
+/* Anchors the working strip to the box (not the column), so it slides up from
+   behind the composer exactly as it does in the main chat. */
+.rm-composer-anchor {
+  width: 100%;
   max-width: 640px;
 }
 .rm-composer-wrap .composer.is-blocked {
   opacity: 0.55;
   box-shadow: none;
-}
-.rm-sugg {
-  width: 100%;
-  max-width: 640px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-.rm-sugg-c {
-  padding: 8px 12px;
-  text-align: left;
-  line-height: var(--lh-snug);
-  color: var(--fg-2);
-  background: transparent;
-  border: 1px dashed var(--bd);
-  border-radius: var(--r-md);
-  transition:
-    border-color 0.14s,
-    background 0.14s,
-    color 0.14s;
-}
-.rm-sugg-c:hover {
-  color: var(--fg-0);
-  background: var(--hover);
-  border-style: solid;
-  border-color: var(--accent-line);
 }
 
 /* ═══ right column: the board ══════════════════════════════════════ */
@@ -698,7 +770,7 @@
     width: 44%;
     min-width: 320px;
   }
-  .rm-thread-col {
+  .rm-thread .chat-inner {
     padding: 0 18px;
   }
   .rm-composer-wrap {
