@@ -37,6 +37,9 @@
 @import "./styles/shared/terminal.css";
 @import "./components/History/History.css";
 @import "./components/ProjectScreen/ProjectScreen.css";
+/* After ProjectScreen.css (it composes on the page shell) and after
+   Chat.css/Composer.css, whose message + composer skins it reuses. */
+@import "./components/ProjectScreen/Roadmap/Roadmap.css";
 @import "./components/Stats/Stats.css";
 @import "./components/RightPanel/FilePanel/FilePanel.css";
 /* Ahead of SettingsScreen.css (its former home) and of CustomAgents.css /

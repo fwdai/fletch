@@ -1,0 +1,608 @@
+/* ─── Roadmap tab ────────────────────────────────────────────────────
+ * Two columns under the project header: the PM conversation (left) and the
+ * board it maintains (right). Message bubbles, the question card, the tool row
+ * and the composer are reused from the agent transcript — only what is unique
+ * to the roadmap is styled here. */
+.rm {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+/* `.grow` is scoped per component in this app, not a global utility. */
+.rm-board-h .grow,
+.rm-prop-foot .grow,
+.rm-item-foot .grow,
+.rm-composer-wrap .composer-foot .grow {
+  flex: 1;
+}
+
+/* ── left column: the PM conversation ── */
+.rm-thread {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--bd-soft);
+}
+.rm-thread-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 0 10px;
+}
+.rm-thread-col {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 0 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+}
+/* The transcript skins carry their own bottom margin; the column's gap owns
+   spacing here. */
+.rm-thread-col .m-user,
+.rm-thread-col .m-agent {
+  margin-bottom: 0;
+}
+
+/* PM identity card — sets the tone once, then gets out of the way. */
+.rm-pm {
+  gap: 11px;
+  padding-bottom: 2px;
+}
+.rm-pm-badge {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--r-md);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+.rm-pm-n {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+.rm-pm-s {
+  margin-top: 1px;
+  color: var(--fg-3);
+}
+
+/* The PM's repo-check summary is the substance of the row, not a tool
+   argument — let it wrap rather than ellipsize at the column's width. */
+.rm-thread-col .m-tool .t-arg {
+  white-space: normal;
+  text-overflow: clip;
+  line-height: var(--lh-snug);
+}
+
+/* findings inside the collapsed repo check */
+.rm-findings {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rm-findings li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  line-height: var(--lh-normal);
+  color: var(--fg-1);
+  text-wrap: pretty;
+}
+.rm-f-tag {
+  flex-shrink: 0;
+  width: 42px;
+  margin-top: 1px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.rm-findings li.f-ok .rm-f-tag {
+  color: var(--success);
+}
+.rm-findings li.f-warn .rm-f-tag {
+  color: var(--warn);
+}
+.rm-findings li.f-dep .rm-f-tag {
+  color: var(--info);
+}
+.rm-f-t code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  background: var(--hover);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-xs);
+}
+
+/* ── proposal: the commit point ── */
+.rm-prop {
+  overflow: hidden;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--accent), var(--bg-2) 94%);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 93%);
+}
+.rm-prop.accepted,
+.rm-prop.discarded {
+  border-color: var(--bd-soft);
+  background: var(--bg-1);
+  box-shadow: none;
+}
+.rm-prop.discarded {
+  opacity: 0.6;
+}
+.rm-prop-h {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 14px 9px;
+}
+.rm-prop-l {
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.rm-prop.accepted .rm-prop-l {
+  color: var(--success);
+}
+.rm-prop.discarded .rm-prop-l {
+  color: var(--fg-3);
+}
+.rm-prop-n {
+  margin-left: auto;
+  color: var(--fg-3);
+}
+.rm-prop-row {
+  gap: 10px;
+  padding: 7px 14px;
+  border-top: 1px solid var(--bd-soft);
+}
+.rm-prop-op {
+  width: 14px;
+  flex-shrink: 0;
+  font-weight: 700;
+}
+.rm-prop-op.add {
+  color: var(--success);
+}
+.rm-prop-op.move {
+  color: var(--info);
+}
+.rm-prop-code {
+  flex-shrink: 0;
+  color: var(--fg-2);
+}
+.rm-prop-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-0);
+}
+.rm-prop-tag {
+  flex-shrink: 0;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.rm-prop-foot {
+  gap: 8px;
+  padding: 10px 12px 11px 14px;
+  border-top: 1px solid var(--bd-soft);
+}
+.rm-prop-hint {
+  color: var(--fg-3);
+}
+
+/* "FLT-142 · FLT-149 on the board" — jumps the board to the row. */
+.rm-landed {
+  gap: 7px;
+  flex-wrap: wrap;
+  color: var(--fg-3);
+}
+.rm-landed-code {
+  color: var(--accent);
+  border-bottom: 1px solid var(--accent-line);
+}
+.rm-landed-code:hover {
+  color: var(--fg-0);
+  border-color: var(--fg-0);
+}
+
+/* ── composer ── */
+.rm-composer-wrap {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 28px 18px;
+}
+.rm-composer-wrap .composer {
+  max-width: 640px;
+}
+.rm-composer-wrap .composer.is-blocked {
+  opacity: 0.55;
+  box-shadow: none;
+}
+.rm-sugg {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.rm-sugg-c {
+  padding: 8px 12px;
+  text-align: left;
+  line-height: var(--lh-snug);
+  color: var(--fg-2);
+  background: transparent;
+  border: 1px dashed var(--bd);
+  border-radius: var(--r-md);
+  transition:
+    border-color 0.14s,
+    background 0.14s,
+    color 0.14s;
+}
+.rm-sugg-c:hover {
+  color: var(--fg-0);
+  background: var(--hover);
+  border-style: solid;
+  border-color: var(--accent-line);
+}
+
+/* ═══ right column: the board ══════════════════════════════════════ */
+.rm-board {
+  width: 45%;
+  min-width: 380px;
+  max-width: 620px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-0);
+}
+.rm-board-h {
+  flex-shrink: 0;
+  height: 44px;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.rm-tabs {
+  display: flex;
+  gap: 2px;
+}
+.rm-tab {
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  font-weight: 500;
+  color: var(--fg-2);
+  transition: var(--transition-ui);
+}
+.rm-tab:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+.rm-tab.active {
+  background: var(--selected);
+  color: var(--fg-0);
+}
+.rm-shipped {
+  gap: 5px;
+  color: var(--fg-3);
+}
+.rm-shipped svg {
+  color: var(--success);
+}
+.rm-board-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 14px 48px;
+}
+
+/* ── horizon group ── */
+.rm-group + .rm-group {
+  margin-top: 22px;
+}
+.rm-group-h {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 4px 8px;
+}
+.rm-group-l {
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-1);
+}
+.rm-group-n {
+  color: var(--fg-3);
+}
+.rm-group-c {
+  margin-left: auto;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.rm-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 11px;
+  border-left: 1px solid var(--bd-soft);
+}
+.rm-empty {
+  padding: 4px 2px;
+  color: var(--fg-3);
+  font-style: italic;
+}
+
+/* ── item row ── */
+.rm-item {
+  overflow: hidden;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  transition:
+    border-color 0.14s var(--ease),
+    background 0.14s var(--ease);
+}
+.rm-item:hover {
+  border-color: var(--bd-strong);
+}
+.rm-item.open {
+  border-color: var(--bd);
+}
+.rm-item-h {
+  width: 100%;
+  gap: 9px;
+  padding: 9px 11px;
+  text-align: left;
+}
+.rm-code {
+  flex-shrink: 0;
+  color: var(--fg-3);
+}
+.rm-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-0);
+}
+.rm-epic {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+}
+/* An agent is on this one right now. */
+.rm-live {
+  flex-shrink: 0;
+  gap: 5px;
+  color: var(--fg-2);
+}
+.rm-pearl {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--success), transparent 82%);
+  animation: rm-pulse 1.8s ease-in-out infinite;
+}
+@keyframes rm-pulse {
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in oklch, var(--success), transparent 90%);
+  }
+}
+.rm-size {
+  flex-shrink: 0;
+  width: 18px;
+  height: 17px;
+  border-radius: var(--r-xs);
+  font-weight: 600;
+  color: var(--fg-2);
+  background: var(--bg-3);
+}
+/* Only the multi-day tier earns a color — the rest are unremarkable. */
+.rm-size.s-L {
+  color: var(--warn);
+  background: color-mix(in oklch, var(--warn), transparent 88%);
+}
+.rm-src {
+  flex-shrink: 0;
+  color: var(--fg-3);
+}
+.rm-src.src-pm {
+  color: var(--accent);
+}
+.rm-chev {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  transition: transform 0.15s var(--ease);
+}
+.rm-item.open .rm-chev {
+  transform: rotate(180deg);
+}
+
+.rm-item-body {
+  padding: 2px 12px 11px;
+}
+.rm-why {
+  margin: 0 0 9px;
+  line-height: var(--lh-normal);
+  color: var(--fg-1);
+  text-wrap: pretty;
+}
+.rm-accept {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.rm-accept li {
+  position: relative;
+  padding-left: 15px;
+  line-height: var(--lh-snug);
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
+.rm-accept li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--bd-strong);
+  border-radius: 2px;
+}
+.rm-item-foot {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rm-area {
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.rm-dep {
+  gap: 4px;
+  color: var(--info);
+}
+
+/* A proposed row — dashed and tinted until the user accepts it. */
+.rm-item.ghost {
+  border-style: dashed;
+  border-color: var(--accent-line);
+  background: color-mix(in oklch, var(--accent), var(--bg-0) 93%);
+  animation: rm-ghost-in 0.34s var(--ease) both;
+}
+.rm-item.ghost .rm-code {
+  color: var(--accent);
+}
+@keyframes rm-ghost-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+/* Just accepted or just moved. */
+.rm-item.landed {
+  animation: rm-land 2.2s var(--ease);
+}
+@keyframes rm-land {
+  0% {
+    border-color: var(--accent);
+    background: color-mix(in oklch, var(--accent), var(--bg-2) 78%);
+  }
+}
+.rm-item.focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 86%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rm-pearl,
+  .rm-item.ghost,
+  .rm-item.landed {
+    animation: none;
+  }
+}
+
+/* ── product map tab ── */
+.rm-map {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rm-map-lede {
+  margin: 2px 4px 12px;
+  line-height: var(--lh-normal);
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
+.rm-dom {
+  gap: 11px;
+  padding: 11px 12px 11px 0;
+  overflow: hidden;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+}
+.rm-dom-bar {
+  width: 3px;
+  flex-shrink: 0;
+  align-self: stretch;
+  background: var(--bd-strong);
+}
+.rm-dom.heat-hot .rm-dom-bar {
+  background: var(--accent);
+}
+.rm-dom.heat-warm .rm-dom-bar {
+  background: color-mix(in oklch, var(--accent), transparent 55%);
+}
+.rm-dom-id {
+  flex: 1;
+  min-width: 0;
+}
+.rm-dom-l {
+  color: var(--fg-0);
+  font-weight: 500;
+}
+.rm-dom-n {
+  margin-top: 2px;
+  color: var(--fg-3);
+}
+.rm-dom-m {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.rm-dom-files {
+  color: var(--fg-2);
+}
+.rm-dom-items {
+  color: var(--fg-3);
+}
+.rm-dom-items.on {
+  color: var(--accent);
+}
+.rm-dom-heat {
+  flex-shrink: 0;
+  width: 52px;
+  text-align: right;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+/* ── narrow windows ── */
+@media (max-width: 1180px) {
+  .rm-board {
+    width: 44%;
+    min-width: 320px;
+  }
+  .rm-thread-col {
+    padding: 0 18px;
+  }
+  .rm-composer-wrap {
+    padding: 8px 18px 16px;
+  }
+}

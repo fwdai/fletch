@@ -11,14 +11,18 @@
   background: var(--bg-1);
 }
 
-/* header — back + project identity */
+/* header — back + project identity + board counts, over the tab row. The tabs
+ * sit ON the bottom rule (see .ps-tab's negative margin), so the active tab's
+ * underline reads as continuous with the header. */
 .ps-head {
+  flex-shrink: 0;
+  padding: 12px 24px 0;
+  border-bottom: 1px solid var(--bd-soft);
+}
+.ps-head-row {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 12px 24px;
-  border-bottom: 1px solid var(--bd-soft);
-  flex-shrink: 0;
 }
 .ps-back {
   gap: 9px;
@@ -52,6 +56,48 @@
 .ps-path {
   margin-top: 3px;
   color: var(--fg-3);
+}
+/* Board counts, right-aligned against the identity block. */
+.ps-stats {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+}
+.ps-stat-shipped {
+  color: var(--success);
+}
+
+/* tabs — Roadmap ⇄ Settings */
+.ps-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+}
+.ps-tab {
+  gap: 7px;
+  padding: 8px 12px 9px;
+  margin-bottom: -1px;
+  font-weight: 500;
+  color: var(--fg-2);
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  border-bottom: 2px solid transparent;
+  transition:
+    background 0.14s var(--ease),
+    color 0.14s var(--ease),
+    border-color 0.14s var(--ease);
+}
+.ps-tab svg {
+  color: var(--fg-3);
+}
+.ps-tab:hover {
+  color: var(--fg-0);
+  background: var(--hover);
+}
+.ps-tab.active {
+  color: var(--fg-0);
+  border-bottom-color: var(--accent);
+}
+.ps-tab.active svg {
+  color: var(--accent);
 }
 
 /* body — one scrollable page; sections stack in a centered column */

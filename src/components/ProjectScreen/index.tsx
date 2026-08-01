@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { api } from "@/api";
-import { Icon } from "@/components/Icon";
 import { loadRunOverrides, type SetupRow, toSetupRows } from "@/components/RunConfig";
 import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
@@ -9,7 +8,9 @@ import { DeleteSection } from "./DeleteSection";
 import { EnvVarsSection } from "./EnvVarsSection";
 import { GeneralSection } from "./GeneralSection";
 import { LinearSection } from "./LinearSection";
+import { ProjectHeader, type ProjectTab } from "./ProjectHeader";
 import { ProjectPulse } from "./ProjectPulse";
+import { Roadmap, useRoadmap } from "./Roadmap";
 import { RunEnvSection } from "./RunEnvSection";
 import { VerifySection } from "./VerifySection";
 
@@ -21,15 +22,20 @@ interface Loaded {
 }
 
 /** Full-screen project page. Rendered in place of the workspace panes while
- *  `projectScreenRepoPath` is set (mirrors SettingsScreen). One scrollable
- *  page: activity pulse + per-project settings every agent in the project
- *  inherits. Keyed by the project's primary repo path; resolves the
- *  project_id and detected run config on open. */
+ *  `projectScreenRepoPath` is set (mirrors SettingsScreen). Two tabs under a
+ *  shared header: the Roadmap (what gets built) and Settings — the activity
+ *  pulse plus the per-project config every agent in the project inherits.
+ *  Keyed by the project's primary repo path; resolves the project_id and
+ *  detected run config on open. */
 export function ProjectScreen({ repoPath }: { repoPath: string }) {
   const close = useAppStore((s) => s.closeProjectScreen);
   const projects = useAppStore((s) => s.workspace?.projects);
+  const [tab, setTab] = useState<ProjectTab>("roadmap");
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Lives here, not in <Roadmap>, because the header shows the same counts —
+  // and they move when the user accepts a proposal.
+  const roadmap = useRoadmap();
 
   // Custom display name for this repo, falling back to the folder basename.
   const name = projects?.find((p) => p.path === repoPath)?.name ?? basename(repoPath);
@@ -71,43 +77,43 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
 
   return (
     <div className="proj-screen">
-      <div className="ps-head">
-        <button type="button" className="ps-back flex-center text-base" onClick={close}>
-          <Icon name="chevL" size={13} />
-          <span>Back to app</span>
-        </button>
-        <div className="ps-id">
-          <div className="ps-title text-lg truncate">{name}</div>
-          <div className="ps-path mono text-xs truncate">
-            {projectRepoCount > 1 ? `${projectRepoCount} repositories` : repoPath}
-          </div>
-        </div>
-      </div>
+      <ProjectHeader
+        name={name}
+        subtitle={projectRepoCount > 1 ? `${projectRepoCount} repositories` : repoPath}
+        roadmap={roadmap}
+        tab={tab}
+        onTab={setTab}
+        onClose={close}
+      />
 
-      <div className="ps-content">
-        {error ? (
-          <div className="ps-state text-sm">Couldn’t load project settings.</div>
-        ) : !loaded ? (
-          <div className="ps-state iflex-center text-sm">
-            <Loader variant="inherit" /> Loading…
-          </div>
-        ) : (
-          <div className="ps-sections">
-            <ProjectPulse projectId={loaded.projectId} />
-            <GeneralSection projectId={loaded.projectId} currentName={name} />
-            <RunEnvSection
-              projectId={loaded.projectId}
-              rows={loaded.rows}
-              ecosystem={loaded.ecosystem}
-              initialOverrides={loaded.overrides}
-            />
-            <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
-            <LinearSection projectId={loaded.projectId} />
-            <VerifySection projectId={loaded.projectId} />
-            <DeleteSection projectId={loaded.projectId} projectName={name} />
-          </div>
-        )}
-      </div>
+      {tab === "roadmap" ? (
+        <Roadmap roadmap={roadmap} />
+      ) : (
+        <div className="ps-content">
+          {error ? (
+            <div className="ps-state text-sm">Couldn’t load project settings.</div>
+          ) : !loaded ? (
+            <div className="ps-state iflex-center text-sm">
+              <Loader variant="inherit" /> Loading…
+            </div>
+          ) : (
+            <div className="ps-sections">
+              <ProjectPulse projectId={loaded.projectId} />
+              <GeneralSection projectId={loaded.projectId} currentName={name} />
+              <RunEnvSection
+                projectId={loaded.projectId}
+                rows={loaded.rows}
+                ecosystem={loaded.ecosystem}
+                initialOverrides={loaded.overrides}
+              />
+              <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
+              <LinearSection projectId={loaded.projectId} />
+              <VerifySection projectId={loaded.projectId} />
+              <DeleteSection projectId={loaded.projectId} projectName={name} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
