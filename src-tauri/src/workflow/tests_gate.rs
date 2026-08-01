@@ -11,9 +11,11 @@
 //! * maps a *tests-only* [`crate::verify::VerificationReport`] back to the
 //!   `TestsOutcome` the gate has always spoken.
 //!
-//! No test command resolvable → [`TestsOutcome::NoCommand`], and the gate
-//! degrades to `verdict` (§9.4). Off-macOS (no `sandbox-exec`) degrades the same
-//! way rather than running a repo-derived command unsandboxed.
+//! No test command resolvable → [`TestsOutcome::NoCommand`], on which the gate
+//! blocks as unverifiable rather than falling back to the agent's verdict (§9.4)
+//! — a step that wants self-report declares `gate: verdict`. Off-macOS (no
+//! `sandbox-exec`) yields the same `NoCommand` rather than running a repo-derived
+//! command unsandboxed.
 
 use std::path::Path;
 
@@ -54,11 +56,13 @@ impl TestRunner for SandboxTestRunner {
         Box::pin(async move {
             // The gate runs under the Run-panel seatbelt profile, which needs
             // macOS `sandbox-exec`. Where it isn't present we can't safely run a
-            // repo-derived command, so degrade to the verdict gate (spec §9.4)
-            // rather than fail the step for the wrong reason.
+            // repo-derived command, so report `NoCommand` — the gate then blocks
+            // as unverifiable (spec §9.4) rather than run the command unsandboxed
+            // or fail the step for the wrong reason. (The app is macOS-only, so
+            // this is a defensive belt-and-suspenders path.)
             if !sandbox_available() {
                 tracing::warn!(
-                    "tests gate: `{}` unavailable on this host; degrading to the verdict gate",
+                    "tests gate: `{}` unavailable on this host; cannot verify tests",
                     crate::sandbox::SANDBOX_EXEC
                 );
                 return TestsOutcome::NoCommand;
@@ -80,7 +84,7 @@ fn sandbox_available() -> bool {
 /// A failed / timed-out / unrunnable install blocks the tests before they run —
 /// a distinct cause (`SetupFailed`) from failing tests (spec §9.4). Otherwise
 /// the `test` check drives the outcome: a `Skipped` test (nothing resolved)
-/// degrades to `NoCommand` → the verdict gate.
+/// maps to `NoCommand`, on which the gate blocks as unverifiable (spec §9.4).
 fn map_tests_outcome(report: &VerificationReport) -> TestsOutcome {
     if let Some(install) = report.check("install") {
         if matches!(
