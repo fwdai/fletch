@@ -11,10 +11,13 @@
 //! re-read — the discipline [`crate::sandbox::EngineKind`] uses, so changing
 //! policy later cannot retroactively widen an agent that is already running.
 //!
-//! Two checks, at the two points where the answer is knowable: [`AgentCaps::refuses`]
-//! before any work happens, and [`AgentCaps::refuses_branch`] once the target
-//! branch has been resolved, which is the earliest moment it is known (it may
-//! come from the checkout's HEAD rather than from the request).
+//! Three checks, at the points where the answer is knowable: [`AgentCaps::refuses`]
+//! before any work happens; [`AgentCaps::refuses_branch`] once the target branch
+//! has been resolved, which is the earliest moment it is known (it may come from
+//! the checkout's HEAD rather than from the request); and [`AgentCaps::refuses_force`]
+//! for the destructive case — a `--force-with-lease` push, whose lease passes for
+//! any branch the agent just fetched, so it is fenced to the agent's *own* work
+//! branch rather than any branch it can repoint its HEAD onto.
 
 /// Ops that spend the host's GitHub credentials to *publish*. `git_fetch` is
 /// credentialed too but reads only, so it is deliberately not gated here — a
@@ -93,6 +96,49 @@ impl AgentCaps {
             )
         })
     }
+
+    /// Why a *force* push to `branch` may not proceed, if so.
+    ///
+    /// SECURITY: a `--force-with-lease --force-if-includes` push rewrites remote
+    /// history, and its lease passes for any branch the agent just fetched — so
+    /// without this gate an agent can fetch a shared branch (`develop`, a
+    /// `release/*`, a teammate's), `checkout -B` its HEAD onto it locally, and
+    /// force-overwrite it under the user's GitHub identity. [`refuses_branch`]
+    /// only fences the review base and the trunks; every *other* existing branch
+    /// is force-clobberable once fetched. So force is confined to the agent's
+    /// **own** work branch — `own_branch`, the name the host recorded when it
+    /// materialized the branch (`AgentRecord.repos[].branch`), which, unlike the
+    /// live `HEAD` the agent repoints at will, the agent cannot forge. `None`
+    /// (no branch recorded yet, or a checkout that never materialized one) fails
+    /// **closed**: the destructive op is refused rather than risked. A non-force
+    /// push never reaches here and may still create a branch.
+    ///
+    /// [`refuses_branch`]: AgentCaps::refuses_branch
+    pub fn refuses_force(self, branch: &str, own_branch: Option<&str>) -> Option<String> {
+        // A denied grant never reaches git at all (the op gate stops it), but the
+        // branch/force gates re-check it so no single call site can leak one.
+        if let Publish::Denied(why) = self.publish {
+            return Some(why.to_string());
+        }
+        // Compared as `is_review_target` compares: trimmed and case-insensitive,
+        // because the app's target is a case-insensitive filesystem where `Fix/X`
+        // and `fix/x` name the same loose ref.
+        let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+        match own_branch.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(own) if same(branch, own) => None,
+            Some(own) => Some(format!(
+                "refusing to force-push '{}': force is limited to this agent's own branch \
+                 '{own}'. Push without --force to create or update a different branch",
+                branch.trim()
+            )),
+            None => Some(format!(
+                "refusing to force-push '{}': this agent has no recorded work branch to \
+                 authorize a force against yet. Push without --force first (e.g. to open \
+                 your pull request); force becomes available for that branch afterward",
+                branch.trim()
+            )),
+        }
+    }
 }
 
 /// Whether `branch` is something no agent may publish to: the repo's own review
@@ -166,8 +212,37 @@ mod tests {
         }
         // Reads stay reachable: `update-branch` refreshes the base this way.
         assert!(caps.refuses("git_fetch").is_none());
-        // And the branch-level check agrees, so neither call site can let a
-        // denied grant through on its own.
+        // And the branch-level checks agree, so no call site can let a denied
+        // grant through on its own — force included.
         assert!(caps.refuses_branch("wf/anything", "main").is_some());
+        assert!(caps
+            .refuses_force("wf/anything", Some("wf/anything"))
+            .is_some());
+    }
+
+    /// The gap this closes: `refuses_branch` fences the review base and the
+    /// trunks, but a force push could still overwrite any *other* existing branch
+    /// (develop, release/*, a teammate's) once fetched. Force is now confined to
+    /// the agent's own recorded branch.
+    #[test]
+    fn force_is_confined_to_the_agents_own_branch() {
+        let caps = AgentCaps::interactive();
+        // The whole reason force exists: rewrite your own branch after a rebase.
+        assert!(caps.refuses_force("fix/login", Some("fix/login")).is_none());
+        // Case and whitespace fold to the same ref on the case-insensitive target.
+        assert!(caps
+            .refuses_force(" Fix/Login ", Some("fix/login"))
+            .is_none());
+        // A shared branch the agent fetched and repointed HEAD onto — refused,
+        // even though `refuses_branch` alone would wave `develop` through.
+        for other in ["develop", "release/24", "teammate/wip", "main"] {
+            assert!(
+                caps.refuses_force(other, Some("fix/login")).is_some(),
+                "{other:?} is not the agent's own branch and must not be force-pushed"
+            );
+        }
+        // Fail closed: with no recorded own branch, no force can be authorized.
+        assert!(caps.refuses_force("fix/login", None).is_some());
+        assert!(caps.refuses_force("develop", None).is_some());
     }
 }

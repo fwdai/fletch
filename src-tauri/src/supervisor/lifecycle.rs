@@ -738,7 +738,11 @@ impl Supervisor {
                 .parent_branch
                 .clone()
                 .unwrap_or_else(|| "main".to_string());
-            repo_targets.push((r.subdir.clone(), checkout, base));
+            // `r.branch` is the agent's own work branch on this checkout, recorded
+            // when the host materialized it. Threaded here so a force push is
+            // fenced to it; `None` until the branch exists and this dispatcher is
+            // rebuilt on the next resume/turn (see `rpc::caps::refuses_force`).
+            repo_targets.push((r.subdir.clone(), checkout, base, r.branch.clone()));
         }
         // A workspace started from an issue carries its ref here ("123" for
         // GitHub, "ENG-123" for Linear); it seeds the agent's live issue ref,
