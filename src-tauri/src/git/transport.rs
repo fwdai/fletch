@@ -45,13 +45,26 @@ pub async fn push_head_to_branch(checkout: &Path, branch: &str) -> Result<()> {
 /// Returns `"up-to-date"` when the remote already had everything (a no-op
 /// push), otherwise `"pushed"`. Lets the UI confirm the outcome instead of
 /// silently doing nothing when there was nothing to send.
+///
+/// `branch` is resolved host-side from the agent-writable `.git/HEAD`, so it is
+/// pushed as a fully-qualified `refs/heads/<branch>:refs/heads/<branch>`
+/// refspec, NEVER as a bare `origin <branch>` positional. As a bare positional
+/// an option-named branch (`--mirror`, `--all`, `--force`) is reparsed by git as
+/// a push *option* — mirror-force-pushing every ref and clobbering protected
+/// `main`/`master`/base. Inside a refspec the string can only ever be a
+/// source/destination branch name, so such a name becomes a harmless same-named
+/// remote branch (or git rejects it) and can never trigger option behaviour or
+/// redirect to a trunk. This primitive is the single choke point behind every
+/// push caller (agent broker, PR broker, Git panel, publish), so the defence
+/// lives here.
 pub async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> {
     let mut cmd = crate::git_dist::command(checkout);
     cmd.args(["push", "-u"]);
     if force {
         cmd.args(["--force-with-lease", "--force-if-includes"]);
     }
-    cmd.args(["origin", branch]);
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    cmd.args(["origin", refspec.as_str()]);
     // Auth for the https transport. `pre-push` would fire on the host, but
     // hooks are already neutralised at the spawn seam (`git::hardening`).
     for (k, v) in crate::github::git_auth_env() {
@@ -285,6 +298,125 @@ mod tests {
             .await
             .unwrap();
         assert!(out.status.success());
+    }
+
+    async fn git_ok(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    async fn rev(dir: &Path, refname: &str) -> String {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(["rev-parse", refname])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "rev-parse {refname}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The agent owns its `.git/HEAD`/`refs`, so the `branch` string reaching
+    /// `push` can be an option-looking name (`--mirror`, `--all`). Pushing a
+    /// fully-qualified refspec must make such a name only ever a destination
+    /// branch — never a git-push OPTION that mirror-force-pushes every ref over
+    /// protected `main`. Reproduces the real injection: the ref + HEAD are
+    /// written directly, and `push` is driven with the resolved option string.
+    #[tokio::test]
+    async fn push_refspec_neutralizes_option_named_branch_injection() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        let remote = root.join("remote.git");
+        let attacker = root.join("attacker");
+
+        // Bare remote seeded with a protected `main`.
+        git_ok(root, &["init", "-q", "--bare", "remote.git"]).await;
+        let seed = root.join("seed");
+        std::fs::create_dir_all(&seed).unwrap();
+        git_ok(&seed, &["init", "-q", "-b", "main"]).await;
+        config(&seed, "user.email", "v@example.com").await;
+        config(&seed, "user.name", "V").await;
+        std::fs::write(seed.join("main.txt"), b"legit main\n").unwrap();
+        git_ok(&seed, &["add", "-A"]).await;
+        git_ok(&seed, &["commit", "-q", "-m", "protected main"]).await;
+        git_ok(
+            &seed,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        )
+        .await;
+        git_ok(&seed, &["push", "-q", "-u", "origin", "main"]).await;
+        let protected = rev(&remote, "refs/heads/main").await;
+
+        // Attacker checkout: an agent clone that fully controls its own `.git`.
+        git_ok(
+            root,
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                attacker.to_str().unwrap(),
+            ],
+        )
+        .await;
+        config(&attacker, "user.email", "a@example.com").await;
+        config(&attacker, "user.name", "A").await;
+        std::fs::write(attacker.join("main.txt"), b"PWNED by attacker\n").unwrap();
+        git_ok(&attacker, &["add", "-A"]).await;
+        git_ok(&attacker, &["commit", "-q", "-m", "attacker payload"]).await;
+        let payload = rev(&attacker, "HEAD").await;
+
+        for opt in ["--mirror", "--all"] {
+            // Plant the option-named branch and point HEAD at it directly —
+            // `.git/HEAD` and `.git/refs` are outside the config deny list.
+            std::fs::write(
+                attacker.join(format!(".git/refs/heads/{opt}")),
+                format!("{payload}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                attacker.join(".git/HEAD"),
+                format!("ref: refs/heads/{opt}\n"),
+            )
+            .unwrap();
+            // `current_branch` resolves to the injected option string, exactly
+            // as the brokers would hand it to `push`.
+            assert_eq!(
+                current_branch(&attacker).await.unwrap().as_deref(),
+                Some(opt),
+                "the injected option name must be what a broker would push"
+            );
+
+            // Drive the real primitive both ways. Neither may mirror or redirect:
+            // as a refspec `{opt}` is only ever a plain destination branch.
+            push(&attacker, opt, false).await.unwrap();
+            push(&attacker, opt, true).await.unwrap();
+
+            // Protected main is untouched; the attack achieves at most a harmless
+            // same-named remote branch pointing at the attacker's own commit.
+            assert_eq!(
+                rev(&remote, "refs/heads/main").await,
+                protected,
+                "protected main must be untouched by an option-named push of {opt:?}"
+            );
+            assert_eq!(
+                rev(&remote, &format!("refs/heads/{opt}")).await,
+                payload,
+                "{opt:?} must land only as a literal same-named branch"
+            );
+        }
     }
 
     #[cfg(unix)]
