@@ -1437,7 +1437,10 @@ mod tests {
         // and the broad grant, so SBPL's last-match-wins actually overrides it.
         for dir in policy::APP_SUPPORT_EXEC_DIRS {
             let deny = format!("(subpath \"{app_support}/{dir}\")");
-            assert!(profile.contains(&deny), "missing auto-exec dir deny: {deny}");
+            assert!(
+                profile.contains(&deny),
+                "missing auto-exec dir deny: {deny}"
+            );
             let deny_at = profile.find(&deny).unwrap();
             assert!(
                 deny_at > allow_at && deny_at > grant_at,
@@ -1446,7 +1449,10 @@ mod tests {
         }
         for file in policy::APP_SUPPORT_EXEC_FILES {
             let deny = format!("(literal \"{app_support}/{file}\")");
-            assert!(profile.contains(&deny), "missing auto-exec file deny: {deny}");
+            assert!(
+                profile.contains(&deny),
+                "missing auto-exec file deny: {deny}"
+            );
             let deny_at = profile.find(&deny).unwrap();
             assert!(
                 deny_at > allow_at && deny_at > grant_at,
