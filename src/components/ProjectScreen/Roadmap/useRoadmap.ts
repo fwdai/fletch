@@ -17,6 +17,12 @@
 // board grows ghost rows live while the PM is still talking. Accepting one is a
 // status patch (`proposed → open`); discarding it is a delete. Those two are
 // the only ways a proposed row leaves that state.
+//
+// Queueing works the same way, one status further along: `open → queued` is the
+// user handing an item to the Rust drainer (src-tauri/src/roadmap/drainer.rs),
+// which owns everything after it — `queued → active` when it launches a run,
+// and `active → in_review`/`done`/back to `open` when that run settles. This
+// hook never writes those; it only ever asks for `queued` or takes it back.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -24,6 +30,7 @@ import {
   type NewRoadmapItem,
   onRoadmapItem,
   onRoadmapItemDeleted,
+  onRoadmapQueueNote,
   type RoadmapItem,
   type RoadmapItemPatch,
 } from "@/api";
@@ -32,6 +39,7 @@ import { applyBoardEvent, createBoardSync } from "./boardSync";
 import { PRODUCT_MAP } from "./mockData";
 import type { Horizon } from "./types";
 import { toBoardItem } from "./types";
+import { useProjectWorkflows } from "./useProjectWorkflows";
 
 /** How long a row stays highlighted after landing on the board. */
 const LANDED_MS = 2200;
@@ -57,6 +65,9 @@ export function useRoadmap(repoPath: string) {
   // yet", not "no project" — telling a populated board it's empty for a frame
   // would flash the empty state at someone who has a roadmap.
   const workspaceReady = useAppStore((s) => s.workspace != null);
+  // What a queued item will run under. Loaded here rather than in the Board so
+  // the item form and the card's queue affordance read the same answer.
+  const workflows = useProjectWorkflows(projectId);
 
   const [rows, setRows] = useState<RoadmapItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,6 +79,10 @@ export function useRoadmap(repoPath: string) {
   const [focusCode, setFocusCode] = useState<string | null>(null);
   /** Codes highlighted because they just landed or just moved. */
   const [landed, setLanded] = useState<ReadonlySet<string>>(() => new Set());
+  /** Why a queued item isn't moving, by item id — the drainer's transient
+   *  `roadmap:queue-note`. Not persisted anywhere, on purpose: it's only true
+   *  until the next tick, and the row's own next change supersedes it. */
+  const [notes, setNotes] = useState<ReadonlyMap<string, string>>(() => new Map());
 
   // Every pending highlight timer, so unmounting can't set state on a dead
   // component.
@@ -83,11 +98,29 @@ export function useRoadmap(repoPath: string) {
   }, []);
 
   // ── the persisted board ────────────────────────────────────────────
+  /** Drop an item's queue note. Notes are independent of the row buffer, so
+   *  clearing at event-arrival time is safe even mid-load. */
+  const dropNote = useCallback((id: string) => {
+    setNotes((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
   /** Upsert a row by id, appending new ones — the backend lists oldest-first
    *  and a new row is the newest, so append keeps the two in the same order. */
-  const upsert = useCallback((row: RoadmapItem) => {
-    setRows((prev) => applyBoardEvent(prev, { kind: "upsert", row }));
-  }, []);
+  const upsert = useCallback(
+    (row: RoadmapItem) => {
+      setRows((prev) => applyBoardEvent(prev, { kind: "upsert", row }));
+      // A note explains why a *queued* row is stuck. The moment the row moves
+      // on, whatever it said is history — drop it rather than leave a stale
+      // excuse under a running item.
+      if (row.status !== "queued") dropNote(row.id);
+    },
+    [dropNote],
+  );
 
   // Load the board: subscribe first, buffer during the fetch, then replay — so a
   // row the PM proposes while the board is loading cannot be lost. Rows change
@@ -111,8 +144,20 @@ export function useRoadmap(repoPath: string) {
     const off = onRoadmapItem((row) => {
       if (row.project_id !== projectId) return;
       sync.push({ kind: "upsert", row });
+      // Rows go through the sequencer; notes don't need to — they're a
+      // separate map, and a stale excuse should vanish even mid-load.
+      if (row.status !== "queued") dropNote(row.id);
     });
-    const offDeleted = onRoadmapItemDeleted((id) => sync.push({ kind: "delete", id }));
+    const offDeleted = onRoadmapItemDeleted((id) => {
+      sync.push({ kind: "delete", id });
+      dropNote(id);
+    });
+    // Addressed by item id, and every id on this board belongs to this project,
+    // so no extra filtering is needed — a note for a row we don't hold is
+    // simply never rendered.
+    const offNote = onRoadmapQueueNote(({ item_id, note }) => {
+      setNotes((prev) => new Map(prev).set(item_id, note));
+    });
 
     void (async () => {
       // Registration has to be awaited, not just started: an event emitted
@@ -138,8 +183,9 @@ export function useRoadmap(repoPath: string) {
       alive = false;
       void off.then((f) => f());
       void offDeleted.then((f) => f());
+      void offNote.then((f) => f());
     };
-  }, [projectId, workspaceReady]);
+  }, [projectId, workspaceReady, dropNote]);
 
   /** Light up rows for a moment after they land, then clear only those — a
    *  later landing must not have its highlight cut short by an earlier timer. */
@@ -254,6 +300,31 @@ export function useRoadmap(repoPath: string) {
     [guarded, markLanded, upsert],
   );
 
+  /** Hand items to the drainer: `open → queued`. From here the Rust side owns
+   *  the item — it picks the oldest queued item whose dependencies have landed,
+   *  resolves a workflow, and launches a run. Queueing something it can't run
+   *  yet is fine and deliberate: it waits, and says why on the card. */
+  const queueItems = useCallback(
+    (ids: string[]) =>
+      guarded(async () => {
+        for (const id of ids) upsert(await api.roadmapUpdateItem(id, { status: "queued" }));
+      }),
+    [guarded, upsert],
+  );
+
+  /** Take an item back off the queue before it's dispatched (`queued → open`).
+   *  Racing the drainer is safe: it re-reads the row under the connection lock
+   *  immediately before claiming it, so this either lands first (and the item
+   *  is skipped) or lands after, against an already-`active` row — which the
+   *  board draws as running, because it is. */
+  const unqueueItems = useCallback(
+    (ids: string[]) =>
+      guarded(async () => {
+        for (const id of ids) upsert(await api.roadmapUpdateItem(id, { status: "open" }));
+      }),
+    [guarded, upsert],
+  );
+
   // ── board interaction ──────────────────────────────────────────────
   const toggleItem = useCallback((code: string) => {
     setOpenCodes((s) => {
@@ -298,11 +369,18 @@ export function useRoadmap(repoPath: string) {
     focusCode,
     focusItem,
     landed,
+    /** Why a queued item isn't moving, by item id. */
+    notes,
     addItem,
     editItem,
     moveItem,
     removeItems,
     acceptItems,
+    queueItems,
+    unqueueItems,
+    /** Definitions + the project default, for the queue affordance and the
+     *  item form. */
+    workflows,
   };
 }
 

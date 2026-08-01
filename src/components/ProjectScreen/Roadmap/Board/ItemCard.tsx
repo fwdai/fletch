@@ -1,7 +1,8 @@
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { Icon, type IconName } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
-import { type BoardItem, type ItemSource, SIZE_HINT } from "../types";
+import { type BoardItem, type ItemSource, type ItemStatus, SIZE_HINT } from "../types";
 
 /** Where the item came from, as a one-glyph tag. */
 const SOURCE: Record<ItemSource, { icon: IconName; tip: string }> = {
@@ -9,6 +10,22 @@ const SOURCE: Record<ItemSource, { icon: IconName; tip: string }> = {
   pm: { icon: "sparkle", tip: "Written here with the PM agent" },
   linear: { icon: "layers", tip: "From Linear" },
   github: { icon: "github", tip: "From GitHub" },
+};
+
+/** The one-word state chip on the header line, for the statuses that mean
+ *  something is (or should be) happening. `open`/`proposed` get none — an item
+ *  nobody has queued is the board's resting state and needs no label. */
+const STATE: Partial<Record<ItemStatus, { label: string; cls: string; tip: string }>> = {
+  queued: {
+    label: "Queued",
+    cls: "q",
+    tip: "Waiting for a slot — the queue runs one item per project at a time",
+  },
+  in_review: {
+    label: "In review",
+    cls: "r",
+    tip: "Its run opened a pull request; it ships when that merges",
+  },
 };
 
 interface Props {
@@ -23,6 +40,18 @@ interface Props {
   onAccept?: () => void;
   /** Discard the proposal — the row is deleted. Ghosts only. */
   onDiscard?: () => void;
+  /** Hand the item to the queue (`open → queued`). Absent for a ghost and on a
+   *  read-only board. */
+  onQueue?: () => void;
+  /** Take it back off the queue before it's dispatched (`queued → open`). */
+  onUnqueue?: () => void;
+  /** Open the run this item is being built by. Only on an item with a run. */
+  onOpenRun?: () => void;
+  /** The workflow this item would run under ("Project default" resolved), or
+   *  null when nothing would run it — the queue would stall on it. */
+  workflowName?: string | null;
+  /** Why this queued item isn't moving, straight from the drainer. */
+  note?: string;
   /** Ring the row: it was just jumped to, or a pending proposal moves it. */
   focused?: boolean;
   /** Transient highlight for a row that just landed or just moved. */
@@ -56,17 +85,24 @@ export function ItemCard({
   onEdit,
   onAccept,
   onDiscard,
+  onQueue,
+  onUnqueue,
+  onOpenRun,
+  workflowName,
+  note,
   cardRef,
 }: Props) {
   const createDraft = useAppStore((s) => s.createDraft);
   const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
   const source = SOURCE[item.source];
+  const state = STATE[item.status];
   const cls = [
     "rm-item",
     ghost ? "ghost" : "",
     open ? "open" : "",
     landed ? "landed" : "",
     focused ? "focus" : "",
+    item.status === "queued" ? "queued" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -84,10 +120,18 @@ export function ItemCard({
         <span className="rm-code mono text-xs">{item.code}</span>
         <span className="rm-title text-sm truncate">{item.title}</span>
         {item.epic && <span className="rm-epic text-xs">{item.epic}</span>}
-        {item.status === "active" && item.agent && (
+        {/* A dispatched item shows the pearl whether or not an agent id has
+            been stamped on it yet: the queue flips it to `active` at the moment
+            it claims the row, a beat before the run exists. */}
+        {item.status === "active" && (
           <span className="rm-live iflex-center mono text-xs">
             <span className="rm-pearl" />
-            {item.agent}
+            {item.agent ?? "running"}
+          </span>
+        )}
+        {state && (
+          <span className={`rm-state iflex-center text-xs st-${state.cls}`} title={state.tip}>
+            {state.label}
           </span>
         )}
         {item.size && (
@@ -125,6 +169,16 @@ export function ItemCard({
         </div>
       )}
 
+      {/* Why a queued row isn't moving. Outside the collapsible body and
+          outside the header button, like the ghostbar: an item that has stalled
+          must say so without the user having to go looking for it. */}
+      {note && (
+        <div className="rm-note flex-center text-xs">
+          <Icon name="hand" size={11} />
+          <span className="rm-note-t">{note}</span>
+        </div>
+      )}
+
       {open && (
         <div className="rm-item-body">
           {item.why && <p className="rm-why text-sm">{item.why}</p>}
@@ -143,17 +197,35 @@ export function ItemCard({
                 after {d}
               </span>
             ))}
+            {/* What the queue would run this under, so the user knows before
+                they queue rather than after it stalls. */}
+            {(onQueue || onUnqueue) && (
+              <span
+                className={`rm-wf iflex-center mono text-xs ${workflowName ? "" : "none"}`}
+                title={
+                  workflowName
+                    ? `Runs under the ${workflowName} workflow`
+                    : "No workflow set on this item and no project default — the queue can't run it yet"
+                }
+              >
+                <Icon name="combine" size={9} />
+                {workflowName ?? "no workflow"}
+              </span>
+            )}
             <span className="grow" />
             {onEdit && (
               <Button variant="ghost" size="sm" onClick={onEdit}>
                 <Icon name="edit" size={11} /> Edit
               </Button>
             )}
-            {/* A proposed row isn't work anyone has agreed to do — accept it
+            {/* The manual hand-off stays available on every real row: the queue
+                is autonomous, and sometimes you want to drive. Demoted to a
+                ghost button next to "Queue", which is the path most rows take.
+                A proposed row isn't work anyone has agreed to do — accept it
                 first, then send it. */}
             {!ghost && (
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
                 onClick={async () => {
                   const draftId = await createDraft(repoPath, briefFor(item));
@@ -164,6 +236,35 @@ export function ItemCard({
                 }}
               >
                 <Icon name="zap" size={11} /> Send to an agent
+              </Button>
+            )}
+            {/* An item in review is waiting on a PR, so the PR is the thing to
+                go to — the run behind it is already finished. */}
+            {item.item.pr_url && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  void openExternal(item.item.pr_url as string).catch(() => {});
+                }}
+              >
+                <Icon name="pr" size={11} />
+                {item.item.pr_number ? `PR #${item.item.pr_number}` : "View PR"}
+              </Button>
+            )}
+            {onOpenRun && (
+              <Button variant="outline" size="sm" onClick={onOpenRun}>
+                <Icon name="combine" size={11} /> View run
+              </Button>
+            )}
+            {onUnqueue && (
+              <Button variant="outline" size="sm" onClick={onUnqueue}>
+                Take off the queue
+              </Button>
+            )}
+            {onQueue && (
+              <Button variant="primary" size="sm" onClick={onQueue}>
+                <Icon name="play" size={11} /> Queue
               </Button>
             )}
           </div>

@@ -342,6 +342,80 @@ fn workspace_purpose_migration_leaves_existing_workspaces_untagged() {
     assert_eq!(tagged, 1);
 }
 
+/// Schema version at which `workspaces.purpose` (0027) exists — the version an
+/// install upgrading into the roadmap back-link comes from. Pinned like the
+/// two above, for the same reason.
+const V_WORKSPACE_PURPOSE: usize = 27;
+
+/// `wf_run.roadmap_item_id` (0028) lands on an existing install as a nullable
+/// column: every run already on disk was launched by a human, and stays
+/// unattributed. Only runs the queue drainer dispatches carry an item id — and
+/// that is what the drainer counts to enforce its per-project concurrency cap,
+/// so a human-launched run must never be caught by it.
+#[test]
+fn roadmap_backlink_migration_leaves_existing_runs_unattributed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_WORKSPACE_PURPOSE)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO wf_run (id, name, spec_json, task, project_id, repo_path, run_dir,
+                             branch, base_sha, status, budgets_json, spent_json,
+                             created_at, updated_at)
+              VALUES ('run-old', 'wf', '{}', 'do a thing', 'p', '/r', '/d',
+                      'wf/x', 'abc', 'running', '{}', '{}', 0, 0);",
+    )
+    .unwrap();
+    drop(conn);
+
+    init(dir.path()).unwrap();
+
+    let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT roadmap_item_id FROM wf_run WHERE id = 'run-old'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        existing, None,
+        "a run launched by hand is not the queue's to throttle"
+    );
+
+    // A dispatched run is an ordinary row otherwise, and the column is a plain
+    // back-link: deleting the item it names must not cascade the run away —
+    // the run is the evidence that the work happened.
+    conn.execute(
+        "INSERT INTO roadmap_items (id, project_id, code, title, horizon, status,
+                                    created_at, updated_at)
+         VALUES ('i1', 'p', 'PRJ-100', 'queued work', 'now', 'active', 0, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO wf_run (id, name, spec_json, task, project_id, repo_path, run_dir,
+                             branch, base_sha, status, budgets_json, spent_json,
+                             created_at, updated_at, roadmap_item_id)
+              VALUES ('run-new', 'wf', '{}', 'PRJ-100', 'p', '/r', '/d',
+                      'wf/y', 'abc', 'running', '{}', '{}', 0, 0, 'i1')",
+        [],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM roadmap_items WHERE id = 'i1'", [])
+        .unwrap();
+    let survivors: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM wf_run WHERE id = 'run-new'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(survivors, 1);
+}
+
 #[test]
 fn fresh_init_creates_no_backup() {
     let dir = tempfile::tempdir().unwrap();

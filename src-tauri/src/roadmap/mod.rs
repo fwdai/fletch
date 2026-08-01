@@ -11,13 +11,20 @@
 //! and every mutation must announce itself — a frontend `db_insert` would skip
 //! all three.
 //!
-//! Events (both best-effort; a failed emit never affects what was persisted):
+//! Events (all best-effort; a failed emit never affects what was persisted):
 //! - `roadmap:item` — the full row, on every create/update. The frontend upserts
 //!   by `id`, the same shape `wf:run` uses, so any writer (this surface, the PM
 //!   agent's RPC, the queue drainer) updates the board without a refetch.
 //! - `roadmap:item-deleted` — the deleted row's id, so the board drops it
 //!   instead of upserting it.
+//! - `roadmap:queue-note` — transient, from [`drainer`]: why a queued item isn't
+//!   moving. Nothing persists it; see that module's docs for why.
+//!
+//! Autonomous dispatch lives in [`drainer`]: `queued` items become running
+//! workflows there, and every mutation on this surface [`drainer::nudge`]s it so
+//! a queue action doesn't wait out the tick interval.
 
+pub mod drainer;
 pub mod store;
 pub mod types;
 
@@ -73,6 +80,10 @@ pub async fn roadmap_create_item(
         store::create(&conn, &project_id, &item).map_err(|e| e.to_string())?
     };
     emit_item(&app, &created);
+    // A row can arrive already `queued` (or as a dependency another queued item
+    // is waiting on), so every mutation re-checks the queue rather than trying
+    // to guess which ones matter.
+    drainer::nudge();
     Ok(created)
 }
 
@@ -92,6 +103,7 @@ pub async fn roadmap_update_item(
     };
     let updated = updated.ok_or_else(|| format!("roadmap item {id} no longer exists"))?;
     emit_item(&app, &updated);
+    drainer::nudge();
     Ok(updated)
 }
 
@@ -109,6 +121,9 @@ pub async fn roadmap_delete_item(
     };
     if removed {
         emit_item_deleted(&app, &id);
+        // A deleted item can be the dep something queued was waiting on — a
+        // stale code counts as satisfied, so the removal can unblock a run.
+        drainer::nudge();
     }
     Ok(())
 }

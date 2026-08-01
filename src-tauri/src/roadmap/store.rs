@@ -61,8 +61,8 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
     conn.execute(
         "INSERT INTO roadmap_items
            (id, project_id, code, parent_id, title, why, horizon, status, size, area, source,
-            epic, accept_json, deps_json, created_at, updated_at)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+            epic, accept_json, deps_json, workflow_def_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
         params![
             id,
             project_id,
@@ -77,6 +77,7 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
             new.epic,
             strings_to_col(&new.accept),
             strings_to_col(&new.deps),
+            new.workflow_def_id,
             now,
         ],
     )?;
@@ -396,6 +397,7 @@ mod tests {
                 epic: Some("persistence".into()),
                 accept: vec!["survives a quit".into(), "reattaches".into()],
                 deps: vec![bare.code.clone()],
+                workflow_def_id: Some("wf-pipeline".into()),
             },
         )
         .unwrap();
@@ -410,6 +412,10 @@ mod tests {
         assert_eq!(stored.deps, vec![bare.code]);
         assert_eq!(stored.status, ItemStatus::Proposed);
         assert_eq!(stored.size, Some(ItemSize::L));
+        // Assignable at creation, so the item form can create-and-assign in one
+        // round-trip; unset on the bare row, which means "the project default".
+        assert_eq!(stored.workflow_def_id.as_deref(), Some("wf-pipeline"));
+        assert_eq!(bare.workflow_def_id, None);
     }
 
     #[test]

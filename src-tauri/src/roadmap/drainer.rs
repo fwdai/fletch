@@ -1,0 +1,875 @@
+//! The roadmap queue drainer: the background task that turns `queued` roadmap
+//! items into running workflows, and reflects those runs back onto the board.
+//!
+//! # Why status is the queue
+//!
+//! There is no queue table. `roadmap_items.status` *is* the queue — `queued`
+//! means "the user asked for this to be built", and `created_at` orders it
+//! (FIFO). A second table would be a second source of truth for the one fact
+//! the board already draws, and would need its own reconciliation after every
+//! crash. The horizon (`now`/`next`/`later`) deliberately does **not** gate
+//! dispatch: queueing is an explicit act, and the drainer never moves an item
+//! between horizons on its own.
+//!
+//! # The tick
+//!
+//! Every [`TICK`] (and immediately on a [`nudge`], poked by the roadmap
+//! commands so a queue action doesn't wait out the interval) the drainer, per
+//! project that has roadmap work in flight:
+//!
+//! 1. **Settles** every `active` item against its run row ([`settle`]).
+//! 2. **Dispatches** at most one queued item ([`pick_next`]), if the project is
+//!    under [`MAX_CONCURRENT_ROADMAP_RUNS`] live roadmap-dispatched runs.
+//!
+//! # Locking
+//!
+//! Everything that reads or writes the database happens inside a
+//! `parking_lot::Mutex` guard with no `.await` in scope — the guard is dropped
+//! before [`WorkflowService::launch`] is awaited. That also makes the *claim*
+//! atomic: the drainer re-reads the item and flips `queued → active` inside one
+//! guard, so an unqueue that races the tick either lands before the claim (and
+//! the item is skipped) or after it (and finds an `active` row).
+//!
+//! # Surfacing why an item isn't moving
+//!
+//! A queued item with no resolvable workflow, or one whose run failed, must say
+//! so on the card rather than sitting silent. Rather than add a `blocked_note`
+//! column for a fact that is only true until the next tick, the drainer emits a
+//! transient `roadmap:queue-note` event ([`QueueNote`]) the board renders inline
+//! on the row. Notes are de-duplicated in memory, so a permanently blocked item
+//! doesn't re-emit the same string every fifteen seconds.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use rusqlite::{Connection, OptionalExtension};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
+use tokio::sync::Notify;
+
+use super::types::{ItemPatch, ItemStatus, RoadmapItem};
+use super::{emit_item, store, Db};
+use crate::workflow::spec::{self, Spec};
+use crate::workflow::types::RunStatus;
+
+/// How many roadmap-dispatched runs one project may have in flight at once.
+///
+/// One, for now. An autonomous queue that opens five PRs into the same repo in
+/// parallel buys throughput with merge conflicts and a review backlog the user
+/// didn't ask for; one run at a time keeps every dispatch reviewable and every
+/// dependency edge meaningful (the next item forks from a tree that includes
+/// the last one). Raising this is a one-line change once the merge sweep can
+/// keep up — nothing else in this module assumes the value is 1.
+pub const MAX_CONCURRENT_ROADMAP_RUNS: usize = 1;
+
+/// How often the drainer wakes on its own. Short enough that a queued item
+/// starts within a moment of its dependency landing, long enough that an idle
+/// board costs nothing. Queue actions don't wait for it — see [`nudge`].
+const TICK: Duration = Duration::from_secs(15);
+
+/// Run statuses that count as "still in flight" for the concurrency cap. The
+/// terminal three (`done`/`failed`/`canceled`) free the slot.
+const LIVE_RUN_STATUSES: &str = "'pending','running','paused'";
+
+// ───────────────────────────── the nudge ────────────────────────────────
+
+/// Wakes the drainer between ticks. A single process-wide `Notify`: there is
+/// one drainer, and `notify_one` stores a permit, so a nudge that arrives while
+/// the tick is running is not lost.
+fn signal() -> &'static Notify {
+    static SIGNAL: OnceLock<Notify> = OnceLock::new();
+    SIGNAL.get_or_init(Notify::new)
+}
+
+/// Ask the drainer to re-check now. Called by the roadmap commands after any
+/// mutation — queueing an item is the obvious one, but so is marking a
+/// dependency `done`, which may unblock something already queued. Cheap enough
+/// to call unconditionally rather than guessing which patches matter.
+pub(crate) fn nudge() {
+    signal().notify_one();
+}
+
+// ───────────────────────────── queue notes ──────────────────────────────
+
+/// The `roadmap:queue-note` payload: why an item is not moving, addressed to
+/// the row that isn't moving. Transient by design — nothing persists it, and
+/// the next state change on the row makes it stale, which is exactly when the
+/// board drops it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct QueueNote {
+    pub item_id: String,
+    pub code: String,
+    pub note: String,
+}
+
+// ───────────────────────────── pure decisions ───────────────────────────
+
+/// What the drainer will do with a project's queue this tick. Computed by
+/// [`pick_next`] from a snapshot, so the decision is unit-testable without a
+/// database, a tokio runtime, or a clock.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Decision {
+    /// Nothing queued at all.
+    Empty,
+    /// The project is already at [`MAX_CONCURRENT_ROADMAP_RUNS`].
+    AtCapacity,
+    /// Everything queued is waiting on a dependency. Carries the head of the
+    /// queue and the codes it waits on, so the caller can say so on the card.
+    Blocked {
+        item_id: String,
+        waiting_on: Vec<String>,
+    },
+    /// Dispatch this item (an index into the queue slice given to [`pick_next`]).
+    Dispatch(usize),
+}
+
+/// Whether every code in `deps` counts as landed.
+///
+/// A dep is satisfied when its item is `done`. `in_review` is *not* done: the
+/// PR is open, the work isn't in the base branch, and a dependant forked now
+/// would build on a tree that doesn't contain it.
+///
+/// A dep code that resolves to no item at all is also satisfied. The item it
+/// pointed at was deleted off the board, and a deleted item never ships — so
+/// waiting for it would block the dependant forever on work nobody intends to
+/// do. Treating the reference as stale is the only outcome the user can act on.
+pub(crate) fn unsatisfied_deps(
+    deps: &[String],
+    done: &HashSet<String>,
+    known: &HashSet<String>,
+) -> Vec<String> {
+    deps.iter()
+        .filter(|d| known.contains(*d) && !done.contains(*d))
+        .cloned()
+        .collect()
+}
+
+/// Pick the oldest queued item whose dependencies have all landed.
+///
+/// `queued` must be in FIFO order (the DAO lists oldest-first, which is the
+/// order the board draws and the order the user queued in). An item with
+/// unsatisfied deps is *skipped*, never failed — its turn comes when the thing
+/// it waits on lands.
+pub(crate) fn pick_next(
+    queued: &[RoadmapItem],
+    live_runs: usize,
+    done: &HashSet<String>,
+    known: &HashSet<String>,
+) -> Decision {
+    if queued.is_empty() {
+        return Decision::Empty;
+    }
+    if live_runs >= MAX_CONCURRENT_ROADMAP_RUNS {
+        return Decision::AtCapacity;
+    }
+    let mut head_block: Option<(String, Vec<String>)> = None;
+    for (i, item) in queued.iter().enumerate() {
+        let waiting = unsatisfied_deps(&item.deps, done, known);
+        if waiting.is_empty() {
+            return Decision::Dispatch(i);
+        }
+        head_block.get_or_insert((item.id.clone(), waiting));
+    }
+    // Unreachable with a non-empty queue, but expressed as a fallback rather
+    // than an unwrap so a future edit can't panic here.
+    match head_block {
+        Some((item_id, waiting_on)) => Decision::Blocked {
+            item_id,
+            waiting_on,
+        },
+        None => Decision::Empty,
+    }
+}
+
+/// Which workflow definition to run an item under: the item's own override,
+/// else the project's default. There is deliberately no hardcoded fallback
+/// spec — inventing a workflow for work the user queued would be a worse
+/// outcome than saying "pick one", which is what the caller does with `None`.
+pub(crate) fn resolve_workflow(
+    item: &RoadmapItem,
+    project_default: Option<&str>,
+) -> Option<String> {
+    item.workflow_def_id
+        .clone()
+        .or_else(|| project_default.map(str::to_string))
+}
+
+/// What an `active` item's run says should happen to the item.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Settlement {
+    /// The run is still going. Leave the item alone.
+    Running,
+    /// The run finished and opened a PR. The work isn't merged yet, so the item
+    /// is `in_review` — PR 5's merge sweep is what moves it to `done`.
+    InReview,
+    /// The run finished without opening a PR (a spec with `open_pr: false`, or
+    /// a finalize that only pushed). Nothing else is coming, so the item is
+    /// done as far as this app can tell.
+    Done,
+    /// The run failed, was canceled, or its row is gone. The item goes back to
+    /// `open` with the reason on the card.
+    ///
+    /// Deliberately **not** back to `queued`: an auto-retry loop on a failing
+    /// workflow burns tokens all night and re-opens the same broken PR. Losing
+    /// a run is a decision point — the user re-queues once they know why.
+    Released(&'static str),
+}
+
+/// Map a roadmap-dispatched run's state onto its item. `status` is `None` when
+/// the run row no longer exists (a `wf_delete_run`, or a project half-deleted
+/// under us).
+pub(crate) fn settle(status: Option<RunStatus>, pr_url: Option<&str>) -> Settlement {
+    match status {
+        None => Settlement::Released("its run was deleted"),
+        Some(RunStatus::Pending) | Some(RunStatus::Running) | Some(RunStatus::Paused) => {
+            Settlement::Running
+        }
+        Some(RunStatus::Done) if pr_url.is_some() => Settlement::InReview,
+        Some(RunStatus::Done) => Settlement::Done,
+        Some(RunStatus::Failed) => Settlement::Released("its run failed"),
+        Some(RunStatus::Canceled) => Settlement::Released("its run was canceled"),
+    }
+}
+
+/// The trailing number of a GitHub PR URL (`.../pull/142` → `142`).
+///
+/// PR 5's seam: the merge sweep needs a number to poll, and today the only
+/// record of the PR is the `finalize_pr` journal event's URL. PR 5 persists
+/// `pr_number`/`pr_url` on `wf_run` at finalize time and reads them from there;
+/// this parse exists so an item settled by *this* build still carries enough to
+/// be polled, and can be deleted once the run row holds the truth.
+pub(crate) fn pr_number_from_url(url: &str) -> Option<i64> {
+    let tail = url.trim_end_matches('/').rsplit('/').next()?;
+    tail.parse().ok()
+}
+
+/// The task brief a dispatched run receives, built from the item.
+///
+/// A superset of the card's "Send to an agent" prompt (`ItemCard.briefFor`):
+/// same code/title/why/acceptance shape, plus the two things a *non-interactive*
+/// run needs and a human in a chat doesn't — what already landed underneath it,
+/// and the instruction to stamp the code on the PR so the board can find its
+/// way back to the work.
+pub(crate) fn build_brief(item: &RoadmapItem, deps: &[&RoadmapItem]) -> String {
+    let mut lines = vec![format!("{}: {}", item.code, item.title)];
+    if !item.why.trim().is_empty() {
+        lines.push(String::new());
+        lines.push(item.why.trim().to_string());
+    }
+    if !item.accept.is_empty() {
+        lines.push(String::new());
+        lines.push("Done when:".to_string());
+        lines.extend(item.accept.iter().map(|a| format!("- [ ] {a}")));
+    }
+    if !deps.is_empty() {
+        lines.push(String::new());
+        lines.push("Builds on work that has already landed:".to_string());
+        lines.extend(
+            deps.iter()
+                .map(|d| format!("- {}: {} (done)", d.code, d.title)),
+        );
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "Reference [{}] in the pull request title and description so this item \
+         can be tracked back to the roadmap.",
+        item.code
+    ));
+    lines.join("\n")
+}
+
+// ───────────────────────────── the task ─────────────────────────────────
+
+/// Everything one dispatch needs, resolved under the connection lock so the
+/// launch itself can be awaited with no guard held.
+struct Plan {
+    item: RoadmapItem,
+    definition_id: String,
+    spec: Spec,
+    repo_path: String,
+    brief: String,
+}
+
+/// Start the drainer. Called once from setup, after the [`WorkflowService`] is
+/// managed — it launches through the same service the composer does, so runs it
+/// starts are ordinary runs in every other respect (resumable, cancellable,
+/// visible in the sidebar).
+///
+/// [`WorkflowService`]: crate::workflow::scheduler::WorkflowService
+pub fn spawn(app: AppHandle, db: Db, service: Arc<crate::workflow::scheduler::WorkflowService>) {
+    tauri::async_runtime::spawn(async move {
+        // A note is re-emitted only when it changes, so a permanently blocked
+        // item says its piece once instead of every tick.
+        let mut said: HashMap<String, String> = HashMap::new();
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(TICK) => {}
+                _ = signal().notified() => {}
+            }
+            tick(&app, &db, &service, &mut said).await;
+        }
+    });
+}
+
+async fn tick(
+    app: &AppHandle,
+    db: &Db,
+    service: &Arc<crate::workflow::scheduler::WorkflowService>,
+    said: &mut HashMap<String, String>,
+) {
+    for project_id in projects_with_work(db) {
+        settle_project(app, db, &project_id, said);
+        // At most one dispatch per project per tick: the cap is re-read from
+        // the database next tick, so a burst can never exceed it.
+        if let Some(plan) = claim_next(app, db, &project_id, said) {
+            dispatch(app, db, service, plan).await;
+        }
+    }
+}
+
+/// Projects with a roadmap item the drainer could act on. Scoping the tick to
+/// these keeps an install with fifty projects and one live queue from walking
+/// fifty boards.
+fn projects_with_work(db: &Db) -> Vec<String> {
+    let conn = db.lock();
+    conn.prepare(
+        "SELECT DISTINCT project_id FROM roadmap_items WHERE status IN ('queued','active')",
+    )
+    .and_then(|mut s| {
+        s.query_map([], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+    })
+    .unwrap_or_default()
+}
+
+// ───────────────────────────── settlement ───────────────────────────────
+
+/// One `active` item's run, as this tick found it.
+struct Settled {
+    item: RoadmapItem,
+    outcome: Settlement,
+    pr_url: Option<String>,
+    /// The run this item is tied to, when the item's own `run_id` didn't name
+    /// it — recovered through the `wf_run.roadmap_item_id` back-link and written
+    /// back onto the row.
+    adopted_run_id: Option<String>,
+}
+
+/// Reflect each `active` item's run back onto the item.
+///
+/// Items with an `agent_id` and no run are left alone: that's the manual "Send
+/// to an agent" hand-off, which the queue doesn't own.
+///
+/// An item with *neither* is a claim whose launch never finished writing back —
+/// the app died between `launch` (which inserts the run with the back-link) and
+/// the drainer's `run_id` write. The back-link is what makes that recoverable:
+/// the run is found by item id and adopted. Only if there is no run at all is
+/// the item released. This can't misfire on a launch that is merely still in
+/// flight: the drainer is one task, and `dispatch` is awaited inside the tick,
+/// so a tick never observes its own pending launch.
+fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &mut HashMap<String, String>) {
+    let settled: Vec<Settled> = {
+        let conn = db.lock();
+        let items = match store::list(&conn, project_id) {
+            Ok(items) => items,
+            Err(e) => {
+                tracing::warn!(project_id, error = %e, "roadmap drainer: cannot read board");
+                return;
+            }
+        };
+        items
+            .into_iter()
+            .filter(|i| i.status == ItemStatus::Active)
+            // The manual hand-off: an agent is on it, no run to settle against.
+            .filter(|i| i.run_id.is_some() || i.agent_id.is_none())
+            .map(|item| {
+                let adopted_run_id = match &item.run_id {
+                    Some(_) => None,
+                    None => dispatched_run_id(&conn, &item.id),
+                };
+                let run_id = item.run_id.clone().or_else(|| adopted_run_id.clone());
+                let status = match &run_id {
+                    Some(id) => run_status(&conn, id),
+                    // No run row at all — neither named nor back-linked.
+                    None => None,
+                };
+                let pr_url = match status {
+                    // Only a finished run can have finalized, so the journal
+                    // scan is paid once per item, not once per tick.
+                    Some(RunStatus::Done) => {
+                        run_id.as_deref().and_then(|id| finalized_pr_url(&conn, id))
+                    }
+                    _ => None,
+                };
+                let outcome = match run_id {
+                    // A claim whose run never reached the database. `settle`
+                    // can't tell this from a deleted run — the item can, and
+                    // "never started" is the honest thing to put on the card.
+                    None => Settlement::Released("its run never started"),
+                    Some(_) => settle(status, pr_url.as_deref()),
+                };
+                Settled {
+                    item,
+                    outcome,
+                    pr_url,
+                    adopted_run_id,
+                }
+            })
+            // A still-running item needs no write unless its link was recovered.
+            .filter(|s| s.outcome != Settlement::Running || s.adopted_run_id.is_some())
+            .collect()
+    };
+
+    for Settled {
+        item,
+        outcome,
+        pr_url,
+        adopted_run_id,
+    } in settled
+    {
+        let patch = match &outcome {
+            Settlement::Running => {
+                // Recovered only: repair the link and leave the item running.
+                write_item(
+                    app,
+                    db,
+                    &item.id,
+                    ItemPatch {
+                        run_id: Some(adopted_run_id.clone()),
+                        ..Default::default()
+                    },
+                );
+                tracing::info!(
+                    item = %item.code,
+                    run = ?adopted_run_id,
+                    "roadmap drainer: re-attached item to its run"
+                );
+                continue;
+            }
+            Settlement::InReview => ItemPatch {
+                status: Some(ItemStatus::InReview),
+                // PR 5's seam: the merge sweep will read `pr_number`/`pr_url`
+                // off `wf_run` (persisted at finalize) rather than off the
+                // journal, and poll from there. Stamping them on the item now
+                // means a board settled by this build is already pollable.
+                pr_url: Some(pr_url.clone()),
+                pr_number: Some(pr_url.as_deref().and_then(pr_number_from_url)),
+                ..Default::default()
+            },
+            Settlement::Done => ItemPatch {
+                status: Some(ItemStatus::Done),
+                ..Default::default()
+            },
+            Settlement::Released(_) => ItemPatch {
+                status: Some(ItemStatus::Open),
+                // The run is over; the item is not "the thing that run is
+                // doing" any more. Clearing the link keeps a re-queue from
+                // settling instantly against the old, terminal run.
+                run_id: Some(None),
+                ..Default::default()
+            },
+        };
+        write_item(app, db, &item.id, patch);
+        match outcome {
+            Settlement::Released(why) => {
+                tracing::info!(item = %item.code, %why, "roadmap drainer: released item");
+                say(app, said, &item, &format!("Back on the board — {why}."));
+            }
+            // A settled-forward item is no longer waiting on anything, so any
+            // note it carried is stale.
+            _ => forget(said, &item.id),
+        }
+    }
+}
+
+/// The run dispatched for this item, newest first — the reverse of the item's
+/// own `run_id`, read through the `wf_run.roadmap_item_id` back-link. This is
+/// what makes a crash between `launch` and the drainer's write-back
+/// recoverable; see [`settle_project`].
+fn dispatched_run_id(conn: &Connection, item_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT id FROM wf_run WHERE roadmap_item_id = ?1 ORDER BY created_at DESC LIMIT 1",
+        [item_id],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// A run's status, or `None` when the row is gone.
+fn run_status(conn: &Connection, run_id: &str) -> Option<RunStatus> {
+    conn.query_row("SELECT status FROM wf_run WHERE id = ?1", [run_id], |r| {
+        r.get::<_, String>(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
+    .and_then(|s| RunStatus::from_db(&s))
+}
+
+/// The URL of the PR a finished run opened, from its `finalize_pr` journal
+/// event. That event carries either `{"url": …}` or `{"error": …}`; only the
+/// former means a PR exists.
+///
+/// PR 5's seam — see [`pr_number_from_url`]: once `wf_run` carries the PR
+/// columns, this reads a column instead of scanning the journal.
+fn finalized_pr_url(conn: &Connection, run_id: &str) -> Option<String> {
+    let payload: String = conn
+        .query_row(
+            "SELECT payload_json FROM wf_event
+              WHERE run_id = ?1 AND type = ?2 ORDER BY seq DESC LIMIT 1",
+            rusqlite::params![run_id, crate::workflow::types::event_type::FINALIZE_PR],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+    let value: serde_json::Value = serde_json::from_str(&payload).ok()?;
+    value
+        .get("url")
+        .and_then(|u| u.as_str())
+        .filter(|u| !u.trim().is_empty())
+        .map(str::to_string)
+}
+
+// ───────────────────────────── dispatch ─────────────────────────────────
+
+/// What one project's queue produced this tick. Returned out of the connection
+/// guard so every emit — the claimed row, or the note explaining why there
+/// isn't one — happens with no lock held.
+enum Claim {
+    /// Nothing to do and nothing to say.
+    Nothing,
+    /// Something is queued but can't run yet, and the card should say why.
+    Note(Box<RoadmapItem>, String),
+    /// An item was claimed (already `active`) and is ready to launch.
+    Claimed(Box<Plan>),
+}
+
+/// Decide what to dispatch for this project and *claim* it. Returns the plan
+/// for a claimed item — already flipped to `active`, so neither a second tick
+/// nor another writer can pick it up.
+fn claim_next(
+    app: &AppHandle,
+    db: &Db,
+    project_id: &str,
+    said: &mut HashMap<String, String>,
+) -> Option<Plan> {
+    let claim = {
+        let conn = db.lock();
+        plan_and_claim(&conn, project_id)
+    };
+    match claim {
+        Claim::Nothing => None,
+        Claim::Note(item, text) => {
+            say(app, said, &item, &text);
+            None
+        }
+        Claim::Claimed(plan) => {
+            // Whatever was blocking this item no longer is.
+            forget(said, &plan.item.id);
+            emit_item(app, &plan.item);
+            Some(*plan)
+        }
+    }
+}
+
+/// The whole decision, inside one connection guard: read the board, count live
+/// runs, pick, resolve, and claim. No `.await`, no emits — so the read the
+/// decision is made on and the write that acts on it cannot be interleaved with
+/// another writer (the app has one connection behind one mutex).
+fn plan_and_claim(conn: &Connection, project_id: &str) -> Claim {
+    let items = match store::list(conn, project_id) {
+        Ok(items) => items,
+        Err(e) => {
+            tracing::warn!(project_id, error = %e, "roadmap drainer: cannot read board");
+            return Claim::Nothing;
+        }
+    };
+    let done: HashSet<String> = items
+        .iter()
+        .filter(|i| i.status == ItemStatus::Done)
+        .map(|i| i.code.clone())
+        .collect();
+    let known: HashSet<String> = items.iter().map(|i| i.code.clone()).collect();
+    let queued: Vec<RoadmapItem> = items
+        .iter()
+        .filter(|i| i.status == ItemStatus::Queued)
+        .cloned()
+        .collect();
+
+    let live = live_run_count(conn, project_id);
+    let item = match pick_next(&queued, live, &done, &known) {
+        Decision::Dispatch(i) => queued[i].clone(),
+        Decision::Blocked {
+            item_id,
+            waiting_on,
+        } => {
+            return match queued.into_iter().find(|i| i.id == item_id) {
+                Some(item) => Claim::Note(
+                    Box::new(item),
+                    format!("Waiting on {}", waiting_on.join(", ")),
+                ),
+                None => Claim::Nothing,
+            };
+        }
+        // Nothing to say: an empty queue is silence, and being at capacity is
+        // the drainer working as intended.
+        Decision::Empty | Decision::AtCapacity => return Claim::Nothing,
+    };
+
+    let project_default = project_setting(conn, project_id, DEFAULT_WORKFLOW_KEY);
+    let Some(definition_id) = resolve_workflow(&item, project_default.as_deref()) else {
+        return Claim::Note(
+            Box::new(item),
+            "No workflow to run it under. Pick one on this item, or set the project's \
+             default workflow."
+                .to_string(),
+        );
+    };
+    let Some(spec) = definition_spec(conn, &definition_id) else {
+        return Claim::Note(
+            Box::new(item),
+            "Its workflow is missing or no longer valid — pick another.".to_string(),
+        );
+    };
+    let Some(repo_path) = primary_repo_path(conn, project_id) else {
+        return Claim::Note(
+            Box::new(item),
+            "This project has no repo to run in.".to_string(),
+        );
+    };
+
+    // Only deps that still resolve get quoted in the brief; a stale code counts
+    // as satisfied (see `unsatisfied_deps`) but has nothing to say.
+    let dep_rows: Vec<&RoadmapItem> = item
+        .deps
+        .iter()
+        .filter_map(|code| items.iter().find(|i| &i.code == code))
+        .collect();
+    let brief = build_brief(&item, &dep_rows);
+
+    // The claim. Re-read under the same guard the decision was made under, so
+    // an unqueue that raced this tick either already landed (and the item was
+    // never in `queued` above) or lands after, against an `active` row.
+    match store::get(conn, &item.id) {
+        Ok(Some(fresh)) if fresh.status == ItemStatus::Queued => {}
+        _ => return Claim::Nothing,
+    }
+    let claimed = store::update(
+        conn,
+        &item.id,
+        &ItemPatch {
+            status: Some(ItemStatus::Active),
+            // Pin the resolved definition on the item, so the card keeps
+            // showing what it actually ran under even if the project default
+            // moves afterwards.
+            workflow_def_id: Some(Some(definition_id.clone())),
+            ..Default::default()
+        },
+    );
+    match claimed {
+        Ok(Some(claimed)) => Claim::Claimed(Box::new(Plan {
+            item: claimed,
+            definition_id,
+            spec,
+            repo_path,
+            brief,
+        })),
+        Ok(None) => Claim::Nothing,
+        Err(e) => {
+            tracing::warn!(item = %item.code, error = %e, "roadmap drainer: claim failed");
+            Claim::Nothing
+        }
+    }
+}
+
+/// Launch the claimed item's run. The only `.await` in the tick, and no DB
+/// guard is held across it.
+async fn dispatch(
+    app: &AppHandle,
+    db: &Db,
+    service: &Arc<crate::workflow::scheduler::WorkflowService>,
+    plan: Plan,
+) {
+    let Plan {
+        item,
+        definition_id,
+        spec,
+        repo_path,
+        brief,
+    } = plan;
+    tracing::info!(item = %item.code, %definition_id, "roadmap drainer: dispatching");
+
+    let launched = service
+        .launch(
+            spec,
+            brief,
+            item.project_id.clone(),
+            repo_path,
+            Some(definition_id),
+            // No base branch: `launch` resolves the spec's `finalize.pr_base`,
+            // then HEAD. A queued item has no opinion about where to fork from
+            // that the workflow doesn't already carry.
+            None,
+            None,
+            Vec::new(),
+            None,
+            Some(item.id.clone()),
+        )
+        .await;
+
+    match launched {
+        Ok(run_id) => write_item(
+            app,
+            db,
+            &item.id,
+            ItemPatch {
+                run_id: Some(Some(run_id)),
+                ..Default::default()
+            },
+        ),
+        Err(e) => {
+            // The claim already flipped the item to `active`; nothing is going
+            // to run, so hand it back rather than leaving a phantom.
+            tracing::warn!(item = %item.code, error = %e, "roadmap drainer: launch failed");
+            write_item(
+                app,
+                db,
+                &item.id,
+                ItemPatch {
+                    status: Some(ItemStatus::Open),
+                    ..Default::default()
+                },
+            );
+            emit_note(
+                app,
+                &QueueNote {
+                    item_id: item.id.clone(),
+                    code: item.code.clone(),
+                    note: format!("Couldn't start a run — {e}"),
+                },
+            );
+        }
+    }
+}
+
+// ───────────────────────────── db helpers ───────────────────────────────
+
+/// `project_settings` key holding a project's default workflow definition id.
+/// The same key the composer writes (`src/workflows/run/projectPipeline.ts`), so
+/// "the workflow this project runs" means one thing on both sides.
+const DEFAULT_WORKFLOW_KEY: &str = "workflow.default";
+
+fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
+        rusqlite::params![project_id, key],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+}
+
+/// Roadmap-dispatched runs still in flight for a project. Human-launched runs
+/// (`roadmap_item_id IS NULL`) are not throttled by the queue and don't count.
+fn live_run_count(conn: &Connection, project_id: &str) -> usize {
+    conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM wf_run
+              WHERE project_id = ?1 AND roadmap_item_id IS NOT NULL
+                AND status IN ({LIVE_RUN_STATUSES})"
+        ),
+        [project_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+    .max(0) as usize
+}
+
+/// The project's primary repo — the first attached, mirroring
+/// `WorkspaceManager::project_repo_paths`. A run targets one repo; the queue
+/// picks the same one the rest of the app calls primary.
+fn primary_repo_path(conn: &Connection, project_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT path FROM repos WHERE project_id = ?1 ORDER BY created_at LIMIT 1",
+        [project_id],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .filter(|p| !p.trim().is_empty())
+}
+
+/// A definition's spec, parsed and validated. An invalid stored spec is treated
+/// as a missing workflow: `launch` would fail on it anyway, and saying "pick
+/// another" is more useful than a failed run.
+fn definition_spec(conn: &Connection, definition_id: &str) -> Option<Spec> {
+    let spec_json: String = conn
+        .query_row(
+            "SELECT spec_json FROM wf_definition WHERE id = ?1",
+            [definition_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+    let spec: Spec = serde_json::from_str(&spec_json)
+        .map_err(|e| tracing::warn!(definition_id, error = %e, "unreadable workflow spec"))
+        .ok()?;
+    // Same validation the save/import path runs, so a definition persisted
+    // before a rule existed can't reach a launch.
+    if let Err(errs) = spec::validate(&spec) {
+        tracing::warn!(definition_id, errors = %errs.join("; "), "invalid workflow spec");
+        return None;
+    }
+    Some(spec)
+}
+
+/// Apply a patch and announce the row. Every drainer write goes through here,
+/// so nothing it changes can reach the database without reaching the board.
+fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
+    let updated = {
+        let conn = db.lock();
+        store::update(&conn, id, &patch)
+    };
+    match updated {
+        Ok(Some(row)) => emit_item(app, &row),
+        // The row was deleted mid-tick; nothing to announce.
+        Ok(None) => {}
+        Err(e) => tracing::warn!(id, error = %e, "roadmap drainer: item write failed"),
+    }
+}
+
+// ───────────────────────────── notes ────────────────────────────────────
+
+fn emit_note(app: &AppHandle, note: &QueueNote) {
+    let _ = app.emit("roadmap:queue-note", note);
+}
+
+/// Emit a note unless the same one was the last thing said about this item.
+fn say(app: &AppHandle, said: &mut HashMap<String, String>, item: &RoadmapItem, note: &str) {
+    if said.get(&item.id).map(String::as_str) == Some(note) {
+        return;
+    }
+    said.insert(item.id.clone(), note.to_string());
+    emit_note(
+        app,
+        &QueueNote {
+            item_id: item.id.clone(),
+            code: item.code.clone(),
+            note: note.to_string(),
+        },
+    );
+}
+
+fn forget(said: &mut HashMap<String, String>, item_id: &str) {
+    said.remove(item_id);
+}
+
+#[cfg(test)]
+mod tests;

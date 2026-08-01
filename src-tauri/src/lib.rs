@@ -1475,6 +1475,7 @@ pub fn run() {
             crate::workspace::migrate_default_checkouts_root();
 
             let db_for_wf = db.clone();
+            let db_for_roadmap = db.clone();
             let workspace = Arc::new(WorkspaceManager::new(db));
 
             // Drop RPC mailboxes left by agents that are gone. Teardown removes
@@ -1515,6 +1516,16 @@ pub fn run() {
             ));
             app.manage(wf_service.clone());
             wf_service.resume_active_runs();
+            // The roadmap queue drainer: turns `queued` roadmap items into runs
+            // through the service above, and settles finished runs back onto
+            // the board. Started after `resume_active_runs` so a run this
+            // process is already re-driving is counted against the per-project
+            // concurrency cap before the first tick can dispatch anything.
+            crate::roadmap::drainer::spawn(
+                app.handle().clone(),
+                db_for_roadmap,
+                wf_service.clone(),
+            );
             // Reload follow-ups that were queued behind an in-flight turn when a
             // prior run exited, so a mid-turn message survives a restart. They
             // rest in the queue and flush on the user's next send (no auto-spawn).

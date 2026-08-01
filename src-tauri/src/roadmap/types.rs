@@ -153,6 +153,11 @@ pub struct NewItem {
     pub accept: Vec<String>,
     #[serde(default)]
     pub deps: Vec<String>,
+    /// Workflow this item is dispatched under when it's queued. `None` means
+    /// "whatever the project's default is at dispatch time" — accepted here so
+    /// the item form can create and assign in one round-trip.
+    #[serde(default)]
+    pub workflow_def_id: Option<String>,
 }
 
 /// A partial update. An absent field is left alone; an explicit `null` on a

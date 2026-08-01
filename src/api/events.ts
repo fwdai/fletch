@@ -14,7 +14,7 @@ import type {
 } from "./types/agent";
 import type { PrStateChangedEvent } from "./types/pr";
 import type { AgentInstallEvent } from "./types/providers";
-import type { RoadmapItem } from "./types/roadmap";
+import type { RoadmapItem, RoadmapQueueNote } from "./types/roadmap";
 import type { RunOutputEvent, RunPortEvent, RunStateEvent } from "./types/run";
 import type { DockerBuildEvent, PublishApproval } from "./types/sandbox";
 import type {
@@ -52,6 +52,15 @@ export function onRoadmapItem(cb: (item: RoadmapItem) => void): Promise<Unlisten
  *  row instead of upserting it. */
 export function onRoadmapItemDeleted(cb: (id: string) => void): Promise<UnlistenFn> {
   return listen<string>("roadmap:item-deleted", (event) => cb(event.payload));
+}
+
+/** `roadmap:queue-note` explains why a queued item isn't moving — no workflow
+ *  to run it under, a dependency that hasn't landed, a launch that failed. The
+ *  board shows it inline on the row; nothing persists it, so a listener that
+ *  wasn't mounted simply didn't hear it (the drainer repeats itself when the
+ *  reason changes). */
+export function onRoadmapQueueNote(cb: (note: RoadmapQueueNote) => void): Promise<UnlistenFn> {
+  return listen<RoadmapQueueNote>("roadmap:queue-note", (event) => cb(event.payload));
 }
 
 export function onAgentInstallState(cb: (e: AgentInstallEvent) => void): Promise<UnlistenFn> {

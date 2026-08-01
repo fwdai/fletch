@@ -1,0 +1,12 @@
+-- The roadmap item a workflow run was dispatched for, set when the roadmap
+-- queue drainer (src-tauri/src/roadmap/drainer.rs) launches a run for a queued
+-- item. Nullable back-link: the item already carries `run_id` forward, and this
+-- is the reverse edge the drainer needs to count a project's live
+-- roadmap-dispatched runs without reading the whole board.
+--
+-- NULL for every run a human launched by hand (the composer, a promotion, a
+-- Home-inbox issue) — those are not the queue's to throttle or to settle.
+-- Mirrors `wf_run.issue_ref` (migration 0024): a plain nullable TEXT column, no
+-- foreign key, so deleting a roadmap item never cascades away the run that
+-- proves the work happened.
+ALTER TABLE wf_run ADD COLUMN roadmap_item_id TEXT;
