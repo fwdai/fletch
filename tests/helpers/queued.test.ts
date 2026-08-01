@@ -14,6 +14,7 @@ const cmdOut = (label: string, text: string): ChatItem => ({
   label,
   text,
 });
+const reasoning = (text: string): ChatItem => ({ kind: "notice", subtype: "reasoning", text });
 
 describe("carryForwardStoreOnly", () => {
   it("keeps an undelivered follow-up the transcript hasn't caught up to", () => {
@@ -71,6 +72,22 @@ describe("carryForwardStoreOnly", () => {
     const prev = [...rebuilt, cmdOut("/doctor", "all good")];
     const out = carryForwardStoreOnly(rebuilt, prev);
     expect(out).toEqual([...rebuilt, cmdOut("/doctor", "all good")]);
+  });
+
+  it("keeps live reasoning in place while its compiled record is persisted", () => {
+    const rebuilt = [userMsg("start"), toolCall("t1"), agentMsg("done")];
+    const prev = [userMsg("start"), reasoning("inspect"), toolCall("t1"), agentMsg("done")];
+    expect(carryForwardStoreOnly(rebuilt, prev)).toEqual([
+      userMsg("start"),
+      reasoning("inspect"),
+      toolCall("t1"),
+      agentMsg("done"),
+    ]);
+  });
+
+  it("does not duplicate reasoning already restored from compiled records", () => {
+    const rebuilt = [userMsg("start"), reasoning("inspect"), agentMsg("done")];
+    expect(carryForwardStoreOnly(rebuilt, rebuilt)).toEqual(rebuilt);
   });
 
   it("keeps command output at its injection point, not the end", () => {

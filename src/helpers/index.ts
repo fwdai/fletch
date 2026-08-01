@@ -6,10 +6,12 @@
 //   - commands:     slash-command / skill-invocation resolution
 //   - transcript:   session-record → chat-item reduction and log rebuild
 //   - usage:        live-usage persistence into session_records
+//   - reasoning:    readable Codex reasoning persistence for transcript replay
 //   - spawn:        spawn-payload snapshots + the send-when-ready retry util
 
 export * from "./agentLookups";
 export * from "./commands";
+export * from "./reasoning";
 export * from "./spawn";
 export * from "./transcript";
 export * from "./usage";

@@ -36,6 +36,7 @@ import {
   applyUserTurns,
   carryForwardStoreOnly,
   needsSessionIdRefresh,
+  persistLiveReasoning,
   persistLiveUsage,
   providerFor,
   reduceRecords,
@@ -241,6 +242,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
     // Capture usage that lives only on the live stream (cursor) into
     // session_records so it folds like every other agent (see persistLiveUsage).
     void persistLiveUsage(get, set, e.agent_id, e.event as RawEvent);
+    // Codex rollout files encrypt reasoning text, so retain the readable live
+    // event as a compiled record and merge it back at its rollout item on replay.
+    void persistLiveReasoning(get, e.agent_id, e.event as RawEvent);
     // A turn can't end with prompts still held — clear any stale entries
     // (e.g. an interrupt that denied a pending question).
     if (turnEnded && get().pendingToolUse[e.agent_id]) {

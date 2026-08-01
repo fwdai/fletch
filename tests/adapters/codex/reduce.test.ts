@@ -186,7 +186,67 @@ describe("codexAdapter", () => {
     expect(call).toMatchObject({ name: "apply_patch", input: { patch: "diff..." } });
   });
 
-  it("drops injected noise (response_item user/developer messages, reasoning)", () => {
+  it("replays current custom tool calls and block-array outputs", () => {
+    const events = codexAdapter.normalizeTranscript([
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          id: "ctc_1",
+          call_id: "call_1",
+          name: "exec",
+          input: "text('hello')",
+          status: "completed",
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: "call_1",
+          output: [
+            { type: "input_text", text: "Script completed\n" },
+            { type: "input_text", text: "Output:\nhello\n" },
+          ],
+        },
+      },
+    ]);
+    expect(run(events)).toEqual([
+      {
+        kind: "tool_call",
+        id: "call_1",
+        name: "exec",
+        input: "text('hello')",
+        streaming: false,
+      },
+      {
+        kind: "tool_result",
+        tool_use_id: "call_1",
+        content: "Script completed\nOutput:\nhello\n",
+        is_error: false,
+      },
+    ]);
+  });
+
+  it("merges readable live reasoning into its encrypted rollout position", () => {
+    const events = codexAdapter.normalizeTranscript([
+      {
+        type: "item.completed",
+        item: { id: "rs_1", type: "reasoning", text: "Inspect the transcript handoff." },
+      },
+      {
+        type: "response_item",
+        payload: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "opaque" },
+      },
+      { type: "event_msg", payload: { type: "agent_message", message: "Found it." } },
+    ]);
+    expect(run(events)).toEqual([
+      { kind: "notice", subtype: "reasoning", text: "Inspect the transcript handoff." },
+      { kind: "agent_message", text: "Found it.", model: undefined },
+    ]);
+  });
+
+  it("drops injected messages and encrypted reasoning with no readable text", () => {
     const lines = readJsonl("rollout.jsonl");
     const events = codexAdapter.normalizeTranscript(lines);
     // Only the clean event_msg user prompt survives, not the AGENTS.md /

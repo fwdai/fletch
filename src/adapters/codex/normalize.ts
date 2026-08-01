@@ -9,7 +9,7 @@
 //
 // We take the conversational backbone (user/agent text, turn end) from the
 // clean `event_msg` channel, and tool activity from `response_item`
-// function calls (which cover both shell `exec_command` and MCP calls).
+// function/custom-tool calls (which cover shell, MCP, and app tools).
 // `response_item` user/assistant messages are skipped — they duplicate the
 // event_msg ones and carry injected noise (AGENTS.md, permissions blurb).
 
@@ -27,18 +27,59 @@ function parseArgs(v: unknown): unknown {
   return v ?? {};
 }
 
+/** Flatten Codex's persisted output shapes. Legacy function calls store a
+ * string; current custom tools store Responses-style input_text blocks. */
+function outputText(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) {
+    return v
+      .map((block) => {
+        const rec = asRecord(block);
+        return typeof rec.text === "string" ? rec.text : "";
+      })
+      .join("");
+  }
+  return v == null ? "" : JSON.stringify(v);
+}
+
+function reasoningSummary(v: unknown): string {
+  if (!Array.isArray(v)) return "";
+  return v
+    .map((part) => {
+      const rec = asRecord(part);
+      return typeof rec.text === "string" ? rec.text : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function normalizeTranscript(lines: unknown[]): RawEvent[] {
-  // Pre-pass: a tool call's output lands on a later `function_call_output`
-  // line, so index outputs by call_id first.
+  // Pre-pass: a tool call's output lands on a later function/custom-tool
+  // output line, so index outputs by call_id first.
   const outputs = new Map<string, string>();
+  // The rollout encrypts reasoning and often persists no readable summary.
+  // Fletch therefore stores the completed live event alongside the rollout;
+  // index that text here and place it at the matching response_item below.
+  const liveReasoning = new Map<string, string>();
   for (const raw of lines) {
     const env = asRecord(raw);
+    if (env.type === "item.completed") {
+      const item = asRecord(env.item);
+      if (
+        item.type === "reasoning" &&
+        typeof item.id === "string" &&
+        typeof item.text === "string"
+      ) {
+        liveReasoning.set(item.id, item.text);
+      }
+      continue;
+    }
     if (env.type !== "response_item") continue;
     const p = asRecord(env.payload);
-    if (p.type === "function_call_output") {
+    if (p.type === "function_call_output" || p.type === "custom_tool_call_output") {
       const id = String(p.call_id ?? "");
       if (id) {
-        outputs.set(id, typeof p.output === "string" ? p.output : JSON.stringify(p.output ?? ""));
+        outputs.set(id, outputText(p.output));
       }
     }
   }
@@ -77,12 +118,24 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
       continue;
     }
 
-    if (env.type === "response_item" && ptype === "function_call") {
+    if (env.type === "response_item" && ptype === "reasoning") {
+      const id = String(p.id ?? "");
+      const text = liveReasoning.get(id) ?? reasoningSummary(p.summary);
+      if (id && text) {
+        out.push({ type: "item.completed", item: { id, type: "reasoning", text } });
+      }
+      continue;
+    }
+
+    if (
+      env.type === "response_item" &&
+      (ptype === "function_call" || ptype === "custom_tool_call")
+    ) {
       const id = String(p.call_id ?? "");
       if (!id) continue;
       const name = typeof p.name === "string" ? p.name : "";
       const namespace = typeof p.namespace === "string" ? p.namespace : "";
-      const args = parseArgs(p.arguments);
+      const args = parseArgs(ptype === "custom_tool_call" ? p.input : p.arguments);
       const output = outputs.get(id) ?? "";
 
       const argRec = asRecord(args);
