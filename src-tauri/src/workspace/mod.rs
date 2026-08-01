@@ -148,6 +148,15 @@ fn default_provider() -> String {
     "claude".to_string()
 }
 
+/// `workspaces.purpose` for a Roadmap project-manager chat: a manual chat that
+/// lives only on the project's Roadmap tab. It is the single tag three places
+/// key off — the sidebar filter ([`query::WorkspaceManager::query_all_agents`]),
+/// the chat listing the Roadmap tab reads, and the publish-denied capability
+/// grant stamped at spawn (`rpc::caps::AgentCaps::advisory`) — so a PM chat can
+/// explore and propose but never publish code. Mirrored frontend-side as
+/// `ROADMAP_PM_PURPOSE` (src/api/types/agent.ts).
+pub const PURPOSE_ROADMAP_PM: &str = "roadmap-pm";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
     pub id: String,
@@ -233,6 +242,13 @@ pub struct AgentRecord {
     /// PR carries so merging it closes the originating issue.
     #[serde(default)]
     pub issue_ref: Option<String>,
+    /// What this workspace is for, when it isn't an ordinary feature agent (see
+    /// [`PURPOSE_ROADMAP_PM`]). `None` — the normal case — is a sidebar agent.
+    /// A tagged workspace is owned by one surface: it is hidden from the sidebar
+    /// like a run-owned agent, listed by its own surface, and may carry a
+    /// narrower capability grant (`rpc::caps`).
+    #[serde(default)]
+    pub purpose: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -426,7 +442,7 @@ const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created
             s.provider, s.view, s.provider_session_id, s.last_error,
             s.effort, s.model, s.instructions, s.forked_context, s.custom_agent_id,
             s.skills, s.mcp_servers,
-            w.sandbox_engine, w.owner_run_id, w.issue_ref
+            w.sandbox_engine, w.owner_run_id, w.issue_ref, w.purpose
      FROM workspaces w
      LEFT JOIN sessions s ON s.workspace_id = w.id";
 
@@ -453,6 +469,7 @@ type AgentRow = (
     Option<String>, // w.sandbox_engine
     Option<String>, // w.owner_run_id
     Option<String>, // w.issue_ref
+    Option<String>, // w.purpose
 );
 
 impl WorkspaceManager {
@@ -497,6 +514,15 @@ impl WorkspaceManager {
     pub fn agents_for_project(&self, project_id: &str) -> Vec<AgentRecord> {
         let conn = self.db.lock();
         Self::query_agents_for_project(&conn, project_id)
+    }
+
+    /// A project's live chats of one `purpose` (see [`PURPOSE_ROADMAP_PM`]),
+    /// newest first — the listing the owning surface renders its picker from.
+    /// Archived chats are omitted: unlike a run's attempts there is nothing to
+    /// go back to, and discarding a chat is how the user retires one.
+    pub fn chats_for_project(&self, project_id: &str, purpose: &str) -> Vec<AgentRecord> {
+        let conn = self.db.lock();
+        Self::query_chats_for_project(&conn, project_id, purpose)
     }
 }
 

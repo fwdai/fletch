@@ -5,10 +5,10 @@ import { discoverCommands } from "@/data/slashCommands";
 import {
   draftNames,
   expandSlashCommand,
+  resolveAgentSpawnProfile,
   resolveBaseBranch,
   resolveSkillInvocation,
   sendWhenAgentReady,
-  snapshotAgentDeliverables,
 } from "@/helpers";
 import { setSetting } from "@/storage/settings";
 import { refreshWorkspace } from "./refreshWorkspace";
@@ -260,18 +260,15 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // the header toggle, never as a spawn default — a per-turn provider has
       // no session id before its first turn, and the backend's native path
       // requires one, so a native spawn would fail and tear the checkout down.
-      // Resolve the selected custom agent's standing brief. Snapshotted at spawn
-      // (passed by value, not by id) so the running agent is unaffected if the
-      // custom agent is later edited or deleted. Empty/blank instructions inject
-      // nothing — the backend treats a blank brief as a no-op.
-      const custom = customAgentId
-        ? get().customAgents.find((a) => a.id === customAgentId)
-        : undefined;
-      const instructions = custom?.instructions?.trim() ? custom.instructions : undefined;
-      // Resolve the agent's skill/MCP assignments to by-value snapshots (see
-      // snapshotAgentDeliverables for the dangling-id / undeliverable-server
-      // semantics).
-      const { skills: assigned, mcpServers } = snapshotAgentDeliverables(get(), custom, provider);
+      // Resolve the selected custom agent's brief + skill/MCP assignments into
+      // by-value snapshots (see resolveAgentSpawnProfile), so the running agent
+      // is unaffected if the preset is later edited or deleted.
+      const {
+        customAgentId: resolvedCustomAgentId,
+        instructions,
+        skills: assigned,
+        mcpServers,
+      } = resolveAgentSpawnProfile(get(), customAgentId, provider);
       // A leading `/<skill>` invokes a library skill: its snapshot joins the
       // spawn payload (materialized + indexed like an assigned skill, deduped
       // by name against the custom agent's set) and the typed command becomes
@@ -308,7 +305,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         thinking,
         model,
         instructions,
-        custom?.id,
+        resolvedCustomAgentId,
         // The base branch the user picked on the new-agent screen. The backend
         // forks the checkout from it and records it as the agent's parent
         // branch (PR base / ahead-behind).

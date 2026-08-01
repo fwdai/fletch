@@ -443,6 +443,18 @@ impl Supervisor {
         agents
     }
 
+    /// A project's chats of one purpose (see `workspace::PURPOSE_ROADMAP_PM`),
+    /// newest first, with runtime status overlaid — the Roadmap tab's chat
+    /// picker reads these. They are deliberately absent from the sidebar
+    /// snapshot, so this is the only listing that surfaces them.
+    pub fn project_chats(&self, project_id: &str, purpose: &str) -> Vec<AgentRecord> {
+        let mut chats = self.workspace.chats_for_project(project_id, purpose);
+        for record in &mut chats {
+            record.status = self.effective_status(&record.id, record);
+        }
+        chats
+    }
+
     pub fn add_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
         self.workspace.add_workspace_repo(repo_path)
     }

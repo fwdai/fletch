@@ -12,6 +12,7 @@ import {
 } from "@/api";
 import { discoverCommands } from "@/data/slashCommands";
 import {
+  agentRecord,
   applyUserTurns,
   dropAgentEntries,
   expandSlashCommand,
@@ -81,6 +82,13 @@ export interface PromoteSeed {
 export interface WorkspaceSlice {
   workspace: Workspace | null;
   selectedAgentId: string | null;
+  /** The off-sidebar chat whose transcript is on screen right now (a Roadmap
+   *  PM chat — see `registerOffSidebarAgents`). Such a chat can never be
+   *  `selectedAgentId`, so without this the turn-end signals would treat a
+   *  watched PM reply as happening "away" and chime over it. Set by the owning
+   *  surface while its pane is mounted, cleared on unmount. */
+  attendedChatId: string | null;
+  setAttendedChat: (id: string | null) => void;
   /** A workflow run selected for the main pane, by run id. Mutually exclusive
    *  with selectedAgentId / activeDraftId. */
   selectedRunId: string | null;
@@ -89,6 +97,20 @@ export interface WorkspaceSlice {
   focusedStepAgentId: string | null;
   /** Pending "promote to workflow" seed: the builder opens pre-filled from it. */
   promoteSeed: PromoteSeed | null;
+  /** Records for agents the workspace snapshot deliberately omits — today the
+   *  Roadmap tab's PM chats, which are hidden from the sidebar (see
+   *  `ROADMAP_PM_PURPOSE`) and fetched by the surface that owns them.
+   *
+   *  They still run through the same per-agent store machinery as any other
+   *  chat (managedLogs, transcript loads, sends), and that machinery resolves an
+   *  agent's provider and repo BY ID — so without registering them here, a
+   *  hidden chat's transcript would be reduced with the default adapter instead
+   *  of its own. Keyed by agent id; the owning surface keeps it current. */
+  offSidebarAgents: Record<string, AgentRecord>;
+  /** Publish (or refresh) off-sidebar records as their owning surface loads
+   *  them. Merged by id; entries are pruned when the agent is discarded, along
+   *  with the rest of its per-agent state (see `dropAgentEntries`). */
+  registerOffSidebarAgents: (agents: AgentRecord[]) => void;
   managedLogs: Record<string, ChatItem[]>;
   /** Question tools the agent is paused on, awaiting a human answer.
    *  Keyed by agent id, then by the tool_use id of the held `AskUserQuestion`
@@ -234,9 +256,12 @@ const SLASH_BUSY_LABELS: Record<string, string> = {
 export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => ({
   workspace: null,
   selectedAgentId: null,
+  attendedChatId: null,
+  setAttendedChat: (id) => set({ attendedChatId: id }),
   selectedRunId: null,
   focusedStepAgentId: null,
   promoteSeed: null,
+  offSidebarAgents: {},
   managedLogs: {},
   pendingToolUse: {},
   transcriptLoading: {},
@@ -250,6 +275,17 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   usage: {},
   runPhases: {},
   runPorts: {},
+
+  registerOffSidebarAgents: (agents) =>
+    set((state) => ({
+      offSidebarAgents: agents.reduce(
+        (acc, a) => {
+          acc[a.id] = a;
+          return acc;
+        },
+        { ...state.offSidebarAgents },
+      ),
+    })),
 
   selectAgent: (id) =>
     set((state) => {
@@ -777,8 +813,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       const { records, items } = await readReducedLog(get, id);
       const usage = usageFromRecords(provider, records);
       if (hasUsage(usage)) {
-        const projectId = get().workspace?.agents.find((a) => a.id === id)?.project_id;
-        recordUsageSnapshot(id, projectId, usage);
+        // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
+        // spend belongs to its project like anyone else's.
+        recordUsageSnapshot(id, agentRecord(get(), id)?.project_id, usage);
       }
       set((state) => {
         // Nothing stored but a live turn is already rendering — don't clobber it.

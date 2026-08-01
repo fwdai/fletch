@@ -1647,6 +1647,7 @@ pub fn run() {
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::wf_run_agents,
+            commands::list_project_chats,
             commands::get_agent_diff_stats,
             commands::agent_head_sha,
             commands::add_workspace_repo,

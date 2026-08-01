@@ -290,6 +290,58 @@ fn roadmap_items_migration_adds_the_table_with_its_constraints() {
     );
 }
 
+/// Schema version at which `roadmap_items` (0026) exists — the version an
+/// install upgrading into the workspace-purpose migration comes from. Pinned
+/// like `V_WORKTREE_PRS`, for the same reason.
+const V_ROADMAP_ITEMS: usize = 26;
+
+/// `workspaces.purpose` (0027) lands on an existing install as a nullable
+/// column: every workspace already on disk is an ordinary sidebar agent, and
+/// stays one. Only rows written with a tag are hidden from the sidebar.
+#[test]
+fn workspace_purpose_migration_leaves_existing_workspaces_untagged() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_ROADMAP_ITEMS)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w', 'p', 'ws', 0);",
+    )
+    .unwrap();
+    drop(conn);
+
+    init(dir.path()).unwrap();
+
+    let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
+    let existing: Option<String> = conn
+        .query_row("SELECT purpose FROM workspaces WHERE id = 'w'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        existing, None,
+        "an existing workspace must stay an ordinary sidebar agent"
+    );
+
+    // A tagged chat is an ordinary row otherwise — same table, same cascade.
+    conn.execute(
+        "INSERT INTO workspaces (id, project_id, name, created_at, purpose)
+         VALUES ('c', 'p', 'chat', 0, 'roadmap-pm')",
+        [],
+    )
+    .unwrap();
+    let tagged: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM workspaces WHERE purpose = 'roadmap-pm'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(tagged, 1);
+}
+
 #[test]
 fn fresh_init_creates_no_backup() {
     let dir = tempfile::tempdir().unwrap();

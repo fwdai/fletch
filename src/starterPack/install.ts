@@ -1,4 +1,4 @@
-// Starter pack installer — seeds the four specialist custom agents and the
+// Starter pack installer — seeds the specialist custom agents and the
 // "Feature pipeline" workflow. Idempotent: it matches existing items by name
 // and skips them, so re-installing never duplicates. Deliberately explicit
 // (invoked from a Settings affordance), never run silently on launch.
@@ -31,7 +31,7 @@ export interface InstallResult {
   workflowCreated: boolean;
 }
 
-/** Seed the starter pack. Creates any of the four specialists missing by name,
+/** Seed the starter pack. Creates any of the specialists missing by name,
  *  reuses those already present, then creates the "Feature pipeline" workflow
  *  (wired to whichever agent ids resulted) unless a workflow of that name
  *  already exists. */

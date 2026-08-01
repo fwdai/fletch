@@ -149,7 +149,7 @@ export function WorkflowsPane() {
     setEditing(next);
   };
 
-  // Seed the specialist bundle (four custom agents + the Feature pipeline
+  // Seed the specialist bundle (the custom agents + the Feature pipeline
   // workflow). Idempotent — re-running skips anything already present by name.
   const installStarter = async () => {
     setInstalling(true);

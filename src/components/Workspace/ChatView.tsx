@@ -9,6 +9,7 @@ import { ChatWorkingStatus } from "./ChatWorkingStatus";
 import { TranscriptList } from "./messages/TranscriptList";
 import { isTurnPending } from "./messages/turnPending";
 import { useTranscript } from "./messages/useTranscript";
+import { useLiveBusy } from "./useLiveBusy";
 
 /** Custom-view body: scrolling chat log + composer at the bottom.
  *  The composer here dispatches the user's message via the store; it
@@ -106,21 +107,9 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const transcript = useTranscript(agent);
   const { items, turns, activeModel, awaitingInput, openTurnStartedAt } = transcript;
 
-  // The backend emits a transient `idle` between process spawn and the first
-  // turn's `running` (every process rests at Idle at spawn). Raw `busy` thus
-  // dips false→true mid-startup, which would flash the working strip and
-  // restart the timer. Hold "working" through brief dips: rise immediately,
-  // fall only after a short grace period.
-  const liveBusyRaw = busy && !awaitingInput;
-  const [liveBusy, setLiveBusy] = useState(liveBusyRaw);
-  useEffect(() => {
-    if (liveBusyRaw) {
-      setLiveBusy(true);
-      return;
-    }
-    const t = window.setTimeout(() => setLiveBusy(false), 700);
-    return () => window.clearTimeout(t);
-  }, [liveBusyRaw]);
+  // Debounced "is working" (see useLiveBusy), shared with the Roadmap tab's PM
+  // chat so both surfaces settle on the same beat.
+  const liveBusy = useLiveBusy(agent.id, awaitingInput);
 
   // Phase A: user just sent a turn-starting prompt and nothing has landed yet.
   // A quiet inline anchor (dots only — label lives in the bottom status strip).

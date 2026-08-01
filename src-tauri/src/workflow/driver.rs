@@ -158,6 +158,9 @@ impl AgentDriver for SupervisorDriver {
                         carry_from: None,
                         // Workflow-step spawns aren't issue-intake spawns.
                         issue_ref: None,
+                        // A step agent is hidden by its `owner_run_id`, not by a
+                        // purpose tag — the run monitor owns it.
+                        purpose: None,
                     },
                 )
                 .await?;

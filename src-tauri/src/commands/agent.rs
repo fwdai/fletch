@@ -29,6 +29,10 @@ pub async fn spawn_agent(
     mcp_servers: Option<Vec<crate::agent_profile::McpServerSnapshot>>,
     fork_base: Option<String>,
     issue_ref: Option<String>,
+    // Tags a workspace owned by a surface other than the sidebar — today only
+    // the Roadmap tab's project-manager chat (`workspace::PURPOSE_ROADMAP_PM`).
+    // Absent for a normal spawn.
+    purpose: Option<String>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
     sup.spawn_agent(
@@ -55,6 +59,7 @@ pub async fn spawn_agent(
             carry_from: None,
             // Set when the spawn originates from a Home-inbox issue.
             issue_ref,
+            purpose,
         },
     )
     .await

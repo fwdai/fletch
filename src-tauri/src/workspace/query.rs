@@ -101,8 +101,14 @@ impl WorkspaceManager {
     pub(super) fn query_all_agents(conn: &Connection) -> Vec<AgentRecord> {
         // Run-owned step agents live under their workflow run, not the
         // sidebar; the frontend never sees owner_run_id, so filter here.
+        // Purpose-tagged workspaces (a Roadmap PM chat) are hidden the same
+        // way and for the same reason: the sidebar is for feature-development
+        // agents and workflow runs, and each tagged workspace is listed by the
+        // surface that owns it (`query_chats_for_project`). Both remain fully
+        // addressable by id — `agent()` applies no filter — so their
+        // transcripts, sends and resumes work exactly like any other agent's.
         let mut stmt = match conn.prepare(&format!(
-            "{AGENT_SELECT} WHERE w.owner_run_id IS NULL ORDER BY w.created_at"
+            "{AGENT_SELECT} WHERE w.owner_run_id IS NULL AND w.purpose IS NULL ORDER BY w.created_at"
         )) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
@@ -132,6 +138,32 @@ impl WorkspaceManager {
         };
 
         stmt.query_map([run_id], Self::map_agent_row)
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| Self::build_agent_record(conn, row))
+            .collect()
+    }
+
+    /// A project's live chats of one purpose, newest first — the inverse of
+    /// [`query_all_agents`]'s purpose filter, scoped to one project. Newest
+    /// first because a chat picker opens on the conversation you were last in,
+    /// not the one you started months ago.
+    pub(super) fn query_chats_for_project(
+        conn: &Connection,
+        project_id: &str,
+        purpose: &str,
+    ) -> Vec<AgentRecord> {
+        let mut stmt = match conn.prepare(&format!(
+            "{AGENT_SELECT} WHERE w.project_id = ?1 AND w.purpose = ?2 AND w.archived_at IS NULL
+             ORDER BY w.created_at DESC"
+        )) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map([project_id, purpose], Self::map_agent_row)
             .ok()
             .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
             .unwrap_or_default()
@@ -403,6 +435,7 @@ impl WorkspaceManager {
             row.get(18)?,
             row.get(19)?,
             row.get(20)?,
+            row.get(21)?,
         ))
     }
 
@@ -432,6 +465,7 @@ impl WorkspaceManager {
             sandbox_engine,
             owner_run_id,
             issue_ref,
+            purpose,
         ) = row;
 
         let is_archived = archived_millis.is_some();
@@ -473,6 +507,7 @@ impl WorkspaceManager {
             sandbox_engine,
             owner_run_id,
             issue_ref,
+            purpose,
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,

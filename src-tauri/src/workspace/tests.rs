@@ -1034,6 +1034,85 @@ fn run_owned_agents_are_hidden_from_the_workspace_list() {
     );
 }
 
+/// A purpose-tagged workspace (the Roadmap PM chat) is hidden from the sidebar
+/// exactly like a run-owned one, stays addressable by id so its chat surface
+/// works, and is listed — newest first — by the surface that owns it.
+#[test]
+fn purpose_tagged_chats_are_hidden_from_the_sidebar_but_listed_by_their_surface() {
+    let db = test_db();
+    let wm = WorkspaceManager::new(db.clone());
+    seed_repo(&db, "/r");
+
+    let mut chat = new_agent_record(
+        "shasta".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "shape the roadmap".into(),
+        AgentView::Custom,
+    );
+    chat.purpose = Some(PURPOSE_ROADMAP_PM.to_string());
+    let chat_id = chat.id.clone();
+    wm.add_agent(&mut chat).unwrap();
+    let project_id = wm.agent(&chat_id).unwrap().project_id;
+
+    // A second chat, created after the first: the picker opens on the newest.
+    let mut newer = new_agent_record(
+        "tahoma".into(),
+        "b".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "another thread".into(),
+        AgentView::Custom,
+    );
+    newer.purpose = Some(PURPOSE_ROADMAP_PM.to_string());
+    newer.created_at = chrono::Utc::now()
+        .checked_add_signed(chrono::Duration::seconds(5))
+        .unwrap()
+        .to_rfc3339();
+    let newer_id = newer.id.clone();
+    wm.add_agent(&mut newer).unwrap();
+
+    // An ordinary agent in the same project, which the sidebar does show.
+    let mut plain = new_agent_record(
+        "rainier".into(),
+        "c".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "build it".into(),
+        AgentView::Custom,
+    );
+    let plain_id = plain.id.clone();
+    wm.add_agent(&mut plain).unwrap();
+
+    let sidebar = wm.current().unwrap().agents;
+    assert!(
+        sidebar.iter().any(|a| a.id == plain_id),
+        "a normal agent still lists"
+    );
+    assert!(
+        sidebar.iter().all(|a| a.id != chat_id && a.id != newer_id),
+        "PM chats must not reach the sidebar"
+    );
+
+    // Reachable by id — transcripts, sends and resumes all address it this way.
+    assert_eq!(
+        wm.agent(&chat_id).unwrap().purpose.as_deref(),
+        Some(PURPOSE_ROADMAP_PM)
+    );
+
+    let listed: Vec<String> = wm
+        .chats_for_project(&project_id, PURPOSE_ROADMAP_PM)
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+    assert_eq!(
+        listed,
+        vec![newer_id, chat_id],
+        "the owning surface lists only its own chats, newest first"
+    );
+}
+
 #[test]
 fn skill_and_mcp_snapshots_round_trip() {
     use crate::agent_profile::{McpServerSnapshot, SkillSnapshot};

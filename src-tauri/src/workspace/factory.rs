@@ -56,6 +56,9 @@ pub fn new_agent_record(
         owner_run_id: None,
         // Set by the issue-intake spawn path; a plain spawn has no origin issue.
         issue_ref: None,
+        // Set by a surface that owns its own chats (the Roadmap tab); a plain
+        // spawn is an ordinary sidebar agent.
+        purpose: None,
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         archive: None,

@@ -7,7 +7,7 @@ import { hasUsage, usageFromRecords } from "../adapters/usage";
 import { api } from "../api";
 import { recordUsageSnapshot } from "../storage/usageDaily";
 import type { AppState } from "../store";
-import { providerFor } from "./agentLookups";
+import { agentRecord, providerFor } from "./agentLookups";
 
 /** Cursor and OpenCode report token usage only on their live stream (never on
  *  disk), so persist that event into session_records (`live_compiled`) when it
@@ -43,8 +43,9 @@ export async function persistLiveUsage(
     const usage = usageFromRecords(provider, records);
     if (hasUsage(usage)) {
       set({ usage: { ...get().usage, [agentId]: usage } });
-      const projectId = get().workspace?.agents.find((a) => a.id === agentId)?.project_id;
-      recordUsageSnapshot(agentId, projectId, usage);
+      // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
+      // spend belongs to its project like anyone else's.
+      recordUsageSnapshot(agentId, agentRecord(get(), agentId)?.project_id, usage);
     }
   } catch {
     // Non-critical: the next records refresh or restart re-aggregates it.

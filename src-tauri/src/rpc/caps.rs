@@ -75,6 +75,20 @@ impl AgentCaps {
         }
     }
 
+    /// What an advisory chat gets — today the Roadmap project-manager chat.
+    /// It has a real checkout so it can read the code it reasons about, but its
+    /// deliverable is a roadmap ticket, never a commit: publishing would make it
+    /// a second, unreviewed path for code to reach a branch. Denied at the grant
+    /// rather than only in its brief, so a persuaded model still can't push.
+    pub fn advisory() -> Self {
+        Self {
+            publish: Publish::Denied(
+                "the project-manager chat proposes roadmap items; it never publishes \
+                 code — write the work up as a roadmap item instead",
+            ),
+        }
+    }
+
     /// Why `op` may not run at all, if so. Checked before any work, so a denied
     /// publish never reaches git.
     pub fn refuses(self, op: &str) -> Option<&'static str> {
@@ -244,5 +258,25 @@ mod tests {
         // Fail closed: with no recorded own branch, no force can be authorized.
         assert!(caps.refuses_force("fix/login", None).is_some());
         assert!(caps.refuses_force("develop", None).is_some());
+    }
+
+    /// The Roadmap PM chat cannot publish at all — and the refusal tells it what
+    /// its deliverable actually is, so it writes a roadmap item instead of
+    /// retrying the push.
+    #[test]
+    fn an_advisory_chat_cannot_publish_anything() {
+        let caps = AgentCaps::advisory();
+        for op in ["git_push", "open_pr"] {
+            let why = caps.refuses(op).expect("must be refused");
+            assert!(
+                why.contains("roadmap item"),
+                "the refusal must name the deliverable"
+            );
+        }
+        // Reading stays open: the chat's whole job is to explore the codebase.
+        assert!(caps.refuses("git_fetch").is_none());
+        assert!(caps.refuses("git_status").is_none());
+        // No branch is publishable, not even one it made up itself.
+        assert!(caps.refuses_branch("pm/notes", "main").is_some());
     }
 }

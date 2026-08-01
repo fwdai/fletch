@@ -35,14 +35,22 @@ function deps(existingAgents: CustomAgent[], existingDefinitions: Definition[]) 
 }
 
 describe("installStarterPack", () => {
-  it("seeds all four agents and the workflow on a clean library", async () => {
+  it("seeds every agent and the workflow on a clean library", async () => {
     const { d, saved } = deps([], []);
     const res = await installStarterPack(d);
 
-    expect(res.agentsCreated).toEqual(["Architect", "Coder", "Reviewer", "Tester"]);
+    // The Project Manager ships with the pack too, though the pipeline doesn't
+    // use it — it's the Roadmap tab's default, not a workflow step.
+    expect(res.agentsCreated).toEqual([
+      "Project Manager",
+      "Architect",
+      "Coder",
+      "Reviewer",
+      "Tester",
+    ]);
     expect(res.agentsSkipped).toEqual([]);
     expect(res.workflowCreated).toBe(true);
-    expect(d.createAgent).toHaveBeenCalledTimes(4);
+    expect(d.createAgent).toHaveBeenCalledTimes(5);
 
     const spec = saved[0];
     expect(spec.name).toBe(STARTER_WORKFLOW_NAME);
@@ -72,7 +80,13 @@ describe("installStarterPack", () => {
     const res = await installStarterPack(d);
 
     expect(res.agentsCreated).toEqual([]);
-    expect(res.agentsSkipped).toEqual(["Architect", "Coder", "Reviewer", "Tester"]);
+    expect(res.agentsSkipped).toEqual([
+      "Project Manager",
+      "Architect",
+      "Coder",
+      "Reviewer",
+      "Tester",
+    ]);
     expect(res.workflowCreated).toBe(false);
     expect(d.createAgent).not.toHaveBeenCalled();
     expect(d.saveDefinition).not.toHaveBeenCalled();
@@ -83,9 +97,11 @@ describe("installStarterPack", () => {
     const { d, saved } = deps(existingAgents, []);
     const res = await installStarterPack(d);
 
-    expect(res.agentsSkipped.length).toBe(4);
+    expect(res.agentsSkipped.length).toBe(STARTER_AGENTS.length);
     expect(res.workflowCreated).toBe(true);
+    // The four pipeline roles, in spec order — the Project Manager (old-0) is
+    // seeded but deliberately not wired into the workflow.
     const ids = Object.values(saved[0].agents).map((a) => a.custom_agent);
-    expect(ids).toEqual(["old-0", "old-1", "old-2", "old-3"]);
+    expect(ids).toEqual(["old-1", "old-2", "old-3", "old-4"]);
   });
 });
