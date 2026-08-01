@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Horizon, RoadmapItem } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { useAppStore } from "@/store";
 import { HORIZONS } from "../types";
 import type { RoadmapState } from "../useRoadmap";
 import { EmptyBoard } from "./EmptyBoard";
@@ -33,11 +34,17 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
     readOnly,
     error,
     clearError,
+    notes,
     addItem,
     editItem,
     removeItems,
     acceptItems,
+    queueItems,
+    unqueueItems,
+    workflows,
   } = roadmap;
+  const selectRun = useAppStore((s) => s.selectRun);
+  const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
 
   const [editing, setEditing] = useState<Editing | null>(null);
   /** The row the form is editing, if it isn't creating one. */
@@ -168,6 +175,10 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
                   // A proposed row is on the board but not *of* it yet: it is
                   // ruled on rather than edited or sent to an agent.
                   const ghost = it.status === "proposed";
+                  // The queue owns everything from `queued` on: an `active` or
+                  // `in_review` row is the drainer's, and the user's lever on it
+                  // is the run, not the row.
+                  const writable = !ghost && !readOnly;
                   return (
                     <ItemCard
                       key={it.code}
@@ -177,6 +188,12 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
                       open={openCodes.has(it.code)}
                       landed={landed.has(it.code)}
                       focused={focusCode === it.code}
+                      note={notes.get(row.id)}
+                      workflowName={
+                        writable
+                          ? (workflows.resolve(row.workflow_def_id)?.name ?? null)
+                          : undefined
+                      }
                       onToggle={() => toggleItem(it.code)}
                       onEdit={
                         ghost || readOnly
@@ -185,6 +202,25 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
                       }
                       onAccept={ghost && !readOnly ? () => acceptItems([row.id]) : undefined}
                       onDiscard={ghost && !readOnly ? () => removeItems([row.id]) : undefined}
+                      onQueue={
+                        writable && it.status === "open" ? () => queueItems([row.id]) : undefined
+                      }
+                      onUnqueue={
+                        writable && it.status === "queued"
+                          ? () => unqueueItems([row.id])
+                          : undefined
+                      }
+                      onOpenRun={
+                        row.run_id
+                          ? () => {
+                              // The run lives in the workspace, which this
+                              // full-screen page covers — select it, then get
+                              // out of the way.
+                              selectRun(row.run_id as string);
+                              closeProjectScreen();
+                            }
+                          : undefined
+                      }
                       cardRef={(el) => {
                         rows.current[it.code] = el;
                       }}
@@ -201,6 +237,7 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
         <ItemDialog
           item={editing.item}
           horizon={editing.horizon}
+          workflows={workflows}
           onClose={() => setEditing(null)}
           onSave={(draft) => (editRow ? editItem(editRow.id, draft) : addItem(draft))}
           onDelete={editRow ? () => removeItems([editRow.id]) : undefined}

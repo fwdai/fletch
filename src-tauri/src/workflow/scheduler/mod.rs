@@ -167,6 +167,13 @@ impl WorkflowService {
         // finalize open-PR path can append a `Closes #<n>` trailer. `None` for a
         // normal launch — backward-compatible with today's behavior.
         issue_ref: Option<String>,
+        // The roadmap item this run was dispatched for (the queue drainer,
+        // `roadmap::drainer`). Written in the same INSERT as the rest of the
+        // row rather than patched in afterwards, so a crash between launch and
+        // the drainer's next write can never orphan a run from the item that
+        // owns it — the drainer counts a project's live runs through this
+        // column. `None` for every human-initiated launch.
+        roadmap_item_id: Option<String>,
     ) -> Result<String> {
         let _lifecycle_guard = self.lifecycle.lock().await;
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
@@ -215,8 +222,9 @@ impl WorkflowService {
             conn.execute(
                 "INSERT INTO wf_run (id, definition_id, parent_run_id, name, spec_json, task,
                      project_id, repo_path, run_dir, branch, base_sha, base_branch, status,
-                     budgets_json, spent_json, created_at, updated_at, issue_ref)
-                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12, '{}', ?13, ?13, ?14)",
+                     budgets_json, spent_json, created_at, updated_at, issue_ref,
+                     roadmap_item_id)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12, '{}', ?13, ?13, ?14, ?15)",
                 rusqlite::params![
                     run_id,
                     definition_id,
@@ -232,6 +240,7 @@ impl WorkflowService {
                     budgets_json,
                     now,
                     issue_ref,
+                    roadmap_item_id,
                 ],
             )
             .map_err(|e| Error::Other(e.to_string()))?;
@@ -686,6 +695,8 @@ pub async fn wf_launch(
             base_sha,
             attachments,
             issue_ref,
+            // A hand-launched run answers to nobody's queue.
+            None,
         )
         .await
         .map_err(|e| e.to_string())

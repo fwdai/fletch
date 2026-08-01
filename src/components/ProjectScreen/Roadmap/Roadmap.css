@@ -533,6 +533,25 @@
     box-shadow: 0 0 0 4px color-mix(in oklch, var(--success), transparent 90%);
   }
 }
+/* One-word lifecycle chip. Only the statuses that mean something is (or should
+   be) happening get one — `open` is the board's resting state. */
+.rm-state {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+/* Waiting its turn: present, unhurried, not an alert. */
+.rm-state.st-q {
+  color: var(--fg-2);
+  background: var(--bg-3);
+}
+/* Built, PR open, not merged — the same vocabulary the PR surfaces use. */
+.rm-state.st-r {
+  color: var(--info);
+  background: color-mix(in oklch, var(--info), transparent 88%);
+}
+
 .rm-size {
   flex-shrink: 0;
   width: 18px;
@@ -609,6 +628,38 @@
 .rm-dep {
   gap: 4px;
   color: var(--info);
+}
+/* What the queue would run this item under. Muted — it's a fact about the row,
+   not an action — until there is no answer, which is a problem worth seeing. */
+.rm-wf {
+  gap: 4px;
+  color: var(--fg-3);
+}
+.rm-wf.none {
+  color: var(--warn);
+}
+
+/* An item the queue has taken responsibility for. A left rule rather than a
+   fill: it marks the row as spoken for without competing with a ghost's tint or
+   the landed flash. */
+.rm-item.queued {
+  border-left-color: var(--bd-strong);
+  border-left-width: 2px;
+}
+
+/* Why a queued row isn't moving (`roadmap:queue-note`). Sits between the header
+   and the body, like the ghostbar, so a stalled item says so collapsed. */
+.rm-note {
+  gap: 6px;
+  padding: 6px 11px 7px;
+  color: var(--warn);
+  border-top: 1px solid color-mix(in oklch, var(--warn), transparent 82%);
+  background: color-mix(in oklch, var(--warn), transparent 94%);
+}
+.rm-note-t {
+  min-width: 0;
+  color: var(--fg-2);
+  text-wrap: pretty;
 }
 
 /* A proposed row — dashed and tinted until the user accepts it. */

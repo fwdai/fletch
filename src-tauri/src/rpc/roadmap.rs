@@ -286,6 +286,9 @@ fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem
             epic: clean(it.epic.as_deref()),
             accept: clean_list(&it.accept),
             deps,
+            // Which workflow builds it is the user's call, not the PM's — a
+            // proposal isn't work anyone has agreed to do yet.
+            workflow_def_id: None,
         });
     }
     Ok(out)

@@ -68,6 +68,33 @@ export interface NewRoadmapItem {
   epic?: string | null;
   accept?: string[];
   deps?: string[];
+  /** Workflow this item is dispatched under when queued. Omitted (or null)
+   *  means "the project's default at dispatch time". */
+  workflow_def_id?: string | null;
+}
+
+/** Why a queued item isn't moving, as the drainer sees it
+ *  (`roadmap:queue-note`, src-tauri/src/roadmap/drainer.rs).
+ *
+ *  Transient: nothing persists it, and the next change to the row makes it
+ *  stale — which is exactly when the board drops it. Carries the code so a
+ *  listener can name the item without holding the row. */
+export interface RoadmapQueueNote {
+  item_id: string;
+  code: string;
+  note: string;
+}
+
+/** The result of a patch: the stored row, and whether this patch is what stored
+ *  it.
+ *
+ *  `applied` is false only for a *conditional* update (`expectStatus`) whose
+ *  precondition missed — the row had already moved on, so nothing was written and
+ *  nothing was broadcast. `item` is then the row as it actually is, which is what
+ *  the caller should put on the board: its own snapshot was the stale one. */
+export interface RoadmapItemUpdate {
+  applied: boolean;
+  item: RoadmapItem;
 }
 
 /** A partial update. An omitted key is left alone; an explicit `null` on a

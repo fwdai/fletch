@@ -153,6 +153,11 @@ pub struct NewItem {
     pub accept: Vec<String>,
     #[serde(default)]
     pub deps: Vec<String>,
+    /// Workflow this item is dispatched under when it's queued. `None` means
+    /// "whatever the project's default is at dispatch time" — accepted here so
+    /// the item form can create and assign in one round-trip.
+    #[serde(default)]
+    pub workflow_def_id: Option<String>,
 }
 
 /// A partial update. An absent field is left alone; an explicit `null` on a
@@ -191,6 +196,21 @@ pub struct ItemPatch {
     pub pr_url: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     pub pr_number: Option<Option<i64>>,
+}
+
+/// The outcome of a patch: the stored row, and whether the patch was the thing
+/// that stored it.
+///
+/// `applied` is false only when the caller asked for a *conditional* update
+/// (`expect_status`) and the row had already moved on — a queue action racing the
+/// drainer's claim. The row still comes back, because the caller's board is what
+/// was wrong: showing it the truth is more useful than an error it would have to
+/// invent a message for.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ItemUpdate {
+    pub applied: bool,
+    /// The patched row when `applied`, the row as it actually is otherwise.
+    pub item: RoadmapItem,
 }
 
 /// Keep a double-`Option` field's `null` distinct from its absence. Serde's
