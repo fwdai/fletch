@@ -270,19 +270,16 @@ pub fn materialize_skills(skills: &[SkillSnapshot], sandbox_root: &Path) -> Resu
 /// user brief is never parsed apart from an injected block) but are injected
 /// together here, brief first.
 ///
-/// `codegraph_available` says whether the codegraph MCP server actually landed
-/// in this session's delivery (`codegraph::McpInjection::codegraph_available`)
-/// — not whether the setting is on. It gates the one *conditional* Fletch
-/// block, which goes first so it sits with the other app-managed guidance the
-/// global text ends with, ahead of the user's role brief. Passing `false` for
-/// a provider that can't receive MCP is the whole point: never advertise a tool
-/// the agent wasn't given.
+/// `blocks` says which *conditional* Fletch playbooks this session actually
+/// earned. They go first, so they sit with the other app-managed guidance the
+/// global text ends with, ahead of the user's role brief. The rule for every
+/// flag here is the same: never advertise a tool the agent wasn't given.
 pub fn effective_instructions(
     brief: Option<&str>,
     forked_context: Option<&str>,
     skills: &[SkillSnapshot],
     sandbox_root: &Path,
-    codegraph_available: bool,
+    blocks: Blocks,
 ) -> Result<Option<String>> {
     let index = materialize_skills(skills, sandbox_root)?;
     let clean = |s: Option<&str>| {
@@ -290,14 +287,39 @@ pub fn effective_instructions(
             .filter(|s| !s.is_empty())
             .map(str::to_string)
     };
-    let codegraph = codegraph_available
+    let codegraph = blocks
+        .codegraph
         .then(crate::instructions::codegraph_block)
         .flatten();
-    let parts: Vec<String> = [codegraph, clean(brief), clean(forked_context), index]
-        .into_iter()
-        .flatten()
-        .collect();
+    let roadmap = blocks
+        .roadmap_pm
+        .then(crate::instructions::roadmap_block)
+        .flatten();
+    let parts: Vec<String> = [
+        codegraph,
+        roadmap,
+        clean(brief),
+        clean(forked_context),
+        index,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
+}
+
+/// The conditional instruction blocks a session qualifies for. A struct rather
+/// than a row of bools so a new one can't be silently swapped with its
+/// neighbour at a call site.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Blocks {
+    /// The codegraph MCP server actually landed in this session's delivery
+    /// (`codegraph::McpInjection::codegraph_available`) — not merely that the
+    /// setting is on.
+    pub codegraph: bool,
+    /// This is a roadmap project-manager chat, so it has the `roadmap_*` RPC
+    /// ops (`rpc::roadmap::RoadmapDispatcher`) and may be told about them.
+    pub roadmap_pm: bool,
 }
 
 /// The subagent type Fletch defines when codegraph is available, as claude's
@@ -518,6 +540,18 @@ pub fn codex_mcp_args(servers: &[McpServerSnapshot]) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// A session that got the codegraph server and nothing else conditional.
+    const CG: Blocks = Blocks {
+        codegraph: true,
+        roadmap_pm: false,
+    };
+
+    /// A roadmap project-manager chat, without codegraph.
+    const PM: Blocks = Blocks {
+        codegraph: false,
+        roadmap_pm: true,
+    };
+
     fn skill(name: &str, desc: &str, body: &str) -> SkillSnapshot {
         SkillSnapshot {
             name: name.into(),
@@ -562,22 +596,29 @@ mod tests {
 
         // Brief only.
         let brief_only =
-            effective_instructions(Some("Be terse."), None, &[], dir.path(), false).unwrap();
+            effective_instructions(Some("Be terse."), None, &[], dir.path(), Blocks::default())
+                .unwrap();
         assert_eq!(brief_only.as_deref(), Some("Be terse."));
 
         // Both: brief first, index after.
-        let both = effective_instructions(Some("Be terse."), None, &skills, dir.path(), false)
-            .unwrap()
-            .unwrap();
+        let both = effective_instructions(
+            Some("Be terse."),
+            None,
+            &skills,
+            dir.path(),
+            Blocks::default(),
+        )
+        .unwrap()
+        .unwrap();
         assert!(both.starts_with("Be terse.\n\n## Skills"));
 
         // Neither → None, so instructions.rs helpers stay no-ops.
         assert_eq!(
-            effective_instructions(None, None, &[], dir.path(), false).unwrap(),
+            effective_instructions(None, None, &[], dir.path(), Blocks::default()).unwrap(),
             None
         );
         assert_eq!(
-            effective_instructions(Some("  "), None, &[], dir.path(), false).unwrap(),
+            effective_instructions(Some("  "), None, &[], dir.path(), Blocks::default()).unwrap(),
             None
         );
     }
@@ -588,17 +629,18 @@ mod tests {
 
         // Not injected: no mention of the tool, and an otherwise-empty session
         // still injects nothing at all.
-        let absent = effective_instructions(Some("Be terse."), None, &[], dir.path(), false)
-            .unwrap()
-            .unwrap();
+        let absent =
+            effective_instructions(Some("Be terse."), None, &[], dir.path(), Blocks::default())
+                .unwrap()
+                .unwrap();
         assert!(!absent.contains("codegraph_explore"), "{absent}");
         assert_eq!(
-            effective_instructions(None, None, &[], dir.path(), false).unwrap(),
+            effective_instructions(None, None, &[], dir.path(), Blocks::default()).unwrap(),
             None
         );
 
         // Injected: the block leads, ahead of the user's brief.
-        let present = effective_instructions(Some("Be terse."), None, &[], dir.path(), true)
+        let present = effective_instructions(Some("Be terse."), None, &[], dir.path(), CG)
             .unwrap()
             .unwrap();
         assert!(present.contains("codegraph_explore"), "{present}");
@@ -606,10 +648,46 @@ mod tests {
 
         // It stands on its own too — a plain session with the server still
         // learns about it.
-        let alone = effective_instructions(None, None, &[], dir.path(), true)
+        let alone = effective_instructions(None, None, &[], dir.path(), CG)
             .unwrap()
             .unwrap();
         assert_eq!(Some(alone), crate::instructions::codegraph_block());
+    }
+
+    #[test]
+    fn roadmap_block_rides_only_for_a_project_manager_chat() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // An ordinary session is never told the roadmap ops exist — it doesn't
+        // have the dispatcher that answers them.
+        let plain = effective_instructions(Some("Be terse."), None, &[], dir.path(), CG)
+            .unwrap()
+            .unwrap();
+        assert!(!plain.contains("roadmap_propose"), "{plain}");
+
+        // A PM chat gets the block, ahead of its brief.
+        let pm = effective_instructions(Some("Be terse."), None, &[], dir.path(), PM)
+            .unwrap()
+            .unwrap();
+        assert!(pm.contains("roadmap_propose"), "{pm}");
+        assert!(pm.ends_with("\n\nBe terse."), "{pm}");
+
+        // Both conditional blocks compose, codegraph first.
+        let both = effective_instructions(
+            None,
+            None,
+            &[],
+            dir.path(),
+            Blocks {
+                codegraph: true,
+                roadmap_pm: true,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let cg = crate::instructions::codegraph_block().unwrap();
+        let rm = crate::instructions::roadmap_block().unwrap();
+        assert_eq!(both, format!("{cg}\n\n{rm}"));
     }
 
     #[test]
@@ -618,8 +696,14 @@ mod tests {
         let skills = vec![skill("Deploy", "cutting a release", "steps")];
 
         // Forked context alone (no brief) still injects.
-        let ctx_only =
-            effective_instructions(None, Some("prior convo"), &[], dir.path(), false).unwrap();
+        let ctx_only = effective_instructions(
+            None,
+            Some("prior convo"),
+            &[],
+            dir.path(),
+            Blocks::default(),
+        )
+        .unwrap();
         assert_eq!(ctx_only.as_deref(), Some("prior convo"));
 
         // All three compose in order: brief, forked context, skill index.
@@ -628,15 +712,21 @@ mod tests {
             Some("prior convo"),
             &skills,
             dir.path(),
-            false,
+            Blocks::default(),
         )
         .unwrap()
         .unwrap();
         assert!(all.starts_with("Be terse.\n\nprior convo\n\n## Skills"));
 
         // Blank forked context is dropped like a blank brief.
-        let blank =
-            effective_instructions(Some("Be terse."), Some("  "), &[], dir.path(), false).unwrap();
+        let blank = effective_instructions(
+            Some("Be terse."),
+            Some("  "),
+            &[],
+            dir.path(),
+            Blocks::default(),
+        )
+        .unwrap();
         assert_eq!(blank.as_deref(), Some("Be terse."));
     }
 

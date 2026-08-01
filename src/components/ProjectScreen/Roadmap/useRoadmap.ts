@@ -8,9 +8,14 @@
 //
 // The PM conversation is NOT here: it is a real agent chat, owned by the Thread
 // column (see Thread/usePmChats.ts). What the two share is this contract — the
-// PM proposes, the user commits, nothing reaches the board unaccepted — which is
-// why `applyChanges` and the ghost rows live in this hook rather than in the
-// thread that will (next slice) feed them.
+// PM proposes, the user commits, nothing reaches the board unaccepted.
+//
+// A proposal is not a client-side draft: `roadmap_propose` (the PM's RPC tool,
+// src-tauri/src/rpc/roadmap.rs) writes real rows with `status: "proposed"`, and
+// they arrive here on the same `roadmap:item` event as everything else — so the
+// board grows ghost rows live while the PM is still talking. Accepting one is a
+// status patch (`proposed → open`); discarding it is a delete. Those two are
+// the only ways a proposed row leaves that state.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -23,7 +28,7 @@ import {
 } from "@/api";
 import { useAppStore } from "@/store";
 import { PRODUCT_MAP } from "./mockData";
-import type { BoardItem, Horizon, ProposalChange } from "./types";
+import type { Horizon } from "./types";
 import { toBoardItem } from "./types";
 
 /** How long a row stays highlighted after landing on the board. */
@@ -36,6 +41,10 @@ export type BoardTab = "roadmap" | "map";
 /** A shipped item leaves the board entirely and survives only as the header's
  *  count, so "on the board" is every status but `done`. */
 const isOnBoard = (i: RoadmapItem) => i.status !== "done";
+
+/** A row the PM has suggested and the user hasn't ruled on. Drawn as a ghost:
+ *  in its target horizon, but counted for nothing. */
+const isProposed = (i: RoadmapItem) => i.status === "proposed";
 
 export function useRoadmap(repoPath: string) {
   // The board is per project, not per repo: a multi-repo project has one
@@ -139,16 +148,17 @@ export function useRoadmap(repoPath: string) {
   );
 
   // ── derived ────────────────────────────────────────────────────────
-  const items = useMemo(() => rows.filter(isOnBoard).map(toBoardItem), [rows]);
+  const items = useMemo(
+    () => rows.filter((r) => isOnBoard(r) && !isProposed(r)).map(toBoardItem),
+    [rows],
+  );
   /** Shipped items aren't on the board; the header carries the count. */
   const shipped = useMemo(() => rows.filter((r) => !isOnBoard(r)).length, [rows]);
 
-  /** Rows a proposal would add, drawn on the board before anything is committed,
-   *  and the moves it would make. Dormant until the PM's propose tool lands
-   *  (next slice): the board already knows how to render both, so the wiring
-   *  stays here rather than being rebuilt around it. */
-  const ghosts: BoardItem[] = useMemo(() => [], []);
-  const moves = useMemo<Extract<ProposalChange, { kind: "move" }>[]>(() => [], []);
+  /** The PM's outstanding proposals, drawn on the board as ghosts until the
+   *  user accepts or discards them. Kept out of `items` so they don't move a
+   *  single count before that. */
+  const ghosts = useMemo(() => rows.filter(isProposed).map(toBoardItem), [rows]);
 
   const counts = useMemo(() => {
     const by: Record<Horizon, number> = { now: 0, next: 0, later: 0 };
@@ -201,57 +211,36 @@ export function useRoadmap(repoPath: string) {
     [guarded, markLanded, upsert],
   );
 
-  const removeItem = useCallback(
-    (id: string) =>
+  /** Delete rows. Also how a proposal is discarded: a suggestion the user turned
+   *  down was never on the roadmap, so it leaves no trace of having been. */
+  const removeItems = useCallback(
+    (ids: string[]) =>
       guarded(async () => {
-        await api.roadmapDeleteItem(id);
-        setRows((prev) => prev.filter((r) => r.id !== id));
+        for (const id of ids) await api.roadmapDeleteItem(id);
+        setRows((prev) => prev.filter((r) => !ids.includes(r.id)));
       }),
     [guarded],
   );
 
   const clearError = useCallback(() => setError(null), []);
 
-  // ── committing a proposal ──────────────────────────────────────────
-  /** Turn a proposal into rows. An add becomes a real item — the proposed code
-   *  was only ever a placeholder, so what the user sees afterwards is the code
-   *  the backend allocated. A move addresses its row by code; one naming a code
-   *  this project doesn't have is skipped rather than failing the whole commit.
-   *  Returns the codes that actually landed.
-   *
-   *  Dormant with `ghosts`/`moves` above: the next slice's `roadmap_propose` RPC
-   *  tool feeds real proposals through exactly this path. */
-  const applyChanges = useCallback(
-    async (changes: ProposalChange[]) => {
-      if (!projectId) throw new Error("This repo isn't part of a project yet.");
-      const codes: string[] = [];
-      for (const c of changes) {
-        if (c.kind === "add") {
-          const row = await api.roadmapCreateItem(projectId, {
-            title: c.item.title,
-            why: c.item.why,
-            horizon: c.item.horizon,
-            size: c.item.size ?? null,
-            area: c.item.area ?? null,
-            source: "pm",
-            epic: c.item.epic ?? null,
-            accept: c.item.accept ?? [],
-            deps: c.item.deps ?? [],
-          });
-          upsert(row);
-          codes.push(row.code);
-        } else {
-          const target = rows.find((r) => r.code === c.code);
-          if (!target) continue;
-          const row = await api.roadmapUpdateItem(target.id, { horizon: c.to });
+  /** Accept proposed rows: `proposed → open` is the moment a suggestion becomes
+   *  a roadmap item. The row (and its code) already exist, so nothing is
+   *  re-created and nothing is renumbered — the code the PM quoted in the chat
+   *  is the code that stays on the board. The other half of the decision is
+   *  [`removeItems`]. */
+  const acceptItems = useCallback(
+    (ids: string[]) =>
+      guarded(async () => {
+        const codes: string[] = [];
+        for (const id of ids) {
+          const row = await api.roadmapUpdateItem(id, { status: "open" });
           upsert(row);
           codes.push(row.code);
         }
-      }
-      markLanded(codes);
-      return codes;
-    },
-    [markLanded, projectId, rows, upsert],
+        markLanded(codes);
+      }),
+    [guarded, markLanded, upsert],
   );
 
   // ── board interaction ──────────────────────────────────────────────
@@ -282,7 +271,6 @@ export function useRoadmap(repoPath: string) {
     // board
     items,
     ghosts,
-    moves,
     counts,
     shipped,
     loading,
@@ -302,8 +290,8 @@ export function useRoadmap(repoPath: string) {
     addItem,
     editItem,
     moveItem,
-    removeItem,
-    applyChanges,
+    removeItems,
+    acceptItems,
   };
 }
 

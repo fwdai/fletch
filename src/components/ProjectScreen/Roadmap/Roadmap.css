@@ -11,7 +11,8 @@
 }
 /* `.grow` is scoped per component in this app, not a global utility. */
 .rm-board-h .grow,
-.rm-prop-foot .grow,
+.rm-props .grow,
+.rm-ghostbar .grow,
 .rm-item-foot .grow,
 .rm-dialog .modal-foot .grow,
 .rm-composer-wrap .composer-foot .grow {
@@ -233,85 +234,6 @@
   text-decoration: underline;
 }
 
-/* ── proposal: the commit point ── */
-.rm-prop {
-  overflow: hidden;
-  border: 1px solid var(--accent-line);
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--accent), var(--bg-2) 94%);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 93%);
-}
-.rm-prop.accepted,
-.rm-prop.discarded {
-  border-color: var(--bd-soft);
-  background: var(--bg-1);
-  box-shadow: none;
-}
-.rm-prop.discarded {
-  opacity: 0.6;
-}
-.rm-prop-h {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 12px 14px 9px;
-}
-.rm-prop-l {
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-.rm-prop.accepted .rm-prop-l {
-  color: var(--success);
-}
-.rm-prop.discarded .rm-prop-l {
-  color: var(--fg-3);
-}
-.rm-prop-n {
-  margin-left: auto;
-  color: var(--fg-3);
-}
-.rm-prop-row {
-  gap: 10px;
-  padding: 7px 14px;
-  border-top: 1px solid var(--bd-soft);
-}
-.rm-prop-op {
-  width: 14px;
-  flex-shrink: 0;
-  font-weight: 700;
-}
-.rm-prop-op.add {
-  color: var(--success);
-}
-.rm-prop-op.move {
-  color: var(--info);
-}
-.rm-prop-code {
-  flex-shrink: 0;
-  color: var(--fg-2);
-}
-.rm-prop-title {
-  flex: 1;
-  min-width: 0;
-  color: var(--fg-0);
-}
-.rm-prop-tag {
-  flex-shrink: 0;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-}
-.rm-prop-foot {
-  gap: 8px;
-  padding: 10px 12px 11px 14px;
-  border-top: 1px solid var(--bd-soft);
-}
-.rm-prop-hint {
-  color: var(--fg-3);
-}
-
 /* ── composer ── */
 .rm-composer-wrap {
   flex-shrink: 0;
@@ -407,6 +329,53 @@
 }
 .rm-board-err-x:hover {
   color: var(--fg-0);
+}
+
+/* ── the proposal bar ──
+   Shown only when the PM has several proposals outstanding: one ghost is ruled
+   on from its own card, but a batch shouldn't cost a trip down three horizons.
+   Reads as accent (a pending decision), not danger, and sits between the
+   header and the scroller so it stays put while the board scrolls. */
+.rm-props {
+  flex-shrink: 0;
+  gap: 10px;
+  padding: 7px 10px 7px 14px;
+  background: color-mix(in oklch, var(--accent), var(--bg-1) 92%);
+  border-bottom: 1px solid var(--accent-line);
+}
+.rm-props-n {
+  flex-shrink: 0;
+  gap: 5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.rm-props-hint {
+  min-width: 0;
+  color: var(--fg-3);
+}
+.rm-props-x,
+.rm-props-ok {
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: var(--r-xs);
+  background: transparent;
+}
+.rm-props-x {
+  color: var(--fg-2);
+}
+.rm-props-x:hover {
+  color: var(--fg-0);
+  background: var(--hover);
+}
+.rm-props-ok {
+  color: var(--accent);
+  border: 1px solid var(--accent-line);
+}
+.rm-props-ok:hover {
+  color: var(--bg-0);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 /* ── the empty board ──
@@ -651,6 +620,16 @@
 }
 .rm-item.ghost .rm-code {
   color: var(--accent);
+}
+/* The decision, always visible on a ghost — collapsed or open. */
+.rm-ghostbar {
+  gap: 8px;
+  padding: 6px 8px 7px 11px;
+  border-top: 1px dashed var(--accent-line);
+}
+.rm-ghostbar-l {
+  min-width: 0;
+  color: var(--fg-3);
 }
 @keyframes rm-ghost-in {
   from {

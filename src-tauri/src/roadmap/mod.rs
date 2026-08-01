@@ -29,10 +29,13 @@ use tauri::{AppHandle, Emitter};
 
 use types::{ItemPatch, NewItem, RoadmapItem};
 
-type Db = Arc<Mutex<Connection>>;
+/// The app's single connection. Public because the PM agent's RPC dispatcher
+/// (`rpc::roadmap`) writes the same table from outside this module and takes
+/// the same handle.
+pub type Db = Arc<Mutex<Connection>>;
 
 /// Notify the frontend that an item row changed; carries the full row.
-fn emit_item(app: &AppHandle, item: &RoadmapItem) {
+pub(crate) fn emit_item(app: &AppHandle, item: &RoadmapItem) {
     let _ = app.emit("roadmap:item", item);
 }
 

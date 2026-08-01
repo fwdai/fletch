@@ -15,10 +15,14 @@ interface Props {
   item: BoardItem;
   /** The project's primary repo — where "Send to an agent" opens the draft. */
   repoPath: string;
-  /** A proposed row — real only once the user accepts the proposal. */
+  /** A proposed row: on the board, but not on the roadmap until it's accepted. */
   ghost?: boolean;
   open: boolean;
   onToggle: () => void;
+  /** Accept the proposal (`proposed → open`). Ghosts only, and not read-only. */
+  onAccept?: () => void;
+  /** Discard the proposal — the row is deleted. Ghosts only. */
+  onDiscard?: () => void;
   /** Ring the row: it was just jumped to, or a pending proposal moves it. */
   focused?: boolean;
   /** Transient highlight for a row that just landed or just moved. */
@@ -50,6 +54,8 @@ export function ItemCard({
   focused,
   landed,
   onEdit,
+  onAccept,
+  onDiscard,
   cardRef,
 }: Props) {
   const createDraft = useAppStore((s) => s.createDraft);
@@ -73,9 +79,9 @@ export function ItemCard({
         onClick={onToggle}
         aria-expanded={open}
       >
-        {/* A proposal has no code yet — one is allocated when the user accepts
-            it — so a number here would be a promise the board then breaks. */}
-        <span className="rm-code mono text-xs">{ghost ? "NEW" : item.code}</span>
+        {/* A proposed row already owns its code (the PM quotes it in the chat
+            the moment it proposes), and accepting one never renumbers it. */}
+        <span className="rm-code mono text-xs">{item.code}</span>
         <span className="rm-title text-sm truncate">{item.title}</span>
         {item.epic && <span className="rm-epic text-xs">{item.epic}</span>}
         {item.status === "active" && item.agent && (
@@ -97,6 +103,27 @@ export function ItemCard({
         </span>
         <Icon name="chevD" size={10} className="rm-chev" />
       </button>
+
+      {/* The two buttons that decide a proposal's fate. Outside the header
+          button (no nesting) and outside the collapsible body, so ruling on a
+          ghost never costs an expand — reading it first is what the expand is
+          for. */}
+      {ghost && (onAccept || onDiscard) && (
+        <div className="rm-ghostbar flex-center">
+          <span className="rm-ghostbar-l text-xs">Proposed — not on the roadmap yet</span>
+          <span className="grow" />
+          {onDiscard && (
+            <Button variant="ghost" size="sm" onClick={onDiscard}>
+              Discard
+            </Button>
+          )}
+          {onAccept && (
+            <Button variant="primary" size="sm" onClick={onAccept}>
+              <Icon name="check" size={11} /> Accept
+            </Button>
+          )}
+        </div>
+      )}
 
       {open && (
         <div className="rm-item-body">
@@ -122,7 +149,8 @@ export function ItemCard({
                 <Icon name="edit" size={11} /> Edit
               </Button>
             )}
-            {/* A proposed row has nothing to send an agent at yet. */}
+            {/* A proposed row isn't work anyone has agreed to do — accept it
+                first, then send it. */}
             {!ghost && (
               <Button
                 variant="outline"

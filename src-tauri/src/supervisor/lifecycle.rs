@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
 use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnSpec};
@@ -777,16 +777,32 @@ impl Supervisor {
             .with_close_issue(agent_id, close_issue)
             .with_approval(app.clone(), agent_id);
         // A run-owned step agent also gets the workflow comms ops (wf_report /
-        // wf_ask / wf_notify, §10); everything else still falls through to the
-        // git dispatcher. Plain agents keep the git dispatcher unchanged.
-        let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> = match &record.owner_run_id {
-            Some(run_id) => Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
+        // wf_ask / wf_notify, §10); a roadmap PM chat gets the roadmap ops
+        // (roadmap_list / roadmap_propose), scoped to its own project. Both
+        // wrap the git dispatcher, and everything else still falls through to
+        // it. Plain agents keep the git dispatcher unchanged.
+        let roadmap_pm = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_ROADMAP_PM);
+        let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> = match (&record.owner_run_id, roadmap_pm) {
+            (Some(run_id), _) => Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
                 app.clone(),
                 run_id.clone(),
                 agent_id.to_string(),
                 git_dispatcher,
             )),
-            None => Arc::new(git_dispatcher),
+            (None, true) => match app.try_state::<crate::roadmap::Db>() {
+                Some(db) => Arc::new(rpc::roadmap::RoadmapDispatcher::new(
+                    app.clone(),
+                    db.inner().clone(),
+                    record.project_id.clone(),
+                    git_dispatcher,
+                )),
+                // The connection is managed at setup, before any agent can
+                // spawn, so this is unreachable in the app. Degrade to the
+                // plain dispatcher rather than panicking a spawn: the ops then
+                // answer "unknown op", which is honest.
+                None => Arc::new(git_dispatcher),
+            },
+            (None, false) => Arc::new(git_dispatcher),
         };
 
         // Claude only writes a session file once the first turn lands.
@@ -977,15 +993,21 @@ impl Supervisor {
             (false, None) => Some(notes),
             (true, brief) => brief.map(str::to_string),
         };
-        // The codegraph playbook rides the same suffix, gated on the server
-        // having really landed above — so an agent is only ever told to prefer
-        // the tool in a session that actually has it.
+        // The conditional playbooks ride the same suffix, each gated on the
+        // session actually having what it describes: codegraph on the server
+        // having really landed above, and the roadmap ops on this being a
+        // project-manager chat (the only purpose given the
+        // `rpc::roadmap::RoadmapDispatcher` — see `launch_agent_process`).
+        let blocks = crate::agent_profile::Blocks {
+            codegraph: codegraph_available,
+            roadmap_pm: record.purpose.as_deref() == Some(crate::workspace::PURPOSE_ROADMAP_PM),
+        };
         let instructions = crate::agent_profile::effective_instructions(
             brief.as_deref(),
             record.forked_context.as_deref(),
             &record.skills,
             &sandbox_root,
-            codegraph_available,
+            blocks,
         )?;
         // MCP delivery is resolved per provider at spawn from this snapshot
         // (`agent::mcp_delivery`), so there's no provider fork here: the spawn

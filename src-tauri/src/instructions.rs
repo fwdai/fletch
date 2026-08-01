@@ -56,6 +56,16 @@ const GIT_ACTIONS: &str = include_str!("instructions/git_actions.md");
 /// a tool it was never given is worse than staying quiet.
 const CODEGRAPH: &str = include_str!("instructions/codegraph.md");
 
+/// Fletch-managed roadmap playbook: the `roadmap_list` / `roadmap_propose` RPC
+/// ops, and the contract that a proposal is a ghost row until the user accepts
+/// it.
+///
+/// Conditional for the same reason as [`CODEGRAPH`]: only a project-manager
+/// chat is given the [`crate::rpc::roadmap::RoadmapDispatcher`], so only that
+/// session may be told these ops exist. Code-managed — it must stay in sync
+/// with the ops that dispatcher implements (pinned by a test there).
+const ROADMAP: &str = include_str!("instructions/roadmap.md");
+
 /// The combined instruction text, trimmed. Empty when every source is
 /// blank/whitespace, which makes every injection helper a no-op.
 pub fn text() -> String {
@@ -73,6 +83,13 @@ pub fn text() -> String {
 /// `instructions/` still disables injection entirely.
 pub fn codegraph_block() -> Option<String> {
     let block = CODEGRAPH.trim();
+    (!block.is_empty()).then(|| block.to_string())
+}
+
+/// The roadmap-ops guidance block, for project-manager chats only. `None` when
+/// the file is blank, like [`codegraph_block`].
+pub fn roadmap_block() -> Option<String> {
+    let block = ROADMAP.trim();
     (!block.is_empty()).then(|| block.to_string())
 }
 
@@ -256,6 +273,27 @@ mod tests {
         // The whole point of the block: subagents don't inherit it, so the
         // main agent must be told to pass it down.
         assert!(block.to_lowercase().contains("subagent"), "block: {block}");
+    }
+
+    #[test]
+    fn roadmap_block_is_conditional_and_states_the_accept_contract() {
+        // Never unconditional: an agent without the roadmap dispatcher must not
+        // be told it can put tickets on a board.
+        let t = text();
+        assert!(!t.contains("roadmap_propose"));
+        assert!(!t.contains("roadmap_list"));
+
+        let block = roadmap_block().expect("shipped default is non-empty");
+        assert!(block.contains("roadmap_list"), "block: {block}");
+        assert!(block.contains("roadmap_propose"), "block: {block}");
+        // The safety property the whole feature rests on: a proposal is a ghost
+        // row until the user accepts it. If the block stops saying so, the PM
+        // starts talking as though it put things on the roadmap itself.
+        let lower = block.to_lowercase();
+        assert!(lower.contains("ghost row"), "block: {block}");
+        assert!(lower.contains("accept"), "block: {block}");
+        // Deps are codes, not titles — the dispatcher rejects anything else.
+        assert!(lower.contains("deps"), "block: {block}");
     }
 
     #[test]
