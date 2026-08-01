@@ -210,13 +210,20 @@ impl SandboxEngine for DockerEngine {
         let name = container_name(ctx.agent_id);
 
         // Object stores every checkout under the agent's writable root borrows
-        // via git alternates (a --shared clone). Scanned across all tracked
-        // repos, not just the primary `cwd`: a multi-repo agent has one shared
-        // clone per repo, each borrowing its own source's objects. Mounted
-        // read-only so in-container git reads borrowed history; empty for old
-        // full-copy clones or worktrees (no mount). Docker forces Clone-mode
+        // via git alternates (a --shared clone). Derived from `ctx.source_repos`
+        // — Fletch's authoritative record of each checkout's user-owned source
+        // repo — NOT from the checkout's own `.git/objects/info/alternates`.
+        // That alternates file lives inside the agent's read-write checkout, so
+        // a container agent can overwrite it to name any host path and, on a
+        // reused-checkout relaunch (resume / switch_view), have that path
+        // bind-mounted read-only into its container — defeating ConfinedReads.
+        // Deriving from the source repos (which the agent cannot write) mounts
+        // exactly what a `--shared` clone borrows without trusting agent state.
+        // Spans every tracked repo, not just the primary: a multi-repo agent
+        // has one shared clone per repo. Mounted read-only; empty when a source
+        // is missing or has no object store. Docker forces Clone-mode
         // workspaces for every provider, so this is provider-agnostic.
-        let borrowed_object_stores = borrowed_object_stores(ctx.writable_root);
+        let borrowed_object_stores = borrowed_object_stores(ctx.source_repos);
 
         // Env set on the docker CLI process; forwarded into the container by the
         // bare `-e NAME` flags `run_args` emits (values never touch argv —

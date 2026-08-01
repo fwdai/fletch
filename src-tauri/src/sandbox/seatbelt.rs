@@ -1438,6 +1438,8 @@ mod tests {
             agent_id: "a1",
             provider: "claude",
             writable_root: &root,
+            // Seatbelt ignores source_repos (host-shared filesystem, no mounts).
+            source_repos: &[],
             rpc_dir: &rpc,
             cwd: &root,
             home: &home,

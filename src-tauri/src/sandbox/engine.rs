@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::Result;
@@ -45,6 +45,18 @@ pub struct AgentLaunchCtx<'a> {
     /// [`sandbox::docker::DockerProvider`]).
     pub provider: &'a str,
     pub writable_root: &'a Path,
+    /// The authoritative source repos each checkout under `writable_root` was
+    /// forked from — `AgentRecord.repos[].repo_path`, the user's own repos,
+    /// which the agent cannot write. The Docker engine derives its borrowed git
+    /// object-store mounts from THESE user-owned paths, never from the checkout's
+    /// own `.git/objects/info/alternates`: that file lives inside the container's
+    /// read-write checkout, so a container agent could overwrite it to point a
+    /// read-only bind mount at an arbitrary host path (`~/.ssh`, `~/.aws`, …) on
+    /// the next reused-checkout relaunch (resume / switch_view). Deriving the
+    /// mount set from the trusted source repos keeps that agent-writable file out
+    /// of the trust boundary. Seatbelt ignores it: it shares the host filesystem,
+    /// so borrowed objects need no separate mount/grant here.
+    pub source_repos: &'a [PathBuf],
     pub rpc_dir: &'a Path,
     pub cwd: &'a Path,
     pub home: &'a Path,
