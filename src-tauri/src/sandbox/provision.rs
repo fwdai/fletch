@@ -478,7 +478,57 @@ async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
         "remote set-url origin",
     )
     .await?;
+    rewrite_origin_head(spec).await;
     Ok(())
+}
+
+/// Repoint the clone's `refs/remotes/origin/HEAD` at the source's *real*
+/// default branch.
+///
+/// `git clone <local path>` writes that symref from the source repo's **HEAD**
+/// — the branch the user happens to have checked out — not from the source's
+/// own `origin/HEAD`. Rewriting the URL above leaves it behind, so a workspace
+/// cloned while the user sat on `docs/some-branch` reports that branch as the
+/// repo default forever after. The spawn path never sees this (it resolves the
+/// base against the *source*, where the symref is right), but everything that
+/// re-derives a default from inside the workspace does: agent worktrees, `gh
+/// pr create`'s implicit base, and [`git::default_branch`] on any checkout
+/// path. That is the whole gap this closes.
+///
+/// Best-effort by design, and the failure mode is deliberate. `set-head` with
+/// an explicit branch is purely local (no network, so nothing added to the
+/// spawn budget) but it does require `refs/remotes/origin/<default>` to exist
+/// in the clone — which it won't when the source has no local head for its own
+/// default branch. Git then refuses and leaves the inherited value untouched,
+/// so we delete the symref instead: with none, [`git::default_branch`] falls
+/// through to the conventional names and finally to `"main"`. A merely
+/// conventional guess is recoverable; confidently naming the user's
+/// in-progress branch as the repo default is the bug.
+async fn rewrite_origin_head(spec: &CheckoutSpec<'_>) {
+    // Resolved against the source, whose `origin/HEAD` is a genuine record of
+    // the remote's default; the clone's is the value we're here to correct.
+    let default = git::default_branch(spec.source_repo).await;
+    if git::run_git(
+        spec.dest,
+        &["remote", "set-head", "origin", &default],
+        "remote set-head origin",
+    )
+    .await
+    .is_ok()
+    {
+        return;
+    }
+    tracing::info!(
+        source = %spec.source_repo.display(),
+        default = %default,
+        "clone has no origin/<default> ref; dropping the inherited origin/HEAD"
+    );
+    let _ = git::run_git(
+        spec.dest,
+        &["remote", "set-head", "origin", "--delete"],
+        "remote set-head origin --delete",
+    )
+    .await;
 }
 
 /// Install Fletch's delegation-signal git hooks into the clone's `.git/hooks`.
@@ -958,6 +1008,78 @@ mod tests {
             run(&dest, &["remote", "get-url", "origin"]),
             "https://github.com/acme/widget.git"
         );
+    }
+
+    /// `refs/remotes/origin/HEAD` in the clone, or `None` when there is no
+    /// symref — the two states the origin/HEAD rewrite chooses between.
+    fn origin_head(repo: &Path) -> Option<String> {
+        let out = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"])
+            .output()
+            .unwrap();
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    #[tokio::test]
+    async fn clone_origin_head_is_the_sources_default_not_its_checked_out_branch() {
+        // The bug this guards: `git clone <local path>` writes the clone's
+        // `refs/remotes/origin/HEAD` from the source's *HEAD*, so a workspace
+        // provisioned while the user sat on a feature branch reported that
+        // branch as the repo default to everything running inside the
+        // workspace — agent worktrees, `gh pr create`, `default_branch` on a
+        // checkout path — even though the spawn itself forked from `main`.
+        let td = tempfile::tempdir().unwrap();
+        let (source, stale, _fresh) = fixture_with_stale_source(td.path());
+        run(&source, &["checkout", "-q", "-b", "docs/side"]);
+        std::fs::write(source.join("s.txt"), b"side").unwrap();
+        run(&source, &["add", "-A"]);
+        run(&source, &["commit", "-q", "-m", "side work"]);
+        // The source is the one with an honest record of the remote default.
+        assert_eq!(origin_head(&source).as_deref(), Some("origin/main"));
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &source,
+            base_ref: &stale,
+            dest: &dest,
+        };
+        provision(&spec).await.unwrap();
+
+        assert_eq!(origin_head(&dest).as_deref(), Some("origin/main"));
+        assert_eq!(git::default_branch(&dest).await, "main");
+    }
+
+    #[tokio::test]
+    async fn clone_drops_origin_head_when_the_default_branch_has_no_ref() {
+        // `set-head` needs `refs/remotes/origin/<default>` to exist in the
+        // clone, and it won't when the source kept no local head for its own
+        // default branch. Leaving git's inherited value would name the user's
+        // feature branch as the repo default; dropping the symref instead lets
+        // `default_branch` fall through to the conventional names.
+        let td = tempfile::tempdir().unwrap();
+        let (source, _stale, _fresh) = fixture_with_stale_source(td.path());
+        run(&source, &["checkout", "-q", "-b", "docs/side"]);
+        std::fs::write(source.join("s.txt"), b"side").unwrap();
+        run(&source, &["add", "-A"]);
+        run(&source, &["commit", "-q", "-m", "side work"]);
+        run(&source, &["branch", "-q", "-D", "main"]);
+        let side_tip = run(&source, &["rev-parse", "HEAD"]);
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &source,
+            base_ref: &side_tip,
+            dest: &dest,
+        };
+        provision(&spec).await.unwrap();
+
+        assert_eq!(origin_head(&dest), None);
+        // Not `docs/side`: a conventional guess beats confidently naming the
+        // branch the user happened to have open.
+        assert_eq!(git::default_branch(&dest).await, "main");
     }
 
     #[tokio::test]
