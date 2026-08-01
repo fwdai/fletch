@@ -38,8 +38,9 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Lives here, not in <Roadmap>, because the header shows the same counts —
-  // and they move when the user accepts a proposal.
-  const roadmap = useRoadmap();
+  // and they move when the user accepts a proposal. Keyed by the repo, which
+  // the hook resolves to the owning project (one roadmap per project).
+  const roadmap = useRoadmap(repoPath);
 
   // Custom display name for this repo, falling back to the folder basename.
   const name = projects?.find((p) => p.path === repoPath)?.name ?? basename(repoPath);

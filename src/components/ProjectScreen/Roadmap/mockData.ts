@@ -1,106 +1,18 @@
-// Placeholder roadmap content. There is no roadmap table or API yet, so the
-// board renders from this module for every project. It is deliberately diverse
-// — every horizon, size, source and status is represented, plus an epic, a
-// dependency chain and an item an agent is actively working — so the shapes in
-// `types.ts` can be turned into a schema without discovering missing columns.
+// Placeholder content for the parts of the Roadmap surface that aren't real
+// yet: the PM conversation (a canned script) and the product map.
 //
-// Replacing this with real data means swapping the four exports below for
-// loaders; nothing else in the folder reads from it.
+// The *board* is no longer here — items are rows in `roadmap_items`, loaded by
+// `useRoadmap` (see src/api/domains/roadmap.ts). The seed items, the shipped
+// count and the code prefix that used to live in this file are gone with it:
+// codes are allocated by the backend, per project.
+//
+// What remains is the script the thread plays until the real PM agent replaces
+// it. Its proposals are mock, but accepting one is not — the changes are
+// written through the API like any other edit. The codes it quotes are
+// placeholders (ghost rows render as "NEW"); the real code is allocated on
+// accept.
 
-import type { MapDomain, PmBody, RoadmapItem, ScriptBeat } from "./types";
-
-/** Codes minted for free-form ideas the PM captures mid-conversation. */
-export const CODE_PREFIX = "FLT-";
-export const FIRST_FREE_CODE = 160;
-
-/** Items already merged. Not on the board — only the header stat. */
-export const SHIPPED_COUNT = 18;
-
-export const SEED_ITEMS: RoadmapItem[] = [
-  {
-    code: "FLT-142",
-    horizon: "now",
-    size: "M",
-    area: "runtime",
-    source: "linear",
-    status: "active",
-    agent: "dolomites",
-    title: "Persist worktree state across app restarts",
-    why: "Fletch forgets in-flight agents when the app quits — the loudest complaint of the last two weeks.",
-    accept: [
-      "Worktree registry survives a hard quit",
-      "Reattaching shows the agent's last transcript",
-      "Orphaned worktrees are offered for cleanup",
-    ],
-  },
-  {
-    code: "FLT-149",
-    horizon: "now",
-    size: "S",
-    area: "runtime",
-    source: "pm",
-    status: "open",
-    title: "Recover orphaned worktrees on launch",
-    why: "Falls out of FLT-142 — without recovery the registry drifts from what's on disk.",
-    accept: ["Scan .fletch/ on boot", "One-click adopt or delete"],
-    deps: ["FLT-142"],
-  },
-  {
-    code: "FLT-137",
-    horizon: "next",
-    size: "S",
-    area: "runtime",
-    source: "linear",
-    status: "open",
-    title: "Backpressure on agent output streaming",
-    why: "Large diffs flood the renderer; the paint-jitter fix only masked it.",
-    accept: ["Stream chunks capped per frame", "No dropped tokens under load"],
-  },
-  {
-    code: "FLT-144",
-    horizon: "next",
-    size: "M",
-    area: "chrome",
-    source: "pm",
-    status: "open",
-    title: "Per-project agent presets",
-    why: "Every new agent in a repo gets the same provider, base branch and workflow — stop re-picking it.",
-    accept: ["Preset editable from the project page", "New-agent draft pre-filled"],
-  },
-  {
-    code: "FLT-131",
-    horizon: "next",
-    size: "XS",
-    area: "chrome",
-    source: "github",
-    status: "open",
-    title: "Surface per-agent token spend in the title bar",
-    why: "Spend is invisible until the invoice arrives.",
-    accept: ["Live cost per worktree", "Roll-up per project"],
-  },
-  {
-    code: "FLT-119",
-    horizon: "later",
-    size: "L",
-    area: "platform",
-    source: "pm",
-    status: "open",
-    title: "Multi-repo projects",
-    why: "Teams with split front/back repos run two Fletch projects today and lose the shared roadmap.",
-    accept: ["One project, many repos", "Agents pick a repo at spawn"],
-  },
-  {
-    code: "FLT-124",
-    horizon: "later",
-    size: "M",
-    area: "chrome",
-    source: "pm",
-    status: "open",
-    title: "Ambient run monitoring outside the app",
-    why: "People leave Fletch while agents work and want a glanceable signal.",
-    accept: ["Menu-bar summary", "Notification when an agent needs you"],
-  },
-];
+import type { MapDomain, PmBody, ScriptBeat } from "./types";
 
 export const PRODUCT_MAP: MapDomain[] = [
   {
@@ -145,35 +57,15 @@ export const PRODUCT_MAP: MapDomain[] = [
   },
 ];
 
-/** What's already in the thread when the page opens. */
+/** What's already in the thread when the page opens. Deliberately says nothing
+ *  about the board's contents: the board is real now, and a scripted opener
+ *  that claimed to have filed items would contradict whatever is actually
+ *  there — starting with a new project's empty board. */
 export const SEED_THREAD: PmBody[] = [
   {
-    kind: "user",
-    body: "The thing people keep hitting is that quitting Fletch loses everything in flight. Make that not happen.",
-  },
-  {
-    kind: "probe",
-    summary: "Read 9 files across the runtime · found 1 partial capability",
-    findings: [
-      {
-        kind: "ok",
-        text: "`WorktreeRegistry` already tracks live worktrees in memory — no persistence layer.",
-      },
-      {
-        kind: "warn",
-        text: "The reattach path assumes a live child process; it needs a resume branch.",
-      },
-      {
-        kind: "ok",
-        text: "`.fletch/` on disk is already the source of truth for the checkout itself.",
-      },
-    ],
-  },
-  {
     kind: "text",
-    body: "That's a real gap, not a bug — the registry is memory-only. I filed it at the top of In flight and split the recovery half out, because the two land at different times.",
+    body: "Tell me what you want this project to do next — an outcome, a complaint, a half-formed idea. I'll read the repo before I write anything down, and nothing reaches the board until you accept it.",
   },
-  { kind: "landed", codes: ["FLT-142", "FLT-149"] },
 ];
 
 /** Canned exchanges, offered as suggestion chips until they've been used. */

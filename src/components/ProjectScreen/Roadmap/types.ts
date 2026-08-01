@@ -1,34 +1,34 @@
-// The Roadmap surface's data model. Everything here is currently fed by
-// `mockData.ts` — there is no roadmap table or API yet. The shapes are written
-// as if they came from the DB (flat rows, string codes, explicit enums) so the
-// eventual schema can be modelled straight off them.
+// The Roadmap surface's data model.
+//
+// The board's rows are real, persisted `roadmap_items` — their shape lives in
+// `@/api` (src/api/types/roadmap.ts, mirroring src-tauri/src/roadmap/types.rs)
+// and is re-exported here so the folder keeps importing from one place. What is
+// defined here is what the *screen* adds on top: the display row the board
+// draws (which can be a persisted item or a not-yet-real proposal), the product
+// map, and the PM conversation — all three still fed by `mockData.ts`.
 
+import type { Horizon, ItemSize, ItemSource, ItemStatus, RoadmapItem } from "@/api";
 import type { UIAnswer, UIQuestion } from "@/components/Workspace/messages/UserInput/parse";
 
-/** Where an item sits on the board. `now` is being built, `next` is queued,
- *  `later` is the backlog. Shipped items leave the board (see `shipped`). */
-export type Horizon = "now" | "next" | "later";
+export type { Horizon, ItemSize, ItemSource, ItemStatus, RoadmapItem } from "@/api";
 
-export type ItemSize = "XS" | "S" | "M" | "L";
-
-/** Where the item came from — drawn as a glyph on the row. */
-export type ItemSource = "pm" | "linear" | "github";
-
-/** `active` means an agent is on it right now. */
-export type ItemStatus = "open" | "active";
-
-export interface RoadmapItem {
-  /** Short human id ("FLT-142", "#207") — unique per project. */
+/** A row as the board draws it. Persisted items reach it through
+ *  [`toBoardItem`]; a proposal the PM hasn't had accepted yet has no row in the
+ *  database, so it arrives as one of these directly (a "ghost"). Fields the
+ *  board can do without are optional, because an unaccepted proposal is allowed
+ *  to be less complete than a stored item. */
+export interface BoardItem {
+  /** Short human id ("FLT-142"). Unique per project, and the board's row key. */
   code: string;
   title: string;
   horizon: Horizon;
-  size: ItemSize;
-  /** Product-map domain this belongs to (`MapDomain.id`). */
-  area: string;
-  source: ItemSource;
-  status: ItemStatus;
   /** Why it's on the board — the one line that justifies its place. */
   why: string;
+  status: ItemStatus;
+  source: ItemSource;
+  size?: ItemSize;
+  /** Product-map domain this belongs to (`MapDomain.id`). */
+  area?: string;
   /** Acceptance criteria, rendered as a checklist. */
   accept?: string[];
   /** Codes this item must land after. */
@@ -37,8 +37,30 @@ export interface RoadmapItem {
   epic?: string;
   /** Agent working it — only meaningful while `status === "active"`. */
   agent?: string;
-  /** Transient highlight for a row that just landed on the board. */
-  justAdded?: boolean;
+  /** The stored row, when there is one. Absent on a ghost, which is exactly
+   *  what gates the edit / delete / send-to-agent affordances: they all need
+   *  something real to act on. */
+  item?: RoadmapItem;
+}
+
+/** Adapt a persisted row for the board. The DTO's nulls become `undefined` so
+ *  the display type stays uniform with a ghost's optional fields. */
+export function toBoardItem(item: RoadmapItem): BoardItem {
+  return {
+    code: item.code,
+    title: item.title,
+    horizon: item.horizon,
+    why: item.why,
+    status: item.status,
+    source: item.source,
+    size: item.size ?? undefined,
+    area: item.area ?? undefined,
+    accept: item.accept.length ? item.accept : undefined,
+    deps: item.deps.length ? item.deps : undefined,
+    epic: item.epic ?? undefined,
+    agent: item.agent_id ?? undefined,
+    item,
+  };
 }
 
 /** A slice of the codebase the PM agent knows about, shown on the Product map
@@ -69,7 +91,7 @@ export interface Finding {
 /** A single edit the PM proposes to the board. Nothing is applied until the
  *  user accepts the proposal that carries it. */
 export type ProposalChange =
-  | { kind: "add"; item: RoadmapItem }
+  | { kind: "add"; item: BoardItem }
   | { kind: "move"; code: string; from: Horizon; to: Horizon; why: string };
 
 /** The follow-up the PM plays once a question is answered. */

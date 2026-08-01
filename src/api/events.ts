@@ -14,6 +14,7 @@ import type {
 } from "./types/agent";
 import type { PrStateChangedEvent } from "./types/pr";
 import type { AgentInstallEvent } from "./types/providers";
+import type { RoadmapItem } from "./types/roadmap";
 import type { RunOutputEvent, RunPortEvent, RunStateEvent } from "./types/run";
 import type { DockerBuildEvent, PublishApproval } from "./types/sandbox";
 import type {
@@ -38,6 +39,19 @@ export function onWfRun(cb: (e: WfRun) => void): Promise<UnlistenFn> {
  *  rows, so the sidebar drops the row instead of upserting it. */
 export function onWfRunDeleted(cb: (runId: string) => void): Promise<UnlistenFn> {
   return listen<string>("wf:run-deleted", (event) => cb(event.payload));
+}
+
+/** Fires whenever a roadmap item is created or changed; carries the full row so
+ *  the board upserts by id without a refetch. Fires for every project — a
+ *  listener scoped to one board filters on `project_id`. */
+export function onRoadmapItem(cb: (item: RoadmapItem) => void): Promise<UnlistenFn> {
+  return listen<RoadmapItem>("roadmap:item", (event) => cb(event.payload));
+}
+
+/** `roadmap:item-deleted` fires the deleted item's id, so the board drops the
+ *  row instead of upserting it. */
+export function onRoadmapItemDeleted(cb: (id: string) => void): Promise<UnlistenFn> {
+  return listen<string>("roadmap:item-deleted", (event) => cb(event.payload));
 }
 
 export function onAgentInstallState(cb: (e: AgentInstallEvent) => void): Promise<UnlistenFn> {

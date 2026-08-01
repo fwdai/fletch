@@ -6,6 +6,7 @@ import { githubApi } from "./domains/github";
 import { issuesApi } from "./domains/issues";
 import { miscApi } from "./domains/misc";
 import { providersApi } from "./domains/providers";
+import { roadmapApi } from "./domains/roadmap";
 import { runApi } from "./domains/run";
 import { sandboxApi } from "./domains/sandbox";
 import { sessionApi } from "./domains/session";
@@ -23,6 +24,7 @@ export * from "./types/git";
 export * from "./types/issues";
 export * from "./types/pr";
 export * from "./types/providers";
+export * from "./types/roadmap";
 export * from "./types/run";
 export * from "./types/sandbox";
 export * from "./types/session";
@@ -47,4 +49,5 @@ export const api = {
   ...commandsApi,
   ...providersApi,
   ...workflowsApi,
+  ...roadmapApi,
 };

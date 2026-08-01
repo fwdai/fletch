@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Icon } from "@/components/Icon";
 
 /** One horizon section of the board — a labelled header with a right-aligned
  *  count over a rule-anchored stack of rows. */
@@ -7,6 +8,7 @@ export function HorizonGroup({
   note,
   count,
   empty,
+  onAdd,
   children,
 }: {
   label: string;
@@ -16,6 +18,9 @@ export function HorizonGroup({
   count: number;
   /** Nothing to render at all, committed or proposed. */
   empty: boolean;
+  /** Add an item straight into this horizon — the group is the placement, so
+   *  the form opens already knowing it. Omitted on a read-only board. */
+  onAdd?: () => void;
   children: ReactNode;
 }) {
   return (
@@ -24,6 +29,16 @@ export function HorizonGroup({
         <span className="rm-group-l mono text-xs">{label}</span>
         <span className="rm-group-n text-xs">{note}</span>
         <span className="rm-group-c mono text-xs">{count}</span>
+        {onAdd && (
+          <button
+            type="button"
+            className="rm-group-add iflex-center"
+            onClick={onAdd}
+            aria-label={`Add an item to ${label}`}
+          >
+            <Icon name="plus" size={11} />
+          </button>
+        )}
       </div>
       <div className="rm-group-body">
         {empty ? <div className="rm-empty text-xs">Nothing here yet.</div> : children}

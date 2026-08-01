@@ -13,6 +13,7 @@
 .rm-board-h .grow,
 .rm-prop-foot .grow,
 .rm-item-foot .grow,
+.rm-dialog .modal-foot .grow,
 .rm-composer-wrap .composer-foot .grow {
   flex: 1;
 }
@@ -310,6 +311,71 @@
   padding: 14px 14px 48px;
 }
 
+/* A write that failed. Sits between the tabs and the rows, because it is about
+   the board as a whole and there is no single row to hang it off. */
+.rm-board-err {
+  flex-shrink: 0;
+  gap: 10px;
+  padding: 8px 14px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+}
+.rm-board-err-t {
+  flex: 1;
+  min-width: 0;
+  line-height: var(--lh-snug);
+  text-wrap: pretty;
+}
+.rm-board-err-x {
+  flex-shrink: 0;
+  color: var(--fg-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rm-board-err-x:hover {
+  color: var(--fg-0);
+}
+
+/* ── the empty board ──
+   A brand-new project. Three empty horizon groups read as a broken screen, so
+   the whole board is replaced by one panel that names the two ways in. */
+.rm-blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 340px;
+  margin: 12% auto 0;
+  padding: 0 8px;
+  text-align: center;
+}
+.rm-blank-badge {
+  width: 40px;
+  height: 40px;
+  margin-bottom: 2px;
+  border-radius: var(--r-md);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+.rm-blank-h {
+  margin: 0;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.rm-blank-b {
+  margin: 0;
+  line-height: var(--lh-normal);
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
+.rm-blank-or {
+  margin-top: 2px;
+  color: var(--fg-3);
+  font-style: italic;
+}
+
 /* ── horizon group ── */
 .rm-group + .rm-group {
   margin-top: 22px;
@@ -333,6 +399,25 @@
   margin-left: auto;
   color: var(--fg-3);
   font-variant-numeric: tabular-nums;
+}
+/* Add straight into this horizon. Quiet until the group is hovered — one of
+   these per group would otherwise be three competing buttons. */
+.rm-group-add {
+  width: 18px;
+  height: 18px;
+  margin-left: 2px;
+  border-radius: var(--r-xs);
+  color: var(--fg-3);
+  opacity: 0;
+  transition: var(--transition-ui);
+}
+.rm-group:hover .rm-group-add,
+.rm-group-add:focus-visible {
+  opacity: 1;
+}
+.rm-group-add:hover {
+  color: var(--fg-0);
+  background: var(--hover);
 }
 .rm-group-body {
   display: flex;
@@ -522,6 +607,20 @@
   .rm-item.landed {
     animation: none;
   }
+}
+
+/* ── the item form ── */
+/* Two short fields share a line: size and area are both one glance wide, and
+   stacking them would push "Why" below the fold. */
+.rm-form-row {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 12px;
+}
+.rm-textarea {
+  min-height: 62px;
+  resize: vertical;
+  line-height: var(--lh-normal);
 }
 
 /* ── product map tab ── */

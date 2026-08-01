@@ -36,7 +36,8 @@ export function Proposal({
           c.kind === "add" ? (
             <div key={c.item.code} className="rm-prop-row flex-center text-sm">
               <span className="rm-prop-op add iflex-center mono">+</span>
-              <span className="rm-prop-code mono text-xs">{c.item.code}</span>
+              {/* No code yet — the backend allocates one if this is accepted. */}
+              <span className="rm-prop-code mono text-xs">NEW</span>
               <span className="rm-prop-title truncate">{c.item.title}</span>
               <span className="rm-prop-tag mono text-xs">{c.item.horizon}</span>
             </div>

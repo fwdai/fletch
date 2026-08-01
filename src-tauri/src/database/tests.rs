@@ -169,6 +169,11 @@ fn upgrading_an_older_schema_backs_it_up_first() {
     assert_eq!(version, 1);
 }
 
+/// Schema version at which `worktree_prs` (0025) exists. Pinned rather than
+/// derived from `MIGRATIONS.len()`: every later migration would otherwise shift
+/// the "one version short of it" baseline these tests upgrade from.
+const V_WORKTREE_PRS: usize = 25;
+
 /// The PR-history migration seeds itself from the bindings already on disk, so
 /// an upgrading install starts with history rather than with today. Without the
 /// backfill the Project Pulse "PRs opened" series — which now reads the log —
@@ -180,7 +185,7 @@ fn pr_history_migration_backfills_existing_bindings() {
     let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
     // One migration short of the history table: the state an existing install
     // upgrades from.
-    let before = MIGRATIONS.len() - 1;
+    let before = V_WORKTREE_PRS - 1;
     get_migrations().to_version(&mut conn, before).unwrap();
 
     conn.execute_batch(
@@ -224,6 +229,65 @@ fn pr_history_migration_backfills_existing_bindings() {
         )
         .unwrap();
     assert_eq!(count, 0, "no persisted state means no renderable snapshot");
+}
+
+/// The roadmap table (0026) lands on an existing install with the shape the DAO
+/// assumes: per-project unique codes, cascade from the owning project, and no
+/// generic-CRUD access (typed commands only, like the `wf_*` tables).
+#[test]
+fn roadmap_items_migration_adds_the_table_with_its_constraints() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    // The version an existing install upgrades from — the table must be created,
+    // not assumed to exist.
+    get_migrations()
+        .to_version(&mut conn, V_WORKTREE_PRS)
+        .unwrap();
+    drop(conn);
+
+    let db = init(dir.path()).unwrap();
+    let conn = db.lock();
+    let pid = make_project(&conn);
+
+    let insert = |id: &str, code: &str| {
+        conn.execute(
+            "INSERT INTO roadmap_items (id, project_id, code, title, horizon, status,
+                                        created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'a title', 'now', 'open', 0, 0)",
+            rusqlite::params![id, pid, code],
+        )
+    };
+    insert("i1", "PRJ-100").unwrap();
+    // Codes are the identity the board, the PM and PR titles all quote — one
+    // project can never hold two of the same.
+    assert!(
+        insert("i2", "PRJ-100").is_err(),
+        "UNIQUE(project_id, code) must reject a duplicate code"
+    );
+    // Defaults the DAO relies on rather than writing explicitly.
+    let (why, source): (String, String) = conn
+        .query_row(
+            "SELECT why, source FROM roadmap_items WHERE id = 'i1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((why.as_str(), source.as_str()), ("", "user"));
+
+    // Deleting the project takes its roadmap with it — a roadmap outliving its
+    // project would be unreachable rows that still consume codes.
+    db_delete(&conn, "projects", json!({ "where": { "id": pid } })).unwrap();
+    let left: i64 = conn
+        .query_row("SELECT COUNT(*) FROM roadmap_items", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0);
+
+    // Writes go through `roadmap_*` commands so code allocation, JSON
+    // marshalling and the row event can't be bypassed.
+    assert!(
+        db_select(&conn, "roadmap_items", json!({})).is_err(),
+        "roadmap_items must stay off the generic CRUD allow-list"
+    );
 }
 
 #[test]
