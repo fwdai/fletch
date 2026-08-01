@@ -214,6 +214,63 @@ fn deny_provider_exec_config(home: &Path) -> String {
     )
 }
 
+/// SBPL deny carving the known macOS **auto-execute** surfaces back out of the
+/// broad `~/Library/Application Support` grant — policy invariant 4
+/// ([`policy::APP_SUPPORT_EXEC_FILES`] / [`policy::APP_SUPPORT_EXEC_DIRS`]).
+///
+/// `~/Library/Application Support` is macOS's config/state root (the `~/.config`
+/// equivalent invariant 2 narrows). It's granted whole because agents,
+/// toolchains, and macOS frameworks legitimately persist per-app state/caches
+/// there — narrowing it wholesale would break them. But a few apps auto-run
+/// code from files under it on their next launch, so an agent-writable copy is
+/// host code execution as the user (the config-poisoning class). This is a
+/// **deny-list of the known-dangerous surfaces, not an exhaustive one**: any
+/// other app that auto-runs a launch-time config here is a documented residual
+/// (see the policy constants).
+///
+/// Paths are built from the same canonical `home` the broad grant resolves from
+/// ([`policy::agent_scratch_dirs`] joins `Library/Application Support` onto it),
+/// so these denies land on the exact prefix the grant allowed — required for
+/// last-match-wins to override it. Prefers `(literal …)`/`(subpath …)` on the
+/// specific files/dirs; it never denies the whole grant or a legitimate
+/// state/cache path.
+///
+/// Like [`deny_app_data_dir`] and [`deny_git_exec_config`] this MUST follow the
+/// `(allow file-write* …)` block — SBPL is last-match-wins — and is emitted for
+/// the **agent profile only**, matching invariant 3's Run-vs-agent asymmetry
+/// (Run executes real project toolchains and is the documented weaker boundary).
+fn deny_appsupport_exec(home_s: &str) -> String {
+    let app_support = format!("{home_s}/Library/Application Support");
+    let mut clauses: Vec<String> = Vec::new();
+    // Whole subtrees first, then single files — both scoped to a specific app's
+    // dir under the grant, never the grant root.
+    for dir in policy::APP_SUPPORT_EXEC_DIRS {
+        clauses.push(format!(
+            "  (subpath {})",
+            sbpl_string(&format!("{app_support}/{dir}"))
+        ));
+    }
+    for file in policy::APP_SUPPORT_EXEC_FILES {
+        clauses.push(format!(
+            "  (literal {})",
+            sbpl_string(&format!("{app_support}/{file}"))
+        ));
+    }
+    format!(
+        ";; Invariant 4: `~/Library/Application Support` is macOS's config/state\n\
+         ;; root (the `~/.config` equivalent) and is granted whole above, but a\n\
+         ;; few apps auto-run code from files under it on their next launch —\n\
+         ;; iTerm2 `Scripts/AutoLaunch`, VS Code / Cursor `User/settings.json`\n\
+         ;; terminal profiles + `tasks.json` folder-open tasks. An agent-writable\n\
+         ;; copy is host code execution as the user, so carve those specific\n\
+         ;; surfaces back out. A deny-list of known-dangerous surfaces, not an\n\
+         ;; exhaustive one (see policy::APP_SUPPORT_EXEC_FILES). Last-match-wins,\n\
+         ;; so this must come after the allow block.\n\
+         (deny file-write*\n{})",
+        clauses.join("\n")
+    )
+}
+
 /// Toolchain + broad-state dirs the Run panel additionally grants so real
 /// project builds succeed. These hold package caches, downloaded toolchains,
 /// and — for some — PATH-resolved binaries (`~/.cargo/bin`, `~/go/bin`,
@@ -567,6 +624,14 @@ pub fn build_profile(
     // same reasoning as the git deny.
     let deny_provider_config = deny_provider_exec_config(&home);
 
+    // Invariant 4, agent profile only — same Run-vs-agent asymmetry as invariant
+    // 3 above. Carves the known macOS launch-time auto-exec surfaces (iTerm2
+    // AutoLaunch, VS Code / Cursor per-user config) back out of the broad
+    // `~/Library/Application Support` grant so an agent can't poison one into
+    // host code execution. The broad grant stays: agents/toolchains/frameworks
+    // legitimately write per-app state/caches there.
+    let deny_appsupport = deny_appsupport_exec(&home_s);
+
     Ok(format!(
         r#"(version 1)
 (allow default)
@@ -588,6 +653,8 @@ pub fn build_profile(
 {deny_git_config}
 
 {deny_provider_config}
+
+{deny_appsupport}
 
 {DEVICE_WRITE_RULES}
 "#
@@ -1338,6 +1405,164 @@ mod tests {
             !profile.contains(&dev),
             "agent profile must not re-allow the dev data subdir"
         );
+    }
+
+    /// Invariant 4: the agent profile carves macOS's known launch-time auto-exec
+    /// surfaces (iTerm2 AutoLaunch, VS Code / Cursor per-user config) back out of
+    /// the broad `~/Library/Application Support` grant — while KEEPING that grant,
+    /// which agents/toolchains/frameworks legitimately write per-app state to.
+    #[test]
+    fn agent_profile_denies_appsupport_auto_exec_but_keeps_the_grant() {
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        let app_support = format!("{}/Library/Application Support", canonical_home.display());
+
+        // The broad grant stays — narrowing it wholesale would break legitimate
+        // per-app state/cache writes. Its exact subpath line, closing `")` and
+        // all, so a deeper deny path (`.../Application Support/iTerm2…`) can't
+        // false-match it.
+        let grant = format!("(subpath \"{app_support}\")");
+        assert!(
+            profile.contains(&grant),
+            "the broad Application Support grant must stay: missing {grant}"
+        );
+
+        let allow_at = profile
+            .find("(allow file-write*")
+            .expect("write allow block");
+        let grant_at = profile.find(&grant).expect("app support grant");
+
+        // Every enumerated auto-exec surface is denied AFTER both the allow block
+        // and the broad grant, so SBPL's last-match-wins actually overrides it.
+        for dir in policy::APP_SUPPORT_EXEC_DIRS {
+            let deny = format!("(subpath \"{app_support}/{dir}\")");
+            assert!(
+                profile.contains(&deny),
+                "missing auto-exec dir deny: {deny}"
+            );
+            let deny_at = profile.find(&deny).unwrap();
+            assert!(
+                deny_at > allow_at && deny_at > grant_at,
+                "{deny} must come after the grant to override it"
+            );
+        }
+        for file in policy::APP_SUPPORT_EXEC_FILES {
+            let deny = format!("(literal \"{app_support}/{file}\")");
+            assert!(
+                profile.contains(&deny),
+                "missing auto-exec file deny: {deny}"
+            );
+            let deny_at = profile.find(&deny).unwrap();
+            assert!(
+                deny_at > allow_at && deny_at > grant_at,
+                "{deny} must come after the grant to override it"
+            );
+        }
+        // Spot-check two named surfaces, so a silent constant edit that drops one
+        // still trips an explicit regression here.
+        assert!(profile.contains(&format!(
+            "(literal \"{app_support}/Code/User/settings.json\")"
+        )));
+        assert!(profile.contains(&format!(
+            "(subpath \"{app_support}/iTerm2/Scripts/AutoLaunch\")"
+        )));
+    }
+
+    /// Invariant 4 is agent-only. The Run profile grants the same broad
+    /// `~/Library/Application Support` (via the shared scratch dirs) but carries
+    /// NO auto-exec carve-out — mirroring invariant 3's Run-vs-agent asymmetry:
+    /// Run runs real project toolchains under the documented weaker boundary.
+    #[test]
+    fn run_profile_grants_app_support_without_the_auto_exec_deny() {
+        let td = tempfile::tempdir().unwrap();
+        let checkout = td.path().join("repo-checkout");
+        let home = td.path().join("home");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+
+        let profile = build_run_profile(&checkout, &home, &[]).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        let app_support = format!("{}/Library/Application Support", canonical_home.display());
+
+        assert!(
+            profile.contains(&format!("(subpath \"{app_support}\")")),
+            "run profile should still grant the broad Application Support dir"
+        );
+        assert!(
+            !profile.contains(";; Invariant 4:"),
+            "the invariant-4 auto-exec deny is agent-only and must not appear in the Run profile"
+        );
+        for file in policy::APP_SUPPORT_EXEC_FILES {
+            assert!(
+                !profile.contains(&format!("(literal \"{app_support}/{file}\")")),
+                "run profile must not carry the auto-exec file deny for {file}"
+            );
+        }
+        for dir in policy::APP_SUPPORT_EXEC_DIRS {
+            assert!(
+                !profile.contains(&format!("{app_support}/{dir}")),
+                "run profile must not carry the auto-exec dir deny for {dir}"
+            );
+        }
+    }
+
+    /// Manual/local acceptance check (macOS-only, `#[ignore]`d — off the Linux CI
+    /// path, and it can't run nested inside Fletch's own sandbox). The text tests
+    /// above prove the profile *text*; only this proves the kernel enforces
+    /// invariant 4: the broad Application Support dir stays writable, but the
+    /// enumerated auto-exec surfaces don't. Run with:
+    ///   cargo test --lib seatbelt_denies_appsupport_auto_exec -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn seatbelt_denies_appsupport_auto_exec() {
+        let td = tempfile::tempdir().unwrap();
+        let (root, rpc, home) = (
+            td.path().join("agent-parent"),
+            td.path().join("rpc"),
+            td.path().join("home"),
+        );
+        for d in [&root, &rpc, &home] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        let app_support = canonical_home.join("Library/Application Support");
+
+        // `sh -c 'printf x > <path>'` under the profile: exit 0 means the write
+        // landed, non-zero means the sandbox refused it. Parents are created
+        // host-side (outside the sandbox) so the test probes the *policy*, not a
+        // missing directory.
+        let write_allowed = |path: &std::path::Path| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::process::Command::new(SANDBOX_EXEC)
+                .args(profile_args(&profile))
+                .args(["/bin/sh", "-c", &format!("printf x > {}", path.display())])
+                .status()
+                .expect("sandbox-exec")
+                .success()
+        };
+
+        // A legitimate per-app state file stays writable — the grant is intact,
+        // not blanket-denied.
+        assert!(
+            write_allowed(&app_support.join("SomeApp/state.json")),
+            "ordinary per-app state must stay writable — the grant, not just the deny, must hold"
+        );
+        // The enumerated auto-exec surfaces are refused.
+        for file in policy::APP_SUPPORT_EXEC_FILES {
+            assert!(
+                !write_allowed(&app_support.join(file)),
+                "{file} was writable",
+            );
+        }
+        for dir in policy::APP_SUPPORT_EXEC_DIRS {
+            assert!(
+                !write_allowed(&app_support.join(dir).join("evil.py")),
+                "the {dir} auto-exec subtree was writable",
+            );
+        }
     }
 
     #[test]
