@@ -10,6 +10,11 @@ pub(crate) struct OrchChildResult {
     pub(crate) generation: u64,
     pub(crate) outcome: ChildOutcome,
     pub(crate) ledger: Ledger,
+    /// The run-budget slice reserved for this child at launch (§11.2), echoed back
+    /// so the stage releases exactly it and folds the child's actual spend in its
+    /// place. `(0, 0)` when nothing was reserved.
+    pub(crate) reserved_turns: i64,
+    pub(crate) reserved_tokens: i64,
 }
 
 /// Result of waiting for the orchestrator to answer a child's ask (§10.4).
@@ -275,7 +280,7 @@ pub(crate) async fn run_orchestrate_stage(
         child_cancels.insert(step.id.clone(), cancel.clone());
         child_gen.insert(step.id.clone(), 0);
         child_specs.insert(step.id.clone(), step.clone());
-        let c = build_orch_child_ctx(
+        let mut c = build_orch_child_ctx(
             ctx,
             run_id,
             run,
@@ -294,6 +299,10 @@ pub(crate) async fn run_orchestrate_stage(
             0,
             cancel,
         );
+        // Reserve this child's slice of the run budget before it launches (§11.2),
+        // so the orchestrator and its concurrent children can't collectively overrun
+        // the run cap mid-stage.
+        reserve_child_budget(ledger, eff, &mut c);
         let entry = stage_entry_sha.clone();
         set.spawn(async move { drive_orch_child(c, entry).await });
     }
@@ -459,7 +468,7 @@ pub(crate) async fn run_orchestrate_stage(
                         child_cancels.insert(step.id.clone(), cancel.clone());
                         child_gen.insert(step.id.clone(), 0);
                         child_specs.insert(step.id.clone(), step.clone());
-                        let c = build_orch_child_ctx(
+                        let mut c = build_orch_child_ctx(
                             ctx,
                             run_id,
                             run,
@@ -478,6 +487,7 @@ pub(crate) async fn run_orchestrate_stage(
                             0,
                             cancel,
                         );
+                        reserve_child_budget(ledger, eff, &mut c);
                         let entry = stage_entry_sha.clone();
                         set.spawn(async move { drive_orch_child(c, entry).await });
                     }
@@ -519,7 +529,7 @@ pub(crate) async fn run_orchestrate_stage(
                                      with this guidance:\n\n{guidance}"
                                 )
                             });
-                            let c = build_orch_child_ctx(
+                            let mut c = build_orch_child_ctx(
                                 ctx,
                                 run_id,
                                 run,
@@ -538,6 +548,7 @@ pub(crate) async fn run_orchestrate_stage(
                                 gen,
                                 cancel,
                             );
+                            reserve_child_budget(ledger, eff, &mut c);
                             let entry = stage_entry_sha.clone();
                             set.spawn(async move { drive_orch_child(c, entry).await });
                         }
@@ -855,6 +866,10 @@ pub(crate) async fn run_orchestrate_stage(
     // `stage_done` — the orchestrator chose to end without waiting for them.
     drain_children(&child_cancels, &mut set).await;
     cancel_sub_runs(ctx, &sub_runs).await;
+    // The children just drained were cancelled without going through the fold path,
+    // so drop any slice they still held (§11.2) before the run advances to the next
+    // block — a leftover child reservation would wrongly shrink its budget.
+    ledger.clear_child_reservations();
     let _ = ctx.driver.archive(&orch_agent_id).await;
     let conn = ctx.db.lock();
     finish_step_exec(&conn, &orch_exec, "done", None);
@@ -1524,6 +1539,9 @@ fn build_orch_child_ctx(
         integrate: Integrate::None,
         extra_note,
         generation,
+        // Stamped by `reserve_child_budget` at each spawn site, before the child runs.
+        reserved_turns: 0,
+        reserved_tokens: 0,
         stage_cancel: cancel,
     }
 }
@@ -1534,13 +1552,19 @@ fn build_orch_child_ctx(
 /// routed to the orchestrator it parks for the answer and re-attempts with it
 /// folded in rather than failing.
 async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchChildResult {
-    let step_eff = c.eff.for_step(c.step.budgets.as_ref());
+    let mut step_eff = c.eff.for_step(c.step.budgets.as_ref());
+    // Bound this child to the run-budget slice reserved for it (§11.2): its ledger
+    // is zero-based, so its run caps become the slice — it stops at its share of the
+    // run budget, and its concurrent siblings can't add up past the run cap.
+    clamp_eff_to_slice(&mut step_eff, c.reserved_turns, c.reserved_tokens);
     let deadlines = deadlines_from(&c.base_deadlines, &step_eff);
     let max_attempts = step_eff.max_attempts;
     let mut child_ledger = Ledger::default();
     let mut last_exec = String::new();
 
     let generation = c.generation;
+    let reserved_turns = c.reserved_turns;
+    let reserved_tokens = c.reserved_tokens;
     let done =
         |step_id: String, exec_id: String, outcome: ChildOutcome, ledger: Ledger| OrchChildResult {
             step_id,
@@ -1548,6 +1572,8 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
             generation,
             outcome,
             ledger,
+            reserved_turns,
+            reserved_tokens,
         };
 
     let test_runner = match crate::workflow::tests_gate::SandboxTestRunner::new(
@@ -1942,9 +1968,12 @@ pub(crate) fn handle_orch_child(
             return;
         }
     };
-    // Its spend counts regardless, but a result from an attempt a later
-    // `retry_child` superseded must not touch the join outcome or wind losers
-    // down — otherwise the stale attempt could decide the stage (§10.2).
+    // Reconcile against the run budget (§11.2): release the slice this attempt
+    // reserved at launch and fold its actual spend in its place — never both. Its
+    // spend counts regardless, but a result from an attempt a later `retry_child`
+    // superseded must not touch the join outcome or wind losers down — otherwise the
+    // stale attempt could decide the stage (§10.2).
+    ledger.release_child_slice(res.reserved_turns, res.reserved_tokens);
     fold_child_ledger(ledger, &res.ledger);
     if child_gen.get(&res.step_id).copied().unwrap_or(0) != res.generation {
         let conn = ctx.db.lock();

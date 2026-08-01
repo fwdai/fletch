@@ -71,6 +71,11 @@ pub(crate) struct ChildResult {
     pub(crate) step_id: String,
     pub(crate) outcome: ChildOutcome,
     pub(crate) ledger: Ledger,
+    /// The run-budget slice reserved for this child at launch (§11.2), echoed back
+    /// so the stage releases exactly it and folds the child's actual spend in its
+    /// place (never both). `(0, 0)` when nothing was reserved.
+    pub(crate) reserved_turns: i64,
+    pub(crate) reserved_tokens: i64,
 }
 
 /// Everything one parallel child owns to drive itself on its own task (child
@@ -111,6 +116,14 @@ pub(crate) struct ChildCtx {
     /// superseded (lower-generation) attempt so a stale finish of the cancelled
     /// task can't win the join. Always `0` outside an orchestrate stage.
     pub(crate) generation: u64,
+    /// The run-budget slice reserved for this child out of the run ledger before it
+    /// launched (§11.2): the child clamps its own zero-based ledger's run caps to
+    /// this slice, so N concurrent children can't collectively overrun the run cap.
+    /// Stamped by [`reserve_child_budget`](super::parallel); `0` until reserved, and
+    /// echoed into the child's result so the stage releases it and folds the child's
+    /// actual spend when it finishes.
+    pub(crate) reserved_turns: i64,
+    pub(crate) reserved_tokens: i64,
     /// Set by the stage to wind this child down (loser cancellation, §6.6).
     pub(crate) stage_cancel: Arc<AtomicBool>,
 }
