@@ -10,11 +10,11 @@ export { useRoadmap } from "./useRoadmap";
  *
  *  State is owned by `useRoadmap` in the parent, because the page header shows
  *  the same counts the board does. */
-export function Roadmap({ roadmap }: { roadmap: RoadmapState }) {
+export function Roadmap({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: string }) {
   return (
     <div className="rm">
       <Thread roadmap={roadmap} />
-      <Board roadmap={roadmap} />
+      <Board roadmap={roadmap} repoPath={repoPath} />
     </div>
   );
 }

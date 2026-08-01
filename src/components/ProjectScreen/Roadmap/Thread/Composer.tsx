@@ -1,32 +1,39 @@
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
-import { Chip } from "@/components/ui/Chip";
 
 /** The PM composer. Reuses the agent composer's skin, but not its input core —
- *  there are no mentions, attachments or model picker to wire up here. Closed
- *  while a proposal or question is waiting on the user, so the board can't
- *  drift behind an unanswered decision. */
+ *  there are no mentions, attachments or model picker to wire up here.
+ *
+ *  Closed while the PM is mid-reply (`busy`) so a second message can't
+ *  interleave its beats with the first, and while a proposal or question is
+ *  waiting on the user (`blocked`) so the board can't drift behind an
+ *  unresolved decision. */
 export function Composer({
   blocked,
+  busy,
   suggestions,
   onSend,
 }: {
+  /** A proposal or question is waiting on the user. */
   blocked: boolean;
+  /** A reply is still landing. */
+  busy: boolean;
   /** Unplayed openers, offered as dashed chips above the box. */
   suggestions: string[];
   onSend: (text: string) => void;
 }) {
   const [draft, setDraft] = useState("");
+  const closed = blocked || busy;
 
   const send = () => {
-    if (blocked || !draft.trim()) return;
+    if (closed || !draft.trim()) return;
     onSend(draft);
     setDraft("");
   };
 
   return (
     <div className="rm-composer-wrap">
-      {!blocked && suggestions.length > 0 && (
+      {!closed && suggestions.length > 0 && (
         <div className="rm-sugg">
           {suggestions.map((s) => (
             <button key={s} type="button" className="rm-sugg-c text-sm" onClick={() => onSend(s)}>
@@ -36,17 +43,19 @@ export function Composer({
         </div>
       )}
 
-      <div className={`composer ${blocked ? "is-blocked" : ""}`}>
+      <div className={`composer ${closed ? "is-blocked" : ""}`}>
         <textarea
           className="composer-input text-base"
           rows={2}
           placeholder={
             blocked
               ? "Resolve the proposal above to keep going…"
-              : "Tell the PM what the product should do…"
+              : busy
+                ? "The PM is working through it…"
+                : "Tell the PM what the product should do…"
           }
           value={draft}
-          disabled={blocked}
+          disabled={closed}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -56,14 +65,11 @@ export function Composer({
           }}
         />
         <div className="composer-foot flex-center">
-          <Chip disabled={blocked}>
-            <Icon name="attach" size={12} /> Attach
-          </Chip>
           <span className="grow" />
           <button
             type="button"
             className="send flex-center"
-            disabled={blocked || !draft.trim()}
+            disabled={closed || !draft.trim()}
             onClick={send}
             aria-label="Send"
           >

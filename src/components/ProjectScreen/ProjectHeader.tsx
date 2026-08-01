@@ -1,10 +1,9 @@
 import { Icon, type IconName } from "@/components/Icon";
 import { CountUp, Stat } from "@/components/Stats";
+import type { ProjectScreenTab } from "@/store/ui";
 import type { RoadmapState } from "./Roadmap";
 
-export type ProjectTab = "roadmap" | "settings";
-
-const TABS: { id: ProjectTab; label: string; icon: IconName }[] = [
+const TABS: { id: ProjectScreenTab; label: string; icon: IconName }[] = [
   { id: "roadmap", label: "Roadmap", icon: "map" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
@@ -23,8 +22,8 @@ export function ProjectHeader({
   /** Repo path, or the repo count for a multi-repo project. */
   subtitle: string;
   roadmap: RoadmapState;
-  tab: ProjectTab;
-  onTab: (tab: ProjectTab) => void;
+  tab: ProjectScreenTab;
+  onTab: (tab: ProjectScreenTab) => void;
   onClose: () => void;
 }) {
   const { counts, shipped } = roadmap;

@@ -1,5 +1,6 @@
 import { Icon, type IconName } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
+import { useAppStore } from "@/store";
 import { type ItemSource, type RoadmapItem, SIZE_HINT } from "../types";
 
 /** Where the item came from, as a one-glyph tag. */
@@ -11,6 +12,8 @@ const SOURCE: Record<ItemSource, { icon: IconName; tip: string }> = {
 
 interface Props {
   item: RoadmapItem;
+  /** The project's primary repo — where "Send to an agent" opens the draft. */
+  repoPath: string;
   /** A proposed row — real only once the user accepts the proposal. */
   ghost?: boolean;
   open: boolean;
@@ -21,9 +24,20 @@ interface Props {
   cardRef?: (el: HTMLDivElement | null) => void;
 }
 
+/** The item as a starting prompt for an agent: what to build, why, and what
+ *  "done" means. Prefills the new draft's composer so the user reviews and
+ *  launches rather than retyping the row. */
+function briefFor(item: RoadmapItem): string {
+  const lines = [`${item.code}: ${item.title}`, "", item.why];
+  if (item.accept?.length) lines.push("", "Done when:", ...item.accept.map((a) => `- ${a}`));
+  return lines.join("\n");
+}
+
 /** One roadmap row: a click-to-expand header line (code, title, size, source)
  *  over the rationale, acceptance criteria and dependencies. */
-export function ItemCard({ item, ghost, open, onToggle, focused, cardRef }: Props) {
+export function ItemCard({ item, repoPath, ghost, open, onToggle, focused, cardRef }: Props) {
+  const createDraft = useAppStore((s) => s.createDraft);
+  const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
   const source = SOURCE[item.source];
   const cls = [
     "rm-item",
@@ -85,7 +99,17 @@ export function ItemCard({ item, ghost, open, onToggle, focused, cardRef }: Prop
             <span className="grow" />
             {/* A proposed row has nothing to send an agent at yet. */}
             {!ghost && (
-              <Button variant="outline" size="sm">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  const draftId = await createDraft(repoPath, briefFor(item));
+                  // The draft lives in the workspace, which this page covers —
+                  // but stay put if it couldn't be created, so the user isn't
+                  // dropped somewhere else to read the error.
+                  if (draftId) closeProjectScreen();
+                }}
+              >
                 <Icon name="zap" size={11} /> Send to an agent
               </Button>
             )}

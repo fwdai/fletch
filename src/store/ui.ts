@@ -12,6 +12,11 @@ import type { SliceCreator } from "./types";
  *  store can remember the last-open tab per agent without importing a component. */
 export type RightPanelTab = "code" | "git" | "run" | "term";
 
+/** Project page tabs — what gets built, and how the project is run. Kept here
+ *  (like `RightPanelTab`) so callers of `openProjectScreen` can pick the tab
+ *  without the store importing a component. */
+export type ProjectScreenTab = "roadmap" | "settings";
+
 export interface UiSlice {
   /** Quick-settings popover (gear / ⌘,). */
   settingsOpen: boolean;
@@ -44,10 +49,13 @@ export interface UiSlice {
   /** When in history mode, the archived agent whose chat preview is
    *  being shown. `null` = list view. */
   selectedHistoryAgentId: string | null;
-  /** Full-screen project page (settings + pulse). Replaces the workspace
+  /** Full-screen project page (roadmap + settings). Replaces the workspace
    *  panes while non-null, like the settings screen. Keyed by the project's
    *  primary repo path — the screen resolves the project_id on open. */
   projectScreenRepoPath: string | null;
+  /** Which tab of the project page is showing. Set by whoever opened the
+   *  screen, so a control labelled "Project settings" lands on Settings. */
+  projectScreenTab: ProjectScreenTab;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   /** Show the structured transcript rail beside the native view's terminal.
@@ -88,9 +96,11 @@ export interface UiSlice {
   closeOnboarding: () => void;
   toggleHistory: (open?: boolean) => void;
   selectHistoryAgent: (id: string | null) => void;
-  /** Open the full-screen project page for a sidebar repo group. */
-  openProjectScreen: (repoPath: string) => void;
+  /** Open the full-screen project page for a sidebar repo group, on `tab`
+   *  (default: the roadmap). */
+  openProjectScreen: (repoPath: string, tab?: ProjectScreenTab) => void;
   closeProjectScreen: () => void;
+  setProjectScreenTab: (tab: ProjectScreenTab) => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   toggleTranscriptRail: () => void;
@@ -120,6 +130,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   historyOpen: false,
   selectedHistoryAgentId: null,
   projectScreenRepoPath: null,
+  projectScreenTab: "roadmap",
   leftCollapsed: false,
   rightCollapsed: false,
   transcriptRailOpen: true,
@@ -171,15 +182,17 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       return next ? { historyOpen: true } : { historyOpen: false, selectedHistoryAgentId: null };
     }),
   selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
-  openProjectScreen: (repoPath) =>
+  openProjectScreen: (repoPath, tab = "roadmap") =>
     set({
       projectScreenRepoPath: repoPath,
+      projectScreenTab: tab,
       // Same takeover rules as the settings screen: one full-screen surface
       // at a time, and a hidden run view shouldn't stay selected.
       settingsScreenOpen: false,
       selectedRunId: null,
     }),
   closeProjectScreen: () => set({ projectScreenRepoPath: null }),
+  setProjectScreenTab: (tab) => set({ projectScreenTab: tab }),
   toggleLeft: () =>
     set((s) => {
       const leftCollapsed = !s.leftCollapsed;

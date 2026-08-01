@@ -54,7 +54,12 @@ export interface DraftsSlice {
   lastRepoPath?: string;
 
   // drafts
-  createDraft: (repoPath: string) => Promise<void>;
+  /** Open a new draft on `repoPath`. `seedPrompt` prefills its composer (read
+   *  as the initial text on mount), so a caller that already knows what the
+   *  agent should do — a roadmap item, a template — lands the user ready to
+   *  launch rather than at an empty box. Resolves to the new draft's id, or
+   *  `null` if it couldn't be created (the error is already surfaced). */
+  createDraft: (repoPath: string, seedPrompt?: string) => Promise<string | null>;
   /** Start a draft from a Home-inbox issue (any tracker source): opens a new
    *  draft on the issue's repo, seeds the composer with the issue brief
    *  (title + body + url + a suggested branch), and tags it with the issue
@@ -118,7 +123,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   },
 
   // ── drafts ─────────────────────────────────────────────────────────────────
-  createDraft: async (repoPath) => {
+  createDraft: async (repoPath, seedPrompt) => {
     const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
     // Name allocation is a backend call; if it fails there's no draft to
     // create. Surface it in the global error banner and bail rather than
@@ -129,7 +134,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       name = await api.allocateDraftName(draftNames(drafts));
     } catch (e) {
       get().setLastError(`Couldn't start a new agent: ${String(e)}`);
-      return;
+      return null;
     }
     const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
     // Carry the sticky custom-agent pick onto the new draft, but only if it
@@ -146,12 +151,16 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       customAgentId,
       base: await resolveBaseBranch(repoPath),
     };
+    // Seed before the draft is visible, so the composer reads it on mount
+    // (same ordering as startWorkFromIssue).
+    if (seedPrompt) get().setComposerDraft(draft.id, seedPrompt);
     set((s) => ({
       drafts: [draft, ...s.drafts],
       activeDraftId: draft.id,
       selectedAgentId: null,
     }));
     get().setLastRepoPath(repoPath);
+    return draft.id;
   },
 
   startWorkFromIssue: async (repoPath, issue) => {

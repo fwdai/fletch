@@ -6,11 +6,16 @@ export function HorizonGroup({
   label,
   note,
   count,
+  empty,
   children,
 }: {
   label: string;
   note: string;
+  /** Committed rows only — proposed ones aren't real yet, so they don't count
+   *  here either (this is the same number the page header shows). */
   count: number;
+  /** Nothing to render at all, committed or proposed. */
+  empty: boolean;
   children: ReactNode;
 }) {
   return (
@@ -21,7 +26,7 @@ export function HorizonGroup({
         <span className="rm-group-c mono text-xs">{count}</span>
       </div>
       <div className="rm-group-body">
-        {count === 0 ? <div className="rm-empty text-xs">Nothing here yet.</div> : children}
+        {empty ? <div className="rm-empty text-xs">Nothing here yet.</div> : children}
       </div>
     </section>
   );

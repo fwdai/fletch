@@ -8,7 +8,7 @@ import { DeleteSection } from "./DeleteSection";
 import { EnvVarsSection } from "./EnvVarsSection";
 import { GeneralSection } from "./GeneralSection";
 import { LinearSection } from "./LinearSection";
-import { ProjectHeader, type ProjectTab } from "./ProjectHeader";
+import { ProjectHeader } from "./ProjectHeader";
 import { ProjectPulse } from "./ProjectPulse";
 import { Roadmap, useRoadmap } from "./Roadmap";
 import { RunEnvSection } from "./RunEnvSection";
@@ -30,7 +30,11 @@ interface Loaded {
 export function ProjectScreen({ repoPath }: { repoPath: string }) {
   const close = useAppStore((s) => s.closeProjectScreen);
   const projects = useAppStore((s) => s.workspace?.projects);
-  const [tab, setTab] = useState<ProjectTab>("roadmap");
+  // The tab lives in the store so whoever opened the screen picks it — the
+  // sidebar's "Project settings" gear lands on Settings, the title-bar pill
+  // on the roadmap.
+  const tab = useAppStore((s) => s.projectScreenTab);
+  const setTab = useAppStore((s) => s.setProjectScreenTab);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Lives here, not in <Roadmap>, because the header shows the same counts —
@@ -87,7 +91,7 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
       />
 
       {tab === "roadmap" ? (
-        <Roadmap roadmap={roadmap} />
+        <Roadmap roadmap={roadmap} repoPath={repoPath} />
       ) : (
         <div className="ps-content">
           {error ? (

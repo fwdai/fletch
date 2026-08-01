@@ -72,8 +72,12 @@ export function useRoadmap() {
   // ── derived ────────────────────────────────────────────────────────
   const pending = messages.find((m) => m.kind === "proposal" && !m.resolved) ?? null;
   const openQuestion = messages.find((m) => m.kind === "question" && !m.answer) ?? null;
-  /** The composer is closed while the user owes an answer or a decision. */
+  /** The user owes an answer or a decision before the thread can move on. */
   const blocked = Boolean(pending || openQuestion);
+  /** A reply is still landing. Also closes the composer: a second message sent
+   *  mid-reply would interleave its beats with the first and could leave two
+   *  proposals open at once, only one of which the board renders. */
+  const busy = thinking;
 
   const ghosts =
     pending?.kind === "proposal"
@@ -113,7 +117,7 @@ export function useRoadmap() {
   const send = useCallback(
     (text: string) => {
       const body = text.trim();
-      if (!body || blocked) return;
+      if (!body || blocked || busy) return;
       push({ kind: "user", body });
 
       // Match on what was actually said — suggestion chips can be clicked in
@@ -129,7 +133,7 @@ export function useRoadmap() {
       setCaptured((n) => n + 1);
       play(freeFormBeat(body, `${CODE_PREFIX}${FIRST_FREE_CODE + captured}`));
     },
-    [blocked, captured, play, push, used],
+    [blocked, busy, captured, play, push, used],
   );
 
   const answerQuestion = useCallback(
@@ -161,10 +165,15 @@ export function useRoadmap() {
         }),
         ...adds,
       ]);
+      // Clear only the rows this call lit up, so a later landing doesn't have
+      // its highlight cut short by an earlier one's timer.
+      const landed = new Set([...adds.map((a) => a.code), ...moved.keys()]);
       after(LANDED_MS, () =>
-        setItems((arr) => arr.map((it) => (it.justAdded ? { ...it, justAdded: false } : it))),
+        setItems((arr) =>
+          arr.map((it) => (landed.has(it.code) ? { ...it, justAdded: false } : it)),
+        ),
       );
-      return [...adds.map((a) => a.code), ...moved.keys()];
+      return [...landed];
     },
     [after],
   );
@@ -229,7 +238,7 @@ export function useRoadmap() {
     focusItem,
     // thread
     messages,
-    thinking,
+    busy,
     blocked,
     suggestions,
     send,

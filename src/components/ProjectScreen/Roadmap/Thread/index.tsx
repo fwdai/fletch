@@ -8,7 +8,7 @@ import { Message, Thinking } from "./Message";
  *  repo, asks when a decision is genuinely open, and proposes board changes —
  *  it never edits the board itself. */
 export function Thread({ roadmap }: { roadmap: RoadmapState }) {
-  const { messages, thinking, blocked, suggestions, send } = roadmap;
+  const { messages, busy, blocked, suggestions, send } = roadmap;
   const scroll = useRef<HTMLDivElement>(null);
 
   // Beats arrive on a timer, so pin to the bottom as the thread grows.
@@ -16,7 +16,7 @@ export function Thread({ roadmap }: { roadmap: RoadmapState }) {
   useEffect(() => {
     const el = scroll.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length, thinking]);
+  }, [messages.length, busy]);
 
   return (
     <section className="rm-thread">
@@ -38,11 +38,11 @@ export function Thread({ roadmap }: { roadmap: RoadmapState }) {
             <Message key={m.id} msg={m} roadmap={roadmap} />
           ))}
 
-          {thinking && <Thinking body="Working through it" />}
+          {busy && <Thinking body="Working through it" />}
         </div>
       </div>
 
-      <Composer blocked={blocked} suggestions={suggestions} onSend={send} />
+      <Composer blocked={blocked} busy={busy} suggestions={suggestions} onSend={send} />
     </section>
   );
 }

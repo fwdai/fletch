@@ -66,7 +66,9 @@ export function ProjectGroup({
 
   function onOpenSettings(e: React.MouseEvent) {
     e.stopPropagation();
-    openProjectScreen(repoPath);
+    // This button says "Project settings", so it opens that tab — the project
+    // page's default (the roadmap) is what the title-bar pill gets.
+    openProjectScreen(repoPath, "settings");
   }
 
   const dropClass = dropIndicator ? `drop-${dropIndicator}` : "";

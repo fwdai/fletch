@@ -9,7 +9,7 @@ import { ProductMap } from "./ProductMap";
 /** The board the PM agent maintains: horizon groups of expandable items, with
  *  a proposal's additions rendered inline as ghost rows. Sibling tab shows the
  *  product map the agent reasons against. */
-export function Board({ roadmap }: { roadmap: RoadmapState }) {
+export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: string }) {
   const { items, ghosts, moves, map, shipped, tab, setTab, openCodes, toggleItem, focusCode } =
     roadmap;
 
@@ -62,18 +62,24 @@ export function Board({ roadmap }: { roadmap: RoadmapState }) {
           <ProductMap map={map} />
         ) : (
           HORIZONS.map((h) => {
+            const real = items.filter((i) => i.horizon === h.id);
             // Proposed additions sit in their target group, so the user sees
-            // where a change would land before committing to it.
-            const rowsFor = [
-              ...items.filter((i) => i.horizon === h.id),
-              ...ghosts.filter((i) => i.horizon === h.id),
-            ];
+            // where a change would land before committing to it — but they
+            // don't move the count until they're accepted.
+            const rowsFor = [...real, ...ghosts.filter((i) => i.horizon === h.id)];
             return (
-              <HorizonGroup key={h.id} label={h.label} note={h.note} count={rowsFor.length}>
+              <HorizonGroup
+                key={h.id}
+                label={h.label}
+                note={h.note}
+                count={real.length}
+                empty={rowsFor.length === 0}
+              >
                 {rowsFor.map((it) => (
                   <ItemCard
                     key={it.code}
                     item={it}
+                    repoPath={repoPath}
                     ghost={ghostCodes.has(it.code)}
                     open={openCodes.has(it.code)}
                     focused={focusCode === it.code || movedCodes.has(it.code)}
