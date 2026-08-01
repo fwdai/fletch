@@ -662,78 +662,105 @@ fn argv_mounts_every_chained_alternate_read_only() {
 }
 
 #[test]
-fn borrowed_object_stores_reads_alternates_lines() {
-    // Layout: writable_root/<subdir>/.git/objects/info/alternates.
+fn borrowed_object_stores_mounts_the_source_object_store() {
+    // The mount set is derived from the authoritative source repo, not the
+    // agent-writable checkout: a `--shared` clone of `<src>` borrows
+    // `<src>/.git/objects`, so that store — and only that — is mounted.
     let td = tempfile::tempdir().unwrap();
-    let root = td.path();
-    let info = root.join("repo/.git/objects/info");
-    std::fs::create_dir_all(&info).unwrap();
+    let src = td.path().join("src");
+    std::fs::create_dir_all(src.join(".git/objects/info")).unwrap();
 
-    // Absent alternates → nothing to mount (worktree / full-copy clone).
-    assert!(borrowed_object_stores(root).is_empty());
+    // No tracked repos → nothing to mount.
+    assert!(borrowed_object_stores(&[]).is_empty());
 
-    std::fs::write(
-        info.join("alternates"),
-        "/src/a/.git/objects\n\n  /src/b/objects  \n",
-    )
-    .unwrap();
     assert_eq!(
-        borrowed_object_stores(root),
-        vec![
-            PathBuf::from("/src/a/.git/objects"),
-            PathBuf::from("/src/b/objects"),
-        ],
+        borrowed_object_stores(std::slice::from_ref(&src)),
+        vec![src.join(".git/objects")],
     );
 }
 
 #[test]
-fn borrowed_object_stores_follows_chained_alternates() {
-    // Model checkout --shared→ B --shared→ A: the checkout points only at
-    // B; B points at A. Both B and A must be discovered so both get
-    // mounted, or in-container git can't reach A's objects.
+fn borrowed_object_stores_follows_source_alternate_chain() {
+    // Model source B --shared→ A: the tracked source is B, whose own object
+    // store borrows A via alternates. Both B and A must be mounted, or
+    // in-container git can't normalize B→A. The chain is walked from the
+    // user-owned SOURCE (B), never from the agent's checkout.
     let td = tempfile::tempdir().unwrap();
     let a = td.path().join("A/.git/objects");
     let b = td.path().join("B/.git/objects");
-    // The checkout lives under the writable root as a subdir.
-    let checkout = td.path().join("root/repo/.git/objects");
-    for dir in [&a, &b, &checkout] {
+    for dir in [&a, &b] {
         std::fs::create_dir_all(dir.join("info")).unwrap();
     }
-    std::fs::write(
-        checkout.join("info/alternates"),
-        format!("{}\n", b.display()),
-    )
-    .unwrap();
     std::fs::write(b.join("info/alternates"), format!("{}\n", a.display())).unwrap();
 
     assert_eq!(
-        borrowed_object_stores(&td.path().join("root")),
+        borrowed_object_stores(&[td.path().join("B")]),
         vec![b, a],
-        "chain must resolve checkout→B→A, mounting both borrowed stores"
+        "chain must resolve source B→A, mounting both borrowed stores"
     );
 }
 
 #[test]
-fn borrowed_object_stores_scans_every_repo_checkout() {
-    // A multi-repo agent: two shared-clone checkouts under one writable
-    // root, each borrowing a different source. Both borrowed stores must be
-    // discovered — scanning only the primary would strand the secondary.
+fn borrowed_object_stores_covers_every_tracked_source() {
+    // A multi-repo agent: two tracked source repos. Each source's object
+    // store must be mounted — covering only the primary would strand the
+    // secondary checkout's borrowed objects.
     let td = tempfile::tempdir().unwrap();
-    let root = td.path().join("agent");
-    let primary = root.join("app/.git/objects/info");
-    let secondary = root.join("lib/.git/objects/info");
-    std::fs::create_dir_all(&primary).unwrap();
-    std::fs::create_dir_all(&secondary).unwrap();
-    std::fs::write(primary.join("alternates"), "/src/app/.git/objects\n").unwrap();
-    std::fs::write(secondary.join("alternates"), "/src/lib/.git/objects\n").unwrap();
+    let app = td.path().join("src/app");
+    let lib = td.path().join("src/lib");
+    std::fs::create_dir_all(app.join(".git/objects/info")).unwrap();
+    std::fs::create_dir_all(lib.join(".git/objects/info")).unwrap();
 
-    // Sorted by subdir name: `app` before `lib`.
+    // Order follows the record's repo order (primary first).
     assert_eq!(
-        borrowed_object_stores(&root),
-        vec![
-            PathBuf::from("/src/app/.git/objects"),
-            PathBuf::from("/src/lib/.git/objects"),
-        ],
+        borrowed_object_stores(&[app.clone(), lib.clone()]),
+        vec![app.join(".git/objects"), lib.join(".git/objects")],
+    );
+}
+
+#[test]
+fn borrowed_object_stores_ignores_agent_writable_checkout_alternates() {
+    // SECURITY REGRESSION. Under Docker the agent's checkout is bind-mounted
+    // read-write, so a container agent can overwrite
+    // `<checkout>/.git/objects/info/alternates` to name a sensitive host path
+    // (here a temp dir standing in for ~/.ssh). If the mount set were read from
+    // that agent-writable file, a reused-checkout relaunch (resume /
+    // switch_view) would bind-mount the attacker's path read-only and leak it.
+    // The mount set is derived from the authoritative SOURCE repo instead, so
+    // the poisoned alternates is never consulted: the real source object store
+    // is mounted and the sensitive path is not.
+    let td = tempfile::tempdir().unwrap();
+
+    // The legitimate, user-owned source the checkout was forked from.
+    let src = td.path().join("src");
+    std::fs::create_dir_all(src.join(".git/objects/info")).unwrap();
+
+    // A sensitive out-of-tree dir the attacker wants mounted. It exists on
+    // disk, so the only thing keeping it out is that we never read the
+    // checkout's alternates.
+    let secret = td.path().join("dot-ssh");
+    std::fs::create_dir_all(&secret).unwrap();
+
+    // The agent-writable checkout, poisoned to borrow the secret dir.
+    let checkout = td.path().join("agent/repo/.git/objects");
+    std::fs::create_dir_all(checkout.join("info")).unwrap();
+    std::fs::write(
+        checkout.join("info/alternates"),
+        format!("{}\n", secret.display()),
+    )
+    .unwrap();
+
+    // Compute from the trusted source list only (what the supervisor threads
+    // from `record.repos`). The poisoned checkout is deliberately NOT passed.
+    let stores = borrowed_object_stores(std::slice::from_ref(&src));
+    assert_eq!(
+        stores,
+        vec![src.join(".git/objects")],
+        "only the user-owned source object store is mounted"
+    );
+    assert!(
+        !stores.contains(&secret),
+        "an agent-writable checkout alternates must never reach the mount set"
     );
 }
 

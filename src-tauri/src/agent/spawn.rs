@@ -29,6 +29,11 @@ pub struct PerTurnSpec {
     /// `SpawnSpec::sandbox_root`). Per-turn agents now run under sandbox-exec
     /// too, so they need it to build the profile.
     pub sandbox_root: PathBuf,
+    /// The authoritative source repos this agent's checkouts were forked from
+    /// (`AgentRecord.repos[].repo_path`). Threaded to the sandbox engine so the
+    /// Docker borrowed-object-store mounts derive from these user-owned paths,
+    /// never from the agent-writable checkout alternates (see `AgentLaunchCtx`).
+    pub source_repos: Vec<PathBuf>,
     /// Session id to resume, if one has been captured already.
     pub session_id: Option<String>,
     /// A custom agent's standing instructions, snapshotted on the session and
@@ -59,6 +64,11 @@ pub struct SpawnSpec<'a> {
     /// contain multiple per-repo checkouts as siblings of `cwd`. Writes
     /// are allowed anywhere under this path.
     pub sandbox_root: PathBuf,
+    /// The authoritative source repos this agent's checkouts were forked from
+    /// (`AgentRecord.repos[].repo_path`). Threaded to the sandbox engine so the
+    /// Docker borrowed-object-store mounts derive from these user-owned paths,
+    /// never from the agent-writable checkout alternates (see `AgentLaunchCtx`).
+    pub source_repos: &'a [PathBuf],
     pub session_id: &'a str,
     /// True if this is the agent's first spawn (no prior conversation
     /// on disk for this session). False if we're respawning to switch
@@ -161,6 +171,7 @@ impl Agent {
             agent_id: spec.agent_id,
             provider: "claude",
             writable_root: &spec.sandbox_root,
+            source_repos: spec.source_repos,
             rpc_dir: &spec.rpc_dir,
             cwd: &spec.cwd,
             home: &home,
@@ -247,6 +258,7 @@ impl Agent {
             agent_id: spec.agent_id,
             provider,
             writable_root: &spec.sandbox_root,
+            source_repos: spec.source_repos,
             rpc_dir: &spec.rpc_dir,
             cwd: &spec.cwd,
             home: &home,
@@ -310,6 +322,7 @@ impl Agent {
             agent_id: spec.agent_id,
             provider: "claude",
             writable_root: &spec.sandbox_root,
+            source_repos: spec.source_repos,
             rpc_dir: &spec.rpc_dir,
             cwd: &spec.cwd,
             home: &home,
@@ -458,6 +471,7 @@ impl Agent {
             agent_id: &spec.agent_id,
             provider,
             writable_root: &spec.sandbox_root,
+            source_repos: &spec.source_repos,
             rpc_dir: &spec.rpc_dir,
             cwd: &spec.cwd,
             home: &home,

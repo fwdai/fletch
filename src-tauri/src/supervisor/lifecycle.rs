@@ -974,6 +974,14 @@ impl Supervisor {
         // path writes whatever config file the provider reads and adds the
         // argv/env pointing at it. See `agent_profile`.
 
+        // The authoritative source repos each checkout was forked from — the
+        // user's own repos, which the agent cannot write. Threaded into the
+        // sandbox engine so the Docker borrowed-object-store mounts derive from
+        // these (never from the agent-writable checkout alternates a container
+        // agent could rewrite to smuggle an arbitrary read-only host mount into
+        // a reused-checkout relaunch). See `sandbox::engine::AgentLaunchCtx`.
+        let source_repos: Vec<PathBuf> = record.repos.iter().map(|r| r.repo_path.clone()).collect();
+
         if per_turn {
             match record.view {
                 // Native view: launch the agent's interactive TUI in a PTY,
@@ -988,6 +996,7 @@ impl Supervisor {
                         agent_id: &agent_id_str,
                         cwd,
                         sandbox_root,
+                        source_repos: &source_repos,
                         session_id,
                         // Per-turn native always resumes (the agent built its
                         // session in the Custom view first).
@@ -1023,6 +1032,7 @@ impl Supervisor {
                         agent_id: agent_id_str.clone(),
                         cwd,
                         sandbox_root,
+                        source_repos: source_repos.clone(),
                         session_id,
                         // model/effort aren't spawn-time for per-turn agents:
                         // the supervisor resolves them from the record and passes
@@ -1047,6 +1057,7 @@ impl Supervisor {
                 agent_id: &agent_id_str,
                 cwd,
                 sandbox_root,
+                source_repos: &source_repos,
                 session_id,
                 fresh: effective_fresh,
                 // Claude's session-level effort, persisted on the record so it

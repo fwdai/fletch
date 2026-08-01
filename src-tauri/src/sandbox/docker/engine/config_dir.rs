@@ -73,25 +73,40 @@ pub(super) fn config_dir_is_default(dir: &Path, home: &Path) -> bool {
     resolve_existing_prefix(dir) == resolve_existing_prefix(&home.join(".claude"))
 }
 
-/// Every object store borrowed via git alternates by any checkout under the
-/// agent's `writable_root` — each an absolute path to mount read-only.
+/// Every object store an agent's `--shared` checkouts borrow via git
+/// alternates — each an absolute path to mount read-only.
 ///
-/// `writable_root` is the agent's parent dir, holding one checkout per tracked
-/// repo at `<root>/<subdir>/`. Each `--shared` clone records its source's
-/// objects in `<subdir>/.git/objects/info/alternates`; a multi-repo agent has
-/// several, so scanning only the primary `cwd` would leave secondary checkouts'
-/// borrowed objects unmounted and break git (log/diff/checkout/commit) there.
+/// SECURITY: the mount set is derived from `source_repos`, Fletch's
+/// authoritative record of each checkout's source repo
+/// (`AgentRecord.repos[].repo_path` — the user's own repos, which the agent
+/// cannot write). It is deliberately NOT derived from the checkout's own
+/// `<subdir>/.git/objects/info/alternates`. Under Docker the whole checkout is
+/// bind-mounted read-write, so a container agent can overwrite that alternates
+/// file to name any absolute host path (`~/.ssh`, `~/.aws`, Fletch's own DB);
+/// were the mount set read from it, a later relaunch that reuses the on-disk
+/// checkout without re-provisioning (`resume_agent` / `switch_view`) would
+/// bind-mount the attacker's path read-only into the container and expose it
+/// over the always-open network — defeating the Docker ConfinedReads /
+/// OpaqueAppData guarantees. Reading only the user-owned source repos keeps
+/// that agent-writable file out of the trust boundary entirely.
 ///
-/// For each checkout the chain is followed transitively: `git clone --shared`
-/// records only the immediate source, so a chained source (B borrowed from A)
-/// leaves the checkout pointing at B while git resolves B→A at runtime — A must
-/// be mounted too or in-container git fails to normalize the alternate. Results
-/// are deduped (repos may share a base). No alternates anywhere (old full-copy
-/// clones, worktrees) → empty, so no extra mount is added — backward
-/// compatible. Reading the files rather than reconstructing paths keeps fresh
-/// spawn, resume, and view-switch uniform.
-pub(super) fn borrowed_object_stores(writable_root: &Path) -> Vec<PathBuf> {
-    /// The alternates listed in `<objects_dir>/info/alternates`, if any.
+/// This reproduces exactly what a `--shared` clone borrows: `git clone
+/// --shared <source>` records `<source>/.git/objects` in the checkout's
+/// alternates, so that store is what must be mounted. A multi-repo agent has
+/// one source per repo, so every entry is walked, not just the primary — else
+/// secondary checkouts' borrowed objects stay unmounted and git breaks
+/// (log/diff/checkout/commit) there.
+///
+/// The chain is followed transitively from each SOURCE (safe — the source is
+/// user-owned): a source may itself borrow (B from A), leaving the checkout
+/// pointing at `<B>/.git/objects` while git resolves B→A at runtime, so A must
+/// be mounted too or in-container git can't normalize the alternate. Results
+/// are deduped (repos may share a base) and cycle-guarded. A missing store is
+/// dropped, not mounted — see below.
+pub(super) fn borrowed_object_stores(source_repos: &[PathBuf]) -> Vec<PathBuf> {
+    /// The alternates listed in `<objects_dir>/info/alternates`, if any. Only
+    /// ever called on stores reached from a trusted source repo, so the file it
+    /// reads is always under user-owned (non-agent-writable) state.
     fn read_alternates(objects_dir: &Path) -> Vec<PathBuf> {
         let Ok(contents) = std::fs::read_to_string(objects_dir.join("info/alternates")) else {
             return Vec::new();
@@ -104,35 +119,31 @@ pub(super) fn borrowed_object_stores(writable_root: &Path) -> Vec<PathBuf> {
             .collect()
     }
 
-    // Seed the chain walk from every checkout's own object store. Sort the
-    // subdirs so the mount order is deterministic (read_dir order isn't).
-    let mut checkouts: Vec<PathBuf> = match std::fs::read_dir(writable_root) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect(),
-        Err(_) => Vec::new(),
-    };
-    checkouts.sort();
-
     let mut out: Vec<PathBuf> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    // BFS over the alternates chains: each checkout's own alternates first (in
-    // file order), then each borrowed store's own. `seen` dedups shared bases
-    // and guards against a cyclic alternates chain.
-    let mut queue: std::collections::VecDeque<PathBuf> = checkouts
+    // Seed the walk from each tracked SOURCE repo's own object store — the exact
+    // store a `--shared` clone of that source records in the checkout. Order
+    // follows the record's repo order (primary first), which is deterministic.
+    let mut queue: std::collections::VecDeque<PathBuf> = source_repos
         .iter()
-        .flat_map(|c| read_alternates(&c.join(".git/objects")))
+        .map(|repo| repo.join(".git/objects"))
         .collect();
     while let Some(store) = queue.pop_front() {
         if !seen.insert(store.clone()) {
             continue;
         }
+        // Follow the source's own alternates chain before emitting the store,
+        // so a chained base (A behind B) is discovered and mounted too.
         for next in read_alternates(&store) {
             queue.push_back(next);
         }
-        out.push(store);
+        // Only mount a store that exists on disk: a bare `-v <path>:<path>:ro`
+        // on a missing source has Docker create it *root-owned*, and a
+        // `--shared` clone can only resolve objects that actually exist, so a
+        // missing store is never one in-container git needs.
+        if store.is_dir() {
+            out.push(store);
+        }
     }
     out
 }
