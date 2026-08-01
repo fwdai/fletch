@@ -67,6 +67,21 @@
 //!    Unlike invariants 1 and 2 this one is a **deny inside a grant** (the shape
 //!    [`super::seatbelt`]'s app-data rule already uses), because the checkout as
 //!    a whole must stay writable.
+//! 4. **No agent-writable path is a macOS launch-time auto-exec config**
+//!    ([`APP_SUPPORT_EXEC_FILES`] / [`APP_SUPPORT_EXEC_DIRS`]).
+//!    `~/Library/Application Support` is macOS's config/state root — the
+//!    `~/.config` equivalent invariant 2 narrows — yet it's granted *whole*
+//!    (agents, toolchains, and macOS frameworks legitimately persist per-app
+//!    state/caches under it, so narrowing it wholesale would break them). But a
+//!    handful of apps auto-run code from files there on their *next launch*
+//!    (iTerm2's `Scripts/AutoLaunch`; VS Code / Cursor `User/settings.json`
+//!    terminal profiles, `tasks.json` folder-open tasks), so an agent-writable
+//!    copy is host code execution as the user — the config-poisoning class
+//!    invariant 2 closes. Like invariant 3 this is a **deny inside a grant**:
+//!    the broad grant stays, these specific surfaces are denied on top. It is
+//!    inherently a **deny-list of known-dangerous surfaces, not an exhaustive
+//!    one** — any other app that auto-runs a launch-time config under
+//!    Application Support is a documented residual (see the constants).
 //!
 //! Claude's config dir gets a third treatment that is really invariant 2
 //! applied to `~/.claude` itself. `~/.claude` *is* a config root — its
@@ -197,6 +212,50 @@ pub const GIT_EXEC_CONFIG_FILES: &[&str] = &[
 pub const GIT_EXEC_CONFIG_DIRS: &[&str] = &[
     "hooks", // what `core.hooksPath` resolves to by default
     "info",  // `info/attributes` — the untracked twin of `.gitattributes`
+];
+
+/// Invariant 4 — **files** under `~/Library/Application Support` that an app
+/// auto-executes, denied inside the broad Application Support grant. Each names
+/// programs its owning app runs, so an agent-writable copy is host code
+/// execution the next time that app launches. Paths are relative to
+/// `~/Library/Application Support` and multi-segment (unlike the single-segment
+/// [`GIT_EXEC_CONFIG_FILES`]): they pin a fixed location under a specific app's
+/// dir, not a leaf spliced onto a variable parent.
+///
+/// Residual: this is a **deny-list of known-dangerous surfaces, not an
+/// exhaustive one**. Other VS Code forks (VSCodium, `Code - Insiders`,
+/// Windsurf) use the identical `User/` layout but are not enumerated, and
+/// trigger-based auto-run configs (Alfred/Keyboard Maestro workflows) are out of
+/// scope — an agent that poisons one of those is an accepted residual, not a
+/// covered surface. Adding a fork is a one-line addition here.
+pub const APP_SUPPORT_EXEC_FILES: &[&str] = &[
+    // VS Code reads these from its per-user profile and runs what they name:
+    // `settings.json` sets `terminal.integrated.automationProfile.osx` /
+    // `.profiles.osx` (a shell it launches) and `*.path` / `*.executablePath`
+    // keys (`git.path`, linters, formatters) it execs; `tasks.json` auto-runs a
+    // task's shell command via `runOptions.runOn: "folderOpen"`; `keybindings`
+    // binds keys to command-running actions (`workbench.action.terminal.
+    // sendSequence`, task launches). Cursor is a VS Code fork with the identical
+    // per-user layout, so it carries the same three surfaces.
+    "Code/User/settings.json",
+    "Code/User/tasks.json",
+    "Code/User/keybindings.json",
+    "Cursor/User/settings.json",
+    "Cursor/User/tasks.json",
+    "Cursor/User/keybindings.json",
+    // iTerm2's legacy single AppleScript, executed automatically on app launch
+    // (the modern replacement is the `AutoLaunch/` dir in APP_SUPPORT_EXEC_DIRS).
+    "iTerm2/Scripts/AutoLaunch.scpt",
+];
+
+/// Invariant 4 — **subtrees** under `~/Library/Application Support` an app
+/// auto-executes *every* file within, denied whole (the directory counterpart
+/// of [`APP_SUPPORT_EXEC_FILES`]). Denied whole because every file in the tree
+/// is run on launch and nothing an agent legitimately does writes here. Paths
+/// are relative to `~/Library/Application Support`.
+pub const APP_SUPPORT_EXEC_DIRS: &[&str] = &[
+    // Every `.py` iTerm2 finds here runs automatically when iTerm2 launches.
+    "iTerm2/Scripts/AutoLaunch",
 ];
 
 /// Class-1 host-persistence dirs a single `provider` must write on the host:
@@ -781,6 +840,30 @@ mod tests {
         // overlapping rules, and the overlap would hide which one is load-bearing.
         for f in GIT_EXEC_CONFIG_FILES {
             assert!(!GIT_EXEC_CONFIG_DIRS.contains(f), "{f} is in both lists");
+        }
+    }
+
+    /// Invariant 4's entries are spliced onto `~/Library/Application Support`
+    /// and emitted as literal SBPL paths: each must be a relative, traversal-free
+    /// path. A leading `/` or a `..` here would silently move the deny *outside*
+    /// the Application Support grant it's meant to carve — either denying an
+    /// unrelated subtree or escaping the carve entirely.
+    #[test]
+    fn app_support_exec_entries_are_relative_and_traversal_free() {
+        let all = APP_SUPPORT_EXEC_FILES
+            .iter()
+            .chain(APP_SUPPORT_EXEC_DIRS.iter());
+        for name in all {
+            assert!(!name.is_empty(), "an entry must not be empty");
+            assert!(
+                !name.starts_with('/') && !name.contains(".."),
+                "{name} must be relative and traversal-free"
+            );
+        }
+        // Disjoint: a path denied as both a file-literal and a subtree would
+        // emit two overlapping rules, hiding which one is load-bearing.
+        for f in APP_SUPPORT_EXEC_FILES {
+            assert!(!APP_SUPPORT_EXEC_DIRS.contains(f), "{f} is in both lists");
         }
     }
 
