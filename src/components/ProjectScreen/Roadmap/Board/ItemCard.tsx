@@ -26,7 +26,9 @@ const STATE: Partial<Record<ItemStatus, { label: string; cls: string; tip: strin
     cls: "r",
     // The watch is host-side (src-tauri/src/roadmap/merge_sweep.rs), so this is
     // a promise the app keeps with the window closed — worth saying, because it
-    // is the difference between "check back here" and "go merge it".
+    // is the difference between "check back here" and "go merge it". "Mark
+    // done" on the card is the manual fallback for when the watch can't see
+    // the merge (revoked token, deleted PR).
     tip: "Its run opened a pull request — merge it and this ships on its own",
   },
 };
@@ -48,6 +50,10 @@ interface Props {
   onQueue?: () => void;
   /** Take it back off the queue before it's dispatched (`queued → open`). */
   onUnqueue?: () => void;
+  /** Ship it by hand (`in_review → done`) when the sweep can't see the merge —
+   *  a revoked token, a deleted PR, a repo that left the project. In-review
+   *  items only, and not read-only. */
+  onMarkDone?: () => void;
   /** Open the run this item is being built by. Only on an item with a run. */
   onOpenRun?: () => void;
   /** The workflow this item would run under ("Project default" resolved), or
@@ -92,6 +98,7 @@ export function ItemCard({
   onDiscard,
   onQueue,
   onUnqueue,
+  onMarkDone,
   onOpenRun,
   workflowName,
   note,
@@ -265,6 +272,11 @@ export function ItemCard({
             {onUnqueue && (
               <Button variant="outline" size="sm" onClick={onUnqueue}>
                 Take off the queue
+              </Button>
+            )}
+            {onMarkDone && (
+              <Button variant="outline" size="sm" onClick={onMarkDone}>
+                <Icon name="check" size={11} /> Mark done
               </Button>
             )}
             {onQueue && (

@@ -887,7 +887,6 @@ fn definition_spec(conn: &Connection, definition_id: &str) -> Option<Spec> {
 
 /// Apply a patch and announce the row. Every drainer write goes through here,
 /// so nothing it changes can reach the database without reaching the board.
-/// [`super::merge_sweep`] writes through it too, for the same guarantee.
 pub(crate) fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
     let updated = {
         let conn = db.lock();
@@ -898,6 +897,34 @@ pub(crate) fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
         // The row was deleted mid-tick; nothing to announce.
         Ok(None) => {}
         Err(e) => tracing::warn!(id, error = %e, "roadmap drainer: item write failed"),
+    }
+}
+
+/// [`write_item`], but only when the row is still in `expected` status — the
+/// transition-safe variant for a verdict decided *before* a wait. The merge
+/// sweep decides over a network read, so by write time the row may have moved
+/// (re-queued, re-dispatched); stamping a stale verdict over that would orphan
+/// the fresh work. A miss writes and announces nothing.
+pub(crate) fn write_item_where(
+    app: &AppHandle,
+    db: &Db,
+    id: &str,
+    expected: ItemStatus,
+    patch: ItemPatch,
+) {
+    let updated = {
+        let conn = db.lock();
+        store::update_where_status(&conn, id, expected, &patch)
+    };
+    match updated {
+        Ok(Some(row)) => emit_item(app, &row),
+        // Deleted, or no longer in `expected` — either way the verdict is
+        // stale and the row's current owner wins.
+        Ok(None) => tracing::debug!(
+            id,
+            "roadmap: row moved before a verdict landed — left alone"
+        ),
+        Err(e) => tracing::warn!(id, error = %e, "roadmap: item write failed"),
     }
 }
 

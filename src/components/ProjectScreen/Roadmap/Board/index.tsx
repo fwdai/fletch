@@ -41,6 +41,7 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
     acceptItems,
     queueItems,
     unqueueItems,
+    markDone,
     workflows,
   } = roadmap;
   const selectRun = useAppStore((s) => s.selectRun);
@@ -175,9 +176,10 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
                   // A proposed row is on the board but not *of* it yet: it is
                   // ruled on rather than edited or sent to an agent.
                   const ghost = it.status === "proposed";
-                  // The queue owns everything from `queued` on: an `active` or
-                  // `in_review` row is the drainer's, and the user's lever on it
-                  // is the run, not the row.
+                  // The queue owns everything from `queued` on: an `active`
+                  // row is the drainer's, and the user's lever on it is the
+                  // run, not the row. `in_review` keeps one manual lever —
+                  // "Mark done" — for merges the sweep can't see.
                   const writable = !ghost && !readOnly;
                   return (
                     <ItemCard
@@ -209,6 +211,9 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
                         writable && it.status === "queued"
                           ? () => unqueueItems([row.id])
                           : undefined
+                      }
+                      onMarkDone={
+                        writable && it.status === "in_review" ? () => markDone(row.id) : undefined
                       }
                       onOpenRun={
                         row.run_id

@@ -176,18 +176,41 @@ struct Watched {
 pub fn spawn(app: AppHandle, db: Db) {
     tauri::async_runtime::spawn(async move {
         loop {
-            let watching = watch_list(&db);
-            if watching.is_empty() {
+            // Each pass runs in its own task so a panic is contained: silently
+            // dead until the next app start is the worst possible failure mode
+            // for the thing that ships merged work — the same guard the
+            // drainer's tick carries.
+            let pass = {
+                let app = app.clone();
+                let db = db.clone();
+                tauri::async_runtime::spawn(async move {
+                    let watching = watch_list(&db);
+                    let idle = watching.is_empty();
+                    if !idle {
+                        sweep(&app, &db, watching).await;
+                    }
+                    idle
+                })
+                .await
+            };
+            match pass {
                 // Nothing in review: sleep until the drainer says there is.
                 // Checked before waiting, not after, so a board that is already
                 // mid-review at launch is swept without needing a start nudge.
-                signal().notified().await;
-                continue;
-            }
-            sweep(&app, &db, watching).await;
-            tokio::select! {
-                _ = tokio::time::sleep(SWEEP) => {}
-                _ = signal().notified() => {}
+                Ok(true) => signal().notified().await,
+                Ok(false) => tokio::select! {
+                    _ = tokio::time::sleep(SWEEP) => {}
+                    _ = signal().notified() => {}
+                },
+                Err(e) => {
+                    tracing::error!(error = %e, "roadmap merge sweep pass panicked — sweeping continues");
+                    // Don't park: the watch list may be non-empty, and the only
+                    // thing that nudges a parked sweep is a drainer settlement.
+                    tokio::select! {
+                        _ = tokio::time::sleep(SWEEP) => {}
+                        _ = signal().notified() => {}
+                    }
+                }
             }
         }
     });
@@ -227,10 +250,11 @@ fn watch_list(db: &Db) -> Vec<Watched> {
         .collect()
 }
 
-/// Poll each watched PR and apply whatever GitHub says. Sequential: the list is
-/// bounded by how many items are in review at once (one per project, given
-/// [`drainer::MAX_CONCURRENT_ROADMAP_RUNS`]), and conditional requests make a
-/// repeat read of an unchanged PR nearly free.
+/// Poll each watched PR and apply whatever GitHub says. Sequential on purpose:
+/// in-review items *accumulate* — [`drainer::MAX_CONCURRENT_ROADMAP_RUNS`] caps
+/// live runs, not open reviews, and a settled run frees its slot — but the list
+/// only grows as fast as runs finish, and conditional requests make a repeat
+/// read of an unchanged PR nearly free (a 304 isn't billed).
 async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
     // One repo path per project per sweep — resolving it is a database read,
     // and every item in a project shares the answer.
@@ -252,7 +276,10 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
             continue;
         };
         tracing::info!(item = %w.code, pr = w.number, ?outcome, "roadmap merge sweep");
-        drainer::write_item(app, db, &w.id, patch);
+        // Conditional on the row still being in review: the verdict was decided
+        // over a network read, and a row the user moved meanwhile (marked done
+        // by hand, re-queued after a delete) must not be stamped over.
+        drainer::write_item_where(app, db, &w.id, ItemStatus::InReview, patch);
         match outcome {
             Verdict::Landed => {
                 // The item is `done`, which is what a dependant's dep gate is

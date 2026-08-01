@@ -17,8 +17,9 @@
 //!   agent's RPC, the queue drainer) updates the board without a refetch.
 //! - `roadmap:item-deleted` — the deleted row's id, so the board drops it
 //!   instead of upserting it.
-//! - `roadmap:queue-note` — transient, from [`drainer`]: why a queued item isn't
-//!   moving. Nothing persists it; see that module's docs for why.
+//! - `roadmap:queue-note` — transient: why an item isn't moving on its own.
+//!   From [`drainer`] (a queued item's blocker) and [`merge_sweep`] (a PR that
+//!   closed without merging). Nothing persists it; see the drainer's docs.
 //!
 //! Autonomous dispatch lives in [`drainer`]: `queued` items become running
 //! workflows there, and every mutation on this surface [`drainer::nudge`]s it so
@@ -145,10 +146,17 @@ pub async fn roadmap_update_item(
     };
     let outcome = outcome.ok_or_else(|| format!("roadmap item {id} no longer exists"))?;
     // A miss changed nothing, so there is nothing to announce and nothing new
-    // for the drainer to look at.
+    // for either background task to look at.
     if outcome.applied {
         emit_item(&app, &outcome.item);
         drainer::nudge();
+        // The sweep parks while nothing is in review, and the drainer's
+        // settlement is otherwise its only alarm clock — a patch that leaves a
+        // row in review through this surface must ring it too. Gated on the
+        // status so a title edit doesn't cut a sleeping sweep's interval short.
+        if outcome.item.status == types::ItemStatus::InReview {
+            merge_sweep::nudge();
+        }
     }
     Ok(outcome)
 }
