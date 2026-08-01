@@ -91,10 +91,14 @@ impl Guarantee {
                  .git/config — nested read-only binds would stop a direct write but not a \
                  rename, because Docker mounts follow the inode where seatbelt's path rules do \
                  not. Instead host-side git refuses to run in a checkout whose config would \
-                 execute a program (crate::git::hardening), which is engine-independent. That \
-                 refusal covers every command that can trigger one: the git::cmd helper seam \
-                 plus the read and pull paths that build a command directly. push and fetch are \
-                 deliberately outside it, running no filter, textconv or merge driver",
+                 execute a program (crate::git::hardening), which is engine-independent. It \
+                 reads every scope the agent can write (local and worktree, via --show-scope), \
+                 so a key smuggled into .git/config.worktree is caught too. That refusal covers \
+                 every command that can trigger one: the git::cmd helper seam plus the read, \
+                 pull and push/fetch paths that build a command directly. push/fetch run no \
+                 filter or merge driver but do run the transport-executing keys core.sshCommand, \
+                 core.gitProxy and remote.<name>.uploadpack/receivepack, which the -c overrides \
+                 omit, so the refusal covers them there too",
             ),
 
             // Seatbelt denies the app-data dir explicitly; Docker never mounts it.

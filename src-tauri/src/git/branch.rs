@@ -40,6 +40,16 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 /// Never errors: a missing `origin`, an offline machine, or a purely local
 /// branch are all expected and simply mean "use local state".
 pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
+    // A fetch over ssh or a local path runs the transport-executing keys
+    // `core.sshCommand`, `core.gitProxy` and `remote.<origin>.uploadpack` — which
+    // `config_overrides` omits, so this direct-build path needs the refusal
+    // explicitly. `repo` is the clone `dest`, an agent checkout under
+    // `checkouts_root`; a refusal degrades to a local ref, the same outcome as an
+    // offline fetch, so `config_is_safe` (which logs and returns false) fits the
+    // never-errors contract.
+    if !super::hardening::config_is_safe(repo).await {
+        return None;
+    }
     // `kill_on_drop` so a timeout actually tears down the hung git process
     // (and its SSH child) rather than orphaning it to keep blocking on the
     // dead connection.

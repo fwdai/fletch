@@ -30,12 +30,24 @@
 //! (1) sits at one seam because it can — it is infallible, so `git_dist` applies
 //! it to every spawn. (2) is async and fallible, so it cannot live there without
 //! making every git spawn fallible; it is applied at `git::cmd`'s shared helper
-//! (which `run_git` / `git_output` / `run_git_env` all funnel through) plus the
-//! four paths that build a command directly *and* run a triggering command:
+//! (which `run_git` / `git_output` / `run_git_env` all funnel through) plus every
+//! path that builds a command directly *and* runs a triggering command:
 //! `git_state`'s three public reads (diff/status/numstat → textconv, clean
-//! filters) and `git::transport::pull` (merge → merge drivers). `push` and
-//! `fetch` build directly too and are deliberately not guarded: neither runs a
-//! filter, textconv or merge driver.
+//! filters), `git::transport::pull` (merge → merge drivers), and the push/fetch
+//! transport paths (`git::transport::push`, `push_head_to_branch`,
+//! `git::branch::fetch_fork_point`, `sandbox::provision::fetch`).
+//!
+//! push/fetch were once left out on the reasoning that "neither runs a filter,
+//! textconv or merge driver" — true, but incomplete: [`EXEC_CONFIG`] also lists
+//! the *transport*-executing keys `core.sshCommand`, `core.gitProxy` and
+//! `remote.<name>.uploadpack`/`receivepack`, which git runs during push/fetch
+//! over ssh/local transport, and [`config_overrides`] deliberately omits them
+//! (they carry a user's real ssh/credential auth). So for push/fetch neither
+//! layer covered those keys — an agent-planted `remote.origin.receivepack` fired
+//! on the next `git push`. The refusal now runs on these paths too. It is scoped
+//! to `checkouts_root`, so `git::transport::fetch_base` — which fetches the
+//! user-owned *source* repo, not an agent checkout — is a no-op and needs no
+//! call: that repo is not agent-writable.
 
 use std::path::Path;
 
@@ -115,8 +127,11 @@ const EXEC_CONFIG: &[(&str, &str)] = &[
 /// Scoped to **agent checkouts**. A user's own repository legitimately carries
 /// these keys — husky sets `core.hooksPath`, git-lfs sets `filter.lfs.*` — and
 /// refusing there would break the app for them. Their repo is also not
-/// agent-writable, so there is nothing to defend against. Only the local scope is
-/// read, for the same reason: global config is the user's, not the agent's.
+/// agent-writable, so there is nothing to defend against. Only the **local and
+/// worktree** scopes are read, for the same reason: global and system config are
+/// the user's, not the agent's — while `.git/config.worktree` (honoured when
+/// `extensions.worktreeConfig=true`) is as agent-writable as `.git/config`, so it
+/// must be read too or a key smuggled there evades the refusal.
 ///
 /// Fails **closed** rather than sanitising. Unsetting the keys would be
 /// self-healing but has to reach through `include.path` indirection and
@@ -159,8 +174,15 @@ async fn refuse_steerable_config_under(dir: &Path, checkouts_root: &Path) -> Res
     // `--includes` is mandatory: git honours keys pulled in by `include.path`,
     // but omits them from the listing unless asked, so without it an agent could
     // smuggle the whole payload behind one innocuous-looking key.
+    // `--show-scope` (not `--local`): git honours `.git/config.worktree` whenever
+    // `extensions.worktreeConfig=true`, and that file is as agent-writable as
+    // `.git/config` under Docker — yet `--local` never lists it, so a
+    // `filter.*.clean` planted there was invisible to this check. Listing every
+    // scope and filtering to the agent-writable ones (`local`/`worktree`, in
+    // `steerable_keys`) closes that gap without hard-coding a single worktree key,
+    // so any future worktree-scoped exec key is caught too.
     let out = crate::git_dist::command(dir)
-        .args(["config", "--local", "--list", "--includes"])
+        .args(["config", "--list", "--show-scope", "--includes"])
         .output()
         .await?;
     // A non-zero exit means no local config to read (not yet a repo, no config
@@ -180,15 +202,34 @@ async fn refuse_steerable_config_under(dir: &Path, checkouts_root: &Path) -> Res
     )))
 }
 
-/// The keys in a `git config --list` listing that would make git run a program.
-/// Pure, so the matching is testable without a repository.
+/// The config scopes an agent can write, and thus the only ones whose keys can
+/// steer git. `--show-scope` tags each line with its origin; `global`/`system`
+/// are the *user's* config (out of an agent's reach and legitimately carrying
+/// these keys), and `command`/`unknown` are ours or the environment's — so only
+/// `local` (`.git/config`) and `worktree` (`.git/config.worktree`) count. Both
+/// live inside the agent-writable checkout.
+const AGENT_WRITABLE_SCOPES: &[&str] = &["local", "worktree"];
+
+/// The keys in a `git config --list --show-scope` listing that would make git run
+/// a program *and* sit in an agent-writable scope. Pure, so the matching is
+/// testable without a repository.
 fn steerable_keys(listing: &str) -> Vec<String> {
     listing
         .lines()
-        .filter_map(|line| line.split('=').next())
-        .map(str::trim)
-        .filter(|key| !key.is_empty() && executes_a_program(key))
-        .map(str::to_string)
+        .filter_map(|line| {
+            // `--show-scope` prefixes each entry with `<scope>\t`; the scope never
+            // contains a tab, so the first tab is the scope/entry boundary. A user's
+            // own global `core.hooksPath` (husky) must not be refused, so keys
+            // outside the agent-writable scopes are dropped here, before matching.
+            let (scope, entry) = line.split_once('\t')?;
+            if !AGENT_WRITABLE_SCOPES.contains(&scope.trim()) {
+                return None;
+            }
+            // Split the key off at the *first* `=`: the key never contains one, but
+            // a value (a command with arguments) can.
+            let key = entry.split('=').next()?.trim();
+            (!key.is_empty() && executes_a_program(key)).then(|| key.to_string())
+        })
         .collect()
 }
 
@@ -309,18 +350,18 @@ mod tests {
     /// fresh `--shared` clone plus a `push -u` leaves behind.
     #[test]
     fn ordinary_clone_config_is_not_flagged() {
-        let listing = "core.repositoryformatversion=0\n\
-                       core.filemode=true\n\
-                       core.bare=false\n\
-                       core.logallrefupdates=true\n\
-                       core.ignorecase=true\n\
-                       core.precomposeunicode=true\n\
-                       remote.origin.url=/tmp/src\n\
-                       remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*\n\
-                       branch.main.remote=origin\n\
-                       branch.main.merge=refs/heads/main\n\
-                       user.name=Tester\n\
-                       user.email=t@example.com\n";
+        let listing = "local\tcore.repositoryformatversion=0\n\
+                       local\tcore.filemode=true\n\
+                       local\tcore.bare=false\n\
+                       local\tcore.logallrefupdates=true\n\
+                       local\tcore.ignorecase=true\n\
+                       local\tcore.precomposeunicode=true\n\
+                       local\tremote.origin.url=/tmp/src\n\
+                       local\tremote.origin.fetch=+refs/heads/*:refs/remotes/origin/*\n\
+                       local\tbranch.main.remote=origin\n\
+                       local\tbranch.main.merge=refs/heads/main\n\
+                       local\tuser.name=Tester\n\
+                       local\tuser.email=t@example.com\n";
         assert!(
             steerable_keys(listing).is_empty(),
             "a plain clone must not be refused: {:?}",
@@ -329,15 +370,22 @@ mod tests {
     }
 
     /// A value containing `=` (a command with arguments) must not confuse the
-    /// key/value split, and every offending key is reported so the message tells
-    /// the user what to remove.
+    /// scope/key/value split, and every offending key in an agent-writable scope
+    /// is reported so the message tells the user what to remove. The `worktree`
+    /// scope counts (`.git/config.worktree` is agent-writable), while a `global`
+    /// exec key is the *user's* — husky's `core.hooksPath` — and must be spared.
     #[test]
-    fn steerable_keys_reports_each_offender() {
-        let listing = "core.hookspath=/tmp/h\n\
-                       filter.evil.clean=/bin/sh -c 'x=1'\n\
-                       branch.main.merge=refs/heads/main\n";
+    fn steerable_keys_reports_each_scoped_offender() {
+        let listing = "local\tcore.hookspath=/tmp/h\n\
+                       local\tfilter.evil.clean=/bin/sh -c 'x=1'\n\
+                       worktree\tfilter.wt.smudge=/tmp/wt.sh\n\
+                       global\tcore.hookspath=/usr/share/husky\n\
+                       local\tbranch.main.merge=refs/heads/main\n";
         let found = steerable_keys(listing);
-        assert_eq!(found, vec!["core.hookspath", "filter.evil.clean"]);
+        assert_eq!(
+            found,
+            vec!["core.hookspath", "filter.evil.clean", "filter.wt.smudge"]
+        );
     }
 
     /// A repo Fletch did not provision is never refused: a user's own repository
@@ -402,6 +450,93 @@ mod tests {
         refuse_steerable_config_under(&repo, &td.path().join("elsewhere"))
             .await
             .expect("out-of-scope repos are never refused");
+    }
+
+    /// The worktree-config evasion: git honours `.git/config.worktree` whenever
+    /// `extensions.worktreeConfig=true`, and under Docker that file is as
+    /// agent-writable as `.git/config` — yet `git config --local --list` never
+    /// shows it, so a `filter.*.clean` planted there used to run on the next diff
+    /// poll while the refusal saw only the innocuous `extensions.worktreeconfig`.
+    /// `--show-scope` lists the worktree scope, so it is now refused.
+    #[tokio::test]
+    async fn a_worktree_config_smuggled_filter_is_still_refused() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("workspaces");
+        let repo = root.join("agent-1/repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        git(&["init", "-q"]);
+
+        // Clean to begin with, so a false positive would show up here first.
+        refuse_steerable_config_under(&repo, &root)
+            .await
+            .expect("a fresh clone must not be refused");
+
+        // `extensions.worktreeConfig` is not itself a steerable key, and it lives
+        // in `.git/config`; the payload lives one scope over, in
+        // `.git/config.worktree`, which `--worktree` writes.
+        git(&["config", "extensions.worktreeConfig", "true"]);
+        assert!(
+            git(&["config", "--worktree", "filter.evil.clean", "/tmp/pwn.sh"])
+                .status
+                .success(),
+            "planting the worktree-scoped filter must succeed"
+        );
+
+        let err = refuse_steerable_config_under(&repo, &root)
+            .await
+            .expect_err("a worktree-config-smuggled filter must be refused")
+            .to_string();
+        assert!(err.contains("filter.evil.clean"), "got: {err}");
+    }
+
+    /// GAP 2: push/fetch over ssh or a local path run the *transport*-executing
+    /// keys — `core.sshCommand`, `core.gitProxy` and
+    /// `remote.<name>.uploadpack`/`receivepack` — which `config_overrides` omits
+    /// (they carry a user's real auth). `git::transport::push`/`fetch_fork_point`
+    /// now front their spawn with this refusal, so a planted transport key on an
+    /// agent checkout is caught before the transport ever runs it.
+    #[tokio::test]
+    async fn a_planted_transport_key_is_refused_before_push_or_fetch() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("workspaces");
+        let repo = root.join("agent-1/repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        git(&["init", "-q"]);
+
+        // Each key git would execute during ssh/local push or fetch must trip the
+        // refusal on its own, so the guard covers the whole transport family.
+        for (key, value) in [
+            ("remote.origin.receivepack", "/tmp/pwn.sh"),
+            ("remote.origin.uploadpack", "/tmp/pwn.sh"),
+            ("core.sshCommand", "/tmp/pwn.sh -o foo=bar"),
+            ("core.gitProxy", "/tmp/pwn.sh"),
+        ] {
+            refuse_steerable_config_under(&repo, &root)
+                .await
+                .expect("clean between plants");
+            git(&["config", key, value]);
+            let err = refuse_steerable_config_under(&repo, &root)
+                .await
+                .expect_err("a planted transport key must be refused before push/fetch")
+                .to_string();
+            let leaf = key.rsplit('.').next().unwrap().to_ascii_lowercase();
+            assert!(err.contains(&leaf), "expected {leaf} in: {err}");
+            git(&["config", "--unset", key]);
+        }
     }
 
     /// The guard end to end, against a real repo carrying a real payload: the

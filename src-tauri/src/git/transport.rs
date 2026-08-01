@@ -13,6 +13,13 @@ use super::cmd::{git_output, git_output_env, identity_env, merge_git_env, output
 /// authenticates with the app's token; a workspace `pre-push` hook cannot fire
 /// because hooks are neutralised at the spawn seam (`git::hardening`).
 pub async fn push_head_to_branch(checkout: &Path, branch: &str) -> Result<()> {
+    // A push over ssh or a local path runs the transport-executing config keys
+    // `remote.<origin>.receivepack`, `core.sshCommand` and `core.gitProxy` — which
+    // `config_overrides` deliberately omits (they carry a user's real auth), so
+    // neither hardening layer neutralises them for push. Refuse a steerable
+    // checkout here, before the transport runs a planted one. Scoped to
+    // `checkouts_root`, so a push against a non-agent target is a no-op.
+    super::hardening::refuse_steerable_config(checkout).await?;
     let mut cmd = crate::git_dist::command(checkout);
     cmd.args(["push", "origin", &format!("HEAD:refs/heads/{branch}")]);
     for (k, v) in crate::github::git_auth_env() {
@@ -46,6 +53,10 @@ pub async fn push_head_to_branch(checkout: &Path, branch: &str) -> Result<()> {
 /// push), otherwise `"pushed"`. Lets the UI confirm the outcome instead of
 /// silently doing nothing when there was nothing to send.
 pub async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> {
+    // See `push_head_to_branch`: push executes `remote.<origin>.receivepack` /
+    // `core.sshCommand` / `core.gitProxy` over ssh/local transport, transport keys
+    // that neither hardening layer neutralises, so the refusal runs before we spawn.
+    super::hardening::refuse_steerable_config(checkout).await?;
     let mut cmd = crate::git_dist::command(checkout);
     cmd.args(["push", "-u"]);
     if force {
@@ -82,8 +93,9 @@ pub async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> 
 pub async fn pull(checkout: &Path) -> Result<()> {
     // A pull merges, so it runs `merge.<name>.driver` — a wildcard key the `-c`
     // overrides cannot neutralise by name. This builds its command directly, so it
-    // needs the config guard explicitly; `push`/`fetch` above do not, because
-    // neither runs a filter, textconv or merge driver.
+    // needs the config guard explicitly, the same as `push` above (which runs the
+    // transport-executing keys) and every other direct-build path on an agent
+    // checkout.
     super::hardening::refuse_steerable_config(checkout).await?;
     let mut cmd = crate::git_dist::command(checkout);
     cmd.args(["pull"]);
@@ -117,6 +129,10 @@ pub async fn pull(checkout: &Path) -> Result<()> {
 /// for the caller to log-and-skip rather than surface. No-op-ish when the source
 /// has no `origin` — git simply fails, which the caller swallows.
 pub async fn fetch_base(source_repo: &Path, base: &str) -> Result<()> {
+    // No `refuse_steerable_config` here: this fetch runs on the user-owned *source*
+    // repo, which sits outside `checkouts_root` and is not agent-writable, so the
+    // (scoped) refusal would be a no-op. The transport-key guard belongs on the
+    // agent-checkout fetch paths (`fetch_fork_point`, `provision::fetch`), not here.
     let mut cmd = crate::git_dist::command(source_repo);
     cmd.args(["fetch", "--quiet", "origin", base]);
     for (k, v) in crate::github::git_auth_env() {
