@@ -96,19 +96,29 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
 }
 
 /** Locate a `prev` item within the freshly-rebuilt transcript so a carried-over
- *  follow-up can be re-anchored next to it. Scans forward from `from` and
+ *  store-only item can be re-anchored next to it. Scans forward from `from` and
  *  returns the FIRST match, so callers advancing `from` in step with a forward
  *  walk through `prev` get a monotonically-advancing anchor: duplicate text
  *  (e.g. repeated "OK" acknowledgements) then resolves to the occurrence at this
  *  point in the turn rather than the last one in the log. Tool calls match on
- *  their stable id; user/agent messages on exact text; other kinds aren't
- *  reliable anchors. Returns -1 when not found at or after `from`. */
+ *  their stable id; user/agent messages and reasoning on exact text; other
+ *  kinds aren't reliable anchors. Returns -1 when not found at or after `from`. */
 function locateAnchor(rebuilt: ChatItem[], item: ChatItem, from: number): number {
-  if (item.kind !== "tool_call" && item.kind !== "user_message" && item.kind !== "agent_message") {
+  const isReasoning = item.kind === "notice" && item.subtype === "reasoning";
+  if (
+    item.kind !== "tool_call" &&
+    item.kind !== "user_message" &&
+    item.kind !== "agent_message" &&
+    !isReasoning
+  ) {
     return -1;
   }
   const textOf = (r: ChatItem): string | undefined =>
-    r.kind === "user_message" || r.kind === "agent_message" ? r.text : undefined;
+    r.kind === "user_message" ||
+    r.kind === "agent_message" ||
+    (r.kind === "notice" && r.subtype === "reasoning")
+      ? r.text
+      : undefined;
   for (let i = Math.max(from, 0); i < rebuilt.length; i += 1) {
     const r = rebuilt[i];
     if (item.kind === "tool_call") {
@@ -120,7 +130,8 @@ function locateAnchor(rebuilt: ChatItem[], item: ChatItem, from: number): number
   return -1;
 }
 
-/** Carry forward store-only items — optimistic mid-turn follow-ups
+/** Carry forward store-only items — optimistic mid-turn follow-ups,
+ *  readable Codex reasoning awaiting its durable compiled-record write,
  *  (`queued_message`) and user-invoked command output (`command_output`
  *  notices: `/doctor`, `/cost`, a blocked-command explanation) — onto a log
  *  just rebuilt from canonical records. Neither ever lands in the transcript,
@@ -170,6 +181,12 @@ export function carryForwardStoreOnly(rebuilt: ChatItem[], prev: ChatItem[]): Ch
     } else if (it.kind === "notice" && it.subtype === "command_output") {
       // Command output lives only in the store — always re-insert it.
       carry(it);
+    } else if (it.kind === "notice" && it.subtype === "reasoning") {
+      // A persisted compiled reasoning record may already have restored it. If
+      // not, keep the live row in place while that asynchronous write settles.
+      const idx = locateAnchor(rebuilt, it, anchor + 1);
+      if (idx >= 0) anchor = idx;
+      else carry(it);
     } else {
       const idx = locateAnchor(rebuilt, it, anchor + 1);
       if (idx >= 0) anchor = idx;

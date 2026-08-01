@@ -32,9 +32,9 @@ pub fn sync_session(supervisor: State<'_, Arc<Supervisor>>, agent_id: String) ->
 }
 
 /// Persist a runtime-compiled record (`source = 'live_compiled'`) the frontend
-/// holds but the on-disk transcript lacks — currently cursor's per-turn token
-/// usage, which it emits only on its live `result` event. Idempotent on
-/// `native_id` (use the event's `request_id`), so re-sending a turn is a no-op.
+/// holds but the on-disk transcript lacks — for example live-only usage and
+/// readable Codex reasoning (the rollout stores only encrypted text). Idempotent
+/// on `native_id`, so re-sending a turn is a no-op.
 /// Returns whether a new row was inserted.
 #[tauri::command]
 pub fn append_live_record(
