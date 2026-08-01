@@ -413,6 +413,35 @@ mod tests {
     }
 
     #[test]
+    fn a_wire_borne_null_clears_the_column() {
+        // The other update tests build `ItemPatch` in Rust and bypass serde;
+        // the frontend's patches arrive as JSON through the command layer.
+        // This is the edit dialog's "Unsized" path, end to end.
+        let conn = test_conn();
+        let p = project(&conn, "p1", "fletch");
+        let item = create(
+            &conn,
+            &p,
+            &NewItem {
+                title: "sized".into(),
+                size: Some(ItemSize::M),
+                area: Some("runtime".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let patch: ItemPatch = serde_json::from_str(r#"{"size": null}"#).unwrap();
+        let row = update(&conn, &item.id, &patch).unwrap().unwrap();
+        assert_eq!(row.size, None, "the dialog's clear must stick");
+        assert_eq!(
+            row.area.as_deref(),
+            Some("runtime"),
+            "absent keys stay untouched"
+        );
+    }
+
+    #[test]
     fn update_patches_only_named_fields_and_clears_with_null() {
         let conn = test_conn();
         let p = project(&conn, "p1", "fletch");

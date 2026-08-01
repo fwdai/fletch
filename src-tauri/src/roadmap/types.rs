@@ -156,9 +156,9 @@ pub struct NewItem {
 }
 
 /// A partial update. An absent field is left alone; an explicit `null` on a
-/// nullable column clears it (`Option<Option<T>>` — serde maps absent to `None`
-/// and `null` to `Some(None)`), which is how "unset the size" is expressed
-/// without a second command.
+/// nullable column clears it (`Option<Option<T>>` with [`double_option`] —
+/// absent is `None`, `null` is `Some(None)`), which is how "unset the size" is
+/// expressed without a second command.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ItemPatch {
     #[serde(default)]
@@ -175,22 +175,36 @@ pub struct ItemPatch {
     pub accept: Option<Vec<String>>,
     #[serde(default)]
     pub deps: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub size: Option<Option<ItemSize>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub area: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub epic: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub agent_id: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub workflow_def_id: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub run_id: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub pr_url: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "double_option")]
     pub pr_number: Option<Option<i64>>,
+}
+
+/// Keep a double-`Option` field's `null` distinct from its absence. Serde's
+/// stock `Option` deserializer folds JSON `null` into the *outer* `None`, which
+/// would make "clear this column" unreachable from the frontend — the patch
+/// would read as "leave it alone" and the edit dialog's clears would silently
+/// revert. This runs only when the key is present, so `null` lands as
+/// `Some(None)`; `#[serde(default)]` still covers the absent case.
+fn double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 // ───────────────────────────── row helpers ──────────────────────────────
@@ -238,5 +252,24 @@ pub(crate) fn strings_to_col(v: &[String]) -> Option<String> {
         None
     } else {
         serde_json::to_string(v).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the wire semantics of the patch: the store tests build `ItemPatch`
+    /// in Rust and never touch serde, but the frontend's patches arrive as
+    /// JSON through the command layer, where `null` and "absent" are different
+    /// bytes that must stay different values.
+    #[test]
+    fn patch_null_clears_value_sets_absent_keeps() {
+        let p: ItemPatch = serde_json::from_str(r#"{"size": null, "area": "runtime"}"#).unwrap();
+        assert_eq!(p.size, Some(None), "an explicit null means 'clear'");
+        assert_eq!(p.area, Some(Some("runtime".into())), "a value means 'set'");
+        assert_eq!(p.epic, None, "an absent key means 'leave alone'");
+        assert_eq!(p.workflow_def_id, None);
+        assert_eq!(p.title, None);
     }
 }
