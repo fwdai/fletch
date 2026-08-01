@@ -24,7 +24,10 @@ const STATE: Partial<Record<ItemStatus, { label: string; cls: string; tip: strin
   in_review: {
     label: "In review",
     cls: "r",
-    tip: "Its run opened a pull request; it ships when that merges",
+    // The watch is host-side (src-tauri/src/roadmap/merge_sweep.rs), so this is
+    // a promise the app keeps with the window closed — worth saying, because it
+    // is the difference between "check back here" and "go merge it".
+    tip: "Its run opened a pull request — merge it and this ships on its own",
   },
 };
 
@@ -50,7 +53,9 @@ interface Props {
   /** The workflow this item would run under ("Project default" resolved), or
    *  null when nothing would run it — the queue would stall on it. */
   workflowName?: string | null;
-  /** Why this queued item isn't moving, straight from the drainer. */
+  /** Why this item isn't moving, straight from the queue: the drainer's reason
+   *  a queued row is stuck, or the merge sweep's "PR #N was closed without
+   *  merging" for one that came back off review. */
   note?: string;
   /** Ring the row: it was just jumped to, or a pending proposal moves it. */
   focused?: boolean;

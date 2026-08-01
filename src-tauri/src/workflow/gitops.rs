@@ -199,6 +199,10 @@ pub struct FinalizeOutcome {
     pub pushed: bool,
     pub branch: String,
     pub pr_url: Option<String>,
+    /// The PR's number, from the same `PrState` the URL came off. Carried
+    /// beside the URL (rather than re-parsed from it downstream) so the run row
+    /// can record the PR's identity as GitHub reported it — see migration 0029.
+    pub pr_number: Option<i64>,
     pub pr_error: Option<String>,
 }
 
@@ -228,18 +232,19 @@ pub async fn finalize(
     .await?;
     git::push_head_to_branch(run_repo, branch).await?;
 
-    let (pr_url, pr_error) = if open_pr {
+    let (pr_url, pr_number, pr_error) = if open_pr {
         match crate::github::pr_create_head(run_repo, branch, title, body, base).await {
-            Ok(pr) => (Some(pr.url), None),
-            Err(e) => (None, Some(e.to_string())),
+            Ok(pr) => (Some(pr.url), Some(i64::from(pr.number)), None),
+            Err(e) => (None, None, Some(e.to_string())),
         }
     } else {
-        (None, None)
+        (None, None, None)
     };
     Ok(FinalizeOutcome {
         pushed: true,
         branch: branch.to_string(),
         pr_url,
+        pr_number,
         pr_error,
     })
 }

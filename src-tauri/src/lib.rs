@@ -1476,6 +1476,7 @@ pub fn run() {
 
             let db_for_wf = db.clone();
             let db_for_roadmap = db.clone();
+            let db_for_merge_sweep = db.clone();
             let workspace = Arc::new(WorkspaceManager::new(db));
 
             // Drop RPC mailboxes left by agents that are gone. Teardown removes
@@ -1526,6 +1527,14 @@ pub fn run() {
                 db_for_roadmap,
                 wf_service.clone(),
             );
+            // The other end of the same loop: watch the PRs of items already
+            // `in_review` and ship them when they merge. Host-side on purpose —
+            // the webview's PR polling stops with the window, and a queue whose
+            // dependants unblock only while you are looking at the board is not
+            // an autonomous queue. Sweeps once now (a PR may well have merged
+            // while the app was closed), then sleeps until there is something
+            // to watch.
+            crate::roadmap::merge_sweep::spawn(app.handle().clone(), db_for_merge_sweep);
             // Reload follow-ups that were queued behind an in-flight turn when a
             // prior run exited, so a mid-turn message survives a restart. They
             // rest in the queue and flush on the user's next send (no auto-spawn).

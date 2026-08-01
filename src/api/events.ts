@@ -54,11 +54,12 @@ export function onRoadmapItemDeleted(cb: (id: string) => void): Promise<Unlisten
   return listen<string>("roadmap:item-deleted", (event) => cb(event.payload));
 }
 
-/** `roadmap:queue-note` explains why a queued item isn't moving — no workflow
- *  to run it under, a dependency that hasn't landed, a launch that failed. The
- *  board shows it inline on the row; nothing persists it, so a listener that
- *  wasn't mounted simply didn't hear it (the drainer repeats itself when the
- *  reason changes). */
+/** `roadmap:queue-note` explains why an item isn't moving — no workflow to run
+ *  it under, a dependency that hasn't landed, a launch that failed, or a PR
+ *  that was closed without merging (the merge sweep sends that one alongside
+ *  the row's flip back to `open`). The board shows it inline on the row;
+ *  nothing persists it, so a listener that wasn't mounted simply didn't hear it
+ *  (the drainer repeats itself when the reason changes). */
 export function onRoadmapQueueNote(cb: (note: RoadmapQueueNote) => void): Promise<UnlistenFn> {
   return listen<RoadmapQueueNote>("roadmap:queue-note", (event) => cb(event.payload));
 }

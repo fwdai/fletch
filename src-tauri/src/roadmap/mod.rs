@@ -23,8 +23,14 @@
 //! Autonomous dispatch lives in [`drainer`]: `queued` items become running
 //! workflows there, and every mutation on this surface [`drainer::nudge`]s it so
 //! a queue action doesn't wait out the tick interval.
+//!
+//! [`merge_sweep`] closes the loop at the other end: it watches the PRs of
+//! `in_review` items and moves them to `done` when they merge on GitHub. It is
+//! host-side rather than in the webview precisely so a queue keeps draining
+//! with the window shut.
 
 pub mod drainer;
+pub mod merge_sweep;
 pub mod store;
 pub mod types;
 

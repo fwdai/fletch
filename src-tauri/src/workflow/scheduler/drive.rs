@@ -550,6 +550,11 @@ async fn finalize_run(
             None,
             &json!({ "url": url }),
         );
+        // …and onto the row itself (0029). The journal event is the run's
+        // history; the columns are the queryable fact. The roadmap merge sweep
+        // needs the latter — "every `in_review` item's PR number" has to be one
+        // read, not a journal scan per run per tick.
+        set_pr(&conn, ctx.app.as_ref(), run_id, outcome.pr_number, &url);
     } else if let Some(err) = outcome.pr_error {
         journal_event(
             &conn,

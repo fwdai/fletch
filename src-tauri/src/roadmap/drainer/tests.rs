@@ -42,6 +42,14 @@ fn codes(list: &[&str]) -> HashSet<String> {
     list.iter().map(|s| (*s).to_string()).collect()
 }
 
+/// The PR a finished run recorded on its row.
+fn pr(number: Option<i64>) -> FinalizedPr {
+    FinalizedPr {
+        url: "https://github.com/o/r/pull/42".into(),
+        number,
+    }
+}
+
 // ───────────────────────────── ordering ─────────────────────────────────
 
 #[test]
@@ -240,12 +248,21 @@ fn a_live_run_leaves_its_item_alone() {
 
 #[test]
 fn a_finished_run_with_a_pr_lands_in_review() {
-    // PR 5's merge sweep is what takes it from here to `done`.
+    // `merge_sweep` is what takes it from here to `done`, once GitHub says the
+    // PR merged.
     assert_eq!(
-        settle(
-            Some(RunStatus::Done),
-            Some("https://github.com/o/r/pull/42")
-        ),
+        settle(Some(RunStatus::Done), Some(&pr(Some(42)))),
+        Settlement::InReview
+    );
+}
+
+#[test]
+fn a_pr_whose_number_never_landed_still_reaches_review() {
+    // The URL is what makes it reviewable; the number is what makes it
+    // *pollable*. Without one the item sits in review until a human moves it,
+    // which is better than settling work that has an open PR straight to done.
+    assert_eq!(
+        settle(Some(RunStatus::Done), Some(&pr(None))),
         Settlement::InReview
     );
 }
@@ -273,20 +290,6 @@ fn a_lost_run_releases_its_item_back_to_the_board() {
         settle(None, None),
         Settlement::Released("its run was deleted")
     );
-}
-
-#[test]
-fn pr_numbers_come_off_the_url_or_not_at_all() {
-    assert_eq!(
-        pr_number_from_url("https://github.com/o/r/pull/142"),
-        Some(142)
-    );
-    assert_eq!(
-        pr_number_from_url("https://github.com/o/r/pull/142/"),
-        Some(142)
-    );
-    assert_eq!(pr_number_from_url("https://github.com/o/r/pulls"), None);
-    assert_eq!(pr_number_from_url(""), None);
 }
 
 // ───────────────────────────── crash recovery ───────────────────────────
