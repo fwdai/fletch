@@ -17,6 +17,60 @@ pub(crate) fn fold_child_ledger(run: &mut Ledger, child: &Ledger) {
     }
 }
 
+/// Reserve a stage child's budget slice out of the run ledger just before it
+/// launches (§11.2) and stamp it on the child ctx, so the child bounds its own
+/// ledger to the slice and the stage releases it on completion. The
+/// parallel/orchestrate analogue of a composed sub-run's reservation (§10.3):
+/// concurrent children draw from ONE run budget, so each carves its worst-case
+/// spend off what remains and N of them can't collectively overrun the run cap
+/// before the boundary fold ever runs. Reserving *here* — the moment a child
+/// actually starts, not when its ctx was built — means a child that starts only
+/// after an earlier one freed its slice draws from the up-to-date remaining budget,
+/// so an ample budget still lets every child run (no false early-stop).
+pub(crate) fn reserve_child_budget(
+    ledger: &mut Ledger,
+    run_eff: &EffectiveBudgets,
+    c: &mut ChildCtx,
+) {
+    let step_eff = run_eff.for_step(c.step.budgets.as_ref());
+    let (turns, tokens) = ledger.reserve_child_slice(run_eff, &step_eff);
+    c.reserved_turns = turns;
+    c.reserved_tokens = tokens;
+}
+
+/// Clamp a stage child's effective run caps to the slice reserved for it (§11.2).
+/// The child runs against its own zero-based ledger on a detached task, so the run
+/// cap can't be enforced against the shared ledger from inside it; capping `turns`
+/// (and `tokens`, when the run is token-capped) at the reserved slice is what stops
+/// the child at its share. A token-uncapped run stays uncapped.
+pub(crate) fn clamp_eff_to_slice(
+    step_eff: &mut EffectiveBudgets,
+    reserved_turns: i64,
+    reserved_tokens: i64,
+) {
+    step_eff.turns = reserved_turns;
+    if step_eff.tokens.is_some() {
+        step_eff.tokens = Some(reserved_tokens);
+    }
+}
+
+/// Launch the next queued parallel child: reserve its budget slice out of the run
+/// ledger first (§11.2), then spawn it onto the join set. A no-op once the queue is
+/// drained.
+fn launch_child(
+    set: &mut JoinSet<ChildResult>,
+    queue: &mut VecDeque<ChildCtx>,
+    ledger: &mut Ledger,
+    run_eff: &EffectiveBudgets,
+    stage_entry_sha: &Option<String>,
+) {
+    if let Some(mut c) = queue.pop_front() {
+        reserve_child_budget(ledger, run_eff, &mut c);
+        let entry = stage_entry_sha.clone();
+        set.spawn(async move { drive_child(c, entry).await });
+    }
+}
+
 /// Run a `parallel` stage with `integrate: none` (§6.6, §12.3): fork every child
 /// from the stage-entry ref, run them concurrently (bounded by `max_concurrent`),
 /// and join.
@@ -185,19 +239,15 @@ pub(crate) async fn run_parallel_stage(
             integrate: par.integrate,
             extra_note: None,
             generation: 0,
+            reserved_turns: 0,
+            reserved_tokens: 0,
             stage_cancel: stage_cancel.clone(),
         });
     }
 
     let mut set: JoinSet<ChildResult> = JoinSet::new();
-    let launch = |set: &mut JoinSet<ChildResult>, queue: &mut VecDeque<ChildCtx>| {
-        if let Some(c) = queue.pop_front() {
-            let entry = stage_entry_sha.clone();
-            set.spawn(async move { drive_child(c, entry).await });
-        }
-    };
     for _ in 0..concurrency {
-        launch(&mut set, &mut queue);
+        launch_child(&mut set, &mut queue, ledger, eff, &stage_entry_sha);
     }
 
     let mut successes = 0usize;
@@ -239,7 +289,10 @@ pub(crate) async fn run_parallel_stage(
                 continue;
             }
         };
-        // Fold the child's spend into the run ledger regardless of outcome.
+        // Reconcile the child against the run budget regardless of outcome (§11.2):
+        // release the slice it reserved at launch and fold its actual spend in its
+        // place — never both, so a slice is never double-counted.
+        ledger.release_child_slice(res.reserved_turns, res.reserved_tokens);
         fold_child_ledger(ledger, &res.ledger);
         match res.outcome {
             ChildOutcome::Success { moved_head, head } => {
@@ -276,9 +329,13 @@ pub(crate) async fn run_parallel_stage(
         }
         // Keep the pipeline full unless we're winding the stage down.
         if !stage_cancel.load(Ordering::SeqCst) {
-            launch(&mut set, &mut queue);
+            launch_child(&mut set, &mut queue, ledger, eff, &stage_entry_sha);
         }
     }
+
+    // Every child is terminal now; drop any slice a panicked child never released
+    // through the fold path above (§11.2) so it can't bleed into the next block.
+    ledger.clear_child_reservations();
 
     // Persist the folded ledger (children's turns/tokens) before returning.
     {
@@ -812,15 +869,23 @@ async fn resume_merge_stage(
 /// and honours `stage_cancel` — a loser's `run_attempt` stops its own agent and
 /// returns `Canceled`, so no agent is ever left running outside the workflow.
 async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResult {
-    let step_eff = c.eff.for_step(c.step.budgets.as_ref());
+    let mut step_eff = c.eff.for_step(c.step.budgets.as_ref());
+    // Bound this child to the run-budget slice reserved for it (§11.2): its ledger
+    // is zero-based, so its run caps become the slice — it stops at its share of the
+    // run budget, and its concurrent siblings can't add up past the run cap.
+    clamp_eff_to_slice(&mut step_eff, c.reserved_turns, c.reserved_tokens);
     let deadlines = deadlines_from(&c.base_deadlines, &step_eff);
     let max_attempts = step_eff.max_attempts;
     let mut child_ledger = Ledger::default();
 
+    let reserved_turns = c.reserved_turns;
+    let reserved_tokens = c.reserved_tokens;
     let done = |outcome: ChildOutcome, ledger: Ledger| ChildResult {
         step_id: c.step.id.clone(),
         outcome,
         ledger,
+        reserved_turns,
+        reserved_tokens,
     };
 
     // Tests-gate runner for this child, honoring its own `tests_timeout_secs`

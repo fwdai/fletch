@@ -246,6 +246,22 @@ pub struct Ledger {
     #[serde(default)]
     pub reserved_tokens: i64,
 
+    /// Turns/tokens promised to the parallel/orchestrate stage children currently
+    /// in flight (§11.2) — the stage analogue of a composed sub-run's
+    /// [`reserved_turns`](Self::reserved_turns): concurrent children draw from ONE
+    /// run budget, so each reserves its worst-case spend here before it runs and
+    /// `exceeded` / `remaining_*` count it, keeping N children from collectively
+    /// overrunning the run cap *during* the stage (not just at the post-stage fold).
+    /// Unlike a sub-run — resumed in place from the journal, so its reservation must
+    /// survive a restart — a stage child is simply re-run on resume, so its slice
+    /// must NOT persist (it would double-count against the re-run). Hence
+    /// `#[serde(skip)]`: a fresh drive re-reserves from a clean base, and a stage
+    /// clears its own outstanding child slices when it finishes.
+    #[serde(skip)]
+    child_reserved_turns: i64,
+    #[serde(skip)]
+    child_reserved_tokens: i64,
+
     /// Transient (never serialized): the current drive's start, set by
     /// [`Self::start_drive`]. `wall_ms` already holds prior drives' time.
     #[serde(skip)]
@@ -322,14 +338,15 @@ impl Ledger {
     /// The first run-level cap this ledger has reached, if any (§11.2). Checked at
     /// each enforcement point; `Some` pauses the run. `>=` because a cap of N
     /// permits N units of spend — reaching N means the next unit would exceed.
-    /// Reserved sub-run capacity (§10.3) counts against the caps: the parent must
-    /// not spend budget it has already promised to a live sub-run.
+    /// Reserved sub-run capacity (§10.3) and reserved stage-child capacity (§11.2)
+    /// both count against the caps: the parent must not spend budget it has already
+    /// promised to a live sub-run or an in-flight stage child.
     pub fn exceeded(&self, eff: &EffectiveBudgets, now_ms: i64) -> Option<BudgetLimit> {
-        if self.turns + self.reserved_turns >= eff.turns {
+        if self.turns + self.reserved_turns + self.child_reserved_turns >= eff.turns {
             return Some(BudgetLimit::Turns);
         }
         if let Some(cap) = eff.tokens {
-            if self.tokens + self.reserved_tokens >= cap {
+            if self.tokens + self.reserved_tokens + self.child_reserved_tokens >= cap {
                 return Some(BudgetLimit::Tokens);
             }
         }
@@ -339,17 +356,19 @@ impl Ledger {
         None
     }
 
-    /// Turns still spendable under `eff` after committed spend and live reservations
-    /// (spec §10.3 budget-fit check). Never negative.
+    /// Turns still spendable under `eff` after committed spend and every live
+    /// reservation — composed sub-runs (§10.3) and in-flight stage children (§11.2)
+    /// alike. Never negative.
     pub fn remaining_turns(&self, eff: &EffectiveBudgets) -> i64 {
-        (eff.turns - self.turns - self.reserved_turns).max(0)
+        (eff.turns - self.turns - self.reserved_turns - self.child_reserved_turns).max(0)
     }
 
     /// Tokens still spendable, or `None` when the run has no token cap (so a token
     /// reservation is unbounded and never rejected on token grounds).
     pub fn remaining_tokens(&self, eff: &EffectiveBudgets) -> Option<i64> {
-        eff.tokens
-            .map(|cap| (cap - self.tokens - self.reserved_tokens).max(0))
+        eff.tokens.map(|cap| {
+            (cap - self.tokens - self.reserved_tokens - self.child_reserved_tokens).max(0)
+        })
     }
 
     /// Reserve a sub-run's budget slice out of the parent ledger (§10.3). The slice
@@ -369,6 +388,61 @@ impl Ledger {
     pub fn release_reservation(&mut self, turns: i64, tokens: i64) {
         self.reserved_turns = (self.reserved_turns - turns).max(0);
         self.reserved_tokens = (self.reserved_tokens - tokens).max(0);
+    }
+
+    /// Reserve one parallel/orchestrate stage child's budget slice out of what the
+    /// run has left (§11.2), the stage analogue of [`Self::reserve`] for a composed
+    /// sub-run (§10.3). Concurrent children share the run's single ledger, so each
+    /// carves its worst-case turn spend — `max_attempts × turns_per_attempt`,
+    /// exactly the ceiling the child's own attempt/retry caps impose — off the
+    /// remaining turns before it starts; N children therefore cannot collectively
+    /// exceed the remaining run turns. The child carries no token cap of its own, so
+    /// its token slice mirrors its turn slice: the same fraction of the remaining
+    /// tokens it takes of the remaining turns (all of them when it takes all the
+    /// remaining turns). That bounds the stage's token spend to what the run has left
+    /// without a single child starving its siblings of the whole token budget — and
+    /// collapses to nothing when the run is token-uncapped. `remaining_*` already
+    /// nets out committed spend AND slices held by live siblings, so reserving in
+    /// launch order makes the children mutually exclusive. Returns the reserved
+    /// `(turns, tokens)`; the stage releases exactly this much with
+    /// [`Self::release_child_slice`] and folds the child's *actual* spend when it
+    /// finishes (never both, so a slice is never double-counted).
+    pub fn reserve_child_slice(
+        &mut self,
+        run: &EffectiveBudgets,
+        child: &EffectiveBudgets,
+    ) -> (i64, i64) {
+        let rem_turns = self.remaining_turns(run);
+        let want = child
+            .max_attempts
+            .saturating_mul(child.turns_per_attempt)
+            .max(0);
+        let turns = want.min(rem_turns);
+        let tokens = match self.remaining_tokens(run) {
+            None => 0, // token-uncapped run: nothing to reserve, never rejected
+            Some(rem) if rem_turns > 0 => rem.saturating_mul(turns) / rem_turns,
+            Some(rem) => rem, // no turns left → this child would hold the remainder
+        };
+        self.child_reserved_turns += turns;
+        self.child_reserved_tokens += tokens;
+        (turns, tokens)
+    }
+
+    /// Release a finished stage child's reserved slice (§11.2), paired with folding
+    /// its actual spend — the child analogue of [`Self::release_reservation`].
+    /// Floored at zero so a double release can never drive the reservation negative.
+    pub fn release_child_slice(&mut self, turns: i64, tokens: i64) {
+        self.child_reserved_turns = (self.child_reserved_turns - turns).max(0);
+        self.child_reserved_tokens = (self.child_reserved_tokens - tokens).max(0);
+    }
+
+    /// Drop every outstanding stage-child slice (§11.2). Called once when a
+    /// parallel/orchestrate stage finishes: a child that was cancelled and drained,
+    /// or that panicked, never released its slice through the normal fold path, and
+    /// — being transient — it must not linger into the next block's budget math.
+    pub fn clear_child_reservations(&mut self) {
+        self.child_reserved_turns = 0;
+        self.child_reserved_tokens = 0;
     }
 }
 
@@ -676,5 +750,140 @@ mod tests {
         assert_eq!(restored.reserved_tokens, 900);
         // Transient fields do not survive serialization.
         assert!(restored.agent_tokens_seen.is_empty());
+    }
+
+    /// A parallel/orchestrate stage child reserves its worst-case turn spend
+    /// (`max_attempts × turns_per_attempt`), and — like a sub-run slice — that
+    /// reservation counts against `remaining_*` and `exceeded` so the run cap is
+    /// honored *during* the stage, not only at the post-stage fold.
+    #[test]
+    fn child_slice_reserves_worst_case_and_counts_against_remaining() {
+        let eff = EffectiveBudgets {
+            turns: 100,
+            tokens: Some(1000),
+            max_attempts: 2,
+            turns_per_attempt: 10,
+            ..Default::default()
+        };
+        let mut l = Ledger::default();
+        let (t, k) = l.reserve_child_slice(&eff, &eff);
+        assert_eq!((t, k), (20, 200), "2×10 turns, proportional token share");
+        assert_eq!(l.remaining_turns(&eff), 80, "100 − 20 reserved");
+        assert_eq!(l.remaining_tokens(&eff), Some(800));
+        // The slice bites even though nothing has actually been spent yet.
+        let tight = EffectiveBudgets {
+            turns: 20,
+            ..eff.clone()
+        };
+        assert_eq!(l.exceeded(&tight, 0), Some(BudgetLimit::Turns));
+    }
+
+    /// The core invariant: N concurrent children near the run's cap collectively
+    /// cannot reserve more than the run has left — the first child takes what
+    /// remains and the rest get an empty slice (they will budget-exceed at once).
+    #[test]
+    fn concurrent_child_slices_cannot_exceed_remaining() {
+        let eff = EffectiveBudgets {
+            turns: 100,
+            tokens: Some(1000),
+            max_attempts: 2,
+            turns_per_attempt: 10, // each child wants 20 turns
+            ..Default::default()
+        };
+        let mut l = Ledger::default();
+        for _ in 0..97 {
+            l.charge_turn("prior", "e"); // enter the stage with only 3 turns left
+        }
+        assert_eq!(l.remaining_turns(&eff), 3);
+        let a = l.reserve_child_slice(&eff, &eff);
+        let b = l.reserve_child_slice(&eff, &eff);
+        let c = l.reserve_child_slice(&eff, &eff);
+        assert_eq!(a.0, 3, "first child takes the 3 remaining turns");
+        assert_eq!((b.0, c.0), (0, 0), "no turns left for the rest");
+        assert!(
+            a.0 + b.0 + c.0 <= 3,
+            "children collectively cannot exceed the remaining run turns"
+        );
+        assert_eq!(l.remaining_turns(&eff), 0);
+    }
+
+    /// When the run budget is ample, every child gets its full worst-case slice —
+    /// no false early-stop: three children of 20 fit comfortably under 100.
+    #[test]
+    fn ample_budget_gives_every_child_its_full_slice() {
+        let eff = EffectiveBudgets {
+            turns: 100,
+            tokens: None,
+            max_attempts: 2,
+            turns_per_attempt: 10,
+            ..Default::default()
+        };
+        let mut l = Ledger::default();
+        let slices: Vec<_> = (0..3).map(|_| l.reserve_child_slice(&eff, &eff)).collect();
+        assert!(
+            slices.iter().all(|(t, _)| *t == 20),
+            "each child keeps its full 20-turn slice"
+        );
+        assert_eq!(l.remaining_turns(&eff), 40, "100 − 3×20");
+    }
+
+    /// Release + fold replaces a child's slice with its actual spend (never both),
+    /// mirroring the sub-run reconciliation.
+    #[test]
+    fn release_child_then_fold_replaces_slice_with_actual_spend() {
+        let eff = EffectiveBudgets {
+            turns: 100,
+            max_attempts: 2,
+            turns_per_attempt: 10,
+            ..Default::default()
+        };
+        let mut l = Ledger::default();
+        let (t, k) = l.reserve_child_slice(&eff, &eff);
+        assert_eq!(l.remaining_turns(&eff), 80);
+        // The child actually spent only 3 of its reserved 20 turns.
+        l.release_child_slice(t, k);
+        l.turns += 3; // mirrors fold_child_ledger
+        assert_eq!(l.remaining_turns(&eff), 97, "only the 3 real turns count");
+    }
+
+    /// A stage clears any slice a cancelled-and-drained or panicked child never
+    /// released, so a leftover reservation can't bleed into the next block.
+    #[test]
+    fn clear_child_reservations_drops_outstanding_slices() {
+        let eff = EffectiveBudgets {
+            turns: 100,
+            max_attempts: 2,
+            turns_per_attempt: 10,
+            ..Default::default()
+        };
+        let mut l = Ledger::default();
+        l.reserve_child_slice(&eff, &eff);
+        l.reserve_child_slice(&eff, &eff);
+        assert_eq!(l.remaining_turns(&eff), 60);
+        l.clear_child_reservations();
+        assert_eq!(l.remaining_turns(&eff), 100, "outstanding slices dropped");
+    }
+
+    /// Child slices are transient: unlike a sub-run reservation they must not
+    /// survive a pause/resume, because a resumed stage re-runs its children (which
+    /// re-reserve) rather than resuming them in place.
+    #[test]
+    fn child_reservations_do_not_persist() {
+        let eff = EffectiveBudgets {
+            turns: 100,
+            max_attempts: 2,
+            turns_per_attempt: 10,
+            ..Default::default()
+        };
+        let mut l = Ledger::default();
+        l.reserve(7, 0); // a sub-run slice — this one DOES persist
+        l.reserve_child_slice(&eff, &eff); // a stage-child slice — transient
+        let restored = Ledger::from_json(&l.to_json());
+        assert_eq!(restored.reserved_turns, 7, "sub-run slice survives");
+        assert_eq!(
+            restored.remaining_turns(&eff),
+            93,
+            "only the sub-run slice is charged after resume; the child slice is gone"
+        );
     }
 }

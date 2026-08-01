@@ -3803,6 +3803,8 @@ fn stale_retry_result_is_discarded_by_generation() {
             head: None,
         },
         ledger: Ledger::default(),
+        reserved_turns: 0,
+        reserved_tokens: 0,
     };
 
     // A stale (generation 0) success is ignored — records no join outcome.
