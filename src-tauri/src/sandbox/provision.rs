@@ -430,8 +430,10 @@ async fn clone_base(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
 /// Run the shared post-clone fixups, then the mode-specific checkout step.
 /// The origin rewrite must come first: the branch-restore checkout may need
 /// to `fetch origin`, which has to hit the real remote, not the source path.
-/// Any failure tears the half-built clone down so nothing orphaned blocks a
-/// retry (a clone is self-contained, so `rm -rf` is always safe here).
+/// The `origin/HEAD` rewrite must come *last*, for the mirror-image reason —
+/// see [`rewrite_origin_head`]. Any failure tears the half-built clone down so
+/// nothing orphaned blocks a retry (a clone is self-contained, so `rm -rf` is
+/// always safe here).
 async fn finish_clone<F, Fut, T>(spec: &CheckoutSpec<'_>, checkout: F) -> Result<T>
 where
     F: FnOnce(std::path::PathBuf) -> Fut,
@@ -441,7 +443,9 @@ where
         rewrite_origin(spec).await?;
         seed_identity(spec).await?;
         install_delegation_hooks(spec.dest).await?;
-        checkout(spec.dest.to_path_buf()).await
+        let checked_out = checkout(spec.dest.to_path_buf()).await?;
+        rewrite_origin_head(spec).await;
+        Ok(checked_out)
     }
     .await;
     if result.is_err() {
@@ -478,7 +482,6 @@ async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
         "remote set-url origin",
     )
     .await?;
-    rewrite_origin_head(spec).await;
     Ok(())
 }
 
@@ -487,7 +490,7 @@ async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
 ///
 /// `git clone <local path>` writes that symref from the source repo's **HEAD**
 /// — the branch the user happens to have checked out — not from the source's
-/// own `origin/HEAD`. Rewriting the URL above leaves it behind, so a workspace
+/// own `origin/HEAD`. Rewriting the origin URL leaves it behind, so a workspace
 /// cloned while the user sat on `docs/some-branch` reports that branch as the
 /// repo default forever after. The spawn path never sees this (it resolves the
 /// base against the *source*, where the symref is right), but everything that
@@ -495,16 +498,29 @@ async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
 /// pr create`'s implicit base, and [`git::default_branch`] on any checkout
 /// path. That is the whole gap this closes.
 ///
-/// Best-effort by design, and the failure mode is deliberate. `set-head` with
-/// an explicit branch is purely local (no network, so nothing added to the
-/// spawn budget) but it does require `refs/remotes/origin/<default>` to exist
-/// in the clone — which it won't when the source has no local head for its own
-/// default branch. Git then refuses and leaves the inherited value untouched,
-/// so we delete the symref instead: with none, [`git::default_branch`] falls
-/// through to the conventional names and finally to `"main"`. A merely
-/// conventional guess is recoverable; confidently naming the user's
-/// in-progress branch as the repo default is the bug.
+/// Runs **after** the checkout step, and that ordering is load-bearing.
+/// `set-head` with an explicit branch is purely local (no network, so nothing
+/// added to the spawn budget) but it requires `refs/remotes/origin/<default>`
+/// to exist in the clone, and the clone only inherits refs for branches the
+/// source keeps a *local* head for. A source that tracks `develop` without
+/// checking it out gives the clone no `origin/develop` — until the checkout
+/// step's base fetch creates it. Running first would mean resolving the
+/// symref against refs that do not exist yet and then never revisiting it.
+///
+/// Best-effort, and the remaining failure mode is deliberate. When the ref is
+/// still absent (the base fetch was for some other branch, or failed offline),
+/// git refuses and leaves the inherited value untouched — so drop the symref
+/// instead: with none, [`git::default_branch`] falls through to the
+/// conventional names and finally to `"main"`. A merely conventional guess is
+/// recoverable; confidently naming the user's in-progress branch as the repo
+/// default is the bug.
 async fn rewrite_origin_head(spec: &CheckoutSpec<'_>) {
+    // `rewrite_origin` *removes* the remote when the source has none, taking
+    // every `refs/remotes/origin/*` with it — including the bad symref. There
+    // is nothing left to correct, and no remote to correct it against.
+    if !has_origin(spec.dest).await {
+        return;
+    }
     // Resolved against the source, whose `origin/HEAD` is a genuine record of
     // the remote's default; the clone's is the value we're here to correct.
     let default = git::default_branch(spec.source_repo).await;
@@ -1050,6 +1066,57 @@ mod tests {
 
         assert_eq!(origin_head(&dest).as_deref(), Some("origin/main"));
         assert_eq!(git::default_branch(&dest).await, "main");
+    }
+
+    #[tokio::test]
+    async fn clone_origin_head_survives_a_default_branch_only_the_base_fetch_supplies() {
+        // Ordering regression. The clone only inherits `origin/<x>` for
+        // branches the source keeps a *local* head for, so a source that
+        // tracks `develop` without checking it out gives the clone no
+        // `origin/develop` — the checkout step's base fetch creates it. With
+        // the symref rewrite running before that fetch, `set-head` failed, the
+        // inherited value was dropped, and nothing re-pointed it afterwards:
+        // `default_branch` then fell through to the conventional names and
+        // answered "main" for a repo whose default is `develop`.
+        let td = tempfile::tempdir().unwrap();
+        let upstream = td.path().join("upstream");
+        std::fs::create_dir_all(&upstream).unwrap();
+        run(&upstream, &["init", "-q", "-b", "develop"]);
+        run(&upstream, &["config", "user.email", "t@example.com"]);
+        run(&upstream, &["config", "user.name", "Tester"]);
+        std::fs::write(upstream.join("a.txt"), b"one").unwrap();
+        run(&upstream, &["add", "-A"]);
+        run(&upstream, &["commit", "-q", "-m", "first"]);
+        let develop_tip = run(&upstream, &["rev-parse", "HEAD"]);
+
+        let source = td.path().join("source");
+        run(
+            td.path(),
+            &["clone", "-q", upstream.to_str().unwrap(), "source"],
+        );
+        run(&source, &["config", "user.email", "t@example.com"]);
+        run(&source, &["config", "user.name", "Tester"]);
+        run(&source, &["checkout", "-q", "-b", "feat/x"]);
+        std::fs::write(source.join("s.txt"), b"side").unwrap();
+        run(&source, &["add", "-A"]);
+        run(&source, &["commit", "-q", "-m", "side work"]);
+        // No local head for the default branch: the clone will not inherit
+        // `refs/remotes/origin/develop`.
+        run(&source, &["branch", "-q", "-D", "develop"]);
+        assert_eq!(origin_head(&source).as_deref(), Some("origin/develop"));
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &source,
+            base_ref: &develop_tip,
+            dest: &dest,
+        };
+        provision_at_remote_base(&spec, "develop", true)
+            .await
+            .unwrap();
+
+        assert_eq!(origin_head(&dest).as_deref(), Some("origin/develop"));
+        assert_eq!(git::default_branch(&dest).await, "develop");
     }
 
     #[tokio::test]
