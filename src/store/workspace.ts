@@ -12,6 +12,7 @@ import {
 } from "@/api";
 import { discoverCommands } from "@/data/slashCommands";
 import {
+  agentRecord,
   applyUserTurns,
   dropAgentEntries,
   expandSlashCommand,
@@ -81,6 +82,13 @@ export interface PromoteSeed {
 export interface WorkspaceSlice {
   workspace: Workspace | null;
   selectedAgentId: string | null;
+  /** The off-sidebar chat whose transcript is on screen right now (a Roadmap
+   *  PM chat — see `registerOffSidebarAgents`). Such a chat can never be
+   *  `selectedAgentId`, so without this the turn-end signals would treat a
+   *  watched PM reply as happening "away" and chime over it. Set by the owning
+   *  surface while its pane is mounted, cleared on unmount. */
+  attendedChatId: string | null;
+  setAttendedChat: (id: string | null) => void;
   /** A workflow run selected for the main pane, by run id. Mutually exclusive
    *  with selectedAgentId / activeDraftId. */
   selectedRunId: string | null;
@@ -248,6 +256,8 @@ const SLASH_BUSY_LABELS: Record<string, string> = {
 export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => ({
   workspace: null,
   selectedAgentId: null,
+  attendedChatId: null,
+  setAttendedChat: (id) => set({ attendedChatId: id }),
   selectedRunId: null,
   focusedStepAgentId: null,
   promoteSeed: null,
@@ -803,8 +813,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       const { records, items } = await readReducedLog(get, id);
       const usage = usageFromRecords(provider, records);
       if (hasUsage(usage)) {
-        const projectId = get().workspace?.agents.find((a) => a.id === id)?.project_id;
-        recordUsageSnapshot(id, projectId, usage);
+        // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
+        // spend belongs to its project like anyone else's.
+        recordUsageSnapshot(id, agentRecord(get(), id)?.project_id, usage);
       }
       set((state) => {
         // Nothing stored but a live turn is already rendering — don't clobber it.

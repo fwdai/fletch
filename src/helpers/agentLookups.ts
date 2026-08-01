@@ -11,7 +11,7 @@ import type { AppState, DraftAgent } from "../store";
  *  here, so hidden chats get the same provider-correct treatment as any other:
  *  falling back to the default adapter would silently mis-render a codex or
  *  cursor chat's transcript. */
-function agentRecord(state: AppState, agentId: string) {
+export function agentRecord(state: AppState, agentId: string) {
   return state.workspace?.agents.find((a) => a.id === agentId) ?? state.offSidebarAgents[agentId];
 }
 

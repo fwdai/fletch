@@ -95,11 +95,23 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
 
   // Publish the records the workspace snapshot omits, so the store's by-id
   // lookups (provider → transcript adapter, repo → slash commands) resolve for
-  // them. Mirrored from the list rather than written at each mutation site, so
-  // there is one place where "what this surface owns" is stated.
+  // them. This mirror keeps the registry fresh as rows are patched, but it is
+  // NOT the load-bearing registration: effects flush child-first, so on the
+  // commit where `chats` first arrives, ChatPane's transcript load would
+  // resolve its provider before this parent effect ran and mis-adapt a
+  // non-claude chat's history. The fetch `.then` and `startChat` therefore
+  // register synchronously, before the record can render.
   useEffect(() => {
     registerOffSidebarAgents(chats);
   }, [chats, registerOffSidebarAgents]);
+
+  // Report the on-screen chat so turn-end signals know the user is watching it
+  // (an off-sidebar chat can never be `selectedAgentId` — see `attendedChatId`).
+  const setAttendedChat = useAppStore((s) => s.setAttendedChat);
+  useEffect(() => {
+    setAttendedChat(selectedId);
+    return () => setAttendedChat(null);
+  }, [selectedId, setAttendedChat]);
 
   // The tab's default agent must exist before the picker can preselect it.
   useEffect(() => {
@@ -120,6 +132,9 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
       .listProjectChats(projectId, ROADMAP_PM_PURPOSE)
       .then((rows) => {
         if (!alive) return;
+        // Register before rendering: ChatPane resolves its transcript adapter
+        // synchronously on mount, ahead of this hook's mirror effect.
+        useAppStore.getState().registerOffSidebarAgents(rows);
         setChats(rows);
         // Open on the newest conversation — where the user left off — rather
         // than on the first one they ever started.
@@ -200,6 +215,8 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
         undefined,
         ROADMAP_PM_PURPOSE,
       );
+      // Register before rendering — same reason as the list load above.
+      useAppStore.getState().registerOffSidebarAgents([rec]);
       setChats((prev) => [rec, ...prev]);
       setSelectedId(rec.id);
     } catch (e) {
@@ -211,18 +228,33 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
 
   const deleteChat = useCallback(
     async (id: string) => {
-      // `discard` is the destructive one — record, checkout and transcript. A
-      // PM chat has no branch and no PR, so there is nothing an archive would
-      // preserve that the user would ever come back for.
-      await discard(id);
-      setChats((prev) => prev.filter((c) => c.id !== id));
+      // Drop the chat locally FIRST, so its pane unmounts before the backend
+      // teardown: `discard` prunes the dead agent's transcript keys mid-flight,
+      // and a still-mounted ChatPane would refetch history for an agent that no
+      // longer exists and re-orphan those keys.
       // Fall back to whatever is newest among the survivors, so deleting the
       // open chat lands the user in another conversation rather than nowhere.
-      setSelectedId((current) =>
-        current === id ? (chats.find((c) => c.id !== id)?.id ?? null) : current,
-      );
+      const survivors = chats.filter((c) => c.id !== id);
+      setChats(survivors);
+      setSelectedId((current) => (current === id ? (survivors[0]?.id ?? null) : current));
+      try {
+        // `discard` is the destructive one — record, checkout and transcript. A
+        // PM chat has no branch and no PR, so there is nothing an archive would
+        // preserve that the user would ever come back for.
+        await discard(id);
+      } catch (e) {
+        // The optimistic removal was wrong — put the truth back on screen.
+        setError(String(e));
+        if (projectId) {
+          const rows = await api.listProjectChats(projectId, ROADMAP_PM_PURPOSE).catch(() => null);
+          if (rows) {
+            useAppStore.getState().registerOffSidebarAgents(rows);
+            setChats(rows);
+          }
+        }
+      }
     },
-    [chats, discard],
+    [chats, discard, projectId],
   );
 
   const selected = chats.find((c) => c.id === selectedId) ?? null;

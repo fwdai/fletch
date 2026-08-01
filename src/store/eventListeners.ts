@@ -32,6 +32,7 @@ import {
 } from "@/api";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import {
+  agentRecord,
   applyEvent,
   applyUserTurns,
   carryForwardStoreOnly,
@@ -71,12 +72,13 @@ type AppGet = Parameters<SliceCreator<AppSlice>>[1];
 
 // "Watching" an agent means its window holds focus AND its chat is on screen.
 // Out-of-app signals (chime + native notification) fire only when you're NOT
-// watching — otherwise you already see the update.
+// watching — otherwise you already see the update. A sidebar agent is on
+// screen when selected; an off-sidebar chat (a Roadmap PM chat) can never be
+// `selectedAgentId`, so its owning surface reports it via `attendedChatId`.
 const watchingChat = (get: AppGet, agentId: string) =>
-  document.hasFocus() && get().selectedAgentId === agentId;
+  document.hasFocus() && (get().selectedAgentId === agentId || get().attendedChatId === agentId);
 
-const agentName = (get: AppGet, agentId: string) =>
-  get().workspace?.agents.find((a) => a.id === agentId)?.name ?? "Agent";
+const agentName = (get: AppGet, agentId: string) => agentRecord(get(), agentId)?.name ?? "Agent";
 
 // Signal an out-of-app event for an agent the user isn't watching: a chime and
 // a native notification, each unless muted in settings.
@@ -266,8 +268,11 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
         signalAway(get, e.agent_id, "Turn complete");
         // Flag results for review on any agent the user isn't currently
         // looking at — this is the only signal for research-only turns that
-        // leave no diff behind. Cleared when the agent is selected.
-        if (get().selectedAgentId !== e.agent_id) {
+        // leave no diff behind. Cleared when the agent is selected. Never set
+        // for a purpose-tagged chat: it has no sidebar row to show the dot on,
+        // and the only clearing paths (`selectAgent`, discard) are unreachable
+        // from its surface — the key would pin the dock badge forever.
+        if (get().selectedAgentId !== e.agent_id && !agentRecord(get(), e.agent_id)?.purpose) {
           set((state) => ({
             unseenResults: { ...state.unseenResults, [e.agent_id]: true },
           }));
@@ -303,8 +308,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
           usage: hasUsage(usage) ? { ...state.usage, [id]: usage } : state.usage,
         }));
         if (hasUsage(usage)) {
-          const projectId = get().workspace?.agents.find((a) => a.id === id)?.project_id;
-          recordUsageSnapshot(id, projectId, usage);
+          // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
+          // spend belongs to its project like anyone else's.
+          recordUsageSnapshot(id, agentRecord(get(), id)?.project_id, usage);
         }
         // The first turn captures the agent's session id in the DB; pull it
         // into the live workspace so the Native toggle unblocks without a
