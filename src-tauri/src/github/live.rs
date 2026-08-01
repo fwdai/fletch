@@ -186,6 +186,38 @@ async fn fetch_all_checks(
     Ok(Some(items))
 }
 
+/// Fetch one PR's state by number over conditional REST, resolving the repo
+/// from any checkout of it.
+///
+/// The state-only counterpart to [`pr_checks_live`], for background pollers
+/// that need "did it merge?" and nothing else. Conditional, so a PR that hasn't
+/// moved since the last read answers `304` and is not billed against the rate
+/// limit — which is what makes it affordable to ask every couple of minutes for
+/// as long as a review takes.
+///
+/// `Ok(None)` means "no answer this round": a rate-limit backoff, no token, a
+/// non-GitHub remote, or a PR the API won't serve. Callers must treat that as
+/// *unchanged*, never as a state — see `roadmap::merge_sweep`.
+pub async fn pr_state_live(checkout: &Path, number: u32) -> Result<Option<PrState>> {
+    if client::is_backing_off() {
+        return Ok(None);
+    }
+    let Some((owner, repo)) = resolve_slug(checkout, None).await else {
+        return Ok(None);
+    };
+    // Background poll path: not being connected is a normal state, not an error.
+    let Ok(client) = client::Client::new() else {
+        return Ok(None);
+    };
+    let (status, pr) = client
+        .rest_get_conditional(&format!("/repos/{owner}/{repo}/pulls/{number}"))
+        .await?;
+    if !status.is_success() {
+        return Ok(None);
+    }
+    Ok(Some(parse_pr_state_rest(&pr)))
+}
+
 /// Fetch the merge gate + CI rollup for one **open** PR by number, over
 /// conditional REST.
 ///

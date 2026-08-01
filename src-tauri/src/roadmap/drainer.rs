@@ -21,6 +21,11 @@
 //! 2. **Dispatches** at most one queued item ([`pick_next`]), if the project is
 //!    under [`MAX_CONCURRENT_ROADMAP_RUNS`] live roadmap-dispatched runs.
 //!
+//! An item settled into `in_review` leaves the drainer's world entirely —
+//! `projects_with_work` only looks at `queued`/`active`, so a board waiting on
+//! reviews is inert here. [`super::merge_sweep`] owns it from there and hands it
+//! back (as `done`, unblocking dependants, or as `open` if the PR was closed).
+//!
 //! # Locking
 //!
 //! Everything that reads or writes the database happens inside a
@@ -211,13 +216,27 @@ pub(crate) fn resolve_workflow(
         .or_else(|| project_default.map(str::to_string))
 }
 
+/// The pull request a finished run opened, as `wf_run` records it (0029).
+///
+/// `number` is nullable independently of the URL: the columns are written
+/// together from one `PrState`, but a row written before 0029 landed (or by a
+/// path that only knew the URL) can still carry a link with nothing to poll.
+/// The merge sweep needs the number, so the two are kept distinct rather than
+/// pretending a URL implies one.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FinalizedPr {
+    pub url: String,
+    pub number: Option<i64>,
+}
+
 /// What an `active` item's run says should happen to the item.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Settlement {
     /// The run is still going. Leave the item alone.
     Running,
     /// The run finished and opened a PR. The work isn't merged yet, so the item
-    /// is `in_review` — PR 5's merge sweep is what moves it to `done`.
+    /// is `in_review` — [`super::merge_sweep`] is what moves it to `done` once
+    /// GitHub says the PR landed.
     InReview,
     /// The run finished without opening a PR (a spec with `open_pr: false`, or
     /// a finalize that only pushed). Nothing else is coming, so the item is
@@ -235,29 +254,17 @@ pub(crate) enum Settlement {
 /// Map a roadmap-dispatched run's state onto its item. `status` is `None` when
 /// the run row no longer exists (a `wf_delete_run`, or a project half-deleted
 /// under us).
-pub(crate) fn settle(status: Option<RunStatus>, pr_url: Option<&str>) -> Settlement {
+pub(crate) fn settle(status: Option<RunStatus>, pr: Option<&FinalizedPr>) -> Settlement {
     match status {
         None => Settlement::Released("its run was deleted"),
         Some(RunStatus::Pending) | Some(RunStatus::Running) | Some(RunStatus::Paused) => {
             Settlement::Running
         }
-        Some(RunStatus::Done) if pr_url.is_some() => Settlement::InReview,
+        Some(RunStatus::Done) if pr.is_some() => Settlement::InReview,
         Some(RunStatus::Done) => Settlement::Done,
         Some(RunStatus::Failed) => Settlement::Released("its run failed"),
         Some(RunStatus::Canceled) => Settlement::Released("its run was canceled"),
     }
-}
-
-/// The trailing number of a GitHub PR URL (`.../pull/142` → `142`).
-///
-/// PR 5's seam: the merge sweep needs a number to poll, and today the only
-/// record of the PR is the `finalize_pr` journal event's URL. PR 5 persists
-/// `pr_number`/`pr_url` on `wf_run` at finalize time and reads them from there;
-/// this parse exists so an item settled by *this* build still carries enough to
-/// be polled, and can be deleted once the run row holds the truth.
-pub(crate) fn pr_number_from_url(url: &str) -> Option<i64> {
-    let tail = url.trim_end_matches('/').rsplit('/').next()?;
-    tail.parse().ok()
 }
 
 /// The task brief a dispatched run receives, built from the item.
@@ -380,7 +387,9 @@ fn projects_with_work(db: &Db) -> Vec<String> {
 struct Settled {
     item: RoadmapItem,
     outcome: Settlement,
-    pr_url: Option<String>,
+    /// The PR the run opened, when it opened one — stamped onto the item so the
+    /// merge sweep can poll it without re-joining to the run.
+    pr: Option<FinalizedPr>,
     /// The run this item is tied to, when the item's own `run_id` didn't name
     /// it — recovered through the `wf_run.roadmap_item_id` back-link and written
     /// back onto the row.
@@ -426,11 +435,10 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
                     // No run row at all — neither named nor back-linked.
                     None => None,
                 };
-                let pr_url = match status {
-                    // Only a finished run can have finalized, so the journal
-                    // scan is paid once per item, not once per tick.
+                let pr = match status {
+                    // Only a finished run can have finalized.
                     Some(RunStatus::Done) => {
-                        run_id.as_deref().and_then(|id| finalized_pr_url(&conn, id))
+                        run_id.as_deref().and_then(|id| finalized_pr(&conn, id))
                     }
                     _ => None,
                 };
@@ -439,12 +447,12 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
                     // can't tell this from a deleted run — the item can, and
                     // "never started" is the honest thing to put on the card.
                     None => Settlement::Released("its run never started"),
-                    Some(_) => settle(status, pr_url.as_deref()),
+                    Some(_) => settle(status, pr.as_ref()),
                 };
                 Settled {
                     item,
                     outcome,
-                    pr_url,
+                    pr,
                     adopted_run_id,
                 }
             })
@@ -456,7 +464,7 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
     for Settled {
         item,
         outcome,
-        pr_url,
+        pr,
         adopted_run_id,
     } in settled
     {
@@ -481,12 +489,13 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
             }
             Settlement::InReview => ItemPatch {
                 status: Some(ItemStatus::InReview),
-                // PR 5's seam: the merge sweep will read `pr_number`/`pr_url`
-                // off `wf_run` (persisted at finalize) rather than off the
-                // journal, and poll from there. Stamping them on the item now
-                // means a board settled by this build is already pollable.
-                pr_url: Some(pr_url.clone()),
-                pr_number: Some(pr_url.as_deref().and_then(pr_number_from_url)),
+                // Copied off the run row onto the item, so the item's own
+                // columns are authoritative from here on: the merge sweep
+                // selects on `status = 'in_review' AND pr_number IS NOT NULL`
+                // and never has to join back to a run that may since have been
+                // deleted, nor to a run repo that has since been cleaned up.
+                pr_url: Some(pr.as_ref().map(|p| p.url.clone())),
+                pr_number: Some(pr.as_ref().and_then(|p| p.number)),
                 ..Default::default()
             },
             Settlement::Done => ItemPatch {
@@ -507,6 +516,12 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
             Settlement::Released(why) => {
                 tracing::info!(item = %item.code, %why, "roadmap drainer: released item");
                 say(app, said, &item, &format!("Back on the board — {why}."));
+            }
+            // A new PR to watch. The sweep sleeps while nothing is in review,
+            // so it has to be told rather than left to find this on a tick.
+            Settlement::InReview => {
+                forget(said, &item.id);
+                super::merge_sweep::nudge();
             }
             // A settled-forward item is no longer waiting on anything, so any
             // note it carried is stale.
@@ -555,29 +570,24 @@ fn run_status(conn: &Connection, run_id: &str) -> Option<RunStatus> {
     .and_then(|s| RunStatus::from_db(&s))
 }
 
-/// The URL of the PR a finished run opened, from its `finalize_pr` journal
-/// event. That event carries either `{"url": …}` or `{"error": …}`; only the
-/// former means a PR exists.
+/// The PR a finished run opened, read off the run row (0029).
 ///
-/// PR 5's seam — see [`pr_number_from_url`]: once `wf_run` carries the PR
-/// columns, this reads a column instead of scanning the journal.
-fn finalized_pr_url(conn: &Connection, run_id: &str) -> Option<String> {
-    let payload: String = conn
+/// A blank or absent URL means no PR: a `push`-only finalize, a `pr create`
+/// that failed (the reason is in the run's `finalize_pr` journal event), or a
+/// run that finished before the columns existed. All three settle the item
+/// straight to `done` — there is nothing to review.
+fn finalized_pr(conn: &Connection, run_id: &str) -> Option<FinalizedPr> {
+    let (url, number): (Option<String>, Option<i64>) = conn
         .query_row(
-            "SELECT payload_json FROM wf_event
-              WHERE run_id = ?1 AND type = ?2 ORDER BY seq DESC LIMIT 1",
-            rusqlite::params![run_id, crate::workflow::types::event_type::FINALIZE_PR],
-            |r| r.get(0),
+            "SELECT pr_url, pr_number FROM wf_run WHERE id = ?1",
+            [run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .ok()
         .flatten()?;
-    let value: serde_json::Value = serde_json::from_str(&payload).ok()?;
-    value
-        .get("url")
-        .and_then(|u| u.as_str())
-        .filter(|u| !u.trim().is_empty())
-        .map(str::to_string)
+    let url = url.filter(|u| !u.trim().is_empty())?;
+    Some(FinalizedPr { url, number })
 }
 
 // ───────────────────────────── dispatch ─────────────────────────────────
@@ -834,7 +844,11 @@ fn live_run_count(conn: &Connection, project_id: &str) -> usize {
 /// The project's primary repo — the first attached, mirroring
 /// `WorkspaceManager::project_repo_paths`. A run targets one repo; the queue
 /// picks the same one the rest of the app calls primary.
-fn primary_repo_path(conn: &Connection, project_id: &str) -> Option<String> {
+///
+/// Shared with [`super::merge_sweep`], which resolves `owner/repo` from this
+/// checkout's remote: it is the one path tied to the *project* rather than to a
+/// run, and so is still there after a finished run's directory is cleaned up.
+pub(crate) fn primary_repo_path(conn: &Connection, project_id: &str) -> Option<String> {
     conn.query_row(
         "SELECT path FROM repos WHERE project_id = ?1 ORDER BY created_at LIMIT 1",
         [project_id],
@@ -873,7 +887,7 @@ fn definition_spec(conn: &Connection, definition_id: &str) -> Option<Spec> {
 
 /// Apply a patch and announce the row. Every drainer write goes through here,
 /// so nothing it changes can reach the database without reaching the board.
-fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
+pub(crate) fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
     let updated = {
         let conn = db.lock();
         store::update(&conn, id, &patch)
@@ -886,9 +900,37 @@ fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
     }
 }
 
+/// [`write_item`], but only when the row is still in `expected` status — the
+/// transition-safe variant for a verdict decided *before* a wait. The merge
+/// sweep decides over a network read, so by write time the row may have moved
+/// (re-queued, re-dispatched); stamping a stale verdict over that would orphan
+/// the fresh work. A miss writes and announces nothing.
+pub(crate) fn write_item_where(
+    app: &AppHandle,
+    db: &Db,
+    id: &str,
+    expected: ItemStatus,
+    patch: ItemPatch,
+) {
+    let updated = {
+        let conn = db.lock();
+        store::update_where_status(&conn, id, expected, &patch)
+    };
+    match updated {
+        Ok(Some(row)) => emit_item(app, &row),
+        // Deleted, or no longer in `expected` — either way the verdict is
+        // stale and the row's current owner wins.
+        Ok(None) => tracing::debug!(
+            id,
+            "roadmap: row moved before a verdict landed — left alone"
+        ),
+        Err(e) => tracing::warn!(id, error = %e, "roadmap: item write failed"),
+    }
+}
+
 // ───────────────────────────── notes ────────────────────────────────────
 
-fn emit_note(app: &AppHandle, note: &QueueNote) {
+pub(crate) fn emit_note(app: &AppHandle, note: &QueueNote) {
     let _ = app.emit("roadmap:queue-note", note);
 }
 

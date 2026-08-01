@@ -89,6 +89,8 @@ function run(over: Partial<WfRun> & { id: string }): WfRun {
     budgets: {},
     spent: {},
     error: null,
+    pr_number: null,
+    pr_url: null,
     created_at: 1,
     updated_at: 1000,
     ...over,

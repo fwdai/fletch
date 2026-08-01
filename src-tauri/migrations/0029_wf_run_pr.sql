@@ -1,0 +1,23 @@
+-- The pull request a workflow run's finalize opened, recorded on the run row
+-- itself rather than only in the journal.
+--
+-- `finalize_run` already knows the PR: `gitops::finalize` gets a full `PrState`
+-- back from `pr_create_head`, journals `finalize_pr {url}`, and throws the rest
+-- away. That was enough while the only consumer was the run timeline, which
+-- reads events. It is not enough for the roadmap merge sweep
+-- (src-tauri/src/roadmap/merge_sweep.rs), which has to answer "did this run's PR
+-- merge?" for every `in_review` item on every tick: a journal scan per run per
+-- tick, with the number recovered by parsing the URL's trailing path segment,
+-- is a query and a string parse standing in for two columns.
+--
+-- Both nullable, and NULL is the ordinary case: a spec with `open_pr: false`
+-- pushes without proposing anything, a `pr create` that failed leaves the run
+-- `done` with the error in the journal, and every run that finished before this
+-- migration keeps its PR only in its `finalize_pr` event. Nothing reads these
+-- columns expecting them to be populated — a NULL simply means "no PR to poll".
+--
+-- The `finalize_pr` journal event stays exactly as it was: it is the run's
+-- append-only history, the timeline renders it, and it is the only record of a
+-- finalize whose PR creation *failed*.
+ALTER TABLE wf_run ADD COLUMN pr_number INTEGER;
+ALTER TABLE wf_run ADD COLUMN pr_url TEXT;

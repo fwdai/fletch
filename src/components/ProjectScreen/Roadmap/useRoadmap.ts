@@ -22,7 +22,8 @@
 // user handing an item to the Rust drainer (src-tauri/src/roadmap/drainer.rs),
 // which owns everything after it — `queued → active` when it launches a run,
 // and `active → in_review`/`done`/back to `open` when that run settles. This
-// hook never writes those; it only ever asks for `queued` or takes it back.
+// hook never writes those; it only ever asks for `queued`, takes it back, or
+// ships an `in_review` item by hand when the merge sweep can't see the merge.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -79,9 +80,11 @@ export function useRoadmap(repoPath: string) {
   const [focusCode, setFocusCode] = useState<string | null>(null);
   /** Codes highlighted because they just landed or just moved. */
   const [landed, setLanded] = useState<ReadonlySet<string>>(() => new Set());
-  /** Why a queued item isn't moving, by item id — the drainer's transient
-   *  `roadmap:queue-note`. Not persisted anywhere, on purpose: it's only true
-   *  until the next tick, and the row's own next change supersedes it. */
+  /** Why an item isn't moving on its own, by item id — the transient
+   *  `roadmap:queue-note`. The drainer sends them for stuck *queued* rows; the
+   *  merge sweep sends one for an *open* row whose PR closed without merging.
+   *  Not persisted anywhere, on purpose: it's only true until the next tick,
+   *  and the row's own next change supersedes it. */
   const [notes, setNotes] = useState<ReadonlyMap<string, string>>(() => new Map());
 
   // Every pending highlight timer, so unmounting can't set state on a dead
@@ -114,9 +117,11 @@ export function useRoadmap(repoPath: string) {
   const upsert = useCallback(
     (row: RoadmapItem) => {
       setRows((prev) => applyBoardEvent(prev, { kind: "upsert", row }));
-      // A note explains why a *queued* row is stuck. The moment the row moves
-      // on, whatever it said is history — drop it rather than leave a stale
-      // excuse under a running item.
+      // A note explains why a row isn't moving on its own. The moment the row
+      // moves, whatever it said is history — drop it rather than leave a stale
+      // excuse under a running item. Queued rows keep theirs: the drainer's
+      // blocked-note must survive the row events around it. (A sweep note on an
+      // open row survives arrival because it's emitted after the row event.)
       if (row.status !== "queued") dropNote(row.id);
     },
     [dropNote],
@@ -291,9 +296,11 @@ export function useRoadmap(repoPath: string) {
       guarded(async () => {
         const codes: string[] = [];
         for (const id of ids) {
-          const { item } = await api.roadmapUpdateItem(id, { status: "open" });
+          // Conditional like every other status transition: accepting is only
+          // meaningful on a row that is still a proposal.
+          const { applied, item } = await api.roadmapUpdateItem(id, { status: "open" }, "proposed");
           upsert(item);
-          codes.push(item.code);
+          if (applied) codes.push(item.code);
         }
         markLanded(codes);
       }),
@@ -344,6 +351,20 @@ export function useRoadmap(repoPath: string) {
           const { item } = await api.roadmapUpdateItem(id, { status: "open" }, "queued");
           upsert(item);
         }
+      }),
+    [guarded, upsert],
+  );
+
+  /** Ship an in-review item by hand: `in_review → done`. The sweep normally
+   *  does this when the PR merges, but it can't always know — a revoked GitHub
+   *  token, a deleted PR, a repo that left the project all read as "still
+   *  open" forever. This is the escape hatch; conditional so a verdict the
+   *  sweep landed a moment earlier wins. */
+  const markDone = useCallback(
+    (id: string) =>
+      guarded(async () => {
+        const { item } = await api.roadmapUpdateItem(id, { status: "done" }, "in_review");
+        upsert(item);
       }),
     [guarded, upsert],
   );
@@ -401,6 +422,7 @@ export function useRoadmap(repoPath: string) {
     acceptItems,
     queueItems,
     unqueueItems,
+    markDone,
     /** Definitions + the project default, for the queue affordance and the
      *  item form. */
     workflows,

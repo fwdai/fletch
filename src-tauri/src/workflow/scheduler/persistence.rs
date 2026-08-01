@@ -73,6 +73,39 @@ pub(crate) fn set_status(
     }
 }
 
+/// Record the PR a finalize opened on the run row and emit `wf:run` (0029).
+///
+/// Called only when a PR actually exists — a `push`-only finalize or a failed
+/// `pr create` leaves both columns NULL, which every reader treats as "no PR to
+/// poll". Written before the run flips `done` so nothing can observe a finished
+/// roadmap-dispatched run without its PR: the drainer settles such a run into
+/// `in_review` off exactly these columns, and the merge sweep polls from there.
+///
+/// `updated_at` is deliberately *not* bumped: this records something that was
+/// already true the moment GitHub answered, and the run's own status write
+/// (immediately after) carries the timestamp the sidebar orders on.
+pub(crate) fn set_pr(
+    conn: &Connection,
+    app: Option<&AppHandle>,
+    run_id: &str,
+    number: Option<i64>,
+    url: &str,
+) {
+    let _ = conn.execute(
+        "UPDATE wf_run SET pr_number = ?1, pr_url = ?2 WHERE id = ?3",
+        rusqlite::params![number, url, run_id],
+    );
+    if let Some(app) = app {
+        if let Ok(run) = conn.query_row(
+            "SELECT * FROM wf_run WHERE id = ?1",
+            [run_id],
+            crate::workflow::types::Run::from_row,
+        ) {
+            journal::emit_run(app, &run);
+        }
+    }
+}
+
 /// Mark a run `failed`: journal `run_failed {error}` first, then update the row.
 /// A failure is an append-only timeline event (§6.1, §7.1) — the observability
 /// goal (§1.2) requires every terminal outcome to be a journal event, not only a

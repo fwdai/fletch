@@ -213,6 +213,13 @@ pub struct Run {
     pub budgets: Value,
     pub spent: Value,
     pub error: Option<String>,
+    /// The PR this run's finalize opened (0029). Both `None` until a finalize
+    /// actually proposes one — a `push`-only spec, a `pr create` that failed,
+    /// or a run that never reached finalize all leave them unset. Persisted so
+    /// "did this run's PR merge?" is a column read rather than a journal scan;
+    /// the roadmap merge sweep is the caller that needs it.
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -237,6 +244,8 @@ impl Run {
             budgets: json_col(r, "budgets_json")?,
             spent: json_col(r, "spent_json")?,
             error: r.get("error")?,
+            pr_number: r.get("pr_number")?,
+            pr_url: r.get("pr_url")?,
             created_at: r.get("created_at")?,
             updated_at: r.get("updated_at")?,
         })

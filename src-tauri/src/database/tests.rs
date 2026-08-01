@@ -416,6 +416,70 @@ fn roadmap_backlink_migration_leaves_existing_runs_unattributed() {
     assert_eq!(survivors, 1);
 }
 
+/// Schema version at which `wf_run.roadmap_item_id` (0028) exists — the version
+/// an install upgrading into the run PR columns comes from. Pinned like the
+/// three above, for the same reason.
+const V_ROADMAP_BACKLINK: usize = 28;
+
+/// `wf_run.pr_number`/`pr_url` (0029) land on an existing install as nullable
+/// columns, and NULL is a meaningful value, not a gap to backfill: a run that
+/// finished before this migration recorded its PR only in its `finalize_pr`
+/// journal event, and the roadmap merge sweep reads "no PR to poll" off exactly
+/// that NULL. Backfilling by parsing the event's URL would invent a number the
+/// app never got from GitHub.
+#[test]
+fn run_pr_columns_land_nullable_on_existing_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_ROADMAP_BACKLINK)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO wf_run (id, name, spec_json, task, project_id, repo_path, run_dir,
+                             branch, base_sha, status, budgets_json, spent_json,
+                             created_at, updated_at)
+              VALUES ('run-old', 'wf', '{}', 'do a thing', 'p', '/r', '/d',
+                      'wf/x', 'abc', 'done', '{}', '{}', 0, 0);",
+    )
+    .unwrap();
+    drop(conn);
+
+    init(dir.path()).unwrap();
+
+    let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
+    let (number, url): (Option<i64>, Option<String>) = conn
+        .query_row(
+            "SELECT pr_number, pr_url FROM wf_run WHERE id = 'run-old'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        number, None,
+        "no PR is recorded for a run that predates 0029"
+    );
+    assert_eq!(url, None);
+
+    // A finalize that opens a PR writes both, and they are the columns the
+    // merge sweep settles an item's `in_review` state from.
+    conn.execute(
+        "UPDATE wf_run SET pr_number = 142, pr_url = 'https://github.com/o/r/pull/142'
+          WHERE id = 'run-old'",
+        [],
+    )
+    .unwrap();
+    let stored: (Option<i64>, Option<String>) = conn
+        .query_row(
+            "SELECT pr_number, pr_url FROM wf_run WHERE id = 'run-old'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0, Some(142));
+    assert_eq!(stored.1.as_deref(), Some("https://github.com/o/r/pull/142"));
+}
+
 #[test]
 fn fresh_init_creates_no_backup() {
     let dir = tempfile::tempdir().unwrap();

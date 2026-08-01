@@ -45,6 +45,12 @@ export interface WfRun {
   budgets: unknown;
   spent: unknown;
   error: string | null;
+  /** The PR this run's finalize opened, when it opened one. Null for a
+   *  `push`-only spec, a `pr create` that failed, and every run that never
+   *  reached finalize. Recorded on the row (migration 0029) so the host-side
+   *  roadmap merge sweep can poll it with the window closed. */
+  pr_number: number | null;
+  pr_url: string | null;
   created_at: number;
   updated_at: number;
 }
