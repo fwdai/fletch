@@ -705,6 +705,13 @@ async fn commit_present(repo: &Path, commit: &str) -> bool {
 /// local path (the run repo): the auth env is scoped to github.com https, so
 /// it is a no-op there, and a local fetch never approaches the timeout.
 async fn fetch(repo: &Path, remote: &str, refspec: &str) -> Result<()> {
+    // A fetch over ssh or a local path runs the transport-executing keys
+    // `core.sshCommand`, `core.gitProxy` and `remote.<name>.uploadpack` — which
+    // `git::config_overrides` omits, so this direct-build path needs the refusal
+    // explicitly. `repo` is always the clone `dest`, an agent checkout under
+    // `checkouts_root`; a refusal returns here as an `Err`, which `ensure_present`
+    // logs and steps over exactly like any other failed rung.
+    crate::git::hardening::refuse_steerable_config(repo).await?;
     let mut cmd = crate::git_dist::command(repo);
     cmd.args(["fetch", remote, refspec]);
     git::apply_github_auth(&mut cmd);

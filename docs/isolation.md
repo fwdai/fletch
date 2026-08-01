@@ -74,21 +74,30 @@ Withholding the write is **seatbelt-only**: under Docker the checkout is
 bind-mounted read-write at its host path, and nested read-only binds would stop a
 direct write but not a rename, because Docker mounts follow the inode where
 seatbelt's path rules do not. So a second, **engine-independent** check backs it
-up: before running git in an agent checkout, Fletch reads that checkout's local
-config and **refuses if any setting would execute a program** — matched on
+up: before running git in an agent checkout, Fletch reads that checkout's config
+and **refuses if any setting would execute a program** — matched on
 `(section, leaf)` with the subsection ignored, so `filter.<any-name>.clean` is
 caught even though the driver name is chosen by the agent's own `.gitattributes`
 and can never be enumerated (`git/hardening.rs`). It reads whatever config git is
-about to read, so it doesn't care how that config got there. Scoped to agent
-checkouts: a user's own repository legitimately carries these keys — husky sets
-`core.hooksPath`, git-lfs sets `filter.lfs.*` — and isn't agent-writable anyway.
+about to read, so it doesn't care how that config got there. It reads via
+`--show-scope` and considers the **local and worktree** scopes, because
+`.git/config.worktree` (honoured when `extensions.worktreeConfig=true`) is as
+agent-writable as `.git/config` — a key smuggled there was once invisible to a
+`--local` listing. Scoped to agent checkouts: a user's own repository legitimately
+carries these keys — husky sets `core.hooksPath`, git-lfs sets `filter.lfs.*` —
+and isn't agent-writable anyway, and its `global`/`system` config is skipped.
 
 The refusal covers every command that can trigger an executable setting: the
 `git::cmd` helper seam that `run_git`/`git_output` funnel through, plus the paths
 that build a git command directly *and* run a trigger — `git_state`'s three public
-reads (status/diff/numstat run clean filters and textconv) and `pull` (a merge runs
-merge drivers). `push` and `fetch` build directly too and are deliberately outside
-it: neither runs a filter, textconv or merge driver.
+reads (status/diff/numstat run clean filters and textconv), `pull` (a merge runs
+merge drivers), and the push/fetch transport paths (`push`, `push_head_to_branch`,
+`fetch_fork_point`, `provision::fetch`). push/fetch run no filter or merge driver,
+but they run the *transport*-executing keys `core.sshCommand`, `core.gitProxy` and
+`remote.<name>.uploadpack`/`receivepack` over ssh/local transport — and the `-c`
+overrides omit those (they carry a user's real auth), so the refusal is the only
+layer that covers them there. `fetch_base` fetches the user-owned source repo,
+outside `checkouts_root`, so the scoped refusal is a no-op there.
 
 One limit to state plainly: the **Run panel deliberately carries neither half** —
 `npm install` on a husky project legitimately writes `core.hooksPath`, and Run is
