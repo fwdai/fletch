@@ -15,6 +15,10 @@ use serde_json::Value;
 /// Declares a string-backed enum with a single source of truth for the
 /// on-disk / on-wire spelling: `as_str` (DB write + serialize) and `from_db`
 /// (DB read + deserialize) can never drift apart.
+///
+/// Exported at the crate root (`crate::db_enum!`) because every module with
+/// status-string columns wants the same guarantee — see `roadmap::types`.
+#[macro_export]
 macro_rules! db_enum {
     ($(#[$meta:meta])* $name:ident { $($variant:ident => $s:literal),+ $(,)? }) => {
         $(#[$meta])*

@@ -26,6 +26,7 @@ mod new_project;
 mod oauth;
 mod power;
 mod pty_session;
+mod roadmap;
 mod rpc;
 mod run_detect;
 mod run_env;
@@ -1639,6 +1640,10 @@ pub fn run() {
             workflow::definition::wf_def_delete,
             workflow::definition::wf_def_export_yaml,
             workflow::definition::wf_def_import_yaml,
+            roadmap::roadmap_list_items,
+            roadmap::roadmap_create_item,
+            roadmap::roadmap_update_item,
+            roadmap::roadmap_delete_item,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::wf_run_agents,
