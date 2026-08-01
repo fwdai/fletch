@@ -401,8 +401,9 @@ pub async fn run_attempt(
             "reason": result.reason,
         });
         // Attach the tests-gate specifics for the timeline (spec §9.4): the
-        // output tail on a red/timeout/setup-failed run, or a degrade warning
-        // when no test command resolved and the gate fell back to verdict.
+        // output tail on a red/timeout/setup-failed run, or an unverifiable
+        // marker when no test command resolved — the `tests` gate then blocks
+        // (it can't fall back to the agent's self-reported verdict).
         match &tests {
             Some(
                 TestsOutcome::Failed { tail }
@@ -412,7 +413,7 @@ pub async fn run_attempt(
                 gate_payload["output_tail"] = json!(tail);
             }
             Some(TestsOutcome::NoCommand) => {
-                gate_payload["tests_degraded"] = json!(true);
+                gate_payload["tests_unverifiable"] = json!(true);
             }
             _ => {}
         }
@@ -1308,9 +1309,11 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn tests_gate_no_command_degrades_to_verdict() {
-        // With no resolvable test command the gate falls back to the verdict:
-        // a done verdict completes the step, and the degrade is journaled.
+    async fn tests_gate_no_command_blocks_rather_than_self_reporting() {
+        // With no resolvable test command the `tests` gate has verified nothing,
+        // so a self-reported "done" verdict must NOT complete the step — it blocks
+        // with a named cause (spec §9.4). A step that wants agent self-report
+        // declares `gate: verdict`; the `tests` gate never silently becomes one.
         let bb = tempfile::tempdir().unwrap();
         let step_dir = blackboard::step_dir(bb.path(), "plan").unwrap();
         let d = MockDriver::new();
@@ -1324,14 +1327,26 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(run.outcome, AttemptOutcome::Done { .. }),
+            matches!(run.outcome, AttemptOutcome::Blocked { .. }),
             "{:?}",
             run.outcome
         );
+        // The pause names its cause and marks the run as unverifiable.
         assert!(run
             .events
             .iter()
             .any(|e| e.event_type == event_type::GATE_EVALUATED
-                && e.payload.get("tests_degraded").and_then(|v| v.as_bool()) == Some(true)));
+                && e.payload
+                    .get("tests_unverifiable")
+                    .and_then(|v| v.as_bool())
+                    == Some(true)));
+        assert!(run
+            .events
+            .iter()
+            .any(|e| e.event_type == event_type::GATE_EVALUATED
+                && e.payload
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s.contains("no test command resolved"))));
     }
 }

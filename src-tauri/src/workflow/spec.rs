@@ -142,7 +142,10 @@ pub enum Gate {
     Commit,
     /// A repo-relative file exists (no absolute path, no `..`).
     Artifact { path: String },
-    /// The project test command exits 0.
+    /// The project test command exits 0. When no test command can be resolved the
+    /// gate has verified nothing, so it blocks as unverifiable rather than falling
+    /// back to the agent's self-reported verdict (spec §9.4) — a step that wants
+    /// self-report declares `gate: verdict`.
     Tests,
     /// A human approves — optionally only after the listed deterministic gates
     /// pass first (`require: [tests]`, spec §9). The approval pause is

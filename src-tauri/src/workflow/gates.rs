@@ -8,7 +8,9 @@
 //! S6 adds the `tests` gate (spec §9.4): the caller (`workflow::tests_gate`)
 //! resolves and runs the project's test command bounded in the step worktree,
 //! then hands the [`TestsOutcome`] in as a fact — execution stays out of this
-//! pure module. When no test command resolves the gate degrades to `verdict`.
+//! pure module. When no test command resolves the gate has verified nothing, so
+//! it blocks with a named cause rather than falling back to the agent's verdict
+//! (that would make `gate: tests` a silent `gate: verdict`, §9.4).
 
 use super::blackboard::{Verdict, VerdictResult};
 use super::spec::{Gate, Require};
@@ -68,7 +70,9 @@ pub enum TestsOutcome {
     /// distinct cause from failing tests (spec §9.4).
     SetupFailed { tail: String },
     /// No test command could be resolved (no override, nothing detected). The
-    /// gate degrades to `verdict` with a journaled warning (spec §9.4).
+    /// `tests` gate can verify nothing, so it blocks with a named cause rather
+    /// than falling back to the agent's self-reported verdict — a step that
+    /// wants self-report declares `gate: verdict` explicitly (spec §9.4).
     NoCommand,
 }
 
@@ -92,9 +96,9 @@ pub struct GateInputs<'a> {
     /// evaluation → `AwaitingApproval`; the `wf_approve` path re-evaluates with
     /// `true`.
     pub approved: bool,
-    /// The result of running the project's tests (the `tests` gate only). `None`
-    /// for every other gate; a `tests` gate with `NoCommand` degrades to the
-    /// verdict facts above (spec §9.4).
+    /// The result of running the project's tests (the `tests` gate and an
+    /// `approval` gate's `require: [tests]` only). `None` for every other gate;
+    /// a `tests` gate with `NoCommand` blocks as unverifiable (spec §9.4).
     pub tests: Option<&'a TestsOutcome>,
 }
 
@@ -155,20 +159,23 @@ fn evaluate_approval(require: &[Require], inputs: &GateInputs) -> GateResult {
     // `require: [tests]` (spec §9): the deterministic gate is evaluated first, so
     // the approval pause is unreachable while tests are red — a failing/timed-out/
     // setup-failed run blocks exactly like a `tests` gate, quoting the same reason
-    // (and output tail) so the re-prompt is identical. With no resolvable test
-    // command the tests gate degrades to the verdict (spec §9.4); mirror that when
-    // the step wrote one, so a "revise"/"blocked" verdict never reaches the human.
-    // A step with no verdict at all still falls through to approval — the approval
-    // gate never demands a verdict, and blocking on a missing file would strand
-    // the step in a re-prompt loop tests can't satisfy.
+    // (and output tail) so the re-prompt is identical. Unlike the bare `tests`
+    // gate, no resolvable test command does NOT block here: the approval gate's
+    // decision is a *human*, itself a verifiable condition (spec §9.4), so an
+    // unverifiable-tests step still escalates to the human. We only short-circuit
+    // when the step's own verdict says "revise"/"blocked" — a self-reported
+    // not-done step must not reach the human as ready-to-approve. A step with no
+    // verdict at all still falls through to approval — the approval gate never
+    // demands a verdict, and blocking on a missing file would strand the step in a
+    // re-prompt loop tests can't satisfy.
     if require.contains(&Require::Tests) {
         if let Some(reason) = tests_block_reason(inputs.tests) {
             return GateResult::blocked(reason);
         }
         if matches!(inputs.tests, Some(TestsOutcome::NoCommand)) && inputs.verdict.is_some() {
-            let degraded = evaluate_verdict(inputs);
-            if degraded.outcome == GateOutcome::Blocked {
-                return degraded;
+            let self_reported = evaluate_verdict(inputs);
+            if self_reported.outcome == GateOutcome::Blocked {
+                return self_reported;
             }
         }
     }
@@ -188,10 +195,24 @@ fn evaluate_tests(inputs: &GateInputs) -> GateResult {
     }
     match inputs.tests {
         Some(TestsOutcome::Passed) => GateResult::done("project tests passed"),
-        // No test command resolvable → degrade to the verdict gate (spec §9.4).
-        // `attempt.rs` journals the degrade warning; here we just read the verdict
-        // facts the caller always gathers. (Failing outcomes are handled above.)
-        _ => evaluate_verdict(inputs),
+        // No test command resolvable → the gate has verified *nothing*, so it must
+        // NOT be satisfiable by the agent's self-reported verdict. Routing to the
+        // verdict here would silently turn `gate: tests` into `gate: verdict` —
+        // the exact "done only when a verifiable condition holds, not when the
+        // agent says so" guarantee this gate exists to keep. Block with a named
+        // cause instead (every pause names its cause, spec §6/§9.4); a step that
+        // genuinely wants agent self-report declares `gate: verdict` explicitly.
+        Some(TestsOutcome::NoCommand) => GateResult::blocked(
+            "tests gate: no test command resolved — cannot verify \
+             (configure a test command via `run.test`, or use `gate: verdict` \
+             for agent self-report)",
+        ),
+        // `None` means the caller skipped the runner for a `tests` gate — a bug;
+        // block rather than assert an unverified completion. The failing outcomes
+        // returned via the guard above, so they never reach this arm, which exists
+        // only to keep the match exhaustive without panicking (the module is pure
+        // and total).
+        _ => GateResult::blocked("tests gate: tests were not run — cannot verify"),
     }
 }
 
@@ -423,9 +444,11 @@ mod tests {
     }
 
     #[test]
-    fn approval_require_tests_degrades_to_verdict_on_no_command() {
-        // With no resolvable test command, `require: [tests]` mirrors the tests
-        // gate's degrade (spec §9.4): a blocking verdict never reaches the human.
+    fn approval_require_tests_no_command_blocks_a_self_reported_not_done() {
+        // With no resolvable test command the approval gate still escalates to the
+        // human (itself a verifiable condition, spec §9.4) — but a step whose own
+        // verdict says "revise"/"blocked" must not reach the human as ready-to-
+        // approve, so it blocks first.
         let gate = Gate::Approval {
             require: vec![Require::Tests],
         };
@@ -513,11 +536,13 @@ mod tests {
     }
 
     #[test]
-    fn tests_gate_no_command_degrades_to_verdict() {
+    fn tests_gate_no_command_blocks_and_never_self_reports() {
+        // No resolvable test command → the gate verified nothing, so it blocks
+        // with a named cause even when the agent self-reported "done" (spec §9.4).
+        // Otherwise `gate: tests` would silently collapse into `gate: verdict`.
         let none = TestsOutcome::NoCommand;
-        // With a done verdict present the degraded gate passes …
         let v = verdict(VerdictResult::Done, "ok");
-        let r = evaluate(
+        let blocked = evaluate(
             &Gate::Tests,
             &GateInputs {
                 tests: Some(&none),
@@ -525,16 +550,41 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(r.outcome, GateOutcome::Done);
+        assert_eq!(blocked.outcome, GateOutcome::Blocked);
+        assert!(
+            blocked.reason.contains("no test command resolved"),
+            "reason should name the cause: {}",
+            blocked.reason
+        );
 
-        // … and without one it blocks exactly like a verdict gate.
-        let r = evaluate(
+        // With no verdict at all it likewise blocks (never asserts completion).
+        let blocked = evaluate(
             &Gate::Tests,
             &GateInputs {
                 tests: Some(&none),
                 ..Default::default()
             },
         );
+        assert_eq!(blocked.outcome, GateOutcome::Blocked);
+
+        // The legitimate escape hatch is untouched: the *same* self-reported
+        // "done" verdict on an explicit `verdict` gate still completes the step.
+        let done = evaluate(
+            &Gate::Verdict,
+            &GateInputs {
+                verdict: Some(&v),
+                ..Default::default()
+            },
+        );
+        assert_eq!(done.outcome, GateOutcome::Done);
+    }
+
+    #[test]
+    fn tests_gate_missing_run_blocks() {
+        // A `tests` gate whose runner was never consulted (`tests: None`) is a
+        // caller bug; it must block rather than assert an unverified completion.
+        let r = evaluate(&Gate::Tests, &GateInputs::default());
         assert_eq!(r.outcome, GateOutcome::Blocked);
+        assert!(r.reason.contains("cannot verify"), "reason: {}", r.reason);
     }
 }
