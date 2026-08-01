@@ -194,8 +194,18 @@ later policy change can't widen an agent already running (`rpc/caps.rs`):
 - **No agent can push the branch its work is reviewed against**, nor a
   conventional trunk (`main`, `master`) whatever a repo declares as its base.
   Before this grant existed `git_push` validated nothing, so an agent sitting on
-  the base pushed straight onto it — and `args.force` made that a lease-guarded
-  force-push.
+  the base pushed straight onto it.
+- **No agent can *force*-push a branch other than its own.** A
+  `--force-with-lease` push rewrites remote history, and the lease passes for any
+  branch the agent just fetched — so with only the rule above (which fences the
+  review base and the trunks, nothing else) an agent could fetch a shared branch
+  (`develop`, a `release/*`, a teammate's), `checkout -B` its HEAD onto it, and
+  force-overwrite it under your identity. Force is therefore confined to the
+  agent's own recorded work branch (`AgentRecord.repos[].branch`) — the
+  spawn-stable name it cannot repoint the way it can its live `HEAD`. Until that
+  branch has been recorded (a fresh checkout that hasn't materialized one yet),
+  force fails **closed**; a non-force push is unaffected and may still create a
+  branch (`rpc/caps.rs`, `refuses_force`).
 - **A workflow step agent cannot publish at all.** A run publishes through its
   own `wf/`-guarded finalize; a step publishing directly would bypass that guard.
 

@@ -56,6 +56,12 @@ struct Target {
     subdir: Option<String>,
     cwd: PathBuf,
     base_branch: String,
+    /// The agent's own work branch for this checkout, as the host recorded it
+    /// when the branch was materialized (`AgentRecord.repos[].branch`). The
+    /// spawn-stable anchor [`AgentCaps::refuses_force`] authorizes a force push
+    /// against — `None` until a branch has been recorded and the dispatcher
+    /// rebuilt (resume / next turn), which fails a force closed.
+    own_branch: Option<String>,
 }
 
 #[derive(Clone)]
@@ -67,11 +73,18 @@ pub struct GitDispatcher {
     /// The default checkout's subdir, resolved from `repos` by matching `cwd`.
     /// Stamped into events for defaulted ops.
     default_subdir: Option<String>,
+    /// The agent's own work branch on the *default* checkout, threaded from the
+    /// record at spawn (`AgentRecord.repos[].branch`) exactly as `base_branch` is
+    /// — the spawn-stable anchor the force-push gate authorizes against. `None`
+    /// until the host has recorded a materialized branch and this dispatcher has
+    /// been rebuilt to carry it, which fails a force closed (see
+    /// [`crate::rpc::caps::AgentCaps::refuses_force`]).
+    own_branch: Option<String>,
     /// Sibling checkouts by subdir (directory name under the workspace root),
-    /// each with its own base branch. Includes the primary. Empty for
-    /// dispatchers built without `with_repos` (tests, old call sites) — then
-    /// `args.repo` is rejected as unknown.
-    repos: std::collections::HashMap<String, (PathBuf, String)>,
+    /// each with its own base branch and own recorded work branch. Includes the
+    /// primary. Empty for dispatchers built without `with_repos` (tests, old call
+    /// sites) — then `args.repo` is rejected as unknown.
+    repos: std::collections::HashMap<String, (PathBuf, String, Option<String>)>,
     /// Agent whose *live* issue ref (`crate::issues::live_issue_ref`) drives
     /// `open_pr`'s closing trailer — `"123"` for a GitHub issue, `"ENG-123"`
     /// for a Linear ticket. Resolved at open_pr time, not construction, so a
@@ -100,11 +113,22 @@ impl GitDispatcher {
             cwd,
             base_branch,
             default_subdir: None,
+            own_branch: None,
             repos: std::collections::HashMap::new(),
             issue_agent: None,
             caps,
             approval: None,
         }
+    }
+
+    /// Record the agent's own work branch for the *primary* checkout, the anchor
+    /// the force-push gate authorizes against. `with_repos` already derives this
+    /// for the primary from its entry, which is the production path; this exists
+    /// for single-checkout test call sites that don't build a repo table.
+    #[cfg(test)]
+    pub fn with_own_branch(mut self, branch: Option<String>) -> Self {
+        self.own_branch = branch;
+        self
     }
 
     /// Bind this dispatcher to the window it can ask for publish approval through.
@@ -155,18 +179,19 @@ impl GitDispatcher {
         self
     }
 
-    /// Register the agent's tracked checkouts as `(subdir, cwd, base_branch)`
-    /// so ops can be pointed at any of them via `args.repo`.
-    pub fn with_repos(mut self, repos: Vec<(String, PathBuf, String)>) -> Self {
+    /// Register the agent's tracked checkouts as `(subdir, cwd, base_branch,
+    /// own_branch)` so ops can be pointed at any of them via `args.repo`.
+    /// `own_branch` is the record's recorded work branch for that checkout, the
+    /// force-push anchor; the primary's is lifted onto `self.own_branch` here so
+    /// a defaulted op (no `args.repo`) resolves it too.
+    pub fn with_repos(mut self, repos: Vec<(String, PathBuf, String, Option<String>)>) -> Self {
         self.repos = repos
             .into_iter()
-            .map(|(subdir, cwd, base)| (subdir, (cwd, base)))
+            .map(|(subdir, cwd, base, own)| (subdir, (cwd, base, own)))
             .collect();
-        self.default_subdir = self
-            .repos
-            .iter()
-            .find(|(_, (cwd, _))| *cwd == self.cwd)
-            .map(|(subdir, _)| subdir.clone());
+        let primary = self.repos.iter().find(|(_, (cwd, _, _))| *cwd == self.cwd);
+        self.default_subdir = primary.map(|(subdir, _)| subdir.clone());
+        self.own_branch = primary.and_then(|(_, (_, _, own))| own.clone());
         self
     }
 
@@ -185,12 +210,14 @@ impl GitDispatcher {
                 subdir: self.default_subdir.clone(),
                 cwd: self.cwd.clone(),
                 base_branch: self.base_branch.clone(),
+                own_branch: self.own_branch.clone(),
             }),
             Some(name) => match self.repos.get(name) {
-                Some((cwd, base)) => Ok(Target {
+                Some((cwd, base, own)) => Ok(Target {
                     subdir: Some(name.to_string()),
                     cwd: cwd.clone(),
                     base_branch: base.clone(),
+                    own_branch: own.clone(),
                 }),
                 None => {
                     let mut known: Vec<&str> = self.repos.keys().map(String::as_str).collect();
@@ -521,6 +548,19 @@ impl GitDispatcher {
         // history (e.g. after the agent rebased its branch). Lease-based so a
         // stale local view can't clobber remote work it hasn't seen.
         let force = arg_bool(args, "force");
+        // SECURITY: the lease alone is not enough. It passes for any branch the
+        // agent just fetched, so an agent can fetch a shared branch (`develop`, a
+        // teammate's), `checkout -B` its HEAD onto it, and force-overwrite it —
+        // `refuses_branch` fences only the review base and the trunks. `branch`
+        // here came from that mutable HEAD, so a force is authorized against the
+        // spawn-stable *own* branch (`t.own_branch`) instead, failing closed when
+        // none is recorded yet. A non-force push is untouched (it can still create
+        // a branch); this only gates the destructive rewrite.
+        if force {
+            if let Some(why) = self.caps.refuses_force(&branch, t.own_branch.as_deref()) {
+                return (Response::err(id, why), effects);
+            }
+        }
         match crate::git::push(&cwd, &branch, force).await {
             Ok(summary) => (Response::ok(id, 0, summary, String::new()), effects),
             Err(e) => (Response::err(id, e.to_string()), effects),
@@ -1087,7 +1127,9 @@ mod tests {
         let rpc_dir = td.path().join("rpc");
         ensure_mailbox(&rpc_dir).unwrap();
         let requests = rpc_dir.join("requests");
-        let dispatcher = dispatcher(&repo);
+        // `fix/diverged` is this agent's own recorded branch, so the force-push
+        // gate authorizes rewriting it after the rebase below.
+        let dispatcher = dispatcher(&repo).with_own_branch(Some("fix/diverged".to_string()));
 
         // First push seeds the remote branch.
         write_request(&requests, "p1.json", r#"{"id":"p1","op":"git_push"}"#);
@@ -1138,6 +1180,91 @@ mod tests {
             String::from_utf8_lossy(&local.stdout).trim(),
             String::from_utf8_lossy(&remote_head.stdout).trim(),
             "the remote branch should match the rewritten local HEAD"
+        );
+    }
+
+    /// The gap this closes: an agent owns `fix/mine`, but fetches a shared branch
+    /// and `checkout -B`s its HEAD onto it, then force-pushes. `refuses_branch`
+    /// waves `develop` through (not the review base), so only the force gate stops
+    /// the destructive overwrite — before any git runs, like the option-name gate.
+    #[tokio::test]
+    async fn git_push_force_refuses_a_branch_the_agent_does_not_own() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+        // The fetch + repoint an attacker would do: HEAD now names a shared branch.
+        run_git(&repo, &["checkout", "-q", "-b", "develop"]);
+
+        let disp = dispatcher(&repo).with_own_branch(Some("fix/mine".to_string()));
+        let (resp, fx) = disp
+            .dispatch_inner("p", "git_push", &json!({ "force": true }))
+            .await;
+        assert!(
+            !resp.ok,
+            "force-pushing a non-own branch must be refused before any push: {resp:?}"
+        );
+        assert!(
+            resp.error.as_deref().unwrap_or_default().contains("force"),
+            "the refusal must name the force constraint, got: {:?}",
+            resp.error
+        );
+        assert!(
+            fx.is_empty(),
+            "a refused force push must emit nothing: {fx:?}"
+        );
+
+        // The very same branch WITHOUT force is not the force gate's business — it
+        // only fails later for lack of a remote, proving the gate is force-specific
+        // and a non-force push can still target another branch.
+        let (resp, _fx) = disp.dispatch_inner("p2", "git_push", &Value::Null).await;
+        let err = resp.error.as_deref().unwrap_or_default();
+        assert!(
+            err.contains("push failed") && !err.contains("force is limited"),
+            "a non-force push must reach the transport, not the force gate: {err:?}"
+        );
+    }
+
+    /// Fail closed: until the host has recorded the agent's branch (and this
+    /// dispatcher been rebuilt to carry it), a force cannot be authorized — so a
+    /// fresh session can't force-overwrite anything. The cost is the documented
+    /// residual: a same-session rebase force is deferred until the branch is
+    /// tracked. Non-force stays available throughout.
+    #[tokio::test]
+    async fn git_push_force_is_refused_until_the_own_branch_is_recorded() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+        run_git(&repo, &["checkout", "-q", "-b", "fix/fresh"]);
+
+        // A `new`-built dispatcher, as at first spawn: no own branch threaded yet.
+        let disp = dispatcher(&repo);
+        let (resp, fx) = disp
+            .dispatch_inner("p", "git_push", &json!({ "force": true }))
+            .await;
+        assert!(
+            !resp.ok,
+            "force must fail closed while no own branch is recorded: {resp:?}"
+        );
+        assert!(
+            resp.error.as_deref().unwrap_or_default().contains("force"),
+            "the refusal must name the force constraint, got: {:?}",
+            resp.error
+        );
+        assert!(
+            fx.is_empty(),
+            "a refused force push must emit nothing: {fx:?}"
         );
     }
 
@@ -1240,8 +1367,8 @@ mod tests {
 
         let disp = GitDispatcher::new(a.clone(), "main".into(), AgentCaps::interactive())
             .with_repos(vec![
-                ("a".into(), a.clone(), "main".into()),
-                ("b".into(), b.clone(), "main".into()),
+                ("a".into(), a.clone(), "main".into(), None),
+                ("b".into(), b.clone(), "main".into(), None),
             ]);
 
         let (resp, _fx) = disp
@@ -1279,8 +1406,8 @@ mod tests {
 
         let disp = GitDispatcher::new(a.clone(), "main".into(), AgentCaps::interactive())
             .with_repos(vec![
-                ("a".into(), a.clone(), "main".into()),
-                ("b".into(), b.clone(), "main".into()),
+                ("a".into(), a.clone(), "main".into(), None),
+                ("b".into(), b.clone(), "main".into(), None),
             ]);
 
         // Targeting the sibling: the branch event must name `b`, so the
@@ -1327,7 +1454,7 @@ mod tests {
         run_git(&a, &["init", "-q", "-b", "main"]);
 
         let disp = GitDispatcher::new(a.clone(), "main".into(), AgentCaps::interactive())
-            .with_repos(vec![("a".into(), a.clone(), "main".into())]);
+            .with_repos(vec![("a".into(), a.clone(), "main".into(), None)]);
         let (resp, fx) = disp
             .dispatch_inner("p", "git_push", &json!({"repo": "nope"}))
             .await;
