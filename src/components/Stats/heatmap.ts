@@ -82,12 +82,23 @@ export function computeStreak(counts: Record<string, number>, todayMs: number): 
   return streak;
 }
 
+/** A YYYY-MM-DD key as a local `Date`. Built from parts rather than parsed:
+ *  `new Date("2026-07-08")` is UTC midnight, which is the previous day for
+ *  anyone west of Greenwich. */
+const parseDay = (day: string): Date =>
+  new Date(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10)));
+
 /** "Tue, Jul 8" for a YYYY-MM-DD key, in the user's locale. */
 export function formatHeatDay(day: string): string {
-  const d = new Date(
-    Number(day.slice(0, 4)),
-    Number(day.slice(5, 7)) - 1,
-    Number(day.slice(8, 10)),
-  );
-  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  return parseDay(day).toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** "Jul 8" — the axis-tick form of `formatHeatDay`, without the weekday a
+ *  tick has no room for. */
+export function formatDayTick(day: string): string {
+  return parseDay(day).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }

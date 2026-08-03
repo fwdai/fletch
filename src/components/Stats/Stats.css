@@ -131,8 +131,10 @@
   margin-right: 3px;
 }
 
-/* Fixed-position so the modal's scroll container can't clip it. */
-.heat-tip {
+/* Shared by every chart mark here (see `useHoverTip`). Fixed-position so a
+ * scroll container — the modal, or the project page's `.ps-content` — can't
+ * clip it against the top of a tall bar. */
+.hover-tip {
   position: fixed;
   transform: translateX(-50%);
   z-index: var(--z-popover);
@@ -144,6 +146,108 @@
   white-space: nowrap;
   pointer-events: none;
   box-shadow: var(--shadow-2);
+}
+
+/* ── MiniBars: compact column chart, same accent ramp as the heatmap ──────
+ * Columns flex to fill the width so the grid's edges line up with the section
+ * around it; the bar inside each column is a fixed width, centered, so a
+ * 12-bucket and a 30-bucket chart read as the same kind of object rather than
+ * one looking like a block and the other like a comb. */
+.mb {
+  --mb-h: 72px;
+  margin-bottom: 20px;
+}
+.mb-grid {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: var(--mb-h);
+}
+.mb-col {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+/* A proportion of the column rather than a fixed width, so a 12-bucket and a
+ * 30-bucket chart both land on a sane bar:gap ratio without either knowing how
+ * many buckets it has. The cap stops a short series turning into slabs. */
+.mb-track {
+  position: relative;
+  width: 72%;
+  max-width: 26px;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.mb-bar {
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: filter 0.08s var(--ease);
+}
+/* The whole of which the foreground bar is a part (PRs opened behind PRs
+ * merged). Same hue, dropped toward the surface — a second accent-adjacent
+ * color would imply an unrelated series. */
+.mb-bar.back {
+  background: color-mix(in oklab, var(--accent) 26%, var(--bg-2));
+}
+/* No observation for this bucket — drawn as a faint full-height band, not a
+ * short mark. A mark near the baseline is exactly what a small value looks
+ * like, which is the one reading this must never invite; a band occupies the
+ * column without asserting a height, so "nothing recorded" and "recorded, and
+ * it was nearly nothing" stay visibly different. A real zero renders as an
+ * empty column, which is the honest picture of a measured zero. */
+.mb-gap {
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--bg-2);
+}
+.mb-col:hover .mb-bar {
+  filter: brightness(1.15);
+}
+
+.mb-axis {
+  display: flex;
+  gap: 3px;
+  margin-top: 6px;
+  color: var(--fg-3);
+}
+.mb-tick {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  white-space: nowrap;
+  overflow: visible;
+}
+.mb-foot {
+  margin-top: 10px;
+  color: var(--fg-3);
+}
+.mb-empty {
+  padding: 20px 14px;
+  margin-bottom: 20px;
+  color: var(--fg-3);
+  text-align: center;
+  border: 1px dashed var(--bd-soft);
+  border-radius: var(--r-sm);
+  line-height: 1.5;
+}
+/* Occupies the same vertical space as the chart it stands in for. */
+.mb-skel {
+  margin-bottom: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mb-col:hover .mb-bar {
+    filter: none;
+  }
 }
 
 /* ── Stat strip: one text line of value–label pairs, detail on hover ── */
@@ -189,13 +293,24 @@
   background-size: 200% 100%;
   animation: stat-shimmer 1.2s linear infinite;
 }
+
+/* Block-level sibling of `.stat-shimmer`, for a whole region rather than one
+ * value in a line of text. Height comes from `<Skeleton>`'s caller. */
+.blk-skeleton {
+  border-radius: var(--r-sm);
+  background: linear-gradient(90deg, var(--bg-2) 25%, var(--bg-3) 50%, var(--bg-2) 75%);
+  background-size: 200% 100%;
+  animation: stat-shimmer 1.2s linear infinite;
+  opacity: 0.5;
+}
 @keyframes stat-shimmer {
   to {
     background-position: -200% 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .stat-shimmer {
+  .stat-shimmer,
+  .blk-skeleton {
     animation: none;
   }
   .heat-grid .heat-cell:hover {

@@ -41,6 +41,10 @@
    Chat.css/Composer.css, whose message + composer skins it reuses. */
 @import "./components/ProjectScreen/Roadmap/Roadmap.css";
 @import "./components/Stats/Stats.css";
+/* After Stats.css: the Activity sections compose on its chart + stat
+   primitives (`.act-key` matches the `.mb-bar` ramp, the shipped skeleton
+   reuses its `stat-shimmer` keyframes). */
+@import "./components/ProjectScreen/Activity/Activity.css";
 @import "./components/RightPanel/FilePanel/FilePanel.css";
 /* Ahead of SettingsScreen.css (its former home) and of CustomAgents.css /
    Feedback.css, whose prose-box classes compose on top of `.ui-input`. */
