@@ -47,9 +47,11 @@ export function RoadmapChip({ itemId, projectId }: { itemId: string; projectId: 
       <span className="t-ellipsis">{item.title}</span>
     </>
   );
-  // No pinned repo for the project (it was unpinned, or this run outlived it):
-  // the item is still worth naming, there is just nowhere to go.
-  if (!repoPath) return <span className="wf-run-rm">{body}</span>;
+  // No pinned repo for the project (it was unpinned, or this run outlived it),
+  // or the item shipped: a `done` row leaves the board entirely, so the jump
+  // would open the roadmap and land on nothing — the common case for a
+  // finished run. The item is still worth naming; there is just nowhere to go.
+  if (!repoPath || item.status === "done") return <span className="wf-run-rm">{body}</span>;
   return (
     <button
       type="button"

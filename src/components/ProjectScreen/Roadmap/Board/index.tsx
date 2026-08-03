@@ -247,7 +247,12 @@ export function Board({
                         proposal && !readOnly ? () => rejectProposals([proposal.id]) : undefined
                       }
                       onQueue={
-                        writable && it.status === "open" ? () => queueItems([row.id]) : undefined
+                        // A handed-off row already has its builder; queueing it
+                        // would dispatch a second one. The drainer refuses such
+                        // rows too — this just keeps the button honest.
+                        writable && it.status === "open" && !row.agent_id
+                          ? () => queueItems([row.id])
+                          : undefined
                       }
                       onUnqueue={
                         writable && it.status === "queued"

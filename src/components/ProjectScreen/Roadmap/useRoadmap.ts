@@ -578,7 +578,12 @@ export function useRoadmap(repoPath: string) {
   const clearRoadmapFocus = useAppStore((s) => s.clearRoadmapFocus);
   useEffect(() => {
     if (!roadmapFocusCode) return;
-    if (!rows.some((r) => r.code === roadmapFocusCode)) return;
+    // Gate on the *rendered* set, not the raw buffer: a `done` row is in
+    // `rows` but leaves the board, so matching it would consume the request,
+    // scroll nowhere, and ring nothing. (Callers already avoid sending done
+    // items here, but a race between the jump and a merge sweep can ship the
+    // item mid-flight.)
+    if (!rows.some((r) => r.code === roadmapFocusCode && isOnBoard(r))) return;
     focusItem(roadmapFocusCode);
     clearRoadmapFocus();
   }, [roadmapFocusCode, rows, focusItem, clearRoadmapFocus]);

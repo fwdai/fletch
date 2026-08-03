@@ -341,12 +341,14 @@ export function ItemCard({
                   <Icon name="edit" size={11} /> Edit
                 </Button>
               )}
-              {/* The manual hand-off stays available on every real row: the queue
-                is autonomous, and sometimes you want to drive. Demoted to a
-                ghost button next to "Queue", which is the path most rows take.
-                A proposed row isn't work anyone has agreed to do — accept it
-                first, then send it. */}
-              {!ghost && (
+              {/* The manual hand-off, for rows nothing is building yet: the
+                queue is autonomous, and sometimes you want to drive. Demoted to
+                a ghost button next to "Queue", which is the path most rows
+                take. A proposed row isn't work anyone has agreed to do —
+                accept it first, then send it. Anything from `queued` on is
+                already dispatched (the backend refuses those too), and a row
+                that was already handed off keeps its one builder. */}
+              {!ghost && item.status === "open" && !agentId && (
                 <Button
                   variant="ghost"
                   size="sm"
