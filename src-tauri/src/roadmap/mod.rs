@@ -37,6 +37,7 @@
 pub mod drainer;
 pub mod events;
 pub mod merge_sweep;
+pub mod proposals;
 pub mod store;
 pub mod types;
 
@@ -46,7 +47,8 @@ use parking_lot::Mutex;
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter};
 
-use events::{EventActor, ItemEvent};
+use events::{EventActor, EventKind, ItemEvent};
+use proposals::{Proposal, ProposalKind, ProposalPatch};
 use types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
 
 /// The app's single connection. Public because the PM agent's RPC dispatcher
@@ -69,6 +71,20 @@ fn emit_item_deleted(app: &AppHandle, id: &str) {
 /// drops, like every other emit here.
 pub(crate) fn emit_item_event(app: &AppHandle, event: &ItemEvent) {
     let _ = app.emit("roadmap:item-event", event);
+}
+
+/// Notify the frontend that a pending PM proposal landed (or was replaced —
+/// same id, new contents); carries the full row, so the card grows its
+/// proposal bar live, mid-conversation.
+pub(crate) fn emit_proposal(app: &AppHandle, proposal: &Proposal) {
+    let _ = app.emit("roadmap:proposal", proposal);
+}
+
+/// Notify the frontend that a proposal is gone — ruled on, or stale. The item
+/// itself is announced separately (`roadmap:item` / `roadmap:item-deleted`)
+/// when the ruling changed it.
+fn emit_proposal_deleted(app: &AppHandle, id: &str) {
+    let _ = app.emit("roadmap:proposal-deleted", id);
 }
 
 /// Every item on a project's roadmap, oldest first. Includes `done` items — the
@@ -218,12 +234,20 @@ pub async fn roadmap_delete_item(
     app: AppHandle,
     db: tauri::State<'_, Db>,
 ) -> Result<(), String> {
-    let removed = {
+    let (removed, pending) = {
         let conn = db.lock();
-        store::delete(&conn, &id).map_err(|e| e.to_string())?
+        // Any pending PM proposal cascades away with the row; read it first so
+        // its disappearance can be announced — the board holds proposals in
+        // their own stream and would otherwise count a ghost of one forever.
+        let pending = proposals::for_item(&conn, &id).map_err(|e| e.to_string())?;
+        let removed = store::delete(&conn, &id).map_err(|e| e.to_string())?;
+        (removed, pending.filter(|_| removed))
     };
     if removed {
         emit_item_deleted(&app, &id);
+        if let Some(p) = pending {
+            emit_proposal_deleted(&app, &p.id);
+        }
         // A deleted item can be the dep something queued was waiting on — a
         // stale code counts as satisfied, so the removal can unblock a run.
         drainer::nudge();
@@ -240,6 +264,182 @@ pub async fn roadmap_list_item_events(
 ) -> Result<Vec<ItemEvent>, String> {
     let conn = db.lock();
     events::list_for_item(&conn, &item_id).map_err(|e| e.to_string())
+}
+
+/// Every pending PM proposal on a project's board — the board load's companion
+/// to [`roadmap_list_items`]; live rows arrive on `roadmap:proposal`.
+#[tauri::command]
+pub async fn roadmap_list_proposals(
+    project_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<Vec<Proposal>, String> {
+    let conn = db.lock();
+    proposals::list_for_project(&conn, &project_id).map_err(|e| e.to_string())
+}
+
+/// What ruling on a proposal did, decided under one lock scope so the check,
+/// the write, and the history it records can never disagree.
+enum Ruling {
+    /// The patch landed; emit the row and the `edited` event. Boxed: a ruling
+    /// is almost always this variant, but the enum's size is set by it, and
+    /// the row + event pair dwarfs the other arms.
+    Updated {
+        item: Box<RoadmapItem>,
+        event: Box<ItemEvent>,
+    },
+    /// The item was deleted at the PM's ask; emit the deletion.
+    Discarded { item_id: String },
+    /// The item outran the ask (it went `active`+ since the PM proposed) — the
+    /// proposal was deleted without applying, and the message says why.
+    Stale { message: String },
+}
+
+/// May a proposal still be applied to this item? Anything from `active` on is
+/// being built or judged — its shape belongs to the run now, and reshaping it
+/// mid-flight would make the PR answer a brief nobody wrote.
+fn proposal_gate(item: &RoadmapItem) -> Result<(), String> {
+    match item.status {
+        ItemStatus::Proposed | ItemStatus::Open | ItemStatus::Queued => Ok(()),
+        status => Err(format!(
+            "{} is {} — an item being built or reviewed can't be reshaped by proposal",
+            item.code,
+            status.as_str()
+        )),
+    }
+}
+
+/// The ruling's history line: the PM's rationale rides along, prefixed with
+/// what the user did with it, so the trail reads honestly — who asked, who
+/// ruled, and why.
+fn ruling_detail(verb: &str, note: Option<&str>) -> String {
+    match note {
+        Some(note) => format!("{verb} a PM proposal — {note}"),
+        None => format!("{verb} a PM proposal"),
+    }
+}
+
+/// The one write behind [`roadmap_accept_proposal`]: re-read the proposal and
+/// its item under the caller's lock, re-check the status gate (the item may
+/// have gone `active` since the PM asked), then apply-and-record or drop the
+/// stale ask. The proposal row is gone on every path — a ruling consumes it,
+/// and a dead ask shouldn't haunt the card.
+fn accept_proposal(conn: &Connection, proposal_id: &str) -> Result<Ruling, String> {
+    let proposal = proposals::get(conn, proposal_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("this proposal has already been ruled on")?;
+    // The FK guarantees the item outlives its proposal, so a hit here is a row.
+    let item = store::get(conn, &proposal.item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("the item this proposal targets no longer exists")?;
+
+    if let Err(message) = proposal_gate(&item) {
+        proposals::delete(conn, proposal_id).map_err(|e| e.to_string())?;
+        return Ok(Ruling::Stale { message });
+    }
+
+    match proposal.kind {
+        ProposalKind::Update => {
+            let patch: ProposalPatch =
+                serde_json::from_value(proposal.patch.clone().ok_or("proposal carries no patch")?)
+                    .map_err(|e| e.to_string())?;
+            let updated = store::update(conn, &item.id, &patch.to_item_patch())
+                .map_err(|e| e.to_string())?
+                .ok_or("the item this proposal targets no longer exists")?;
+            let event = events::record(
+                conn,
+                &updated.id,
+                &updated.project_id,
+                // The ruling writes history, not the ask: the user accepting is
+                // the edit, with the PM's rationale carried in the detail.
+                EventActor::User,
+                EventKind::Edited,
+                Some(&ruling_detail("Accepted", proposal.note.as_deref())),
+            )
+            .map_err(|e| e.to_string())?;
+            proposals::delete(conn, proposal_id).map_err(|e| e.to_string())?;
+            Ok(Ruling::Updated {
+                item: Box::new(updated),
+                event: Box::new(event),
+            })
+        }
+        ProposalKind::Discard => {
+            // No event: the row's deletion cascades its history (and this
+            // proposal) away — an item ruled off the board needs no trail,
+            // exactly like `roadmap_delete_item`.
+            store::delete(conn, &item.id).map_err(|e| e.to_string())?;
+            Ok(Ruling::Discarded { item_id: item.id })
+        }
+    }
+}
+
+/// Apply a pending PM proposal — the user's "yes". One lock scope for the
+/// whole ruling; see [`accept_proposal`]. A stale ask (the item went `active`
+/// since) is deleted and reported as an error the board's bar can show — the
+/// `roadmap:proposal-deleted` emit clears it from the card either way.
+#[tauri::command]
+pub async fn roadmap_accept_proposal(
+    proposal_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<(), String> {
+    let ruling = {
+        let conn = db.lock();
+        accept_proposal(&conn, &proposal_id)?
+    };
+    emit_proposal_deleted(&app, &proposal_id);
+    match ruling {
+        Ruling::Updated { item, event } => {
+            emit_item(&app, &item);
+            emit_item_event(&app, &event);
+            // The patch can change horizon or deps, which can unblock (or
+            // re-order) whatever is queued behind this item.
+            drainer::nudge();
+            Ok(())
+        }
+        Ruling::Discarded { item_id } => {
+            emit_item_deleted(&app, &item_id);
+            // A deleted item can be the dep something queued was waiting on.
+            drainer::nudge();
+            Ok(())
+        }
+        Ruling::Stale { message } => Err(message),
+    }
+}
+
+/// Decline a pending PM proposal — the user's "no". The refusal is history the
+/// PM's next session should see, so it lands as a durable `note` on the item;
+/// the item itself is untouched.
+#[tauri::command]
+pub async fn roadmap_reject_proposal(
+    proposal_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<(), String> {
+    let event = {
+        let conn = db.lock();
+        reject_proposal(&conn, &proposal_id)?
+    };
+    emit_proposal_deleted(&app, &proposal_id);
+    emit_item_event(&app, &event);
+    Ok(())
+}
+
+/// The one write behind [`roadmap_reject_proposal`]: drop the proposal and
+/// record the refusal, in the caller's single lock scope.
+fn reject_proposal(conn: &Connection, proposal_id: &str) -> Result<ItemEvent, String> {
+    let proposal = proposals::get(conn, proposal_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("this proposal has already been ruled on")?;
+    proposals::delete(conn, proposal_id).map_err(|e| e.to_string())?;
+    events::record(
+        conn,
+        &proposal.item_id,
+        &proposal.project_id,
+        EventActor::User,
+        EventKind::Note,
+        Some(&ruling_detail("Declined", proposal.note.as_deref())),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -339,5 +539,116 @@ mod tests {
         };
         let (_, event) = update_and_record(&conn, &it.id, &patch, None).unwrap();
         assert_eq!(event.unwrap().kind, EventKind::Edited);
+    }
+
+    /// A pending update proposal for a test item, straight through the DAO —
+    /// the RPC op's validation is exercised in `rpc::roadmap`'s own tests.
+    fn pending_update(conn: &Connection, item: &RoadmapItem, note: Option<&str>) -> Proposal {
+        let patch = ProposalPatch {
+            title: Some("reshaped".into()),
+            horizon: Some(types::Horizon::Now),
+            ..Default::default()
+        };
+        proposals::upsert(
+            conn,
+            &item.project_id,
+            &item.id,
+            ProposalKind::Update,
+            Some(&patch),
+            note,
+        )
+        .unwrap()
+    }
+
+    /// Accepting an update applies the patch, records the ruling as an `edited`
+    /// event carrying the PM's rationale, and consumes the proposal.
+    #[test]
+    fn accepting_an_update_applies_records_and_consumes() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let p = pending_update(&conn, &it, Some("scope grew"));
+
+        let ruling = accept_proposal(&conn, &p.id).unwrap();
+        let Ruling::Updated { item, event } = ruling else {
+            panic!("expected Updated");
+        };
+        assert_eq!(item.title, "reshaped");
+        assert_eq!(item.horizon, types::Horizon::Now);
+        assert_eq!(event.kind, EventKind::Edited);
+        assert_eq!(event.actor, EventActor::User);
+        assert_eq!(
+            event.detail.as_deref(),
+            Some("Accepted a PM proposal — scope grew")
+        );
+        assert!(proposals::get(&conn, &p.id).unwrap().is_none());
+        // Ruling twice is refused, not replayed.
+        assert!(accept_proposal(&conn, &p.id).is_err());
+    }
+
+    /// An item that went `active` between the ask and the ruling refuses the
+    /// apply and clears the ask: nothing written, no history, no zombie bar.
+    #[test]
+    fn accepting_against_a_raced_away_item_refuses_and_clears() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Queued);
+        let p = pending_update(&conn, &it, None);
+        // The drainer claimed it while the user was reading the diff.
+        store::update(&conn, &it.id, &status_patch(ItemStatus::Active)).unwrap();
+
+        let Ruling::Stale { message } = accept_proposal(&conn, &p.id).unwrap() else {
+            panic!("expected Stale");
+        };
+        assert!(message.contains("active"), "{message}");
+        assert!(message.contains(&it.code), "{message}");
+        assert!(proposals::get(&conn, &p.id).unwrap().is_none());
+        // Untouched: no patch, no event.
+        let row = store::get(&conn, &it.id).unwrap().unwrap();
+        assert_eq!(row.title, it.title);
+        assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+    }
+
+    /// Accepting a discard deletes the item row; its history and the proposal
+    /// itself cascade away with it.
+    #[test]
+    fn accepting_a_discard_deletes_the_row() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let p = proposals::upsert(
+            &conn,
+            "p1",
+            &it.id,
+            ProposalKind::Discard,
+            None,
+            Some("superseded by MCA-101"),
+        )
+        .unwrap();
+
+        let Ruling::Discarded { item_id } = accept_proposal(&conn, &p.id).unwrap() else {
+            panic!("expected Discarded");
+        };
+        assert_eq!(item_id, it.id);
+        assert!(store::get(&conn, &it.id).unwrap().is_none());
+        assert!(proposals::get(&conn, &p.id).unwrap().is_none());
+    }
+
+    /// Declining leaves the item alone and writes the refusal as a durable
+    /// `note`, so the PM's next session sees it was ruled on, and how.
+    #[test]
+    fn rejecting_writes_a_note_and_consumes_the_proposal() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let p = pending_update(&conn, &it, Some("split this in two"));
+
+        let event = reject_proposal(&conn, &p.id).unwrap();
+        assert_eq!(event.kind, EventKind::Note);
+        assert_eq!(event.actor, EventActor::User);
+        assert_eq!(
+            event.detail.as_deref(),
+            Some("Declined a PM proposal — split this in two")
+        );
+        assert_eq!(event.item_id, it.id);
+        assert!(proposals::get(&conn, &p.id).unwrap().is_none());
+        let row = store::get(&conn, &it.id).unwrap().unwrap();
+        assert_eq!(row.title, it.title);
     }
 }

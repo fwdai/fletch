@@ -28,6 +28,7 @@
 .rm-board-h .grow,
 .rm-props .grow,
 .rm-ghostbar .grow,
+.rm-propbar .grow,
 .rm-dialog .modal-foot .grow,
 .rm-composer-wrap .composer-foot .grow {
   flex: 1;
@@ -1011,6 +1012,95 @@ button.rm-hist-h:hover {
     opacity: 0;
     transform: translateY(-4px);
   }
+}
+
+/* ── a pending PM change on a real row ──
+   The ghost grammar applied to a delta: the row itself is real (solid border,
+   normal ground — it *is* on the roadmap), so only the decision surfaces are
+   tinted: an accent edge on the card, and the same always-visible bar a ghost
+   carries, holding the ask and its Accept/Decline. */
+.rm-item.prop {
+  border-color: var(--accent-line);
+}
+.rm-propbar {
+  gap: 8px;
+  padding: 7px 8px 7px 10px;
+  border-top: 1px dashed var(--accent-line);
+  background: color-mix(in oklch, var(--accent), var(--bg-2) 95%);
+}
+.rm-propbar-l {
+  min-width: 0;
+  color: var(--fg-2);
+  line-height: var(--lh-snug);
+}
+.rm-propbar-l strong {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* The per-field diff in the expanded body: what the change would do, old value
+   struck, proposed value highlighted. Sits above the body it would rewrite. */
+.rm-prop-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 11px;
+  padding: 8px 10px;
+  border: 1px dashed var(--accent-line);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--accent), var(--bg-2) 95%);
+}
+.rm-prop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.rm-prop-k {
+  flex-shrink: 0;
+  width: 68px;
+  color: var(--fg-3);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.rm-prop-v {
+  min-width: 0;
+  line-height: var(--lh-snug);
+  text-wrap: pretty;
+}
+.rm-prop-old {
+  color: var(--fg-3);
+  text-decoration: line-through;
+}
+.rm-prop-new {
+  padding: 0 3px;
+  border-radius: var(--r-xs);
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent), transparent 88%);
+}
+/* Old and new share a line; the strike and the tint keep them tellable apart
+   without an arrow glyph between every pair. */
+.rm-prop-old + .rm-prop-new {
+  margin-left: 6px;
+}
+.rm-prop-none {
+  color: var(--fg-3);
+  font-style: italic;
+  margin-left: 6px;
+}
+.rm-prop-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.rm-prop-list li {
+  line-height: var(--lh-snug);
+  text-wrap: pretty;
+  color: var(--fg-2);
 }
 /* Just accepted or just moved. */
 .rm-item.landed {

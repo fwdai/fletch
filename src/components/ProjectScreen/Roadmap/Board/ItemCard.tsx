@@ -1,11 +1,12 @@
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useState } from "react";
-import type { RoadmapItemEvent } from "@/api";
+import type { RoadmapItem, RoadmapItemEvent, RoadmapProposal, RoadmapProposalPatch } from "@/api";
 import { Icon, type IconName } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { formatAge } from "@/util/format";
 import { eventLine } from "../itemHistory";
+import { buildProposalDiff, isEmptyDiff } from "../proposalDiff";
 import type { BoardItem, ItemSource, ItemStatus } from "../types";
 
 /** Where the item came from, as a one-glyph tag. */
@@ -49,6 +50,14 @@ interface Props {
   onAccept?: () => void;
   /** Discard the proposal — the row is deleted. Ghosts only. */
   onDiscard?: () => void;
+  /** The PM's pending ask against this row — a change or a discard the user
+   *  hasn't ruled on. Drawn as an always-visible bar (the ghost bar's grammar)
+   *  plus, for a change, a per-field diff in the expanded body. */
+  proposal?: RoadmapProposal;
+  /** Apply the pending ask. Absent on a read-only board. */
+  onAcceptProposal?: () => void;
+  /** Decline it — the item stays as it is, the refusal lands in history. */
+  onRejectProposal?: () => void;
   /** Hand the item to the queue (`open → queued`). Absent for a ghost and on a
    *  read-only board. */
   onQueue?: () => void;
@@ -103,6 +112,9 @@ export function ItemCard({
   onEdit,
   onAccept,
   onDiscard,
+  proposal,
+  onAcceptProposal,
+  onRejectProposal,
   onQueue,
   onUnqueue,
   onMarkDone,
@@ -119,6 +131,7 @@ export function ItemCard({
   const cls = [
     "rm-item",
     ghost ? "ghost" : "",
+    proposal ? "prop" : "",
     open ? "open" : "",
     landed ? "landed" : "",
     focused ? "focus" : "",
@@ -180,6 +193,34 @@ export function ItemCard({
         </div>
       )}
 
+      {/* The PM's pending ask against this row — the ghost bar's grammar for a
+          delta instead of a new ticket: always visible, ruled on without an
+          expand. The expanded body carries the per-field diff. Never rendered
+          on a ghost: two stacked bars whose Accepts mean different things
+          ("put it on the board" vs "apply the patch") is a coin-flip for the
+          user — rule on the ghost first, the ask stays pending. */}
+      {proposal && !ghost && (onAcceptProposal || onRejectProposal) && (
+        <div className="rm-propbar flex-center">
+          <span className="rm-propbar-l text-xs truncate">
+            <strong>
+              {proposal.kind === "discard" ? "PM proposes discarding" : "PM proposes changes"}
+            </strong>
+            {proposal.note ? ` — ${proposal.note}` : ""}
+          </span>
+          <span className="grow" />
+          {onRejectProposal && (
+            <Button variant="ghost" size="sm" onClick={onRejectProposal}>
+              Decline
+            </Button>
+          )}
+          {onAcceptProposal && (
+            <Button variant="primary" size="sm" onClick={onAcceptProposal}>
+              <Icon name="check" size={11} /> Accept
+            </Button>
+          )}
+        </div>
+      )}
+
       {/* Why a queued row isn't moving. Outside the collapsible body and
           outside the header button, like the ghostbar: an item that has stalled
           must say so without the user having to go looking for it. */}
@@ -192,6 +233,11 @@ export function ItemCard({
 
       {open && (
         <div className="rm-item-body">
+          {/* The pending change, first: the reader came to rule on it, and the
+              unchanged body below is the context, not the news. */}
+          {proposal?.kind === "update" && proposal.patch && (
+            <ProposalDiff item={item.item} patch={proposal.patch} />
+          )}
           {item.why && <p className="rm-why text-sm">{item.why}</p>}
           {item.accept && (
             <ul className="rm-accept text-sm">
@@ -294,6 +340,53 @@ export function ItemCard({
           {events && events.length > 0 && <ItemHistory events={events} />}
         </div>
       )}
+    </div>
+  );
+}
+
+/** What the PM's pending change would do to this row, field by field: the old
+ *  value struck through, the proposed one highlighted; list fields as merged
+ *  lists with additions highlighted and removals struck. Pure pairing lives in
+ *  proposalDiff.ts; this only draws it. A patch that would change nothing
+ *  (the row caught up already) draws nothing — the bar still says what was
+ *  asked. */
+function ProposalDiff({ item, patch }: { item: RoadmapItem; patch: RoadmapProposalPatch }) {
+  const diff = buildProposalDiff(item, patch);
+  if (isEmptyDiff(diff)) return null;
+  return (
+    <div className="rm-prop-diff text-xs">
+      {diff.texts.map((t) => (
+        <div key={t.field} className="rm-prop-row">
+          <span className="rm-prop-k mono">{t.label}</span>
+          <span className="rm-prop-v text-sm">
+            {t.from != null && <s className="rm-prop-old">{t.from}</s>}
+            {t.to != null ? (
+              <span className="rm-prop-new">{t.to}</span>
+            ) : (
+              // A clear: the strike says what goes; this says nothing replaces it.
+              <span className="rm-prop-none">cleared</span>
+            )}
+          </span>
+        </div>
+      ))}
+      {diff.lists.map((l) => (
+        <div key={l.field} className="rm-prop-row">
+          <span className="rm-prop-k mono">{l.label}</span>
+          <ul className="rm-prop-list text-sm">
+            {l.entries.map((e) => (
+              <li key={e.text}>
+                {e.change === "removed" ? (
+                  <s className="rm-prop-old">{e.text}</s>
+                ) : e.change === "added" ? (
+                  <span className="rm-prop-new">{e.text}</span>
+                ) : (
+                  e.text
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
     </div>
   );
 }

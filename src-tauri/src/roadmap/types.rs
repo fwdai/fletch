@@ -199,8 +199,9 @@ pub struct ItemUpdate {
 /// would make "clear this column" unreachable from the frontend — the patch
 /// would read as "leave it alone" and the edit dialog's clears would silently
 /// revert. This runs only when the key is present, so `null` lands as
-/// `Some(None)`; `#[serde(default)]` still covers the absent case.
-fn double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
+/// `Some(None)`; `#[serde(default)]` still covers the absent case. Shared with
+/// [`super::proposals`], whose patch carries the same clear-vs-leave choice.
+pub(crate) fn double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,
     D: serde::Deserializer<'de>,

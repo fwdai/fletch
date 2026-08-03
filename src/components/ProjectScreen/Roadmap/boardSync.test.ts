@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RoadmapItem } from "@/api";
+import type { RoadmapItem, RoadmapProposal } from "@/api";
 import { applyBoardEvent, createBoardSync } from "./boardSync";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -129,5 +129,55 @@ describe("createBoardSync", () => {
     expect(s.ids).toEqual(["old", "live"]);
     sync.push({ kind: "delete", id: "old" });
     expect(s.ids).toEqual(["live"]);
+  });
+});
+
+// ── the proposal stream ───────────────────────────────────────────────────────
+// The PM's pending proposals ride a second instance of the same sequencer: the
+// sequencer is generic, and a replaced proposal arrives as an upsert under the
+// *same id* (the backend keeps it stable), so replace-by-id is the whole story.
+
+function proposal(over: Partial<RoadmapProposal> & { id: string }): RoadmapProposal {
+  return {
+    item_id: `item-${over.id}`,
+    project_id: "p1",
+    kind: "update",
+    patch: { title: "Retitled" },
+    note: null,
+    created_at: 0,
+    ...over,
+  };
+}
+
+describe("createBoardSync over proposals", () => {
+  it("buffers a proposal parked mid-load and replays it over the snapshot", () => {
+    let rows: RoadmapProposal[] = [];
+    const sync = createBoardSync<RoadmapProposal>((update) => {
+      rows = update(rows);
+    });
+
+    // The PM revises its ask while the fetch is in flight: same id, new
+    // contents. The snapshot still carries the old ask; the replay must win.
+    sync.push({ kind: "upsert", row: proposal({ id: "p", note: "revised" }) });
+    sync.push({ kind: "delete", id: "ruled" });
+    sync.settle([proposal({ id: "p", note: "stale" }), proposal({ id: "ruled" })]);
+
+    expect(rows.map((r) => r.id)).toEqual(["p"]);
+    expect(rows[0].note).toBe("revised");
+  });
+
+  it("swaps a replaced ask in place once settled — never two for one item", () => {
+    let rows: RoadmapProposal[] = [];
+    const sync = createBoardSync<RoadmapProposal>((update) => {
+      rows = update(rows);
+    });
+    sync.settle([proposal({ id: "p" })]);
+
+    sync.push({ kind: "upsert", row: proposal({ id: "p", kind: "discard", patch: null }) });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("discard");
+
+    sync.push({ kind: "delete", id: "p" });
+    expect(rows).toEqual([]);
   });
 });

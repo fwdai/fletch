@@ -14,7 +14,12 @@ import type {
 } from "./types/agent";
 import type { PrStateChangedEvent } from "./types/pr";
 import type { AgentInstallEvent } from "./types/providers";
-import type { RoadmapItem, RoadmapItemEvent, RoadmapQueueNote } from "./types/roadmap";
+import type {
+  RoadmapItem,
+  RoadmapItemEvent,
+  RoadmapProposal,
+  RoadmapQueueNote,
+} from "./types/roadmap";
 import type { RunOutputEvent, RunPortEvent, RunStateEvent } from "./types/run";
 import type { DockerBuildEvent, PublishApproval } from "./types/sandbox";
 import type {
@@ -61,6 +66,21 @@ export function onRoadmapItemDeleted(cb: (id: string) => void): Promise<Unlisten
  *  nothing. */
 export function onRoadmapItemEvent(cb: (e: RoadmapItemEvent) => void): Promise<UnlistenFn> {
   return listen<RoadmapItemEvent>("roadmap:item-event", (event) => cb(event.payload));
+}
+
+/** `roadmap:proposal` fires when the PM parks (or revises — same id, new
+ *  contents) a pending ask against an existing item; carries the full row so
+ *  the card grows its proposal bar without a refetch. Fires for every project —
+ *  a listener scoped to one board filters on `project_id`. */
+export function onRoadmapProposal(cb: (proposal: RoadmapProposal) => void): Promise<UnlistenFn> {
+  return listen<RoadmapProposal>("roadmap:proposal", (event) => cb(event.payload));
+}
+
+/** `roadmap:proposal-deleted` fires the proposal's id once it has been ruled on
+ *  (accepted, declined, or found stale) — the item's own fate arrives
+ *  separately on `roadmap:item` / `roadmap:item-deleted`. */
+export function onRoadmapProposalDeleted(cb: (id: string) => void): Promise<UnlistenFn> {
+  return listen<string>("roadmap:proposal-deleted", (event) => cb(event.payload));
 }
 
 /** `roadmap:queue-note` explains why an item isn't moving — no workflow to run
