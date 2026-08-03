@@ -214,12 +214,20 @@
   position: relative;
   flex-shrink: 0;
 }
+/* Centred in the empty state, where the form is the invitation; left-aligned in
+   the header popover, so the chip and the menu it opens share an edge. */
+.rm-newchat-pop .rm-newchat {
+  justify-content: flex-start;
+}
+/* Sized to the agent menu it opens (296px card + 12px padding a side), and its
+   row left-aligned to match: the menu anchors to the picker chip's left edge,
+   so a centred chip left it hanging off the popover by ~46px. */
 .rm-newchat-pop {
   position: absolute;
   z-index: 200;
   top: calc(100% + 6px);
   right: 0;
-  width: 300px;
+  width: 320px;
   padding: 12px;
   background: var(--bg-2);
   border: 1px solid var(--bd-strong);
