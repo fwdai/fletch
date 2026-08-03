@@ -60,8 +60,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Notify;
 
+use super::events::{self, EventActor, EventKind, ItemEvent, TrailEntry};
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
-use super::{emit_item, store, Db};
+use super::{emit_item, emit_item_event, store, Db};
 use crate::workflow::spec::{self, Spec};
 use crate::workflow::types::RunStatus;
 
@@ -264,6 +265,22 @@ pub(crate) fn settle(status: Option<RunStatus>, pr: Option<&FinalizedPr>) -> Set
         Some(RunStatus::Done) => Settlement::Done,
         Some(RunStatus::Failed) => Settlement::Released("its run failed"),
         Some(RunStatus::Canceled) => Settlement::Released("its run was canceled"),
+    }
+}
+
+/// The history event a settlement writes alongside its item patch — `None` for
+/// a run that is still going. The `run_failed` detail is the same reason string
+/// the transient queue note wraps, so the durable record and the toast never
+/// tell two stories; unlike the note, this one survives a reload.
+pub(crate) fn settlement_event(
+    outcome: &Settlement,
+    pr: Option<&FinalizedPr>,
+) -> Option<(EventKind, Option<String>)> {
+    match outcome {
+        Settlement::Running => None,
+        Settlement::InReview => Some((EventKind::PrOpened, pr.map(|p| p.url.clone()))),
+        Settlement::Done => Some((EventKind::Shipped, None)),
+        Settlement::Released(why) => Some((EventKind::RunFailed, Some((*why).to_string()))),
     }
 }
 
@@ -511,7 +528,12 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
                 ..Default::default()
             },
         };
-        write_item(app, db, &item.id, patch);
+        match settlement_event(&outcome, pr.as_ref()) {
+            Some((kind, detail)) => write_item_with_event(app, db, &item.id, patch, kind, detail),
+            // Unreachable — `Running` bailed above — but a settlement without
+            // an event must still land its patch rather than vanish.
+            None => write_item(app, db, &item.id, patch),
+        }
         match outcome {
             Settlement::Released(why) => {
                 tracing::info!(item = %item.code, %why, "roadmap drainer: released item");
@@ -600,8 +622,10 @@ enum Claim {
     Nothing,
     /// Something is queued but can't run yet, and the card should say why.
     Note(Box<RoadmapItem>, String),
-    /// An item was claimed (already `active`) and is ready to launch.
-    Claimed(Box<Plan>),
+    /// An item was claimed (already `active`) and is ready to launch. Carries
+    /// the `dispatched` history event recorded with the claim, so it can be
+    /// emitted once the lock is dropped.
+    Claimed(Box<Plan>, ItemEvent),
 }
 
 /// Decide what to dispatch for this project and *claim* it. Returns the plan
@@ -618,10 +642,11 @@ fn claim_next(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) -> O
             say(app, said, &item, &text);
             None
         }
-        Claim::Claimed(plan) => {
+        Claim::Claimed(plan, event) => {
             // Whatever was blocking this item no longer is.
             forget(said, &plan.item.id);
             emit_item(app, &plan.item);
+            emit_item_event(app, &event);
             Some(*plan)
         }
     }
@@ -702,39 +727,68 @@ fn plan_and_claim(conn: &Connection, project_id: &str) -> Claim {
         .collect();
     let brief = build_brief(&item, &dep_rows);
 
-    // The claim. Re-read under the same guard the decision was made under, so
-    // an unqueue that raced this tick either already landed (and the item was
+    // The claim. Runs under the same guard the decision was made under, so an
+    // unqueue that raced this tick either already landed (and the item was
     // never in `queued` above) or lands after, against an `active` row.
-    match store::get(conn, &item.id) {
-        Ok(Some(fresh)) if fresh.status == ItemStatus::Queued => {}
-        _ => return Claim::Nothing,
-    }
-    let claimed = store::update(
-        conn,
-        &item.id,
-        &ItemPatch {
-            status: Some(ItemStatus::Active),
-            // Pin the resolved definition on the item, so the card keeps
-            // showing what it actually ran under even if the project default
-            // moves afterwards.
-            workflow_def_id: Some(Some(definition_id.clone())),
-            ..Default::default()
-        },
-    );
-    match claimed {
-        Ok(Some(claimed)) => Claim::Claimed(Box::new(Plan {
-            item: claimed,
-            definition_id,
-            spec,
-            repo_path,
-            brief,
-        })),
+    match claim_item(conn, &item.id, &definition_id) {
+        Ok(Some((claimed, event))) => Claim::Claimed(
+            Box::new(Plan {
+                item: claimed,
+                definition_id,
+                spec,
+                repo_path,
+                brief,
+            }),
+            event,
+        ),
         Ok(None) => Claim::Nothing,
         Err(e) => {
             tracing::warn!(item = %item.code, error = %e, "roadmap drainer: claim failed");
             Claim::Nothing
         }
     }
+}
+
+/// Flip a picked item `queued → active`, pin the workflow it will run under,
+/// and record the `dispatched` history event — one lock-held sequence, so the
+/// claim and its record cannot disagree. `None` when the row moved (or went)
+/// between the pick and here: re-read first, so a racing unqueue is honoured
+/// rather than overwritten.
+fn claim_item(
+    conn: &Connection,
+    item_id: &str,
+    definition_id: &str,
+) -> rusqlite::Result<Option<(RoadmapItem, ItemEvent)>> {
+    match store::get(conn, item_id)? {
+        Some(fresh) if fresh.status == ItemStatus::Queued => {}
+        _ => return Ok(None),
+    }
+    let Some(claimed) = store::update(
+        conn,
+        item_id,
+        &ItemPatch {
+            status: Some(ItemStatus::Active),
+            // Pin the resolved definition on the item, so the card keeps
+            // showing what it actually ran under even if the project default
+            // moves afterwards.
+            workflow_def_id: Some(Some(definition_id.to_string())),
+            ..Default::default()
+        },
+    )?
+    else {
+        return Ok(None);
+    };
+    let event = events::record(
+        conn,
+        &claimed.id,
+        &claimed.project_id,
+        EventActor::Drainer,
+        EventKind::Dispatched,
+        // What it was dispatched under — the pinned definition id, the same
+        // fact `workflow_def_id` now carries.
+        Some(definition_id),
+    )?;
+    Ok(Some((claimed, event)))
 }
 
 /// Launch the claimed item's run. The only `.await` in the tick, and no DB
@@ -786,7 +840,11 @@ async fn dispatch(
             // The claim already flipped the item to `active`; nothing is going
             // to run, so hand it back rather than leaving a phantom.
             tracing::warn!(item = %item.code, error = %e, "roadmap drainer: launch failed");
-            write_item(
+            // One reason string for both channels: the transient note the card
+            // shows now, and the durable `run_failed` event that still says so
+            // after a reload.
+            let reason = format!("Couldn't start a run — {e}");
+            write_item_with_event(
                 app,
                 db,
                 &item.id,
@@ -794,13 +852,15 @@ async fn dispatch(
                     status: Some(ItemStatus::Open),
                     ..Default::default()
                 },
+                EventKind::RunFailed,
+                Some(reason.clone()),
             );
             emit_note(
                 app,
                 &QueueNote {
                     item_id: item.id.clone(),
                     code: item.code.clone(),
-                    note: format!("Couldn't start a run — {e}"),
+                    note: reason,
                 },
             );
         }
@@ -885,8 +945,9 @@ fn definition_spec(conn: &Connection, definition_id: &str) -> Option<Spec> {
     Some(spec)
 }
 
-/// Apply a patch and announce the row. Every drainer write goes through here,
-/// so nothing it changes can reach the database without reaching the board.
+/// Apply a patch and announce the row. Every drainer write goes through here
+/// (or [`write_item_with_event`]), so nothing it changes can reach the database
+/// without reaching the board.
 pub(crate) fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
     let updated = {
         let conn = db.lock();
@@ -900,24 +961,65 @@ pub(crate) fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
     }
 }
 
-/// [`write_item`], but only when the row is still in `expected` status — the
-/// transition-safe variant for a verdict decided *before* a wait. The merge
-/// sweep decides over a network read, so by write time the row may have moved
-/// (re-queued, re-dispatched); stamping a stale verdict over that would orphan
-/// the fresh work. A miss writes and announces nothing.
+/// [`write_item`] for a *transition*: the patch and the history event that
+/// names it land in one lock scope, then both are announced. Used for every
+/// drainer write that moves an item's status; link repairs and `run_id`
+/// write-backs stay on [`write_item`], because they are bookkeeping, not
+/// history.
+fn write_item_with_event(
+    app: &AppHandle,
+    db: &Db,
+    id: &str,
+    patch: ItemPatch,
+    kind: EventKind,
+    detail: Option<String>,
+) {
+    let updated = {
+        let conn = db.lock();
+        apply_and_record(&conn, id, None, &patch, EventActor::Drainer, kind, detail)
+    };
+    match updated {
+        Ok(Some((row, event))) => {
+            emit_item(app, &row);
+            emit_item_event(app, &event);
+        }
+        // The row was deleted mid-tick; its events cascaded with it.
+        Ok(None) => {}
+        Err(e) => tracing::warn!(id, error = %e, "roadmap drainer: item write failed"),
+    }
+}
+
+/// [`write_item_with_event`], but only when the row is still in `expected`
+/// status — the transition-safe variant for a verdict decided *before* a wait.
+/// The merge sweep decides over a network read, so by write time the row may
+/// have moved (re-queued, re-dispatched); stamping a stale verdict over that
+/// would orphan the fresh work. A miss writes and announces nothing — no row,
+/// and no event, because history for a write that lost its race would be false.
 pub(crate) fn write_item_where(
     app: &AppHandle,
     db: &Db,
     id: &str,
     expected: ItemStatus,
     patch: ItemPatch,
+    entry: TrailEntry,
 ) {
     let updated = {
         let conn = db.lock();
-        store::update_where_status(&conn, id, expected, &patch)
+        apply_and_record(
+            &conn,
+            id,
+            Some(expected),
+            &patch,
+            entry.actor,
+            entry.kind,
+            entry.detail,
+        )
     };
     match updated {
-        Ok(Some(row)) => emit_item(app, &row),
+        Ok(Some((row, event))) => {
+            emit_item(app, &row);
+            emit_item_event(app, &event);
+        }
         // Deleted, or no longer in `expected` — either way the verdict is
         // stale and the row's current owner wins.
         Ok(None) => tracing::debug!(
@@ -926,6 +1028,36 @@ pub(crate) fn write_item_where(
         ),
         Err(e) => tracing::warn!(id, error = %e, "roadmap: item write failed"),
     }
+}
+
+/// The one lock-held write behind the event-carrying helpers: apply the
+/// (possibly conditional) patch, and record the event only when the patch
+/// actually landed — a miss must leave no trace anywhere.
+fn apply_and_record(
+    conn: &Connection,
+    id: &str,
+    expected: Option<ItemStatus>,
+    patch: &ItemPatch,
+    actor: EventActor,
+    kind: EventKind,
+    detail: Option<String>,
+) -> rusqlite::Result<Option<(RoadmapItem, ItemEvent)>> {
+    let updated = match expected {
+        Some(expected) => store::update_where_status(conn, id, expected, patch)?,
+        None => store::update(conn, id, patch)?,
+    };
+    let Some(row) = updated else {
+        return Ok(None);
+    };
+    let event = events::record(
+        conn,
+        &row.id,
+        &row.project_id,
+        actor,
+        kind,
+        detail.as_deref(),
+    )?;
+    Ok(Some((row, event)))
 }
 
 // ───────────────────────────── notes ────────────────────────────────────

@@ -225,8 +225,9 @@ fn strings_col(r: &Row, col: &str) -> rusqlite::Result<Vec<String>> {
     }
 }
 
-/// Parse a required enum TEXT column via its `from_db`.
-fn enum_col<T>(r: &Row, col: &str, parse: fn(&str) -> Option<T>) -> rusqlite::Result<T> {
+/// Parse a required enum TEXT column via its `from_db`. Shared with
+/// [`super::events`], whose rows carry the same kind of column.
+pub(crate) fn enum_col<T>(r: &Row, col: &str, parse: fn(&str) -> Option<T>) -> rusqlite::Result<T> {
     let raw: String = r.get(col)?;
     parse(&raw).ok_or_else(|| conversion_err(col, format!("unexpected value {raw:?}")))
 }

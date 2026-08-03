@@ -339,6 +339,133 @@ fn recovery_adopts_only_a_live_run() {
     assert_eq!(dispatched_run_id(&conn, "id-FLT-999"), None);
 }
 
+// ───────────────────────────── durable history ──────────────────────────
+
+/// A project row for the FK, plus one roadmap item in `status`.
+fn db_item(conn: &Connection, status: ItemStatus) -> RoadmapItem {
+    conn.execute(
+        "INSERT OR IGNORE INTO projects (id, name, created_at) VALUES ('p1', 'fletch', 0)",
+        [],
+    )
+    .unwrap();
+    store::create(
+        conn,
+        "p1",
+        &crate::roadmap::types::NewItem {
+            title: "it".into(),
+            status: Some(status),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn each_settlement_names_its_event() {
+    let with_pr = pr(Some(42));
+    assert_eq!(settlement_event(&Settlement::Running, None), None);
+    assert_eq!(
+        settlement_event(&Settlement::InReview, Some(&with_pr)),
+        Some((EventKind::PrOpened, Some(with_pr.url.clone())))
+    );
+    assert_eq!(
+        settlement_event(&Settlement::Done, None),
+        Some((EventKind::Shipped, None))
+    );
+    // The durable detail is the same reason string the transient note wraps.
+    assert_eq!(
+        settlement_event(&Settlement::Released("its run failed"), None),
+        Some((EventKind::RunFailed, Some("its run failed".to_string())))
+    );
+}
+
+#[test]
+fn a_claim_records_one_dispatched_event_naming_the_workflow() {
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Queued);
+
+    let (claimed, event) = claim_item(&conn, &it.id, "wf-1").unwrap().expect("claims");
+    assert_eq!(claimed.status, ItemStatus::Active);
+    assert_eq!(claimed.workflow_def_id.as_deref(), Some("wf-1"));
+    assert_eq!(event.kind, EventKind::Dispatched);
+    assert_eq!(event.actor, EventActor::Drainer);
+    assert_eq!(event.detail.as_deref(), Some("wf-1"));
+    assert_eq!(events::list_for_item(&conn, &it.id).unwrap(), vec![event]);
+
+    // A second claim finds the row no longer queued: no write, and no second
+    // event pretending there was one.
+    assert!(claim_item(&conn, &it.id, "wf-1").unwrap().is_none());
+    assert_eq!(events::list_for_item(&conn, &it.id).unwrap().len(), 1);
+}
+
+#[test]
+fn a_release_persists_its_reason_where_the_note_never_lands() {
+    // The card's toast ("Back on the board — its run failed.") is a transient
+    // `roadmap:queue-note`; nothing below asserts on it because nothing stores
+    // it — the schema has no note table at all, which is the second half of
+    // this pin. The durable record is the `run_failed` event, which a reload
+    // (any fresh read of the table) still finds.
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Active);
+
+    let (row, event) = apply_and_record(
+        &conn,
+        &it.id,
+        None,
+        &ItemPatch {
+            status: Some(ItemStatus::Open),
+            run_id: Some(None),
+            ..Default::default()
+        },
+        EventActor::Drainer,
+        EventKind::RunFailed,
+        Some("its run failed".to_string()),
+    )
+    .unwrap()
+    .expect("the item is there to release");
+    assert_eq!(row.status, ItemStatus::Open);
+
+    let listed = events::list_for_item(&conn, &it.id).unwrap();
+    assert_eq!(listed, vec![event]);
+    assert_eq!(listed[0].kind, EventKind::RunFailed);
+    assert_eq!(listed[0].detail.as_deref(), Some("its run failed"));
+
+    // No table anywhere persists queue notes — the reason string's only durable
+    // home is the event above.
+    let note_tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE '%note%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(note_tables, 0);
+}
+
+#[test]
+fn a_conditional_verdict_that_misses_records_nothing() {
+    // The sweep's path: the verdict was decided over a network read, and the
+    // row moved meanwhile. No patch lands, so no history may claim one did.
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Queued);
+
+    let outcome = apply_and_record(
+        &conn,
+        &it.id,
+        Some(ItemStatus::InReview),
+        &ItemPatch {
+            status: Some(ItemStatus::Done),
+            ..Default::default()
+        },
+        EventActor::Sweep,
+        EventKind::Shipped,
+        None,
+    )
+    .unwrap();
+    assert!(outcome.is_none());
+    assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+}
+
 // ───────────────────────────── note dedup ───────────────────────────────
 
 #[test]

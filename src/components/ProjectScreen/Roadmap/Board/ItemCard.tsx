@@ -1,7 +1,11 @@
 import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { useState } from "react";
+import type { RoadmapItemEvent } from "@/api";
 import { Icon, type IconName } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
+import { formatAge } from "@/util/format";
+import { eventLine } from "../itemHistory";
 import type { BoardItem, ItemSource, ItemStatus } from "../types";
 
 /** Where the item came from, as a one-glyph tag. */
@@ -63,6 +67,9 @@ interface Props {
    *  a queued row is stuck, or the merge sweep's "PR #N was closed without
    *  merging" for one that came back off review. */
   note?: string;
+  /** The item's durable history, newest first — fetched lazily on first expand
+   *  (see `useRoadmap.loadEvents`), so it can be absent for a beat. */
+  events?: RoadmapItemEvent[];
   /** Ring the row: it was just jumped to, or a pending proposal moves it. */
   focused?: boolean;
   /** Transient highlight for a row that just landed or just moved. */
@@ -102,6 +109,7 @@ export function ItemCard({
   onOpenRun,
   workflowName,
   note,
+  events,
   cardRef,
 }: Props) {
   const createDraft = useAppStore((s) => s.createDraft);
@@ -283,7 +291,59 @@ export function ItemCard({
               )}
             </div>
           </div>
+          {events && events.length > 0 && <ItemHistory events={events} />}
         </div>
+      )}
+    </div>
+  );
+}
+
+/** The card's history footnote: the latest event inline ("Run failed — its run
+ *  failed · 2h ago"), with the full trail behind a disclosure when there is
+ *  more than one line to show. Deliberately quiet — this is provenance, not an
+ *  action surface. */
+function ItemHistory({ events }: { events: RoadmapItemEvent[] }) {
+  const [open, setOpen] = useState(false);
+  const now = Date.now();
+  const latest = events[0];
+  const line = (e: RoadmapItemEvent) => (
+    <>
+      <span className="rm-hist-t truncate">{eventLine(e)}</span>
+      <span className="rm-hist-age mono">{formatAge(e.created_at, now)}</span>
+    </>
+  );
+  if (events.length === 1) {
+    return (
+      <div className="rm-hist">
+        <div className="rm-hist-h flex-center text-xs">
+          <Icon name="history" size={11} />
+          {line(latest)}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="rm-hist">
+      <button
+        type="button"
+        className="rm-hist-h flex-center text-xs"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <Icon name="history" size={11} />
+        {line(latest)}
+        <Icon name="chevD" size={9} className="rm-hist-chev" />
+      </button>
+      {open && (
+        <ul className="rm-hist-list text-xs">
+          {/* The latest repeats at the top of the trail on purpose: the list is
+              the whole history, not "the rest of it". */}
+          {events.map((e) => (
+            <li key={e.id} className="flex-center">
+              {line(e)}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

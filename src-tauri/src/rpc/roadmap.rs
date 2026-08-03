@@ -30,6 +30,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
+use crate::roadmap::events::{self, EventActor, EventKind, ItemEvent};
 use crate::roadmap::store;
 use crate::roadmap::types::{Horizon, ItemSource, ItemStatus, NewItem, RoadmapItem};
 use crate::roadmap::Db;
@@ -276,17 +277,19 @@ fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem
 /// `roadmap_propose`: validate the batch, insert it as `proposed` rows in one
 /// transaction, and hand back the allocated codes.
 ///
-/// Returns the created rows alongside the response so the caller can announce
-/// each one to the frontend — the board grows ghost rows live, mid-conversation.
+/// Returns the created rows — and the `proposed` history events recorded with
+/// them — alongside the response so the caller can announce both to the
+/// frontend: the board grows ghost rows live, mid-conversation.
 fn propose_op(
     conn: &Connection,
     project_id: &str,
     id: &str,
     args: &Value,
-) -> (Response, Vec<RoadmapItem>) {
+) -> (Response, Vec<RoadmapItem>, Vec<ItemEvent>) {
     let err = |msg: String| {
         (
             Response::err(id, format!("roadmap_propose: {msg}")),
+            Vec::new(),
             Vec::new(),
         )
     };
@@ -306,17 +309,29 @@ fn propose_op(
     };
 
     // All or nothing: a failure half-way through must not leave the user
-    // staring at three of the five tickets they were promised.
-    let created = (|| -> rusqlite::Result<Vec<RoadmapItem>> {
+    // staring at three of the five tickets they were promised. Each row's
+    // `proposed` history event rides the same transaction, so a ghost can never
+    // exist without the record of who suggested it.
+    let created = (|| -> rusqlite::Result<(Vec<RoadmapItem>, Vec<ItemEvent>)> {
         let tx = conn.unchecked_transaction()?;
         let mut created = Vec::with_capacity(news.len());
+        let mut recorded = Vec::with_capacity(news.len());
         for new in &news {
-            created.push(store::create(&tx, project_id, new)?);
+            let item = store::create(&tx, project_id, new)?;
+            recorded.push(events::record(
+                &tx,
+                &item.id,
+                project_id,
+                EventActor::Pm,
+                EventKind::Proposed,
+                None,
+            )?);
+            created.push(item);
         }
         tx.commit()?;
-        Ok(created)
+        Ok((created, recorded))
     })();
-    let created = match created {
+    let (created, recorded) = match created {
         Ok(created) => created,
         Err(e) => return err(e.to_string()),
     };
@@ -328,12 +343,17 @@ fn propose_op(
             .collect::<Vec<_>>(),
     });
     match serde_json::to_string(&payload) {
-        Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), created),
+        Ok(stdout) => (
+            Response::ok(id, 0, stdout, String::new()),
+            created,
+            recorded,
+        ),
         // The rows exist either way — say so rather than implying nothing
         // happened, and still emit them.
         Err(e) => (
             Response::err(id, format!("roadmap_propose: created, but {e}")),
             created,
+            recorded,
         ),
     }
 }
@@ -388,13 +408,16 @@ impl RpcDispatcher for RoadmapDispatcher {
                 "roadmap_propose" => {
                     // Lock held only for the validate+insert; the emits happen
                     // after it is dropped.
-                    let (resp, created) = {
+                    let (resp, created, recorded) = {
                         let conn = self.db.lock();
                         propose_op(&conn, &self.project_id, id, args)
                     };
                     if let Some(app) = &self.app {
                         for item in &created {
                             crate::roadmap::emit_item(app, item);
+                        }
+                        for event in &recorded {
+                            crate::roadmap::emit_item_event(app, event);
                         }
                     }
                     (resp, Vec::new())
@@ -501,6 +524,12 @@ mod tests {
             // wrote it.
             assert_eq!(row.status, ItemStatus::Proposed);
             assert_eq!(row.source, ItemSource::Pm);
+            // Each proposal starts its durable history: one `proposed` event,
+            // attributed to the PM.
+            let history = events::list_for_item(&db.lock(), &row.id).unwrap();
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].kind, EventKind::Proposed);
+            assert_eq!(history[0].actor, EventActor::Pm);
         }
         assert_eq!(rows[0].horizon, Horizon::Now);
         assert_eq!(rows[0].accept, vec!["it drains".to_string()]);

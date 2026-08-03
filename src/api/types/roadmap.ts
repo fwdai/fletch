@@ -78,6 +78,46 @@ export interface RoadmapQueueNote {
   note: string;
 }
 
+/** Who moved an item — the four writers of `roadmap_items`, by surface: the
+ *  typed commands (`user`), the propose RPC (`pm`), the queue drainer
+ *  (`drainer`), and the merge sweep (`sweep`). */
+export type RoadmapEventActor = "user" | "pm" | "drainer" | "sweep";
+
+/** What happened to an item — one kind per transition, so a history line never
+ *  re-derives meaning from a status pair. `held`/`released` arrive with the
+ *  holds slice (B5). */
+export type RoadmapEventKind =
+  | "proposed"
+  | "accepted"
+  | "discarded"
+  | "edited"
+  | "queued"
+  | "unqueued"
+  | "dispatched"
+  | "pr_opened"
+  | "run_failed"
+  | "shipped"
+  | "abandoned"
+  | "blocked"
+  | "note";
+
+/** One durable history row (`roadmap_item_events`, mirroring
+ *  src-tauri/src/roadmap/events.rs). Every status transition writes exactly
+ *  one; unlike the queue note, these survive a reload — a failed run's reason
+ *  is still on the card tomorrow. */
+export interface RoadmapItemEvent {
+  id: string;
+  item_id: string;
+  /** Denormalized off the item so a board-scoped listener filters without
+   *  holding the row. */
+  project_id: string;
+  actor: RoadmapEventActor;
+  kind: RoadmapEventKind;
+  /** Human-readable payload: a failure reason, a PR url, a workflow id. */
+  detail: string | null;
+  created_at: number;
+}
+
 /** The result of a patch: the stored row, and whether this patch is what stored
  *  it.
  *

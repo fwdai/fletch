@@ -912,6 +912,56 @@
   color: var(--warn);
 }
 
+/* The card's durable history (`roadmap:item-event`) — a footnote under the
+   expanded body: latest event inline, full trail on disclosure. Everything is
+   fg-3 on purpose; provenance should never compete with the body above it. */
+.rm-hist {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bd-soft);
+}
+.rm-hist-h {
+  width: 100%;
+  gap: 6px;
+  color: var(--fg-3);
+  line-height: var(--lh-none);
+  text-align: left;
+}
+button.rm-hist-h:hover {
+  color: var(--fg-2);
+}
+.rm-hist-t {
+  min-width: 0;
+}
+/* The "· 2h ago" tail; the dot is styling, not content. */
+.rm-hist-age {
+  flex-shrink: 0;
+}
+.rm-hist-age::before {
+  content: "· ";
+}
+.rm-hist-chev {
+  flex-shrink: 0;
+  opacity: 0.75;
+  transition: transform 0.15s var(--ease);
+}
+.rm-hist-h[aria-expanded="true"] .rm-hist-chev {
+  transform: rotate(180deg);
+}
+.rm-hist-list {
+  margin: 7px 0 0;
+  padding: 0 0 0 17px; /* under the header's text, past its icon */
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.rm-hist-list li {
+  gap: 6px;
+  color: var(--fg-3);
+  line-height: var(--lh-none);
+}
+
 /* An item the queue has taken responsibility for. A left rule rather than a
    fill: it marks the row as spoken for without competing with a ghost's tint or
    the landed flash. */

@@ -31,12 +31,15 @@ import {
   type NewRoadmapItem,
   onRoadmapItem,
   onRoadmapItemDeleted,
+  onRoadmapItemEvent,
   onRoadmapQueueNote,
   type RoadmapItem,
+  type RoadmapItemEvent,
   type RoadmapItemPatch,
 } from "@/api";
 import { useAppStore } from "@/store";
 import { applyBoardEvent, createBoardSync } from "./boardSync";
+import { insertEvent, mergeSnapshot } from "./itemHistory";
 import { PRODUCT_MAP } from "./mockData";
 import type { Horizon } from "./types";
 import { toBoardItem } from "./types";
@@ -86,6 +89,16 @@ export function useRoadmap(repoPath: string) {
    *  Not persisted anywhere, on purpose: it's only true until the next tick,
    *  and the row's own next change supersedes it. */
   const [notes, setNotes] = useState<ReadonlyMap<string, string>>(() => new Map());
+  /** Each item's durable history, newest first (`roadmap:item-event` +
+   *  `roadmap_list_item_events`). Held lazily: an item's trail is fetched on
+   *  first expand and followed live from then on — events for items nobody
+   *  ever expanded are simply dropped, so the map only ever holds what some
+   *  card has shown. */
+  const [events, setEvents] = useState<ReadonlyMap<string, RoadmapItemEvent[]>>(() => new Map());
+  /** Items whose history has been requested — the "followed live" set. In a
+   *  ref because the event listener must read the current answer without
+   *  resubscribing per expand. */
+  const requestedEvents = useRef<Set<string>>(new Set());
 
   // Every pending highlight timer, so unmounting can't set state on a dead
   // component.
@@ -140,6 +153,10 @@ export function useRoadmap(repoPath: string) {
     }
     let alive = true;
     setLoading(true);
+    // A new board means new trails: what the previous project's cards loaded
+    // says nothing about this one's items.
+    requestedEvents.current = new Set();
+    setEvents(new Map());
 
     // Unmounting mid-load must not write state, so every commit goes through
     // the same `alive` gate the fetch does.
@@ -156,6 +173,23 @@ export function useRoadmap(repoPath: string) {
     const offDeleted = onRoadmapItemDeleted((id) => {
       sync.push({ kind: "delete", id });
       dropNote(id);
+      // The backend cascades the row's history away; drop ours too, and let a
+      // reused id (there are none, but the map shouldn't bet on that) refetch.
+      requestedEvents.current.delete(id);
+      setEvents((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+    });
+    // History rows, appended only to trails some card already loaded — an
+    // event for a never-expanded item is dropped here and refetched whole on
+    // that item's first expand, which keeps the map leak-free.
+    const offEvent = onRoadmapItemEvent((e) => {
+      if (e.project_id !== projectId) return;
+      if (!requestedEvents.current.has(e.item_id)) return;
+      setEvents((prev) => new Map(prev).set(e.item_id, insertEvent(prev.get(e.item_id) ?? [], e)));
     });
     // Addressed by item id, and every id on this board belongs to this project,
     // so no extra filtering is needed — a note for a row we don't hold is
@@ -188,9 +222,30 @@ export function useRoadmap(repoPath: string) {
       alive = false;
       void off.then((f) => f());
       void offDeleted.then((f) => f());
+      void offEvent.then((f) => f());
       void offNote.then((f) => f());
     };
   }, [projectId, workspaceReady, dropNote]);
+
+  /** Fetch an item's history once, on first expand. The listener above is
+   *  already appending live rows for it from the moment this is called, and
+   *  `mergeSnapshot` folds the two together by id — the same
+   *  subscribe-then-fetch-then-replay shape the board load uses. A failed fetch
+   *  un-requests the item so the next expand retries. */
+  const loadEvents = useCallback(async (itemId: string) => {
+    if (requestedEvents.current.has(itemId)) return;
+    requestedEvents.current.add(itemId);
+    try {
+      const snapshot = await api.roadmapListItemEvents(itemId);
+      setEvents((prev) =>
+        new Map(prev).set(itemId, mergeSnapshot(prev.get(itemId) ?? [], snapshot)),
+      );
+    } catch {
+      // History is a footnote: not worth the board's error bar. The card
+      // simply has no trail until a later expand succeeds.
+      requestedEvents.current.delete(itemId);
+    }
+  }, []);
 
   /** Light up rows for a moment after they land, then clear only those — a
    *  later landing must not have its highlight cut short by an earlier timer. */
@@ -370,13 +425,21 @@ export function useRoadmap(repoPath: string) {
   );
 
   // ── board interaction ──────────────────────────────────────────────
-  const toggleItem = useCallback((code: string) => {
-    setOpenCodes((s) => {
-      const next = new Set(s);
-      if (!next.delete(code)) next.add(code);
-      return next;
-    });
-  }, []);
+  /** Expand/collapse a card. `itemId` (when the caller holds the row) is what
+   *  triggers the item's one-time history fetch — on every toggle rather than
+   *  only on opens, because `loadEvents` is idempotent and "is it open" would
+   *  otherwise be a second source of truth here. */
+  const toggleItem = useCallback(
+    (code: string, itemId?: string) => {
+      setOpenCodes((s) => {
+        const next = new Set(s);
+        if (!next.delete(code)) next.add(code);
+        return next;
+      });
+      if (itemId) void loadEvents(itemId);
+    },
+    [loadEvents],
+  );
 
   /** Jump the board to an item and flash it — used by the "on the board" links. */
   const focusItem = useCallback(
@@ -384,9 +447,15 @@ export function useRoadmap(repoPath: string) {
       setTab("roadmap");
       setFocusCode(code);
       setOpenCodes((s) => new Set(s).add(code));
+      // The card lands expanded, so its trail must load exactly as if the
+      // user had expanded it by hand — otherwise the history line the caller
+      // is often pointing at ("its run failed") is invisible until a manual
+      // collapse and re-expand.
+      const row = rows.find((r) => r.code === code);
+      if (row) void loadEvents(row.id);
       after(FOCUS_MS, () => setFocusCode(null));
     },
-    [after],
+    [after, rows, loadEvents],
   );
 
   return {
@@ -415,6 +484,9 @@ export function useRoadmap(repoPath: string) {
     landed,
     /** Why a queued item isn't moving, by item id. */
     notes,
+    /** Each item's durable history, by item id — only for items whose card has
+     *  been expanded at least once. */
+    events,
     addItem,
     editItem,
     moveItem,

@@ -14,7 +14,7 @@ import type {
 } from "./types/agent";
 import type { PrStateChangedEvent } from "./types/pr";
 import type { AgentInstallEvent } from "./types/providers";
-import type { RoadmapItem, RoadmapQueueNote } from "./types/roadmap";
+import type { RoadmapItem, RoadmapItemEvent, RoadmapQueueNote } from "./types/roadmap";
 import type { RunOutputEvent, RunPortEvent, RunStateEvent } from "./types/run";
 import type { DockerBuildEvent, PublishApproval } from "./types/sandbox";
 import type {
@@ -52,6 +52,15 @@ export function onRoadmapItem(cb: (item: RoadmapItem) => void): Promise<Unlisten
  *  row instead of upserting it. */
 export function onRoadmapItemDeleted(cb: (id: string) => void): Promise<UnlistenFn> {
   return listen<string>("roadmap:item-deleted", (event) => cb(event.payload));
+}
+
+/** `roadmap:item-event` fires when a durable history row lands — one per status
+ *  transition, carrying the full event. The board appends it to an expanded
+ *  card's trail; anything missed is refetched on the next expand
+ *  (`roadmap_list_item_events`), so a listener that wasn't mounted loses
+ *  nothing. */
+export function onRoadmapItemEvent(cb: (e: RoadmapItemEvent) => void): Promise<UnlistenFn> {
+  return listen<RoadmapItemEvent>("roadmap:item-event", (event) => cb(event.payload));
 }
 
 /** `roadmap:queue-note` explains why an item isn't moving — no workflow to run

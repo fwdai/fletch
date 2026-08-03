@@ -3,6 +3,7 @@ import type {
   ItemStatus,
   NewRoadmapItem,
   RoadmapItem,
+  RoadmapItemEvent,
   RoadmapItemPatch,
   RoadmapItemUpdate,
 } from "../types/roadmap";
@@ -39,4 +40,8 @@ export const roadmapApi = {
     }),
   /** Remove an item from the board. */
   roadmapDeleteItem: (id: string) => invoke<void>("roadmap_delete_item", { id }),
+  /** One item's durable history, newest first. Fetched lazily on first card
+   *  expand; live rows arrive on `roadmap:item-event`. */
+  roadmapListItemEvents: (itemId: string) =>
+    invoke<RoadmapItemEvent[]>("roadmap_list_item_events", { itemId }),
 };
