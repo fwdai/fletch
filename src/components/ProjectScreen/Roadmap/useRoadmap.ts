@@ -316,12 +316,19 @@ export function useRoadmap(repoPath: string) {
 
   /** The PM's pending asks against existing items, by the item they target —
    *  the shape the card lookup wants, and one-per-item by construction (the
-   *  backend replaces an item's ask in place). */
+   *  backend replaces an item's ask in place). Restricted to items the board
+   *  actually renders: an ask whose item advanced to `done` has no card to
+   *  rule it from, and counting or quoting it would make a single orphan both
+   *  invisible and immortal. The row itself survives in the DB; it comes back
+   *  into view if the item ever returns to the board. */
   const proposals = useMemo(() => {
+    const visible = new Set(rows.filter(isOnBoard).map((r) => r.id));
     const by = new Map<string, RoadmapProposal>();
-    for (const p of proposalRows) by.set(p.item_id, p);
+    for (const p of proposalRows) {
+      if (visible.has(p.item_id)) by.set(p.item_id, p);
+    }
     return by as ReadonlyMap<string, RoadmapProposal>;
-  }, [proposalRows]);
+  }, [proposalRows, rows]);
 
   /** Every code the board holds, ghosts included — the PM quotes a code the
    *  moment it proposes one, so a chat chip must resolve before the user has
@@ -551,9 +558,15 @@ export function useRoadmap(repoPath: string) {
       setTab("roadmap");
       setFocusCode(code);
       setOpenCodes((s) => new Set(s).add(code));
+      // The card lands expanded, so its trail must load exactly as if the
+      // user had expanded it by hand — otherwise the history line the caller
+      // is often pointing at ("its run failed") is invisible until a manual
+      // collapse and re-expand.
+      const row = rows.find((r) => r.code === code);
+      if (row) void loadEvents(row.id);
       after(FOCUS_MS, () => setFocusCode(null));
     },
-    [after],
+    [after, rows, loadEvents],
   );
 
   // A jump asked for from outside this screen — a run's roadmap chip
