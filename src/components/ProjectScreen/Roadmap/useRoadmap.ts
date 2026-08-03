@@ -32,10 +32,13 @@ import {
   onRoadmapItem,
   onRoadmapItemDeleted,
   onRoadmapItemEvent,
+  onRoadmapProposal,
+  onRoadmapProposalDeleted,
   onRoadmapQueueNote,
   type RoadmapItem,
   type RoadmapItemEvent,
   type RoadmapItemPatch,
+  type RoadmapProposal,
 } from "@/api";
 import { useAppStore } from "@/store";
 import { applyBoardEvent, createBoardSync } from "./boardSync";
@@ -74,6 +77,12 @@ export function useRoadmap(repoPath: string) {
   const workflows = useProjectWorkflows(projectId);
 
   const [rows, setRows] = useState<RoadmapItem[]>([]);
+  /** The PM's pending asks against existing items (`roadmap:proposal` +
+   *  `roadmap_list_proposals`) — at most one per item, replaced in place under
+   *  a stable id. Loaded with the item snapshot through the same
+   *  subscribe-then-fetch-then-replay sequencer, because the PM parks these
+   *  mid-conversation exactly like it proposes ghost rows. */
+  const [proposalRows, setProposalRows] = useState<RoadmapProposal[]>([]);
   const [loading, setLoading] = useState(true);
   /** The last failure from a mutation with no form of its own to report into
    *  (a move, a delete, an accepted proposal). */
@@ -148,6 +157,7 @@ export function useRoadmap(repoPath: string) {
   useEffect(() => {
     if (!projectId) {
       setRows([]);
+      setProposalRows([]);
       setLoading(!workspaceReady);
       return;
     }
@@ -169,6 +179,20 @@ export function useRoadmap(repoPath: string) {
       // Rows go through the sequencer; notes don't need to — they're a
       // separate map, and a stale excuse should vanish even mid-load.
       if (row.status !== "queued") dropNote(row.id);
+    });
+    // The proposal stream rides its own instance of the same sequencer: the
+    // same two loss windows exist for it, and a replaced ask arrives as an
+    // upsert under a stable id (see boardSync.ts).
+    const psync = createBoardSync<RoadmapProposal>((update) => {
+      if (alive) setProposalRows(update);
+    });
+    const offProposal = onRoadmapProposal((p) => {
+      if (p.project_id !== projectId) return;
+      psync.push({ kind: "upsert", row: p });
+    });
+    const offProposalDeleted = onRoadmapProposalDeleted((id) => {
+      // Addressed by proposal id; one we don't hold is simply never rendered.
+      psync.push({ kind: "delete", id });
     });
     const offDeleted = onRoadmapItemDeleted((id) => {
       sync.push({ kind: "delete", id });
@@ -201,18 +225,23 @@ export function useRoadmap(repoPath: string) {
     void (async () => {
       // Registration has to be awaited, not just started: an event emitted
       // before `listen` resolves never reaches us at all.
-      await Promise.all([off, offDeleted]);
+      await Promise.all([off, offDeleted, offProposal, offProposalDeleted]);
       if (!alive) return;
       try {
-        const items = await api.roadmapListItems(projectId);
+        const [items, pending] = await Promise.all([
+          api.roadmapListItems(projectId),
+          api.roadmapListProposals(projectId),
+        ]);
         if (!alive) return;
         sync.settle(items);
+        psync.settle(pending);
         setLoading(false);
       } catch (e) {
         if (!alive) return;
         // No snapshot to replay over — settle anyway so later events still
         // apply instead of piling up in the buffer.
         sync.settle();
+        psync.settle();
         setError(String(e));
         setLoading(false);
       }
@@ -222,6 +251,8 @@ export function useRoadmap(repoPath: string) {
       alive = false;
       void off.then((f) => f());
       void offDeleted.then((f) => f());
+      void offProposal.then((f) => f());
+      void offProposalDeleted.then((f) => f());
       void offEvent.then((f) => f());
       void offNote.then((f) => f());
     };
@@ -276,6 +307,15 @@ export function useRoadmap(repoPath: string) {
    *  user accepts or discards them. Kept out of `items` so they don't move a
    *  single count before that. */
   const ghosts = useMemo(() => rows.filter(isProposed).map(toBoardItem), [rows]);
+
+  /** The PM's pending asks against existing items, by the item they target —
+   *  the shape the card lookup wants, and one-per-item by construction (the
+   *  backend replaces an item's ask in place). */
+  const proposals = useMemo(() => {
+    const by = new Map<string, RoadmapProposal>();
+    for (const p of proposalRows) by.set(p.item_id, p);
+    return by as ReadonlyMap<string, RoadmapProposal>;
+  }, [proposalRows]);
 
   const counts = useMemo(() => {
     const by: Record<Horizon, number> = { now: 0, next: 0, later: 0 };
@@ -360,6 +400,39 @@ export function useRoadmap(repoPath: string) {
         markLanded(codes);
       }),
     [guarded, markLanded, upsert],
+  );
+
+  /** Apply pending PM proposals — the user's "yes" on each. The backend rules
+   *  in one lock scope per proposal: a stale ask (its item went `active` since)
+   *  is dropped there and surfaces here as the error the bar shows, while the
+   *  `roadmap:proposal-deleted` emit clears it off the card either way. */
+  const acceptProposals = useCallback(
+    (ids: string[]) =>
+      guarded(async () => {
+        // A stale ask refuses individually; it mustn't take the rest of an
+        // "Accept all" down with it, so rule on every id and report the first
+        // refusal after the fact.
+        let refusal: unknown = null;
+        for (const id of ids) {
+          try {
+            await api.roadmapAcceptProposal(id);
+          } catch (e) {
+            refusal ??= e;
+          }
+        }
+        if (refusal != null) throw refusal;
+      }),
+    [guarded],
+  );
+
+  /** Decline pending PM proposals. The items are untouched; each refusal lands
+   *  in its item's durable history for the PM's next session to see. */
+  const rejectProposals = useCallback(
+    (ids: string[]) =>
+      guarded(async () => {
+        for (const id of ids) await api.roadmapRejectProposal(id);
+      }),
+    [guarded],
   );
 
   /** Hand items to the drainer: `open → queued`. From here the Rust side owns
@@ -481,11 +554,15 @@ export function useRoadmap(repoPath: string) {
     /** Each item's durable history, by item id — only for items whose card has
      *  been expanded at least once. */
     events,
+    /** Pending PM proposals against existing items, by item id. */
+    proposals,
     addItem,
     editItem,
     moveItem,
     removeItems,
     acceptItems,
+    acceptProposals,
+    rejectProposals,
     queueItems,
     unqueueItems,
     markDone,

@@ -35,6 +35,7 @@ export function Board({
   const {
     items,
     ghosts,
+    proposals,
     map,
     tab,
     setTab,
@@ -52,6 +53,8 @@ export function Board({
     editItem,
     removeItems,
     acceptItems,
+    acceptProposals,
+    rejectProposals,
     queueItems,
     unqueueItems,
     markDone,
@@ -129,13 +132,14 @@ export function Board({
 
       {/* One proposal is ruled on from its own card; a batch gets a single bar,
           so accepting six tickets isn't six trips down the board. It sits above
-          the scroller rather than inside it — the ghosts it acts on can be in
-          three different horizons. */}
-      {tab === "roadmap" && ghosts.length > 1 && (
+          the scroller rather than inside it — the ghosts and pending changes it
+          acts on can be in three different horizons. Accept-all rules both:
+          ghost rows join the roadmap, pending changes are applied. */}
+      {tab === "roadmap" && ghosts.length + proposals.size > 1 && (
         <div className="rm-props flex-center text-xs">
           <span className="rm-props-n iflex-center mono">
             <Icon name="sparkle" size={11} />
-            {ghosts.length} proposed
+            {ghosts.length + proposals.size} proposed
           </span>
           <span className="rm-props-hint truncate">
             Nothing is on the roadmap until you say so.
@@ -144,14 +148,20 @@ export function Board({
           <button
             type="button"
             className="rm-props-x"
-            onClick={() => removeItems(ghosts.map((g) => g.item.id))}
+            onClick={() => {
+              if (ghosts.length) void removeItems(ghosts.map((g) => g.item.id));
+              if (proposals.size) void rejectProposals([...proposals.values()].map((p) => p.id));
+            }}
           >
             Discard all
           </button>
           <button
             type="button"
             className="rm-props-ok iflex-center"
-            onClick={() => acceptItems(ghosts.map((g) => g.item.id))}
+            onClick={() => {
+              if (ghosts.length) void acceptItems(ghosts.map((g) => g.item.id));
+              if (proposals.size) void acceptProposals([...proposals.values()].map((p) => p.id));
+            }}
           >
             <Icon name="check" size={11} /> Accept all
           </button>
@@ -184,6 +194,8 @@ export function Board({
                   // A proposed row is on the board but not *of* it yet: it is
                   // ruled on rather than edited or sent to an agent.
                   const ghost = it.status === "proposed";
+                  /** The PM's pending ask against this row, if any. */
+                  const proposal = proposals.get(row.id);
                   // The queue owns everything from `queued` on: an `active`
                   // row is the drainer's, and the user's lever on it is the
                   // run, not the row. `in_review` keeps one manual lever —
@@ -213,6 +225,13 @@ export function Board({
                       }
                       onAccept={ghost && !readOnly ? () => acceptItems([row.id]) : undefined}
                       onDiscard={ghost && !readOnly ? () => removeItems([row.id]) : undefined}
+                      proposal={proposal}
+                      onAcceptProposal={
+                        proposal && !readOnly ? () => acceptProposals([proposal.id]) : undefined
+                      }
+                      onRejectProposal={
+                        proposal && !readOnly ? () => rejectProposals([proposal.id]) : undefined
+                      }
                       onQueue={
                         writable && it.status === "open" ? () => queueItems([row.id]) : undefined
                       }

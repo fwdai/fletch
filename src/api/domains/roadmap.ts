@@ -6,6 +6,7 @@ import type {
   RoadmapItemEvent,
   RoadmapItemPatch,
   RoadmapItemUpdate,
+  RoadmapProposal,
 } from "../types/roadmap";
 
 /** Per-project roadmap storage (`roadmap_*`, src-tauri/src/roadmap). Every
@@ -44,4 +45,18 @@ export const roadmapApi = {
    *  expand; live rows arrive on `roadmap:item-event`. */
   roadmapListItemEvents: (itemId: string) =>
     invoke<RoadmapItemEvent[]>("roadmap_list_item_events", { itemId }),
+  /** Every pending PM proposal on a project's board — fetched with the item
+   *  snapshot; live rows arrive on `roadmap:proposal`. */
+  roadmapListProposals: (projectId: string) =>
+    invoke<RoadmapProposal[]>("roadmap_list_proposals", { projectId }),
+  /** Apply a pending proposal — the user's "yes". Rejects with a message when
+   *  the item raced past the gate (went `active` since the PM asked); the
+   *  stale proposal is dropped backend-side either way and its removal arrives
+   *  on `roadmap:proposal-deleted`. */
+  roadmapAcceptProposal: (proposalId: string) =>
+    invoke<void>("roadmap_accept_proposal", { proposalId }),
+  /** Decline a pending proposal — the item is untouched, and the refusal lands
+   *  in its durable history for the PM's next session to see. */
+  roadmapRejectProposal: (proposalId: string) =>
+    invoke<void>("roadmap_reject_proposal", { proposalId }),
 };

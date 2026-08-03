@@ -118,6 +118,43 @@ export interface RoadmapItemEvent {
   created_at: number;
 }
 
+/** What a pending PM proposal asks for: patch the item, or remove it. */
+export type RoadmapProposalKind = "update" | "discard";
+
+/** The delta an `update` proposal carries — the item's shape only, never its
+ *  lifecycle (no `status`, no `code`, no run back-links; the backend refuses
+ *  them). An omitted key is left alone; an explicit `null` on `area` clears
+ *  it — the same wire semantics as `RoadmapItemPatch`. */
+export interface RoadmapProposalPatch {
+  title?: string;
+  why?: string;
+  horizon?: Horizon;
+  area?: string | null;
+  accept?: string[];
+  deps?: string[];
+}
+
+/** One pending PM proposal (`roadmap:proposal` and `roadmap_list_proposals`
+ *  carry the same shape, mirroring src-tauri/src/roadmap/proposals.rs). At
+ *  most one exists per item; a newer ask replaces it under the *same id*, so
+ *  upserting by id can never hold two for one item. Only the user's ruling
+ *  (accept/reject) or the item's deletion removes it. */
+export interface RoadmapProposal {
+  id: string;
+  item_id: string;
+  /** Denormalized off the item so a board-scoped listener filters without
+   *  holding the row. */
+  project_id: string;
+  kind: RoadmapProposalKind;
+  /** The validated patch for an `update`; null for a `discard`. Its keys are
+   *  exactly the fields the proposal changes. */
+  patch: RoadmapProposalPatch | null;
+  /** The PM's one-line rationale. Always present for a discard (the ask must
+   *  explain itself); optional for an update. */
+  note: string | null;
+  created_at: number;
+}
+
 /** The result of a patch: the stored row, and whether this patch is what stored
  *  it.
  *
