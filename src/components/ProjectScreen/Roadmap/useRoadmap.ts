@@ -520,9 +520,15 @@ export function useRoadmap(repoPath: string) {
       setTab("roadmap");
       setFocusCode(code);
       setOpenCodes((s) => new Set(s).add(code));
+      // The card lands expanded, so its trail must load exactly as if the
+      // user had expanded it by hand — otherwise the history line the caller
+      // is often pointing at ("its run failed") is invisible until a manual
+      // collapse and re-expand.
+      const row = rows.find((r) => r.code === code);
+      if (row) void loadEvents(row.id);
       after(FOCUS_MS, () => setFocusCode(null));
     },
-    [after],
+    [after, rows, loadEvents],
   );
 
   return {
