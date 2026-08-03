@@ -674,9 +674,14 @@ fn plan_and_claim(conn: &Connection, project_id: &str) -> Claim {
         .map(|i| i.code.clone())
         .collect();
     let known: HashSet<String> = items.iter().map(|i| i.code.clone()).collect();
+    // An item with an `agent_id` was handed to a specific agent by hand — the
+    // hand-off *is* its dispatch, so the queue must never put a second builder
+    // on it. The hand-off command refuses `queued`+ items and the card hides
+    // Queue on handed-off rows, so this filter is the belt to those braces:
+    // it holds even for a row a typed command queued directly.
     let queued: Vec<RoadmapItem> = items
         .iter()
-        .filter(|i| i.status == ItemStatus::Queued)
+        .filter(|i| i.status == ItemStatus::Queued && i.agent_id.is_none())
         .cloned()
         .collect();
 

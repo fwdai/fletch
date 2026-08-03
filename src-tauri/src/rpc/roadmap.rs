@@ -217,7 +217,10 @@ fn compact(item: &RoadmapItem, pending: Option<&Proposal>) -> Value {
     if !item.deps.is_empty() {
         o.insert("deps".into(), json!(item.deps));
     }
-    if let Some(p) = pending {
+    // Quoted only while the item can still be ruled: an ask whose item has
+    // advanced past the gate has no card to rule it from, and quoting it
+    // forever would read as "still waiting on the user" when nothing is.
+    if let Some(p) = pending.filter(|_| rulable(item.status)) {
         let mut pp = Map::new();
         pp.insert("kind".into(), json!(p.kind.as_str()));
         if let Some(note) = &p.note {
@@ -459,15 +462,28 @@ fn proposable<'a>(items: &'a [RoadmapItem], code: &str) -> Result<&'a RoadmapIte
     let item = items.iter().find(|i| i.code == code).ok_or_else(|| {
         format!("no item {code:?} on this board — `roadmap_list` shows what exists")
     })?;
-    match item.status {
-        ItemStatus::Proposed | ItemStatus::Open | ItemStatus::Queued => Ok(item),
-        status => Err(format!(
+    if rulable(item.status) {
+        Ok(item)
+    } else {
+        Err(format!(
             "{} is {} — an item being built or reviewed can't be reshaped by proposal; \
              use the codes `roadmap_list` shows as proposed, open, or queued",
             item.code,
-            status.as_str()
-        )),
+            item.status.as_str()
+        ))
     }
+}
+
+/// May an ask against an item with this status still be ruled on? Anything
+/// from `active` on is being built or judged. Shared by the propose-time gate
+/// above and the `compact` projection, so the PM is never quoted an ask the
+/// user has no card to rule. (The ruling-side copy of this set lives in
+/// `roadmap::proposal_gate`; unifying them is filed for B5.)
+fn rulable(status: ItemStatus) -> bool {
+    matches!(
+        status,
+        ItemStatus::Proposed | ItemStatus::Open | ItemStatus::Queued
+    )
 }
 
 /// Normalize and validate an update's patch against the board, or say exactly

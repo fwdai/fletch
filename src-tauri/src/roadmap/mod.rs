@@ -305,9 +305,12 @@ pub async fn roadmap_set_rank(
 /// provenance: it lands as a `note` naming the agent, read off the `workspaces`
 /// row here so the trail can't disagree with the sidebar.
 ///
-/// The status is deliberately untouched. Nothing about this item is queued, so
-/// the drainer never claims it (it picks from `queued` only) — the hand-off *is*
-/// the dispatch, and the user drives it from the agent's chat.
+/// The status is deliberately untouched, and the hand-off is gated to
+/// `proposed | open`: an item that is queued, being built, or in review is
+/// already dispatched, and stamping a second builder onto it would put two
+/// agents on one brief (the queue side of that door is closed too — the
+/// drainer skips agent-linked items, and the card hides Queue on them). The
+/// hand-off *is* the dispatch, and the user drives it from the agent's chat.
 #[tauri::command]
 pub async fn roadmap_hand_off_item(
     item_id: String,
@@ -332,6 +335,20 @@ fn hand_off(
     item_id: &str,
     agent_id: &str,
 ) -> Result<(RoadmapItem, ItemEvent), String> {
+    let current = store::get(conn, item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    match current.status {
+        ItemStatus::Proposed | ItemStatus::Open => {}
+        status => {
+            return Err(format!(
+                "{} is {} — an item that is queued or already being built can't be handed \
+                 to an agent; take it back to the board first",
+                current.code,
+                status.as_str()
+            ))
+        }
+    }
     // A name we can't read is not worth failing the hand-off over — the stamp is
     // the load-bearing half, and the card falls back to the workspace list for
     // the label anyway.
@@ -829,6 +846,22 @@ mod tests {
         let (_, event) = hand_off(&conn, &it.id, "gone").unwrap();
         assert_eq!(event.detail.as_deref(), Some("Handed to an agent"));
         assert!(hand_off(&conn, "no-such-item", "gone").is_err());
+    }
+
+    /// Anything from `queued` on is already dispatched: handing it off would
+    /// put a second builder on one brief. The refusal names the status, stamps
+    /// nothing, and records nothing.
+    #[test]
+    fn handing_off_refuses_a_dispatched_item() {
+        let conn = test_conn();
+        for status in [ItemStatus::Queued, ItemStatus::Active, ItemStatus::InReview] {
+            let it = with_status(&conn, status);
+            let err = hand_off(&conn, &it.id, "w1").unwrap_err();
+            assert!(err.contains(status.as_str()), "{err}");
+            let row = store::get(&conn, &it.id).unwrap().unwrap();
+            assert_eq!(row.agent_id, None, "a refusal must not stamp");
+            assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+        }
     }
 
     /// A pending update proposal for a test item, straight through the DAO —

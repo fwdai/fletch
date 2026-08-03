@@ -255,8 +255,11 @@ export function ItemCard({
 
       {/* The PM's pending ask against this row — the ghost bar's grammar for a
           delta instead of a new ticket: always visible, ruled on without an
-          expand. The expanded body carries the per-field diff. */}
-      {proposal && (onAcceptProposal || onRejectProposal) && (
+          expand. The expanded body carries the per-field diff. Never rendered
+          on a ghost: two stacked bars whose Accepts mean different things
+          ("put it on the board" vs "apply the patch") is a coin-flip for the
+          user — rule on the ghost first, the ask stays pending. */}
+      {proposal && !ghost && (onAcceptProposal || onRejectProposal) && (
         <div className="rm-propbar flex-center">
           <span className="rm-propbar-l text-xs truncate">
             <strong>
@@ -357,12 +360,14 @@ export function ItemCard({
                   <Icon name="edit" size={11} /> Edit
                 </Button>
               )}
-              {/* The manual hand-off stays available on every real row: the queue
-                is autonomous, and sometimes you want to drive. Demoted to a
-                ghost button next to "Queue", which is the path most rows take.
-                A proposed row isn't work anyone has agreed to do — accept it
-                first, then send it. */}
-              {!ghost && (
+              {/* The manual hand-off, for rows nothing is building yet: the
+                queue is autonomous, and sometimes you want to drive. Demoted to
+                a ghost button next to "Queue", which is the path most rows
+                take. A proposed row isn't work anyone has agreed to do —
+                accept it first, then send it. Anything from `queued` on is
+                already dispatched (the backend refuses those too), and a row
+                that was already handed off keeps its one builder. */}
+              {!ghost && item.status === "open" && !agentId && (
                 <Button
                   variant="ghost"
                   size="sm"
