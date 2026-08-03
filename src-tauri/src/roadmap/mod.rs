@@ -363,8 +363,13 @@ pub async fn roadmap_list_proposals(
 /// What ruling on a proposal did, decided under one lock scope so the check,
 /// the write, and the history it records can never disagree.
 enum Ruling {
-    /// The patch landed; emit the row and the `edited` event.
-    Updated { item: RoadmapItem, event: ItemEvent },
+    /// The patch landed; emit the row and the `edited` event. Boxed: a ruling
+    /// is almost always this variant, but the enum's size is set by it, and
+    /// the row + event pair dwarfs the other arms.
+    Updated {
+        item: Box<RoadmapItem>,
+        event: Box<ItemEvent>,
+    },
     /// The item was deleted at the PM's ask; emit the deletion.
     Discarded { item_id: String },
     /// The item outran the ask (it went `active`+ since the PM proposed) — the
@@ -436,8 +441,8 @@ fn accept_proposal(conn: &Connection, proposal_id: &str) -> Result<Ruling, Strin
             .map_err(|e| e.to_string())?;
             proposals::delete(conn, proposal_id).map_err(|e| e.to_string())?;
             Ok(Ruling::Updated {
-                item: updated,
-                event,
+                item: Box::new(updated),
+                event: Box::new(event),
             })
         }
         ProposalKind::Discard => {
