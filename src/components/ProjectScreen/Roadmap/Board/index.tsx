@@ -54,6 +54,7 @@ export function Board({
     notes,
     events,
     runsById,
+    codes,
     addItem,
     editItem,
     removeItems,
@@ -323,6 +324,7 @@ export function Board({
           item={editing.item}
           horizon={editing.horizon}
           workflows={workflows}
+          codes={codes}
           onClose={() => setEditing(null)}
           onSave={(draft) => (editRow ? editItem(editRow.id, draft) : addItem(draft))}
           onDelete={editRow ? () => removeItems([editRow.id]) : undefined}
