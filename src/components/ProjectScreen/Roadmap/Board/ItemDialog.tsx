@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { Horizon, RoadmapItem } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Segmented } from "@/components/Settings/Segmented";
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Modal, ModalBody, ModalFooter } from "@/components/ui/Modal";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { TextArea, TextInput } from "@/components/ui/TextInput";
+import { addDep, removeDep, suggestCodes } from "../depsField";
 import { HORIZONS } from "../types";
 import type { ProjectWorkflows } from "../useProjectWorkflows";
 
@@ -19,6 +20,11 @@ export interface ItemDraft {
   horizon: Horizon;
   area: string | null;
   accept: string[];
+  /** Codes this item must land after. The queue skips an item whose deps aren't
+   *  `done`, so this is the user's half of dispatch order (rank is the other).
+   *  Validated against the board here for speed and against the real dependency
+   *  graph backend-side, which is the authority — only it can see a loop. */
+  deps: string[];
   /** Which workflow the queue dispatches this under. `null` means "whatever the
    *  project's default is at dispatch time" — resolved by the Rust drainer, not
    *  frozen here, so changing the project default moves every un-pinned item. */
@@ -47,6 +53,9 @@ interface Props {
   /** The workflows this project could run the item under, and which one is its
    *  default. */
   workflows: ProjectWorkflows;
+  /** Every code on the board, for the dep field — exact matches only, because
+   *  the prefix varies per project. */
+  codes: ReadonlySet<string>;
   onClose: () => void;
   onSave: (draft: ItemDraft) => Promise<unknown>;
   /** Absent while creating: there is nothing to delete yet. */
@@ -55,18 +64,51 @@ interface Props {
 
 /** Create or edit one roadmap item. The same form for both, because the fields
  *  are the same and a separate "quick add" would drift from it. */
-export function ItemDialog({ item, horizon, workflows, onClose, onSave, onDelete }: Props) {
+export function ItemDialog({ item, horizon, workflows, codes, onClose, onSave, onDelete }: Props) {
   const [title, setTitle] = useState(item?.title ?? "");
   const [why, setWhy] = useState(item?.why ?? "");
   const [place, setPlace] = useState<Horizon>(item?.horizon ?? horizon);
   const [area, setArea] = useState(item?.area ?? "");
   const [accept, setAccept] = useState((item?.accept ?? []).join("\n"));
+  const [deps, setDeps] = useState<string[]>(item?.deps ?? []);
+  /** What is typed in the dep box but not yet a chip. */
+  const [depDraft, setDepDraft] = useState("");
   const [workflow, setWorkflow] = useState<string>(item?.workflow_def_id ?? PROJECT_DEFAULT);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const canSave = title.trim().length > 0 && !busy;
+
+  /** Every code this item could still depend on — the board minus itself and
+   *  minus the chips already there. Independent of what is typed, so the field
+   *  doesn't disable itself mid-word when a query matches nothing. */
+  const depsAvailable = useMemo(
+    () => suggestCodes("", codes, deps, item?.code),
+    [codes, deps, item?.code],
+  );
+  /** …narrowed to what has been typed, for the suggestion list. Filtered here
+   *  rather than left to the datalist, whose matching rules vary by engine. */
+  const depOptions = useMemo(
+    () => suggestCodes(depDraft, codes, deps, item?.code),
+    [depDraft, codes, deps, item?.code],
+  );
+
+  /** Turn the typed token into a chip, or say why it can't be one. Refusals the
+   *  board can answer (unknown code, self) land here; a *loop* comes back from
+   *  the backend on save, into the same slot. */
+  const commitDep = () => {
+    const { deps: next, error: refusal } = addDep(deps, depDraft, codes, item?.code);
+    if (refusal) {
+      setError(refusal);
+      return;
+    }
+    if (next) {
+      setDeps(next);
+      setError(null);
+    }
+    setDepDraft("");
+  };
 
   // "Project default" names the definition when there is one, so the choice is
   // legible rather than a promise the user has to go and verify. When there
@@ -87,6 +129,13 @@ export function ItemDialog({ item, horizon, workflows, onClose, onSave, onDelete
 
   const save = async () => {
     if (!canSave) return;
+    // A code left in the box is meant as a dep — saving without it would drop
+    // it silently. A refusal stops the save, with the reason on screen.
+    const pending = addDep(deps, depDraft, codes, item?.code);
+    if (pending.error) {
+      setError(pending.error);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -96,6 +145,7 @@ export function ItemDialog({ item, horizon, workflows, onClose, onSave, onDelete
         horizon: place,
         area: area.trim() || null,
         accept: linesToList(accept),
+        deps: pending.deps ?? deps,
         workflow_def_id: workflow === PROJECT_DEFAULT ? null : workflow,
       });
       onClose();
@@ -148,6 +198,61 @@ export function ItemDialog({ item, horizon, workflows, onClose, onSave, onDelete
         <div className="modal-field">
           <span className="modal-label text-sm">Horizon</span>
           <Segmented value={place} options={HORIZON_OPTIONS} onChange={setPlace} />
+        </div>
+
+        {/* Dependencies as chips: a code is a thing you pick, not prose, and the
+            row already draws them this way ("after FLT-100"). The queue skips an
+            item whose deps aren't done, so this field is dispatch order the user
+            can state — the loop check is the backend's (see roadmap::deps). */}
+        <div className="modal-field">
+          <label className="modal-label text-sm" htmlFor="rm-deps">
+            After <span className="modal-opt">codes this must land after, optional</span>
+          </label>
+          <div className="rm-deps flex-center">
+            {deps.map((d) => (
+              <span key={d} className="rm-dep-chip iflex-center mono text-xs">
+                {d}
+                <button
+                  type="button"
+                  className="rm-dep-x iflex-center"
+                  aria-label={`Remove ${d}`}
+                  onClick={() => {
+                    setDeps(removeDep(deps, d));
+                    setError(null);
+                  }}
+                >
+                  <Icon name="close" size={9} />
+                </button>
+              </span>
+            ))}
+            <input
+              id="rm-deps"
+              className="rm-deps-in mono text-xs"
+              list="rm-deps-codes"
+              autoComplete="off"
+              placeholder={deps.length ? "" : (depsAvailable[0] ?? "nothing else on the board yet")}
+              disabled={depsAvailable.length === 0 && deps.length === 0}
+              value={depDraft}
+              onChange={(e) => setDepDraft(e.target.value)}
+              onBlur={commitDep}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === ",") {
+                  // The chip, not the form: Enter here means "that's a dep".
+                  e.preventDefault();
+                  commitDep();
+                } else if (e.key === "Backspace" && !depDraft && deps.length) {
+                  setDeps(deps.slice(0, -1));
+                }
+              }}
+            />
+            {/* Native suggestions rather than a popup: the answer is a short
+                list of codes, and the datalist filters as the user types. */}
+            <datalist id="rm-deps-codes">
+              {depOptions.map((c) => (
+                <option key={c} value={c} />
+              ))}
+            </datalist>
+          </div>
         </div>
 
         <div className="modal-field">

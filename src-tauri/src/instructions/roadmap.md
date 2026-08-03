@@ -56,10 +56,12 @@ Fields, per item:
 - `horizon` — required: `now` (being built), `next` (up next), `later` (backlog).
 - `area` — optional product-map domain.
 - `accept` — optional array of acceptance criteria: what makes it done.
-- `deps` — optional array of **codes** (`["FLT-100"]`) this must land after.
-  Only codes already on the board — items in the same batch have no code yet,
-  so if two of your tickets are ordered, propose the first, then the second
-  with a dep on the code you got back.
+- `deps` — optional array of what this must land after. Either a **code**
+  already on the board (`["FLT-100"]`) or a **position in this batch**
+  (`["#2"]` = the second ticket in this call, counting from 1). So an ordered
+  plan is one call: propose the slices in build order and point each at the one
+  before it. The positions are turned into the real codes as the tickets are
+  created, and `roadmap_list` shows codes from then on.
 
 Build the request with `jq` so free text is escaped correctly:
 
@@ -69,7 +71,10 @@ jq -n --arg id "$ID" '{id:$id,op:"roadmap_propose",args:{items:[
   {title:"Add the queue drainer",
    why:"queued items sit forever with nothing to launch them",
    horizon:"next", area:"workflow",
-   accept:["a queued item launches a run","the run id is stored on the item"]}
+   accept:["a queued item launches a run","the run id is stored on the item"]},
+  {title:"Reflect a finished run back onto the board",
+   why:"a dispatched item has to leave the queue when its run lands",
+   horizon:"next", deps:["#1"]}
 ]}}' > "$FLETCH_RPC_DIR/requests/$ID.json.tmp"
 mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"
 until [ -f "$FLETCH_RPC_DIR/responses/$ID.json" ]; do sleep 0.2; done
@@ -79,7 +84,8 @@ cat "$FLETCH_RPC_DIR/responses/$ID.json"
 `stdout` carries the allocated codes — refer to them by code from then on:
 
 ```json
-{"created":[{"code":"FLT-142","title":"Add the queue drainer"}]}
+{"created":[{"code":"FLT-142","title":"Add the queue drainer"},
+            {"code":"FLT-143","title":"Reflect a finished run back onto the board"}]}
 ```
 
 Rules the app enforces, so save yourself a round trip:
@@ -88,6 +94,11 @@ Rules the app enforces, so save yourself a round trip:
   conversation, not to send a bigger batch.
 - The whole batch is rejected if any item is invalid — nothing is half-created.
   The error names the item; fix it and resend.
+- `deps` may not form a circle. Nothing in a loop is ever built — each item
+  waits on the next — so a batch that closes one is refused, and the refusal
+  draws the loop (`FLT-142 → FLT-143 → FLT-142`). The same is true of a ticket
+  that merely *waits on* a loop already on the board: propose the fix to that
+  loop first.
 - An unknown field is an error (a misspelled `horizon` must not silently become
   a backlog item). You cannot set `status` or `source`: a proposal is always
   proposed, and always attributed to you.
@@ -116,9 +127,16 @@ cat "$FLETCH_RPC_DIR/responses/$ID.json"
 ["title","horizon","accept"]}}` — say it in the conversation.
 
 `patch` takes any of `title | why | horizon | area | accept | deps`, with the
-same rules as proposing (deps are codes already on the board; `"area": null`
-clears the area). Nothing else is patchable — not `status`, not `code`.
+same rules as proposing (`"area": null` clears the area). `deps` here are codes
+on the board — there is no batch to point into — and the whole list replaces the
+item's current one. Nothing else is patchable — not `status`, not `code`.
 `note` is one honest sentence on why; the user reads it next to the diff.
+
+A dep patch that would close a loop is refused, here *and* again when the user
+accepts it: the board moves while an ask is pending, so a patch that was fine
+when you sent it can be a circle by the time it is ruled on. If that happens the
+ask is dropped and the user is told which loop it would have made — read a fresh
+`roadmap_list` and re-ask if the change still matters.
 
 ### `roadmap_propose_discard` — propose retiring an item
 
