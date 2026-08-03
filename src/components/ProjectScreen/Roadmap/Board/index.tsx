@@ -47,6 +47,7 @@ export function Board({
     error,
     clearError,
     notes,
+    events,
     addItem,
     editItem,
     removeItems,
@@ -198,12 +199,13 @@ export function Board({
                       landed={landed.has(it.code)}
                       focused={focusCode === it.code}
                       note={notes.get(row.id)}
+                      events={events.get(row.id)}
                       workflowName={
                         writable
                           ? (workflows.resolve(row.workflow_def_id)?.name ?? null)
                           : undefined
                       }
-                      onToggle={() => toggleItem(it.code)}
+                      onToggle={() => toggleItem(it.code, row.id)}
                       onEdit={
                         ghost || readOnly
                           ? undefined

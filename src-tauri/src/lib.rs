@@ -1664,6 +1664,7 @@ pub fn run() {
             roadmap::roadmap_create_item,
             roadmap::roadmap_update_item,
             roadmap::roadmap_delete_item,
+            roadmap::roadmap_list_item_events,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::wf_run_agents,

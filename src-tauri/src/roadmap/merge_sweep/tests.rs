@@ -113,6 +113,27 @@ fn a_failed_read_changes_nothing_either() {
     assert!(patch_for(&verdict(None)).is_none());
 }
 
+// ───────────────────────────── the history event ────────────────────────
+
+#[test]
+fn a_verdict_writes_and_records_together_or_not_at_all() {
+    // `event_for` pairs `patch_for` verdict by verdict: whatever writes the
+    // board also writes the durable record, and a verdict that touches nothing
+    // records nothing. The `shipped` event's timestamp is the item's `done_at`.
+    assert!(event_for(&Verdict::Waiting).is_none());
+    assert_eq!(
+        event_for(&Verdict::Landed),
+        Some((EventKind::Shipped, None))
+    );
+    assert_eq!(
+        event_for(&Verdict::Abandoned),
+        Some((
+            EventKind::Abandoned,
+            Some("PR closed without merging".to_string())
+        ))
+    );
+}
+
 // ───────────────────────────── the note ─────────────────────────────────
 
 #[test]

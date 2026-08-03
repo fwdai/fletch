@@ -17,9 +17,13 @@
 //!   agent's RPC, the queue drainer) updates the board without a refetch.
 //! - `roadmap:item-deleted` — the deleted row's id, so the board drops it
 //!   instead of upserting it.
+//! - `roadmap:item-event` — one durable history row ([`events`]), on every
+//!   status transition. The expanded card renders the trail; `roadmap:item`
+//!   already carries the row itself, so this only carries the *why*.
 //! - `roadmap:queue-note` — transient: why an item isn't moving on its own.
 //!   From [`drainer`] (a queued item's blocker) and [`merge_sweep`] (a PR that
 //!   closed without merging). Nothing persists it; see the drainer's docs.
+//!   Failures and transitions, by contrast, persist as [`events`] rows.
 //!
 //! Autonomous dispatch lives in [`drainer`]: `queued` items become running
 //! workflows there, and every mutation on this surface [`drainer::nudge`]s it so
@@ -31,6 +35,7 @@
 //! with the window shut.
 
 pub mod drainer;
+pub mod events;
 pub mod merge_sweep;
 pub mod store;
 pub mod types;
@@ -41,6 +46,7 @@ use parking_lot::Mutex;
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter};
 
+use events::{EventActor, ItemEvent};
 use types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
 
 /// The app's single connection. Public because the PM agent's RPC dispatcher
@@ -56,6 +62,13 @@ pub(crate) fn emit_item(app: &AppHandle, item: &RoadmapItem) {
 /// Notify the frontend that an item was deleted, so the board drops the row.
 fn emit_item_deleted(app: &AppHandle, id: &str) {
     let _ = app.emit("roadmap:item-deleted", id);
+}
+
+/// Notify the frontend that a history row landed; carries the full event so an
+/// expanded card appends it without a refetch. Best-effort, after the lock
+/// drops, like every other emit here.
+pub(crate) fn emit_item_event(app: &AppHandle, event: &ItemEvent) {
+    let _ = app.emit("roadmap:item-event", event);
 }
 
 /// Every item on a project's roadmap, oldest first. Includes `done` items — the
@@ -114,41 +127,18 @@ pub async fn roadmap_update_item(
     app: AppHandle,
     db: tauri::State<'_, Db>,
 ) -> Result<ItemUpdate, String> {
-    let outcome = {
+    let (outcome, event) = {
         let conn = db.lock();
-        match expect_status {
-            Some(expected) => {
-                match store::update_where_status(&conn, &id, expected, &patch)
-                    .map_err(|e| e.to_string())?
-                {
-                    Some(item) => Some(ItemUpdate {
-                        applied: true,
-                        item,
-                    }),
-                    // Missed the precondition. Read the current row under the
-                    // same guard the failed update ran in, so what the caller
-                    // gets back is the state that beat it.
-                    None => store::get(&conn, &id)
-                        .map_err(|e| e.to_string())?
-                        .map(|item| ItemUpdate {
-                            applied: false,
-                            item,
-                        }),
-                }
-            }
-            None => store::update(&conn, &id, &patch)
-                .map_err(|e| e.to_string())?
-                .map(|item| ItemUpdate {
-                    applied: true,
-                    item,
-                }),
-        }
+        update_and_record(&conn, &id, &patch, expect_status).map_err(|e| e.to_string())?
     };
     let outcome = outcome.ok_or_else(|| format!("roadmap item {id} no longer exists"))?;
     // A miss changed nothing, so there is nothing to announce and nothing new
     // for either background task to look at.
     if outcome.applied {
         emit_item(&app, &outcome.item);
+        if let Some(event) = &event {
+            emit_item_event(&app, event);
+        }
         drainer::nudge();
         // The sweep parks while nothing is in review, and the drainer's
         // settlement is otherwise its only alarm clock — a patch that leaves a
@@ -161,8 +151,67 @@ pub async fn roadmap_update_item(
     Ok(outcome)
 }
 
+/// The one write behind [`roadmap_update_item`]: apply the (possibly
+/// conditional) patch and, when it actually lands, record the history event the
+/// transition implies — both under the caller's single lock scope, so the event
+/// can never describe a write that lost a race.
+///
+/// The event is `Some` exactly when the update applied: a missed precondition
+/// wrote nothing, so there is no history to invent for it — the applied /
+/// not-applied contract is untouched. Outer `None` means the row is gone.
+fn update_and_record(
+    conn: &Connection,
+    id: &str,
+    patch: &ItemPatch,
+    expect_status: Option<ItemStatus>,
+) -> rusqlite::Result<(Option<ItemUpdate>, Option<ItemEvent>)> {
+    let updated = match expect_status {
+        Some(expected) => store::update_where_status(conn, id, expected, patch)?,
+        None => store::update(conn, id, patch)?,
+    };
+    match updated {
+        Some(item) => {
+            let kind = events::transition_kind(expect_status, patch.status);
+            let event = events::record(
+                conn,
+                &item.id,
+                &item.project_id,
+                // This surface is the frontend's door; the other writers (PM
+                // RPC, drainer, sweep) record under their own actors.
+                EventActor::User,
+                kind,
+                None,
+            )?;
+            Ok((
+                Some(ItemUpdate {
+                    applied: true,
+                    item,
+                }),
+                Some(event),
+            ))
+        }
+        // Missed the precondition (or the row is gone). Read the current row
+        // under the same guard the failed update ran in, so what the caller
+        // gets back is the state that beat it.
+        None => match expect_status {
+            Some(_) => Ok((
+                store::get(conn, id)?.map(|item| ItemUpdate {
+                    applied: false,
+                    item,
+                }),
+                None,
+            )),
+            None => Ok((None, None)),
+        },
+    }
+}
+
 /// Delete an item. Silent when the row is already gone — the caller's intent
 /// ("this should not be on the board") is satisfied either way.
+///
+/// Deletion records no history event on purpose: `roadmap_item_events` cascades
+/// with the row, so a deleted item (including a discarded proposal) takes its
+/// trail with it — an item ruled off the board needs no history.
 #[tauri::command]
 pub async fn roadmap_delete_item(
     id: String,
@@ -180,4 +229,115 @@ pub async fn roadmap_delete_item(
         drainer::nudge();
     }
     Ok(())
+}
+
+/// One item's durable history, newest first. Fetched lazily by the board on
+/// first card expand; live rows arrive on `roadmap:item-event`.
+#[tauri::command]
+pub async fn roadmap_list_item_events(
+    item_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<Vec<ItemEvent>, String> {
+    let conn = db.lock();
+    events::list_for_item(&conn, &item_id).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::get_migrations;
+    use events::EventKind;
+    use types::NewItem;
+
+    fn test_conn() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'fletch', 0)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn with_status(conn: &Connection, status: ItemStatus) -> RoadmapItem {
+        store::create(
+            conn,
+            "p1",
+            &NewItem {
+                title: "it".into(),
+                status: Some(status),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn status_patch(to: ItemStatus) -> ItemPatch {
+        ItemPatch {
+            status: Some(to),
+            ..Default::default()
+        }
+    }
+
+    /// Every user transition the board performs writes exactly one event of the
+    /// right kind, attributed to the user.
+    #[test]
+    fn each_user_transition_writes_exactly_one_event() {
+        use ItemStatus::{Done, InReview, Open, Proposed, Queued};
+        let conn = test_conn();
+        let cases = [
+            (Proposed, Open, EventKind::Accepted),
+            (Open, Queued, EventKind::Queued),
+            (Queued, Open, EventKind::Unqueued),
+            (InReview, Done, EventKind::Shipped),
+        ];
+        for (from, to, kind) in cases {
+            let it = with_status(&conn, from);
+            let (outcome, event) =
+                update_and_record(&conn, &it.id, &status_patch(to), Some(from)).unwrap();
+            assert!(outcome.unwrap().applied);
+            let event = event.expect("an applied transition records itself");
+            assert_eq!(event.kind, kind);
+            assert_eq!(event.actor, EventActor::User);
+            assert_eq!(event.detail, None);
+            assert_eq!(events::list_for_item(&conn, &it.id).unwrap(), vec![event]);
+        }
+    }
+
+    /// A missed precondition writes nothing — not the row, and not history. The
+    /// applied/not-applied contract is what the frontend's races lean on, and an
+    /// event for a write that never happened would be a lie on the card.
+    #[test]
+    fn a_missed_precondition_records_nothing() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Active);
+        let (outcome, event) = update_and_record(
+            &conn,
+            &it.id,
+            &status_patch(ItemStatus::Open),
+            Some(ItemStatus::Queued),
+        )
+        .unwrap();
+        let outcome = outcome.unwrap();
+        assert!(!outcome.applied);
+        assert_eq!(outcome.item.status, ItemStatus::Active);
+        assert!(event.is_none());
+        assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+    }
+
+    /// Any other applied patch is an `edited` — the catch-all that keeps "every
+    /// transition writes exactly one event" true for the form too.
+    #[test]
+    fn a_plain_edit_records_edited() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let patch = ItemPatch {
+            title: Some("retitled".into()),
+            ..Default::default()
+        };
+        let (_, event) = update_and_record(&conn, &it.id, &patch, None).unwrap();
+        assert_eq!(event.unwrap().kind, EventKind::Edited);
+    }
 }

@@ -53,6 +53,7 @@ use tauri::AppHandle;
 use tokio::sync::Notify;
 
 use super::drainer::{self, QueueNote};
+use super::events::{EventActor, EventKind};
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
 use super::Db;
 use crate::github::PrStatus;
@@ -151,10 +152,25 @@ pub(crate) fn patch_for(verdict: &Verdict) -> Option<ItemPatch> {
     }
 }
 
+/// The history event a verdict writes alongside its patch — the durable half of
+/// the answer, paired with [`patch_for`] (`None` exactly when that is). The
+/// `shipped` event's timestamp is the item's `done_at`.
+pub(crate) fn event_for(verdict: &Verdict) -> Option<(EventKind, Option<String>)> {
+    match verdict {
+        Verdict::Waiting => None,
+        Verdict::Landed => Some((EventKind::Shipped, None)),
+        Verdict::Abandoned => Some((
+            EventKind::Abandoned,
+            Some("PR closed without merging".to_string()),
+        )),
+    }
+}
+
 /// What the board is told when a PR is closed unmerged. Nothing persists it —
 /// same transient `roadmap:queue-note` channel the drainer explains a stuck
 /// queue on, for the same reason: it is true until the user does something
-/// about it, and the row's own next change supersedes it.
+/// about it, and the row's own next change supersedes it. The durable record is
+/// the `abandoned` event [`event_for`] pairs with the same verdict.
 pub(crate) fn abandoned_note(number: i64) -> String {
     format!("PR #{number} was closed without merging — back on the board.")
 }
@@ -275,11 +291,24 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
         let Some(patch) = patch_for(&outcome) else {
             continue;
         };
+        // `patch_for` and `event_for` are `Some` for exactly the same verdicts;
+        // the expect documents that rather than inventing a fallback event.
+        let (kind, detail) = event_for(&outcome).expect("a verdict that writes also records");
         tracing::info!(item = %w.code, pr = w.number, ?outcome, "roadmap merge sweep");
         // Conditional on the row still being in review: the verdict was decided
         // over a network read, and a row the user moved meanwhile (marked done
-        // by hand, re-queued after a delete) must not be stamped over.
-        drainer::write_item_where(app, db, &w.id, ItemStatus::InReview, patch);
+        // by hand, re-queued after a delete) must not be stamped over. A miss
+        // records no event either — the row's current owner writes its own.
+        drainer::write_item_where(
+            app,
+            db,
+            &w.id,
+            ItemStatus::InReview,
+            patch,
+            EventActor::Sweep,
+            kind,
+            detail,
+        );
         match outcome {
             Verdict::Landed => {
                 // The item is `done`, which is what a dependant's dep gate is
