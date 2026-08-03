@@ -13,6 +13,7 @@ function item(over: Partial<RoadmapItem> & { id: string }): RoadmapItem {
     why: "",
     horizon: "later",
     status: "open",
+    rank: 1,
     area: null,
     source: "user",
     accept: [],

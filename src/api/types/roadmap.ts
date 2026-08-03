@@ -32,6 +32,11 @@ export interface RoadmapItem {
   why: string;
   horizon: Horizon;
   status: ItemStatus;
+  /** Where the item sits in the project's priority order — what the board sorts
+   *  a horizon group by, and what the queue dispatches by. Fractional indexing:
+   *  a card dropped between two neighbours takes the midpoint of their ranks, so
+   *  one row is written per drag (see migration 0032). */
+  rank: number;
   /** Product-map domain this belongs to. */
   area: string | null;
   source: ItemSource;
@@ -155,6 +160,23 @@ export interface RoadmapProposal {
   created_at: number;
 }
 
+/** The PM's pending ask to reorder a whole board (`roadmap:order-proposal` and
+ *  `roadmap_get_order_proposal`, mirroring src-tauri/src/roadmap/order.rs).
+ *
+ *  Board scoped, not item scoped: at most one per project, and a newer ask
+ *  replaces it. `codes` is the *complete* order of the board's orderable items
+ *  (`proposed | open | queued`) — the backend refuses a partial list, so the ask
+ *  is unambiguous. The user's ruling re-validates the set and refuses if the
+ *  board moved since. */
+export interface RoadmapOrderProposal {
+  project_id: string;
+  /** Every orderable item's code, in the order the PM is asking for. */
+  codes: string[];
+  /** The PM's one-line rationale, shown on the board's order bar. */
+  note: string | null;
+  created_at: number;
+}
+
 /** The result of a patch: the stored row, and whether this patch is what stored
  *  it.
  *
@@ -176,6 +198,11 @@ export interface RoadmapItemPatch {
   horizon?: Horizon;
   status?: ItemStatus;
   source?: ItemSource;
+  /** A new position in the priority order. Sent together with `horizon` when a
+   *  drag crosses groups — one write, one planning fact, one history line. A
+   *  rank move *within* a group goes through `roadmap_set_rank` instead, which
+   *  writes no history. */
+  rank?: number;
   accept?: string[];
   deps?: string[];
   area?: string | null;

@@ -4,12 +4,16 @@
 //! # Why status is the queue
 //!
 //! There is no queue table. `roadmap_items.status` *is* the queue — `queued`
-//! means "the user asked for this to be built", and `created_at` orders it
-//! (FIFO). A second table would be a second source of truth for the one fact
-//! the board already draws, and would need its own reconciliation after every
-//! crash. The horizon (`now`/`next`/`later`) deliberately does **not** gate
-//! dispatch: queueing is an explicit act, and the drainer never moves an item
-//! between horizons on its own.
+//! means "the user asked for this to be built", and `rank` orders it (migration
+//! 0032; before that it was `created_at`, i.e. FIFO, which made "build this one
+//! first" inexpressible). A second table would be a second source of truth for
+//! the one fact the board already draws, and would need its own reconciliation
+//! after every crash. The queue is read through [`store::list`], so the order
+//! the board shows and the order this dispatches in are the same query — the
+//! user's drag and the PM's accepted reordering move both at once. The horizon
+//! (`now`/`next`/`later`) deliberately does **not** gate dispatch: queueing is
+//! an explicit act, and the drainer never moves an item between horizons on its
+//! own.
 //!
 //! # The tick
 //!
@@ -167,12 +171,12 @@ pub(crate) fn unsatisfied_deps(
         .collect()
 }
 
-/// Pick the oldest queued item whose dependencies have all landed.
+/// Pick the highest-priority queued item whose dependencies have all landed.
 ///
-/// `queued` must be in FIFO order (the DAO lists oldest-first, which is the
-/// order the board draws and the order the user queued in). An item with
-/// unsatisfied deps is *skipped*, never failed — its turn comes when the thing
-/// it waits on lands.
+/// `queued` must be in *rank* order — the DAO lists by `rank, created_at, rowid`
+/// (0032), which is exactly the order the board draws, so the item the user
+/// dragged to the top is the item this dispatches. An item with unsatisfied deps
+/// is *skipped*, never failed — its turn comes when the thing it waits on lands.
 pub(crate) fn pick_next(
     queued: &[RoadmapItem],
     live_runs: usize,

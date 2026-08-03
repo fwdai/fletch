@@ -62,6 +62,10 @@ pub struct RoadmapItem {
     pub why: String,
     pub horizon: Horizon,
     pub status: ItemStatus,
+    /// Where the item sits in the project's priority order — the one thing the
+    /// board draws a group by and the drainer dispatches by (fractional
+    /// indexing; see migration 0032 and [`crate::roadmap::store::next_rank`]).
+    pub rank: f64,
     /// Product-map domain this belongs to.
     pub area: Option<String>,
     pub source: ItemSource,
@@ -85,7 +89,7 @@ pub struct RoadmapItem {
 /// dormant until the cleanup migration that drops them alongside `parent_id`
 /// (see .context/roadmap-pm-plan.md).
 pub(crate) const COLUMNS: &str = "id, project_id, code, parent_id, title, why, horizon, status, \
-     area, source, accept_json, deps_json, agent_id, workflow_def_id, run_id, \
+     rank, area, source, accept_json, deps_json, agent_id, workflow_def_id, run_id, \
      pr_url, pr_number, created_at, updated_at";
 
 impl RoadmapItem {
@@ -99,6 +103,7 @@ impl RoadmapItem {
             why: r.get("why")?,
             horizon: enum_col(r, "horizon", Horizon::from_db)?,
             status: enum_col(r, "status", ItemStatus::from_db)?,
+            rank: r.get("rank")?,
             area: r.get("area")?,
             source: enum_col(r, "source", ItemSource::from_db)?,
             accept: strings_col(r, "accept_json")?,
@@ -161,6 +166,13 @@ pub struct ItemPatch {
     pub status: Option<ItemStatus>,
     #[serde(default)]
     pub source: Option<ItemSource>,
+    /// A new position in the project's priority order. Reachable from the
+    /// board's drag (a cross-group drop patches `horizon` and `rank` together,
+    /// so one write is one planning fact) and from the order ruling; never from
+    /// the PM, whose [`super::proposals::ProposalPatch`] has no such field —
+    /// order is asked for with the dedicated `roadmap_propose_order` op.
+    #[serde(default)]
+    pub rank: Option<f64>,
     #[serde(default)]
     pub accept: Option<Vec<String>>,
     #[serde(default)]

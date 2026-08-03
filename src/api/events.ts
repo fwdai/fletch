@@ -17,6 +17,7 @@ import type { AgentInstallEvent } from "./types/providers";
 import type {
   RoadmapItem,
   RoadmapItemEvent,
+  RoadmapOrderProposal,
   RoadmapProposal,
   RoadmapQueueNote,
 } from "./types/roadmap";
@@ -81,6 +82,25 @@ export function onRoadmapProposal(cb: (proposal: RoadmapProposal) => void): Prom
  *  separately on `roadmap:item` / `roadmap:item-deleted`. */
 export function onRoadmapProposalDeleted(cb: (id: string) => void): Promise<UnlistenFn> {
   return listen<string>("roadmap:proposal-deleted", (event) => cb(event.payload));
+}
+
+/** `roadmap:order-proposal` fires when the PM parks (or replaces) a whole-board
+ *  order ask; carries the full row so the board grows its order bar without a
+ *  refetch. Fires for every project — a listener scoped to one board filters on
+ *  `project_id`. */
+export function onRoadmapOrderProposal(
+  cb: (proposal: RoadmapOrderProposal) => void,
+): Promise<UnlistenFn> {
+  return listen<RoadmapOrderProposal>("roadmap:order-proposal", (event) => cb(event.payload));
+}
+
+/** `roadmap:order-proposal-deleted` fires the *project id* once the order ask has
+ *  been ruled on (accepted, declined, or found stale) — the ask is keyed by
+ *  board, not by row. The reordered rows arrive separately on `roadmap:item`. */
+export function onRoadmapOrderProposalDeleted(
+  cb: (projectId: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("roadmap:order-proposal-deleted", (event) => cb(event.payload));
 }
 
 /** `roadmap:queue-note` explains why an item isn't moving — no workflow to run

@@ -19,6 +19,7 @@ fn in_review(code: &str, number: Option<i64>) -> RoadmapItem {
         why: String::new(),
         horizon: Horizon::Now,
         status: ItemStatus::InReview,
+        rank: 1.0,
         area: None,
         source: ItemSource::User,
         accept: Vec::new(),
