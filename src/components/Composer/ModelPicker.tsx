@@ -5,8 +5,10 @@ import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
 import { Chip } from "@/components/ui/Chip";
 import { Scrim } from "@/components/ui/Scrim";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
-import { isDockerSupported, PROVIDERS, providerLabel } from "@/data/providers";
+import { PROVIDERS, providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { useAgentAvailability } from "./availability";
+import { ModelOptions } from "./ModelOptions";
 
 interface Props {
   provider: string;
@@ -21,47 +23,17 @@ interface Props {
    *  at spawn, so the dropdown drops the agent/custom-agent sections and shows
    *  only this provider's models. */
   modelOnly?: boolean;
-  /** Which way the menu opens. The composer lives on the bottom edge of the
-   *  window, so `up` is the default; a picker mounted near the top of a panel
-   *  must open `down` or it runs off the top of the screen and is clipped. */
-  drop?: "up" | "down";
-  /** Restrict the custom-agent section to these ids. Omitted means every custom
-   *  agent whose base provider is enabled — the composer, where the whole
-   *  library is fair game. An empty array hides the section outright.
-   *
-   *  This exists for surfaces that are about one job rather than about spawning
-   *  anything: the Roadmap's chat picker offers the Project Manager and the bare
-   *  coding agents, because a tester or an architect in that list is an offer to
-   *  do something the surface can't do. */
-  customAgentIds?: string[];
-  /** How the two groups are titled and ordered. The defaults describe the
-   *  composer: built-in coding agents lead, the user's own library follows.
-   *
-   *  A surface where one custom agent *is* the intended choice wants the
-   *  reverse — leading with a section called "Custom agents" that holds the
-   *  recommended default reads as an optional extra, and the bare providers
-   *  become the fallback they actually are. */
-  sections?: {
-    /** Heading over the built-in providers. Default "Coding agents". */
-    providers?: string;
-    /** Heading over the custom agents. Default "Custom agents". */
-    custom?: string;
-    /** Draw the custom group above the providers. */
-    customFirst?: boolean;
-  };
 }
 
-function formatContext(tokens: number): string {
-  if (!tokens) return "Context unknown";
-  if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M ctx`;
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k ctx`;
-  return `${tokens} ctx`;
-}
-
-/** Agent + model picker. A flat list groups coding agents and custom agents;
- *  hovering a coding agent opens a flyout on the right for model selection.
- *  Clicking an agent row commits its default model; leaving model unset
- *  preserves the provider CLI's default. Selections stay sticky via `onChange`. */
+/** Agent + model picker for the composer. A flat list groups coding agents and
+ *  custom agents; hovering a coding agent opens a flyout on the right for model
+ *  selection. Clicking an agent row commits its default model; leaving model
+ *  unset preserves the provider CLI's default. Selections stay sticky via
+ *  `onChange`.
+ *
+ *  The menu always opens upward — the composer sits on the bottom edge of the
+ *  window. A surface near the top of a panel wants a screen, not a menu that has
+ *  to grow the other way (see the Roadmap's `NewChatScreen`). */
 export function ModelPicker({
   provider,
   model,
@@ -69,28 +41,18 @@ export function ModelPicker({
   onChange,
   locked = false,
   modelOnly = false,
-  drop = "up",
-  customAgentIds,
-  sections,
 }: Props) {
-  const customFirst = sections?.customFirst ?? false;
   const [open, setOpen] = useState(false);
   // Coding agent whose model flyout is currently expanded (null = none).
   const [hovered, setHovered] = useState<string | null>(null);
   const providerFlags = useAppStore((s) => s.providerFlags);
-  const providerVersions = useAppStore((s) => s.providerVersions);
-  const providerPaths = useAppStore((s) => s.providerPaths);
-  const providersProbed = useAppStore((s) => s.providersProbed);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const customAgents = useAppStore((s) => s.customAgents);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
-  // New agents get the currently selected sandbox engine. Only providers with
-  // container support (see `isDockerSupported`) run under Docker, so under the
-  // docker engine every unsupported coding agent (and any custom agent whose
-  // base isn't supported) is disabled — matching the backend spawn refusal in
-  // supervisor/lifecycle.rs.
-  const sandboxEngine = useAppStore((s) => s.sandboxEngine);
-  const dockerOnly = sandboxEngine === "docker";
+  // Whether each agent can actually be spawned right now — installed, and
+  // container-ready when the Docker engine is on. Matches the backend refusal
+  // in supervisor/lifecycle.rs.
+  const availability = useAgentAvailability();
 
   const selected = PROVIDERS.find((p) => p.id === provider) ?? PROVIDERS[0];
   const enabled = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
@@ -100,16 +62,13 @@ export function ModelPicker({
   }, [model, modelsByAgent, provider]);
 
   // The active custom agent (chip identity + dropdown highlight). Only custom
-  // agents whose base provider is enabled are offered, narrowed further to the
-  // caller's allow-list when it gave one.
+  // agents whose base provider is enabled are offered.
   //
   // `activeCustom` is looked up against the full library on purpose: it drives
   // the chip, and a selection made elsewhere must still render with its own
   // name rather than silently reading as a bare provider.
   const activeCustom = customAgents.find((a) => a.id === customAgentId);
-  const selectableCustom = customAgents.filter(
-    (a) => providerFlags[a.base] !== false && (!customAgentIds || customAgentIds.includes(a.id)),
-  );
+  const selectableCustom = customAgents.filter((a) => providerFlags[a.base] !== false);
   // The coding agent whose model panel is currently shown (null = none).
   const hoveredAgent = hovered ? (PROVIDERS.find((p) => p.id === hovered) ?? null) : null;
 
@@ -143,83 +102,32 @@ export function ModelPicker({
     setOpen(false);
   }
 
+  /** The list for one provider. In model-only mode it is always the session's
+   *  own provider, so its current model highlights even for a custom-agent
+   *  session (customAgentId set). */
   function renderModelList(p: (typeof PROVIDERS)[number]) {
-    const models = modelsByAgent[p.id] ?? [];
-    // In model-only mode the list is always the session's own provider, so its
-    // current model highlights even for a custom-agent session (customAgentId set).
-    const isCurrent = modelOnly || (p.id === provider && !customAgentId);
     return (
-      <div className="model-list">
-        <button
-          type="button"
-          className={`model-option flex-center ${isCurrent && !model ? "active" : ""}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            pickModel(p.id, undefined);
-          }}
-        >
-          <span className="model-option-main">
-            <span className="model-option-name truncate def text-base">Default model</span>
-            <span className="model-option-desc truncate text-xs">
-              Use {p.label}'s configured default
-            </span>
-          </span>
-          {isCurrent && !model && <Icon name="check" size={13} />}
-        </button>
-
-        {models.length === 0 ? (
-          <div className="model-empty text-sm">
-            {p.fixedModel
-              ? `${p.label} manages its own model — no selection needed.`
-              : `Model catalog unavailable for ${p.label}.`}
-          </div>
-        ) : (
-          models.map((m) => {
-            const active = isCurrent && m.id === model;
-            return (
-              <button
-                key={m.id}
-                type="button"
-                className={`model-option flex-center ${active ? "active" : ""}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  pickModel(p.id, m.id);
-                }}
-              >
-                <span className="model-option-main">
-                  <span className="model-option-name truncate text-base">{m.name}</span>
-                </span>
-                {m.contextWindow > 0 && (
-                  <span className="model-ctx text-xs">{formatContext(m.contextWindow)}</span>
-                )}
-                {active && <Icon name="check" size={13} />}
-              </button>
-            );
-          })
-        )}
-      </div>
+      <ModelOptions
+        provider={p}
+        model={model}
+        isCurrent={modelOnly || (p.id === provider && !customAgentId)}
+        onPick={pickModel}
+      />
     );
   }
 
-  /* Extracted so the two groups can be drawn in either order — see
-     `sections.customFirst`. */
   const customSection = (
     <>
-      {/* On a restricted picker the heading is only worth drawing if the section
-          has something under it: the "set up a custom agent" CTA is an
-          invitation to build an agent the surface wouldn't offer anyway, and an
-          empty allow-list means the one agent it wants is still seeding. */}
-      {(!customAgentIds || selectableCustom.length > 0) && (
-        <div className="model-sect flex-center text-xs">
-          <span>{sections?.custom ?? "Custom agents"}</span>
-          <span className="model-sect-line" />
-        </div>
-      )}
+      <div className="model-sect flex-center text-xs">
+        <span>Custom agents</span>
+        <span className="model-sect-line" />
+      </div>
       {selectableCustom.length > 0 ? (
         selectableCustom.map((a) => {
           const active = a.id === customAgentId;
-          // A custom agent inherits its base provider's docker support.
-          const dockerBlocked = dockerOnly && !isDockerSupported(a.base);
+          // A custom agent inherits its base provider's availability exactly.
+          const { reason } = availability(a.base);
+          const blocked = reason !== null;
           return (
             <button
               key={a.id}
@@ -227,15 +135,11 @@ export function ModelPicker({
               // Same reasoning as the provider rows: aria-disabled (not the
               // native attr) keeps the row hover-capable so the CSS
               // .tip/data-tip refusal is reachable in the WebView.
-              aria-disabled={dockerBlocked}
-              data-tip={
-                dockerBlocked
-                  ? `${providerLabel(a.base)} isn't available in Docker sandboxes yet`
-                  : undefined
-              }
-              className={`model-custom-row flex-center ${dockerBlocked ? "is-disabled tip" : ""} ${active ? "active" : ""}`}
+              aria-disabled={blocked}
+              data-tip={reason ?? undefined}
+              className={`model-custom-row flex-center ${blocked ? "is-disabled tip" : ""} ${active ? "active" : ""}`}
               onMouseEnter={() => setHovered(null)}
-              onClick={() => !dockerBlocked && pickCustom(a.id, a.base, a.model)}
+              onClick={() => !blocked && pickCustom(a.id, a.base, a.model)}
             >
               <Mono name={a.name} hue={a.color} size={26} />
               <span className="model-custom-text">
@@ -246,7 +150,7 @@ export function ModelPicker({
             </button>
           );
         })
-      ) : customAgentIds ? null : (
+      ) : (
         <button
           type="button"
           className="model-custom-cta flex-center"
@@ -303,29 +207,17 @@ export function ModelPicker({
           {/* Transparent wrapper: the main card sits above (z-index 2) the
            *  model side panel (z-index 1) so the panel slides out from
            *  underneath the dropdown rather than floating beside it. */}
-          <div className={`model-dd-wrap drop-${drop}`} onMouseLeave={() => setHovered(null)}>
+          <div className="model-dd-wrap" onMouseLeave={() => setHovered(null)}>
             <div className="model-dd-main">
-              {customFirst && customSection}
               <div className="model-sect flex-center text-xs">
-                <span>{sections?.providers ?? "Coding agents"}</span>
+                <span>Coding agents</span>
                 <span className="model-sect-line" />
               </div>
               {enabled.map((p) => {
-                // Fail open: only gate on the path once a probe has actually
-                // succeeded (`providersProbed`). While probing, or if the probe
-                // failed, treat as installed so a transient detection error
-                // never disables an agent the user really has.
-                const installed = !providersProbed || !!providerPaths[p.id];
-                const missing = providersProbed && !installed;
-                // Providers without container support can't run under Docker yet
-                // (see dockerOnly + isDockerSupported).
-                const dockerBlocked = dockerOnly && !isDockerSupported(p.id);
-                const disabled = !installed || dockerBlocked;
-                // Why disabled — dockerBlocked wins over missing (a non-Claude
-                // agent under Docker is blocked regardless of install state).
-                const disabledTip = dockerBlocked
-                  ? `${p.label} isn't available in Docker sandboxes yet`
-                  : "Not installed — see Settings › Providers";
+                // Installed, and container-ready if Docker is on — the shared
+                // gate the spawn path enforces.
+                const { reason, note } = availability(p.id);
+                const disabled = reason !== null;
                 const isSelected = p.id === provider && !customAgentId;
                 const isOpen = hovered === p.id;
                 return (
@@ -341,7 +233,7 @@ export function ModelPicker({
                     // (shows on :hover), used only for the disabled explanation.
                     aria-disabled={disabled}
                     className={`model-agent-row flex-center ${disabled ? "is-disabled tip" : ""} ${isSelected ? "active" : ""} ${isOpen ? "hot" : ""}`}
-                    data-tip={disabled ? disabledTip : undefined}
+                    data-tip={reason ?? undefined}
                     title={
                       disabled
                         ? undefined
@@ -352,19 +244,13 @@ export function ModelPicker({
                   >
                     <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={26} />
                     <span className="model-agent-name truncate text-base">{p.label}</span>
-                    <span className="model-agent-ver text-xs">
-                      {dockerBlocked
-                        ? "Not in Docker yet"
-                        : missing
-                          ? "Not installed"
-                          : providerVersions[p.id]}
-                    </span>
+                    <span className="model-agent-ver text-xs">{note}</span>
                     {!disabled && <Icon name="chevR" size={12} />}
                   </button>
                 );
               })}
 
-              {!customFirst && customSection}
+              {customSection}
             </div>
 
             {hoveredAgent && (
@@ -395,7 +281,7 @@ export function ModelPicker({
       {open && modelOnly && (
         <>
           <Scrim onClose={() => setOpen(false)} />
-          <div className={`model-dd-wrap drop-${drop}`}>
+          <div className="model-dd-wrap">
             <div className="model-dd-main">
               <div className="model-sect flex-center text-xs">
                 <span>Model</span>

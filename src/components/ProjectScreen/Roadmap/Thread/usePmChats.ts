@@ -67,10 +67,17 @@ export interface PmChatsState {
   starting: boolean;
   error: string | null;
   clearError: () => void;
-  /** Spawn a new chat and open it. The workspace provisions in the background,
-   *  by design: the chat is addressable the moment the record exists, so the
-   *  user can start typing while the clone lands. */
-  startChat: (pick: ChatAgentPick) => Promise<void>;
+  /** Spawn a new chat and open it, sending `firstMessage` as its opening turn
+   *  when the new-chat screen collected one. The workspace provisions in the
+   *  background, by design: the chat is addressable the moment the record
+   *  exists, so the user can start typing while the clone lands — and for the
+   *  same reason the opening turn can be dispatched right away, with the
+   *  backend holding it until the process is up.
+   *
+   *  Resolves `true` once the chat exists and is open. A `false` means the spawn
+   *  failed and `error` says why — the new-chat screen stays up on that, rather
+   *  than dropping the user back into the conversation they left. */
+  startChat: (pick: ChatAgentPick, firstMessage?: string) => Promise<boolean>;
   /** Discard a chat for good — its record, checkout and transcript. */
   deleteChat: (id: string) => Promise<void>;
   /** The Project Manager preset's id, once resolved: the default pick for a new
@@ -181,7 +188,7 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
   const repoRef = useRef(repoPath);
   repoRef.current = repoPath;
 
-  const startChat = useCallback(async (pick: ChatAgentPick) => {
+  const startChat = useCallback(async (pick: ChatAgentPick, firstMessage?: string) => {
     setStarting(true);
     setError(null);
     try {
@@ -219,8 +226,17 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
       useAppStore.getState().registerOffSidebarAgents([rec]);
       setChats((prev) => [rec, ...prev]);
       setSelectedId(rec.id);
+      // The opening turn, dispatched without waiting: the send appends its
+      // optimistic bubble to this agent's log, which is what the pane mounting
+      // on the next render reads, so the message is already on screen when the
+      // transcript appears. Failures land in the store's own error channel —
+      // this hook's `error` is about the spawn, and the chat now exists.
+      const opening = firstMessage?.trim();
+      if (opening) void useAppStore.getState().sendUserMessage(rec.id, opening);
+      return true;
     } catch (e) {
       setError(String(e));
+      return false;
     } finally {
       setStarting(false);
     }

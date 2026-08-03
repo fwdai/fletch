@@ -204,50 +204,250 @@
   background: var(--hover);
 }
 
-/* ── starting a chat ── */
-.rm-newchat {
-  gap: 8px;
-  flex-wrap: wrap;
+/* ── the blank panel ──
+   Shared by the empty board and the new-session screen: a badge, a heading and
+   a line of prose, centred. Defined above both consumers so their own margin
+   and layout overrides win on source order rather than on specificity. */
+.rm-blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 340px;
+  margin: 12% auto 0;
+  padding: 0 8px;
+  text-align: center;
+}
+.rm-blank-badge {
+  width: 40px;
+  height: 40px;
+  margin-bottom: 2px;
   justify-content: center;
-}
-.rm-newchat-anchor {
-  position: relative;
-  flex-shrink: 0;
-}
-/* Centred in the empty state, where the form is the invitation; left-aligned in
-   the header popover, so the chip and the menu it opens share an edge. */
-.rm-newchat-pop .rm-newchat {
-  justify-content: flex-start;
-}
-/* Sized to the agent menu it opens (296px card + 12px padding a side), and its
-   row left-aligned to match: the menu anchors to the picker chip's left edge,
-   so a centred chip left it hanging off the popover by ~46px. */
-.rm-newchat-pop {
-  position: absolute;
-  z-index: 200;
-  top: calc(100% + 6px);
-  right: 0;
-  width: 320px;
-  padding: 12px;
-  background: var(--bg-2);
-  border: 1px solid var(--bd-strong);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow-2);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
 }
-.rm-newchat-h {
-  margin-bottom: 10px;
+.rm-blank-h {
+  margin: 0;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.rm-blank-b {
+  margin: 0;
   line-height: var(--lh-normal);
-  color: var(--fg-3);
+  color: var(--fg-2);
   text-wrap: pretty;
 }
-/* The empty state's invitation is wider than the board's, because it has to
-   say what the agent will and won't do before anyone talks to it. */
-.rm-thread-blank {
-  max-width: 400px;
-  margin-top: 8%;
+.rm-blank-or {
+  margin-top: 2px;
+  color: var(--fg-3);
+  font-style: italic;
 }
-.rm-thread-blank .rm-newchat {
+
+/* ── starting a chat ──
+   A screen in the column's body, not a popover: the agents are a visible list
+   and the composer sits exactly where the live chat's composer sits, so
+   starting a chat reads as the conversation beginning rather than as a form
+   being submitted. */
+.rm-nc {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  animation: rmNcIn 0.14s var(--ease);
+}
+@keyframes rmNcIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rm-nc-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 28px;
+  display: flex;
+  flex-direction: column;
+}
+/* Auto margins above and below centre the block in the column while it fits —
+   collapsed, it is only a heading and one card, and top-aligning that leaves it
+   marooned above a screen of nothing. They collapse to zero once the content
+   overflows, which is what `justify-content: center` would not do: that clips
+   the top out of the scroll range. */
+.rm-nc-blank {
+  max-width: 400px;
+  margin-top: auto;
+  margin-bottom: 22px;
+}
+.rm-nc-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto auto;
+  padding-bottom: 8px;
+}
+/* Group heading with a trailing rule, matching the composer picker's sections —
+   the two surfaces name the same groups and should title them the same way. */
+.rm-nc-sect {
+  gap: 7px;
+  padding: 8px 2px 3px;
+  color: var(--fg-3);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.rm-nc-sect + .rm-nc-sect {
   margin-top: 6px;
+}
+.rm-nc-sect-line {
+  flex: 1;
+  height: 1px;
+  background: var(--bd-soft);
+}
+/* The same heading, made a disclosure: the bare coding agents fold away so the
+   screen opens on the one agent it recommends rather than on seven cards. */
+.rm-nc-sect-btn {
+  width: 100%;
+  background: transparent;
+  /* A <button> resets both, and this one has to read as the same heading as the
+     plain section above it. */
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  transition: var(--transition-ui);
+}
+.rm-nc-sect-btn:hover {
+  color: var(--fg-1);
+}
+.rm-nc-sect-btn:hover .rm-nc-sect-line {
+  background: var(--bd);
+}
+.rm-nc-sect-btn svg {
+  flex-shrink: 0;
+}
+.rm-nc-sect-n {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* one agent */
+.rm-nc-card {
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  transition: var(--transition-ui);
+}
+.rm-nc-card:hover:not(.is-disabled) {
+  border-color: var(--bd);
+}
+.rm-nc-card.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+/* Expanded model list: the card becomes a container, so the accent tint gives
+   way to a neutral ground the rows can sit on. Only ever set together with
+   `.active` (only the selected card expands), and it must not undo that card's
+   accent edge — the selection is still what the border says. */
+.rm-nc-card.open {
+  background: var(--bg-2);
+  border-color: var(--accent-line);
+}
+.rm-nc-card.is-disabled {
+  opacity: 0.55;
+}
+.rm-nc-row {
+  gap: 4px;
+  padding-right: 8px;
+}
+.rm-nc-pick {
+  flex: 1;
+  min-width: 0;
+  gap: 11px;
+  padding: 10px 4px 10px 11px;
+  text-align: left;
+  background: transparent;
+  border-radius: var(--r-md);
+}
+.rm-nc-pick > svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.rm-nc-card.is-disabled .rm-nc-pick {
+  cursor: default;
+}
+.rm-nc-mark {
+  flex-shrink: 0;
+  display: inline-flex;
+}
+.rm-nc-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rm-nc-name {
+  font-weight: 500;
+  color: var(--fg-0);
+}
+.rm-nc-desc {
+  color: var(--fg-3);
+}
+/* Model control. Only the selected card shows one, so it never competes with
+   the identity of the cards around it. */
+.rm-nc-model {
+  flex-shrink: 0;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  color: var(--fg-2);
+  background: transparent;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  transition: var(--transition-ui);
+}
+.rm-nc-model:hover {
+  color: var(--fg-0);
+  border-color: var(--bd);
+}
+/* The list expands inside the card — no floating layer, so it can't open off
+   the top of the window the way the old hover flyout did. */
+.rm-nc-models {
+  padding: 4px;
+  margin-top: -2px;
+  border-top: 1px solid var(--bd-soft);
+}
+
+/* Hint line under the composer: how to start, and the way out of typing at all.
+   Rendered inside the composer's own wrap, so it inherits its centring. */
+.rm-nc-foot {
+  gap: 5px;
+  margin-top: -2px;
+  color: var(--fg-3);
+}
+.rm-nc-dot {
+  opacity: 0.6;
+}
+.rm-nc-empty {
+  color: var(--fg-2);
+  background: transparent;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rm-nc-empty:hover:not(:disabled) {
+  color: var(--fg-0);
 }
 .rm-thread-state {
   flex: 1;
@@ -437,46 +637,6 @@
   color: var(--bg-0);
   background: var(--accent);
   border-color: var(--accent);
-}
-
-/* ── the empty board ──
-   A brand-new project. Three empty horizon groups read as a broken screen, so
-   the whole board is replaced by one panel that names the two ways in. */
-.rm-blank {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  max-width: 340px;
-  margin: 12% auto 0;
-  padding: 0 8px;
-  text-align: center;
-}
-.rm-blank-badge {
-  width: 40px;
-  height: 40px;
-  margin-bottom: 2px;
-  justify-content: center;
-  border-radius: var(--r-md);
-  color: var(--accent);
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-line);
-}
-.rm-blank-h {
-  margin: 0;
-  font-weight: 600;
-  color: var(--fg-0);
-}
-.rm-blank-b {
-  margin: 0;
-  line-height: var(--lh-normal);
-  color: var(--fg-2);
-  text-wrap: pretty;
-}
-.rm-blank-or {
-  margin-top: 2px;
-  color: var(--fg-3);
-  font-style: italic;
 }
 
 /* ── horizon group ── */
