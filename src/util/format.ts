@@ -22,8 +22,10 @@ export function firstLine(s: string, max = 56): string {
   return head.length > max ? `${head.slice(0, max - 1)}…` : head;
 }
 
-export function formatAge(iso: string, nowMs: number): string {
-  const t = new Date(iso).getTime();
+/** How long ago `at` was, at one scale ("now", "42m", "6h", "3d"). Accepts an
+ *  ISO string or an ms-epoch number — the app stores timestamps both ways. */
+export function formatAge(at: string | number, nowMs: number): string {
+  const t = typeof at === "number" ? at : new Date(at).getTime();
   if (Number.isNaN(t)) return "";
   const seconds = Math.max(0, Math.floor((nowMs - t) / 1000));
   if (seconds < 60) return "now";
@@ -51,6 +53,28 @@ export function localDay(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** The local Monday of the week containing `ms`, as a `localDay` key. Anchored
+ *  at noon before stepping whole days, so a DST boundary can't land the result
+ *  on the wrong date (the same trick the heatmap grid uses). */
+export function weekStartDay(ms: number): string {
+  const d = new Date(ms);
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return localDay(d.getTime());
+}
+
+/** A span of elapsed time at one significant scale: minutes under an hour,
+ *  hours under a day, then days. One decimal below 10 of a unit ("4.2h") so
+ *  short spans stay distinguishable, none above it ("14h"). */
+export function formatDuration(ms: number): string {
+  const minutes = Math.max(0, ms) / 60_000;
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${hours.toFixed(hours < 10 ? 1 : 0)}h`;
+  const days = hours / 24;
+  return `${days.toFixed(days < 10 ? 1 : 0)}d`;
 }
 
 export function formatTokens(n: number): string {

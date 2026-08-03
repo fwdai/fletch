@@ -2,11 +2,22 @@ import { hasUsage, usageFromRecords } from "@/adapters/usage";
 import { api } from "@/api";
 import { dbQuery } from "@/storage/db";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
+import {
+  dailySpend,
+  type MergeStats,
+  mergeStats,
+  type PrRow,
+  type SpendDay,
+  type UsageRow,
+} from "./derive";
 
-// Data layer for the Project Pulse block. Everything here reads what the app
-// already persists (session_user_turns, workspaces, worktrees) via SELECT-only
-// raw queries; nothing is recorded on open except the opportunistic usage
-// snapshots seeded by `loadPulseUsage`.
+// Data layer for the Activity tab. Everything here reads what the app already
+// persists (session_user_turns, workspaces, worktrees, worktree_prs,
+// usage_daily, roadmap_items) via SELECT-only raw queries; nothing is recorded
+// on open except the opportunistic usage snapshots seeded by `loadPulseUsage`.
+//
+// Each loader is a query plus a call into `derive` — the shaping lives there so
+// it can be tested without a database.
 
 /** Per-local-day counts feeding the heatmap and its tooltip. */
 export interface PulseActivity {
@@ -146,4 +157,73 @@ export async function loadPulseUsage(projectId: string): Promise<PulseUsage> {
     );
   }
   return { tokens, costUsd };
+}
+
+/** Open→merge times and the opened/merged trend, from the append-only PR log.
+ *
+ *  `worktree_prs` (migration 0025) back-seeded itself from the existing
+ *  bindings, so this covers the project's whole history rather than starting
+ *  at install — unlike the usage series below. Every PR the project has is a
+ *  few hundred rows at worst, so the whole log is folded in JS rather than
+ *  asking SQLite for a median it has no percentile function for. */
+export async function loadMergeStats(
+  projectId: string,
+  nowMs: number,
+  weeks: number,
+): Promise<MergeStats> {
+  const rows = await dbQuery<PrRow>(
+    `SELECT p.opened_at AS opened_at, p.merged_at AS merged_at, p.state AS state
+       FROM worktree_prs p JOIN workspaces w ON w.id = p.workspace_id
+      WHERE w.project_id = ?`,
+    [projectId],
+  );
+  return mergeStats(rows, nowMs, weeks);
+}
+
+/** Per-day token/dollar spend over `days`.
+ *
+ *  Reads the project's ENTIRE `usage_daily` history, not just the window: the
+ *  rows are cumulative, so the first day in range needs its predecessor to
+ *  produce a delta at all. One row per (workspace, day) keeps that cheap. */
+export async function loadSpend(projectId: string, days: string[]): Promise<SpendDay[]> {
+  const rows = await dbQuery<UsageRow>(
+    `SELECT workspace_id, day,
+            input_tokens + output_tokens AS tokens,
+            cost_usd AS cost
+       FROM usage_daily WHERE project_id = ?`,
+    [projectId],
+  );
+  return dailySpend(rows, days);
+}
+
+/** A shipped roadmap item, as the recent list renders it. */
+export interface ShippedItem {
+  id: string;
+  code: string;
+  title: string;
+  pr_url: string | null;
+  pr_number: number | null;
+  /** Ship time, approximated by the last write to the row (see below). */
+  updated_at: number;
+}
+
+/** The most recently shipped roadmap items.
+ *
+ *  Ordered by `updated_at`, which is the ship time only until something edits
+ *  the row afterwards — `roadmap_items` has no `done_at` column. That is
+ *  precise enough for a "recently shipped" list, where a slightly out-of-order
+ *  entry costs nothing, and is exactly why there is no shipped-per-week chart
+ *  here: a chart would be quietly wrong rather than visibly approximate. */
+export async function loadRecentlyShipped(
+  projectId: string,
+  limit: number,
+): Promise<ShippedItem[]> {
+  return dbQuery<ShippedItem>(
+    `SELECT id, code, title, pr_url, pr_number, updated_at
+       FROM roadmap_items
+      WHERE project_id = ? AND status = 'done'
+      ORDER BY updated_at DESC
+      LIMIT ?`,
+    [projectId, limit],
+  );
 }

@@ -1,6 +1,7 @@
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useMemo } from "react";
 import { localDay } from "@/util/format";
 import { buildHeatmapWeeks, heatLevel, monthLabels } from "./heatmap";
+import { useHoverTip } from "./useHoverTip";
 
 interface Props {
   /** Activity count per local day (YYYY-MM-DD). Missing days are 0. */
@@ -17,12 +18,6 @@ interface Props {
   footer?: ReactNode;
 }
 
-interface Tip {
-  x: number;
-  y: number;
-  text: string;
-}
-
 /** GitHub-style contribution grid on the app's accent ramp. One cell per
  *  local day, columns are Monday-first weeks, intensity scales to the
  *  busiest day in range. Hover any cell for the exact counts. */
@@ -35,7 +30,7 @@ export function ActivityHeatmap({ counts, weeks = 52, endMs, tooltipFor, footer 
     [grid],
   );
   const today = localDay(end);
-  const [tip, setTip] = useState<Tip | null>(null);
+  const tip = useHoverTip();
 
   return (
     <div className="heat">
@@ -63,15 +58,8 @@ export function ActivityHeatmap({ counts, weeks = 52, endMs, tooltipFor, footer 
                     className={`heat-cell${cell.day === today ? " today" : ""}`}
                     data-level={heatLevel(cell.count, max)}
                     aria-label={tooltipFor(cell.day, cell.count)}
-                    onMouseEnter={(e) => {
-                      const r = e.currentTarget.getBoundingClientRect();
-                      setTip({
-                        x: r.left + r.width / 2,
-                        y: r.bottom + 6,
-                        text: tooltipFor(cell.day, cell.count),
-                      });
-                    }}
-                    onMouseLeave={() => setTip(null)}
+                    onMouseEnter={(e) => tip.show(e, tooltipFor(cell.day, cell.count))}
+                    onMouseLeave={tip.hide}
                   />
                 ) : (
                   <div key={cell.day} className="heat-cell out" />
@@ -91,15 +79,7 @@ export function ActivityHeatmap({ counts, weeks = 52, endMs, tooltipFor, footer 
           More
         </div>
       </div>
-      {tip && (
-        <div
-          className="heat-tip mono text-xs"
-          style={{ left: tip.x, top: tip.y }}
-          role="presentation"
-        >
-          {tip.text}
-        </div>
-      )}
+      {tip.node}
     </div>
   );
 }

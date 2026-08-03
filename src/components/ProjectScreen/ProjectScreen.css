@@ -215,19 +215,10 @@
 .ps-section .heat {
   margin-bottom: 24px;
 }
+/* Stands in for the heatmap; the shimmer itself is `.blk-skeleton`
+ * (Stats.css), so this only owns the gap to the stat row below. */
 .pulse-skeleton {
-  height: 128px;
   margin-bottom: 24px;
-  border-radius: var(--r-sm);
-  background: linear-gradient(90deg, var(--bg-2) 25%, var(--bg-3) 50%, var(--bg-2) 75%);
-  background-size: 200% 100%;
-  animation: stat-shimmer 1.2s linear infinite;
-  opacity: 0.5;
-}
-@media (prefers-reduced-motion: reduce) {
-  .pulse-skeleton {
-    animation: none;
-  }
 }
 .ps-section-t {
   font-weight: 600;

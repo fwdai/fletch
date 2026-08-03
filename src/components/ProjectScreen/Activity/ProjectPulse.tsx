@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { ActivityHeatmap, CountUp, computeStreak, formatHeatDay, Stat } from "@/components/Stats";
+import {
+  ActivityHeatmap,
+  CountUp,
+  computeStreak,
+  formatHeatDay,
+  Skeleton,
+  Stat,
+} from "@/components/Stats";
 import { formatCost, formatTokens } from "@/util/format";
 import {
   loadPulseActivity,
@@ -8,18 +15,20 @@ import {
   type PulseActivity,
   type PulseTotals,
   type PulseUsage,
-} from "./pulseData";
+} from "./activityData";
 
 const WEEKS = 52;
 // One extra week of margin past the grid so the oldest column is never short.
 const HORIZON_MS = (WEEKS + 1) * 7 * 86_400_000;
 
-/** The Activity tab's body: a year of daily activity on the accent heat ramp,
- *  a streak counter, and lifetime hero numbers.
+/** The Activity tab's opening section: a year of daily activity on the accent
+ *  heat ramp, a streak counter, and lifetime hero numbers. The widest lens on
+ *  the page — the sections below it narrow to merge speed, spend and specific
+ *  shipped items.
  *
  *  It carries its own heading. On Settings it had none — it was the first
- *  block on a page whose tab already named it — but a tab holding one section
- *  needs to say what the section is, and the grid alone doesn't.
+ *  block on a page whose tab already named it — but a section among siblings
+ *  has to say what it is, and the grid alone doesn't.
  *
  *  Turn/agent/PR series load in one round of fast indexed queries; the token
  *  total folds every session's records, so it streams in behind a shimmer. */
@@ -93,7 +102,7 @@ export function ProjectPulse({ projectId }: { projectId: string }) {
           }
         />
       ) : (
-        <div className="pulse-skeleton" />
+        <Skeleton height={128} className="pulse-skeleton" />
       )}
 
       <div className="stat-row text-sm">

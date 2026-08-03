@@ -4,12 +4,12 @@ import { loadRunOverrides, type SetupRow, toSetupRows } from "@/components/RunCo
 import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
+import { Activity } from "./Activity";
 import { DeleteSection } from "./DeleteSection";
 import { EnvVarsSection } from "./EnvVarsSection";
 import { GeneralSection } from "./GeneralSection";
 import { LinearSection } from "./LinearSection";
 import { ProjectHeader } from "./ProjectHeader";
-import { ProjectPulse } from "./ProjectPulse";
 import { Roadmap, useRoadmap } from "./Roadmap";
 import { RunEnvSection } from "./RunEnvSection";
 import { VerifySection } from "./VerifySection";
@@ -96,7 +96,7 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
                 <Loader variant="inherit" /> Loading…
               </div>
             ) : tab === "activity" ? (
-              <ProjectPulse projectId={loaded.projectId} />
+              <Activity projectId={loaded.projectId} />
             ) : (
               <>
                 <GeneralSection projectId={loaded.projectId} currentName={name} />

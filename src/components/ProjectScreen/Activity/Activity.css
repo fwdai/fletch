@@ -1,0 +1,80 @@
+/* ─── Activity tab ────────────────────────────────────────────────────────
+ * Sections specific to the Activity page. The heatmap, stat strips and bar
+ * charts they're built from are shared primitives and live in Stats.css; the
+ * page shell (`.ps-section*`) is ProjectScreen.css. Only the two things with
+ * no reuse elsewhere are here: the chart legend and the shipped list.
+ *
+ * Imported AFTER Stats.css so `.act-key` can compose on the `.mb-bar` ramp
+ * without a specificity fight — see the manifest note in app.css. */
+
+/* Two-swatch key under the merged-vs-opened chart. Deliberately not a generic
+ * legend primitive: one chart on one page needs it, and the heatmap's own
+ * Less/More ramp already covers the other shape a legend takes here. */
+.act-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.act-key {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+/* Matches `.mb-bar.back` — the same mix, so the key reads as the same series. */
+.act-key.back {
+  background: color-mix(in oklab, var(--accent) 26%, var(--bg-2));
+}
+.act-key:not(:first-child) {
+  margin-left: 8px;
+}
+
+/* ── recently shipped ── */
+.act-ship {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+}
+.act-ship-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px;
+  border-top: 1px solid var(--bd-soft);
+}
+.act-ship-row:first-child {
+  border-top: none;
+}
+/* Fixed-width so the titles start on one line down the list — the codes are a
+ * column of identifiers, not inline text. */
+.act-ship-code {
+  flex-shrink: 0;
+  width: 62px;
+  color: var(--fg-3);
+}
+.act-ship-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.act-ship-age {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+/* The shared outline button, just shortened — a 26px CTA would set the row
+ * height here, and these rows are a list to scan, not a stack of actions.
+ *
+ * Two classes deep on purpose: the height it overrides comes from
+ * `.btn-t.sm-t` (icon-button.css), so a bare `.act-ship-pr` loses the cascade
+ * on specificity no matter how late this file is imported. */
+.act-ship .act-ship-pr {
+  flex-shrink: 0;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+}
