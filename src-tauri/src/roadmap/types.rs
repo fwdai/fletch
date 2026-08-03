@@ -1,5 +1,5 @@
-//! The `roadmap_items` domain types: one row, its four string-backed enums, and
-//! the create/patch payloads the commands accept.
+//! The `roadmap_items` domain types: one row, its three string-backed enums,
+//! and the create/patch payloads the commands accept.
 //!
 //! The enums use the shared [`crate::db_enum`] macro, so the on-disk spelling
 //! and the on-wire spelling are the same string by construction — a `horizon`
@@ -38,16 +38,6 @@ crate::db_enum! {
 }
 
 crate::db_enum! {
-    /// Rough effort tier. Nullable on the row — an unshaped idea has no size.
-    ItemSize {
-        Xs => "XS",
-        S  => "S",
-        M  => "M",
-        L  => "L",
-    }
-}
-
-crate::db_enum! {
     /// Where the item came from. `user` is a hand-written row, `pm` came out of
     /// the roadmap conversation, the rest are imports.
     ItemSource {
@@ -72,12 +62,9 @@ pub struct RoadmapItem {
     pub why: String,
     pub horizon: Horizon,
     pub status: ItemStatus,
-    pub size: Option<ItemSize>,
     /// Product-map domain this belongs to.
     pub area: Option<String>,
     pub source: ItemSource,
-    /// Grouping label when several items were shaped together.
-    pub epic: Option<String>,
     /// Acceptance criteria, rendered as a checklist. Empty, never null.
     pub accept: Vec<String>,
     /// Codes this item must land after. Empty, never null.
@@ -93,8 +80,12 @@ pub struct RoadmapItem {
 
 /// The columns every read selects, in one place so the row decoder and the
 /// queries can't disagree about what is available.
+///
+/// The table also carries `size` and `epic`, cut from every surface and left
+/// dormant until the cleanup migration that drops them alongside `parent_id`
+/// (see .context/roadmap-pm-plan.md).
 pub(crate) const COLUMNS: &str = "id, project_id, code, parent_id, title, why, horizon, status, \
-     size, area, source, epic, accept_json, deps_json, agent_id, workflow_def_id, run_id, \
+     area, source, accept_json, deps_json, agent_id, workflow_def_id, run_id, \
      pr_url, pr_number, created_at, updated_at";
 
 impl RoadmapItem {
@@ -108,10 +99,8 @@ impl RoadmapItem {
             why: r.get("why")?,
             horizon: enum_col(r, "horizon", Horizon::from_db)?,
             status: enum_col(r, "status", ItemStatus::from_db)?,
-            size: opt_enum_col(r, "size", ItemSize::from_db)?,
             area: r.get("area")?,
             source: enum_col(r, "source", ItemSource::from_db)?,
-            epic: r.get("epic")?,
             accept: strings_col(r, "accept_json")?,
             deps: strings_col(r, "deps_json")?,
             agent_id: r.get("agent_id")?,
@@ -141,14 +130,10 @@ pub struct NewItem {
     #[serde(default)]
     pub status: Option<ItemStatus>,
     #[serde(default)]
-    pub size: Option<ItemSize>,
-    #[serde(default)]
     pub area: Option<String>,
     /// Defaults to `user` — a row typed on the board by hand.
     #[serde(default)]
     pub source: Option<ItemSource>,
-    #[serde(default)]
-    pub epic: Option<String>,
     #[serde(default)]
     pub accept: Vec<String>,
     #[serde(default)]
@@ -162,7 +147,7 @@ pub struct NewItem {
 
 /// A partial update. An absent field is left alone; an explicit `null` on a
 /// nullable column clears it (`Option<Option<T>>` with [`double_option`] —
-/// absent is `None`, `null` is `Some(None)`), which is how "unset the size" is
+/// absent is `None`, `null` is `Some(None)`), which is how "unset the area" is
 /// expressed without a second command.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ItemPatch {
@@ -181,11 +166,7 @@ pub struct ItemPatch {
     #[serde(default)]
     pub deps: Option<Vec<String>>,
     #[serde(default, deserialize_with = "double_option")]
-    pub size: Option<Option<ItemSize>>,
-    #[serde(default, deserialize_with = "double_option")]
     pub area: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option")]
-    pub epic: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     pub agent_id: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -250,21 +231,6 @@ fn enum_col<T>(r: &Row, col: &str, parse: fn(&str) -> Option<T>) -> rusqlite::Re
     parse(&raw).ok_or_else(|| conversion_err(col, format!("unexpected value {raw:?}")))
 }
 
-/// Parse a nullable enum TEXT column via its `from_db`.
-fn opt_enum_col<T>(
-    r: &Row,
-    col: &str,
-    parse: fn(&str) -> Option<T>,
-) -> rusqlite::Result<Option<T>> {
-    let raw: Option<String> = r.get(col)?;
-    match raw {
-        None => Ok(None),
-        Some(s) => parse(&s)
-            .map(Some)
-            .ok_or_else(|| conversion_err(col, format!("unexpected value {s:?}"))),
-    }
-}
-
 /// Serialize a string list for its `*_json` column. An empty list stores as
 /// NULL rather than `"[]"` — the column's "nothing here" value is one thing.
 pub(crate) fn strings_to_col(v: &[String]) -> Option<String> {
@@ -285,11 +251,10 @@ mod tests {
     /// bytes that must stay different values.
     #[test]
     fn patch_null_clears_value_sets_absent_keeps() {
-        let p: ItemPatch = serde_json::from_str(r#"{"size": null, "area": "runtime"}"#).unwrap();
-        assert_eq!(p.size, Some(None), "an explicit null means 'clear'");
-        assert_eq!(p.area, Some(Some("runtime".into())), "a value means 'set'");
-        assert_eq!(p.epic, None, "an absent key means 'leave alone'");
-        assert_eq!(p.workflow_def_id, None);
+        let p: ItemPatch = serde_json::from_str(r#"{"area": null, "agent_id": "a-1"}"#).unwrap();
+        assert_eq!(p.area, Some(None), "an explicit null means 'clear'");
+        assert_eq!(p.agent_id, Some(Some("a-1".into())), "a value means 'set'");
+        assert_eq!(p.workflow_def_id, None, "an absent key means 'leave alone'");
         assert_eq!(p.title, None);
     }
 }

@@ -60,9 +60,9 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
     let now = now_millis();
     conn.execute(
         "INSERT INTO roadmap_items
-           (id, project_id, code, parent_id, title, why, horizon, status, size, area, source,
-            epic, accept_json, deps_json, workflow_def_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
+           (id, project_id, code, parent_id, title, why, horizon, status, area, source,
+            accept_json, deps_json, workflow_def_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
         params![
             id,
             project_id,
@@ -71,10 +71,8 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
             new.why,
             new.horizon.unwrap_or(Horizon::Later).as_str(),
             new.status.unwrap_or(ItemStatus::Open).as_str(),
-            new.size.map(|s| s.as_str()),
             new.area,
             new.source.unwrap_or(ItemSource::User).as_str(),
-            new.epic,
             strings_to_col(&new.accept),
             strings_to_col(&new.deps),
             new.workflow_def_id,
@@ -158,14 +156,8 @@ fn apply(
     if let Some(v) = &patch.deps {
         set("deps_json", Box::new(strings_to_col(v)));
     }
-    if let Some(v) = patch.size {
-        set("size", Box::new(v.map(|s| s.as_str())));
-    }
     if let Some(v) = &patch.area {
         set("area", Box::new(v.clone()));
-    }
-    if let Some(v) = &patch.epic {
-        set("epic", Box::new(v.clone()));
     }
     if let Some(v) = &patch.agent_id {
         set("agent_id", Box::new(v.clone()));
@@ -322,7 +314,6 @@ fn derive_prefix(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::database::get_migrations;
-    use crate::roadmap::types::ItemSize;
 
     /// A migrated in-memory DB with foreign keys on, matching how the app opens
     /// the real file — the cascade and the FK to `projects` are part of what
@@ -432,7 +423,6 @@ mod tests {
         assert_eq!(bare.horizon, Horizon::Later, "an unplaced item is backlog");
         assert_eq!(bare.status, ItemStatus::Open);
         assert_eq!(bare.source, ItemSource::User);
-        assert_eq!(bare.size, None);
         assert!(bare.accept.is_empty() && bare.deps.is_empty());
         assert_eq!(bare.why, "");
         assert!(bare.parent_id.is_none(), "v1 never writes a parent");
@@ -445,10 +435,8 @@ mod tests {
                 why: "because".into(),
                 horizon: Some(Horizon::Now),
                 status: Some(ItemStatus::Proposed),
-                size: Some(ItemSize::L),
                 area: Some("runtime".into()),
                 source: Some(ItemSource::Pm),
-                epic: Some("persistence".into()),
                 accept: vec!["survives a quit".into(), "reattaches".into()],
                 deps: vec![bare.code.clone()],
                 workflow_def_id: Some("wf-pipeline".into()),
@@ -465,7 +453,6 @@ mod tests {
         assert_eq!(stored.accept, vec!["survives a quit", "reattaches"]);
         assert_eq!(stored.deps, vec![bare.code]);
         assert_eq!(stored.status, ItemStatus::Proposed);
-        assert_eq!(stored.size, Some(ItemSize::L));
         // Assignable at creation, so the item form can create-and-assign in one
         // round-trip; unset on the bare row, which means "the project default".
         assert_eq!(stored.workflow_def_id.as_deref(), Some("wf-pipeline"));
@@ -476,27 +463,27 @@ mod tests {
     fn a_wire_borne_null_clears_the_column() {
         // The other update tests build `ItemPatch` in Rust and bypass serde;
         // the frontend's patches arrive as JSON through the command layer.
-        // This is the edit dialog's "Unsized" path, end to end.
+        // This is the edit dialog's cleared-area path, end to end.
         let conn = test_conn();
         let p = project(&conn, "p1", "fletch");
         let item = create(
             &conn,
             &p,
             &NewItem {
-                title: "sized".into(),
-                size: Some(ItemSize::M),
+                title: "labelled".into(),
                 area: Some("runtime".into()),
+                workflow_def_id: Some("wf-pipeline".into()),
                 ..Default::default()
             },
         )
         .unwrap();
 
-        let patch: ItemPatch = serde_json::from_str(r#"{"size": null}"#).unwrap();
+        let patch: ItemPatch = serde_json::from_str(r#"{"area": null}"#).unwrap();
         let row = update(&conn, &item.id, &patch).unwrap().unwrap();
-        assert_eq!(row.size, None, "the dialog's clear must stick");
+        assert_eq!(row.area, None, "the dialog's clear must stick");
         assert_eq!(
-            row.area.as_deref(),
-            Some("runtime"),
+            row.workflow_def_id.as_deref(),
+            Some("wf-pipeline"),
             "absent keys stay untouched"
         );
     }
@@ -511,7 +498,6 @@ mod tests {
             &NewItem {
                 title: "move me".into(),
                 horizon: Some(Horizon::Later),
-                size: Some(ItemSize::M),
                 area: Some("runtime".into()),
                 accept: vec!["one".into()],
                 ..Default::default()
@@ -532,11 +518,10 @@ mod tests {
         .unwrap();
         assert_eq!(moved.horizon, Horizon::Now);
         assert_eq!(
-            moved.size,
-            Some(ItemSize::M),
+            moved.area.as_deref(),
+            Some("runtime"),
             "an absent field is left alone"
         );
-        assert_eq!(moved.area.as_deref(), Some("runtime"));
         assert_eq!(moved.accept, vec!["one"]);
         assert_eq!(moved.code, item.code, "a code never moves");
         assert_eq!(moved.created_at, item.created_at);
@@ -547,7 +532,6 @@ mod tests {
             &conn,
             &item.id,
             &ItemPatch {
-                size: Some(None),
                 area: Some(None),
                 accept: Some(vec![]),
                 title: Some("retitled".into()),
@@ -556,7 +540,6 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(cleared.size, None);
         assert_eq!(cleared.area, None);
         assert!(cleared.accept.is_empty());
         assert_eq!(cleared.title, "retitled");

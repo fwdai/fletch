@@ -710,11 +710,9 @@
    share a center: with the inherited ratio the text's line box is several
    pixels taller than its glyphs, and centering *that* box against an 11px icon
    leaves the icon riding visibly high. And one fixed `height` for all of them
-   is why a row carrying a size tag is exactly as tall as one carrying a state
-   pill — the chips no longer set the row's height, the row does. */
-.rm-epic,
+   is why a row carrying a source glyph is exactly as tall as one carrying a
+   state pill — the chips no longer set the row's height, the row does. */
 .rm-state,
-.rm-size,
 .rm-live,
 .rm-src,
 .rm-area,
@@ -770,20 +768,6 @@
   min-width: 0;
   color: var(--fg-0);
 }
-.rm-epic {
-  max-width: 130px;
-  padding: 0 8px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: inline-block;
-  line-height: 18px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: 999px;
-}
 /* An agent is on this one right now. The label is whatever the queue stamped on
    the row — an agent id, which can be long — so it is capped and truncated
    rather than allowed to push the title out of the row. */
@@ -827,21 +811,6 @@
   background: color-mix(in oklch, var(--info), transparent 88%);
 }
 
-/* A one-letter tier tag. Square-ish rather than a pill: it is a measure, not a
-   state, and the different shape is what tells them apart at a glance. */
-.rm-size {
-  width: 20px;
-  padding: 0;
-  border-radius: var(--r-xs);
-  font-weight: 600;
-  color: var(--fg-2);
-  background: var(--bg-3);
-}
-/* Only the multi-day tier earns a color — the rest are unremarkable. */
-.rm-size.s-L {
-  color: var(--warn);
-  background: color-mix(in oklch, var(--warn), transparent 88%);
-}
 /* Provenance glyph. A fixed square so the chevron after it sits on the same
    line on every row, whichever source drew it. */
 .rm-src {

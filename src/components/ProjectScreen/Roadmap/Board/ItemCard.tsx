@@ -2,7 +2,7 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { Icon, type IconName } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
-import { type BoardItem, type ItemSource, type ItemStatus, SIZE_HINT } from "../types";
+import type { BoardItem, ItemSource, ItemStatus } from "../types";
 
 /** Where the item came from, as a one-glyph tag. */
 const SOURCE: Record<ItemSource, { icon: IconName; tip: string }> = {
@@ -83,7 +83,7 @@ function briefFor(item: BoardItem): string {
   return lines.join("\n").trim();
 }
 
-/** One roadmap row: a click-to-expand header line (code, title, size, source)
+/** One roadmap row: a click-to-expand header line (code, title, source)
  *  over the rationale, acceptance criteria and dependencies. */
 export function ItemCard({
   item,
@@ -131,7 +131,6 @@ export function ItemCard({
             the moment it proposes), and accepting one never renumbers it. */}
         <span className="rm-code mono text-xs">{item.code}</span>
         <span className="rm-title text-sm truncate">{item.title}</span>
-        {item.epic && <span className="rm-epic text-xs">{item.epic}</span>}
         {/* A dispatched item shows the pearl whether or not an agent id has
             been stamped on it yet: the queue flips it to `active` at the moment
             it claims the row, a beat before the run exists. */}
@@ -144,14 +143,6 @@ export function ItemCard({
         {state && (
           <span className={`rm-state iflex-center text-xs st-${state.cls}`} title={state.tip}>
             {state.label}
-          </span>
-        )}
-        {item.size && (
-          <span
-            className={`rm-size iflex-center mono text-xs s-${item.size}`}
-            title={SIZE_HINT[item.size]}
-          >
-            {item.size}
           </span>
         )}
         <span className={`rm-src iflex-center src-${item.source}`} title={source.tip}>
