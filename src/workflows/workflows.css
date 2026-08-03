@@ -1407,6 +1407,28 @@ body.wb-drawer-open .set-main {
   margin-left: auto;
   flex-shrink: 0;
 }
+/* The roadmap item this run was dispatched for — the monitor's link back up a
+   level. Quiet: it is provenance, and the run itself is what the header is for. */
+.wf-run-rm {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 260px;
+  min-width: 0;
+  padding: 0 8px;
+  height: 22px;
+  flex-shrink: 0;
+  font-size: 11.5px;
+  line-height: var(--lh-none);
+  white-space: nowrap;
+  color: var(--fg-2);
+  border-radius: 999px;
+  background: var(--bg-3);
+}
+button.wf-run-rm:hover {
+  color: var(--fg-0);
+  background: var(--hover);
+}
 .wf-run .t-ellipsis {
   overflow: hidden;
   text-overflow: ellipsis;

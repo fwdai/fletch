@@ -1,10 +1,17 @@
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useState } from "react";
-import type { RoadmapItem, RoadmapItemEvent, RoadmapProposal, RoadmapProposalPatch } from "@/api";
+import type {
+  RoadmapItem,
+  RoadmapItemEvent,
+  RoadmapProposal,
+  RoadmapProposalPatch,
+  WfRun,
+} from "@/api";
 import { Icon, type IconName } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { formatAge } from "@/util/format";
+import { pausedLabel } from "@/workflows/run/status";
 import { eventLine } from "../itemHistory";
 import { buildProposalDiff, isEmptyDiff } from "../proposalDiff";
 import type { BoardItem, ItemSource, ItemStatus } from "../types";
@@ -69,6 +76,11 @@ interface Props {
   onMarkDone?: () => void;
   /** Open the run this item is being built by. Only on an item with a run. */
   onOpenRun?: () => void;
+  /** The live row of the run this item is tied to (`run_id`), when the workflow
+   *  engine still has one. Read for the pearl's label and, when the run is
+   *  paused, for the reason chip — an `active` card that has stopped moving must
+   *  say why without a trip to the monitor. */
+  run?: WfRun;
   /** The workflow this item would run under ("Project default" resolved), or
    *  null when nothing would run it — the queue would stall on it. */
   workflowName?: string | null;
@@ -119,6 +131,7 @@ export function ItemCard({
   onUnqueue,
   onMarkDone,
   onOpenRun,
+  run,
   workflowName,
   note,
   events,
@@ -126,6 +139,19 @@ export function ItemCard({
 }: Props) {
   const createDraft = useAppStore((s) => s.createDraft);
   const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
+  const selectAgent = useAppStore((s) => s.selectAgent);
+  const agentId = item.item.agent_id;
+  /** The agent named on the row, if the workspace still exists. A hand-off is
+   *  recorded permanently but the agent it names is disposable, so a stale link
+   *  resolves to nothing and the card simply stops mentioning it — never a
+   *  dangling id. */
+  const agentName = useAppStore((s) =>
+    agentId ? (s.workspace?.agents.find((a) => a.id === agentId)?.name ?? null) : null,
+  );
+  /** The manual hand-off ("Send to an agent"): an agent is on this item and no
+   *  run owns it, so the queue isn't driving — the user is. */
+  const handedOff = agentName != null && !item.item.run_id;
+  const paused = run?.status === "paused" ? run.paused_reason : null;
   const source = SOURCE[item.source];
   const state = STATE[item.status];
   const cls = [
@@ -152,13 +178,28 @@ export function ItemCard({
             the moment it proposes), and accepting one never renumbers it. */}
         <span className="rm-code mono text-xs">{item.code}</span>
         <span className="rm-title text-sm truncate">{item.title}</span>
-        {/* A dispatched item shows the pearl whether or not an agent id has
-            been stamped on it yet: the queue flips it to `active` at the moment
-            it claims the row, a beat before the run exists. */}
+        {/* A dispatched item shows the pearl whether or not anything has been
+            stamped on it yet: the queue flips it to `active` at the moment it
+            claims the row, a beat before the run exists. What the pearl *names*
+            is the most specific thing that resolves — the run doing the work,
+            else the agent on the row — and only falls back to the bare word when
+            neither is loaded yet. */}
         {item.status === "active" && (
           <span className="rm-live iflex-center mono text-xs">
             <span className="rm-pearl" />
-            <span className="truncate">{item.agent ?? "running"}</span>
+            <span className="truncate">{run?.name ?? agentName ?? "running"}</span>
+          </span>
+        )}
+        {/* A paused run is the board's most important state and the one it used
+            to hide: the pearl keeps pulsing while nothing happens. Say why here,
+            on the row, so the trip to the monitor is a choice. */}
+        {paused && (
+          <span
+            className="rm-paused iflex-center text-xs"
+            title="Its run is waiting on something — open the run to deal with it"
+          >
+            <Icon name="hand" size={11} />
+            Paused — {pausedLabel(paused)}
           </span>
         )}
         {state && (
@@ -221,6 +262,25 @@ export function ItemCard({
         </div>
       )}
 
+      {/* The manual hand-off, visible without an expand: the queue doesn't own
+          this item, a named agent does. Clicking goes there — the agent lives in
+          the workspace this full-screen page covers, so selecting it and getting
+          out of the way is the whole navigation (same move as "View run"). */}
+      {handedOff && (
+        <button
+          type="button"
+          className="rm-handoff flex-center text-xs"
+          onClick={() => {
+            selectAgent(agentId as string);
+            closeProjectScreen();
+          }}
+        >
+          <Icon name="zap" size={11} />
+          <span className="rm-handoff-t truncate">Handed to {agentName}</span>
+          <Icon name="arrowR" size={11} className="rm-handoff-go" />
+        </button>
+      )}
+
       {/* Why a queued row isn't moving. Outside the collapsible body and
           outside the header button, like the ghostbar: an item that has stalled
           must say so without the user having to go looking for it. */}
@@ -281,17 +341,23 @@ export function ItemCard({
                   <Icon name="edit" size={11} /> Edit
                 </Button>
               )}
-              {/* The manual hand-off stays available on every real row: the queue
-                is autonomous, and sometimes you want to drive. Demoted to a
-                ghost button next to "Queue", which is the path most rows take.
-                A proposed row isn't work anyone has agreed to do — accept it
-                first, then send it. */}
-              {!ghost && (
+              {/* The manual hand-off, for rows nothing is building yet: the
+                queue is autonomous, and sometimes you want to drive. Demoted to
+                a ghost button next to "Queue", which is the path most rows
+                take. A proposed row isn't work anyone has agreed to do —
+                accept it first, then send it. Anything from `queued` on is
+                already dispatched (the backend refuses those too), and a row
+                that was already handed off keeps its one builder. */}
+              {!ghost && item.status === "open" && !agentId && (
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={async () => {
-                    const draftId = await createDraft(repoPath, briefFor(item));
+                    // The item id rides the draft: the link can only be recorded
+                    // once an agent exists, and a draft's first send is what
+                    // spawns one (see `spawnFromDraft`). A draft the user
+                    // abandons therefore stamps nothing.
+                    const draftId = await createDraft(repoPath, briefFor(item), item.item.id);
                     // The draft lives in the workspace, which this page covers —
                     // but stay put if it couldn't be created, so the user isn't
                     // dropped somewhere else to read the error.

@@ -18,6 +18,9 @@ export const roadmapApi = {
    *  the board hides them from the horizons and counts them as shipped. */
   roadmapListItems: (projectId: string) =>
     invoke<RoadmapItem[]>("roadmap_list_items", { projectId }),
+  /** One item by id, or `null` when it's gone. For callers that hold an item id
+   *  without its board — a workflow run's `roadmap_item_id` back-link. */
+  roadmapGetItem: (itemId: string) => invoke<RoadmapItem | null>("roadmap_get_item", { itemId }),
   /** Add an item. The `code` is allocated backend-side (per-project, under the
    *  connection lock), which is why it isn't part of the payload. */
   roadmapCreateItem: (projectId: string, item: NewRoadmapItem) =>
@@ -39,6 +42,12 @@ export const roadmapApi = {
       // Always sent, so the argument is present-and-null rather than absent.
       expectStatus: expectStatus ?? null,
     }),
+  /** Record a manual hand-off: this item is being built by an agent the user
+   *  spawned themselves ("Send to an agent"). Stamps `agent_id` and writes a
+   *  `note` naming the agent; the status is untouched, so the queue still
+   *  doesn't own the item. Returns the stored row. */
+  roadmapHandOffItem: (itemId: string, agentId: string) =>
+    invoke<RoadmapItem>("roadmap_hand_off_item", { itemId, agentId }),
   /** Remove an item from the board. */
   roadmapDeleteItem: (id: string) => invoke<void>("roadmap_delete_item", { id }),
   /** One item's durable history, newest first. Fetched lazily on first card

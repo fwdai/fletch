@@ -40,6 +40,10 @@ export interface DraftAgent {
    *  composer's issue picker. Carried to the backend at spawn so the agent's
    *  PR closes it. Undefined for a plain draft. */
   issueRef?: string;
+  /** The roadmap item this draft was started from ("Send to an agent" on a
+   *  board card). The link can only be recorded once the agent exists, so it
+   *  rides the draft until the first send spawns one — see `spawnFromDraft`. */
+  roadmapItemId?: string;
 }
 
 export interface DraftsSlice {
@@ -57,9 +61,15 @@ export interface DraftsSlice {
   /** Open a new draft on `repoPath`. `seedPrompt` prefills its composer (read
    *  as the initial text on mount), so a caller that already knows what the
    *  agent should do — a roadmap item, a template — lands the user ready to
-   *  launch rather than at an empty box. Resolves to the new draft's id, or
-   *  `null` if it couldn't be created (the error is already surfaced). */
-  createDraft: (repoPath: string, seedPrompt?: string) => Promise<string | null>;
+   *  launch rather than at an empty box. `roadmapItemId` tags the draft as a
+   *  roadmap hand-off, which stamps the item once the agent is spawned.
+   *  Resolves to the new draft's id, or `null` if it couldn't be created (the
+   *  error is already surfaced). */
+  createDraft: (
+    repoPath: string,
+    seedPrompt?: string,
+    roadmapItemId?: string,
+  ) => Promise<string | null>;
   /** Start a draft from a Home-inbox issue (any tracker source): opens a new
    *  draft on the issue's repo, seeds the composer with the issue brief
    *  (title + body + url + a suggested branch), and tags it with the issue
@@ -123,7 +133,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   },
 
   // ── drafts ─────────────────────────────────────────────────────────────────
-  createDraft: async (repoPath, seedPrompt) => {
+  createDraft: async (repoPath, seedPrompt, roadmapItemId) => {
     const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
     // Name allocation is a backend call; if it fails there's no draft to
     // create. Surface it in the global error banner and bail rather than
@@ -150,6 +160,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       model: selection.model,
       customAgentId,
       base: await resolveBaseBranch(repoPath),
+      roadmapItemId,
     };
     // Seed before the draft is visible, so the composer reads it on mount
     // (same ordering as startWorkFromIssue).
@@ -316,6 +327,15 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // closes it (backend appends `Closes #N` to the primary repo's PR).
         draft.issueRef,
       );
+      // A draft started from a board card links its item to the agent the
+      // moment there is an agent to link to — this is the only point where the
+      // hand-off is real (a draft can be abandoned; an agent can't be un-spawned).
+      // Fire-and-forget with the failure swallowed: the spawn succeeded, and a
+      // roadmap write must never be what tears it down. The board follows
+      // `roadmap:item`, so the card grows the agent chip without a refetch.
+      if (draft.roadmapItemId) {
+        void api.roadmapHandOffItem(draft.roadmapItemId, rec.id).catch(() => {});
+      }
       // Apply the selection, draft cleanup and log seed immediately, ahead of
       // the guarded workspace refresh, so this user-intent state can never be
       // dropped if a concurrent refresh supersedes ours.

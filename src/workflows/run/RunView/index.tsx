@@ -22,6 +22,7 @@ import { BudgetMeter } from "./BudgetMeter";
 import { flattenSteps } from "./flatten";
 import { PausedBanner } from "./PausedBanner";
 import { selectPendingQuestion } from "./pendingQuestion";
+import { RoadmapChip } from "./RoadmapChip";
 import { Timeline } from "./Timeline";
 import { useRunDetail } from "./useRunDetail";
 
@@ -175,6 +176,10 @@ export function RunView({ id }: { id: string }) {
             {run.name} · <span className="mono">{run.branch}</span>
           </div>
         </div>
+        {/* Which roadmap item asked for this run, when one did. */}
+        {run.roadmap_item_id && (
+          <RoadmapChip itemId={run.roadmap_item_id} projectId={run.project_id} />
+        )}
         <span className="wf-run-status" style={{ color: rc.tone }}>
           <span className="wf-srow-dot" style={{ background: rc.tone }} />
           {rc.label}

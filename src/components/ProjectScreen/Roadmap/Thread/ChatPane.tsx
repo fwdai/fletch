@@ -1,5 +1,7 @@
 import { useRef } from "react";
 import type { AgentRecord } from "@/api";
+import { TokenChipContext } from "@/components/Markdown";
+import { TOKEN_CHIP_ATTR } from "@/components/markdownTokens";
 import { ChatWorkingStatus } from "@/components/Workspace/ChatWorkingStatus";
 import { TranscriptList } from "@/components/Workspace/messages/TranscriptList";
 import { isTurnPending } from "@/components/Workspace/messages/turnPending";
@@ -23,8 +25,24 @@ const SENDABLE = new Set(["running", "idle", "spawning"]);
  *  noise here. What it does share is everything that decides *what the rows
  *  mean* — `useTranscript`, the provider adapters, `TranscriptList` — so a
  *  tool call, a thinking block or a question card looks and behaves exactly as
- *  it does in the main chat, and neither surface can drift from the other. */
-export function ChatPane({ agent }: { agent: AgentRecord }) {
+ *  it does in the main chat, and neither surface can drift from the other.
+ *
+ *  The one thing this pane adds to the shared rendering is item codes: a code
+ *  the PM quotes is the same object as the row on the board a few hundred pixels
+ *  to the right, so it's a link. `codes` are matched exactly (see
+ *  markdownTokens.ts) and the clicks are caught by delegation on this container,
+ *  which is what keeps the shared transcript components out of it entirely. */
+export function ChatPane({
+  agent,
+  codes,
+  onCodeClick,
+}: {
+  agent: AgentRecord;
+  /** Every code on the project's board, or omitted for no linking at all. */
+  codes?: ReadonlySet<string>;
+  /** Jump the board to a clicked code. */
+  onCodeClick?: (code: string) => void;
+}) {
   const send = useAppStore((s) => s.sendUserMessage);
   const turnStartedAt = useAppStore((s) => s.turnStartedAt[agent.id]);
   const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
@@ -58,15 +76,25 @@ export function ChatPane({ agent }: { agent: AgentRecord }) {
           : "This chat is stopped.";
 
   return (
-    <div className="rm-chat">
-      <TranscriptList
-        agent={agent}
-        transcript={transcript}
-        liveBusy={liveBusy}
-        pending={pending}
-        pinRef={pinnedToBottom}
-        hideNav
-      />
+    <div
+      className="rm-chat"
+      onClick={(e) => {
+        if (!onCodeClick) return;
+        const chip = (e.target as HTMLElement).closest(`[${TOKEN_CHIP_ATTR}]`);
+        const code = chip?.getAttribute(TOKEN_CHIP_ATTR);
+        if (code) onCodeClick(code);
+      }}
+    >
+      <TokenChipContext.Provider value={codes ?? null}>
+        <TranscriptList
+          agent={agent}
+          transcript={transcript}
+          liveBusy={liveBusy}
+          pending={pending}
+          pinRef={pinnedToBottom}
+          hideNav
+        />
+      </TokenChipContext.Provider>
       <Composer
         disabled={!canSend}
         placeholder={placeholder}

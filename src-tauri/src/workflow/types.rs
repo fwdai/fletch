@@ -220,6 +220,11 @@ pub struct Run {
     /// the roadmap merge sweep is the caller that needs it.
     pub pr_number: Option<i64>,
     pub pr_url: Option<String>,
+    /// The roadmap item this run was dispatched for (0028), or `None` for a run
+    /// launched by hand. Exposed on the row so the monitor can show which item a
+    /// run is building without a second query — the back-link the roadmap
+    /// drainer already relies on, read from the other end.
+    pub roadmap_item_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -246,6 +251,7 @@ impl Run {
             error: r.get("error")?,
             pr_number: r.get("pr_number")?,
             pr_url: r.get("pr_url")?,
+            roadmap_item_id: r.get("roadmap_item_id")?,
             created_at: r.get("created_at")?,
             updated_at: r.get("updated_at")?,
         })
