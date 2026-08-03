@@ -12,10 +12,11 @@ import type { SliceCreator } from "./types";
  *  store can remember the last-open tab per agent without importing a component. */
 export type RightPanelTab = "code" | "git" | "run" | "term";
 
-/** Project page tabs — what gets built, and how the project is run. Kept here
- *  (like `RightPanelTab`) so callers of `openProjectScreen` can pick the tab
- *  without the store importing a component. */
-export type ProjectScreenTab = "roadmap" | "settings";
+/** Project page tabs, in display order: what gets built next, what has been
+ *  built, and how the project is run. Kept here (like `RightPanelTab`) so
+ *  callers of `openProjectScreen` can pick the tab without the store importing
+ *  a component. */
+export type ProjectScreenTab = "roadmap" | "activity" | "settings";
 
 export interface UiSlice {
   /** Quick-settings popover (gear / ⌘,). */
@@ -64,6 +65,10 @@ export interface UiSlice {
   transcriptRailOpen: boolean;
   leftWidth: number;
   rightWidth: number;
+  /** Board column width on the Roadmap tab. `null` — the default — means the
+   *  two columns split the page evenly and stay proportional as the window
+   *  resizes; the first splitter drag pins it to a width. Persisted. */
+  roadmapBoardWidth: number | null;
   /** Last-open right-rail tab per agent, keyed by agent id. Lets the panel
    *  restore the tab the user was on (e.g. Git) when they switch back to an
    *  agent, instead of always resetting to the first tab. In-memory only. */
@@ -107,9 +112,11 @@ export interface UiSlice {
   /** Live (in-memory) width update during a splitter drag. */
   setLeftWidth: (w: number) => void;
   setRightWidth: (w: number) => void;
+  setRoadmapBoardWidth: (w: number) => void;
   /** Persist the final width once a splitter drag ends. */
   commitLeftWidth: (w: number) => void;
   commitRightWidth: (w: number) => void;
+  commitRoadmapBoardWidth: (w: number) => void;
   /** Remember the right-rail tab an agent was last viewing. */
   setRightPanelTab: (agentId: string, tab: RightPanelTab) => void;
   /** Dismiss a Mission Control review-queue item at its current signal
@@ -136,6 +143,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   transcriptRailOpen: true,
   leftWidth: DEFAULT_LEFT_WIDTH,
   rightWidth: DEFAULT_RIGHT_WIDTH,
+  roadmapBoardWidth: null,
   rightPanelTabs: {},
   reviewDismissed: {},
   admin: false,
@@ -215,8 +223,10 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   // state. Persistence is deferred to commit*Width on drag end (see splitter).
   setLeftWidth: (w) => set({ leftWidth: w }),
   setRightWidth: (w) => set({ rightWidth: w }),
+  setRoadmapBoardWidth: (w) => set({ roadmapBoardWidth: w }),
   commitLeftWidth: (w) => setSetting("leftWidth", String(w)),
   commitRightWidth: (w) => setSetting("rightWidth", String(w)),
+  commitRoadmapBoardWidth: (w) => setSetting("roadmapBoardWidth", String(w)),
   setRightPanelTab: (agentId, tab) =>
     set((s) => ({ rightPanelTabs: { ...s.rightPanelTabs, [agentId]: tab } })),
   dismissReviewItem: (id, signature) =>

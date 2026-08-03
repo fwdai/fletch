@@ -4,6 +4,21 @@
  * and the composer are reused from the agent transcript — only what is unique
  * to the roadmap is styled here. */
 .rm {
+  /* Floors for the two columns, mirroring ROADMAP_MIN_BOARD / _THREAD in
+     storage/preferences.ts — the splitter clamps the drag to these, and the
+     rules below clamp the *rendered* width, which is what protects a width
+     persisted on a wide window from crushing the chat on a narrow one. */
+  --rm-min-board: 360px;
+  --rm-min-thread: 400px;
+  /* The two panel headers are separate elements in separate columns with
+     entirely different contents, so nothing makes their bottom rules line up
+     except agreeing on a number. They agree here — and the page header above
+     uses the same one, so the chrome reads as even bands. 46px is the tallest
+     thing either header holds (a 26px icon button) plus 10px of air. */
+  --rm-head-h: 46px;
+  /* One gutter for the board column: its header, its rows, and every strip
+     that can appear between them start on the same vertical line. */
+  --rm-gut: 16px;
   flex: 1;
   display: flex;
   min-width: 0;
@@ -13,7 +28,6 @@
 .rm-board-h .grow,
 .rm-props .grow,
 .rm-ghostbar .grow,
-.rm-item-foot .grow,
 .rm-dialog .modal-foot .grow,
 .rm-composer-wrap .composer-foot .grow {
   flex: 1;
@@ -56,21 +70,31 @@
 /* ── header: who you're talking to, and which conversation ── */
 .rm-thread-head {
   flex-shrink: 0;
+  height: var(--rm-head-h);
   gap: 9px;
-  padding: 10px 16px 10px 20px;
+  padding: 0 10px 0 var(--rm-gut);
   border-bottom: 1px solid var(--bd-soft);
 }
 .rm-thread-head .grow {
   flex: 1;
 }
+/* Both identity marks — the placeholder badge and the real agent chip — are the
+   same 22px square, so switching from "Project manager" to a live chat doesn't
+   shift the title beside it. */
 .rm-pm-badge {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   flex-shrink: 0;
-  border-radius: var(--r-md);
+  justify-content: center;
+  border-radius: var(--r-sm);
   color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid var(--accent-line);
+}
+.rm-thread-head .ag-prov-chip {
+  width: 22px;
+  height: 22px;
+  justify-content: center;
 }
 .rm-pm-n {
   color: var(--fg-0);
@@ -83,17 +107,24 @@
   min-width: 0;
   flex: 1;
 }
+/* Sized like the header's icon button so the two hover targets in the bar are
+   the same height and share its optical center. */
 .rm-picker-btn {
   gap: 7px;
+  height: 26px;
   max-width: 100%;
-  padding: 3px 7px;
+  padding: 0 7px;
+  margin-left: -3px;
   border-radius: var(--r-sm);
   color: var(--fg-0);
   background: transparent;
-  transition: background 0.14s;
+  transition: var(--transition-ui);
 }
 .rm-picker-btn:hover {
   background: var(--hover);
+}
+.rm-picker-btn svg {
+  color: var(--fg-3);
 }
 .rm-picker-t {
   min-width: 0;
@@ -145,9 +176,14 @@
 .rm-picker-row-t {
   color: var(--fg-0);
 }
+/* Same footprint as the `xs` icon button it replaces, so confirming a delete
+   doesn't resize the row it sits on. */
 .rm-picker-del {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
-  padding: 3px 7px;
+  height: 22px;
+  padding: 0 8px;
   color: var(--danger);
   background: transparent;
   border: 1px solid var(--danger);
@@ -178,12 +214,20 @@
   position: relative;
   flex-shrink: 0;
 }
+/* Centred in the empty state, where the form is the invitation; left-aligned in
+   the header popover, so the chip and the menu it opens share an edge. */
+.rm-newchat-pop .rm-newchat {
+  justify-content: flex-start;
+}
+/* Sized to the agent menu it opens (296px card + 12px padding a side), and its
+   row left-aligned to match: the menu anchors to the picker chip's left edge,
+   so a centred chip left it hanging off the popover by ~46px. */
 .rm-newchat-pop {
   position: absolute;
   z-index: 200;
   top: calc(100% + 6px);
   right: 0;
-  width: 300px;
+  width: 320px;
   padding: 12px;
   background: var(--bg-2);
   border: 1px solid var(--bd-strong);
@@ -218,7 +262,7 @@
 .rm-thread-err {
   flex-shrink: 0;
   gap: 10px;
-  padding: 7px 16px 7px 20px;
+  padding: 8px var(--rm-gut);
   color: var(--danger);
   background: color-mix(in oklch, var(--danger), var(--bg-1) 92%);
   border-bottom: 1px solid var(--bd-soft);
@@ -255,10 +299,15 @@
 }
 
 /* ═══ right column: the board ══════════════════════════════════════ */
+/* Half the page until the splitter is dragged, at which point React sets a px
+   width inline. `flex-shrink: 0` so the chat (which is `flex: 1`) is the one
+   that gives; the max-width is what stops the board from taking the chat's
+   floor when the window narrows below the width the user chose. */
 .rm-board {
-  width: 45%;
-  min-width: 380px;
-  max-width: 620px;
+  width: 50%;
+  flex-shrink: 0;
+  min-width: var(--rm-min-board);
+  max-width: calc(100% - var(--rm-min-thread));
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -266,14 +315,19 @@
 }
 .rm-board-h {
   flex-shrink: 0;
-  height: 44px;
+  height: var(--rm-head-h);
   gap: 10px;
-  padding: 0 14px;
+  /* Left gutter matches the rows below; the right is inset by the icon
+     button's own padding so its glyph lands on the same margin. */
+  padding: 0 10px 0 var(--rm-gut);
   border-bottom: 1px solid var(--bd-soft);
 }
+/* Secondary nav: bare pills, not the page header's segmented control. Nesting
+   one control inside another would give two levels of tabs the same weight. */
 .rm-tabs {
   display: flex;
   gap: 2px;
+  margin-left: -8px;
 }
 .rm-tab {
   gap: 6px;
@@ -282,27 +336,31 @@
   border-radius: var(--r-sm);
   font-weight: 500;
   color: var(--fg-2);
-  transition: var(--transition-ui);
+  transition:
+    background 0.14s var(--ease),
+    color 0.14s var(--ease),
+    box-shadow 0.14s var(--ease);
+}
+.rm-tab svg {
+  color: var(--fg-3);
+  transition: color 0.14s var(--ease);
 }
 .rm-tab:hover {
   background: var(--hover);
   color: var(--fg-0);
 }
 .rm-tab.active {
-  background: var(--selected);
+  background: var(--bg-2);
   color: var(--fg-0);
+  box-shadow: inset 0 0 0 1px var(--bd-soft);
 }
-.rm-shipped {
-  gap: 5px;
-  color: var(--fg-3);
-}
-.rm-shipped svg {
-  color: var(--success);
+.rm-tab.active svg {
+  color: var(--accent);
 }
 .rm-board-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 14px 14px 48px;
+  padding: 14px var(--rm-gut) 48px;
 }
 
 /* A write that failed. Sits between the tabs and the rows, because it is about
@@ -310,7 +368,7 @@
 .rm-board-err {
   flex-shrink: 0;
   gap: 10px;
-  padding: 8px 14px;
+  padding: 8px var(--rm-gut);
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
@@ -339,13 +397,11 @@
 .rm-props {
   flex-shrink: 0;
   gap: 10px;
-  padding: 7px 10px 7px 14px;
+  padding: 8px 10px 8px var(--rm-gut);
   background: color-mix(in oklch, var(--accent), var(--bg-1) 92%);
   border-bottom: 1px solid var(--accent-line);
 }
 .rm-props-n {
-  flex-shrink: 0;
-  gap: 5px;
   font-weight: 600;
   color: var(--accent);
 }
@@ -355,11 +411,16 @@
 }
 .rm-props-x,
 .rm-props-ok {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
   gap: 4px;
-  padding: 3px 9px;
+  height: 22px;
+  padding: 0 9px;
   border-radius: var(--r-xs);
   background: transparent;
+  transition: var(--transition-ui);
 }
 .rm-props-x {
   color: var(--fg-2);
@@ -395,6 +456,7 @@
   width: 40px;
   height: 40px;
   margin-bottom: 2px;
+  justify-content: center;
   border-radius: var(--r-md);
   color: var(--accent);
   background: var(--accent-soft);
@@ -436,7 +498,11 @@
 .rm-group-n {
   color: var(--fg-3);
 }
+/* The label and its note align on their baselines; the count and the button are
+   boxes, and align on their centers — `align-self` is what keeps a baseline
+   row from hanging a bare glyph off the text's baseline. */
 .rm-group-c {
+  align-self: center;
   margin-left: auto;
   color: var(--fg-3);
   font-variant-numeric: tabular-nums;
@@ -444,9 +510,11 @@
 /* Add straight into this horizon. Quiet until the group is hovered — one of
    these per group would otherwise be three competing buttons. */
 .rm-group-add {
+  align-self: center;
   width: 18px;
   height: 18px;
   margin-left: 2px;
+  justify-content: center;
   border-radius: var(--r-xs);
   color: var(--fg-3);
   opacity: 0;
@@ -473,6 +541,37 @@
   font-style: italic;
 }
 
+/* ── chips ───────────────────────────────────────────────────────────
+   Every small tag on this surface — filled pills on the row header, bare
+   icon+label meta in the footer and the strips — is built from one block, so
+   they cannot drift apart.
+
+   Two things do the real work. `line-height: 1` is why an icon and its label
+   share a center: with the inherited ratio the text's line box is several
+   pixels taller than its glyphs, and centering *that* box against an 11px icon
+   leaves the icon riding visibly high. And one fixed `height` for all of them
+   is why a row carrying a size tag is exactly as tall as one carrying a state
+   pill — the chips no longer set the row's height, the row does. */
+.rm-epic,
+.rm-state,
+.rm-size,
+.rm-live,
+.rm-src,
+.rm-area,
+.rm-dep,
+.rm-wf,
+.rm-props-n,
+.rm-group-c {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 18px;
+  flex-shrink: 0;
+  line-height: var(--lh-none);
+  white-space: nowrap;
+}
+
 /* ── item row ── */
 .rm-item {
   overflow: hidden;
@@ -484,20 +583,27 @@
     background 0.14s var(--ease);
 }
 .rm-item:hover {
-  border-color: var(--bd-strong);
+  background: var(--hover);
+  border-color: var(--bd);
 }
 .rm-item.open {
   border-color: var(--bd);
+  box-shadow: var(--shadow-1);
 }
+/* A fixed height, not padding around whatever chips the row happens to carry:
+   otherwise a row with a size tag is a pixel taller than the one above it and
+   the stack reads as ragged. */
 .rm-item-h {
   width: 100%;
+  height: 38px;
   gap: 9px;
-  padding: 9px 11px;
+  padding: 0 10px;
   text-align: left;
 }
 .rm-code {
   flex-shrink: 0;
   color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
 }
 .rm-title {
   flex: 1;
@@ -505,8 +611,12 @@
   color: var(--fg-0);
 }
 .rm-epic {
-  flex-shrink: 0;
-  padding: 2px 6px;
+  max-width: 130px;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  line-height: 18px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -514,15 +624,21 @@
   background: var(--accent-soft);
   border-radius: 999px;
 }
-/* An agent is on this one right now. */
+/* An agent is on this one right now. The label is whatever the queue stamped on
+   the row — an agent id, which can be long — so it is capped and truncated
+   rather than allowed to push the title out of the row. */
 .rm-live {
-  flex-shrink: 0;
   gap: 5px;
+  max-width: 120px;
   color: var(--fg-2);
+}
+.rm-live > .truncate {
+  min-width: 0;
 }
 .rm-pearl {
   width: 7px;
   height: 7px;
+  flex-shrink: 0;
   border-radius: 50%;
   background: var(--success);
   box-shadow: 0 0 0 2px color-mix(in oklch, var(--success), transparent 82%);
@@ -536,10 +652,9 @@
 /* One-word lifecycle chip. Only the statuses that mean something is (or should
    be) happening get one — `open` is the board's resting state. */
 .rm-state {
-  flex-shrink: 0;
-  padding: 2px 7px;
+  padding: 0 8px;
+  font-weight: 500;
   border-radius: 999px;
-  white-space: nowrap;
 }
 /* Waiting its turn: present, unhurried, not an alert. */
 .rm-state.st-q {
@@ -552,10 +667,11 @@
   background: color-mix(in oklch, var(--info), transparent 88%);
 }
 
+/* A one-letter tier tag. Square-ish rather than a pill: it is a measure, not a
+   state, and the different shape is what tells them apart at a glance. */
 .rm-size {
-  flex-shrink: 0;
-  width: 18px;
-  height: 17px;
+  width: 20px;
+  padding: 0;
   border-radius: var(--r-xs);
   font-weight: 600;
   color: var(--fg-2);
@@ -566,8 +682,10 @@
   color: var(--warn);
   background: color-mix(in oklch, var(--warn), transparent 88%);
 }
+/* Provenance glyph. A fixed square so the chevron after it sits on the same
+   line on every row, whichever source drew it. */
 .rm-src {
-  flex-shrink: 0;
+  width: 18px;
   color: var(--fg-3);
 }
 .rm-src.src-pm {
@@ -576,14 +694,22 @@
 .rm-chev {
   flex-shrink: 0;
   color: var(--fg-3);
-  transition: transform 0.15s var(--ease);
+  opacity: 0.75;
+  transition:
+    transform 0.15s var(--ease),
+    opacity 0.15s var(--ease);
+}
+.rm-item:hover .rm-chev {
+  opacity: 1;
 }
 .rm-item.open .rm-chev {
   transform: rotate(180deg);
 }
 
+/* Left padding matches the header button's, so the rationale starts on the
+   same line as the item code above it. */
 .rm-item-body {
-  padding: 2px 12px 11px;
+  padding: 2px 10px 11px;
 }
 .rm-why {
   margin: 0 0 9px;
@@ -616,9 +742,25 @@
   border: 1px solid var(--bd-strong);
   border-radius: 2px;
 }
+/* Meta on the left, actions on the right, each wrapping as a block. */
 .rm-item-foot {
-  gap: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
+  gap: 8px;
+}
+.rm-item-meta,
+.rm-item-acts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.rm-item-acts {
+  margin-left: auto;
+  justify-content: flex-end;
 }
 .rm-area {
   letter-spacing: 0.07em;
@@ -626,14 +768,16 @@
   color: var(--fg-3);
 }
 .rm-dep {
-  gap: 4px;
   color: var(--info);
 }
 /* What the queue would run this item under. Muted — it's a fact about the row,
    not an action — until there is no answer, which is a problem worth seeing. */
 .rm-wf {
-  gap: 4px;
+  max-width: 190px;
   color: var(--fg-3);
+}
+.rm-wf > .truncate {
+  min-width: 0;
 }
 .rm-wf.none {
   color: var(--warn);
@@ -651,7 +795,8 @@
    and the body, like the ghostbar, so a stalled item says so collapsed. */
 .rm-note {
   gap: 6px;
-  padding: 6px 11px 7px;
+  padding: 7px 10px;
+  line-height: var(--lh-snug);
   color: var(--warn);
   border-top: 1px solid color-mix(in oklch, var(--warn), transparent 82%);
   background: color-mix(in oklch, var(--warn), transparent 94%);
@@ -675,7 +820,7 @@
 /* The decision, always visible on a ghost — collapsed or open. */
 .rm-ghostbar {
   gap: 8px;
-  padding: 6px 8px 7px 11px;
+  padding: 7px 8px 7px 10px;
   border-top: 1px dashed var(--accent-line);
 }
 .rm-ghostbar-l {
@@ -794,12 +939,11 @@
   color: var(--fg-3);
 }
 
-/* ── narrow windows ── */
+/* ── narrow windows ──
+   The columns' widths need no override any more: the board is clamped by
+   `min-width`/`max-width` against the live page width, so it gives way on its
+   own. Only the chat's inner gutters still want tightening. */
 @media (max-width: 1180px) {
-  .rm-board {
-    width: 44%;
-    min-width: 320px;
-  }
   .rm-thread .chat-inner {
     padding: 0 18px;
   }

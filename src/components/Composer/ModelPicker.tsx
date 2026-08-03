@@ -21,6 +21,34 @@ interface Props {
    *  at spawn, so the dropdown drops the agent/custom-agent sections and shows
    *  only this provider's models. */
   modelOnly?: boolean;
+  /** Which way the menu opens. The composer lives on the bottom edge of the
+   *  window, so `up` is the default; a picker mounted near the top of a panel
+   *  must open `down` or it runs off the top of the screen and is clipped. */
+  drop?: "up" | "down";
+  /** Restrict the custom-agent section to these ids. Omitted means every custom
+   *  agent whose base provider is enabled — the composer, where the whole
+   *  library is fair game. An empty array hides the section outright.
+   *
+   *  This exists for surfaces that are about one job rather than about spawning
+   *  anything: the Roadmap's chat picker offers the Project Manager and the bare
+   *  coding agents, because a tester or an architect in that list is an offer to
+   *  do something the surface can't do. */
+  customAgentIds?: string[];
+  /** How the two groups are titled and ordered. The defaults describe the
+   *  composer: built-in coding agents lead, the user's own library follows.
+   *
+   *  A surface where one custom agent *is* the intended choice wants the
+   *  reverse — leading with a section called "Custom agents" that holds the
+   *  recommended default reads as an optional extra, and the bare providers
+   *  become the fallback they actually are. */
+  sections?: {
+    /** Heading over the built-in providers. Default "Coding agents". */
+    providers?: string;
+    /** Heading over the custom agents. Default "Custom agents". */
+    custom?: string;
+    /** Draw the custom group above the providers. */
+    customFirst?: boolean;
+  };
 }
 
 function formatContext(tokens: number): string {
@@ -41,7 +69,11 @@ export function ModelPicker({
   onChange,
   locked = false,
   modelOnly = false,
+  drop = "up",
+  customAgentIds,
+  sections,
 }: Props) {
+  const customFirst = sections?.customFirst ?? false;
   const [open, setOpen] = useState(false);
   // Coding agent whose model flyout is currently expanded (null = none).
   const [hovered, setHovered] = useState<string | null>(null);
@@ -68,9 +100,16 @@ export function ModelPicker({
   }, [model, modelsByAgent, provider]);
 
   // The active custom agent (chip identity + dropdown highlight). Only custom
-  // agents whose base provider is enabled are offered.
+  // agents whose base provider is enabled are offered, narrowed further to the
+  // caller's allow-list when it gave one.
+  //
+  // `activeCustom` is looked up against the full library on purpose: it drives
+  // the chip, and a selection made elsewhere must still render with its own
+  // name rather than silently reading as a bare provider.
   const activeCustom = customAgents.find((a) => a.id === customAgentId);
-  const selectableCustom = customAgents.filter((a) => providerFlags[a.base] !== false);
+  const selectableCustom = customAgents.filter(
+    (a) => providerFlags[a.base] !== false && (!customAgentIds || customAgentIds.includes(a.id)),
+  );
   // The coding agent whose model panel is currently shown (null = none).
   const hoveredAgent = hovered ? (PROVIDERS.find((p) => p.id === hovered) ?? null) : null;
 
@@ -162,6 +201,73 @@ export function ModelPicker({
     );
   }
 
+  /* Extracted so the two groups can be drawn in either order — see
+     `sections.customFirst`. */
+  const customSection = (
+    <>
+      {/* On a restricted picker the heading is only worth drawing if the section
+          has something under it: the "set up a custom agent" CTA is an
+          invitation to build an agent the surface wouldn't offer anyway, and an
+          empty allow-list means the one agent it wants is still seeding. */}
+      {(!customAgentIds || selectableCustom.length > 0) && (
+        <div className="model-sect flex-center text-xs">
+          <span>{sections?.custom ?? "Custom agents"}</span>
+          <span className="model-sect-line" />
+        </div>
+      )}
+      {selectableCustom.length > 0 ? (
+        selectableCustom.map((a) => {
+          const active = a.id === customAgentId;
+          // A custom agent inherits its base provider's docker support.
+          const dockerBlocked = dockerOnly && !isDockerSupported(a.base);
+          return (
+            <button
+              key={a.id}
+              type="button"
+              // Same reasoning as the provider rows: aria-disabled (not the
+              // native attr) keeps the row hover-capable so the CSS
+              // .tip/data-tip refusal is reachable in the WebView.
+              aria-disabled={dockerBlocked}
+              data-tip={
+                dockerBlocked
+                  ? `${providerLabel(a.base)} isn't available in Docker sandboxes yet`
+                  : undefined
+              }
+              className={`model-custom-row flex-center ${dockerBlocked ? "is-disabled tip" : ""} ${active ? "active" : ""}`}
+              onMouseEnter={() => setHovered(null)}
+              onClick={() => !dockerBlocked && pickCustom(a.id, a.base, a.model)}
+            >
+              <Mono name={a.name} hue={a.color} size={26} />
+              <span className="model-custom-text">
+                <span>{a.name}</span>
+                <span>{a.description || providerLabel(a.base)}</span>
+              </span>
+              {active && <Icon name="check" size={12} />}
+            </button>
+          );
+        })
+      ) : customAgentIds ? null : (
+        <button
+          type="button"
+          className="model-custom-cta flex-center"
+          onMouseEnter={() => setHovered(null)}
+          onClick={() => {
+            setOpen(false);
+            openSettingsScreen("agents", "new-custom-agent");
+          }}
+        >
+          <span className="model-custom-cta-icon">
+            <Icon name="plus" size={14} />
+          </span>
+          <span className="model-custom-text">
+            <span>Set up a custom agent</span>
+            <span>Pair an agent with a model and a standing brief</span>
+          </span>
+        </button>
+      )}
+    </>
+  );
+
   return (
     <div className="model-picker">
       <Chip
@@ -197,14 +303,11 @@ export function ModelPicker({
           {/* Transparent wrapper: the main card sits above (z-index 2) the
            *  model side panel (z-index 1) so the panel slides out from
            *  underneath the dropdown rather than floating beside it. */}
-          <div
-            className="model-dd-wrap"
-            style={{ bottom: "calc(100% + 6px)", left: 0 }}
-            onMouseLeave={() => setHovered(null)}
-          >
+          <div className={`model-dd-wrap drop-${drop}`} onMouseLeave={() => setHovered(null)}>
             <div className="model-dd-main">
+              {customFirst && customSection}
               <div className="model-sect flex-center text-xs">
-                <span>Coding agents</span>
+                <span>{sections?.providers ?? "Coding agents"}</span>
                 <span className="model-sect-line" />
               </div>
               {enabled.map((p) => {
@@ -261,60 +364,7 @@ export function ModelPicker({
                 );
               })}
 
-              <div className="model-sect flex-center text-xs">
-                <span>Custom agents</span>
-                <span className="model-sect-line" />
-              </div>
-              {selectableCustom.length > 0 ? (
-                selectableCustom.map((a) => {
-                  const active = a.id === customAgentId;
-                  // A custom agent inherits its base provider's docker support.
-                  const dockerBlocked = dockerOnly && !isDockerSupported(a.base);
-                  return (
-                    <button
-                      key={a.id}
-                      type="button"
-                      // Same reasoning as the provider rows above: aria-disabled
-                      // (not the native attr) keeps the row hover-capable so the
-                      // CSS .tip/data-tip refusal is reachable in the WebView.
-                      aria-disabled={dockerBlocked}
-                      data-tip={
-                        dockerBlocked
-                          ? `${providerLabel(a.base)} isn't available in Docker sandboxes yet`
-                          : undefined
-                      }
-                      className={`model-custom-row flex-center ${dockerBlocked ? "is-disabled tip" : ""} ${active ? "active" : ""}`}
-                      onMouseEnter={() => setHovered(null)}
-                      onClick={() => !dockerBlocked && pickCustom(a.id, a.base, a.model)}
-                    >
-                      <Mono name={a.name} hue={a.color} size={26} />
-                      <span className="model-custom-text">
-                        <span>{a.name}</span>
-                        <span>{a.description || providerLabel(a.base)}</span>
-                      </span>
-                      {active && <Icon name="check" size={12} />}
-                    </button>
-                  );
-                })
-              ) : (
-                <button
-                  type="button"
-                  className="model-custom-cta flex-center"
-                  onMouseEnter={() => setHovered(null)}
-                  onClick={() => {
-                    setOpen(false);
-                    openSettingsScreen("agents", "new-custom-agent");
-                  }}
-                >
-                  <span className="model-custom-cta-icon">
-                    <Icon name="plus" size={14} />
-                  </span>
-                  <span className="model-custom-text">
-                    <span>Set up a custom agent</span>
-                    <span>Pair an agent with a model and a standing brief</span>
-                  </span>
-                </button>
-              )}
+              {!customFirst && customSection}
             </div>
 
             {hoveredAgent && (
@@ -345,7 +395,7 @@ export function ModelPicker({
       {open && modelOnly && (
         <>
           <Scrim onClose={() => setOpen(false)} />
-          <div className="model-dd-wrap" style={{ bottom: "calc(100% + 6px)", left: 0 }}>
+          <div className={`model-dd-wrap drop-${drop}`}>
             <div className="model-dd-main">
               <div className="model-sect flex-center text-xs">
                 <span>Model</span>

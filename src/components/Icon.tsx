@@ -1,4 +1,5 @@
 import {
+  Activity,
   Archive,
   ArchiveRestore,
   ArrowDown,
@@ -160,6 +161,7 @@ const ICON_COMPONENTS = {
   hand: Hand,
   grip: GripVertical,
   feedback: MessageSquare,
+  activity: Activity,
 } satisfies Record<string, ComponentType<IconComponentProps>>;
 
 // Originally rendered with fill="currentColor". Setting fill on the root SVG
