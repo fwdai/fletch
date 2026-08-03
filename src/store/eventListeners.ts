@@ -54,6 +54,7 @@ import {
   parseProviderFlags,
   parseProviderPathOverrides,
   parseReviewDismissed,
+  parseRoadmapBoardWidth,
   parseSandboxEngine,
   type ThemeMode,
 } from "@/storage/preferences";
@@ -167,6 +168,9 @@ export const hydrateSettings = async (set: AppSet) => {
       rightCollapsed: s.rightCollapsed === "true",
       leftWidth: parsePaneWidth(s.leftWidth, DEFAULT_LEFT_WIDTH),
       rightWidth: parsePaneWidth(s.rightWidth, DEFAULT_RIGHT_WIDTH),
+      // Absent until the Roadmap splitter is dragged for the first time; null
+      // keeps the even split.
+      roadmapBoardWidth: parseRoadmapBoardWidth(s.roadmapBoardWidth),
       // Mission Control's dismissed review-queue marks (item id → signal
       // signature); the queue honors a mark only while the signature matches.
       reviewDismissed: parseReviewDismissed(s.reviewDismissed),

@@ -138,7 +138,7 @@ export function ItemCard({
         {item.status === "active" && (
           <span className="rm-live iflex-center mono text-xs">
             <span className="rm-pearl" />
-            {item.agent ?? "running"}
+            <span className="truncate">{item.agent ?? "running"}</span>
           </span>
         )}
         {state && (
@@ -155,9 +155,9 @@ export function ItemCard({
           </span>
         )}
         <span className={`rm-src iflex-center src-${item.source}`} title={source.tip}>
-          <Icon name={source.icon} size={10} />
+          <Icon name={source.icon} size={11} />
         </span>
-        <Icon name="chevD" size={10} className="rm-chev" />
+        <Icon name="chevD" size={11} className="rm-chev" />
       </button>
 
       {/* The two buttons that decide a proposal's fate. Outside the header
@@ -201,89 +201,96 @@ export function ItemCard({
               ))}
             </ul>
           )}
-          <div className="rm-item-foot flex-center">
-            {item.area && <span className="rm-area mono text-xs">{item.area}</span>}
-            {item.deps?.map((d) => (
-              <span key={d} className="rm-dep iflex-center mono text-xs">
-                <Icon name="arrowR" size={9} />
-                after {d}
-              </span>
-            ))}
-            {/* What the queue would run this under, so the user knows before
-                they queue rather than after it stalls. */}
-            {(onQueue || onUnqueue) && (
-              <span
-                className={`rm-wf iflex-center mono text-xs ${workflowName ? "" : "none"}`}
-                title={
-                  workflowName
-                    ? `Runs under the ${workflowName} workflow`
-                    : "No workflow set on this item and no project default — the queue can't run it yet"
-                }
-              >
-                <Icon name="combine" size={9} />
-                {workflowName ?? "no workflow"}
-              </span>
-            )}
-            <span className="grow" />
-            {onEdit && (
-              <Button variant="ghost" size="sm" onClick={onEdit}>
-                <Icon name="edit" size={11} /> Edit
-              </Button>
-            )}
-            {/* The manual hand-off stays available on every real row: the queue
+          {/* Two groups rather than one row with a spacer: when the card is too
+              narrow to hold both, the actions wrap as a block and stay together
+              on the right. A spacer would drop them one at a time, leaving the
+              primary button stranded on its own line. */}
+          <div className="rm-item-foot">
+            <div className="rm-item-meta">
+              {item.area && <span className="rm-area mono text-xs">{item.area}</span>}
+              {item.deps?.map((d) => (
+                <span key={d} className="rm-dep iflex-center mono text-xs">
+                  <Icon name="arrowR" size={11} />
+                  after {d}
+                </span>
+              ))}
+              {/* What the queue would run this under, so the user knows before
+                  they queue rather than after it stalls. */}
+              {(onQueue || onUnqueue) && (
+                <span
+                  className={`rm-wf iflex-center mono text-xs ${workflowName ? "" : "none"}`}
+                  title={
+                    workflowName
+                      ? `Runs under the ${workflowName} workflow`
+                      : "No workflow set on this item and no project default — the queue can't run it yet"
+                  }
+                >
+                  <Icon name="combine" size={11} />
+                  <span className="truncate">{workflowName ?? "no workflow"}</span>
+                </span>
+              )}
+            </div>
+            <div className="rm-item-acts">
+              {onEdit && (
+                <Button variant="ghost" size="sm" onClick={onEdit}>
+                  <Icon name="edit" size={11} /> Edit
+                </Button>
+              )}
+              {/* The manual hand-off stays available on every real row: the queue
                 is autonomous, and sometimes you want to drive. Demoted to a
                 ghost button next to "Queue", which is the path most rows take.
                 A proposed row isn't work anyone has agreed to do — accept it
                 first, then send it. */}
-            {!ghost && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={async () => {
-                  const draftId = await createDraft(repoPath, briefFor(item));
-                  // The draft lives in the workspace, which this page covers —
-                  // but stay put if it couldn't be created, so the user isn't
-                  // dropped somewhere else to read the error.
-                  if (draftId) closeProjectScreen();
-                }}
-              >
-                <Icon name="zap" size={11} /> Send to an agent
-              </Button>
-            )}
-            {/* An item in review is waiting on a PR, so the PR is the thing to
+              {!ghost && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={async () => {
+                    const draftId = await createDraft(repoPath, briefFor(item));
+                    // The draft lives in the workspace, which this page covers —
+                    // but stay put if it couldn't be created, so the user isn't
+                    // dropped somewhere else to read the error.
+                    if (draftId) closeProjectScreen();
+                  }}
+                >
+                  <Icon name="zap" size={11} /> Send to an agent
+                </Button>
+              )}
+              {/* An item in review is waiting on a PR, so the PR is the thing to
                 go to — the run behind it is already finished. */}
-            {item.item.pr_url && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  void openExternal(item.item.pr_url as string).catch(() => {});
-                }}
-              >
-                <Icon name="pr" size={11} />
-                {item.item.pr_number ? `PR #${item.item.pr_number}` : "View PR"}
-              </Button>
-            )}
-            {onOpenRun && (
-              <Button variant="outline" size="sm" onClick={onOpenRun}>
-                <Icon name="combine" size={11} /> View run
-              </Button>
-            )}
-            {onUnqueue && (
-              <Button variant="outline" size="sm" onClick={onUnqueue}>
-                Take off the queue
-              </Button>
-            )}
-            {onMarkDone && (
-              <Button variant="outline" size="sm" onClick={onMarkDone}>
-                <Icon name="check" size={11} /> Mark done
-              </Button>
-            )}
-            {onQueue && (
-              <Button variant="primary" size="sm" onClick={onQueue}>
-                <Icon name="play" size={11} /> Queue
-              </Button>
-            )}
+              {item.item.pr_url && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void openExternal(item.item.pr_url as string).catch(() => {});
+                  }}
+                >
+                  <Icon name="pr" size={11} />
+                  {item.item.pr_number ? `PR #${item.item.pr_number}` : "View PR"}
+                </Button>
+              )}
+              {onOpenRun && (
+                <Button variant="outline" size="sm" onClick={onOpenRun}>
+                  <Icon name="combine" size={11} /> View run
+                </Button>
+              )}
+              {onUnqueue && (
+                <Button variant="outline" size="sm" onClick={onUnqueue}>
+                  Take off the queue
+                </Button>
+              )}
+              {onMarkDone && (
+                <Button variant="outline" size="sm" onClick={onMarkDone}>
+                  <Icon name="check" size={11} /> Mark done
+                </Button>
+              )}
+              {onQueue && (
+                <Button variant="primary" size="sm" onClick={onQueue}>
+                  <Icon name="play" size={11} /> Queue
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       )}

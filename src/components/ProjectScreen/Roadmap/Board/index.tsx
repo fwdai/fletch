@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import type { Horizon, RoadmapItem } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -18,12 +18,24 @@ type Editing = { item: RoadmapItem | null; horizon: Horizon };
 /** The board the PM agent maintains: horizon groups of expandable items, with
  *  the PM's outstanding proposals rendered inline as ghost rows in the horizon
  *  they'd land in. Sibling tab shows the product map the agent reasons against. */
-export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: string }) {
+export function Board({
+  roadmap,
+  repoPath,
+  width,
+  asideRef,
+}: {
+  roadmap: RoadmapState;
+  repoPath: string;
+  /** Column width set by the splitter, or null for the default even split —
+   *  which is a CSS percentage, so it stays even as the window resizes. */
+  width?: number | null;
+  /** Lets the splitter measure this column at drag start. */
+  asideRef?: RefObject<HTMLElement>;
+}) {
   const {
     items,
     ghosts,
     map,
-    shipped,
     tab,
     setTab,
     openCodes,
@@ -67,8 +79,11 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
   const blank = !loading && items.length === 0 && ghosts.length === 0;
   const openNew = (horizon: Horizon) => setEditing({ item: null, horizon });
 
+  // Only the width is set inline. The stylesheet's min/max stay in force, so a
+  // width persisted on a wide window can't crush the chat on a narrow one — the
+  // column is clamped back on render, not silently overflowed.
   return (
-    <aside className="rm-board">
+    <aside className="rm-board" ref={asideRef} style={width == null ? undefined : { width }}>
       <div className="rm-board-h flex-center">
         <div className="rm-tabs">
           <button
@@ -76,37 +91,29 @@ export function Board({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath: 
             className={`rm-tab iflex-center text-sm ${tab === "roadmap" ? "active" : ""}`}
             onClick={() => setTab("roadmap")}
           >
-            <Icon name="map" size={12} /> Roadmap
+            <Icon name="map" size={13} /> Roadmap
           </button>
           <button
             type="button"
             className={`rm-tab iflex-center text-sm ${tab === "map" ? "active" : ""}`}
             onClick={() => setTab("map")}
           >
-            <Icon name="cube" size={12} /> Product map
+            <Icon name="cube" size={13} /> Product map
           </button>
         </div>
         <span className="grow" />
-        {tab === "roadmap" && (
-          <>
-            {/* Zero shipped is the honest state of a new project, and saying so
-                adds nothing — the stat appears once there's something to count. */}
-            {shipped > 0 && (
-              <span className="rm-shipped iflex-center mono text-xs">
-                <Icon name="merge" size={11} />
-                {shipped} shipped
-              </span>
-            )}
-            {!readOnly && (
-              <IconButton
-                aria-label="Add roadmap item"
-                tip="Add an item"
-                onClick={() => openNew("next")}
-              >
-                <Icon name="plus" />
-              </IconButton>
-            )}
-          </>
+        {/* No shipped count here: the page header already carries it, and two
+            copies of the same number a centimetre apart is clutter, not
+            reinforcement. */}
+        {tab === "roadmap" && !readOnly && (
+          <IconButton
+            aria-label="Add roadmap item"
+            tip="Add an item"
+            tipDown
+            onClick={() => openNew("next")}
+          >
+            <Icon name="plus" />
+          </IconButton>
         )}
       </div>
 

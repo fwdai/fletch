@@ -1,3 +1,14 @@
+/* Agent identity chip (`<AgentIdentityChip>`): a monogram or provider glyph.
+ * Inline-flex, not inline — as a bare inline box its glyph sits on the text
+ * baseline, which leaves descender space underneath and pushes the chip a
+ * couple of pixels off-center against anything beside it. Every call site
+ * wants it centered, so it is centered here once rather than per surface. */
+.ag-prov-chip {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
 /* compact status badges (PR state, error, draft) */
 .ag-badge {
   gap: 3px;

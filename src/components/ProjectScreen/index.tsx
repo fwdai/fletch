@@ -43,12 +43,9 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
   const roadmap = useRoadmap(repoPath);
 
   // Custom display name for this repo, falling back to the folder basename.
+  // Not shown in the page header (the title bar already names the project) —
+  // the settings sections below still need it.
   const name = projects?.find((p) => p.path === repoPath)?.name ?? basename(repoPath);
-  // The project's repos (known once the project_id resolves). A single-repo
-  // project reads as "the repo at this path"; multi-repo has no single
-  // location, so the header shows the repo count instead.
-  const projectRepoCount =
-    loaded == null ? 1 : (projects?.filter((p) => p.project_id === loaded.projectId).length ?? 1);
 
   // Resolve project_id + detected run config for the repo, then load the
   // persisted overrides. Both must be ready before the editor mounts so the
@@ -82,14 +79,7 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
 
   return (
     <div className="proj-screen">
-      <ProjectHeader
-        name={name}
-        subtitle={projectRepoCount > 1 ? `${projectRepoCount} repositories` : repoPath}
-        roadmap={roadmap}
-        tab={tab}
-        onTab={setTab}
-        onClose={close}
-      />
+      <ProjectHeader roadmap={roadmap} tab={tab} onTab={setTab} onClose={close} />
 
       {tab === "roadmap" ? (
         <Roadmap roadmap={roadmap} repoPath={repoPath} />

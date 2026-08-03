@@ -8,19 +8,18 @@ const TABS: { id: ProjectScreenTab; label: string; icon: IconName }[] = [
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
-/** The project page header: the back button, the project's identity, the board
- *  counts right-aligned, and the tab row sitting on the bottom rule. */
+/** The project page header: one thin chrome bar — back on the left, the tab
+ *  segment centered, the board counts on the right.
+ *
+ *  No project name or path here: the title bar already names the project the
+ *  page belongs to, and repeating it cost a whole second row of height above
+ *  two panels that each have a header of their own. */
 export function ProjectHeader({
-  name,
-  subtitle,
   roadmap,
   tab,
   onTab,
   onClose,
 }: {
-  name: string;
-  /** Repo path, or the repo count for a multi-repo project. */
-  subtitle: string;
   roadmap: RoadmapState;
   tab: ProjectScreenTab;
   onTab: (tab: ProjectScreenTab) => void;
@@ -30,35 +29,10 @@ export function ProjectHeader({
 
   return (
     <div className="ps-head">
-      <div className="ps-head-row">
-        <button type="button" className="ps-back flex-center text-base" onClick={onClose}>
-          <Icon name="chevL" size={13} />
-          <span>Back to app</span>
-        </button>
-        <div className="ps-id">
-          <div className="ps-title text-lg truncate">{name}</div>
-          <div className="ps-path mono text-xs truncate">{subtitle}</div>
-        </div>
-        <div className="stat-row ps-stats text-sm">
-          <Stat label="in flight">
-            <CountUp value={counts.now} />
-          </Stat>
-          <span className="stat-sep" />
-          <Stat label="next">
-            <CountUp value={counts.next} />
-          </Stat>
-          <span className="stat-sep" />
-          <Stat label="later">
-            <CountUp value={counts.later} />
-          </Stat>
-          <span className="stat-sep" />
-          <Stat label="shipped">
-            <span className="ps-stat-shipped">
-              <CountUp value={shipped} />
-            </span>
-          </Stat>
-        </div>
-      </div>
+      <button type="button" className="ps-back flex-center text-sm" onClick={onClose}>
+        <Icon name="chevL" size={13} />
+        <span>Back to app</span>
+      </button>
 
       <nav className="ps-tabs">
         {TABS.map((t) => (
@@ -73,6 +47,31 @@ export function ProjectHeader({
           </button>
         ))}
       </nav>
+
+      <div className="stat-row ps-stats text-sm">
+        <Stat label="in flight">
+          <CountUp value={counts.now} />
+        </Stat>
+        {/* Dropped first on a narrow window — see `.ps-stats-mid`. The wrapper
+            is `display: contents`, so at full width the strip lays out exactly
+            as if these were direct children. */}
+        <span className="ps-stats-mid">
+          <span className="stat-sep" />
+          <Stat label="next">
+            <CountUp value={counts.next} />
+          </Stat>
+          <span className="stat-sep" />
+          <Stat label="later">
+            <CountUp value={counts.later} />
+          </Stat>
+        </span>
+        <span className="stat-sep" />
+        <Stat label="shipped">
+          <span className="ps-stat-shipped">
+            <CountUp value={shipped} />
+          </span>
+        </Stat>
+      </div>
     </div>
   );
 }

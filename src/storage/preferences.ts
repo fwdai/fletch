@@ -185,6 +185,25 @@ export function parsePaneWidth(raw: string | undefined, fallback: number): numbe
   return Math.min(MAX_PANE_WIDTH, Math.max(MIN_PANE_WIDTH, n));
 }
 
+/** Floors for the Roadmap tab's two columns. The board stops being a list
+ *  below ~360px (the row's chips start wrapping); the chat's transcript is
+ *  laid out for a reading column and stops being one below ~400px. */
+export const ROADMAP_MIN_BOARD = 360;
+export const ROADMAP_MIN_THREAD = 400;
+
+/** Board width on the Roadmap tab, or `null` for the default even split.
+ *
+ *  `null` is meaningfully different from a number here: until the user drags
+ *  the splitter the columns stay *proportional* (a CSS 50%), so the page looks
+ *  right on any window. The first drag converts that into a fixed width, which
+ *  is how the app's other panes behave. */
+export function parseRoadmapBoardWidth(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(MAX_PANE_WIDTH, Math.max(ROADMAP_MIN_BOARD, n));
+}
+
 // ---- Sandbox engine ------------------------------------------------------------
 
 /** Isolation engine new agents are stamped with. Mirrors the backend's

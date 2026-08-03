@@ -349,11 +349,6 @@
     background-position: -40% 0;
   }
 }
-.agent-row .ag-prov-chip {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-}
 /* dev-server "running" indicator — a green play mark in a tinted, bordered
  * circle beside the identity chip. Signals the worktree's app is up, distinct
  * from the agent's turn status (rail / loader / shimmer). The slow breathing
