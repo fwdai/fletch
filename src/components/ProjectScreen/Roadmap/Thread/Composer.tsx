@@ -9,15 +9,23 @@ export function Composer({
   disabled,
   placeholder,
   status,
+  autoFocus,
+  hint,
   onSend,
 }: {
   /** The chat can't take a message right now (still loading, or stopped). */
   disabled?: boolean;
   placeholder: string;
+  /** Take the caret on mount. Set by the new-chat screen, where typing *is* the
+   *  primary action; the live chat leaves focus wherever the user put it. */
+  autoFocus?: boolean;
   /** The working strip, which slides up from behind the box — so it is rendered
    *  inside the same `.composer-anchor` the main chat uses, and lines up with
    *  the box rather than with the column. */
   status?: ReactNode;
+  /** A line under the box, in the wrap's own column so it inherits the same
+   *  centring and gutters. The new-chat screen's keyboard hint lives here. */
+  hint?: ReactNode;
   onSend: (text: string) => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -39,6 +47,9 @@ export function Composer({
           <textarea
             className="composer-input text-base"
             rows={2}
+            // The new-chat screen exists to be typed into; the caret starting
+            // anywhere else is the bug.
+            autoFocus={autoFocus}
             placeholder={placeholder}
             value={draft}
             disabled={disabled}
@@ -64,6 +75,7 @@ export function Composer({
           </div>
         </div>
       </div>
+      {hint}
     </div>
   );
 }

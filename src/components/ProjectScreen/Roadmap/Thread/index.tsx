@@ -3,11 +3,10 @@ import { AgentIdentityChip } from "@/components/AgentIdentityChip";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { Loader } from "@/components/ui/Loader";
-import { Scrim } from "@/components/ui/Scrim";
 import type { RoadmapState } from "../useRoadmap";
 import { ChatPane } from "./ChatPane";
 import { ChatPicker } from "./ChatPicker";
-import { NewChatForm } from "./NewChatForm";
+import { NewChatScreen } from "./NewChatScreen";
 import { type ChatAgentPick, usePmChats } from "./usePmChats";
 
 /** The left column: a real conversation with the project's PM agent.
@@ -22,28 +21,39 @@ export function Thread({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath:
   const { projectId } = roadmap;
   const chats = usePmChats(projectId, repoPath);
   const { selected } = chats;
-  /** The new-chat popover, opened from the header while a chat is already up.
-   *  With no chats yet the same form is the body's empty state, so there is
-   *  nothing to pop over. */
+  /** The user asked for the new-chat screen. With no chats yet that screen is
+   *  the column's only body anyway — see `newChat` below — so this flag is only
+   *  what makes it *replace* a conversation. */
   const [composing, setComposing] = useState(false);
 
-  const start = (pick: ChatAgentPick) => {
-    setComposing(false);
-    void chats.startChat(pick);
+  // The screen stays up for the whole spawn — it shows its own "starting" state,
+  // and closing it first would flash the *previous* conversation back on screen
+  // for as long as the spawn takes. A failed spawn leaves it up with the error.
+  const start = async (pick: ChatAgentPick, firstMessage?: string) => {
+    if (await chats.startChat(pick, firstMessage)) setComposing(false);
   };
+
+  // The new-chat screen owns the body whenever the user asked for it, and
+  // whenever there is no conversation to show instead.
+  const newChat = !chats.loading && !!projectId && (composing || !selected);
 
   return (
     <section className="rm-thread">
       <div className="rm-thread-head flex-center">
-        {selected ? (
+        {/* A live chat wears its agent's identity; the session screen and the
+            empty column wear the same planning mark the screen leads with, so
+            the header and the body below it read as one thing. */}
+        {selected && !newChat ? (
           <AgentIdentityChip agent={selected} size={20} />
         ) : (
           <span className="rm-pm-badge iflex-center">
-            <Icon name="sparkle" size={12} />
+            <Icon name="notebookPen" size={12} />
           </span>
         )}
 
-        {selected ? (
+        {newChat ? (
+          <span className="rm-pm-n text-sm">New planning session</span>
+        ) : selected ? (
           <ChatPicker
             chats={chats.chats}
             selected={selected}
@@ -57,34 +67,29 @@ export function Thread({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath:
 
         <span className="grow" />
 
-        {selected && (
-          <div className="rm-newchat-anchor">
+        {/* One affordance, two directions: open the screen, or leave it for the
+            chat you came from. Absent while the screen is the only body there
+            is — the project's first chat has nothing to go back to. */}
+        {selected &&
+          (newChat ? (
             <IconButton
-              tip="New chat"
+              tip="Back to the chat"
               tipDown
-              aria-label="New chat"
-              active={composing}
-              onClick={() => setComposing((v) => !v)}
+              aria-label="Back to the chat"
+              onClick={() => setComposing(false)}
+            >
+              <Icon name="close" />
+            </IconButton>
+          ) : (
+            <IconButton
+              tip="New planning session"
+              tipDown
+              aria-label="New planning session"
+              onClick={() => setComposing(true)}
             >
               <Icon name="plus" />
             </IconButton>
-            {composing && (
-              <>
-                <Scrim onClose={() => setComposing(false)} />
-                <div className="rm-newchat-pop">
-                  <div className="rm-newchat-h text-xs">
-                    A fresh thread, with its own workspace and context.
-                  </div>
-                  <NewChatForm
-                    defaultAgentId={chats.defaultAgentId}
-                    starting={chats.starting}
-                    onStart={start}
-                  />
-                </div>
-              </>
-            )}
-          </div>
-        )}
+          ))}
       </div>
 
       {chats.error && (
@@ -104,28 +109,16 @@ export function Thread({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath:
         <div className="rm-thread-state text-sm">
           This repo isn’t part of a project yet, so it has no project manager to talk to.
         </div>
+      ) : newChat ? (
+        <NewChatScreen
+          defaultAgentId={chats.defaultAgentId}
+          starting={chats.starting}
+          onStart={(pick, firstMessage) => void start(pick, firstMessage)}
+          onCancel={selected ? () => setComposing(false) : undefined}
+        />
       ) : selected ? (
         <ChatPane key={selected.id} agent={selected} />
-      ) : (
-        <div className="rm-thread-scroll">
-          <div className="rm-blank rm-thread-blank">
-            <span className="rm-blank-badge iflex-center">
-              <Icon name="sparkle" size={18} />
-            </span>
-            <h3 className="rm-blank-h text-base">Talk to your project manager</h3>
-            <p className="rm-blank-b text-sm">
-              It reads the repo first — what exists, what depends on what, where the seams are —
-              then proposes roadmap items with the code to back them up. It never edits code, and
-              nothing reaches the board until you accept it.
-            </p>
-            <NewChatForm
-              defaultAgentId={chats.defaultAgentId}
-              starting={chats.starting}
-              onStart={start}
-            />
-          </div>
-        </div>
-      )}
+      ) : null}
     </section>
   );
 }

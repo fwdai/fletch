@@ -111,7 +111,7 @@ export function ChatPicker({
                 close();
               }}
             >
-              <Icon name="plus" size={11} /> New chat
+              <Icon name="plus" size={11} /> New planning session
             </button>
           </div>
         </>
