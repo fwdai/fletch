@@ -60,7 +60,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Notify;
 
-use super::events::{self, EventActor, EventKind, ItemEvent};
+use super::events::{self, EventActor, EventKind, ItemEvent, TrailEntry};
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
 use super::{emit_item, emit_item_event, store, Db};
 use crate::workflow::spec::{self, Spec};
@@ -1001,13 +1001,19 @@ pub(crate) fn write_item_where(
     id: &str,
     expected: ItemStatus,
     patch: ItemPatch,
-    actor: EventActor,
-    kind: EventKind,
-    detail: Option<String>,
+    entry: TrailEntry,
 ) {
     let updated = {
         let conn = db.lock();
-        apply_and_record(&conn, id, Some(expected), &patch, actor, kind, detail)
+        apply_and_record(
+            &conn,
+            id,
+            Some(expected),
+            &patch,
+            entry.actor,
+            entry.kind,
+            entry.detail,
+        )
     };
     match updated {
         Ok(Some((row, event))) => {
