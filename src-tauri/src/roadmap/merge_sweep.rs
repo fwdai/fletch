@@ -53,7 +53,7 @@ use tauri::AppHandle;
 use tokio::sync::Notify;
 
 use super::drainer::{self, QueueNote};
-use super::events::{EventActor, EventKind};
+use super::events::{EventActor, EventKind, TrailEntry};
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
 use super::Db;
 use crate::github::PrStatus;
@@ -305,9 +305,11 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
             &w.id,
             ItemStatus::InReview,
             patch,
-            EventActor::Sweep,
-            kind,
-            detail,
+            TrailEntry {
+                actor: EventActor::Sweep,
+                kind,
+                detail,
+            },
         );
         match outcome {
             Verdict::Landed => {

@@ -77,6 +77,15 @@ pub struct ItemEvent {
 
 const COLUMNS: &str = "id, item_id, project_id, actor, kind, detail, created_at";
 
+/// What one transition writes to the trail: who moved the item, what happened,
+/// and the human-readable payload. Travels as one value so a write helper's
+/// signature names the transition rather than three loose fields.
+pub(crate) struct TrailEntry {
+    pub actor: EventActor,
+    pub kind: EventKind,
+    pub detail: Option<String>,
+}
+
 impl ItemEvent {
     fn from_row(r: &Row) -> rusqlite::Result<Self> {
         Ok(Self {
