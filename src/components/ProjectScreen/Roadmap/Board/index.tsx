@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import type { Horizon, RoadmapItem } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -81,6 +81,14 @@ export function Board({
 
   /** Nothing on the board at all — not even a pending proposal. */
   const blank = !loading && items.length === 0 && ghosts.length === 0;
+
+  /** The PM's asks against admitted rows only. An ask targeting a row that is
+   *  itself still a ghost stays out of the batch bar — its card shows no bar
+   *  either (see ItemCard), so the count and the buttons agree. */
+  const asks = useMemo(() => {
+    const ghostIds = new Set(ghosts.map((g) => g.item.id));
+    return [...proposals.values()].filter((p) => !ghostIds.has(p.item_id));
+  }, [ghosts, proposals]);
   const openNew = (horizon: Horizon) => setEditing({ item: null, horizon });
 
   // Only the width is set inline. The stylesheet's min/max stay in force, so a
@@ -134,12 +142,16 @@ export function Board({
           so accepting six tickets isn't six trips down the board. It sits above
           the scroller rather than inside it — the ghosts and pending changes it
           acts on can be in three different horizons. Accept-all rules both:
-          ghost rows join the roadmap, pending changes are applied. */}
-      {tab === "roadmap" && ghosts.length + proposals.size > 1 && (
+          ghost rows join the roadmap, pending changes are applied. An ask
+          against a row that is itself still a ghost is neither counted nor
+          bulk-ruled — its card shows no bar for it (rule on the ghost first),
+          and bulk-applying a patch to a ticket the user hasn't admitted would
+          rule two questions with one click. */}
+      {tab === "roadmap" && ghosts.length + asks.length > 1 && (
         <div className="rm-props flex-center text-xs">
           <span className="rm-props-n iflex-center mono">
             <Icon name="sparkle" size={11} />
-            {ghosts.length + proposals.size} proposed
+            {ghosts.length + asks.length} proposed
           </span>
           <span className="rm-props-hint truncate">
             Nothing is on the roadmap until you say so.
@@ -150,7 +162,7 @@ export function Board({
             className="rm-props-x"
             onClick={() => {
               if (ghosts.length) void removeItems(ghosts.map((g) => g.item.id));
-              if (proposals.size) void rejectProposals([...proposals.values()].map((p) => p.id));
+              if (asks.length) void rejectProposals(asks.map((p) => p.id));
             }}
           >
             Discard all
@@ -160,7 +172,7 @@ export function Board({
             className="rm-props-ok iflex-center"
             onClick={() => {
               if (ghosts.length) void acceptItems(ghosts.map((g) => g.item.id));
-              if (proposals.size) void acceptProposals([...proposals.values()].map((p) => p.id));
+              if (asks.length) void acceptProposals(asks.map((p) => p.id));
             }}
           >
             <Icon name="check" size={11} /> Accept all

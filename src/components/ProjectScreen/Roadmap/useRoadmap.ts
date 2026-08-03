@@ -310,12 +310,19 @@ export function useRoadmap(repoPath: string) {
 
   /** The PM's pending asks against existing items, by the item they target —
    *  the shape the card lookup wants, and one-per-item by construction (the
-   *  backend replaces an item's ask in place). */
+   *  backend replaces an item's ask in place). Restricted to items the board
+   *  actually renders: an ask whose item advanced to `done` has no card to
+   *  rule it from, and counting or quoting it would make a single orphan both
+   *  invisible and immortal. The row itself survives in the DB; it comes back
+   *  into view if the item ever returns to the board. */
   const proposals = useMemo(() => {
+    const visible = new Set(rows.filter(isOnBoard).map((r) => r.id));
     const by = new Map<string, RoadmapProposal>();
-    for (const p of proposalRows) by.set(p.item_id, p);
+    for (const p of proposalRows) {
+      if (visible.has(p.item_id)) by.set(p.item_id, p);
+    }
     return by as ReadonlyMap<string, RoadmapProposal>;
-  }, [proposalRows]);
+  }, [proposalRows, rows]);
 
   const counts = useMemo(() => {
     const by: Record<Horizon, number> = { now: 0, next: 0, later: 0 };

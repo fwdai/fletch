@@ -195,8 +195,11 @@ export function ItemCard({
 
       {/* The PM's pending ask against this row — the ghost bar's grammar for a
           delta instead of a new ticket: always visible, ruled on without an
-          expand. The expanded body carries the per-field diff. */}
-      {proposal && (onAcceptProposal || onRejectProposal) && (
+          expand. The expanded body carries the per-field diff. Never rendered
+          on a ghost: two stacked bars whose Accepts mean different things
+          ("put it on the board" vs "apply the patch") is a coin-flip for the
+          user — rule on the ghost first, the ask stays pending. */}
+      {proposal && !ghost && (onAcceptProposal || onRejectProposal) && (
         <div className="rm-propbar flex-center">
           <span className="rm-propbar-l text-xs truncate">
             <strong>
