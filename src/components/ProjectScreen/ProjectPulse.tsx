@@ -14,8 +14,13 @@ const WEEKS = 52;
 // One extra week of margin past the grid so the oldest column is never short.
 const HORIZON_MS = (WEEKS + 1) * 7 * 86_400_000;
 
-/** The "Project Pulse" block atop Project Settings: a year of daily activity
- *  on the accent heat ramp, a streak counter, and lifetime hero numbers.
+/** The Activity tab's body: a year of daily activity on the accent heat ramp,
+ *  a streak counter, and lifetime hero numbers.
+ *
+ *  It carries its own heading. On Settings it had none — it was the first
+ *  block on a page whose tab already named it — but a tab holding one section
+ *  needs to say what the section is, and the grid alone doesn't.
+ *
  *  Turn/agent/PR series load in one round of fast indexed queries; the token
  *  total folds every session's records, so it streams in behind a shimmer. */
 export function ProjectPulse({ projectId }: { projectId: string }) {
@@ -65,6 +70,14 @@ export function ProjectPulse({ projectId }: { projectId: string }) {
 
   return (
     <section className="ps-section">
+      <header className="ps-section-h">
+        <h2 className="ps-section-t text-lg">Project pulse</h2>
+        <p className="ps-section-lead text-sm">
+          Every day an agent took a turn on this project, over the past year. Totals below are
+          lifetime — what this project has cost and produced since you added it.
+        </p>
+      </header>
+
       {activity ? (
         <ActivityHeatmap
           counts={turns}

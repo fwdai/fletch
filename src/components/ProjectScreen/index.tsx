@@ -22,11 +22,14 @@ interface Loaded {
 }
 
 /** Full-screen project page. Rendered in place of the workspace panes while
- *  `projectScreenRepoPath` is set (mirrors SettingsScreen). Two tabs under a
- *  shared header: the Roadmap (what gets built) and Settings — the activity
- *  pulse plus the per-project config every agent in the project inherits.
+ *  `projectScreenRepoPath` is set (mirrors SettingsScreen). Three tabs under a
+ *  shared header, one per question you can ask about a project: the Roadmap
+ *  (what gets built next), Activity (what has been built), and Settings (the
+ *  per-project config every agent in the project inherits).
+ *
  *  Keyed by the project's primary repo path; resolves the project_id and
- *  detected run config on open. */
+ *  detected run config on open. Both non-roadmap tabs need the resolved
+ *  project_id, so they share one load gate. */
 export function ProjectScreen({ repoPath }: { repoPath: string }) {
   const close = useAppStore((s) => s.closeProjectScreen);
   const projects = useAppStore((s) => s.workspace?.projects);
@@ -85,28 +88,31 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
         <Roadmap roadmap={roadmap} repoPath={repoPath} />
       ) : (
         <div className="ps-content">
-          {error ? (
-            <div className="ps-state text-sm">Couldn’t load project settings.</div>
-          ) : !loaded ? (
-            <div className="ps-state iflex-center text-sm">
-              <Loader variant="inherit" /> Loading…
-            </div>
-          ) : (
-            <div className="ps-sections">
+          <div className="ps-sections">
+            {error ? (
+              <div className="ps-state text-sm">Couldn’t load this project.</div>
+            ) : !loaded ? (
+              <div className="ps-state iflex-center text-sm">
+                <Loader variant="inherit" /> Loading…
+              </div>
+            ) : tab === "activity" ? (
               <ProjectPulse projectId={loaded.projectId} />
-              <GeneralSection projectId={loaded.projectId} currentName={name} />
-              <RunEnvSection
-                projectId={loaded.projectId}
-                rows={loaded.rows}
-                ecosystem={loaded.ecosystem}
-                initialOverrides={loaded.overrides}
-              />
-              <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
-              <LinearSection projectId={loaded.projectId} />
-              <VerifySection projectId={loaded.projectId} />
-              <DeleteSection projectId={loaded.projectId} projectName={name} />
-            </div>
-          )}
+            ) : (
+              <>
+                <GeneralSection projectId={loaded.projectId} currentName={name} />
+                <RunEnvSection
+                  projectId={loaded.projectId}
+                  rows={loaded.rows}
+                  ecosystem={loaded.ecosystem}
+                  initialOverrides={loaded.overrides}
+                />
+                <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
+                <LinearSection projectId={loaded.projectId} />
+                <VerifySection projectId={loaded.projectId} />
+                <DeleteSection projectId={loaded.projectId} projectName={name} />
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

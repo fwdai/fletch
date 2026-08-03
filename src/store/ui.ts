@@ -12,10 +12,11 @@ import type { SliceCreator } from "./types";
  *  store can remember the last-open tab per agent without importing a component. */
 export type RightPanelTab = "code" | "git" | "run" | "term";
 
-/** Project page tabs — what gets built, and how the project is run. Kept here
- *  (like `RightPanelTab`) so callers of `openProjectScreen` can pick the tab
- *  without the store importing a component. */
-export type ProjectScreenTab = "roadmap" | "settings";
+/** Project page tabs, in display order: what gets built next, what has been
+ *  built, and how the project is run. Kept here (like `RightPanelTab`) so
+ *  callers of `openProjectScreen` can pick the tab without the store importing
+ *  a component. */
+export type ProjectScreenTab = "roadmap" | "activity" | "settings";
 
 export interface UiSlice {
   /** Quick-settings popover (gear / ⌘,). */

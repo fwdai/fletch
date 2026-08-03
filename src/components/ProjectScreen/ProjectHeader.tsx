@@ -5,6 +5,7 @@ import type { RoadmapState } from "./Roadmap";
 
 const TABS: { id: ProjectScreenTab; label: string; icon: IconName }[] = [
   { id: "roadmap", label: "Roadmap", icon: "map" },
+  { id: "activity", label: "Activity", icon: "activity" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
