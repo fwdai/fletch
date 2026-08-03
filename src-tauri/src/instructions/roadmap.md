@@ -25,7 +25,7 @@ cat "$FLETCH_RPC_DIR/responses/$ID.json"
 
 ```json
 [{"code":"FLT-100","title":"Queue drainer","horizon":"now","status":"open",
-  "why":"the queue needs one","size":"M","area":"workflow","accept":["it drains"]}]
+  "why":"the queue needs one","area":"workflow","accept":["it drains"]}]
 ```
 
 Optional filter: `{"op":"roadmap_list","args":{"status":["open","done"]}}`.
@@ -44,10 +44,7 @@ Fields, per item:
 - `title` — required, one line, imperative ("Add the queue drainer").
 - `why` — the one line that justifies its place on the board. Write it.
 - `horizon` — required: `now` (being built), `next` (up next), `later` (backlog).
-- `size` — optional: `XS` (minutes), `S` (under an hour), `M` (half a day),
-  `L` (multi-day). Size honestly; an `L` is a hint to slice further.
 - `area` — optional product-map domain.
-- `epic` — optional label grouping several tickets you shaped together.
 - `accept` — optional array of acceptance criteria: what makes it done.
 - `deps` — optional array of **codes** (`["FLT-100"]`) this must land after.
   Only codes already on the board — items in the same batch have no code yet,
@@ -61,7 +58,7 @@ ID=$(uuidgen)
 jq -n --arg id "$ID" '{id:$id,op:"roadmap_propose",args:{items:[
   {title:"Add the queue drainer",
    why:"queued items sit forever with nothing to launch them",
-   horizon:"next", size:"M", area:"workflow",
+   horizon:"next", area:"workflow",
    accept:["a queued item launches a run","the run id is stored on the item"]}
 ]}}' > "$FLETCH_RPC_DIR/requests/$ID.json.tmp"
 mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"

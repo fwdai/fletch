@@ -1,12 +1,12 @@
 import { useState } from "react";
-import type { Horizon, ItemSize, RoadmapItem } from "@/api";
+import type { Horizon, RoadmapItem } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Segmented } from "@/components/Settings/Segmented";
 import { Button } from "@/components/ui/Button";
 import { Modal, ModalBody, ModalFooter } from "@/components/ui/Modal";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { TextArea, TextInput } from "@/components/ui/TextInput";
-import { HORIZONS, SIZE_HINT } from "../types";
+import { HORIZONS } from "../types";
 import type { ProjectWorkflows } from "../useProjectWorkflows";
 
 /** The fields a human fills in. Deliberately a subset of the row: `code`,
@@ -17,7 +17,6 @@ export interface ItemDraft {
   title: string;
   why: string;
   horizon: Horizon;
-  size: ItemSize | null;
   area: string | null;
   accept: string[];
   /** Which workflow the queue dispatches this under. `null` means "whatever the
@@ -26,21 +25,8 @@ export interface ItemDraft {
   workflow_def_id: string | null;
 }
 
-/** `null` is a real value here — "no size yet", which is the honest state of an
- *  idea nobody has shaped. */
-const NO_SIZE = "none";
-
 /** The picker's stand-in for `workflow_def_id: null`. */
 const PROJECT_DEFAULT = "default";
-
-const SIZE_OPTIONS: SelectOption<string>[] = [
-  { value: NO_SIZE, label: "Unsized", hint: "not shaped yet" },
-  ...(["XS", "S", "M", "L"] as const).map((s) => ({
-    value: s,
-    label: s,
-    hint: SIZE_HINT[s],
-  })),
-];
 
 const HORIZON_OPTIONS = HORIZONS.map((h) => ({ value: h.id, label: h.label }));
 
@@ -73,7 +59,6 @@ export function ItemDialog({ item, horizon, workflows, onClose, onSave, onDelete
   const [title, setTitle] = useState(item?.title ?? "");
   const [why, setWhy] = useState(item?.why ?? "");
   const [place, setPlace] = useState<Horizon>(item?.horizon ?? horizon);
-  const [size, setSize] = useState<string>(item?.size ?? NO_SIZE);
   const [area, setArea] = useState(item?.area ?? "");
   const [accept, setAccept] = useState((item?.accept ?? []).join("\n"));
   const [workflow, setWorkflow] = useState<string>(item?.workflow_def_id ?? PROJECT_DEFAULT);
@@ -109,7 +94,6 @@ export function ItemDialog({ item, horizon, workflows, onClose, onSave, onDelete
         title: title.trim(),
         why: why.trim(),
         horizon: place,
-        size: size === NO_SIZE ? null : (size as ItemSize),
         area: area.trim() || null,
         accept: linesToList(accept),
         workflow_def_id: workflow === PROJECT_DEFAULT ? null : workflow,
@@ -166,24 +150,16 @@ export function ItemDialog({ item, horizon, workflows, onClose, onSave, onDelete
           <Segmented value={place} options={HORIZON_OPTIONS} onChange={setPlace} />
         </div>
 
-        <div className="rm-form-row">
-          <div className="modal-field">
-            <span className="modal-label text-sm">
-              Size <span className="modal-opt">optional</span>
-            </span>
-            <Select value={size} options={SIZE_OPTIONS} onChange={setSize} ariaLabel="Size" />
-          </div>
-          <div className="modal-field">
-            <label className="modal-label text-sm" htmlFor="rm-area">
-              Area <span className="modal-opt">optional</span>
-            </label>
-            <TextInput
-              id="rm-area"
-              placeholder="runtime"
-              value={area}
-              onChange={(e) => setArea(e.target.value)}
-            />
-          </div>
+        <div className="modal-field">
+          <label className="modal-label text-sm" htmlFor="rm-area">
+            Area <span className="modal-opt">optional</span>
+          </label>
+          <TextInput
+            id="rm-area"
+            placeholder="runtime"
+            value={area}
+            onChange={(e) => setArea(e.target.value)}
+          />
         </div>
 
         <div className="modal-field">

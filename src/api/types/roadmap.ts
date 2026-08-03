@@ -11,8 +11,6 @@
  *  `later` is the backlog. Shipped items leave the board entirely. */
 export type Horizon = "now" | "next" | "later";
 
-export type ItemSize = "XS" | "S" | "M" | "L";
-
 /** Where the item came from — drawn as a glyph on the row. */
 export type ItemSource = "user" | "pm" | "linear" | "github";
 
@@ -34,12 +32,9 @@ export interface RoadmapItem {
   why: string;
   horizon: Horizon;
   status: ItemStatus;
-  size: ItemSize | null;
   /** Product-map domain this belongs to. */
   area: string | null;
   source: ItemSource;
-  /** Grouping label when several items were shaped together. */
-  epic: string | null;
   /** Acceptance criteria, rendered as a checklist. */
   accept: string[];
   /** Codes this item must land after. */
@@ -62,10 +57,8 @@ export interface NewRoadmapItem {
   why?: string;
   horizon?: Horizon;
   status?: ItemStatus;
-  size?: ItemSize | null;
   area?: string | null;
   source?: ItemSource;
-  epic?: string | null;
   accept?: string[];
   deps?: string[];
   /** Workflow this item is dispatched under when queued. Omitted (or null)
@@ -98,7 +91,7 @@ export interface RoadmapItemUpdate {
 }
 
 /** A partial update. An omitted key is left alone; an explicit `null` on a
- *  nullable column clears it — so `{ size: null }` unsets the size while `{}`
+ *  nullable column clears it — so `{ area: null }` unsets the area while `{}`
  *  changes nothing. `code` and `project_id` are not patchable. */
 export interface RoadmapItemPatch {
   title?: string;
@@ -108,9 +101,7 @@ export interface RoadmapItemPatch {
   source?: ItemSource;
   accept?: string[];
   deps?: string[];
-  size?: ItemSize | null;
   area?: string | null;
-  epic?: string | null;
   agent_id?: string | null;
   workflow_def_id?: string | null;
   run_id?: string | null;

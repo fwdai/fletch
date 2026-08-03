@@ -31,7 +31,7 @@ use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
 use crate::roadmap::store;
-use crate::roadmap::types::{Horizon, ItemSize, ItemSource, ItemStatus, NewItem, RoadmapItem};
+use crate::roadmap::types::{Horizon, ItemSource, ItemStatus, NewItem, RoadmapItem};
 use crate::roadmap::Db;
 use crate::rpc::git::GitDispatcher;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
@@ -86,11 +86,7 @@ struct ProposedItem {
     #[serde(default)]
     horizon: Option<String>,
     #[serde(default)]
-    size: Option<String>,
-    #[serde(default)]
     area: Option<String>,
-    #[serde(default)]
-    epic: Option<String>,
     #[serde(default)]
     accept: Vec<String>,
     #[serde(default)]
@@ -142,14 +138,8 @@ fn compact(item: &RoadmapItem) -> Value {
     if !item.why.is_empty() {
         o.insert("why".into(), json!(item.why));
     }
-    if let Some(size) = item.size {
-        o.insert("size".into(), json!(size.as_str()));
-    }
     if let Some(area) = &item.area {
         o.insert("area".into(), json!(area));
-    }
-    if let Some(epic) = &item.epic {
-        o.insert("epic".into(), json!(epic));
     }
     if !item.accept.is_empty() {
         o.insert("accept".into(), json!(item.accept));
@@ -254,15 +244,6 @@ fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem
                 )
             })?,
         };
-        let size = match it.size.as_deref().map(str::trim) {
-            None | Some("") => None,
-            Some(s) => Some(ItemSize::from_db(s).ok_or_else(|| {
-                format!(
-                    "item {at} ({title:?}): unknown size {s:?} — expected {}",
-                    one_of(&["XS", "S", "M", "L"])
-                )
-            })?),
-        };
         let deps = clean_list(&it.deps);
         for d in &deps {
             if !known.contains(d.as_str()) {
@@ -280,10 +261,8 @@ fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem
             // What makes this a proposal rather than a roadmap item: it lands
             // as a ghost the user has to accept.
             status: Some(ItemStatus::Proposed),
-            size,
             area: clean(it.area.as_deref()),
             source: Some(ItemSource::Pm),
-            epic: clean(it.epic.as_deref()),
             accept: clean_list(&it.accept),
             deps,
             // Which workflow builds it is the user's call, not the PM's — a
@@ -499,8 +478,7 @@ mod tests {
                 "roadmap_propose",
                 &json!({"items": [
                     {"title": "Ship the drainer", "why": "the queue needs one",
-                     "horizon": "now", "size": "M", "area": "workflow",
-                     "epic": "roadmap", "accept": ["it drains"]},
+                     "horizon": "now", "area": "workflow", "accept": ["it drains"]},
                     {"title": "Second", "why": "also", "horizon": "later"},
                 ]}),
             )
@@ -525,9 +503,8 @@ mod tests {
             assert_eq!(row.source, ItemSource::Pm);
         }
         assert_eq!(rows[0].horizon, Horizon::Now);
-        assert_eq!(rows[0].size, Some(ItemSize::M));
         assert_eq!(rows[0].accept, vec!["it drains".to_string()]);
-        assert_eq!(rows[0].epic.as_deref(), Some("roadmap"));
+        assert_eq!(rows[0].area.as_deref(), Some("workflow"));
     }
 
     #[test]
@@ -542,8 +519,8 @@ mod tests {
         // No args at all is the same mistake.
         assert!(!propose(&db, Value::Null).ok);
 
-        // A blank title, a bad horizon and a bad size each name the offending
-        // item so the agent can fix exactly that one.
+        // A blank title and a bad horizon each name the offending item so the
+        // agent can fix exactly that one.
         for (args, needle) in [
             (
                 json!({"items": [{"title": "ok", "horizon": "next"}, {"title": "  ", "horizon": "next"}]}),
@@ -554,10 +531,6 @@ mod tests {
                 "unknown horizon",
             ),
             (json!({"items": [{"title": "ok"}]}), "`horizon` is required"),
-            (
-                json!({"items": [{"title": "ok", "horizon": "now", "size": "XXL"}]}),
-                "unknown size",
-            ),
             // A misspelled field would otherwise be silently dropped.
             (
                 json!({"items": [{"title": "ok", "horizon": "now", "horizen": "next"}]}),
@@ -566,6 +539,16 @@ mod tests {
             // The agent may not decide an item is accepted.
             (
                 json!({"items": [{"title": "ok", "horizon": "now", "status": "open"}]}),
+                "unknown field",
+            ),
+            // The pruned fields are gone, not ignored: a PM still sending them
+            // gets a precise refusal (see .context/roadmap-pm-plan.md, A0).
+            (
+                json!({"items": [{"title": "ok", "horizon": "now", "size": "M"}]}),
+                "unknown field",
+            ),
+            (
+                json!({"items": [{"title": "ok", "horizon": "now", "epic": "roadmap"}]}),
                 "unknown field",
             ),
         ] {
@@ -640,7 +623,7 @@ mod tests {
         assert_eq!(rows[1]["status"], "done");
         // Empties are omitted rather than sent as nulls.
         assert!(rows[1].get("why").is_none());
-        assert!(rows[1].get("size").is_none());
+        assert!(rows[1].get("area").is_none());
 
         let resp = list(&db, json!({ "status": ["done"] }));
         let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();

@@ -10,9 +10,9 @@
 // with `status: "proposed"`, so a ghost on the board is an ordinary item that
 // hasn't been accepted yet.
 
-import type { Horizon, ItemSize, ItemSource, ItemStatus, RoadmapItem } from "@/api";
+import type { Horizon, ItemSource, ItemStatus, RoadmapItem } from "@/api";
 
-export type { Horizon, ItemSize, ItemSource, ItemStatus, RoadmapItem } from "@/api";
+export type { Horizon, ItemSource, ItemStatus, RoadmapItem } from "@/api";
 
 /** A row as the board draws it — a persisted item flattened by [`toBoardItem`],
  *  with the DTO's nulls collapsed to `undefined` so the card can test each
@@ -26,15 +26,12 @@ export interface BoardItem {
   why: string;
   status: ItemStatus;
   source: ItemSource;
-  size?: ItemSize;
   /** Product-map domain this belongs to (`MapDomain.id`). */
   area?: string;
   /** Acceptance criteria, rendered as a checklist. */
   accept?: string[];
   /** Codes this item must land after. */
   deps?: string[];
-  /** Optional grouping label when several items were shaped together. */
-  epic?: string;
   /** Agent working it — only meaningful while `status === "active"`. */
   agent?: string;
   /** The stored row behind this card — what every mutation addresses. */
@@ -51,11 +48,9 @@ export function toBoardItem(item: RoadmapItem): BoardItem {
     why: item.why,
     status: item.status,
     source: item.source,
-    size: item.size ?? undefined,
     area: item.area ?? undefined,
     accept: item.accept.length ? item.accept : undefined,
     deps: item.deps.length ? item.deps : undefined,
-    epic: item.epic ?? undefined,
     agent: item.agent_id ?? undefined,
     item,
   };
@@ -72,13 +67,6 @@ export interface MapDomain {
   items: number;
   heat: "hot" | "warm" | "cool";
 }
-
-export const SIZE_HINT: Record<ItemSize, string> = {
-  XS: "a few minutes",
-  S: "under an hour",
-  M: "half a day",
-  L: "multi-day",
-};
 
 /** Board groups, in display order. The same labels drive the header stats. */
 export const HORIZONS: { id: Horizon; label: string; note: string }[] = [
