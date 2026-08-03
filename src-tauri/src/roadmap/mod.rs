@@ -98,6 +98,19 @@ pub async fn roadmap_list_items(
     store::list(&conn, &project_id).map_err(|e| e.to_string())
 }
 
+/// One item by id, or `None` when it's gone. The board never needs this (it
+/// holds the whole project), but a *run* does: `wf_run.roadmap_item_id` names an
+/// item by id, and the run monitor's roadmap chip has to render its code and
+/// title without loading someone else's board.
+#[tauri::command]
+pub async fn roadmap_get_item(
+    item_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<Option<RoadmapItem>, String> {
+    let conn = db.lock();
+    store::get(&conn, &item_id).map_err(|e| e.to_string())
+}
+
 /// Add an item to a project's roadmap. The `code` is allocated here, not passed
 /// in: it's the item's identity for the rest of its life, and only the DB knows
 /// which numbers are taken.
@@ -220,6 +233,76 @@ fn update_and_record(
             None => Ok((None, None)),
         },
     }
+}
+
+/// Record the manual hand-off: the user sent this item to an agent they spawned
+/// themselves ("Send to an agent" on the card), so the item now names that
+/// workspace.
+///
+/// Its own command rather than an `agent_id` patch through
+/// [`roadmap_update_item`] because the two say different things. A patch records
+/// `edited` with no detail — true, and useless on the card. A hand-off is
+/// provenance: it lands as a `note` naming the agent, read off the `workspaces`
+/// row here so the trail can't disagree with the sidebar.
+///
+/// The status is deliberately untouched. Nothing about this item is queued, so
+/// the drainer never claims it (it picks from `queued` only) — the hand-off *is*
+/// the dispatch, and the user drives it from the agent's chat.
+#[tauri::command]
+pub async fn roadmap_hand_off_item(
+    item_id: String,
+    agent_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<RoadmapItem, String> {
+    let (item, event) = {
+        let conn = db.lock();
+        hand_off(&conn, &item_id, &agent_id)?
+    };
+    emit_item(&app, &item);
+    emit_item_event(&app, &event);
+    Ok(item)
+}
+
+/// The one write behind [`roadmap_hand_off_item`]: stamp the workspace and
+/// record the note in the caller's single lock scope, so an item that says it
+/// was handed off always carries the line explaining when.
+fn hand_off(
+    conn: &Connection,
+    item_id: &str,
+    agent_id: &str,
+) -> Result<(RoadmapItem, ItemEvent), String> {
+    // A name we can't read is not worth failing the hand-off over — the stamp is
+    // the load-bearing half, and the card falls back to the workspace list for
+    // the label anyway.
+    let name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM workspaces WHERE id = ?1",
+            [agent_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let patch = ItemPatch {
+        agent_id: Some(Some(agent_id.to_string())),
+        ..Default::default()
+    };
+    let item = store::update(conn, item_id, &patch)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let detail = match &name {
+        Some(name) => format!("Handed to agent {name}"),
+        None => "Handed to an agent".to_string(),
+    };
+    let event = events::record(
+        conn,
+        &item.id,
+        &item.project_id,
+        EventActor::User,
+        EventKind::Note,
+        Some(&detail),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((item, event))
 }
 
 /// Delete an item. Silent when the row is already gone — the caller's intent
@@ -534,6 +617,52 @@ mod tests {
         };
         let (_, event) = update_and_record(&conn, &it.id, &patch, None).unwrap();
         assert_eq!(event.unwrap().kind, EventKind::Edited);
+    }
+
+    /// `roadmap_get_item`'s one read: a live id returns the row, and an id that
+    /// never existed (or has been deleted) is `None` rather than an error — the
+    /// run monitor's chip renders nothing for an item that left the board.
+    #[test]
+    fn getting_an_item_by_id_finds_it_or_reports_nothing() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        assert_eq!(store::get(&conn, &it.id).unwrap().as_ref(), Some(&it));
+        assert!(store::get(&conn, "no-such-item").unwrap().is_none());
+        store::delete(&conn, &it.id).unwrap();
+        assert!(store::get(&conn, &it.id).unwrap().is_none());
+    }
+
+    /// A hand-off stamps the workspace, leaves the status alone, and records a
+    /// `note` naming the agent — the line the card's trail shows.
+    #[test]
+    fn handing_off_stamps_the_agent_and_names_it_in_history() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO workspaces (id, project_id, name, created_at)
+             VALUES ('w1', 'p1', 'blue-heron', 0)",
+            [],
+        )
+        .unwrap();
+        let it = with_status(&conn, ItemStatus::Open);
+
+        let (item, event) = hand_off(&conn, &it.id, "w1").unwrap();
+        assert_eq!(item.agent_id.as_deref(), Some("w1"));
+        assert_eq!(item.status, ItemStatus::Open);
+        assert_eq!(event.kind, EventKind::Note);
+        assert_eq!(event.actor, EventActor::User);
+        assert_eq!(event.detail.as_deref(), Some("Handed to agent blue-heron"));
+    }
+
+    /// An unknown agent id still stamps (the row is what the drainer and the
+    /// card read); only the label degrades. An unknown *item* is an error —
+    /// there is nothing to hand off.
+    #[test]
+    fn handing_off_degrades_without_a_name_and_refuses_a_dead_item() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let (_, event) = hand_off(&conn, &it.id, "gone").unwrap();
+        assert_eq!(event.detail.as_deref(), Some("Handed to an agent"));
+        assert!(hand_off(&conn, "no-such-item", "gone").is_err());
     }
 
     /// A pending update proposal for a test item, straight through the DAO —

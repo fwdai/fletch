@@ -57,6 +57,12 @@ export interface UiSlice {
   /** Which tab of the project page is showing. Set by whoever opened the
    *  screen, so a control labelled "Project settings" lands on Settings. */
   projectScreenTab: ProjectScreenTab;
+  /** A roadmap item code the board should jump to as soon as it holds it — the
+   *  cross-screen half of "every altitude links back to the one above it" (a
+   *  run's roadmap chip). Consumed and cleared by the board that has the code,
+   *  so it fires once; the board next to the PM chat needs none of this and
+   *  calls `focusItem` directly. */
+  roadmapFocusCode: string | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   /** Show the structured transcript rail beside the native view's terminal.
@@ -106,6 +112,12 @@ export interface UiSlice {
   openProjectScreen: (repoPath: string, tab?: ProjectScreenTab) => void;
   closeProjectScreen: () => void;
   setProjectScreenTab: (tab: ProjectScreenTab) => void;
+  /** Open a project's board with one item focused — expanded, scrolled to and
+   *  ringed. `repoPath` is the project's primary repo (how the screen is keyed);
+   *  the code is picked up by that board on its next render. */
+  focusRoadmapItem: (repoPath: string, code: string) => void;
+  /** Drop a consumed (or abandoned) focus request. */
+  clearRoadmapFocus: () => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   toggleTranscriptRail: () => void;
@@ -138,6 +150,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   selectedHistoryAgentId: null,
   projectScreenRepoPath: null,
   projectScreenTab: "roadmap",
+  roadmapFocusCode: null,
   leftCollapsed: false,
   rightCollapsed: false,
   transcriptRailOpen: true,
@@ -198,9 +211,18 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       // at a time, and a hidden run view shouldn't stay selected.
       settingsScreenOpen: false,
       selectedRunId: null,
+      // A plain open must not inherit someone else's jump request.
+      roadmapFocusCode: null,
     }),
-  closeProjectScreen: () => set({ projectScreenRepoPath: null }),
+  closeProjectScreen: () => set({ projectScreenRepoPath: null, roadmapFocusCode: null }),
   setProjectScreenTab: (tab) => set({ projectScreenTab: tab }),
+  focusRoadmapItem: (repoPath, code) => {
+    // Reuses the open path so the takeover rules stay in one place; the code is
+    // set after, because opening clears any stale request.
+    get().openProjectScreen(repoPath, "roadmap");
+    set({ roadmapFocusCode: code });
+  },
+  clearRoadmapFocus: () => set({ roadmapFocusCode: null }),
   toggleLeft: () =>
     set((s) => {
       const leftCollapsed = !s.leftCollapsed;

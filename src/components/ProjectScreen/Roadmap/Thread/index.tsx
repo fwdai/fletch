@@ -117,7 +117,12 @@ export function Thread({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath:
           onCancel={selected ? () => setComposing(false) : undefined}
         />
       ) : selected ? (
-        <ChatPane key={selected.id} agent={selected} />
+        <ChatPane
+          key={selected.id}
+          agent={selected}
+          codes={roadmap.codes}
+          onCodeClick={roadmap.focusItem}
+        />
       ) : null}
     </section>
   );

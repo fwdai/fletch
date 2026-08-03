@@ -32,8 +32,6 @@ export interface BoardItem {
   accept?: string[];
   /** Codes this item must land after. */
   deps?: string[];
-  /** Agent working it — only meaningful while `status === "active"`. */
-  agent?: string;
   /** The stored row behind this card — what every mutation addresses. */
   item: RoadmapItem;
 }
@@ -51,7 +49,9 @@ export function toBoardItem(item: RoadmapItem): BoardItem {
     area: item.area ?? undefined,
     accept: item.accept.length ? item.accept : undefined,
     deps: item.deps.length ? item.deps : undefined,
-    agent: item.agent_id ?? undefined,
+    // No `agent` field: the row's `agent_id` is an id, and the card needs the
+    // *name*, which only the workspace list knows — it resolves it there (and
+    // renders nothing for an agent that has since been deleted).
     item,
   };
 }

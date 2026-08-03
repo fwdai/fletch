@@ -715,6 +715,7 @@
    state pill — the chips no longer set the row's height, the row does. */
 .rm-state,
 .rm-live,
+.rm-paused,
 .rm-src,
 .rm-area,
 .rm-dep,
@@ -769,13 +770,24 @@
   min-width: 0;
   color: var(--fg-0);
 }
-/* An agent is on this one right now. The label is whatever the queue stamped on
-   the row — an agent id, which can be long — so it is capped and truncated
-   rather than allowed to push the title out of the row. */
+/* An agent is on this one right now. The label is the run's name, else the
+   agent's — both user-facing words, but either can be long, so it is capped and
+   truncated rather than allowed to push the title out of the row. */
 .rm-live {
   gap: 5px;
   max-width: 120px;
   color: var(--fg-2);
+}
+/* The pearl is pulsing but the run is waiting on a person. Warn-toned, because
+   nothing moves until someone acts — the one header chip that is a demand. */
+.rm-paused {
+  padding: 0 8px;
+  max-width: 190px;
+  overflow: hidden;
+  font-weight: 500;
+  border-radius: 999px;
+  color: var(--warn);
+  background: color-mix(in oklch, var(--warn), transparent 88%);
 }
 .rm-live > .truncate {
   min-width: 0;
@@ -985,6 +997,49 @@ button.rm-hist-h:hover {
   min-width: 0;
   color: var(--fg-2);
   text-wrap: pretty;
+}
+
+/* The manual hand-off: an agent the user started is on this item, and the queue
+   isn't driving it. Accent rather than warn — this is a state someone chose, not
+   one that needs attention — and a full-width button, because the whole point is
+   that it goes somewhere. */
+.rm-handoff {
+  width: 100%;
+  gap: 6px;
+  padding: 7px 10px;
+  text-align: left;
+  line-height: var(--lh-snug);
+  color: var(--accent);
+  border-top: 1px solid var(--accent-line);
+  background: color-mix(in oklch, var(--accent), var(--bg-2) 95%);
+}
+.rm-handoff:hover {
+  background: color-mix(in oklch, var(--accent), var(--bg-2) 88%);
+}
+.rm-handoff-t {
+  min-width: 0;
+  color: var(--fg-2);
+}
+.rm-handoff-go {
+  margin-left: auto;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+/* An item code the PM quoted in the chat, rendered as a link to the row on the
+   board beside it (see markdownTokens.ts). Scoped to this pane: the same
+   renderer draws every other chat in the app, and nowhere else has a board to
+   jump to. Sized to sit inside a paragraph without disturbing its line box. */
+.rm-chat .md-chip {
+  padding: 0 4px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--accent), transparent 90%);
+}
+.rm-chat .md-chip:hover {
+  background: color-mix(in oklch, var(--accent), transparent 78%);
 }
 
 /* A proposed row — dashed and tinted until the user accepts it. */

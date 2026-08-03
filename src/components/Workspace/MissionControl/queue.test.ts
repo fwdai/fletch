@@ -91,6 +91,7 @@ function run(over: Partial<WfRun> & { id: string }): WfRun {
     error: null,
     pr_number: null,
     pr_url: null,
+    roadmap_item_id: null,
     created_at: 1,
     updated_at: 1000,
     ...over,

@@ -39,8 +39,10 @@ import {
   type RoadmapItemEvent,
   type RoadmapItemPatch,
   type RoadmapProposal,
+  type WfRun,
 } from "@/api";
 import { useAppStore } from "@/store";
+import { useRuns } from "@/workflows/run/useRuns";
 import { applyBoardEvent, createBoardSync } from "./boardSync";
 import { insertEvent, mergeSnapshot } from "./itemHistory";
 import { PRODUCT_MAP } from "./mockData";
@@ -75,6 +77,10 @@ export function useRoadmap(repoPath: string) {
   // What a queued item will run under. Loaded here rather than in the Board so
   // the item form and the card's queue affordance read the same answer.
   const workflows = useProjectWorkflows(projectId);
+  // The live run rows, from the same `wf:run` stream the sidebar follows — an
+  // `active` card reads its run's status off this rather than polling anything
+  // of its own. Cheap: one list fetch and one subscription, both event-driven.
+  const allRuns = useRuns();
 
   const [rows, setRows] = useState<RoadmapItem[]>([]);
   /** The PM's pending asks against existing items (`roadmap:proposal` +
@@ -317,6 +323,28 @@ export function useRoadmap(repoPath: string) {
     return by as ReadonlyMap<string, RoadmapProposal>;
   }, [proposalRows]);
 
+  /** Every code the board holds, ghosts included — the PM quotes a code the
+   *  moment it proposes one, so a chat chip must resolve before the user has
+   *  ruled on the row.
+   *
+   *  Keyed on the codes themselves rather than on `rows`: the chat re-renders
+   *  every markdown block when this set's identity changes, and a retitle or a
+   *  status flip changes no code. */
+  const codeKey = useMemo(() => [...new Set(rows.map((r) => r.code))].sort().join(" "), [rows]);
+  const codes = useMemo(
+    () => new Set(codeKey ? codeKey.split(" ") : []) as ReadonlySet<string>,
+    [codeKey],
+  );
+
+  /** The runs behind the board's items, by run id — what a card needs to say
+   *  more than "running": the run's name, and why it stopped. Scoped to this
+   *  project so a busy install's other runs never reach a card. */
+  const runsById = useMemo(() => {
+    const by = new Map<string, WfRun>();
+    for (const r of allRuns) if (r.project_id === projectId) by.set(r.id, r);
+    return by as ReadonlyMap<string, WfRun>;
+  }, [allRuns, projectId]);
+
   const counts = useMemo(() => {
     const by: Record<Horizon, number> = { now: 0, next: 0, later: 0 };
     for (const i of items) by[i.horizon] += 1;
@@ -514,7 +542,10 @@ export function useRoadmap(repoPath: string) {
     [loadEvents],
   );
 
-  /** Jump the board to an item and flash it — used by the "on the board" links. */
+  /** Jump the board to an item: switch to the roadmap tab, expand the row,
+   *  scroll it into view (the Board's `focusCode` effect) and ring it for a
+   *  moment. Called from the PM chat's code chips, which sit beside this board,
+   *  and from the cross-screen request below. */
   const focusItem = useCallback(
     (code: string) => {
       setTab("roadmap");
@@ -524,6 +555,20 @@ export function useRoadmap(repoPath: string) {
     },
     [after],
   );
+
+  // A jump asked for from outside this screen — a run's roadmap chip
+  // (`ui.focusRoadmapItem`), which opened the project page and left the code
+  // behind. Consumed only by the board that actually holds the code, and
+  // cleared as it fires: the request is a one-shot, and a board that has just
+  // mounted for a different project must not swallow it.
+  const roadmapFocusCode = useAppStore((s) => s.roadmapFocusCode);
+  const clearRoadmapFocus = useAppStore((s) => s.clearRoadmapFocus);
+  useEffect(() => {
+    if (!roadmapFocusCode) return;
+    if (!rows.some((r) => r.code === roadmapFocusCode)) return;
+    focusItem(roadmapFocusCode);
+    clearRoadmapFocus();
+  }, [roadmapFocusCode, rows, focusItem, clearRoadmapFocus]);
 
   return {
     /** The project this board belongs to; null until the workspace loads, or
@@ -556,6 +601,12 @@ export function useRoadmap(repoPath: string) {
     events,
     /** Pending PM proposals against existing items, by item id. */
     proposals,
+    /** The project's live workflow runs, by run id — an item's `run_id` resolves
+     *  here for the card's pearl label and pause reason. */
+    runsById,
+    /** Every code on this board, for the PM chat's code linkifier — exact
+     *  matches only, because the prefix varies per project. */
+    codes,
     addItem,
     editItem,
     moveItem,

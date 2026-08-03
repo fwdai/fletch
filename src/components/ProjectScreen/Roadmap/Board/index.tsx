@@ -49,6 +49,7 @@ export function Board({
     clearError,
     notes,
     events,
+    runsById,
     addItem,
     editItem,
     removeItems,
@@ -212,6 +213,7 @@ export function Board({
                       focused={focusCode === it.code}
                       note={notes.get(row.id)}
                       events={events.get(row.id)}
+                      run={row.run_id ? runsById.get(row.run_id) : undefined}
                       workflowName={
                         writable
                           ? (workflows.resolve(row.workflow_def_id)?.name ?? null)

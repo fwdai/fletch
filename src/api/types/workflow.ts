@@ -51,6 +51,10 @@ export interface WfRun {
    *  roadmap merge sweep can poll it with the window closed. */
   pr_number: number | null;
   pr_url: string | null;
+  /** The roadmap item this run was dispatched for (migration 0028), or null for
+   *  a run launched by hand. The monitor reads it to show which item the run is
+   *  building, and to link back to the board. */
+  roadmap_item_id: string | null;
   created_at: number;
   updated_at: number;
 }
