@@ -12,6 +12,7 @@ function item(over: Partial<RoadmapItem> = {}): RoadmapItem {
     why: "old why",
     horizon: "later",
     status: "open",
+    rank: 1,
     area: "workflow",
     source: "user",
     accept: ["a", "b"],

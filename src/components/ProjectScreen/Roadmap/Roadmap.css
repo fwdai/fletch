@@ -640,6 +640,81 @@
   border-color: var(--accent);
 }
 
+/* ── the order bar ──
+   The batch bar's grammar for a whole-board ask: same accent ground, same two
+   buttons (reused classes — one pending decision should look like every other),
+   with the proposed sequence as a numbered list underneath. The list is what the
+   user actually rules on, so it is open by default and capped in height rather
+   than hidden behind a disclosure. */
+.rm-order {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 38vh;
+  background: color-mix(in oklch, var(--accent), var(--bg-1) 94%);
+  border-bottom: 1px solid var(--accent-line);
+}
+.rm-order-h {
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 7px 10px 7px var(--rm-gut);
+}
+.rm-order-t {
+  min-width: 0;
+  gap: 6px;
+  color: var(--fg-2);
+  text-align: left;
+}
+.rm-order-l {
+  min-width: 0;
+}
+.rm-order-l strong {
+  font-weight: 600;
+  color: var(--accent);
+}
+.rm-order-n {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.rm-order-chev {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  transition: var(--transition-ui);
+}
+.rm-order-h [aria-expanded="true"] .rm-order-chev {
+  transform: rotate(180deg);
+}
+/* The sequence itself. Numbered by the list, so the position is the browser's
+   count and can never disagree with the order it draws. */
+.rm-order-list {
+  min-height: 0;
+  margin: 0;
+  padding: 0 10px 8px calc(var(--rm-gut) + 16px);
+  overflow-y: auto;
+  color: var(--fg-3);
+}
+.rm-order-list li {
+  gap: 7px;
+  padding: 1px 0;
+  list-style: decimal;
+  font-variant-numeric: tabular-nums;
+}
+/* Only the rows that would move are worth the ink; the rest are context. */
+.rm-order-list li.moved {
+  color: var(--fg-1);
+}
+.rm-order-i {
+  flex-shrink: 0;
+  color: var(--fg-3);
+}
+.rm-order-list li.moved .rm-order-i {
+  color: var(--accent);
+}
+.rm-order-title {
+  min-width: 0;
+}
+
 /* ── horizon group ── */
 .rm-group + .rm-group {
   margin-top: 22px;
@@ -749,6 +824,41 @@
 .rm-item.open {
   border-color: var(--bd);
   box-shadow: var(--shadow-1);
+}
+
+/* ── drag to reorder ──
+   The row is its own handle, and the whole affordance is three quiet states: a
+   grab cursor on what can move, the moving row faded, and a one-pixel accent
+   line on the edge the drop would land at. No lifted card, no shifting
+   placeholder — this list is short and the line already says where. Rows that
+   can't move (`active`, `in_review`) simply have none of it. */
+.rm-item.drag {
+  position: relative;
+  cursor: grab;
+}
+.rm-item.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+.rm-item.drop-before::after,
+.rm-item.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.rm-item.drop-before::after {
+  top: 0;
+}
+.rm-item.drop-after::after {
+  bottom: 0;
+}
+/* Dropping past the last row of a group — and the only way into an empty one. */
+.rm-group-body.dropping {
+  border-left-color: var(--accent);
 }
 /* A fixed height, not padding around whatever chips the row happens to carry:
    otherwise a row with a size tag is a pixel taller than the one above it and

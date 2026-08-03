@@ -15,6 +15,7 @@ import { pausedLabel } from "@/workflows/run/status";
 import { eventLine } from "../itemHistory";
 import { buildProposalDiff, isEmptyDiff } from "../proposalDiff";
 import type { BoardItem, ItemSource, ItemStatus } from "../types";
+import type { CardDnd } from "./useBoardDnd";
 
 /** Where the item came from, as a one-glyph tag. */
 const SOURCE: Record<ItemSource, { icon: IconName; tip: string }> = {
@@ -93,6 +94,9 @@ interface Props {
   events?: RoadmapItemEvent[];
   /** Ring the row: it was just jumped to, or a pending proposal moves it. */
   focused?: boolean;
+  /** Drag-to-reorder wiring, from `useBoardDnd`. Absent on a read-only board and
+   *  for rows nothing can reorder. The card only draws it. */
+  dnd?: CardDnd;
   /** Transient highlight for a row that just landed or just moved. */
   landed?: boolean;
   /** Open this item's form. Absent for a ghost (there is no row to edit yet)
@@ -135,6 +139,7 @@ export function ItemCard({
   workflowName,
   note,
   events,
+  dnd,
   cardRef,
 }: Props) {
   const createDraft = useAppStore((s) => s.createDraft);
@@ -162,12 +167,26 @@ export function ItemCard({
     landed ? "landed" : "",
     focused ? "focus" : "",
     item.status === "queued" ? "queued" : "",
+    // The whole row is the drag handle — a card is a single object, and a
+    // dedicated grip would be a second affordance for one gesture.
+    dnd?.draggable ? "drag" : "",
+    dnd?.dragging ? "dragging" : "",
+    dnd?.edge ? `drop-${dnd.edge}` : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   return (
-    <div ref={cardRef} className={cls}>
+    <div
+      ref={cardRef}
+      className={cls}
+      draggable={dnd?.draggable}
+      onDragStart={dnd?.onDragStart}
+      onDragEnd={dnd?.onDragEnd}
+      onDragOver={dnd?.onDragOver}
+      onDragLeave={dnd?.onDragLeave}
+      onDrop={dnd?.onDrop}
+    >
       <button
         type="button"
         className="rm-item-h flex-center"

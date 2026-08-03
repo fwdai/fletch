@@ -9,10 +9,11 @@
 use super::*;
 use crate::roadmap::types::{Horizon, ItemSource};
 
-/// A queued item, `n` milliseconds into the board's life. `created_at` is what
-/// orders the queue, so the tests set it explicitly rather than relying on
-/// insertion order.
-fn item(code: &str, created_at: i64) -> RoadmapItem {
+/// A queued item at `rank` in the project's priority order. `rank` is what
+/// orders the queue (0032), so the tests set it explicitly rather than relying
+/// on insertion order; timestamps are irrelevant to every decision here and are
+/// left at zero.
+fn item(code: &str, rank: f64) -> RoadmapItem {
     RoadmapItem {
         id: format!("id-{code}"),
         project_id: "p1".into(),
@@ -22,6 +23,7 @@ fn item(code: &str, created_at: i64) -> RoadmapItem {
         why: String::new(),
         horizon: Horizon::Next,
         status: ItemStatus::Queued,
+        rank,
         area: None,
         source: ItemSource::User,
         accept: Vec::new(),
@@ -31,8 +33,8 @@ fn item(code: &str, created_at: i64) -> RoadmapItem {
         run_id: None,
         pr_url: None,
         pr_number: None,
-        created_at,
-        updated_at: created_at,
+        created_at: 0,
+        updated_at: 0,
     }
 }
 
@@ -51,13 +53,15 @@ fn pr(number: Option<i64>) -> FinalizedPr {
 // ───────────────────────────── ordering ─────────────────────────────────
 
 #[test]
-fn the_queue_is_fifo() {
-    // The user queued these in this order; the drainer honours it. Horizon is
-    // deliberately not consulted — a `later` item the user queued outranks a
-    // `now` item they didn't.
-    let mut first = item("FLT-100", 10);
+fn the_queue_follows_rank() {
+    // The slice arrives in the DAO's rank order (`store::list`), which is the
+    // order the board draws — so the head is the item the user dragged to the
+    // top, not the one that happens to be oldest. Horizon is deliberately not
+    // consulted: a `later` item the user queued outranks a `now` item they
+    // didn't.
+    let mut first = item("FLT-101", 1.0);
     first.horizon = Horizon::Later;
-    let mut second = item("FLT-101", 20);
+    let mut second = item("FLT-100", 2.0);
     second.horizon = Horizon::Now;
     let queue = vec![first, second];
 
@@ -76,7 +80,7 @@ fn an_empty_queue_decides_nothing() {
 
 #[test]
 fn a_done_dependency_lets_an_item_through() {
-    let mut it = item("FLT-101", 10);
+    let mut it = item("FLT-101", 10.0);
     it.deps = vec!["FLT-100".into()];
 
     assert_eq!(
@@ -94,7 +98,7 @@ fn a_done_dependency_lets_an_item_through() {
 fn an_in_review_dependency_still_blocks() {
     // `in_review` means the PR is open, not merged: a dependant forked now
     // would build on a tree that doesn't contain the work it depends on.
-    let mut it = item("FLT-101", 10);
+    let mut it = item("FLT-101", 10.0);
     it.deps = vec!["FLT-100".into()];
 
     assert_eq!(
@@ -116,7 +120,7 @@ fn an_in_review_dependency_still_blocks() {
 fn a_dependency_that_no_longer_exists_counts_as_satisfied() {
     // The item it pointed at was deleted off the board, and a deleted item
     // never ships — waiting for it would block this one forever.
-    let mut it = item("FLT-101", 10);
+    let mut it = item("FLT-101", 10.0);
     it.deps = vec!["FLT-100".into()];
 
     assert_eq!(
@@ -128,9 +132,9 @@ fn a_dependency_that_no_longer_exists_counts_as_satisfied() {
 #[test]
 fn a_blocked_head_does_not_block_the_rest_of_the_queue() {
     // Skipped, never failed: FLT-100's turn comes when its dep lands.
-    let mut blocked = item("FLT-100", 10);
+    let mut blocked = item("FLT-100", 10.0);
     blocked.deps = vec!["FLT-099".into()];
-    let ready = item("FLT-101", 20);
+    let ready = item("FLT-101", 20.0);
 
     assert_eq!(
         pick_next(
@@ -145,9 +149,9 @@ fn a_blocked_head_does_not_block_the_rest_of_the_queue() {
 
 #[test]
 fn an_all_blocked_queue_reports_the_head_and_what_it_waits_on() {
-    let mut head = item("FLT-100", 10);
+    let mut head = item("FLT-100", 10.0);
     head.deps = vec!["FLT-098".into(), "FLT-099".into()];
-    let mut tail = item("FLT-101", 20);
+    let mut tail = item("FLT-101", 20.0);
     tail.deps = vec!["FLT-100".into()];
 
     let known = codes(&["FLT-098", "FLT-099", "FLT-100", "FLT-101"]);
@@ -178,7 +182,7 @@ fn unsatisfied_deps_reports_only_the_live_unlanded_ones() {
 
 #[test]
 fn the_cap_holds_the_queue_even_with_a_ready_item() {
-    let ready = item("FLT-100", 10);
+    let ready = item("FLT-100", 10.0);
     assert_eq!(
         pick_next(
             &[ready],
@@ -194,7 +198,7 @@ fn the_cap_holds_the_queue_even_with_a_ready_item() {
 fn capacity_is_checked_before_dependencies() {
     // An at-capacity project says so rather than reporting a dep block the user
     // can't act on — the item may well be unblocked by the time a slot frees.
-    let mut blocked = item("FLT-100", 10);
+    let mut blocked = item("FLT-100", 10.0);
     blocked.deps = vec!["FLT-099".into()];
     assert_eq!(
         pick_next(
@@ -211,7 +215,7 @@ fn capacity_is_checked_before_dependencies() {
 
 #[test]
 fn an_items_own_workflow_wins_over_the_project_default() {
-    let mut it = item("FLT-100", 10);
+    let mut it = item("FLT-100", 10.0);
     it.workflow_def_id = Some("wf-item".into());
     assert_eq!(
         resolve_workflow(&it, Some("wf-default")),
@@ -221,7 +225,7 @@ fn an_items_own_workflow_wins_over_the_project_default() {
 
 #[test]
 fn an_item_without_one_falls_back_to_the_project_default() {
-    let it = item("FLT-100", 10);
+    let it = item("FLT-100", 10.0);
     assert_eq!(
         resolve_workflow(&it, Some("wf-default")),
         Some("wf-default".to_string())
@@ -232,7 +236,7 @@ fn an_item_without_one_falls_back_to_the_project_default() {
 fn no_workflow_anywhere_resolves_to_nothing() {
     // Explicitly not a hardcoded fallback spec: inventing a workflow for work
     // the user queued is worse than asking them to pick one.
-    assert_eq!(resolve_workflow(&item("FLT-100", 10), None), None);
+    assert_eq!(resolve_workflow(&item("FLT-100", 10.0), None), None);
 }
 
 // ───────────────────────────── settlement ───────────────────────────────
@@ -471,7 +475,7 @@ fn a_conditional_verdict_that_misses_records_nothing() {
 #[test]
 fn a_note_repeats_when_the_row_moved_and_stays_quiet_when_it_didnt() {
     let mut said: HashMap<String, SaidNote> = HashMap::new();
-    let blocked = item("FLT-100", 10);
+    let blocked = item("FLT-100", 10.0);
     let note = "Waiting on FLT-099";
 
     // First time it's said, and then it's silent — a permanently blocked item
@@ -497,13 +501,13 @@ fn a_note_repeats_when_the_row_moved_and_stays_quiet_when_it_didnt() {
 
 #[test]
 fn the_brief_carries_the_item_its_criteria_and_its_ancestry() {
-    let mut it = item("FLT-142", 10);
+    let mut it = item("FLT-142", 10.0);
     it.title = "Persist worktree state across restarts".into();
     it.why = "A hard quit loses every checkout binding.".into();
     it.accept = vec!["survives a quit".into(), "orphans are offered".into()];
     it.deps = vec!["FLT-140".into()];
 
-    let mut dep = item("FLT-140", 5);
+    let mut dep = item("FLT-140", 5.0);
     dep.title = "Worktree registry".into();
     dep.status = ItemStatus::Done;
 
@@ -527,7 +531,7 @@ fn the_brief_carries_the_item_its_criteria_and_its_ancestry() {
 fn a_bare_item_still_produces_a_usable_brief() {
     // No why, no criteria, no deps: the run gets the title and the tracking
     // instruction, and no empty headings pretending there's more.
-    let brief = build_brief(&item("FLT-100", 10), &[]);
+    let brief = build_brief(&item("FLT-100", 10.0), &[]);
     assert!(brief.starts_with("FLT-100: do FLT-100"));
     assert!(!brief.contains("Done when:"));
     assert!(!brief.contains("Builds on"));

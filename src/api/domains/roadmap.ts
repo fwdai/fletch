@@ -6,6 +6,7 @@ import type {
   RoadmapItemEvent,
   RoadmapItemPatch,
   RoadmapItemUpdate,
+  RoadmapOrderProposal,
   RoadmapProposal,
 } from "../types/roadmap";
 
@@ -14,8 +15,9 @@ import type {
  *  so callers that already subscribe don't need to refetch after writing —
  *  see `useRoadmap`. */
 export const roadmapApi = {
-  /** Every item on a project's roadmap, oldest first. Includes `done` items:
-   *  the board hides them from the horizons and counts them as shipped. */
+  /** Every item on a project's roadmap in board order — by `rank`, which is also
+   *  the order the queue dispatches in. Includes `done` items: the board hides
+   *  them from the horizons and counts them as shipped. */
   roadmapListItems: (projectId: string) =>
     invoke<RoadmapItem[]>("roadmap_list_items", { projectId }),
   /** One item by id, or `null` when it's gone. For callers that hold an item id
@@ -42,6 +44,12 @@ export const roadmapApi = {
       // Always sent, so the argument is present-and-null rather than absent.
       expectStatus: expectStatus ?? null,
     }),
+  /** Move an item in the project's priority order — the board's drag within a
+   *  horizon group. Bookkeeping, so it writes no history line (a *horizon* move
+   *  is a planning fact and rides `roadmapUpdateItem` with the rank in the same
+   *  patch). Returns the stored row. */
+  roadmapSetRank: (itemId: string, rank: number) =>
+    invoke<RoadmapItem>("roadmap_set_rank", { itemId, rank }),
   /** Record a manual hand-off: this item is being built by an agent the user
    *  spawned themselves ("Send to an agent"). Stamps `agent_id` and writes a
    *  `note` naming the agent; the status is untouched, so the queue still
@@ -68,4 +76,18 @@ export const roadmapApi = {
    *  in its durable history for the PM's next session to see. */
   roadmapRejectProposal: (proposalId: string) =>
     invoke<void>("roadmap_reject_proposal", { proposalId }),
+  /** The project's pending whole-board order ask, or `null`. Fetched with the
+   *  item snapshot; live rows arrive on `roadmap:order-proposal`. */
+  roadmapGetOrderProposal: (projectId: string) =>
+    invoke<RoadmapOrderProposal | null>("roadmap_get_order_proposal", { projectId }),
+  /** Apply the PM's proposed order — ranks the whole sequence 1..n in one
+   *  transaction. Rejects with a message when the board's orderable set changed
+   *  since the ask (an item was claimed, a new one proposed); the stale ask is
+   *  dropped backend-side either way and its removal arrives on
+   *  `roadmap:order-proposal-deleted`. */
+  roadmapAcceptOrderProposal: (projectId: string) =>
+    invoke<void>("roadmap_accept_order_proposal", { projectId }),
+  /** Decline the proposed order — the board is untouched. */
+  roadmapRejectOrderProposal: (projectId: string) =>
+    invoke<void>("roadmap_reject_order_proposal", { projectId }),
 };

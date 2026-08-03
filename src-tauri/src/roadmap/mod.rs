@@ -20,6 +20,10 @@
 //! - `roadmap:item-event` — one durable history row ([`events`]), on every
 //!   status transition. The expanded card renders the trail; `roadmap:item`
 //!   already carries the row itself, so this only carries the *why*.
+//! - `roadmap:proposal` / `roadmap:proposal-deleted` — one item's pending PM
+//!   delta arriving or being ruled on ([`proposals`]).
+//! - `roadmap:order-proposal` / `roadmap:order-proposal-deleted` — the PM's
+//!   whole-board order ask ([`order`]), keyed by project rather than by row.
 //! - `roadmap:queue-note` — transient: why an item isn't moving on its own.
 //!   From [`drainer`] (a queued item's blocker) and [`merge_sweep`] (a PR that
 //!   closed without merging). Nothing persists it; see the drainer's docs.
@@ -37,6 +41,7 @@
 pub mod drainer;
 pub mod events;
 pub mod merge_sweep;
+pub mod order;
 pub mod proposals;
 pub mod store;
 pub mod types;
@@ -48,6 +53,7 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Emitter};
 
 use events::{EventActor, EventKind, ItemEvent};
+use order::OrderProposal;
 use proposals::{Proposal, ProposalKind, ProposalPatch};
 use types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
 
@@ -87,8 +93,21 @@ fn emit_proposal_deleted(app: &AppHandle, id: &str) {
     let _ = app.emit("roadmap:proposal-deleted", id);
 }
 
-/// Every item on a project's roadmap, oldest first. Includes `done` items — the
-/// board hides them from the horizons and counts them as "shipped".
+/// Notify the frontend that the PM parked (or replaced) a whole-board order ask;
+/// carries the full row, so the board's order bar appears mid-conversation.
+pub(crate) fn emit_order_proposal(app: &AppHandle, proposal: &OrderProposal) {
+    let _ = app.emit("roadmap:order-proposal", proposal);
+}
+
+/// Notify the frontend that the order ask is gone — ruled on, or stale.
+/// Addressed by project, because that is the ask's key: one per board.
+fn emit_order_proposal_deleted(app: &AppHandle, project_id: &str) {
+    let _ = app.emit("roadmap:order-proposal-deleted", project_id);
+}
+
+/// Every item on a project's roadmap in board order (`rank`, then `created_at`).
+/// Includes `done` items — the board hides them from the horizons and counts them
+/// as "shipped".
 #[tauri::command]
 pub async fn roadmap_list_items(
     project_id: String,
@@ -233,6 +252,47 @@ fn update_and_record(
             None => Ok((None, None)),
         },
     }
+}
+
+/// Move an item in the project's priority order — the board's drag, landing as
+/// a single fractional rank (see migration 0032).
+///
+/// Its own command rather than a `rank` patch through [`roadmap_update_item`]
+/// because it deliberately writes **no history event**. A rank nudge is
+/// bookkeeping, not a planning fact: it is the same class of write as the
+/// drainer's `run_id` write-back (see [`drainer::write_item`] vs
+/// `write_item_with_event`), and a trail reading "edited" six times because the
+/// user tidied a backlog would bury the lines that matter. A *horizon* move is
+/// a planning fact, so that one rides [`roadmap_update_item`] with the rank in
+/// the same patch and records itself as an edit.
+///
+/// The write is unconditional: the row's status is not what this changes, and
+/// re-ranking an item the drainer claimed a moment ago is harmless — the
+/// drainer reads rank only to pick among `queued` items.
+#[tauri::command]
+pub async fn roadmap_set_rank(
+    item_id: String,
+    rank: f64,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<RoadmapItem, String> {
+    let item = {
+        let conn = db.lock();
+        store::update(
+            &conn,
+            &item_id,
+            &ItemPatch {
+                rank: Some(rank),
+                ..Default::default()
+            },
+        )
+        .map_err(|e| e.to_string())?
+    };
+    let item = item.ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    emit_item(&app, &item);
+    // The queue dispatches in rank order, so the next pick may have changed.
+    drainer::nudge();
+    Ok(item)
 }
 
 /// Record the manual hand-off: the user sent this item to an agent they spawned
@@ -542,6 +602,107 @@ fn reject_proposal(conn: &Connection, proposal_id: &str) -> Result<ItemEvent, St
     .map_err(|e| e.to_string())
 }
 
+/// The project's pending whole-board order ask, if any — the board load's third
+/// companion to [`roadmap_list_items`]; live rows arrive on
+/// `roadmap:order-proposal`.
+#[tauri::command]
+pub async fn roadmap_get_order_proposal(
+    project_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<Option<OrderProposal>, String> {
+    let conn = db.lock();
+    order::get(&conn, &project_id).map_err(|e| e.to_string())
+}
+
+/// What ruling on an order ask did. Same shape as [`Ruling`]: decided under one
+/// lock scope, so the re-validation, the rewrite, and what gets announced can
+/// never disagree.
+enum OrderRuling {
+    /// The sequence was applied; emit every row whose rank moved.
+    Applied(Vec<RoadmapItem>),
+    /// The board's orderable set is no longer the one the PM sequenced — the ask
+    /// was deleted without applying, and the message says what changed.
+    Stale(String),
+}
+
+/// The one write behind [`roadmap_accept_order_proposal`]: re-read the ask and
+/// the board under the caller's lock, re-validate that the sequence is still
+/// *exactly* the orderable set, then rewrite the ranks or drop the stale ask.
+///
+/// Re-validation is not paranoia: an item can be claimed by the drainer, shipped
+/// by the sweep, or newly proposed by the PM between the ask and the click, and
+/// each of those changes what "the whole order" means. Applying a sequence that
+/// no longer covers the board would silently leave the new item's rank behind
+/// everything — the same "a stale ask self-deletes" policy the item deltas use.
+fn accept_order(conn: &Connection, project_id: &str) -> Result<OrderRuling, String> {
+    let proposal = order::get(conn, project_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("this order proposal has already been ruled on")?;
+    let items = store::list(conn, project_id).map_err(|e| e.to_string())?;
+    match order::validate_order(&proposal.codes, &items) {
+        Err(message) => {
+            order::delete(conn, project_id).map_err(|e| e.to_string())?;
+            Ok(OrderRuling::Stale(format!(
+                "the board changed since the PM proposed this order — {message}"
+            )))
+        }
+        Ok(ids) => {
+            // One transaction: a half-applied sequence is an order nobody
+            // proposed. No per-item events — ranks are bookkeeping, exactly as
+            // in [`roadmap_set_rank`].
+            let rows = store::set_ranks(conn, &ids).map_err(|e| e.to_string())?;
+            order::delete(conn, project_id).map_err(|e| e.to_string())?;
+            Ok(OrderRuling::Applied(rows))
+        }
+    }
+}
+
+/// Apply the PM's proposed order — the user's "yes" on the whole sequence. One
+/// lock scope for the ruling; see [`accept_order`]. The ask is consumed on every
+/// path, so the bar clears whether the order landed or went stale.
+#[tauri::command]
+pub async fn roadmap_accept_order_proposal(
+    project_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<(), String> {
+    let ruling = {
+        let conn = db.lock();
+        accept_order(&conn, &project_id)?
+    };
+    emit_order_proposal_deleted(&app, &project_id);
+    match ruling {
+        OrderRuling::Applied(rows) => {
+            for row in &rows {
+                emit_item(&app, row);
+            }
+            // The queue dispatches in rank order, so the next pick has changed.
+            drainer::nudge();
+            Ok(())
+        }
+        OrderRuling::Stale(message) => Err(message),
+    }
+}
+
+/// Decline the PM's proposed order — the board is untouched.
+///
+/// Unlike an item delta's refusal, this writes no history: there is no single
+/// item the refusal is about, and inventing a `note` on every row in the
+/// sequence would bury the lines that matter under bookkeeping.
+#[tauri::command]
+pub async fn roadmap_reject_order_proposal(
+    project_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<(), String> {
+    {
+        let conn = db.lock();
+        order::delete(&conn, &project_id).map_err(|e| e.to_string())?;
+    }
+    emit_order_proposal_deleted(&app, &project_id);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,6 +952,92 @@ mod tests {
         assert_eq!(item_id, it.id);
         assert!(store::get(&conn, &it.id).unwrap().is_none());
         assert!(proposals::get(&conn, &p.id).unwrap().is_none());
+    }
+
+    /// Accepting an order rewrites every orderable row's rank as 1.0, 2.0, …
+    /// in the asked sequence, consumes the ask, and writes no history — a rank
+    /// is bookkeeping, like the drainer's `run_id` write-back.
+    #[test]
+    fn accepting_an_order_renumbers_the_board_and_records_nothing() {
+        let conn = test_conn();
+        let a = with_status(&conn, ItemStatus::Open);
+        let b = with_status(&conn, ItemStatus::Queued);
+        let c = with_status(&conn, ItemStatus::Proposed);
+        order::upsert(
+            &conn,
+            "p1",
+            &[c.code.clone(), a.code.clone(), b.code.clone()],
+            Some("auth first"),
+        )
+        .unwrap();
+
+        let OrderRuling::Applied(rows) = accept_order(&conn, "p1").unwrap() else {
+            panic!("expected Applied");
+        };
+        assert_eq!(
+            rows.iter().map(|r| r.code.as_str()).collect::<Vec<_>>(),
+            vec![c.code.as_str(), a.code.as_str(), b.code.as_str()]
+        );
+        assert_eq!(
+            store::list(&conn, "p1")
+                .unwrap()
+                .iter()
+                .map(|i| i.code.clone())
+                .collect::<Vec<_>>(),
+            vec![c.code.clone(), a.code.clone(), b.code.clone()],
+            "the board (and the drainer's queue) now reads in the accepted order"
+        );
+        for it in [&a, &b, &c] {
+            assert!(
+                events::list_for_item(&conn, &it.id).unwrap().is_empty(),
+                "a reorder is bookkeeping, not history"
+            );
+        }
+        // The ask is consumed; ruling twice is refused rather than replayed.
+        assert!(order::get(&conn, "p1").unwrap().is_none());
+        assert!(accept_order(&conn, "p1").is_err());
+    }
+
+    /// The board moved since the PM sequenced it (the drainer claimed one item,
+    /// and a new ticket arrived): the ask no longer covers the orderable set, so
+    /// it refuses and self-deletes rather than applying a partial order.
+    #[test]
+    fn accepting_a_stale_order_refuses_and_clears() {
+        let conn = test_conn();
+        let a = with_status(&conn, ItemStatus::Queued);
+        let b = with_status(&conn, ItemStatus::Open);
+        order::upsert(&conn, "p1", &[b.code.clone(), a.code.clone()], None).unwrap();
+        // The drainer claimed `a` while the user was reading the ask, and the PM
+        // proposed something new.
+        store::update(&conn, &a.id, &status_patch(ItemStatus::Active)).unwrap();
+        let fresh = with_status(&conn, ItemStatus::Proposed);
+
+        let OrderRuling::Stale(message) = accept_order(&conn, "p1").unwrap() else {
+            panic!("expected Stale");
+        };
+        assert!(message.contains("the board changed"), "{message}");
+        assert!(message.contains(&a.code), "{message}");
+        assert!(order::get(&conn, "p1").unwrap().is_none());
+        // Nothing was renumbered.
+        assert_eq!(store::get(&conn, &b.id).unwrap().unwrap().rank, b.rank);
+        assert_eq!(
+            store::get(&conn, &fresh.id).unwrap().unwrap().rank,
+            fresh.rank
+        );
+    }
+
+    /// Declining leaves the board alone and takes the ask with it. No history:
+    /// there is no one item a whole-board refusal belongs to.
+    #[test]
+    fn rejecting_an_order_drops_the_ask_and_touches_nothing() {
+        let conn = test_conn();
+        let a = with_status(&conn, ItemStatus::Open);
+        order::upsert(&conn, "p1", std::slice::from_ref(&a.code), Some("nope")).unwrap();
+
+        assert!(order::delete(&conn, "p1").unwrap());
+        assert!(order::get(&conn, "p1").unwrap().is_none());
+        assert_eq!(store::get(&conn, &a.id).unwrap().unwrap().rank, a.rank);
+        assert!(events::list_for_item(&conn, &a.id).unwrap().is_empty());
     }
 
     /// Declining leaves the item alone and writes the refusal as a durable

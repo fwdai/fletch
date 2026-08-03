@@ -31,12 +31,20 @@ const FIRST_NUMBER: i64 = 100;
 /// Fallback prefix when a project name yields no usable letters.
 const FALLBACK_PREFIX: &str = "PRJ";
 
-/// Every item on a project's roadmap, oldest first — the order rows were added
-/// within a horizon is the order the board draws them, and it's stable across
-/// edits (unlike `updated_at`, which would make a row jump when it's touched).
+/// Every item on a project's roadmap in *board order* — `rank` first, which is
+/// the explicit priority order the user drags and the PM proposes (0032), then
+/// `created_at, rowid` to break a tie stably.
+///
+/// The same order the drainer dispatches in: it reads its queue through this
+/// function, so the visible order and the dispatch order cannot disagree (see
+/// [`super::drainer::pick_next`]). The tiebreak matters because `rank` has no
+/// uniqueness constraint — two rows can only share a value through a hand-edit
+/// or a fractional split that exhausted the float, and neither may make the
+/// board's order depend on SQLite's scan order.
 pub fn list(conn: &Connection, project_id: &str) -> rusqlite::Result<Vec<RoadmapItem>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM roadmap_items WHERE project_id = ?1 ORDER BY created_at, rowid"
+        "SELECT {COLUMNS} FROM roadmap_items WHERE project_id = ?1 \
+         ORDER BY rank, created_at, rowid"
     ))?;
     let rows = stmt.query_map([project_id], RoadmapItem::from_row)?;
     rows.collect()
@@ -52,17 +60,18 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<RoadmapItem>>
     .optional()
 }
 
-/// Insert an item, allocating its `code`. Defaults: `later` horizon, `open`
-/// status, `user` source.
+/// Insert an item, allocating its `code` and its `rank`. Defaults: `later`
+/// horizon, `open` status, `user` source, last in the priority order.
 pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::Result<RoadmapItem> {
     let id = uuid::Uuid::new_v4().to_string();
     let code = next_code(conn, project_id)?;
+    let rank = next_rank(conn, project_id)?;
     let now = now_millis();
     conn.execute(
         "INSERT INTO roadmap_items
-           (id, project_id, code, parent_id, title, why, horizon, status, area, source,
+           (id, project_id, code, parent_id, title, why, horizon, status, rank, area, source,
             accept_json, deps_json, workflow_def_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
         params![
             id,
             project_id,
@@ -71,6 +80,7 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
             new.why,
             new.horizon.unwrap_or(Horizon::Later).as_str(),
             new.status.unwrap_or(ItemStatus::Open).as_str(),
+            rank,
             new.area,
             new.source.unwrap_or(ItemSource::User).as_str(),
             strings_to_col(&new.accept),
@@ -149,6 +159,9 @@ fn apply(
     }
     if let Some(v) = patch.source {
         set("source", Box::new(v.as_str()));
+    }
+    if let Some(v) = patch.rank {
+        set("rank", Box::new(v));
     }
     if let Some(v) = &patch.accept {
         set("accept_json", Box::new(strings_to_col(v)));
@@ -246,6 +259,47 @@ pub fn next_code(conn: &Connection, project_id: &str) -> rusqlite::Result<String
     Ok(format!("{prefix}-{}", highest + 1))
 }
 
+/// The rank a new item takes: `MAX(rank) + 1` for the project, so anything
+/// added lands *last* in the priority order rather than silently jumping the
+/// queue. `1.0` on an empty board.
+///
+/// Read-max/insert, atomic for the same reason [`next_code`] is: one connection
+/// behind one mutex, held by the caller. Two rows sharing a rank would still
+/// order deterministically (the list query tiebreaks on `created_at, rowid`),
+/// but the drag would have no gap to split.
+pub fn next_rank(conn: &Connection, project_id: &str) -> rusqlite::Result<f64> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(rank), 0.0) + 1.0 FROM roadmap_items WHERE project_id = ?1",
+        [project_id],
+        |r| r.get(0),
+    )
+}
+
+/// Rewrite a whole set of ranks as `1.0, 2.0, …` in the given id order, in one
+/// transaction — the accepted-order path, where the new sequence is the whole
+/// ask and a partially applied one would be an order nobody proposed.
+///
+/// Returns the rewritten rows in their new order, for emitting after the lock
+/// drops. An id that no longer resolves is skipped rather than failing the
+/// batch: the caller has already validated the set, and a row deleted in the
+/// microseconds since is not a reason to refuse the other twelve.
+pub fn set_ranks(conn: &Connection, ids: &[String]) -> rusqlite::Result<Vec<RoadmapItem>> {
+    let tx = conn.unchecked_transaction()?;
+    let now = now_millis();
+    let mut out = Vec::with_capacity(ids.len());
+    for (n, id) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE roadmap_items SET rank = ?1, updated_at = ?2 WHERE id = ?3",
+            params![(n + 1) as f64, now, id],
+        )?;
+        if let Some(row) = get(&tx, id)? {
+            out.push(row);
+        }
+    }
+    tx.commit()?;
+    Ok(out)
+}
+
 /// The numeric tail of a code, if it has one. `"FLT-142"` → `142`.
 fn code_number(code: &str) -> Option<i64> {
     code.rsplit('-').next()?.parse().ok()
@@ -312,6 +366,8 @@ fn derive_prefix(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use rusqlite_migration::{Migrations, M};
+
     use super::*;
     use crate::database::get_migrations;
 
@@ -412,6 +468,127 @@ mod tests {
         )
         .unwrap();
         assert_eq!(create(&conn, &p, &titled("x")).unwrap().code, "FLE-100");
+    }
+
+    /// A new item lands *last* in the priority order — `MAX(rank) + 1`, per
+    /// project, so adding a ticket never jumps the queue.
+    #[test]
+    fn a_new_item_ranks_last_within_its_own_project() {
+        let conn = test_conn();
+        let a = project(&conn, "pa", "alpha");
+        let b = project(&conn, "pb", "beta");
+
+        let first = create(&conn, &a, &titled("one")).unwrap();
+        let second = create(&conn, &a, &titled("two")).unwrap();
+        let other = create(&conn, &b, &titled("theirs")).unwrap();
+        assert_eq!(first.rank, 1.0);
+        assert_eq!(second.rank, 2.0);
+        assert_eq!(other.rank, 1.0, "each project has its own sequence");
+
+        // A drag drops the second item above the first (the midpoint of "before
+        // 1.0" and nothing), and the next new item still lands last.
+        update(
+            &conn,
+            &second.id,
+            &ItemPatch {
+                rank: Some(0.5),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let third = create(&conn, &a, &titled("three")).unwrap();
+        assert_eq!(third.rank, 2.0, "MAX + 1 over what is left");
+        assert_eq!(
+            list(&conn, &a)
+                .unwrap()
+                .iter()
+                .map(|i| i.code.clone())
+                .collect::<Vec<_>>(),
+            vec![second.code, first.code, third.code],
+            "the board draws rank order"
+        );
+    }
+
+    /// The 0032 backfill: rows written before the column existed keep exactly
+    /// the order the board used to draw them (`created_at, rowid`), as 1.0, 2.0,
+    /// … per project. Seeded through raw inserts because that is what a
+    /// pre-migration database holds.
+    #[test]
+    fn the_migration_backfills_existing_rows_in_board_order() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        // Everything up to and including 0031 — the state a shipped install is
+        // in before this slice.
+        let before = crate::database::MIGRATIONS.len() - 1;
+        Migrations::new(
+            crate::database::MIGRATIONS[..before]
+                .iter()
+                .map(|&sql| M::up(sql))
+                .collect(),
+        )
+        .to_latest(&mut conn)
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'one', 0), ('p2', 'two', 0);
+             INSERT INTO roadmap_items (id, project_id, code, title, horizon, status,
+                                        created_at, updated_at) VALUES
+               ('b', 'p1', 'ONE-101', 'second', 'later', 'open', 20, 20),
+               ('a', 'p1', 'ONE-100', 'first',  'later', 'open', 10, 10),
+               ('c', 'p1', 'ONE-102', 'tied',   'later', 'open', 20, 20),
+               ('d', 'p2', 'TWO-100', 'theirs', 'later', 'open', 99, 99);",
+        )
+        .unwrap();
+
+        get_migrations().to_latest(&mut conn).unwrap();
+
+        // Per project, and in the pre-0032 order: `created_at` first, then
+        // insertion order for the two rows that share a timestamp.
+        let ranks: Vec<(String, f64)> = list(&conn, "p1")
+            .unwrap()
+            .iter()
+            .map(|i| (i.id.clone(), i.rank))
+            .collect();
+        assert_eq!(
+            ranks,
+            vec![
+                ("a".to_string(), 1.0),
+                ("b".to_string(), 2.0),
+                ("c".to_string(), 3.0)
+            ]
+        );
+        assert_eq!(list(&conn, "p2").unwrap()[0].rank, 1.0);
+        // And the allocator picks up from the backfilled values.
+        assert_eq!(create(&conn, "p1", &titled("next")).unwrap().rank, 4.0);
+    }
+
+    /// The accepted-order path: one transaction rewrites the whole sequence as
+    /// 1.0, 2.0, …, and hands back the rows in that order.
+    #[test]
+    fn setting_a_whole_sequence_renumbers_it_from_one() {
+        let conn = test_conn();
+        let p = project(&conn, "p1", "fletch");
+        let one = create(&conn, &p, &titled("one")).unwrap();
+        let two = create(&conn, &p, &titled("two")).unwrap();
+        let three = create(&conn, &p, &titled("three")).unwrap();
+
+        let rows = set_ranks(&conn, &[three.id.clone(), one.id.clone(), two.id.clone()]).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.rank).collect::<Vec<_>>(),
+            vec![1.0, 2.0, 3.0]
+        );
+        assert_eq!(
+            list(&conn, &p)
+                .unwrap()
+                .iter()
+                .map(|i| i.id.clone())
+                .collect::<Vec<_>>(),
+            vec![three.id, one.id, two.id]
+        );
+
+        // An id that vanished between validation and the write is skipped, not
+        // fatal — the rest of the sequence still lands.
+        let ghost = "no-such-item".to_string();
+        assert_eq!(set_ranks(&conn, &[ghost]).unwrap().len(), 0);
     }
 
     #[test]

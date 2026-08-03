@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Icon } from "@/components/Icon";
+import type { GroupDnd } from "./useBoardDnd";
 
 /** One horizon section of the board — a labelled header with a right-aligned
  *  count over a rule-anchored stack of rows. */
@@ -9,6 +10,7 @@ export function HorizonGroup({
   count,
   empty,
   onAdd,
+  dnd,
   children,
 }: {
   label: string;
@@ -21,6 +23,10 @@ export function HorizonGroup({
   /** Add an item straight into this horizon — the group is the placement, so
    *  the form opens already knowing it. Omitted on a read-only board. */
   onAdd?: () => void;
+  /** The group as a drop target: dropping anywhere the rows don't cover appends
+   *  to the end of this horizon, which is also the only way into an empty one.
+   *  Absent on a read-only board. */
+  dnd?: GroupDnd;
   children: ReactNode;
 }) {
   return (
@@ -40,7 +46,15 @@ export function HorizonGroup({
           </button>
         )}
       </div>
-      <div className="rm-group-body">
+      {/* The rows' own stack is the drop zone for "past the last one". Not a
+          control: the placement it performs is also reachable from the item
+          form's horizon field, so no keyboard path is lost. */}
+      <div
+        className={`rm-group-body ${dnd?.over ? "dropping" : ""}`}
+        onDragOver={dnd?.onDragOver}
+        onDragLeave={dnd?.onDragLeave}
+        onDrop={dnd?.onDrop}
+      >
         {empty ? <div className="rm-empty text-xs">Nothing here yet.</div> : children}
       </div>
     </section>

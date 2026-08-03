@@ -9,7 +9,9 @@ import { EmptyBoard } from "./EmptyBoard";
 import { HorizonGroup } from "./HorizonGroup";
 import { ItemCard } from "./ItemCard";
 import { ItemDialog } from "./ItemDialog";
+import { OrderProposalBar } from "./OrderProposalBar";
 import { ProductMap } from "./ProductMap";
+import { useBoardDnd } from "./useBoardDnd";
 
 /** What the form is open on: an existing row, or a new one destined for
  *  `horizon` — the group whose "+" was pressed. */
@@ -36,6 +38,8 @@ export function Board({
     items,
     ghosts,
     proposals,
+    orderProposal,
+    orderable,
     map,
     tab,
     setTab,
@@ -56,6 +60,10 @@ export function Board({
     acceptItems,
     acceptProposals,
     rejectProposals,
+    acceptOrder,
+    rejectOrder,
+    moveItem,
+    setRanks,
     queueItems,
     unqueueItems,
     markDone,
@@ -63,6 +71,16 @@ export function Board({
   } = roadmap;
   const selectRun = useAppStore((s) => s.selectRun);
   const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
+
+  // Every row the board draws, in priority order — ghosts included, since a
+  // proposed row has a rank like any other and sits where it would land. One
+  // list, so the drag's arithmetic sees exactly the order the user sees.
+  const drawn = useMemo(
+    () => [...items, ...ghosts].sort((a, b) => a.item.rank - b.item.rank),
+    [items, ghosts],
+  );
+  // Drag-to-reorder; the ranks it computes live in rank.ts.
+  const dnd = useBoardDnd({ rows: drawn.map((i) => i.item), moveItem, setRanks });
 
   const [editing, setEditing] = useState<Editing | null>(null);
   /** The row the form is editing, if it isn't creating one. */
@@ -181,6 +199,20 @@ export function Board({
         </div>
       )}
 
+      {/* The order ask is board-level, like the batch bar above it, and for the
+          same reason: the sequence it proposes spans all three horizons, so no
+          single card can carry it. It goes below the batch bar because a
+          reordering of items the user hasn't accepted yet is the less urgent of
+          the two decisions. */}
+      {tab === "roadmap" && orderProposal && (
+        <OrderProposalBar
+          proposal={orderProposal}
+          orderable={orderable}
+          onAccept={readOnly ? undefined : () => void acceptOrder()}
+          onDecline={readOnly ? undefined : () => void rejectOrder()}
+        />
+      )}
+
       <div className="rm-board-scroll" ref={scroll}>
         {tab === "map" ? (
           <ProductMap map={map} />
@@ -188,19 +220,19 @@ export function Board({
           <EmptyBoard readOnly={readOnly} onAdd={() => openNew("next")} />
         ) : (
           HORIZONS.map((h) => {
-            const real = items.filter((i) => i.horizon === h.id);
             // Proposed additions sit in their target group, so the user sees
             // where a change would land before committing to it — but they
             // don't move the count until they're accepted.
-            const rowsFor = [...real, ...ghosts.filter((i) => i.horizon === h.id)];
+            const rowsFor = drawn.filter((i) => i.horizon === h.id);
             return (
               <HorizonGroup
                 key={h.id}
                 label={h.label}
                 note={h.note}
-                count={real.length}
+                count={rowsFor.filter((i) => i.status !== "proposed").length}
                 empty={rowsFor.length === 0}
                 onAdd={readOnly ? undefined : () => openNew(h.id)}
+                dnd={readOnly ? undefined : dnd.groupDnd(h.id)}
               >
                 {rowsFor.map((it) => {
                   const row = it.item;
@@ -273,6 +305,7 @@ export function Board({
                             }
                           : undefined
                       }
+                      dnd={readOnly ? undefined : dnd.cardDnd(row)}
                       cardRef={(el) => {
                         rows.current[it.code] = el;
                       }}

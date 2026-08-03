@@ -24,6 +24,13 @@
 // and `active → in_review`/`done`/back to `open` when that run settles. This
 // hook never writes those; it only ever asks for `queued`, takes it back, or
 // ships an `in_review` item by hand when the merge sweep can't see the merge.
+//
+// Order is the third thing the two parties share. `rank` (migration 0032) is what
+// the board draws a group by *and* what the drainer dispatches by, so dragging a
+// card up the list moves it up the queue. The user writes it directly (a drag);
+// the PM can only propose a whole new sequence, which arrives here as one
+// board-scoped ask the user accepts or declines — the same suggest-never-commit
+// contract, one altitude up from a single card.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -32,12 +39,15 @@ import {
   onRoadmapItem,
   onRoadmapItemDeleted,
   onRoadmapItemEvent,
+  onRoadmapOrderProposal,
+  onRoadmapOrderProposalDeleted,
   onRoadmapProposal,
   onRoadmapProposalDeleted,
   onRoadmapQueueNote,
   type RoadmapItem,
   type RoadmapItemEvent,
   type RoadmapItemPatch,
+  type RoadmapOrderProposal,
   type RoadmapProposal,
   type WfRun,
 } from "@/api";
@@ -65,6 +75,13 @@ const isOnBoard = (i: RoadmapItem) => i.status !== "done";
  *  in its target horizon, but counted for nothing. */
 const isProposed = (i: RoadmapItem) => i.status === "proposed";
 
+/** Can this row's position in the order be changed — by a drag, or by an
+ *  accepted PM reordering? Everything from `active` on has been dispatched, so
+ *  its place in the queue is settled and moving it would mean nothing (the same
+ *  three statuses the backend's `order::is_orderable` allows). */
+const isOrderable = (i: RoadmapItem) =>
+  i.status === "proposed" || i.status === "open" || i.status === "queued";
+
 export function useRoadmap(repoPath: string) {
   // The board is per project, not per repo: a multi-repo project has one
   // roadmap. Resolved from the pinned-repo list the sidebar already loads.
@@ -89,6 +106,10 @@ export function useRoadmap(repoPath: string) {
    *  subscribe-then-fetch-then-replay sequencer, because the PM parks these
    *  mid-conversation exactly like it proposes ghost rows. */
   const [proposalRows, setProposalRows] = useState<RoadmapProposal[]>([]);
+  /** The PM's pending ask to reorder the whole board, or null. One per project
+   *  (`roadmap:order-proposal`, keyed by project rather than by row), replaced in
+   *  place when the PM changes its mind. */
+  const [orderProposal, setOrderProposal] = useState<RoadmapOrderProposal | null>(null);
   const [loading, setLoading] = useState(true);
   /** The last failure from a mutation with no form of its own to report into
    *  (a move, a delete, an accepted proposal). */
@@ -164,6 +185,7 @@ export function useRoadmap(repoPath: string) {
     if (!projectId) {
       setRows([]);
       setProposalRows([]);
+      setOrderProposal(null);
       setLoading(!workspaceReady);
       return;
     }
@@ -200,6 +222,28 @@ export function useRoadmap(repoPath: string) {
       // Addressed by proposal id; one we don't hold is simply never rendered.
       psync.push({ kind: "delete", id });
     });
+    // The order ask is one row per board, so the list sequencer would be the
+    // wrong shape — but the same two loss windows exist, so the same
+    // subscribe-then-fetch-then-replay discipline applies, collapsed to
+    // "last write wins": anything that arrives during the fetch is remembered
+    // and replayed over the snapshot instead of being clobbered by it.
+    let orderSettled = false;
+    let bufferedOrder: RoadmapOrderProposal | null | undefined;
+    const commitOrder = (p: RoadmapOrderProposal | null) => {
+      if (alive) setOrderProposal(p);
+    };
+    const takeOrder = (p: RoadmapOrderProposal | null) => {
+      if (orderSettled) commitOrder(p);
+      else bufferedOrder = p;
+    };
+    const offOrder = onRoadmapOrderProposal((p) => {
+      if (p.project_id !== projectId) return;
+      takeOrder(p);
+    });
+    const offOrderDeleted = onRoadmapOrderProposalDeleted((id) => {
+      if (id !== projectId) return;
+      takeOrder(null);
+    });
     const offDeleted = onRoadmapItemDeleted((id) => {
       sync.push({ kind: "delete", id });
       dropNote(id);
@@ -231,16 +275,26 @@ export function useRoadmap(repoPath: string) {
     void (async () => {
       // Registration has to be awaited, not just started: an event emitted
       // before `listen` resolves never reaches us at all.
-      await Promise.all([off, offDeleted, offProposal, offProposalDeleted]);
+      await Promise.all([
+        off,
+        offDeleted,
+        offProposal,
+        offProposalDeleted,
+        offOrder,
+        offOrderDeleted,
+      ]);
       if (!alive) return;
       try {
-        const [items, pending] = await Promise.all([
+        const [items, pending, order] = await Promise.all([
           api.roadmapListItems(projectId),
           api.roadmapListProposals(projectId),
+          api.roadmapGetOrderProposal(projectId),
         ]);
         if (!alive) return;
         sync.settle(items);
         psync.settle(pending);
+        orderSettled = true;
+        commitOrder(bufferedOrder !== undefined ? bufferedOrder : order);
         setLoading(false);
       } catch (e) {
         if (!alive) return;
@@ -248,6 +302,8 @@ export function useRoadmap(repoPath: string) {
         // apply instead of piling up in the buffer.
         sync.settle();
         psync.settle();
+        orderSettled = true;
+        if (bufferedOrder !== undefined) commitOrder(bufferedOrder);
         setError(String(e));
         setLoading(false);
       }
@@ -259,6 +315,8 @@ export function useRoadmap(repoPath: string) {
       void offDeleted.then((f) => f());
       void offProposal.then((f) => f());
       void offProposalDeleted.then((f) => f());
+      void offOrder.then((f) => f());
+      void offOrderDeleted.then((f) => f());
       void offEvent.then((f) => f());
       void offNote.then((f) => f());
     };
@@ -352,6 +410,16 @@ export function useRoadmap(repoPath: string) {
     return by as ReadonlyMap<string, WfRun>;
   }, [allRuns, projectId]);
 
+  /** The rows whose position in the order can still change, in priority order —
+   *  what a drag may reorder, and the current order a proposal's preview is
+   *  compared against. Same three statuses the backend's `order::is_orderable`
+   *  allows.
+   *
+   *  Sorted here rather than trusted from the fetch: the snapshot arrives in rank
+   *  order, but a live `roadmap:item` replaces a row *in place*, so a rank the
+   *  user just dragged would otherwise leave the buffer's order stale. */
+  const orderable = useMemo(() => rows.filter(isOrderable).sort((a, b) => a.rank - b.rank), [rows]);
+
   const counts = useMemo(() => {
     const by: Record<Horizon, number> = { now: 0, next: 0, later: 0 };
     for (const i of items) by[i.horizon] += 1;
@@ -393,14 +461,33 @@ export function useRoadmap(repoPath: string) {
     }
   }, []);
 
+  /** Move a card to another horizon, at a given position in the priority order —
+   *  the drag that crosses groups.
+   *
+   *  One patch carrying both, deliberately: a horizon move is a planning fact
+   *  ("this is next, not later"), so it should record itself as an edit in the
+   *  item's history, and the rank it lands at is part of the same gesture. A
+   *  rank move *within* a group is not a planning fact and goes through
+   *  [`setRank`], which writes no history. */
   const moveItem = useCallback(
-    (id: string, to: Horizon) =>
+    (id: string, to: Horizon, rank?: number) =>
       guarded(async () => {
-        const { item } = await api.roadmapUpdateItem(id, { horizon: to });
+        const { item } = await api.roadmapUpdateItem(id, { horizon: to, rank });
         upsert(item);
         markLanded([item.code]);
       }),
     [guarded, markLanded, upsert],
+  );
+
+  /** Move a card within its group — bookkeeping, so no history line. Takes a
+   *  list because the collision fallback rewrites a whole group's ranks (see
+   *  rank.ts); the ordinary drag is one write. */
+  const setRanks = useCallback(
+    (writes: { id: string; rank: number }[]) =>
+      guarded(async () => {
+        for (const w of writes) upsert(await api.roadmapSetRank(w.id, w.rank));
+      }),
+    [guarded, upsert],
   );
 
   /** Delete rows. Also how a proposal is discarded: a suggestion the user turned
@@ -470,8 +557,29 @@ export function useRoadmap(repoPath: string) {
     [guarded],
   );
 
+  /** Apply the PM's proposed order — one ruling for the whole sequence. A stale
+   *  ask (the board's orderable set changed since) is dropped backend-side and
+   *  surfaces here as the error the board's bar shows; the reordered rows arrive
+   *  on `roadmap:item` either way. */
+  const acceptOrder = useCallback(
+    () =>
+      guarded(async () => {
+        if (projectId) await api.roadmapAcceptOrderProposal(projectId);
+      }),
+    [guarded, projectId],
+  );
+
+  /** Decline the proposed order. The board is untouched. */
+  const rejectOrder = useCallback(
+    () =>
+      guarded(async () => {
+        if (projectId) await api.roadmapRejectOrderProposal(projectId);
+      }),
+    [guarded, projectId],
+  );
+
   /** Hand items to the drainer: `open → queued`. From here the Rust side owns
-   *  the item — it picks the oldest queued item whose dependencies have landed,
+   *  the item — it picks the highest-ranked queued item whose deps have landed,
    *  resolves a workflow, and launches a run. Queueing something it can't run
    *  yet is fine and deliberate: it waits, and says why on the card.
    *
@@ -619,6 +727,11 @@ export function useRoadmap(repoPath: string) {
     events,
     /** Pending PM proposals against existing items, by item id. */
     proposals,
+    /** The PM's pending whole-board reordering, or null. */
+    orderProposal,
+    /** Every row whose position can still change, in board order — the drag's
+     *  domain and the order preview's reference. */
+    orderable,
     /** The project's live workflow runs, by run id — an item's `run_id` resolves
      *  here for the card's pearl label and pause reason. */
     runsById,
@@ -628,10 +741,13 @@ export function useRoadmap(repoPath: string) {
     addItem,
     editItem,
     moveItem,
+    setRanks,
     removeItems,
     acceptItems,
     acceptProposals,
     rejectProposals,
+    acceptOrder,
+    rejectOrder,
     queueItems,
     unqueueItems,
     markDone,

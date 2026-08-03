@@ -7,12 +7,13 @@
 //! surface every other agent has (its `AgentCaps::advisory()` still refuses the
 //! publish ops, one mechanism checked once).
 //!
-//! Four ops, all scoped to the project this chat belongs to. The project id is
+//! Five ops, all scoped to the project this chat belongs to. The project id is
 //! stamped at construction from the workspace record, never taken from `args`:
 //! a chat can only ever read and write its own project's board.
 //!
-//! - `roadmap_list` — the whole board, compact, including `done` items (the PM
-//!   needs to know what already shipped before it proposes more).
+//! - `roadmap_list` — the whole board, compact, in board order (which is rank
+//!   order, i.e. dispatch order), including `done` items (the PM needs to know
+//!   what already shipped before it proposes more).
 //! - `roadmap_propose` — creates rows with `status = "proposed"`, `source =
 //!   "pm"`. A proposed row is a *ghost* on the board: it renders where it would
 //!   land, counts for nothing, and only becomes real when the user accepts it
@@ -23,6 +24,11 @@
 //!   ([`crate::roadmap::proposals`], at most one per item, a newer one
 //!   replacing it) that only the user's ruling applies. The PM can reshape the
 //!   board it argued for without ever holding the pen.
+//! - `roadmap_propose_order` — the same contract for the board's *order*: a
+//!   whole-board ask ([`crate::roadmap::order`]) naming every orderable item in
+//!   the sequence the PM argues for. Board scoped rather than item scoped, and
+//!   refused unless it covers the orderable set exactly, so what the user rules
+//!   on is unambiguous.
 //!
 //! Validation rejects the whole batch rather than creating a partial one: the
 //! PM gets one precise error it can fix and retry, and the user never sees half
@@ -36,6 +42,7 @@ use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
 use crate::roadmap::events::{self, EventActor, EventKind, ItemEvent};
+use crate::roadmap::order::{self, OrderProposal};
 use crate::roadmap::proposals::{self, Proposal, ProposalKind, ProposalPatch};
 use crate::roadmap::store;
 use crate::roadmap::types::{Horizon, ItemSource, ItemStatus, NewItem, RoadmapItem};
@@ -46,11 +53,12 @@ use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 /// The ops this dispatcher owns. Pinned by a test against the instruction block
 /// so the two can't drift — an agent told about an op that doesn't exist (or
 /// given one it was never told about) is a silently broken tool.
-pub const OPS: [&str; 4] = [
+pub const OPS: [&str; 5] = [
     "roadmap_list",
     "roadmap_propose",
     "roadmap_propose_update",
     "roadmap_propose_discard",
+    "roadmap_propose_order",
 ];
 
 /// Most items one `roadmap_propose` call may carry. A proposal is a thing a
@@ -127,6 +135,19 @@ struct ProposeDiscardArgs {
     code: String,
     #[serde(default)]
     reason: String,
+}
+
+/// `roadmap_propose_order` args: the whole new sequence, and why. `codes` must
+/// name every orderable item on the board — the refusal says which are missing
+/// or don't belong (see [`order::validate_order`]).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProposeOrderArgs {
+    #[serde(default)]
+    codes: Vec<String>,
+    /// One honest sentence on why this order — the user reads it above the board.
+    #[serde(default)]
+    note: Option<String>,
 }
 
 /// Decode `args` into an op's shape. A missing `args` arrives as JSON null,
@@ -622,6 +643,56 @@ fn propose_discard_op(
     }
 }
 
+// ───────────────────────── roadmap_propose_order ────────────────────────
+
+/// `roadmap_propose_order`: park a whole-board order ask, replacing any the
+/// project already has.
+///
+/// The sequence must be *exactly* the board's orderable set — refused otherwise,
+/// naming what's missing or what doesn't belong. That is what makes the ask mean
+/// one thing: it IS the new backlog order, not a hint about part of one, so the
+/// user can rule on it without reconstructing where the unnamed items went.
+/// Nothing is applied here; the ruling rewrites the ranks.
+fn propose_order_op(
+    conn: &Connection,
+    project_id: &str,
+    id: &str,
+    args: &Value,
+) -> (Response, Option<OrderProposal>) {
+    let err = |msg: String| {
+        (
+            Response::err(id, format!("roadmap_propose_order: {msg}")),
+            None,
+        )
+    };
+    let args: ProposeOrderArgs = match parse_required(args) {
+        Ok(a) => a,
+        Err(e) => return err(e),
+    };
+    let items = match store::list(conn, project_id) {
+        Ok(items) => items,
+        Err(e) => return err(e.to_string()),
+    };
+    let codes = clean_list(&args.codes);
+    // Validated here *and* at ruling time, against the same function: the board
+    // moves while an ask is pending, and the user's click must not apply a
+    // sequence that no longer covers it.
+    if let Err(e) = order::validate_order(&codes, &items) {
+        return err(e);
+    }
+    let note = clean(args.note.as_deref());
+    let stored = match order::upsert(conn, project_id, &codes, note.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return err(e.to_string()),
+    };
+
+    let payload = json!({ "proposed": { "order": codes } });
+    match serde_json::to_string(&payload) {
+        Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(stored)),
+        Err(e) => err(e.to_string()),
+    }
+}
+
 // ───────────────────────────── dispatcher ───────────────────────────────
 
 /// Adds the roadmap ops to a project-manager chat, over the standard git
@@ -703,6 +774,18 @@ impl RpcDispatcher for RoadmapDispatcher {
                     }
                     (resp, Vec::new())
                 }
+                "roadmap_propose_order" => {
+                    // Same lock discipline again; the ask is board-scoped, so
+                    // what is announced is one row keyed by project.
+                    let (resp, stored) = {
+                        let conn = self.db.lock();
+                        propose_order_op(&conn, &self.project_id, id, args)
+                    };
+                    if let (Some(app), Some(p)) = (&self.app, &stored) {
+                        crate::roadmap::emit_order_proposal(app, p);
+                    }
+                    (resp, Vec::new())
+                }
                 other => (
                     Response::err(
                         id,
@@ -775,6 +858,11 @@ mod tests {
     fn propose_discard(db: &Db, args: Value) -> (Response, Option<Proposal>) {
         let conn = db.lock();
         propose_discard_op(&conn, "p1", "r1", &args)
+    }
+
+    fn propose_order(db: &Db, args: Value) -> (Response, Option<OrderProposal>) {
+        let conn = db.lock();
+        propose_order_op(&conn, "p1", "r1", &args)
     }
 
     fn one_item(title: &str) -> Value {
@@ -1101,6 +1189,111 @@ mod tests {
         // And args at all, for both ops.
         assert!(!propose_discard(&db, Value::Null).0.ok);
         assert!(!propose_update(&db, Value::Null).0.ok);
+    }
+
+    #[test]
+    fn propose_order_parks_the_whole_sequence() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("first")).ok); // MCA-100
+        assert!(propose(&db, one_item("second")).ok); // MCA-101
+        assert!(propose(&db, one_item("third")).ok); // MCA-102
+
+        let (resp, stored) = propose_order(
+            &db,
+            json!({"codes": ["MCA-102", "MCA-100", "MCA-101"], "note": "the dep goes first"}),
+        );
+        assert!(resp.ok, "{resp:?}");
+        let out: Value = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        assert_eq!(
+            out["proposed"]["order"],
+            json!(["MCA-102", "MCA-100", "MCA-101"])
+        );
+
+        // Parked, not applied: the board's order is untouched until the user
+        // rules on it.
+        let p = stored.unwrap();
+        assert_eq!(p.codes, vec!["MCA-102", "MCA-100", "MCA-101"]);
+        assert_eq!(p.note.as_deref(), Some("the dep goes first"));
+        let rows = store::list(&db.lock(), "p1").unwrap();
+        assert_eq!(
+            rows.iter().map(|i| i.code.as_str()).collect::<Vec<_>>(),
+            vec!["MCA-100", "MCA-101", "MCA-102"]
+        );
+    }
+
+    #[test]
+    fn propose_order_rejects_anything_but_the_exact_orderable_set() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("first")).ok); // MCA-100
+        assert!(propose(&db, one_item("second")).ok); // MCA-101
+        {
+            // An item already being built: its place in the queue is settled.
+            let conn = db.lock();
+            store::create(
+                &conn,
+                "p1",
+                &NewItem {
+                    title: "building".into(),
+                    status: Some(ItemStatus::Active),
+                    ..Default::default()
+                },
+            )
+            .unwrap(); // MCA-102
+        }
+
+        for (args, needle) in [
+            (json!({"codes": []}), "must list every orderable item"),
+            // Blank entries are trimmed away, which makes this an empty ask.
+            (json!({"codes": ["  "]}), "must list every orderable item"),
+            (json!({"codes": ["MCA-100"]}), "MCA-101"),
+            (
+                json!({"codes": ["MCA-100", "MCA-101", "MCA-999"]}),
+                "not an item on this board",
+            ),
+            (
+                json!({"codes": ["MCA-100", "MCA-101", "MCA-102"]}),
+                "MCA-102 is active",
+            ),
+            (
+                json!({"codes": ["MCA-100", "MCA-100", "MCA-101"]}),
+                "appears twice",
+            ),
+            // A misspelled field would otherwise be silently dropped.
+            (
+                json!({"codes": ["MCA-100", "MCA-101"], "notes": "why"}),
+                "unknown field",
+            ),
+        ] {
+            let (resp, stored) = propose_order(&db, args);
+            assert!(!resp.ok, "should have been rejected");
+            let e = resp.error.unwrap();
+            assert!(e.contains(needle), "expected {needle:?} in {e:?}");
+            assert!(stored.is_none());
+        }
+        // Args at all are required, and nothing above parked an ask.
+        assert!(!propose_order(&db, Value::Null).0.ok);
+        assert!(order::get(&db.lock(), "p1").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_newer_order_ask_replaces_the_pending_one() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("first")).ok); // MCA-100
+        assert!(propose(&db, one_item("second")).ok); // MCA-101
+
+        assert!(
+            propose_order(&db, json!({"codes": ["MCA-100", "MCA-101"]}))
+                .0
+                .ok
+        );
+        let (resp, stored) = propose_order(
+            &db,
+            json!({"codes": ["MCA-101", "MCA-100"], "note": "changed my mind"}),
+        );
+        assert!(resp.ok, "{resp:?}");
+        // One pending ask per board — the user rules on the current position.
+        assert_eq!(order::get(&db.lock(), "p1").unwrap(), stored);
+        assert_eq!(stored.unwrap().codes, vec!["MCA-101", "MCA-100"]);
     }
 
     #[test]
