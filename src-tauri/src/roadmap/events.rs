@@ -167,9 +167,13 @@ pub fn list_for_item(conn: &Connection, item_id: &str) -> rusqlite::Result<Vec<I
 /// `created_at DESC, rowid DESC` [`list_for_item`] uses: two events written in
 /// the same millisecond must resolve to the one written last, not to either.
 pub fn latest_per_item(conn: &Connection, project_id: &str) -> rusqlite::Result<Vec<ItemEvent>> {
+    // `rowid` rides along so the outer ordering can tie-break same-millisecond
+    // writes by write order too — the head of this list is "the newest event
+    // anywhere on the board" (the standup digest reads it), and that must be
+    // one row, not whichever item id sorts first.
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLUMNS} FROM (
-           SELECT {COLUMNS},
+           SELECT {COLUMNS}, rowid AS rid,
                   ROW_NUMBER() OVER (
                     PARTITION BY item_id ORDER BY created_at DESC, rowid DESC
                   ) AS rn
@@ -177,7 +181,7 @@ pub fn latest_per_item(conn: &Connection, project_id: &str) -> rusqlite::Result<
             WHERE project_id = ?1
          )
           WHERE rn = 1
-          ORDER BY created_at DESC, item_id"
+          ORDER BY created_at DESC, rid DESC"
     ))?;
     let rows = stmt.query_map([project_id], ItemEvent::from_row)?;
     rows.collect()
@@ -192,23 +196,6 @@ pub fn latest_by_item(
         .into_iter()
         .map(|e| (e.item_id.clone(), e))
         .collect())
-}
-
-/// The newest event anywhere on a board — "when did this board last move".
-///
-/// The standup digest compares exactly this against the PM chat's last turn: if
-/// nothing has happened since the two of you spoke, there is nothing to
-/// summarize, and asking for a digest anyway trains the user to ignore them.
-pub fn latest_for_project(
-    conn: &Connection,
-    project_id: &str,
-) -> rusqlite::Result<Option<ItemEvent>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM roadmap_item_events WHERE project_id = ?1
-          ORDER BY created_at DESC, rowid DESC LIMIT 1"
-    ))?;
-    let mut rows = stmt.query_map([project_id], ItemEvent::from_row)?;
-    rows.next().transpose()
 }
 
 /// The item's newest event, or `None` for an item with no history yet.
@@ -319,7 +306,7 @@ mod tests {
         let conn = test_conn();
         let a = item(&conn);
         let b = item(&conn);
-        assert!(latest_for_project(&conn, "p1").unwrap().is_none());
+        assert!(latest_per_item(&conn, "p1").unwrap().is_empty());
         assert!(latest_by_item(&conn, "p1").unwrap().is_empty());
 
         for kind in [EventKind::Created, EventKind::Queued, EventKind::Dispatched] {
@@ -337,11 +324,9 @@ mod tests {
 
         let a_head = list_for_item(&conn, &a.id).unwrap()[0].clone();
         assert_eq!(a_head.kind, EventKind::Dispatched);
-        // Board-wide: the newest write anywhere, whichever item it landed on.
-        assert_eq!(
-            latest_for_project(&conn, "p1").unwrap(),
-            Some(b_note.clone())
-        );
+        // Board-wide: the list is newest-first, so its head is the newest write
+        // anywhere — the fact the standup digest reads off element zero.
+        assert_eq!(latest_per_item(&conn, "p1").unwrap().first(), Some(&b_note));
 
         let by_item = latest_by_item(&conn, "p1").unwrap();
         assert_eq!(by_item.len(), 2);
@@ -354,7 +339,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert!(latest_for_project(&conn, "p2").unwrap().is_none());
+        assert!(latest_per_item(&conn, "p2").unwrap().is_empty());
         assert!(latest_by_item(&conn, "p2").unwrap().is_empty());
     }
 

@@ -25,6 +25,7 @@ import {
   onAgentStatus,
   onAgentTask,
   ROADMAP_PM_PURPOSE,
+  type RoadmapItemEvent,
   type UserTurn,
 } from "@/api";
 import { resolveAgentSpawnProfile, resolveBaseBranch } from "@/helpers";
@@ -99,12 +100,16 @@ async function askForStandup(projectId: string, chat: AgentRecord): Promise<void
   const inFlight = checkingStandup.get(projectId);
   if (inFlight) return inFlight;
   const run = (async () => {
-    const [event, turns] = await Promise.all([
-      api.roadmapLatestEvent(projectId).catch(() => null),
+    const [latest, turns] = await Promise.all([
+      // The board-wide newest-per-item read the "Needs you" strip already uses;
+      // its head is the newest event anywhere on the board (an item's latest is
+      // by definition the newest thing said about it), so "has the board moved
+      // since?" needs no dedicated single-row command.
+      api.roadmapLatestEvents(projectId).catch(() => [] as RoadmapItemEvent[]),
       api.readUserTurns(chat.id).catch(() => [] as UserTurn[]),
     ]);
     const ask = shouldAskForStandup({
-      boardMovedAt: event?.created_at ?? null,
+      boardMovedAt: latest[0]?.created_at ?? null,
       chatActiveAt: chatActiveAt(chat, turns),
       freshlySpawned: freshChats.has(chat.id),
       // Re-read after the awaits: another project's check can't have set it, but
