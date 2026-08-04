@@ -11,11 +11,14 @@
 --
 -- A rebuild rather than three ALTER ... DROP COLUMNs because `parent_id`
 -- carries a self-referencing FK, and SQLite refuses to drop a column named in
--- a foreign-key constraint. The migration runner (rusqlite_migration) applies
--- this with foreign-key enforcement off, so the DROP/RENAME below can't
--- cascade into roadmap_item_events/roadmap_proposals rows; their `REFERENCES
--- roadmap_items` clauses resolve against the renamed table again the moment
--- the rename lands, and both operations sit in the same migration transaction.
+-- a foreign-key constraint. `database::init` turns foreign-key enforcement OFF
+-- before running migrations (rusqlite_migration leaves the pragma to its
+-- caller), so the DROP/RENAME below can't cascade into roadmap_item_events/
+-- roadmap_proposals rows; their `REFERENCES roadmap_items` clauses resolve
+-- against the renamed table again the moment the rename lands, and `init`
+-- runs PRAGMA foreign_key_check afterwards to prove nothing dangles. Any
+-- future rebuild migration inherits that guarantee from `init`, not from
+-- anything written here.
 --
 -- Column order matches what 0026 + 0032 (rank) + 0033 (holds) left behind,
 -- minus the three dropped — the row decoder reads by name, but keeping the
