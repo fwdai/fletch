@@ -43,6 +43,11 @@ crate::db_enum! {
     /// What happened. One kind per transition, so a history line never has to
     /// re-derive meaning from a status pair.
     ///
+    /// No variant without a writer: `discarded` was declared and never written —
+    /// discarding an item deletes the row (its history cascades away with it)
+    /// and declining a PM proposal writes a `note` — so it is gone rather than
+    /// left as a kind the frontend must label and nothing produces.
+    ///
     /// `held`/`released` are the odd pair: they name no status move at all (a
     /// hold stops autonomous progress and leaves the row exactly where it is —
     /// see [`super::holds`]), so they are the two kinds where the *detail* is the
@@ -55,7 +60,6 @@ crate::db_enum! {
         Created    => "created",
         Proposed   => "proposed",
         Accepted   => "accepted",
-        Discarded  => "discarded",
         Edited     => "edited",
         Queued     => "queued",
         Unqueued   => "unqueued",
@@ -497,11 +501,10 @@ mod tests {
     /// Every variant, listed once so the pin above can walk them. The `db_enum!`
     /// macro produces no iterator, and a missing entry here would quietly weaken
     /// the pin — so the count is asserted against the frontend's union too.
-    const ALL_KINDS: [EventKind; 16] = [
+    const ALL_KINDS: [EventKind; 15] = [
         EventKind::Created,
         EventKind::Proposed,
         EventKind::Accepted,
-        EventKind::Discarded,
         EventKind::Edited,
         EventKind::Queued,
         EventKind::Unqueued,

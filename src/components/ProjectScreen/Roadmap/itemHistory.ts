@@ -16,7 +16,6 @@ export const EVENT_LABEL: Record<RoadmapEventKind, string> = {
   created: "Created",
   proposed: "Proposed",
   accepted: "Accepted",
-  discarded: "Discarded",
   edited: "Edited",
   queued: "Queued",
   unqueued: "Taken off the queue",
@@ -34,6 +33,19 @@ export const EVENT_LABEL: Record<RoadmapEventKind, string> = {
 /** One history entry as one line: the kind, and the detail when there is one. */
 export function eventLine(e: RoadmapItemEvent): string {
   return e.detail ? `${EVENT_LABEL[e.kind]} — ${e.detail}` : EVENT_LABEL[e.kind];
+}
+
+/** The external URL an entry's detail *is*, or null when it's prose.
+ *
+ *  Some details are addresses rather than sentences — `pr_opened` carries the
+ *  pull request's URL — and a card that renders one as truncated text asks the
+ *  user to copy it out by eye. Only a detail that is nothing but an `https` URL
+ *  qualifies: a reason string that happens to mention a link is still prose, and
+ *  linkifying inside it would need a parser this footnote doesn't deserve. */
+export function eventDetailUrl(e: RoadmapItemEvent): string | null {
+  const detail = e.detail?.trim();
+  if (!detail || /\s/.test(detail) || !detail.startsWith("https://")) return null;
+  return detail;
 }
 
 /** Newest first, ties kept in their existing relative order (the backend

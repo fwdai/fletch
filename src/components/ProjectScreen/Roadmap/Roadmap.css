@@ -26,9 +26,9 @@
 }
 /* `.grow` is scoped per component in this app, not a global utility. */
 .rm-board-h .grow,
+.rm-board-ro .grow,
 .rm-props .grow,
-.rm-ghostbar .grow,
-.rm-propbar .grow,
+.rm-decbar .grow,
 .rm-dialog .modal-foot .grow,
 .rm-composer-wrap .composer-foot .grow {
   flex: 1;
@@ -590,6 +590,34 @@
   color: var(--fg-0);
 }
 
+/* ── the read-only board's way out ──
+   A repo with no project row: the board is readable and nothing on it is
+   writable. Muted rather than warn-toned — nothing is broken, a step is just
+   missing — and it sits in the same band as the error bar so the board's own
+   chrome never moves. */
+.rm-board-ro {
+  flex-shrink: 0;
+  gap: 6px;
+  padding: 8px var(--rm-gut);
+  color: var(--fg-3);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--bd-soft);
+}
+.rm-board-ro-t {
+  min-width: 0;
+  line-height: var(--lh-snug);
+  text-wrap: pretty;
+}
+.rm-board-ro-ok {
+  flex-shrink: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rm-board-ro-ok:hover {
+  color: var(--fg-0);
+}
+
 /* ── the "Needs you" strip ──
    The decisions the pipeline is waiting on, above the batch bar. Same grammar as
    the bars below it (a flat band between the header and the scroller, one accent
@@ -1140,6 +1168,18 @@
 .rm-wf.none {
   color: var(--warn);
 }
+/* "Can't watch this PR": an in-review item whose row has a PR link but no
+   number, so the merge sweep skips it (merge_sweep.rs `pollable`). Warn-toned
+   and sitting in the action row beside "Mark done", because it is a standing
+   instruction to the user, not a transient condition. */
+.rm-unpollable {
+  gap: 4px;
+  flex-shrink: 1;
+  min-width: 0;
+  line-height: var(--lh-snug);
+  text-wrap: pretty;
+  color: var(--warn);
+}
 
 /* The card's durable history (`roadmap:item-event`) — a footnote under the
    expanded body: latest event inline, full trail on disclosure. Everything is
@@ -1189,6 +1229,17 @@ button.rm-hist-h:hover {
   gap: 6px;
   color: var(--fg-3);
   line-height: var(--lh-none);
+}
+/* A history detail that is nothing but a URL — the `pr_opened` line. Underlined
+   rather than coloured: this is a footnote, and an accent link here would outrank
+   the card's own actions. */
+.rm-hist-link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rm-hist-link:hover {
+  color: var(--accent);
 }
 
 /* An item the queue has taken responsibility for. A left rule rather than a
@@ -1254,7 +1305,14 @@ button.rm-hist-h:hover {
 /* The manual hand-off: an agent the user started is on this item, and the queue
    isn't driving it. Accent rather than warn — this is a state someone chose, not
    one that needs attention — and a full-width button, because the whole point is
-   that it goes somewhere. */
+   that it goes somewhere. The undo rides the same band, right-aligned, so the
+   fact and the way out of it are one strip. */
+/* The band carries the edge and the ground; the two buttons inside it carry
+   only their own hover, so neither has to undo the other's border. */
+.rm-handoff-row {
+  border-top: 1px solid var(--accent-line);
+  background: color-mix(in oklch, var(--accent), var(--bg-2) 95%);
+}
 .rm-handoff {
   width: 100%;
   gap: 6px;
@@ -1262,10 +1320,20 @@ button.rm-hist-h:hover {
   text-align: left;
   line-height: var(--lh-snug);
   color: var(--accent);
-  border-top: 1px solid var(--accent-line);
-  background: color-mix(in oklch, var(--accent), var(--bg-2) 95%);
 }
-.rm-handoff:hover {
+.rm-handoff-undo {
+  flex-shrink: 0;
+  padding: 7px 10px 7px 6px;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.rm-handoff-undo:hover {
+  color: var(--fg-1);
+  text-decoration: underline;
+}
+/* Only when it goes somewhere: a hand-off whose agent was deleted renders the
+   same label as a plain span, and a hover state on it would promise a click. */
+button.rm-handoff:hover {
   background: color-mix(in oklch, var(--accent), var(--bg-2) 88%);
 }
 .rm-handoff-t {
@@ -1304,15 +1372,38 @@ button.rm-hist-h:hover {
 .rm-item.ghost .rm-code {
   color: var(--accent);
 }
-/* The decision, always visible on a ghost — collapsed or open. */
-.rm-ghostbar {
+/* ── the decision bar ──
+   One bar for both things a card can be waiting on a ruling for: a proposed row
+   (`ghost` — the row itself is dashed and tinted, so the bar only needs the
+   dashed edge) and a pending PM delta on a real row (`prop` — the row is solid
+   because it *is* on the roadmap, so the decision surface carries the tint
+   instead). Same geometry, same grammar, one 15-line component (DecisionBar.tsx).
+   Always visible, collapsed or open. */
+.rm-decbar {
   gap: 8px;
   padding: 7px 8px 7px 10px;
   border-top: 1px dashed var(--accent-line);
 }
-.rm-ghostbar-l {
+.rm-decbar.prop {
+  background: color-mix(in oklch, var(--accent), var(--bg-2) 95%);
+}
+.rm-decbar-l {
   min-width: 0;
   color: var(--fg-3);
+  line-height: var(--lh-snug);
+}
+.rm-decbar.prop .rm-decbar-l {
+  color: var(--fg-2);
+}
+.rm-decbar-l strong {
+  font-weight: 600;
+  color: var(--accent);
+}
+/* A ghost's whole row is already the news (dashed, tinted, animated in), so its
+   bar states the fact quietly instead of shouting it a second time. */
+.rm-decbar.ghost .rm-decbar-l strong {
+  font-weight: inherit;
+  color: inherit;
 }
 @keyframes rm-ghost-in {
   from {
@@ -1324,25 +1415,9 @@ button.rm-hist-h:hover {
 /* ── a pending PM change on a real row ──
    The ghost grammar applied to a delta: the row itself is real (solid border,
    normal ground — it *is* on the roadmap), so only the decision surfaces are
-   tinted: an accent edge on the card, and the same always-visible bar a ghost
-   carries, holding the ask and its Accept/Decline. */
+   tinted: an accent edge on the card, and the `.rm-decbar.prop` bar above. */
 .rm-item.prop {
   border-color: var(--accent-line);
-}
-.rm-propbar {
-  gap: 8px;
-  padding: 7px 8px 7px 10px;
-  border-top: 1px dashed var(--accent-line);
-  background: color-mix(in oklch, var(--accent), var(--bg-2) 95%);
-}
-.rm-propbar-l {
-  min-width: 0;
-  color: var(--fg-2);
-  line-height: var(--lh-snug);
-}
-.rm-propbar-l strong {
-  font-weight: 600;
-  color: var(--accent);
 }
 
 /* The per-field diff in the expanded body: what the change would do, old value

@@ -158,6 +158,11 @@ export function useRoadmap(repoPath: string) {
    *  ref because the event listener must read the current answer without
    *  resubscribing per expand. */
   const requestedEvents = useRef<Set<string>>(new Set());
+  /** Which board the trails in `events` belong to. Bumped by the load effect on
+   *  every project switch, so a history fetch that resolves after the switch can
+   *  tell that its answer is about someone else's item and drop it — the map is
+   *  reset synchronously there, but an in-flight request isn't. */
+  const eventsGeneration = useRef(0);
 
   // Every pending highlight timer, so unmounting can't set state on a dead
   // component.
@@ -217,8 +222,11 @@ export function useRoadmap(repoPath: string) {
     let alive = true;
     setLoading(true);
     // A new board means new trails: what the previous project's cards loaded
-    // says nothing about this one's items.
+    // says nothing about this one's items. The generation bump is what stops an
+    // already-in-flight `loadEvents` from writing the old board's history into
+    // this map.
     requestedEvents.current = new Set();
+    eventsGeneration.current += 1;
     setEvents(new Map());
     setLatestEvents([]);
 
@@ -317,7 +325,11 @@ export function useRoadmap(repoPath: string) {
 
     void (async () => {
       // Registration has to be awaited, not just started: an event emitted
-      // before `listen` resolves never reaches us at all.
+      // before `listen` resolves never reaches us at all. Every stream whose
+      // loss the user would see is in here — the history rows and the queue
+      // notes included: a note is deduped against the row version it describes
+      // (see the drainer's `say`), so one missed during the load is not resent
+      // and the card is left with no explanation at all.
       await Promise.all([
         off,
         offDeleted,
@@ -330,7 +342,10 @@ export function useRoadmap(repoPath: string) {
         // Awaited too, now that the strip decides from this stream: a `blocked`
         // emitted before registration resolves would otherwise be lost, and the
         // snapshot below can't backfill an event that fired after it was read.
+        // Same for the notes stream — the drainer dedupes per row version, so a
+        // note lost during the load is never resent.
         offEvent,
+        offNote,
       ]);
       if (!alive) return;
       try {
@@ -385,15 +400,21 @@ export function useRoadmap(repoPath: string) {
   const loadEvents = useCallback(async (itemId: string) => {
     if (requestedEvents.current.has(itemId)) return;
     requestedEvents.current.add(itemId);
+    // The board this fetch is for. A project switch resets the map and the
+    // requested set, so a resolution that arrives afterwards is answering a
+    // question about a board nobody is looking at — writing it would put another
+    // project's trail under one of this project's item ids.
+    const generation = eventsGeneration.current;
     try {
       const snapshot = await api.roadmapListItemEvents(itemId);
+      if (eventsGeneration.current !== generation) return;
       setEvents((prev) =>
         new Map(prev).set(itemId, mergeSnapshot(prev.get(itemId) ?? [], snapshot)),
       );
     } catch {
       // History is a footnote: not worth the board's error bar. The card
       // simply has no trail until a later expand succeeds.
-      requestedEvents.current.delete(itemId);
+      if (eventsGeneration.current === generation) requestedEvents.current.delete(itemId);
     }
   }, []);
 
@@ -573,6 +594,19 @@ export function useRoadmap(repoPath: string) {
 
   const clearError = useCallback(() => setError(null), []);
 
+  /** Give this repo a project, so the board it is already showing becomes
+   *  writable. The same entry point the sidebar's "Open a folder" uses
+   *  (`NewProjectPopover` → `addWorkspaceRepo`), minus the folder picker — the
+   *  path is the one this screen is open on. Deliberately not the New Project
+   *  modal: that creates a *different*, brand-new repo, which is not what a user
+   *  looking at this repo's read-only roadmap is asking for. Failures land on the
+   *  store's `lastError` banner, as they do from the sidebar. */
+  const addWorkspaceRepo = useAppStore((s) => s.addWorkspaceRepo);
+  const makeProject = useCallback(
+    () => void addWorkspaceRepo(repoPath),
+    [addWorkspaceRepo, repoPath],
+  );
+
   /** Accept proposed rows: `proposed → open` is the moment a suggestion becomes
    *  a roadmap item. The row (and its code) already exist, so nothing is
    *  re-created and nothing is renumbered — the code the PM quoted in the chat
@@ -719,6 +753,19 @@ export function useRoadmap(repoPath: string) {
     [guarded, upsert],
   );
 
+  /** Take a handed-off item back off its agent — the undo of "Send to an agent".
+   *  Clears `agent_id` and lands a history note naming the agent; the row is then
+   *  the queue's to dispatch again. The backend re-checks the gate (something to
+   *  take back, and nothing dispatched since), so a refusal shows up on the
+   *  board's error bar rather than being swallowed. */
+  const reclaimItem = useCallback(
+    (id: string) =>
+      guarded(async () => {
+        upsert(await api.roadmapReclaimItem(id));
+      }),
+    [guarded, upsert],
+  );
+
   /** Stop the whole board. Runs already in flight still settle — reflecting
    *  reality is not autonomy — so this freezes what *starts*, not what finishes.
    *  The banner and the strip both read the row this returns. */
@@ -824,8 +871,11 @@ export function useRoadmap(repoPath: string) {
     shipped,
     loading,
     /** No project row for this repo — the board can be read but not written,
-     *  so the write affordances stay out of the way. */
+     *  so the write affordances stay out of the way. [`makeProject`] is the way
+     *  out of it. */
     readOnly: workspaceReady && projectId == null,
+    /** Make this repo a project, which is what a read-only board is missing. */
+    makeProject,
     error,
     clearError,
     map: PRODUCT_MAP,
@@ -872,6 +922,7 @@ export function useRoadmap(repoPath: string) {
     rejectOrder,
     queueItems,
     unqueueItems,
+    reclaimItem,
     markDone,
     holdItem,
     releaseItem,

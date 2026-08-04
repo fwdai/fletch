@@ -1671,6 +1671,7 @@ pub fn run() {
             roadmap::roadmap_hold_project,
             roadmap::roadmap_release_project,
             roadmap::roadmap_get_project_hold,
+            roadmap::roadmap_reclaim_item,
             roadmap::roadmap_delete_item,
             roadmap::roadmap_list_item_events,
             roadmap::roadmap_latest_events,

@@ -9,9 +9,9 @@
 //! marshalling, so neither can drift.
 //!
 //! Every function here must be called with the connection mutex held. That is
-//! what makes [`next_code`]'s read-max/insert pair atomic: the app has exactly
-//! one `Connection` behind one `Mutex`, so no second writer can allocate the
-//! same code between the `MAX` and the `INSERT`.
+//! what makes [`next_code`]'s read/bump pair atomic: the app has exactly one
+//! `Connection` behind one `Mutex`, so no second writer can allocate the same
+//! code between reading the counter and bumping it.
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -23,6 +23,11 @@ use crate::database::now_millis;
 /// first allocation so the prefix survives a project rename — the codes already
 /// minted under it don't change, and neither should the next one.
 const PREFIX_KEY: &str = "roadmap.code_prefix";
+
+/// `project_settings` key holding the *next* number a project will mint. Read
+/// and bumped inside the caller's lock scope by [`next_code`], so a number is
+/// issued exactly once, ever — see there for why recycling is not an option.
+const SEQ_KEY: &str = "roadmap.code_seq";
 
 /// Where a project's numbering starts. Three digits from the outset so codes
 /// sort and align in the UI without zero-padding.
@@ -238,17 +243,45 @@ pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 
 /// The next free code for a project ("FLT-142").
 ///
-/// The number is `MAX(existing suffix) + 1`, computed in Rust rather than SQL so
-/// codes that don't match the project's own prefix (an imported `#207`, a
-/// hand-edited row) are skipped instead of poisoning the max. Must be called
-/// with the connection lock held — see the module docs.
+/// The number comes off a persisted per-project counter ([`SEQ_KEY`]), read and
+/// bumped here, so a number is issued **once, ever** — never recycled. Must be
+/// called with the connection lock held, in the same scope as the insert that
+/// consumes it, which is what makes read-and-bump atomic (see the module docs).
 ///
-/// The max is taken over *live* rows, so deleting the highest-numbered item
-/// hands its number back to the next one. That is the accepted cost of keeping
-/// the allocator stateless (no counter to drift from the rows): an item deleted
-/// off the board never shipped, so nothing outside the table quotes its code.
+/// Recycling was the earlier behaviour (`MAX(live suffix) + 1`) and is rejected:
+/// a code outlives its row in places the table can't see. A stored PM proposal
+/// naming `FLT-142` as a dependency would silently rebind to whatever unrelated
+/// item next took that number, and a code the PM quoted in a live transcript
+/// would start pointing somewhere else. A stateless allocator isn't worth
+/// either.
 pub fn next_code(conn: &Connection, project_id: &str) -> rusqlite::Result<String> {
     let prefix = code_prefix(conn, project_id)?;
+    let number = next_number(conn, project_id)?;
+    conn.execute(
+        "INSERT INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3) \
+         ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value",
+        params![project_id, SEQ_KEY, (number + 1).to_string()],
+    )?;
+    Ok(format!("{prefix}-{number}"))
+}
+
+/// The number [`next_code`] will mint: the stored counter, floored by the
+/// highest live code so it can never collide with a row that is already there.
+///
+/// The floor covers the two ways the counter can be behind the table: a project
+/// numbered before the counter existed (no stored value — the floor *is* the
+/// seed), and a row inserted with a hand-written code. `MAX` is computed in Rust
+/// rather than SQL so codes that don't match the project's own prefix (an
+/// imported `#207`) are skipped instead of poisoning it.
+fn next_number(conn: &Connection, project_id: &str) -> rusqlite::Result<i64> {
+    let stored: Option<i64> = conn
+        .query_row(
+            "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
+            params![project_id, SEQ_KEY],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|v| v.trim().parse().ok());
     let mut stmt = conn.prepare("SELECT code FROM roadmap_items WHERE project_id = ?1")?;
     let highest = stmt
         .query_map([project_id], |r| r.get::<_, String>(0))?
@@ -256,15 +289,17 @@ pub fn next_code(conn: &Connection, project_id: &str) -> rusqlite::Result<String
         .filter_map(|c| code_number(&c))
         .max()
         .unwrap_or(FIRST_NUMBER - 1);
-    Ok(format!("{prefix}-{}", highest + 1))
+    Ok(stored.unwrap_or(FIRST_NUMBER).max(highest + 1))
 }
 
 /// The rank a new item takes: `MAX(rank) + 1` for the project, so anything
 /// added lands *last* in the priority order rather than silently jumping the
 /// queue. `1.0` on an empty board.
 ///
-/// Read-max/insert, atomic for the same reason [`next_code`] is: one connection
-/// behind one mutex, held by the caller. Two rows sharing a rank would still
+/// Read-max/insert, atomic for the same reason [`next_code`]'s read/bump is: one
+/// connection behind one mutex, held by the caller. Unlike a code, a rank is not
+/// an identity — reusing one is meaningless, so there is no counter to keep.
+/// Two rows sharing a rank would still
 /// order deterministically (the list query tiebreaks on `created_at, rowid`),
 /// but the drag would have no gap to split.
 pub fn next_rank(conn: &Connection, project_id: &str) -> rusqlite::Result<f64> {
@@ -436,23 +471,57 @@ mod tests {
     }
 
     #[test]
-    fn deleting_an_item_never_renumbers_the_survivors() {
-        // A code is an item's identity — the PM quotes it, and later slices put
-        // it in branch names and PR titles. Removing a neighbour must not move
-        // anyone else's, and the next allocation must not collide with a live
-        // one. (Deleting the *highest* item does free its number back: see
-        // `next_code`.)
+    fn a_number_is_issued_once_ever_even_if_its_item_is_deleted() {
+        // A code is an item's identity — the PM quotes it in a transcript, a
+        // stored proposal names it as a dependency, and later slices put it in
+        // branch names and PR titles. None of those live in this table, so
+        // handing a deleted item's number to a *different* item would silently
+        // rebind every one of them: an accepted dep patch saying "after
+        // FLE-102" would start pointing at work nobody sequenced. Earlier
+        // versions recycled the highest number as a deliberate trade for a
+        // stateless allocator; the trade is rejected — the counter is persisted.
         let conn = test_conn();
         let p = project(&conn, "p1", "fletch");
         let one = create(&conn, &p, &titled("one")).unwrap();
         let two = create(&conn, &p, &titled("two")).unwrap();
         let three = create(&conn, &p, &titled("three")).unwrap();
+        // Both a middle item and the highest one, which is the case the old
+        // `MAX(live) + 1` allocator got wrong.
         assert!(delete(&conn, &two.id).unwrap());
+        assert!(delete(&conn, &three.id).unwrap());
 
         let four = create(&conn, &p, &titled("four")).unwrap();
-        assert_eq!(one.code, "FLE-100");
-        assert_eq!(three.code, "FLE-102", "survivors keep their codes");
-        assert_eq!(four.code, "FLE-103", "and the gap is not backfilled");
+        assert_eq!(one.code, "FLE-100", "survivors keep their codes");
+        assert_eq!(two.code, "FLE-101");
+        assert_eq!(three.code, "FLE-102");
+        assert_eq!(four.code, "FLE-103", "no gap is ever backfilled");
+        // And the counter is where the numbering lives, not the rows.
+        let seq: String = conn
+            .query_row(
+                "SELECT value FROM project_settings WHERE project_id = 'p1' AND key = ?1",
+                [SEQ_KEY],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(seq, "104");
+    }
+
+    #[test]
+    fn a_project_numbered_before_the_counter_existed_picks_up_after_its_rows() {
+        // The seed path: rows minted by the old stateless allocator, and no
+        // stored counter. The first allocation must clear them rather than
+        // collide (there is no UNIQUE constraint to catch it).
+        let conn = test_conn();
+        let p = project(&conn, "p1", "fletch");
+        conn.execute(
+            "INSERT INTO roadmap_items (id, project_id, code, title, horizon, status,
+                                        created_at, updated_at)
+             VALUES ('legacy', 'p1', 'FLE-142', 'from before', 'later', 'open', 0, 0)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(create(&conn, &p, &titled("next")).unwrap().code, "FLE-143");
+        assert_eq!(create(&conn, &p, &titled("after")).unwrap().code, "FLE-144");
     }
 
     #[test]
