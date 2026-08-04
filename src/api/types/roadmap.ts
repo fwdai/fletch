@@ -92,8 +92,13 @@ export type RoadmapEventActor = "user" | "pm" | "drainer" | "sweep";
  *  re-derives meaning from a status pair. No member without a backend writer:
  *  `held`/`released` arrive with the holds slice (B5), and `discarded` is gone
  *  (discarding deletes the row, history and all; declining a PM ask writes a
- *  `note`). */
+ *  `note`).
+ *
+ *  `created` is the user-typed row's opening line, the mirror of the PM's
+ *  `proposed`: without it a hand-built board has no history at all, and every
+ *  "what changed since?" reader calls it unchanged. */
 export type RoadmapEventKind =
+  | "created"
   | "proposed"
   | "accepted"
   | "edited"

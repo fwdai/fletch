@@ -509,6 +509,85 @@ fn a_conditional_verdict_that_misses_records_nothing() {
     assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
 }
 
+// ───────────────────────────── wedged queues ────────────────────────────
+
+/// Give `item` a dep list, straight through the DAO — the write paths refuse a
+/// loop now, so a board that has one is built by hand here.
+fn set_deps(conn: &Connection, item: &RoadmapItem, codes: &[&str]) {
+    store::update(
+        conn,
+        &item.id,
+        &ItemPatch {
+            deps: Some(codes.iter().map(|c| (*c).to_string()).collect()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_wedged_queue_head_records_one_blocked_event_not_one_per_tick() {
+    // Two queued items waiting on each other: neither is ever `done`, so
+    // neither is ever dispatched, and the transient note nobody was watching
+    // was the only trace. That is the durable line `EventKind::Blocked` exists
+    // for — and it must land once, not once every fifteen seconds.
+    let conn = test_conn();
+    let a = db_item(&conn, ItemStatus::Queued);
+    let b = db_item(&conn, ItemStatus::Queued);
+    set_deps(&conn, &a, &[&b.code]);
+    set_deps(&conn, &b, &[&a.code]);
+
+    let Claim::Note {
+        item,
+        text,
+        recorded,
+    } = plan_and_claim(&conn, "p1")
+    else {
+        panic!("expected a note about the wedged head");
+    };
+    assert_eq!(item.id, a.id, "the head of the queue is what's wedged");
+    assert!(
+        text.contains(&format!("{} → {} → {}", a.code, b.code, a.code)),
+        "the loop is named, not just the wait: {text}"
+    );
+    let event = recorded.expect("a blockage that never resolves is durable");
+    assert_eq!(event.kind, EventKind::Blocked);
+    assert_eq!(event.actor, EventActor::Drainer);
+    // One reason string for both channels, as everywhere else in this module.
+    assert_eq!(event.detail.as_deref(), Some(text.as_str()));
+
+    // Next tick, same loop: the note may repeat (it's transient), the row may
+    // not.
+    let Claim::Note { recorded, .. } = plan_and_claim(&conn, "p1") else {
+        panic!("expected a note");
+    };
+    assert!(
+        recorded.is_none(),
+        "a durable line must not repeat per tick"
+    );
+    assert_eq!(events::list_for_item(&conn, &a.id).unwrap().len(), 1);
+}
+
+#[test]
+fn ordinary_dep_waiting_stays_transient() {
+    // The dependency is real work that hasn't landed yet — it will, and then
+    // this item dispatches. Nothing durable, or every queue would grow a
+    // history of "still waiting" lines it re-derives every tick anyway.
+    let conn = test_conn();
+    let dep = db_item(&conn, ItemStatus::Open);
+    let waiting = db_item(&conn, ItemStatus::Queued);
+    set_deps(&conn, &waiting, &[&dep.code]);
+
+    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1") else {
+        panic!("expected a note");
+    };
+    assert_eq!(text, format!("Waiting on {}", dep.code));
+    assert!(recorded.is_none());
+    assert!(events::list_for_item(&conn, &waiting.id)
+        .unwrap()
+        .is_empty());
+}
+
 // ───────────────────────────── note dedup ───────────────────────────────
 
 #[test]

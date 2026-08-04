@@ -69,6 +69,19 @@ export const roadmapApi = {
    *  expand; live rows arrive on `roadmap:item-event`. */
   roadmapListItemEvents: (itemId: string) =>
     invoke<RoadmapItemEvent[]>("roadmap_list_item_events", { itemId }),
+  /** The newest event of every item on a project's board, newest first — one
+   *  read for the board-wide question the "Needs you" strip asks (is this item's
+   *  *latest* word `blocked`?), where the per-item fetch above would be one
+   *  query per card and would miss every card nobody expanded. Fetched with the
+   *  item snapshot; live rows arrive on `roadmap:item-event`. */
+  roadmapLatestEvents: (projectId: string) =>
+    invoke<RoadmapItemEvent[]>("roadmap_latest_events", { projectId }),
+  /** The newest history row anywhere on a project's board, or `null` for a board
+   *  that never moved. One row, not a trail: this answers "has the board changed
+   *  since?" for the standup digest (see `standup.ts`), which compares it against
+   *  the PM chat's last turn. */
+  roadmapLatestEvent: (projectId: string) =>
+    invoke<RoadmapItemEvent | null>("roadmap_latest_event", { projectId }),
   /** Every pending PM proposal on a project's board — fetched with the item
    *  snapshot; live rows arrive on `roadmap:proposal`. */
   roadmapListProposals: (projectId: string) =>
