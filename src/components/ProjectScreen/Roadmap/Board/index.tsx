@@ -5,6 +5,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { NeedsYou } from "../NeedsYou";
 import { HORIZONS } from "../types";
+import { reviewGate } from "../useItemReviews";
 import type { RoadmapState } from "../useRoadmap";
 import { EmptyBoard } from "./EmptyBoard";
 import { HorizonGroup } from "./HorizonGroup";
@@ -56,6 +57,7 @@ export function Board({
     clearError,
     notes,
     events,
+    reviews,
     runsById,
     codes,
     addItem,
@@ -71,6 +73,8 @@ export function Board({
     queueItems,
     unqueueItems,
     markDone,
+    mergeItemPr,
+    sendReviewFeedback,
     workflows,
   } = roadmap;
   const selectRun = useAppStore((s) => s.selectRun);
@@ -269,6 +273,15 @@ export function Board({
                   // run, not the row. `in_review` keeps one manual lever —
                   // "Mark done" — for merges the sweep can't see.
                   const writable = !ghost && !readOnly;
+                  /** What GitHub says about this row's PR, when it's under
+                   *  review and the board's poll has an answer. */
+                  const review = it.status === "in_review" ? reviews.get(row.id) : undefined;
+                  // Both review actions are gated off the same derived verdict
+                  // the card's chip renders, so the card can never offer a merge
+                  // it has just called blocked. Read-only boards get neither: one
+                  // writes to GitHub, the other writes an event.
+                  const gate = review ? reviewGate(review) : null;
+                  const threads = gate?.threads ?? 0;
                   return (
                     <ItemCard
                       key={it.code}
@@ -316,6 +329,15 @@ export function Board({
                       }
                       onMarkDone={
                         writable && it.status === "in_review" ? () => markDone(row.id) : undefined
+                      }
+                      review={review}
+                      onMergePr={
+                        writable && gate?.mergeAllowed ? () => mergeItemPr(row.id) : undefined
+                      }
+                      onFixReview={
+                        writable && review && threads > 0
+                          ? () => sendReviewFeedback(row, review)
+                          : undefined
                       }
                       onOpenRun={row.run_id ? () => openRun(row.run_id as string) : undefined}
                       dnd={readOnly ? undefined : dnd.cardDnd(row)}

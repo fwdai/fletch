@@ -5,6 +5,7 @@ import type {
   RoadmapItem,
   RoadmapItemEvent,
   RoadmapItemPatch,
+  RoadmapItemReview,
   RoadmapItemUpdate,
   RoadmapOrderProposal,
   RoadmapProposal,
@@ -56,6 +57,25 @@ export const roadmapApi = {
    *  doesn't own the item. Returns the stored row. */
   roadmapHandOffItem: (itemId: string, agentId: string) =>
     invoke<RoadmapItem>("roadmap_hand_off_item", { itemId, agentId }),
+  /** One `in_review` item's live review state — the CI rollup, the unresolved
+   *  review threads, and the PR's branch pair. `null` when there is nothing to
+   *  read (not under review, no PR number, no project repo); each field of a
+   *  result degrades on its own. Read-only: polled by the mounted board (see
+   *  `useItemReviews`), writes nothing. */
+  roadmapItemReview: (itemId: string) =>
+    invoke<RoadmapItemReview | null>("roadmap_item_review", { itemId }),
+  /** Merge an in-review item's PR through the same host path the Git panel's
+   *  Merge uses, then nudge the merge sweep so the item ships within a beat.
+   *  The sweep is still what writes `done` — a merge is a request, and only
+   *  GitHub's answer is evidence it landed. Rejects loudly (gate closed, no
+   *  permission, revoked token); the board's error bar shows it. */
+  roadmapMergeItemPr: (itemId: string) => invoke<void>("roadmap_merge_item_pr", { itemId }),
+  /** Record that this item's review feedback went to an agent — the durable
+   *  half of "Fix review feedback". A `note` event only: the item's builder is
+   *  the run that opened the PR, and the fix agent belongs to the PR, so no
+   *  `agent_id` is stamped and the status is untouched. */
+  roadmapNoteReviewFeedback: (itemId: string, threads: number) =>
+    invoke<RoadmapItemEvent>("roadmap_note_review_feedback", { itemId, threads }),
   /** Remove an item from the board. */
   roadmapDeleteItem: (id: string) => invoke<void>("roadmap_delete_item", { id }),
   /** One item's durable history, newest first. Fetched lazily on first card

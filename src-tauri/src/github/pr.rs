@@ -9,8 +9,8 @@ use crate::error::{Error, Result};
 
 use super::client;
 use super::query::{
-    branch_pr_nodes, branch_prs_query, gh_time_ms, graphql_opt, pick_branch_pr, repo_ref,
-    require_current_branch, require_repo_ref, resolve_slug,
+    branch_pr_nodes, branch_prs_query, gh_time_ms, graphql_opt, pick_branch_pr, pr_node_and_viewer,
+    repo_ref, require_current_branch, require_repo_ref, resolve_slug,
 };
 use super::types::*;
 
@@ -308,7 +308,7 @@ pub async fn pr_merge(checkout: &Path) -> Result<()> {
     let branch = require_current_branch(checkout, "pr merge").await?;
 
     let client = client::Client::new()?;
-    let query = branch_prs_query("id isMergeQueueEnabled");
+    let query = branch_prs_query(MERGE_TARGET_FIELDS);
     let data = client
         .graphql(
             &query,
@@ -319,12 +319,50 @@ pub async fn pr_merge(checkout: &Path) -> Result<()> {
     let pr = pick_branch_pr(&nodes)
         .filter(|n| n["state"].as_str() == Some("OPEN"))
         .ok_or_else(|| Error::Gh("no open PR for this branch".into()))?;
-    let id = pr["id"]
-        .as_str()
-        .ok_or_else(|| Error::Gh("no open PR for this branch".into()))?
-        .to_string();
-    let merge_queue = pr["isMergeQueueEnabled"].as_bool().unwrap_or(false);
+    let (id, merge_queue) =
+        merge_target(pr).ok_or_else(|| Error::Gh("no open PR for this branch".into()))?;
+    merge_node(&client, &id, merge_queue).await
+}
 
+/// Merge an open PR addressed by **number** rather than by the checkout's
+/// current branch.
+///
+/// The roadmap board's entry point: an `in_review` item holds a PR number, and
+/// the checkout it resolves `owner/repo` from is the project's primary repo —
+/// which sits on `main`, not on the PR's branch, so [`pr_merge`]'s branch scan
+/// would find no PR (or, worse, someone else's). Everything after "which node
+/// do we merge" is shared with it ([`merge_node`]), so the auto-merge /
+/// merge-queue policy cannot drift between the two doors.
+pub async fn pr_merge_number(checkout: &Path, number: u32) -> Result<()> {
+    let client = client::Client::new()?;
+    // `pr_node_and_viewer` is the by-number read every polling path uses; the
+    // viewer login it also selects is free and simply unused here.
+    let node = pr_node_and_viewer(checkout, None, number, MERGE_TARGET_FIELDS)
+        .await?
+        .map(|(node, _viewer)| node)
+        .filter(|node| node["state"].as_str() == Some("OPEN"))
+        .ok_or_else(|| Error::Gh(format!("PR #{number} is not an open pull request")))?;
+    let (id, merge_queue) = merge_target(&node)
+        .ok_or_else(|| Error::Gh(format!("PR #{number} did not resolve to a mergeable PR")))?;
+    merge_node(&client, &id, merge_queue).await
+}
+
+/// What a merge needs off a PR node: the node id the mutations address, and
+/// whether its base branch has a merge queue.
+const MERGE_TARGET_FIELDS: &str = "id isMergeQueueEnabled";
+
+/// The pair [`MERGE_TARGET_FIELDS`] selects, or `None` when the node carries no
+/// id (a partial GraphQL response — nothing to merge).
+fn merge_target(node: &Value) -> Option<(String, bool)> {
+    let id = node["id"].as_str()?.to_string();
+    Some((id, node["isMergeQueueEnabled"].as_bool().unwrap_or(false)))
+}
+
+/// The merge itself, shared by both doors: enable auto-merge, falling back to an
+/// immediate merge for the two refusals that mean "there is nothing to wait
+/// for" — and never on a merge-queue branch, where a direct merge would skip
+/// the queue's integration checks.
+async fn merge_node(client: &client::Client, id: &str, merge_queue: bool) -> Result<()> {
     let auto = client
         .graphql(
             r#"mutation($id:ID!){
@@ -408,6 +446,24 @@ mod tests {
     fn pr_state_unknown_state_defaults_to_open() {
         let pr = parse_pr_state(&pr_node("SOMETHING_NEW", 3, "MERGEABLE"));
         assert!(matches!(pr.state, PrStatus::Open));
+    }
+
+    /// Both merge doors read their target through this: an id-less node (a
+    /// partial GraphQL response) must refuse rather than merge nothing, and a
+    /// missing `isMergeQueueEnabled` must read as "no queue" — the value that
+    /// *permits* the direct-merge fallback, matching what a repo without the
+    /// feature reports.
+    #[test]
+    fn merge_target_needs_an_id_and_defaults_to_no_queue() {
+        let (id, queue) = merge_target(&json!({"id": "PR_abc"})).expect("id present");
+        assert_eq!(id, "PR_abc");
+        assert!(!queue);
+
+        let (_, queue) = merge_target(&json!({"id": "PR_abc", "isMergeQueueEnabled": true}))
+            .expect("id present");
+        assert!(queue);
+
+        assert!(merge_target(&json!({"isMergeQueueEnabled": false})).is_none());
     }
 
     #[test]

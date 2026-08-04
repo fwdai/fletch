@@ -37,6 +37,40 @@ export interface MergeGate {
   needsUpdate: boolean;
 }
 
+/** Terse phrasing for a situation — the words a chip or a header strip has room
+ *  for ("checks failing", "behind main"). Lives here beside the classification
+ *  because it is the same decision said out loud: two surfaces now render this
+ *  vocabulary (the Git panel's status header and the roadmap card's gate chip),
+ *  and a second copy is how "review required" on one screen becomes "blocked" on
+ *  the other. The PR card's longer sentences stay its own — that is a different
+ *  register, not a second answer.
+ *
+ *  `base` names the branch for the two situations that are *about* the base.
+ *  Callers that don't know it (a board holding a PR number and no checkout) get
+ *  the honest generic word rather than a wrong branch name. */
+export function mergeGateLabel(situation: MergeGateSituation, base = "base"): string {
+  switch (situation) {
+    case "ready":
+      return "ready to merge";
+    case "mergeable-soft":
+      return "optional checks failing";
+    case "checks-failing":
+      return "checks failing";
+    case "review-required":
+      return "review required";
+    case "behind":
+      return `behind ${base}`;
+    case "conflicts":
+      return `conflicts with ${base}`;
+    case "draft":
+      return "draft";
+    case "computing":
+      return "checking…";
+    case "no-conflicts":
+      return "no conflicts";
+  }
+}
+
 export interface MergeGateContext {
   /** Number of failing required checks — splits `blocked` into agent-fixable
    *  (checks failing) vs. a pure review gate. */

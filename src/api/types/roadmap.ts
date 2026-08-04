@@ -7,6 +7,8 @@
 // arrive as real arrays (empty, never null). Nullable columns arrive as `null`,
 // never `undefined`.
 
+import type { PrChecks, PrComments } from "./pr";
+
 /** Where an item sits on the board. `now` is being built, `next` is queued up,
  *  `later` is the backlog. Shipped items leave the board entirely. */
 export type Horizon = "now" | "next" | "later";
@@ -126,6 +128,22 @@ export interface RoadmapItemEvent {
   /** Human-readable payload: a failure reason, a PR url, a workflow id. */
   detail: string | null;
   created_at: number;
+}
+
+/** One `in_review` item's live review state (`roadmap_item_review`, mirroring
+ *  src-tauri/src/roadmap/pr_review.rs).
+ *
+ *  Every field degrades on its own: the CI rollup is a REST read, the threads a
+ *  GraphQL one, the branch pair a third — so `null` always means "nothing to say
+ *  this round" (no token, a rate-limit pause, a deleted PR), never zero. The card
+ *  keeps whatever it last knew rather than claiming a green PR has no checks. */
+export interface RoadmapItemReview {
+  checks: PrChecks | null;
+  comments: PrComments | null;
+  /** The PR's branch — what a fix agent forks from so it works ON the PR. */
+  head_ref: string | null;
+  /** The PR's base branch, so the gate chip names what it is behind. */
+  base_ref: string | null;
 }
 
 /** What a pending PM proposal asks for: patch the item, or remove it. */

@@ -1,6 +1,6 @@
 import type { GitState, MergeState, PrState } from "@/api";
 import type { GitPanelState } from "@/components/RightPanel/primaryActions";
-import { describeMergeGate, type MergeGateTone } from "@/mergeGate";
+import { describeMergeGate, type MergeGateTone, mergeGateLabel } from "@/mergeGate";
 import { ViewOnGitHub } from "./shared";
 
 // ── Color-coded status header ─────────────────────────────────────
@@ -15,22 +15,6 @@ const HEADER_KIND_BY_TONE: Record<MergeGateTone, HeaderKind> = {
   warn: "changes",
   attention: "att",
   info: "info",
-};
-
-/** Terse merge-gate phrasing for the at-a-glance header. */
-const HEADER_TEXT_BY_SITUATION: Record<
-  ReturnType<typeof describeMergeGate>["situation"],
-  (base: string) => string
-> = {
-  ready: () => "ready to merge",
-  "mergeable-soft": () => "optional checks failing",
-  "checks-failing": () => "checks failing",
-  "review-required": () => "review required",
-  behind: (base) => `behind ${base}`,
-  conflicts: (base) => `conflicts with ${base}`,
-  draft: () => "draft",
-  computing: () => "checking…",
-  "no-conflicts": () => "no conflicts",
 };
 
 interface HeaderInfo {
@@ -87,7 +71,7 @@ export function describeHeader(
       return {
         kind: HEADER_KIND_BY_TONE[gate.tone],
         pill,
-        text: HEADER_TEXT_BY_SITUATION[gate.situation](base),
+        text: mergeGateLabel(gate.situation, base),
         ext: true,
       };
     }
