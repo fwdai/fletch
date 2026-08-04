@@ -268,10 +268,12 @@ fn watch_list(db: &Db) -> Vec<Watched> {
 }
 
 /// Poll each watched PR and apply whatever GitHub says. Sequential on purpose:
-/// in-review items *accumulate* — [`drainer::MAX_CONCURRENT_ROADMAP_RUNS`] caps
-/// live runs, not open reviews, and a settled run frees its slot — but the list
-/// only grows as fast as runs finish, and conditional requests make a repeat
-/// read of an unchanged PR nearly free (a 304 isn't billed).
+/// in-review items *accumulate* — [`drainer::concurrency_cap`] caps live runs,
+/// not open reviews, and a settled run frees its slot — but the list only grows as
+/// fast as runs finish, and conditional requests make a repeat read of an
+/// unchanged PR nearly free (a 304 isn't billed). A project that raises its cap
+/// fills this list faster, which is the honest cost of the dial (see the drainer's
+/// docs) rather than a problem this loop has to solve.
 async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
     // One repo path per project per sweep — resolving it is a database read,
     // and every item in a project shares the answer.

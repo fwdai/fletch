@@ -36,7 +36,9 @@ const STATE: Partial<Record<ItemStatus, { label: string; cls: string; tip: strin
   queued: {
     label: "Queued",
     cls: "q",
-    tip: "Waiting for a slot — the queue runs one item per project at a time",
+    // How many slots there are is a per-project dial (Settings → Roadmap), so the
+    // tip talks about slots rather than promising a number it can't see here.
+    tip: "Waiting for a slot — the queue runs as many items at once as this project allows",
   },
   in_review: {
     label: "In review",
@@ -58,8 +60,17 @@ interface Props {
   ghost?: boolean;
   open: boolean;
   onToggle: () => void;
-  /** Accept the proposal (`proposed → open`). Ghosts only, and not read-only. */
+  /** Accept the proposal (`proposed → open`). Ghosts only, and not read-only.
+   *  Where it lands is the project's business, not this card's: with autoqueue on
+   *  it queues (which is why `acceptLabel` changes), and a hold leaves it `open`. */
   onAccept?: () => void;
+  /** Accept *and* queue in one click. Passed only while autoqueue is off — with it
+   *  on, `onAccept` already does this. */
+  onAcceptQueue?: () => void;
+  /** What the two accepts say, from `acceptActions` — so the words the board uses
+   *  and the words this card uses are computed once. */
+  acceptLabel?: string;
+  queueLabel?: string | null;
   /** Discard the proposal — the row is deleted. Ghosts only. */
   onDiscard?: () => void;
   /** The PM's pending ask against this row — a change or a discard the user
@@ -154,6 +165,9 @@ export function ItemCard({
   landed,
   onEdit,
   onAccept,
+  onAcceptQueue,
+  acceptLabel,
+  queueLabel,
   onDiscard,
   proposal,
   onAcceptProposal,
@@ -282,8 +296,11 @@ export function ItemCard({
       {ghost && (onAccept || onDiscard) && (
         <DecisionBar
           label="Proposed — not on the roadmap yet"
+          acceptLabel={acceptLabel}
+          queueLabel={queueLabel}
           declineLabel="Discard"
           onAccept={onAccept}
+          onAcceptQueue={onAcceptQueue}
           onDecline={onDiscard}
         />
       )}

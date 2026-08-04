@@ -625,15 +625,26 @@ export function useRoadmap(repoPath: string) {
    *  a roadmap item. The row (and its code) already exist, so nothing is
    *  re-created and nothing is renumbered — the code the PM quoted in the chat
    *  is the code that stays on the board. The other half of the decision is
-   *  [`removeItems`]. */
+   *  [`removeItems`].
+   *
+   *  `queue` is the "Accept & queue" click: accept and hand it to the drainer in
+   *  one gesture. Where an accept *lands* is decided backend-side, not here — the
+   *  project's autoqueue dial can queue it with `queue` unset, and a hold leaves
+   *  it `open` even with `queue` set (holds trump the dial). So this reads the
+   *  status off the row that comes back rather than assuming one. */
   const acceptItems = useCallback(
-    (ids: string[]) =>
+    (ids: string[], queue = false) =>
       guarded(async () => {
         const codes: string[] = [];
         for (const id of ids) {
           // Conditional like every other status transition: accepting is only
           // meaningful on a row that is still a proposal.
-          const { applied, item } = await api.roadmapUpdateItem(id, { status: "open" }, "proposed");
+          const { applied, item } = await api.roadmapUpdateItem(
+            id,
+            { status: "open" },
+            "proposed",
+            queue,
+          );
           upsert(item);
           if (applied) codes.push(item.code);
         }

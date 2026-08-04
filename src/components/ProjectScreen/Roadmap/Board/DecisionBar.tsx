@@ -18,8 +18,10 @@ export function DecisionBar({
   note,
   variant = "ghost",
   acceptLabel = "Accept",
+  queueLabel,
   declineLabel,
   onAccept,
+  onAcceptQueue,
   onDecline,
 }: {
   /** What is being asked, in a few words ("Proposed — not on the roadmap yet").
@@ -32,8 +34,15 @@ export function DecisionBar({
    *  decision surface stands out from a body that *is* the roadmap). */
   variant?: "ghost" | "prop";
   acceptLabel?: string;
+  /** Label for the second accept, when the caller has one — see `onAcceptQueue`. */
+  queueLabel?: string | null;
   declineLabel: string;
   onAccept?: () => void;
+  /** Accept *and* queue, in one click (a ghost row's `queue: true` accept). Only
+   *  offered while the project's autoqueue dial is off: with it on, `onAccept`
+   *  already queues and this would be the same button twice. Drawn as an outline
+   *  so the plain accept stays the primary — the extra autonomy is the opt-in. */
+  onAcceptQueue?: () => void;
   onDecline?: () => void;
 }) {
   return (
@@ -46,6 +55,11 @@ export function DecisionBar({
       {onDecline && (
         <Button variant="ghost" size="sm" onClick={onDecline}>
           {declineLabel}
+        </Button>
+      )}
+      {onAcceptQueue && queueLabel && (
+        <Button variant="outline" size="sm" onClick={onAcceptQueue}>
+          <Icon name="zap" size={11} /> {queueLabel}
         </Button>
       )}
       {onAccept && (

@@ -24,8 +24,25 @@
 //! 1. **Settles** every `active` item against its run row ([`settle`]), and
 //!    hands each settlement to the project-manager chat as a review turn
 //!    ([`super::review`]) — the loop back up to the agent that wrote the brief.
-//! 2. **Dispatches** at most one queued item ([`pick_next`]), if the project is
-//!    under [`MAX_CONCURRENT_ROADMAP_RUNS`] live roadmap-dispatched runs.
+//! 2. **Dispatches** queued items ([`pick_next`]) until the project is at its
+//!    concurrency cap ([`concurrency_cap`]) or nothing is claimable.
+//!
+//! # The dial
+//!
+//! One run at a time is the *default*, not the design (B3,
+//! .context/roadmap-pm-plan.md): `roadmap.max_concurrent` raises it per project,
+//! and [`MAX_CONCURRENT_ROADMAP_RUNS`] is what an unset dial means. The honest
+//! trade is unchanged by making it settable — N parallel runs on one repo buy
+//! throughput with merge conflicts between their PRs and a review backlog only
+//! the user can clear, and each fork sees a tree without the others' work in it.
+//! So the dial is the user's, it clamps at [`MAX_CONCURRENT_ROADMAP_CEILING`],
+//! and the default keeps a board that was never configured behaving exactly as it
+//! did when the number was a constant.
+//!
+//! Each dispatch inside one tick re-runs the *whole* decision under the
+//! connection lock — the live-run count, the board read, [`dispatchable`],
+//! [`pick_next`] — so raising the cap widens what a tick may do and loosens none
+//! of the gates it does it through.
 //!
 //! # Holds
 //!
@@ -35,6 +52,12 @@
 //! is not autonomy: it is the app noticing that a run it already started has
 //! finished. Refusing to reflect that would leave an `active` card lying about a
 //! run that ended hours ago, which is the opposite of what a brake is for.
+//!
+//! Holds outrank the dial in both directions: a raised cap dispatches more of
+//! what is *already* dispatchable and can't reach a held row, and autoqueue
+//! ([`autoqueue`], read by the accept path in [`super::update_and_record`]) lands
+//! an accepted item `open` rather than `queued` while a hold stands. A hold may
+//! only ever reduce autonomy (invariant 2), so the dial can never override one.
 //!
 //! An item settled into `in_review` leaves the drainer's world entirely —
 //! `projects_with_work` only looks at `queued`/`active`, so a board waiting on
@@ -90,15 +113,24 @@ use super::{deps, emit_item, emit_item_event, holds, store, Db};
 use crate::workflow::spec::{self, Spec};
 use crate::workflow::types::RunStatus;
 
-/// How many roadmap-dispatched runs one project may have in flight at once.
+/// How many roadmap-dispatched runs one project may have in flight when nobody
+/// has said otherwise — the default behind [`MAX_CONCURRENT_KEY`], not a ceiling.
 ///
-/// One, for now. An autonomous queue that opens five PRs into the same repo in
-/// parallel buys throughput with merge conflicts and a review backlog the user
-/// didn't ask for; one run at a time keeps every dispatch reviewable and every
-/// dependency edge meaningful (the next item forks from a tree that includes
-/// the last one). Raising this is a one-line change once the merge sweep can
-/// keep up — nothing else in this module assumes the value is 1.
+/// One, because that is the conservative reading of an autonomous queue: every
+/// dispatch stays reviewable and every dependency edge stays meaningful (the next
+/// item forks from a tree that includes the last one). A project that wants
+/// throughput asks for it explicitly; see the module docs for what it buys and
+/// what it costs.
 pub const MAX_CONCURRENT_ROADMAP_RUNS: usize = 1;
+
+/// The highest cap the dial offers, and the clamp every read applies.
+///
+/// Four, and the limit is not the machine. Parallel runs land parallel pull
+/// requests into **one** repo: past a handful, the merge sweep is serializing
+/// merges that increasingly conflict with each other, and the review bandwidth of
+/// the single human who has to rule on them is the real bottleneck. A number
+/// nobody can keep up with is not more autonomy, it is a backlog.
+pub const MAX_CONCURRENT_ROADMAP_CEILING: usize = 4;
 
 /// How often the drainer wakes on its own. Short enough that a queued item
 /// starts within a moment of its dependency landing, long enough that an idle
@@ -158,7 +190,7 @@ type SaidNotes = Mutex<HashMap<String, SaidNote>>;
 pub(crate) enum Decision {
     /// Nothing queued at all.
     Empty,
-    /// The project is already at [`MAX_CONCURRENT_ROADMAP_RUNS`].
+    /// The project is already at its cap ([`concurrency_cap`]).
     AtCapacity,
     /// Everything queued is waiting on a dependency. Carries the head of the
     /// queue and the codes it waits on, so the caller can say so on the card.
@@ -215,11 +247,12 @@ pub(crate) fn unsatisfied_deps(
 ///   while the hold stands.
 ///
 /// Pure over a board snapshot, so both skips are unit-testable without a
-/// database. **When autoqueue lands (B3, see .context/roadmap-pm-plan.md), it
-/// must dispatch through this filter and the project check in
-/// [`plan_and_claim`]** — a dial that moves `open → queued` on accept would
-/// otherwise walk straight past both brakes, which is exactly the mode holds
-/// exist to make safe.
+/// database. **Autoqueue (B3) dispatches through here, and through the project
+/// check in [`plan_and_claim`], like everything else**: it changes only which
+/// status an accepted item lands in, so an autoqueued row is an ordinary `queued`
+/// row this filter reads exactly as it reads a hand-queued one. It also refuses to
+/// queue a held row at all ([`super::accept_landing`]), which is belt to this
+/// brace — the mode autoqueue creates is the one holds exist to make safe.
 pub(crate) fn dispatchable(items: &[RoadmapItem]) -> Vec<RoadmapItem> {
     items
         .iter()
@@ -235,16 +268,23 @@ pub(crate) fn dispatchable(items: &[RoadmapItem]) -> Vec<RoadmapItem> {
 /// so the item the user dragged to the top is the item this dispatches — and
 /// already stripped of the rows nothing may claim. An item with unsatisfied deps
 /// is *skipped*, never failed — its turn comes when the thing it waits on lands.
+///
+/// `cap` is the project's [`concurrency_cap`], passed in rather than read from a
+/// constant so the whole decision stays pure: one dispatch at cap 1 and up to
+/// four at cap 4 are the *same* rule seen at two settings. Nothing about
+/// parallelism needs new graph logic — deps already serialize dependants, so a
+/// second slot can only ever go to work that was independent anyway.
 pub(crate) fn pick_next(
     queued: &[RoadmapItem],
     live_runs: usize,
+    cap: usize,
     done: &HashSet<String>,
     known: &HashSet<String>,
 ) -> Decision {
     if queued.is_empty() {
         return Decision::Empty;
     }
-    if live_runs >= MAX_CONCURRENT_ROADMAP_RUNS {
+    if live_runs >= cap {
         return Decision::AtCapacity;
     }
     let mut head_block: Option<(String, Vec<String>)> = None;
@@ -437,9 +477,29 @@ async fn tick(
 ) {
     for project_id in projects_with_work(db) {
         settle_project(app, db, &project_id, said);
-        // At most one dispatch per project per tick: the cap is re-read from
-        // the database next tick, so a burst can never exceed it.
-        if let Some(plan) = claim_next(app, db, &project_id, said) {
+        let cap = {
+            let conn = db.lock();
+            concurrency_cap(&conn, &project_id)
+        };
+        // Claim until the project is full or nothing is claimable, and never more
+        // than `cap` times in one tick.
+        //
+        // The bound is the cap for two reasons. It is enough: an idle project can
+        // fill every slot in a single tick, which is what makes a raised dial
+        // felt immediately rather than one item per fifteen seconds. And it is
+        // *needed*: a claim whose launch fails hands its item back to the board
+        // (see [`dispatch`]), so an unbounded loop would burn through a whole
+        // queue of failing dispatches in one tick — at cap 1 that is exactly the
+        // one-attempt-per-tick behaviour this had before the dial existed, kept.
+        //
+        // Sequential, and each iteration re-reads everything under the lock:
+        // `dispatch` is awaited before the next claim, so the run row it inserts
+        // is already counted by the next `live_run_count` and the loop cannot
+        // overshoot by racing itself.
+        for _ in 0..cap {
+            let Some(plan) = claim_next(app, db, &project_id, cap, said) else {
+                break;
+            };
             dispatch(app, db, service, plan).await;
         }
     }
@@ -728,10 +788,16 @@ impl Claim {
 /// Decide what to dispatch for this project and *claim* it. Returns the plan
 /// for a claimed item — already flipped to `active`, so neither a second tick
 /// nor another writer can pick it up.
-fn claim_next(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) -> Option<Plan> {
+fn claim_next(
+    app: &AppHandle,
+    db: &Db,
+    project_id: &str,
+    cap: usize,
+    said: &SaidNotes,
+) -> Option<Plan> {
     let claim = {
         let conn = db.lock();
-        plan_and_claim(&conn, project_id)
+        plan_and_claim(&conn, project_id, cap)
     };
     match claim {
         Claim::Nothing => None,
@@ -768,9 +834,14 @@ fn claim_next(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) -> O
 /// calls this, so a held board still reflects the runs it already started
 /// (see the module docs — settling is not autonomy). A held project says nothing
 /// on the cards either: the reason is one banner above the board, and repeating
-/// it per row would be the same sentence five times. **Autoqueue (B3) must come
-/// through this function**, or it would dispatch straight past this check.
-fn plan_and_claim(conn: &Connection, project_id: &str) -> Claim {
+/// it per row would be the same sentence five times. **Autoqueue comes through
+/// this function** like every other queued row: it writes a status, and this is
+/// still the only thing that turns a status into a run.
+///
+/// `cap` is the project's dial, read once per tick by the caller and re-applied
+/// here on every claim — the *count* it is compared against ([`live_run_count`])
+/// is re-read inside this guard, which is the half that has to be fresh.
+fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
     match holds::get_project(conn, project_id) {
         Ok(Some(hold)) => {
             tracing::debug!(project_id, reason = %hold.reason, "roadmap drainer: project held");
@@ -802,7 +873,7 @@ fn plan_and_claim(conn: &Connection, project_id: &str) -> Claim {
     let queued = dispatchable(&items);
 
     let live = live_run_count(conn, project_id);
-    let item = match pick_next(&queued, live, &done, &known) {
+    let item = match pick_next(&queued, live, cap, &done, &known) {
         Decision::Dispatch(i) => queued[i].clone(),
         Decision::Blocked {
             item_id,
@@ -1062,6 +1133,23 @@ async fn dispatch(
 /// "the workflow this project runs" means one thing on both sides.
 const DEFAULT_WORKFLOW_KEY: &str = "workflow.default";
 
+/// `project_settings` key holding how many roadmap runs this project may have in
+/// flight. Absent (or unreadable) means [`MAX_CONCURRENT_ROADMAP_RUNS`]; every
+/// value is clamped to `1..=`[`MAX_CONCURRENT_ROADMAP_CEILING`]. Written by the
+/// Roadmap section of project settings (`RoadmapSection.tsx`, which mirrors these
+/// spellings).
+const MAX_CONCURRENT_KEY: &str = "roadmap.max_concurrent";
+
+/// `project_settings` key for the autonomy dial's other half: when on, accepting
+/// a proposed item lands it `queued` instead of `open`, so one click is the whole
+/// distance from the PM's suggestion to a running build. Default **off** — the
+/// conservative reading, and the one every existing board already has.
+///
+/// Read by the accept path ([`super::update_and_record`]) rather than by this
+/// module: the dial decides where an accept *lands*, and dispatch then treats the
+/// result as the ordinary `queued` row it is.
+const AUTOQUEUE_KEY: &str = "roadmap.autoqueue";
+
 /// One per-project setting, trimmed, with a blank treated as absent. Shared with
 /// [`super::review`], which reads its own dial the same way.
 pub(super) fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<String> {
@@ -1073,6 +1161,52 @@ pub(super) fn project_setting(conn: &Connection, project_id: &str, key: &str) ->
     .ok()
     .map(|s| s.trim().to_string())
     .filter(|s| !s.is_empty())
+}
+
+/// One per-project boolean dial. `default` is what an absent row means, and also
+/// what an unrecognized value means — a setting nobody can read is not a mandate
+/// in either direction.
+///
+/// Shared by every roadmap dial ([`autoqueue`] here, `roadmap.settle_review` in
+/// [`super::review`]) so "off" is spelled the same way for all of them: whatever
+/// a checkbox writes (`1`/`0`), whatever a hand-edited row plausibly says
+/// (`true`/`false`, `on`/`off`, `yes`/`no`).
+pub(super) fn project_flag(conn: &Connection, project_id: &str, key: &str, default: bool) -> bool {
+    parse_flag(project_setting(conn, project_id, key).as_deref(), default)
+}
+
+/// [`project_flag`]'s rule, without the database.
+pub(crate) fn parse_flag(raw: Option<&str>, default: bool) -> bool {
+    match raw.map(|v| v.to_ascii_lowercase()) {
+        None => default,
+        Some(v) => match v.as_str() {
+            "1" | "true" | "on" | "yes" => true,
+            "0" | "false" | "off" | "no" => false,
+            _ => default,
+        },
+    }
+}
+
+/// Does accepting a proposed item queue it straight away for this project?
+pub(super) fn autoqueue(conn: &Connection, project_id: &str) -> bool {
+    project_flag(conn, project_id, AUTOQUEUE_KEY, false)
+}
+
+/// How many roadmap runs this project may have in flight at once.
+pub(crate) fn concurrency_cap(conn: &Connection, project_id: &str) -> usize {
+    parse_cap(project_setting(conn, project_id, MAX_CONCURRENT_KEY).as_deref())
+}
+
+/// [`concurrency_cap`]'s rule, without the database: parse, clamp, and fall back.
+///
+/// Garbage falls back to the default rather than to zero or to the ceiling. Zero
+/// would stop the queue with no hold to explain it (that is what holds are for,
+/// and they are visible); the ceiling would answer a typo with four parallel runs.
+pub(crate) fn parse_cap(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(MAX_CONCURRENT_ROADMAP_RUNS)
+        .min(MAX_CONCURRENT_ROADMAP_CEILING)
 }
 
 /// Roadmap-dispatched runs still in flight for a project. Human-launched runs
