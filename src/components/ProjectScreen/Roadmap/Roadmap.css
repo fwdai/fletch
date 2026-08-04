@@ -1088,6 +1088,14 @@
 .rm-src.src-pm {
   color: var(--accent);
 }
+/* Tracker-routed rows (the issue funnel): distinct from both the user's quiet
+   neutral and the PM's accent, so provenance reads at a glance. */
+.rm-src.src-github {
+  color: var(--fg-2);
+}
+.rm-src.src-linear {
+  color: var(--info);
+}
 .rm-chev {
   flex-shrink: 0;
   color: var(--fg-3);
