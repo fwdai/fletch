@@ -870,7 +870,18 @@ fn dormant_column_drop_preserves_rows_and_rebinds_references() {
 
     let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
     // Every kept column survived the copy with its value.
-    let row: (String, String, f64, String, String, String, String, i64, String, i64) = conn
+    let row: (
+        String,
+        String,
+        f64,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        i64,
+    ) = conn
         .query_row(
             "SELECT code, title, rank, source, accept_json, deps_json, pr_url, pr_number,
                     hold_reason, held_at
