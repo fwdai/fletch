@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RoadmapItem, RoadmapProposal } from "@/api";
-import { applyBoardEvent, createBoardSync } from "./boardSync";
+import { applyRowEvent, createRowSync } from "./rowSync";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -45,37 +45,34 @@ function store(initial: RoadmapItem[] = []) {
   };
 }
 
-// ── applyBoardEvent ───────────────────────────────────────────────────────────
+// ── applyRowEvent ───────────────────────────────────────────────────────────
 
-describe("applyBoardEvent", () => {
+describe("applyRowEvent", () => {
   it("appends an unseen row and replaces a known one by id", () => {
     const a = item({ id: "a" });
     const b = item({ id: "b" });
-    const appended = applyBoardEvent([a], { kind: "upsert", row: b });
+    const appended = applyRowEvent([a], { kind: "upsert", row: b });
     expect(appended.map((r) => r.id)).toEqual(["a", "b"]);
 
     const renamed = item({ id: "a", title: "Renamed" });
-    const replaced = applyBoardEvent(appended, { kind: "upsert", row: renamed });
+    const replaced = applyRowEvent(appended, { kind: "upsert", row: renamed });
     expect(replaced.map((r) => r.id)).toEqual(["a", "b"]);
     expect(replaced[0].title).toBe("Renamed");
   });
 
   it("drops the row a delete names and leaves the rest alone", () => {
     const rows = [item({ id: "a" }), item({ id: "b" })];
-    expect(applyBoardEvent(rows, { kind: "delete", id: "a" }).map((r) => r.id)).toEqual(["b"]);
-    expect(applyBoardEvent(rows, { kind: "delete", id: "zzz" }).map((r) => r.id)).toEqual([
-      "a",
-      "b",
-    ]);
+    expect(applyRowEvent(rows, { kind: "delete", id: "a" }).map((r) => r.id)).toEqual(["b"]);
+    expect(applyRowEvent(rows, { kind: "delete", id: "zzz" }).map((r) => r.id)).toEqual(["a", "b"]);
   });
 });
 
-// ── createBoardSync ───────────────────────────────────────────────────────────
+// ── createRowSync ───────────────────────────────────────────────────────────
 
-describe("createBoardSync", () => {
+describe("createRowSync", () => {
   it("buffers events arriving before the snapshot instead of dropping them", () => {
     const s = store();
-    const sync = createBoardSync(s.commit);
+    const sync = createRowSync(s.commit);
 
     // The PM proposes a row while the fetch is still in flight.
     sync.push({ kind: "upsert", row: item({ id: "ghost", status: "proposed" }) });
@@ -87,7 +84,7 @@ describe("createBoardSync", () => {
 
   it("replays the buffer in arrival order, upserts and deletes interleaved", () => {
     const s = store();
-    const sync = createBoardSync(s.commit);
+    const sync = createRowSync(s.commit);
 
     sync.push({ kind: "upsert", row: item({ id: "x", title: "first" }) });
     sync.push({ kind: "upsert", row: item({ id: "y" }) });
@@ -101,7 +98,7 @@ describe("createBoardSync", () => {
 
   it("does not let a stale snapshot resurrect a row deleted during the load", () => {
     const s = store();
-    const sync = createBoardSync(s.commit);
+    const sync = createRowSync(s.commit);
 
     sync.push({ kind: "delete", id: "gone" });
     // The backend read its rows before the delete landed.
@@ -111,7 +108,7 @@ describe("createBoardSync", () => {
 
   it("applies events directly once settled", () => {
     const s = store();
-    const sync = createBoardSync(s.commit);
+    const sync = createRowSync(s.commit);
     sync.settle([item({ id: "a" })]);
 
     sync.push({ kind: "upsert", row: item({ id: "b" }) });
@@ -122,7 +119,7 @@ describe("createBoardSync", () => {
 
   it("keeps buffered events when the fetch failed and there is no snapshot", () => {
     const s = store([item({ id: "old" })]);
-    const sync = createBoardSync(s.commit);
+    const sync = createRowSync(s.commit);
 
     sync.push({ kind: "upsert", row: item({ id: "live" }) });
     sync.settle(); // error path: settle with nothing to replay over
@@ -150,10 +147,10 @@ function proposal(over: Partial<RoadmapProposal> & { id: string }): RoadmapPropo
   };
 }
 
-describe("createBoardSync over proposals", () => {
+describe("createRowSync over proposals", () => {
   it("buffers a proposal parked mid-load and replays it over the snapshot", () => {
     let rows: RoadmapProposal[] = [];
-    const sync = createBoardSync<RoadmapProposal>((update) => {
+    const sync = createRowSync<RoadmapProposal>((update) => {
       rows = update(rows);
     });
 
@@ -169,7 +166,7 @@ describe("createBoardSync over proposals", () => {
 
   it("swaps a replaced ask in place once settled — never two for one item", () => {
     let rows: RoadmapProposal[] = [];
-    const sync = createBoardSync<RoadmapProposal>((update) => {
+    const sync = createRowSync<RoadmapProposal>((update) => {
       rows = update(rows);
     });
     sync.settle([proposal({ id: "p" })]);

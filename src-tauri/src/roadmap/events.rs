@@ -148,6 +148,35 @@ pub fn list_for_item(conn: &Connection, item_id: &str) -> rusqlite::Result<Vec<I
     rows.collect()
 }
 
+/// The newest event of every item on one project's board, newest first — one
+/// read for a board-wide question, where [`list_for_item`] would be one query
+/// per card (and the board only ever loads the trails of cards someone
+/// expanded).
+///
+/// What needs it: the board's "Needs you" strip asks "is this item's *latest*
+/// word `blocked`?" — a `blocked` event that a later transition superseded is
+/// history, not a decision waiting on the user.
+///
+/// A window function rather than `MAX(created_at)` so the tiebreak is the same
+/// `created_at DESC, rowid DESC` [`list_for_item`] uses: two events written in
+/// the same millisecond must resolve to the one written last, not to either.
+pub fn latest_per_item(conn: &Connection, project_id: &str) -> rusqlite::Result<Vec<ItemEvent>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM (
+           SELECT {COLUMNS},
+                  ROW_NUMBER() OVER (
+                    PARTITION BY item_id ORDER BY created_at DESC, rowid DESC
+                  ) AS rn
+             FROM roadmap_item_events
+            WHERE project_id = ?1
+         )
+          WHERE rn = 1
+          ORDER BY created_at DESC, item_id"
+    ))?;
+    let rows = stmt.query_map([project_id], ItemEvent::from_row)?;
+    rows.collect()
+}
+
 /// The history kind a user patch implies, from the transition it performs.
 ///
 /// The typed commands express a transition as `expect_status` (where the row
@@ -226,6 +255,91 @@ mod tests {
         assert_eq!(listed[0].detail.as_deref(), Some("its run failed"));
         assert_eq!(second.actor, EventActor::Drainer);
         assert_eq!(second.kind, EventKind::RunFailed);
+    }
+
+    #[test]
+    fn latest_per_item_returns_the_newest_row_for_every_item() {
+        // The strip's question is "what does this item's trail say *now*": an
+        // item whose `blocked` was superseded by a dispatch is not blocked, and
+        // an item whose last word is `blocked` is.
+        let conn = test_conn();
+        let one = item(&conn);
+        let two = item(&conn);
+
+        for (id, kind, detail) in [
+            (&one.id, EventKind::Queued, None),
+            (
+                &one.id,
+                EventKind::Blocked,
+                Some("MCA-100 → MCA-101 → MCA-100"),
+            ),
+            // Supersedes the block: same millisecond, so only the rowid
+            // tiebreak makes this the newest.
+            (&one.id, EventKind::Dispatched, Some("build")),
+            (&two.id, EventKind::Queued, None),
+            (
+                &two.id,
+                EventKind::Blocked,
+                Some("MCA-101 → MCA-100 → MCA-101"),
+            ),
+        ] {
+            record(&conn, id, "p1", EventActor::Drainer, kind, detail).unwrap();
+        }
+
+        let latest = latest_per_item(&conn, "p1").unwrap();
+        assert_eq!(latest.len(), 2, "one row per item, not one per event");
+        let by: std::collections::HashMap<&str, &ItemEvent> =
+            latest.iter().map(|e| (e.item_id.as_str(), e)).collect();
+        assert_eq!(by[one.id.as_str()].kind, EventKind::Dispatched);
+        assert_eq!(by[two.id.as_str()].kind, EventKind::Blocked);
+        assert_eq!(
+            by[two.id.as_str()].detail.as_deref(),
+            Some("MCA-101 → MCA-100 → MCA-101")
+        );
+    }
+
+    #[test]
+    fn latest_per_item_is_scoped_to_one_board() {
+        // The strip is per project; another project's wedge is not this board's
+        // decision (and the item id wouldn't resolve to a row here anyway).
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO projects (id, name, created_at) VALUES ('p2', 'other', 0)",
+            [],
+        )
+        .unwrap();
+        let mine = item(&conn);
+        let theirs = store::create(
+            &conn,
+            "p2",
+            &NewItem {
+                title: "theirs".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        record(
+            &conn,
+            &mine.id,
+            "p1",
+            EventActor::User,
+            EventKind::Queued,
+            None,
+        )
+        .unwrap();
+        record(
+            &conn,
+            &theirs.id,
+            "p2",
+            EventActor::Drainer,
+            EventKind::Blocked,
+            None,
+        )
+        .unwrap();
+
+        let latest = latest_per_item(&conn, "p1").unwrap();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].item_id, mine.id);
     }
 
     #[test]

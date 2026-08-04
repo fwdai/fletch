@@ -6,7 +6,7 @@
 // listener already live (the board subscribes before it fetches anything). That
 // leaves one window: an event that lands while the snapshot request is in
 // flight is delivered live *and* included in the snapshot. `mergeSnapshot`
-// closes it the same way boardSync closes the board's — by id, so an event can
+// closes it the same way rowSync closes the board's — by id, so an event can
 // appear once however it arrived.
 
 import type { RoadmapEventKind, RoadmapItemEvent } from "@/api";

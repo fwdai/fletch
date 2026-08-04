@@ -590,6 +590,80 @@
   color: var(--fg-0);
 }
 
+/* ── the "Needs you" strip ──
+   The decisions the pipeline is waiting on, above the batch bar. Same grammar as
+   the bars below it (a flat band between the header and the scroller, one accent
+   line, the same button pair) but read in amber rather than accent: a proposal is
+   an invitation, a pause is something already stopped. Deliberately low-key —
+   the cards are rows, not panels, so three of them cost three lines. */
+.rm-needs {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in oklch, var(--warn), var(--bg-1) 93%);
+  border-bottom: 1px solid color-mix(in oklch, var(--warn), transparent 72%);
+}
+.rm-needs-h {
+  gap: 10px;
+  padding: 7px 10px 4px var(--rm-gut);
+}
+.rm-needs-n {
+  gap: 5px;
+  font-weight: 600;
+  color: var(--warn);
+}
+.rm-needs-hint {
+  min-width: 0;
+  color: var(--fg-3);
+}
+.rm-needs-card {
+  display: flex;
+  flex-direction: column;
+  padding: 3px 10px 3px var(--rm-gut);
+}
+.rm-needs-card:last-child {
+  padding-bottom: 8px;
+}
+.rm-needs-row {
+  gap: 8px;
+  min-height: 24px;
+  font-size: 11.5px;
+}
+.rm-needs-glyph {
+  flex-shrink: 0;
+  color: var(--warn);
+}
+/* The item the decision is about. A button, because it jumps the board to the
+   card — the one navigation every reason shares. */
+.rm-needs-item {
+  min-width: 0;
+  gap: 7px;
+  color: var(--fg-1);
+  text-align: left;
+}
+.rm-needs-title {
+  min-width: 0;
+}
+.rm-needs-item:hover {
+  color: var(--fg-0);
+}
+.rm-needs-item:hover .rm-needs-title {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rm-needs-why {
+  min-width: 0;
+  color: var(--fg-3);
+}
+/* The inline answer for a question pause. Indented to the item's title so the
+   form reads as belonging to that row and not to the strip. */
+.rm-needs-answer {
+  padding: 0 0 4px 19px;
+}
+.rm-needs-answer .wf-answer {
+  margin-top: 4px;
+}
+
 /* ── the proposal bar ──
    Shown only when the PM has several proposals outstanding: one ghost is ruled
    on from its own card, but a batch shouldn't cost a trip down three horizons.
