@@ -11,6 +11,7 @@ import { GeneralSection } from "./GeneralSection";
 import { LinearSection } from "./LinearSection";
 import { ProjectHeader } from "./ProjectHeader";
 import { Roadmap, useRoadmap } from "./Roadmap";
+import { RoadmapSection } from "./RoadmapSection";
 import { RunEnvSection } from "./RunEnvSection";
 import { VerifySection } from "./VerifySection";
 
@@ -108,6 +109,7 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
                 />
                 <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
                 <LinearSection projectId={loaded.projectId} />
+                <RoadmapSection projectId={loaded.projectId} />
                 <VerifySection projectId={loaded.projectId} />
                 <DeleteSection projectId={loaded.projectId} projectName={name} />
               </>

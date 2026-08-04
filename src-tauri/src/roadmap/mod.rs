@@ -80,6 +80,7 @@ pub mod review;
 pub mod store;
 pub mod types;
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -279,17 +280,24 @@ fn create_checked(
 /// moment late is dropped instead of flipping a live run's item back onto the
 /// board (which would orphan the run — see [`drainer`]). Omitting it keeps the
 /// unconditional behaviour every other caller wants (a retitle, a horizon move).
+///
+/// `queue` is the accept path's one extra gesture: "Accept & queue", one click
+/// instead of accept-then-queue. It is meaningful *only* on an accept
+/// (`expect_status: proposed`, `status: open`) and ignored everywhere else — see
+/// [`accept_landing`], which is also where the project's autoqueue dial is read,
+/// so the button and the dial are one implementation and a hold overrules both.
 #[tauri::command]
 pub async fn roadmap_update_item(
     id: String,
     patch: ItemPatch,
     expect_status: Option<ItemStatus>,
+    queue: Option<bool>,
     app: AppHandle,
     db: tauri::State<'_, Db>,
 ) -> Result<ItemUpdate, String> {
     let (outcome, event) = {
         let conn = db.lock();
-        update_and_record(&conn, &id, &patch, expect_status)?
+        update_and_record(&conn, &id, &patch, expect_status, queue.unwrap_or(false))?
     };
     let outcome = outcome.ok_or_else(|| format!("roadmap item {id} no longer exists"))?;
     // A miss changed nothing, so there is nothing to announce and nothing new
@@ -299,6 +307,9 @@ pub async fn roadmap_update_item(
         if let Some(event) = &event {
             emit_item_event(&app, event);
         }
+        // Unconditional, and load-bearing for the dial: an autoqueued accept
+        // leaves the row `queued`, so this is the call that turns one click into a
+        // run without waiting out the tick.
         drainer::nudge();
         // The sweep parks while nothing is in review, and the drainer's
         // settlement is otherwise its only alarm clock — a patch that leaves a
@@ -324,11 +335,19 @@ pub async fn roadmap_update_item(
 /// guard: this command is the item dialog's door, and a dep list that closes a
 /// loop would leave the queue skipping the whole chain forever. The refusal is
 /// an `Err` the dialog renders in its error slot, not a silent drop.
+///
+/// An *accept* is the one transition this function may redirect: [`accept_landing`]
+/// decides whether the row lands `open` or `queued`, so the autonomy dial applies
+/// to every accept surface there is — the card's bar, the batch bar, anything
+/// added later — without one line of frontend logic deciding it. The event still
+/// says `accepted` (from the transition the caller *asked* for), with what became
+/// of it as the detail.
 fn update_and_record(
     conn: &Connection,
     id: &str,
     patch: &ItemPatch,
     expect_status: Option<ItemStatus>,
+    queue: bool,
 ) -> Result<(Option<ItemUpdate>, Option<ItemEvent>), String> {
     if let Some(new_deps) = &patch.deps {
         // A row that is already gone falls through to the normal "no longer
@@ -337,13 +356,29 @@ fn update_and_record(
             check_dep_edit(conn, &current, new_deps)?;
         }
     }
+    // Where an accept lands, resolved before the write and in the same guard as
+    // it: the dial, the button, and the two holds are all read here.
+    let landing = is_accept(expect_status, patch)
+        .then(|| landing_for(conn, id, queue))
+        .flatten();
+    // An accept writes the status its landing names — `open` for all but a
+    // queueing one, which is the status the caller already sent. Only the
+    // `status` field is ever rewritten; everything else lands exactly as sent.
+    let mut effective = Cow::Borrowed(patch);
+    if let Some(landing) = landing {
+        effective.to_mut().status = Some(landing.status());
+    }
     let updated = match expect_status {
-        Some(expected) => store::update_where_status(conn, id, expected, patch),
-        None => store::update(conn, id, patch),
+        Some(expected) => store::update_where_status(conn, id, expected, &effective),
+        None => store::update(conn, id, &effective),
     }
     .map_err(|e| e.to_string())?;
     match updated {
         Some(item) => {
+            // The transition the *caller* performed, not the status the row
+            // landed in: an autoqueued accept is one ruling by one actor, and
+            // `accepted` is the name of that ruling. What the dial then did with
+            // it is the detail — see [`Landing::detail`].
             let kind = events::transition_kind(expect_status, patch.status);
             let event = events::record(
                 conn,
@@ -353,7 +388,7 @@ fn update_and_record(
                 // RPC, drainer, sweep) record under their own actors.
                 EventActor::User,
                 kind,
-                None,
+                landing.and_then(Landing::detail),
             )
             .map_err(|e| e.to_string())?;
             Ok((
@@ -380,6 +415,99 @@ fn update_and_record(
             None => Ok((None, None)),
         },
     }
+}
+
+/// Is this patch *the accept* — the `proposed → open` ruling that turns a PM
+/// suggestion into a roadmap item? The only transition the autonomy dial touches.
+fn is_accept(expect_status: Option<ItemStatus>, patch: &ItemPatch) -> bool {
+    expect_status == Some(ItemStatus::Proposed) && patch.status == Some(ItemStatus::Open)
+}
+
+/// Where an accepted item lands.
+///
+/// The autonomy dial's entire user-visible effect, as three outcomes rather than a
+/// bool, because the third one has to be *sayable*: a user who pressed "Accept &
+/// queue" on a held row and got an `open` item is owed the reason.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Landing {
+    /// `proposed → open`. The accept alone — what every accept did before the
+    /// dial existed, and still the default.
+    Board,
+    /// `proposed → queued`. Either the project's autoqueue dial is on, or this
+    /// click was "Accept & queue".
+    Queue,
+    /// Queueing was asked for and a hold stands, so it lands `open` after all.
+    HeldBack,
+}
+
+impl Landing {
+    /// The status the row actually lands in.
+    fn status(self) -> ItemStatus {
+        match self {
+            Landing::Queue => ItemStatus::Queued,
+            Landing::Board | Landing::HeldBack => ItemStatus::Open,
+        }
+    }
+
+    /// What the `accepted` line says beyond "accepted", or `None` when the accept
+    /// is the whole story.
+    ///
+    /// One event, not two. An `accepted` + `queued` pair would read as two rulings
+    /// where the user made one, and would make this the only write in the module
+    /// whose single transition emits two history rows; the trail's job is to name
+    /// the *gesture*, and "Accepted — auto-queued" names it exactly. Both readers
+    /// of the trail are served by that: the card's history line renders the detail
+    /// inline, and the PM's `last_event` projection (and the standup that reads the
+    /// newest event) sees one line it can quote verbatim.
+    fn detail(self) -> Option<&'static str> {
+        match self {
+            Landing::Board => None,
+            Landing::Queue => Some("auto-queued"),
+            Landing::HeldBack => Some("left off the queue — this is held"),
+        }
+    }
+}
+
+/// The dial, the button, and the brake — one rule, pure over the three facts.
+///
+/// Holds trump the dial, always (invariant 2: a hold may only ever *reduce*
+/// autonomy). So `held` can turn a queueing accept into a plain one, and nothing
+/// can turn a plain accept into a queueing one behind the user's back. The row
+/// still becomes a roadmap item — refusing the accept itself would be a hold
+/// blocking the user's own ruling, which is the opposite of what it is for.
+pub(crate) fn accept_landing(queue_requested: bool, autoqueue: bool, held: bool) -> Landing {
+    if !queue_requested && !autoqueue {
+        return Landing::Board;
+    }
+    if held {
+        return Landing::HeldBack;
+    }
+    Landing::Queue
+}
+
+/// [`accept_landing`] against the database: read the project's dial and both
+/// brakes for the row being accepted. Called with the connection lock held, in the
+/// same guard as the write it decides.
+///
+/// `None` when the row is gone — the caller's write then misses on its own and
+/// reports the row as it is.
+fn landing_for(conn: &Connection, id: &str, queue: bool) -> Option<Landing> {
+    let item = store::get(conn, id).ok().flatten()?;
+    // An unreadable project hold counts as held: the drainer refuses to dispatch
+    // when it can't read one (see `plan_and_claim`), and this must not be the door
+    // that queues something anyway.
+    let project_held = match holds::get_project(conn, &item.project_id) {
+        Ok(hold) => hold.is_some(),
+        Err(e) => {
+            tracing::warn!(id, error = %e, "roadmap: cannot read the project hold — accepting without queueing");
+            true
+        }
+    };
+    Some(accept_landing(
+        queue,
+        drainer::autoqueue(conn, &item.project_id),
+        item.is_held() || project_held,
+    ))
 }
 
 /// Check a dep list an item that already exists is about to be given: the codes
@@ -1394,7 +1522,7 @@ mod tests {
         for (from, to, kind) in cases {
             let it = with_status(&conn, from);
             let (outcome, event) =
-                update_and_record(&conn, &it.id, &status_patch(to), Some(from)).unwrap();
+                update_and_record(&conn, &it.id, &status_patch(to), Some(from), false).unwrap();
             assert!(outcome.unwrap().applied);
             let event = event.expect("an applied transition records itself");
             assert_eq!(event.kind, kind);
@@ -1416,6 +1544,7 @@ mod tests {
             &it.id,
             &status_patch(ItemStatus::Open),
             Some(ItemStatus::Queued),
+            false,
         )
         .unwrap();
         let outcome = outcome.unwrap();
@@ -1435,8 +1564,187 @@ mod tests {
             title: Some("retitled".into()),
             ..Default::default()
         };
-        let (_, event) = update_and_record(&conn, &it.id, &patch, None).unwrap();
+        let (_, event) = update_and_record(&conn, &it.id, &patch, None, false).unwrap();
         assert_eq!(event.unwrap().kind, EventKind::Edited);
+    }
+
+    // ───────────────────────── the autonomy dial ────────────────────────
+
+    /// Turn a project's dial on.
+    fn set_autoqueue(conn: &Connection, on: bool) {
+        conn.execute(
+            "INSERT OR REPLACE INTO project_settings (project_id, key, value)
+             VALUES ('p1', 'roadmap.autoqueue', ?1)",
+            rusqlite::params![if on { "1" } else { "0" }],
+        )
+        .unwrap();
+    }
+
+    /// Accept one proposed row, with or without the "Accept & queue" flag, and
+    /// report where it landed and what the trail says about it. Exactly the call
+    /// [`roadmap_update_item`] makes.
+    fn accept(conn: &Connection, id: &str, queue: bool) -> (ItemStatus, EventKind, Option<String>) {
+        let (outcome, event) = update_and_record(
+            conn,
+            id,
+            &status_patch(ItemStatus::Open),
+            Some(ItemStatus::Proposed),
+            queue,
+        )
+        .unwrap();
+        let outcome = outcome.expect("the row is there");
+        assert!(outcome.applied);
+        let event = event.expect("an applied accept records itself");
+        (outcome.item.status, event.kind, event.detail)
+    }
+
+    /// The whole rule, without a database: the button, the dial, and the brake.
+    #[test]
+    fn the_dial_and_the_button_land_in_the_same_place() {
+        // Neither asked: today's accept, unchanged.
+        assert_eq!(accept_landing(false, false, false), Landing::Board);
+        // Either one queues it — one implementation, two doors.
+        assert_eq!(accept_landing(true, false, false), Landing::Queue);
+        assert_eq!(accept_landing(false, true, false), Landing::Queue);
+        assert_eq!(accept_landing(true, true, false), Landing::Queue);
+        // A hold beats both, and beats them the same way (invariant 2: a hold can
+        // only ever reduce autonomy).
+        assert_eq!(accept_landing(true, false, true), Landing::HeldBack);
+        assert_eq!(accept_landing(false, true, true), Landing::HeldBack);
+        // A hold on a row nobody asked to queue changes nothing — the accept
+        // itself is the user's ruling and is never refused.
+        assert_eq!(accept_landing(false, false, true), Landing::Board);
+
+        // Each landing's status and its one line of trail.
+        assert_eq!(Landing::Board.status(), ItemStatus::Open);
+        assert_eq!(Landing::Queue.status(), ItemStatus::Queued);
+        assert_eq!(Landing::HeldBack.status(), ItemStatus::Open);
+        assert_eq!(Landing::Board.detail(), None);
+        assert!(Landing::Queue.detail().is_some());
+        assert!(Landing::HeldBack.detail().is_some());
+    }
+
+    /// With the dial on, accepting is the only touch before a run starts: the row
+    /// lands `queued`, and one `accepted` event says how it got there.
+    #[test]
+    fn autoqueue_lands_an_accepted_item_in_the_queue() {
+        let conn = test_conn();
+        set_autoqueue(&conn, true);
+        let it = with_status(&conn, ItemStatus::Proposed);
+
+        let (status, kind, detail) = accept(&conn, &it.id, false);
+        assert_eq!(status, ItemStatus::Queued);
+        // Still `accepted`: one ruling by one actor, whatever the dial did with
+        // it. The detail is what names the dial's part.
+        assert_eq!(kind, EventKind::Accepted);
+        assert_eq!(detail.as_deref(), Some("auto-queued"));
+        // One line, not an `accepted` + `queued` pair.
+        assert_eq!(events::list_for_item(&conn, &it.id).unwrap().len(), 1);
+    }
+
+    /// With the dial off, the accept is unchanged — and the same code path takes
+    /// "Accept & queue" (`queue: true`) to `queued`, so the button and the dial
+    /// can never disagree about where an accepted item goes.
+    #[test]
+    fn the_dial_off_accepts_to_the_board_unless_the_click_asked_to_queue() {
+        let conn = test_conn();
+        let plain = with_status(&conn, ItemStatus::Proposed);
+        assert_eq!(
+            accept(&conn, &plain.id, false),
+            (ItemStatus::Open, EventKind::Accepted, None)
+        );
+
+        let queued = with_status(&conn, ItemStatus::Proposed);
+        let (status, kind, detail) = accept(&conn, &queued.id, true);
+        assert_eq!(status, ItemStatus::Queued);
+        assert_eq!(kind, EventKind::Accepted);
+        assert_eq!(detail.as_deref(), Some("auto-queued"));
+    }
+
+    /// Holds trump the dial. A held row (and every row of a held board) is
+    /// accepted onto the roadmap and left `open` — the brake the PM can pull is
+    /// exactly what makes high-autonomy mode safe, so it must survive the mode
+    /// that needs it. The trail says why, because otherwise the user who pressed
+    /// "Accept & queue" has an `open` item and no explanation.
+    #[test]
+    fn a_hold_keeps_an_accepted_item_off_the_queue() {
+        let conn = test_conn();
+        set_autoqueue(&conn, true);
+
+        let held = with_status(&conn, ItemStatus::Proposed);
+        holds::hold_item(
+            &conn,
+            &held.id,
+            "confirm the direction first",
+            EventActor::Pm,
+        )
+        .unwrap();
+        let (status, kind, detail) = accept(&conn, &held.id, true);
+        assert_eq!(status, ItemStatus::Open, "the item's own hold stopped it");
+        assert_eq!(kind, EventKind::Accepted);
+        assert!(detail.unwrap().contains("held"));
+
+        // The board-wide brake does the same for a row with no hold of its own.
+        let ordinary = with_status(&conn, ItemStatus::Proposed);
+        holds::hold_project(&conn, "p1", "re-planning the quarter", EventActor::Pm).unwrap();
+        assert_eq!(accept(&conn, &ordinary.id, false).0, ItemStatus::Open);
+
+        // Released, the dial applies again — nothing about the accept path
+        // remembers the hold.
+        assert!(holds::release_project(&conn, "p1").unwrap());
+        let after = with_status(&conn, ItemStatus::Proposed);
+        assert_eq!(accept(&conn, &after.id, false).0, ItemStatus::Queued);
+    }
+
+    /// The dial reaches exactly one transition. A queue action, an unqueue, or a
+    /// form edit is not an accept, so neither the setting nor the flag may touch
+    /// it — otherwise "Accept & queue"'s flag, sent by any caller, would become a
+    /// second way to queue anything.
+    #[test]
+    fn nothing_but_an_accept_is_redirected() {
+        let conn = test_conn();
+        set_autoqueue(&conn, true);
+
+        // An unqueue with the flag set stays an unqueue.
+        let queued = with_status(&conn, ItemStatus::Queued);
+        let (outcome, event) = update_and_record(
+            &conn,
+            &queued.id,
+            &status_patch(ItemStatus::Open),
+            Some(ItemStatus::Queued),
+            true,
+        )
+        .unwrap();
+        assert_eq!(outcome.unwrap().item.status, ItemStatus::Open);
+        let event = event.unwrap();
+        assert_eq!(event.kind, EventKind::Unqueued);
+        assert_eq!(event.detail, None);
+
+        // And a plain edit is still an edit, with no status invented for it.
+        let open = with_status(&conn, ItemStatus::Open);
+        let (outcome, event) = update_and_record(
+            &conn,
+            &open.id,
+            &ItemPatch {
+                title: Some("retitled".into()),
+                ..Default::default()
+            },
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(outcome.unwrap().item.status, ItemStatus::Open);
+        assert_eq!(event.unwrap().kind, EventKind::Edited);
+
+        assert!(is_accept(
+            Some(ItemStatus::Proposed),
+            &status_patch(ItemStatus::Open)
+        ));
+        assert!(!is_accept(None, &status_patch(ItemStatus::Open)));
+        assert!(!is_accept(
+            Some(ItemStatus::Proposed),
+            &status_patch(ItemStatus::Queued)
+        ));
     }
 
     /// `roadmap_get_item`'s one read: a live id returns the row, and an id that
@@ -1877,11 +2185,13 @@ mod tests {
         };
 
         // b after a: an ordinary edge, applied.
-        let (outcome, _) = update_and_record(&conn, &b.id, &deps_patch(&[&a.code]), None).unwrap();
+        let (outcome, _) =
+            update_and_record(&conn, &b.id, &deps_patch(&[&a.code]), None, false).unwrap();
         assert_eq!(outcome.unwrap().item.deps, vec![a.code.clone()]);
 
         // a after b now closes the loop — refused, and the row is untouched.
-        let err = update_and_record(&conn, &a.id, &deps_patch(&[&b.code]), None).unwrap_err();
+        let err =
+            update_and_record(&conn, &a.id, &deps_patch(&[&b.code]), None, false).unwrap_err();
         assert!(err.contains("loop"), "{err}");
         assert!(
             err.contains(&format!("{} → {} → {}", a.code, b.code, a.code)),
@@ -1890,11 +2200,13 @@ mod tests {
         assert!(store::get(&conn, &a.id).unwrap().unwrap().deps.is_empty());
 
         // A code that isn't on the board at all is refused too.
-        let err = update_and_record(&conn, &a.id, &deps_patch(&["MCA-999"]), None).unwrap_err();
+        let err =
+            update_and_record(&conn, &a.id, &deps_patch(&["MCA-999"]), None, false).unwrap_err();
         assert!(err.contains("MCA-999"), "{err}");
 
         // Self-reference, and the same rule on the create path.
-        let err = update_and_record(&conn, &a.id, &deps_patch(&[&a.code]), None).unwrap_err();
+        let err =
+            update_and_record(&conn, &a.id, &deps_patch(&[&a.code]), None, false).unwrap_err();
         assert!(err.contains("depend on itself"), "{err}");
         let err = create_checked(
             &conn,
@@ -1946,7 +2258,7 @@ mod tests {
             deps: Some(vec![b.code.clone()]),
             ..Default::default()
         };
-        let (outcome, _) = update_and_record(&conn, &a.id, &patch, None).unwrap();
+        let (outcome, _) = update_and_record(&conn, &a.id, &patch, None, false).unwrap();
         assert_eq!(outcome.unwrap().item.title, "retitled");
     }
 

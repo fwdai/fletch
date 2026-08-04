@@ -69,14 +69,17 @@ fn the_queue_follows_rank() {
     let queue = vec![first, second];
 
     assert_eq!(
-        pick_next(&queue, 0, &codes(&[]), &codes(&["FLT-100", "FLT-101"])),
+        pick_next(&queue, 0, 1, &codes(&[]), &codes(&["FLT-100", "FLT-101"])),
         Decision::Dispatch(0)
     );
 }
 
 #[test]
 fn an_empty_queue_decides_nothing() {
-    assert_eq!(pick_next(&[], 0, &codes(&[]), &codes(&[])), Decision::Empty);
+    assert_eq!(
+        pick_next(&[], 0, 1, &codes(&[]), &codes(&[])),
+        Decision::Empty
+    );
 }
 
 // ───────────────────────────── what is in the queue ─────────────────────
@@ -123,7 +126,7 @@ fn a_held_head_is_skipped_and_the_next_item_still_dispatches() {
     let queue = dispatchable(&[held, ready]);
     assert_eq!(queue.len(), 1);
     assert_eq!(
-        pick_next(&queue, 0, &codes(&[]), &codes(&["FLT-100", "FLT-101"])),
+        pick_next(&queue, 0, 1, &codes(&[]), &codes(&["FLT-100", "FLT-101"])),
         Decision::Dispatch(0),
     );
     assert_eq!(queue[0].code, "FLT-101");
@@ -140,6 +143,7 @@ fn a_done_dependency_lets_an_item_through() {
         pick_next(
             &[it],
             0,
+            1,
             &codes(&["FLT-100"]),
             &codes(&["FLT-100", "FLT-101"])
         ),
@@ -158,6 +162,7 @@ fn an_in_review_dependency_still_blocks() {
         pick_next(
             &[it],
             0,
+            1,
             // FLT-100 exists but is not done.
             &codes(&[]),
             &codes(&["FLT-100", "FLT-101"])
@@ -177,7 +182,7 @@ fn a_dependency_that_no_longer_exists_counts_as_satisfied() {
     it.deps = vec!["FLT-100".into()];
 
     assert_eq!(
-        pick_next(&[it], 0, &codes(&[]), &codes(&["FLT-101"])),
+        pick_next(&[it], 0, 1, &codes(&[]), &codes(&["FLT-101"])),
         Decision::Dispatch(0)
     );
 }
@@ -193,6 +198,7 @@ fn a_blocked_head_does_not_block_the_rest_of_the_queue() {
         pick_next(
             &[blocked, ready],
             0,
+            1,
             &codes(&[]),
             &codes(&["FLT-099", "FLT-100", "FLT-101"])
         ),
@@ -210,7 +216,7 @@ fn an_all_blocked_queue_reports_the_head_and_what_it_waits_on() {
     let known = codes(&["FLT-098", "FLT-099", "FLT-100", "FLT-101"]);
     // FLT-098 landed; FLT-099 hasn't.
     assert_eq!(
-        pick_next(&[head, tail], 0, &codes(&["FLT-098"]), &known),
+        pick_next(&[head, tail], 0, 1, &codes(&["FLT-098"]), &known),
         Decision::Blocked {
             item_id: "id-FLT-100".into(),
             waiting_on: vec!["FLT-099".into()],
@@ -240,6 +246,7 @@ fn the_cap_holds_the_queue_even_with_a_ready_item() {
         pick_next(
             &[ready],
             MAX_CONCURRENT_ROADMAP_RUNS,
+            MAX_CONCURRENT_ROADMAP_RUNS,
             &codes(&[]),
             &codes(&["FLT-100"])
         ),
@@ -257,11 +264,197 @@ fn capacity_is_checked_before_dependencies() {
         pick_next(
             &[blocked],
             MAX_CONCURRENT_ROADMAP_RUNS,
+            MAX_CONCURRENT_ROADMAP_RUNS,
             &codes(&[]),
             &codes(&["FLT-099", "FLT-100"])
         ),
         Decision::AtCapacity
     );
+}
+
+/// The dial, as the tick walks it: two independent items both dispatch under a
+/// cap of 2, in rank order, one per claim — and the third claim (of a two-item
+/// queue) reports capacity rather than picking something twice.
+#[test]
+fn a_raised_cap_dispatches_a_second_independent_item() {
+    let queue = vec![item("FLT-100", 1.0), item("FLT-101", 2.0)];
+    let known = codes(&["FLT-100", "FLT-101"]);
+
+    // Nothing live yet: the head goes, exactly as at cap 1.
+    assert_eq!(
+        pick_next(&queue, 0, 2, &codes(&[]), &known),
+        Decision::Dispatch(0)
+    );
+    // One live run, and the same board — the second item is the next claim of
+    // this same tick, and the queue it reads no longer holds the claimed row (it
+    // is `active`, so `dispatchable` drops it).
+    assert_eq!(
+        pick_next(&queue[1..], 1, 2, &codes(&[]), &known),
+        Decision::Dispatch(0)
+    );
+    // Both live: full.
+    assert_eq!(
+        pick_next(&queue[1..], 2, 2, &codes(&[]), &known),
+        Decision::AtCapacity
+    );
+}
+
+/// Raising the cap buys parallelism only where the graph allows it. A dependant
+/// stays blocked with a free slot going spare — deps serialize dependants, which
+/// is why parallel dispatch needed no new graph logic.
+#[test]
+fn a_dependant_stays_blocked_however_high_the_cap() {
+    let mut dependant = item("FLT-101", 2.0);
+    dependant.deps = vec!["FLT-100".into()];
+    let known = codes(&["FLT-100", "FLT-101"]);
+
+    // FLT-100 was claimed a moment ago (so it is out of the queue) and is not
+    // `done`. Three free slots, and nothing to put in them.
+    assert_eq!(
+        pick_next(
+            &[dependant.clone()],
+            1,
+            MAX_CONCURRENT_ROADMAP_CEILING,
+            &codes(&[]),
+            &known
+        ),
+        Decision::Blocked {
+            item_id: "id-FLT-101".into(),
+            waiting_on: vec!["FLT-100".into()],
+        }
+    );
+    // Once it lands, the dependant goes — cap or no cap.
+    assert_eq!(
+        pick_next(
+            &[dependant],
+            1,
+            MAX_CONCURRENT_ROADMAP_CEILING,
+            &codes(&["FLT-100"]),
+            &known
+        ),
+        Decision::Dispatch(0)
+    );
+}
+
+/// Cap 1 is the default, and the default is today's behaviour to the letter: one
+/// dispatch, then capacity — never two, however much is ready.
+#[test]
+fn the_default_cap_still_dispatches_one_at_a_time() {
+    let queue = vec![item("FLT-100", 1.0), item("FLT-101", 2.0)];
+    let known = codes(&["FLT-100", "FLT-101"]);
+    assert_eq!(MAX_CONCURRENT_ROADMAP_RUNS, 1);
+    assert_eq!(
+        pick_next(&queue, 0, MAX_CONCURRENT_ROADMAP_RUNS, &codes(&[]), &known),
+        Decision::Dispatch(0)
+    );
+    assert_eq!(
+        pick_next(
+            &queue[1..],
+            1,
+            MAX_CONCURRENT_ROADMAP_RUNS,
+            &codes(&[]),
+            &known
+        ),
+        Decision::AtCapacity
+    );
+}
+
+// ───────────────────────────── the dial ─────────────────────────────────
+
+#[test]
+fn the_cap_setting_is_parsed_clamped_and_defaulted() {
+    // Unset is the default — a board nobody configured behaves as it always did.
+    assert_eq!(parse_cap(None), MAX_CONCURRENT_ROADMAP_RUNS);
+    assert_eq!(parse_cap(Some("1")), 1);
+    assert_eq!(parse_cap(Some("4")), 4);
+    // Above the ceiling clamps down rather than being refused: the value is a
+    // dial, and the honest answer to "twelve" is "four".
+    assert_eq!(parse_cap(Some("12")), MAX_CONCURRENT_ROADMAP_CEILING);
+    // Garbage, a zero, and a negative all fall back to the default. Zero would
+    // stop the queue with no hold to explain it, which is what holds are for.
+    for bad in ["0", "-1", "two", "3.5", "", "1e3"] {
+        assert_eq!(
+            parse_cap(Some(bad)),
+            MAX_CONCURRENT_ROADMAP_RUNS,
+            "{bad:?} should read as the default"
+        );
+    }
+}
+
+#[test]
+fn the_boolean_dials_read_both_answers_and_fall_back() {
+    // One spelling table for every roadmap dial (autoqueue here, settle_review in
+    // `review`), so "off" can't mean two things on two settings.
+    for on in ["1", "true", "on", "yes", "TRUE", "On"] {
+        assert!(parse_flag(Some(on), false), "{on} should read as on");
+    }
+    for off in ["0", "false", "off", "no", "FALSE", "Off"] {
+        assert!(!parse_flag(Some(off), true), "{off} should read as off");
+    }
+    // Absent or unreadable is the default, in both directions: a setting nobody
+    // can parse is not a mandate.
+    assert!(!parse_flag(None, false));
+    assert!(parse_flag(None, true));
+    assert!(!parse_flag(Some("maybe"), false));
+    assert!(parse_flag(Some("maybe"), true));
+}
+
+/// Every dial's key and default is declared identically on both sides of the wire.
+///
+/// The frontend *writes* these rows (project settings → Roadmap) and this side
+/// *reads* them, with nothing in between to catch a mismatch: a key that drifts is
+/// a toggle that appears to work and changes nothing, and a default that drifts is
+/// a board behaving one way and describing itself another. Same reasoning as the
+/// `EventKind` pin in `events.rs`, for the same reason (a filed B5 follow-up).
+#[test]
+fn every_dial_is_declared_on_both_sides_of_the_wire() {
+    const TS: &str = include_str!("../../../../src/components/ProjectScreen/Roadmap/autonomy.ts");
+    for expected in [
+        format!("export const AUTOQUEUE_KEY = {AUTOQUEUE_KEY:?};"),
+        format!("export const MAX_CONCURRENT_KEY = {MAX_CONCURRENT_KEY:?};"),
+        format!(
+            "export const SETTLE_REVIEW_KEY = {:?};",
+            crate::roadmap::review::SETTLE_REVIEW_KEY
+        ),
+        format!("export const DEFAULT_MAX_CONCURRENT = {MAX_CONCURRENT_ROADMAP_RUNS};"),
+        format!("export const MAX_CONCURRENT_CEILING = {MAX_CONCURRENT_ROADMAP_CEILING};"),
+    ] {
+        assert!(
+            TS.contains(&expected),
+            "autonomy.ts must declare `{expected}` — the host reads what it writes"
+        );
+    }
+}
+
+#[test]
+fn the_cap_is_read_per_project() {
+    let conn = test_conn();
+    conn.execute(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'fletch', 0), ('p2', 'o', 0)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(concurrency_cap(&conn, "p1"), MAX_CONCURRENT_ROADMAP_RUNS);
+    assert!(!autoqueue(&conn, "p1"));
+
+    for (project, value) in [("p1", "3"), ("p2", "nonsense")] {
+        conn.execute(
+            "INSERT INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3)",
+            rusqlite::params![project, MAX_CONCURRENT_KEY, value],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO project_settings (project_id, key, value) VALUES ('p1', ?1, '1')",
+        rusqlite::params![AUTOQUEUE_KEY],
+    )
+    .unwrap();
+
+    assert_eq!(concurrency_cap(&conn, "p1"), 3);
+    // The other project keeps the default, and a garbage value is not contagious.
+    assert_eq!(concurrency_cap(&conn, "p2"), MAX_CONCURRENT_ROADMAP_RUNS);
+    assert!(autoqueue(&conn, "p1"));
+    assert!(!autoqueue(&conn, "p2"));
 }
 
 // ───────────────────────────── workflow choice ──────────────────────────
@@ -594,7 +787,7 @@ fn a_wedged_queue_head_records_one_blocked_event_not_one_per_tick() {
         item,
         text,
         recorded,
-    } = plan_and_claim(&conn, "p1")
+    } = plan_and_claim(&conn, "p1", 1)
     else {
         panic!("expected a note about the wedged head");
     };
@@ -611,7 +804,7 @@ fn a_wedged_queue_head_records_one_blocked_event_not_one_per_tick() {
 
     // Next tick, same loop: the note may repeat (it's transient), the row may
     // not.
-    let Claim::Note { recorded, .. } = plan_and_claim(&conn, "p1") else {
+    let Claim::Note { recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
         panic!("expected a note");
     };
     assert!(
@@ -631,7 +824,7 @@ fn ordinary_dep_waiting_stays_transient() {
     let waiting = db_item(&conn, ItemStatus::Queued);
     set_deps(&conn, &waiting, &[&dep.code]);
 
-    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1") else {
+    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
         panic!("expected a note");
     };
     assert_eq!(text, format!("Waiting on {}", dep.code));
@@ -648,7 +841,7 @@ fn ordinary_dep_waiting_stays_transient() {
 /// queue selection — so it is the honest signal that the item was in the queue,
 /// without a `wf_definition` and a repo row to make a real claim possible.
 fn reached(conn: &Connection, project_id: &str) -> &'static str {
-    match plan_and_claim(conn, project_id) {
+    match plan_and_claim(conn, project_id, 1) {
         Claim::Nothing => "nothing",
         Claim::Note { .. } => "in the queue",
         Claim::Claimed(..) => "claimed",
