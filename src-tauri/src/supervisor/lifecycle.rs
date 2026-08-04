@@ -998,9 +998,28 @@ impl Supervisor {
         // having really landed above, and the roadmap ops on this being a
         // project-manager chat (the only purpose given the
         // `rpc::roadmap::RoadmapDispatcher` — see `launch_agent_process`).
+        let roadmap_pm = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_ROADMAP_PM);
+        // The PM's product memory (`roadmap::memory`), read here because this is
+        // the site that knows *which project* this chat belongs to — the same
+        // stamp `launch_agent_process` gives the RPC dispatcher. Read on every
+        // launch path, like every other instruction layer, so a resumed chat
+        // whose brief the user changed comes back with the current one rather
+        // than the one it spawned with. A read failure (or no DB state, which is
+        // unreachable once setup ran) degrades to no brief: an agent with one
+        // section missing is worth more than a spawn that fails.
+        let product_brief = roadmap_pm
+            .then(|| app.try_state::<crate::roadmap::Db>())
+            .flatten()
+            .and_then(|db| {
+                let conn = db.lock();
+                crate::roadmap::memory::load(&conn, &record.project_id).ok()
+            })
+            .flatten()
+            .map(|brief| brief.content);
         let blocks = crate::agent_profile::Blocks {
             codegraph: codegraph_available,
-            roadmap_pm: record.purpose.as_deref() == Some(crate::workspace::PURPOSE_ROADMAP_PM),
+            roadmap_pm,
+            product_brief: product_brief.as_deref(),
         };
         let instructions = crate::agent_profile::effective_instructions(
             brief.as_deref(),

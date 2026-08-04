@@ -15,6 +15,8 @@ import type {
 import type { PrStateChangedEvent } from "./types/pr";
 import type { AgentInstallEvent } from "./types/providers";
 import type {
+  RoadmapBrief,
+  RoadmapBriefProposal,
   RoadmapItem,
   RoadmapItemEvent,
   RoadmapOrderProposal,
@@ -121,6 +123,32 @@ export function onRoadmapProjectHold(cb: (hold: RoadmapProjectHold) => void): Pr
  *  and none to release. */
 export function onRoadmapProjectHoldReleased(cb: (projectId: string) => void): Promise<UnlistenFn> {
   return listen<string>("roadmap:project-hold-released", (event) => cb(event.payload));
+}
+
+/** `roadmap:brief` fires when the project's product brief changes — which only
+ *  happens when the user accepts a PM ask, since that ruling is its one writer.
+ *  Carries the whole document, so the tab re-renders without a refetch. Fires for
+ *  every project — a listener scoped to one board filters on `project_id`. */
+export function onRoadmapBrief(cb: (brief: RoadmapBrief) => void): Promise<UnlistenFn> {
+  return listen<RoadmapBrief>("roadmap:brief", (event) => cb(event.payload));
+}
+
+/** `roadmap:brief-proposal` fires when the PM parks (or replaces) an ask to
+ *  rewrite the brief; carries the full row so the tab grows its decision bar
+ *  mid-conversation. */
+export function onRoadmapBriefProposal(
+  cb: (proposal: RoadmapBriefProposal) => void,
+): Promise<UnlistenFn> {
+  return listen<RoadmapBriefProposal>("roadmap:brief-proposal", (event) => cb(event.payload));
+}
+
+/** `roadmap:brief-proposal-deleted` fires the *project id* once the brief ask has
+ *  been ruled on either way — the ask is keyed by board, not by row. An accepted
+ *  one is followed by `roadmap:brief` carrying the new document. */
+export function onRoadmapBriefProposalDeleted(
+  cb: (projectId: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("roadmap:brief-proposal-deleted", (event) => cb(event.payload));
 }
 
 /** `roadmap:queue-note` explains why an item isn't moving — no workflow to run

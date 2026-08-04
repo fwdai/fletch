@@ -14,7 +14,7 @@ import { HorizonGroup } from "./HorizonGroup";
 import { ItemCard } from "./ItemCard";
 import { ItemDialog } from "./ItemDialog";
 import { OrderProposalBar } from "./OrderProposalBar";
-import { ProductMap } from "./ProductMap";
+import { ProductBrief } from "./ProductBrief";
 import { ProjectHoldBanner } from "./ProjectHoldBanner";
 import { useBoardDnd } from "./useBoardDnd";
 
@@ -24,7 +24,8 @@ type Editing = { item: RoadmapItem | null; horizon: Horizon };
 
 /** The board the PM agent maintains: horizon groups of expandable items, with
  *  the PM's outstanding proposals rendered inline as ghost rows in the horizon
- *  they'd land in. Sibling tab shows the product map the agent reasons against. */
+ *  they'd land in. The sibling tab holds the product brief — the memory the agent
+ *  reasons *from*, where the board is what it reasons *about*. */
 export function Board({
   roadmap,
   repoPath,
@@ -46,7 +47,8 @@ export function Board({
     proposals,
     orderProposal,
     orderable,
-    map,
+    brief,
+    briefProposal,
     tab,
     setTab,
     openCodes,
@@ -73,6 +75,8 @@ export function Board({
     rejectProposals,
     acceptOrder,
     rejectOrder,
+    acceptBrief,
+    rejectBrief,
     moveItem,
     setRanks,
     queueItems,
@@ -174,12 +178,17 @@ export function Board({
           >
             <Icon name="map" size={13} /> Roadmap
           </button>
+          {/* "Product brief", not "Product map": the tab now shows the document
+              the PM actually keeps, and naming it for what it is stops the
+              surface promising a derived map nothing produces. A pending change
+              is flagged here too — it is one click away and easy to miss. */}
           <button
             type="button"
-            className={`rm-tab iflex-center text-sm ${tab === "map" ? "active" : ""}`}
-            onClick={() => setTab("map")}
+            className={`rm-tab iflex-center text-sm ${tab === "brief" ? "active" : ""}`}
+            onClick={() => setTab("brief")}
           >
-            <Icon name="cube" size={13} /> Product map
+            <Icon name="notebookPen" size={13} /> Product brief
+            {briefProposal && <span className="rm-tab-dot" aria-label="1 pending change" />}
           </button>
         </div>
         <span className="grow" />
@@ -325,8 +334,13 @@ export function Board({
       )}
 
       <div className="rm-board-scroll" ref={scroll}>
-        {tab === "map" ? (
-          <ProductMap map={map} />
+        {tab === "brief" ? (
+          <ProductBrief
+            brief={brief}
+            proposal={briefProposal}
+            onAccept={readOnly ? undefined : () => void acceptBrief()}
+            onDecline={readOnly ? undefined : () => void rejectBrief()}
+          />
         ) : blank ? (
           <EmptyBoard readOnly={readOnly} onAdd={() => openNew("next")} />
         ) : (

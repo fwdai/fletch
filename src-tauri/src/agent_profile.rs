@@ -279,7 +279,7 @@ pub fn effective_instructions(
     forked_context: Option<&str>,
     skills: &[SkillSnapshot],
     sandbox_root: &Path,
-    blocks: Blocks,
+    blocks: Blocks<'_>,
 ) -> Result<Option<String>> {
     let index = materialize_skills(skills, sandbox_root)?;
     let clean = |s: Option<&str>| {
@@ -291,9 +291,12 @@ pub fn effective_instructions(
         .codegraph
         .then(crate::instructions::codegraph_block)
         .flatten();
+    // The product brief rides *inside* the roadmap block rather than as a layer
+    // of its own: it is only meaningful to a session that has the ops, and the
+    // block is where the contract for changing it is stated.
     let roadmap = blocks
         .roadmap_pm
-        .then(crate::instructions::roadmap_block)
+        .then(|| crate::instructions::roadmap_block(blocks.product_brief))
         .flatten();
     let parts: Vec<String> = [
         codegraph,
@@ -312,7 +315,7 @@ pub fn effective_instructions(
 /// than a row of bools so a new one can't be silently swapped with its
 /// neighbour at a call site.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Blocks {
+pub struct Blocks<'a> {
     /// The codegraph MCP server actually landed in this session's delivery
     /// (`codegraph::McpInjection::codegraph_available`) — not merely that the
     /// setting is on.
@@ -320,6 +323,14 @@ pub struct Blocks {
     /// This is a roadmap project-manager chat, so it has the `roadmap_*` RPC
     /// ops (`rpc::roadmap::RoadmapDispatcher`) and may be told about them.
     pub roadmap_pm: bool,
+    /// The project's product brief (`roadmap::memory::load`), when it has one —
+    /// the PM's memory of the product across sessions, injected inside the
+    /// roadmap block. Carried here rather than fetched inside
+    /// [`effective_instructions`] because that keeps this module free of the
+    /// database, and it rides in `Blocks` rather than as a sixth parameter
+    /// because it is a *conditional* layer like the two flags above: ignored
+    /// unless `roadmap_pm`, since no other session has the ops that maintain it.
+    pub product_brief: Option<&'a str>,
 }
 
 /// The subagent type Fletch defines when codegraph is available, as claude's
@@ -541,15 +552,18 @@ mod tests {
     use super::*;
 
     /// A session that got the codegraph server and nothing else conditional.
-    const CG: Blocks = Blocks {
+    const CG: Blocks<'static> = Blocks {
         codegraph: true,
         roadmap_pm: false,
+        product_brief: None,
     };
 
-    /// A roadmap project-manager chat, without codegraph.
-    const PM: Blocks = Blocks {
+    /// A roadmap project-manager chat, without codegraph, whose project has no
+    /// product brief yet.
+    const PM: Blocks<'static> = Blocks {
         codegraph: false,
         roadmap_pm: true,
+        product_brief: None,
     };
 
     fn skill(name: &str, desc: &str, body: &str) -> SkillSnapshot {
@@ -681,13 +695,56 @@ mod tests {
             Blocks {
                 codegraph: true,
                 roadmap_pm: true,
+                product_brief: None,
             },
         )
         .unwrap()
         .unwrap();
         let cg = crate::instructions::codegraph_block().unwrap();
-        let rm = crate::instructions::roadmap_block().unwrap();
+        let rm = crate::instructions::roadmap_block(None).unwrap();
         assert_eq!(both, format!("{cg}\n\n{rm}"));
+    }
+
+    #[test]
+    fn the_product_brief_reaches_only_a_project_manager_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let brief = "# Fletch\n\nSupervised agents.";
+
+        // A PM chat whose project has a brief: it rides inside the roadmap block.
+        let pm = effective_instructions(
+            None,
+            None,
+            &[],
+            dir.path(),
+            Blocks {
+                product_brief: Some(brief),
+                ..PM
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            Some(pm),
+            crate::instructions::roadmap_block(Some(brief)),
+            "the brief must not become a layer of its own"
+        );
+
+        // An ordinary session cannot be handed one: it has no op to maintain it
+        // and no board to read, so a brief there would be context nobody asked
+        // for and nobody could change.
+        let plain = effective_instructions(
+            Some("Be terse."),
+            None,
+            &[],
+            dir.path(),
+            Blocks {
+                product_brief: Some(brief),
+                ..Blocks::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plain, "Be terse.");
     }
 
     #[test]

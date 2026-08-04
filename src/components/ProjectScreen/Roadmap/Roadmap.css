@@ -1649,73 +1649,85 @@ button.rm-handoff:hover {
   outline: none;
 }
 
-/* ── product map tab ── */
-.rm-map {
+/* ── product brief tab ──
+   The document the PM keeps, not a dashboard: one column, prose width, and the
+   pending-change decision above it. The markdown body borrows the chat's
+   `.m-agent` prose skin (Chat.css, imported ahead of this file) rather than
+   restating twenty type rules — it is the same kind of content, written by the
+   same author. */
+.rm-brief {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
+  padding-bottom: 8px;
 }
-.rm-map-lede {
-  margin: 2px 4px 12px;
-  line-height: var(--lh-normal);
-  color: var(--fg-2);
-  text-wrap: pretty;
+.rm-brief-md {
+  max-width: 68ch;
+  margin: 0 2px;
 }
-.rm-dom {
-  gap: 11px;
-  padding: 11px 12px 11px 0;
+/* `.m-agent` reserves the gap under a chat bubble; here the tab's own padding
+   does. */
+.rm-brief-md.m-agent {
+  margin-bottom: 0;
+}
+.rm-brief-ask {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-md);
   overflow: hidden;
   background: var(--bg-2);
-  border: 1px solid var(--bd-soft);
-  border-radius: var(--r-md);
 }
-.rm-dom-bar {
-  width: 3px;
+/* The bar sits flush inside the ask box: it is the box's header, not a card of
+   its own, so it drops the standalone rounding. */
+.rm-brief-ask .rm-decbar {
+  border: 0;
+  border-radius: 0;
+}
+.rm-brief-t {
+  gap: 6px;
+  padding: 7px 10px;
+  border: 0;
+  border-top: 1px solid var(--bd-soft);
+  background: none;
+  color: var(--fg-2);
+  cursor: pointer;
+  text-align: left;
+}
+.rm-brief-t:hover {
+  color: var(--fg-1);
+  background: var(--hover);
+}
+.rm-brief-chev {
   flex-shrink: 0;
-  align-self: stretch;
-  background: var(--bd-strong);
+  transform: rotate(-90deg);
+  transition: transform 120ms ease;
 }
-.rm-dom.heat-hot .rm-dom-bar {
-  background: var(--accent);
+.rm-brief-chev.open {
+  transform: none;
 }
-.rm-dom.heat-warm .rm-dom-bar {
-  background: color-mix(in oklch, var(--accent), transparent 55%);
+.rm-brief-ask .rm-brief-md {
+  padding: 4px 12px 2px;
+  border-top: 1px solid var(--bd-soft);
 }
-.rm-dom-id {
-  flex: 1;
-  min-width: 0;
-}
-.rm-dom-l {
-  color: var(--fg-0);
-  font-weight: 500;
-}
-.rm-dom-n {
-  margin-top: 2px;
+.rm-brief-h {
+  gap: 6px;
+  margin: 2px 2px 0;
   color: var(--fg-3);
 }
-.rm-dom-m {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-}
-.rm-dom-files {
+.rm-brief-l {
   color: var(--fg-2);
 }
-.rm-dom-items {
+.rm-brief-age {
   color: var(--fg-3);
 }
-.rm-dom-items.on {
-  color: var(--accent);
-}
-.rm-dom-heat {
-  flex-shrink: 0;
-  width: 52px;
-  text-align: right;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-3);
+/* A pending brief change, flagged on the tab itself. */
+.rm-tab-dot {
+  width: 5px;
+  height: 5px;
+  margin-left: 1px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 /* ── narrow windows ──
