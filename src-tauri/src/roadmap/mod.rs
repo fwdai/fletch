@@ -1030,6 +1030,15 @@ fn reclaim(conn: &Connection, item_id: &str) -> Result<(RoadmapItem, ItemEvent),
 /// Deletion records no history event on purpose: `roadmap_item_events` cascades
 /// with the row, so a deleted item (including a discarded proposal) takes its
 /// trail with it — an item ruled off the board needs no history.
+///
+/// One thing does have to outlive the row: a *routed issue's* refusal. A ghost
+/// the issue funnel created carries the tracker URL it came from
+/// ([`RoadmapItem::issue_url`]), and discarding it is the user saying "not this
+/// one" — a decision the inbox must respect after a reload, when the row it was
+/// expressed on is gone. So the tombstone is written here, in the same lock scope
+/// as the delete, from the row as it was (see [`store::decline_issue`]). Only for
+/// a still-`proposed` row: removing an item the user already *accepted* is a
+/// different decision, and re-offering that issue later is correct.
 #[tauri::command]
 pub async fn roadmap_delete_item(
     id: String,
@@ -1042,7 +1051,17 @@ pub async fn roadmap_delete_item(
         // its disappearance can be announced — the board holds proposals in
         // their own stream and would otherwise count a ghost of one forever.
         let pending = proposals::for_item(&conn, &id).map_err(|e| e.to_string())?;
+        // Read before the delete for the same reason: the routing record this row
+        // may carry is only legible while the row exists.
+        let doomed = store::get(&conn, &id).map_err(|e| e.to_string())?;
         let removed = store::delete(&conn, &id).map_err(|e| e.to_string())?;
+        if removed {
+            if let Some(row) = doomed.filter(|r| r.status == ItemStatus::Proposed) {
+                if let Some(url) = row.issue_url.as_deref() {
+                    store::decline_issue(&conn, &row.project_id, url).map_err(|e| e.to_string())?;
+                }
+            }
+        }
         (removed, pending.filter(|_| removed))
     };
     if removed {

@@ -57,11 +57,17 @@ export interface UiSlice {
   /** Which tab of the project page is showing. Set by whoever opened the
    *  screen, so a control labelled "Project settings" lands on Settings. */
   projectScreenTab: ProjectScreenTab;
-  /** A roadmap item code the board should jump to as soon as it holds it — the
+  /** A roadmap item code the board should reveal as soon as it can — the
    *  cross-screen half of "every altitude links back to the one above it" (a
-   *  run's roadmap chip). Consumed and cleared by the board that has the code,
-   *  so it fires once; the board next to the PM chat needs none of this and
-   *  calls `focusItem` directly. */
+   *  run's roadmap chip). The board next to the PM chat needs none of this and
+   *  calls `revealItem` directly.
+   *
+   *  **Consumed or refused, never left pending.** The target board clears this the
+   *  moment its own rows have settled, whether or not it holds the code: an
+   *  unresolvable request (the item shipped mid-jump, the code belongs to another
+   *  project, the snapshot failed) used to sit here indefinitely and then fire at
+   *  whichever board next happened to hold that code. A refusal is said out loud
+   *  on that board's error bar instead — see `useRoadmap`. */
   roadmapFocusCode: string | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;

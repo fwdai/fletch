@@ -35,6 +35,7 @@ fn item(code: &str, rank: f64) -> RoadmapItem {
         hold_reason: None,
         held_by: None,
         held_at: None,
+        issue_url: None,
         created_at: 0,
         updated_at: 0,
     }

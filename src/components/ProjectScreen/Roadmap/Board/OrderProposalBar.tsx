@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { RoadmapItem, RoadmapOrderProposal } from "@/api";
 import { Icon } from "@/components/Icon";
+import { BoardRulingActions } from "./DecisionBar";
 
 /** One line of the proposed sequence: where the item would sit, what it is, and
  *  whether that is a change. */
@@ -73,16 +74,9 @@ export function OrderProposalBar({
           <Icon name="chevD" size={9} className="rm-order-chev" />
         </button>
         <span className="grow" />
-        {onDecline && (
-          <button type="button" className="rm-props-x" onClick={onDecline}>
-            Decline
-          </button>
-        )}
-        {onAccept && (
-          <button type="button" className="rm-props-ok iflex-center" onClick={onAccept}>
-            <Icon name="check" size={11} /> Accept
-          </button>
-        )}
+        {/* The ruling trio lives in DecisionBar.tsx, with the batch bar's — this
+            bar's own contribution is the sequence, not the buttons. */}
+        <BoardRulingActions onAccept={onAccept} onDecline={onDecline} />
       </div>
       {open && (
         <ol className="rm-order-list text-xs">

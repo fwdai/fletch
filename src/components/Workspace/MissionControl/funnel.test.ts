@@ -5,6 +5,8 @@ import {
   distillIssueBody,
   funnelAction,
   issueToRoadmapItem,
+  parseDeclinedIssues,
+  routedIssueUrl,
   routedIssueUrls,
 } from "./funnel";
 
@@ -19,8 +21,10 @@ function issue(over: Partial<TrackerIssue> = {}): TrackerIssue {
   };
 }
 
-function row(why: string): Pick<RoadmapItem, "why"> {
-  return { why };
+/** A row as the funnel reads it. `issue_url` defaults to null so the legacy
+ *  why-line path is what a bare `row("…")` exercises. */
+function row(why: string, issue_url: string | null = null): Pick<RoadmapItem, "why" | "issue_url"> {
+  return { why, issue_url };
 }
 
 describe("distillIssueBody", () => {
@@ -78,7 +82,14 @@ describe("issueToRoadmapItem", () => {
       why: "https://x/1",
       status: "proposed",
       source: "github",
+      issue_url: "https://x/1",
     });
+  });
+
+  // The durable routing record, and the only place it is ever written.
+  it("carries the issue url as a field, not only as prose", () => {
+    const item = issueToRoadmapItem(issue({ url: "https://x/42", body: "Steps" }));
+    expect(item.issue_url).toBe("https://x/42");
   });
 
   it("maps a Linear ticket to the linear source", () => {
@@ -96,11 +107,36 @@ describe("issueToRoadmapItem", () => {
   });
 });
 
+describe("routedIssueUrl", () => {
+  it("reads the column, whatever the prose says", () => {
+    // The whole point of migration 0036: the `why` is the user's to rewrite (and
+    // the PM's to propose changes to), and dedup must not notice.
+    expect(routedIssueUrl(row("Because three people asked", "https://x/7"))).toBe("https://x/7");
+    expect(routedIssueUrl(row("", "https://x/7"))).toBe("https://x/7");
+  });
+
+  it("falls back to the first line for rows written before the column existed", () => {
+    expect(routedIssueUrl(row("https://github.com/o/r/issues/1\nLogin fails"))).toBe(
+      "https://github.com/o/r/issues/1",
+    );
+    expect(routedIssueUrl(row("https://linear.app/acme/issue/ENG-2"))).toBe(
+      "https://linear.app/acme/issue/ENG-2",
+    );
+  });
+
+  it("is null for a row nobody imported", () => {
+    expect(routedIssueUrl(row("Because users keep asking"))).toBeNull();
+    expect(routedIssueUrl(row(""))).toBeNull();
+    expect(routedIssueUrl(row("see https://github.com/o/r/issues/9 for detail"))).toBeNull();
+  });
+});
+
 describe("routedIssueUrls", () => {
-  it("reads the url off each row's first line", () => {
+  it("collects both the column and the legacy first line", () => {
     const urls = routedIssueUrls([
-      row("https://github.com/o/r/issues/1\nLogin fails"),
+      row("Rewritten rationale", "https://github.com/o/r/issues/1"),
       row("https://linear.app/acme/issue/ENG-2"),
+      row("Not from a tracker at all"),
     ]);
     expect([...urls].sort()).toEqual([
       "https://github.com/o/r/issues/1",
@@ -108,14 +144,27 @@ describe("routedIssueUrls", () => {
     ]);
   });
 
-  it("ignores a why that doesn't open with a bare url", () => {
-    expect(
-      routedIssueUrls([
-        row("Because users keep asking"),
-        row(""),
-        row("see https://github.com/o/r/issues/9 for detail"),
-      ]).size,
-    ).toBe(0);
+  it("is empty for a board of hand-written rows", () => {
+    expect(routedIssueUrls([row("Because users keep asking"), row("")]).size).toBe(0);
+  });
+});
+
+describe("parseDeclinedIssues", () => {
+  it("reads the stored JSON array", () => {
+    expect([...parseDeclinedIssues('["https://x/1","https://x/2"]')]).toEqual([
+      "https://x/1",
+      "https://x/2",
+    ]);
+  });
+
+  it("is empty for anything it can't trust", () => {
+    for (const value of [undefined, "", "not json", "{}", '"a string"', "[1,2]"]) {
+      expect(parseDeclinedIssues(value).size, String(value)).toBe(0);
+    }
+  });
+
+  it("keeps only the strings out of a mixed array", () => {
+    expect([...parseDeclinedIssues('["https://x/1",7,null]')]).toEqual(["https://x/1"]);
   });
 });
 
@@ -144,6 +193,34 @@ describe("funnelAction", () => {
 
   it("offers no action for an issue with no url to dedup on", () => {
     expect(funnelAction("p1", "", routed)).toEqual({ kind: "none" });
+  });
+
+  // The durable-refusal half: a discarded ghost used to be re-offered on every
+  // read, forever, because the record of the refusal died with the row.
+  it("reports an issue the user turned down instead of offering it again", () => {
+    const declined = new Set(["https://github.com/o/r/issues/5"]);
+    expect(funnelAction("p1", "https://github.com/o/r/issues/5", routed, declined)).toEqual({
+      kind: "declined",
+    });
+    // Untouched issues are still addable.
+    expect(funnelAction("p1", "https://github.com/o/r/issues/6", routed, declined)).toEqual({
+      kind: "add",
+      projectId: "p1",
+    });
+  });
+
+  it("lets the board outrank the tombstone when an issue was routed again", () => {
+    const declined = new Set(["https://github.com/o/r/issues/1"]);
+    expect(funnelAction("p1", "https://github.com/o/r/issues/1", routed, declined)).toEqual({
+      kind: "routed",
+    });
+  });
+
+  it("treats an unknown declined set as nothing declined", () => {
+    expect(funnelAction("p1", "https://github.com/o/r/issues/2", routed)).toEqual({
+      kind: "add",
+      projectId: "p1",
+    });
   });
 
   // The same origin repo can be pinned in two projects; each board is judged

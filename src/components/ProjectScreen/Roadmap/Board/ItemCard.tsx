@@ -15,6 +15,7 @@ import { formatAge } from "@/util/format";
 import { pausedLabel } from "@/workflows/run/status";
 import { EVENT_LABEL, eventDetailUrl, eventLine } from "../itemHistory";
 import { buildProposalDiff, isEmptyDiff } from "../proposalDiff";
+import { cardRuling } from "../ruling";
 import type { BoardItem, ItemSource, ItemStatus } from "../types";
 import { reviewGate } from "../useItemReviews";
 import { DecisionBar } from "./DecisionBar";
@@ -60,27 +61,28 @@ interface Props {
   ghost?: boolean;
   open: boolean;
   onToggle: () => void;
-  /** Accept the proposal (`proposed → open`). Ghosts only, and not read-only.
-   *  Where it lands is the project's business, not this card's: with autoqueue on
-   *  it queues (which is why `acceptLabel` changes), and a hold leaves it `open`. */
+  /** Say yes to whatever this row has pending — admit the ghost, apply the PM's
+   *  ask, or (a revised ghost) both, in that order. Which of those it is comes
+   *  from `cardRuling`, and the board binds the matching mutation; absent on a
+   *  read-only board. Where an admission *lands* is the project's business, not
+   *  this card's: with autoqueue on it queues (which is why `acceptLabel`
+   *  changes), and a hold leaves it `open`. */
   onAccept?: () => void;
-  /** Accept *and* queue in one click. Passed only while autoqueue is off — with it
-   *  on, `onAccept` already does this. */
+  /** Accept *and* queue in one click. Passed only for a ruling that admits a row,
+   *  and only while autoqueue is off — with it on, `onAccept` already does this. */
   onAcceptQueue?: () => void;
   /** What the two accepts say, from `acceptActions` — so the words the board uses
    *  and the words this card uses are computed once. */
   acceptLabel?: string;
   queueLabel?: string | null;
-  /** Discard the proposal — the row is deleted. Ghosts only. */
+  /** Say no: discard the ghost, or decline the ask and leave the row alone. Same
+   *  one-bar/one-pair shape as `onAccept`. */
   onDiscard?: () => void;
   /** The PM's pending ask against this row — a change or a discard the user
-   *  hasn't ruled on. Drawn as an always-visible bar (the ghost bar's grammar)
-   *  plus, for a change, a per-field diff in the expanded body. */
+   *  hasn't ruled on. Folded into this card's single ruling (see `cardRuling`),
+   *  and, for a change the ruling can apply, drawn as a per-field diff in the
+   *  expanded body. */
   proposal?: RoadmapProposal;
-  /** Apply the pending ask. Absent on a read-only board. */
-  onAcceptProposal?: () => void;
-  /** Decline it — the item stays as it is, the refusal lands in history. */
-  onRejectProposal?: () => void;
   /** Hand the item to the queue (`open → queued`). Absent for a ghost and on a
    *  read-only board. */
   onQueue?: () => void;
@@ -170,8 +172,6 @@ export function ItemCard({
   queueLabel,
   onDiscard,
   proposal,
-  onAcceptProposal,
-  onRejectProposal,
   onQueue,
   onUnqueue,
   onReclaim,
@@ -216,10 +216,15 @@ export function ItemCard({
   const paused = run?.status === "paused" ? run.paused_reason : null;
   const source = SOURCE[item.source];
   const state = STATE[item.status];
+  /** The single question this card is asking, if any — one answer for the bar and
+   *  the diff (and, board-side, for the batch count). */
+  const ruling = cardRuling(!!ghost, proposal ?? null);
   const cls = [
     "rm-item",
     ghost ? "ghost" : "",
-    proposal ? "prop" : "",
+    // A revised ghost is drawn as a ghost, not as both: the row isn't on the
+    // roadmap yet, which is the louder of the two facts.
+    ruling.kind === "ask" ? "prop" : "",
     open ? "open" : "",
     landed ? "landed" : "",
     focused ? "focus" : "",
@@ -289,36 +294,24 @@ export function ItemCard({
         <Icon name="chevD" size={11} className="rm-chev" />
       </button>
 
-      {/* The two buttons that decide a proposal's fate. Outside the header
-          button (no nesting) and outside the collapsible body, so ruling on a
-          ghost never costs an expand — reading it first is what the expand is
-          for. */}
-      {ghost && (onAccept || onDiscard) && (
+      {/* The one bar that decides everything pending on this row. Outside the
+          header button (no nesting) and outside the collapsible body, so ruling
+          never costs an expand — reading it first is what the expand is for.
+          Which question it asks is `cardRuling`'s call, not this component's: a
+          ghost carrying a PM ask is ONE ruling ("accept the revised item"), not
+          two stacked Accepts meaning different things, and the same answer drives
+          the diff below and the batch bar's count. */}
+      {ruling.kind !== "none" && (onAccept || onDiscard) && (
         <DecisionBar
-          label="Proposed — not on the roadmap yet"
+          variant={ruling.variant}
+          label={ruling.label}
+          note={ruling.proposal?.note}
           acceptLabel={acceptLabel}
           queueLabel={queueLabel}
-          declineLabel="Discard"
+          declineLabel={ruling.declineLabel}
           onAccept={onAccept}
           onAcceptQueue={onAcceptQueue}
           onDecline={onDiscard}
-        />
-      )}
-
-      {/* The PM's pending ask against this row — the same bar for a delta
-          instead of a new ticket: always visible, ruled on without an expand.
-          The expanded body carries the per-field diff. Never rendered on a
-          ghost: two stacked bars whose Accepts mean different things ("put it
-          on the board" vs "apply the patch") is a coin-flip for the user —
-          rule on the ghost first, the ask stays pending. */}
-      {proposal && !ghost && (onAcceptProposal || onRejectProposal) && (
-        <DecisionBar
-          variant="prop"
-          label={proposal.kind === "discard" ? "PM proposes discarding" : "PM proposes changes"}
-          note={proposal.note}
-          declineLabel="Decline"
-          onAccept={onAcceptProposal}
-          onDecline={onRejectProposal}
         />
       )}
 
@@ -400,9 +393,11 @@ export function ItemCard({
       {open && (
         <div className="rm-item-body">
           {/* The pending change, first: the reader came to rule on it, and the
-              unchanged body below is the context, not the news. */}
-          {proposal?.kind === "update" && proposal.patch && (
-            <ProposalDiff item={item.item} patch={proposal.patch} />
+              unchanged body below is the context, not the news. Gated on the
+              *ruling*, not merely on a patch existing — a diff the bar above
+              cannot act on is what made a revised ghost unrulable. */}
+          {ruling.showsDiff && ruling.proposal?.patch && (
+            <ProposalDiff item={item.item} patch={ruling.proposal.patch} />
           )}
           {item.why && <p className="rm-why text-sm">{item.why}</p>}
           {item.accept && (

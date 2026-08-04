@@ -75,8 +75,8 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
     conn.execute(
         "INSERT INTO roadmap_items
            (id, project_id, code, title, why, horizon, status, rank, area, source,
-            accept_json, deps_json, workflow_def_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+            accept_json, deps_json, workflow_def_id, issue_url, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
         params![
             id,
             project_id,
@@ -91,6 +91,7 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
             strings_to_col(&new.accept),
             strings_to_col(&new.deps),
             new.workflow_def_id,
+            new.issue_url,
             now,
         ],
     )?;
@@ -239,6 +240,68 @@ fn apply(
 pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     let n = conn.execute("DELETE FROM roadmap_items WHERE id = ?1", [id])?;
     Ok(n > 0)
+}
+
+/// `project_settings` key holding the tracker issues the user has *turned down* —
+/// a JSON array of URLs.
+///
+/// Not a column and not a table, for one reason: the fact it records is about a
+/// row that no longer exists. Discarding a ghost deletes it (that is what a
+/// discard is, and what makes the trail cascade away with it), so the "declined"
+/// half of a routing record has nowhere on `roadmap_items` to live. A table would
+/// be the tidier home, but a roadmap table is off the generic CRUD allow-list by
+/// invariant and would therefore need a typed read command of its own for one
+/// list of strings; `project_settings` is already the project-scoped key/value
+/// store the frontend can read (`getProjectSettings`), and already holds JSON
+/// documents this way (see `run_env`).
+pub(crate) const DECLINED_ISSUES_KEY: &str = "roadmap.declined_issues";
+
+/// How many declined URLs a project keeps. Oldest are dropped first: the list
+/// exists to stop the inbox re-offering something you just said no to, and an
+/// issue you declined a thousand tickets ago being offered once more is a far
+/// smaller sin than an unbounded settings value re-read on every inbox render.
+const DECLINED_MAX: usize = 500;
+
+/// Remember that an imported issue was turned down, so the inbox stops offering
+/// it. Idempotent: a URL already on the list is left where it is rather than
+/// re-appended, so re-declining can't push the rest of the list out.
+///
+/// Called from the delete path when the row being removed is a *proposed* row
+/// carrying an `issue_url` — the exact shape of "the user discarded the ghost
+/// this issue was routed as". Deleting a row that was already *accepted* records
+/// nothing: that issue reached the roadmap and was then removed from it, which is
+/// a different decision from refusing it at the door.
+pub fn decline_issue(conn: &Connection, project_id: &str, issue_url: &str) -> rusqlite::Result<()> {
+    let mut urls = declined_issues(conn, project_id)?;
+    if urls.iter().any(|u| u == issue_url) {
+        return Ok(());
+    }
+    urls.push(issue_url.to_string());
+    if urls.len() > DECLINED_MAX {
+        urls.drain(..urls.len() - DECLINED_MAX);
+    }
+    let json = serde_json::to_string(&urls).unwrap_or_else(|_| "[]".to_string());
+    conn.execute(
+        "INSERT INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3) \
+         ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value",
+        params![project_id, DECLINED_ISSUES_KEY, json],
+    )?;
+    Ok(())
+}
+
+/// The stored declined list, oldest first. A missing or unparseable value reads
+/// as empty — a corrupt setting must cost the dedup, never the discard.
+fn declined_issues(conn: &Connection, project_id: &str) -> rusqlite::Result<Vec<String>> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
+            params![project_id, DECLINED_ISSUES_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(stored
+        .and_then(|v| serde_json::from_str::<Vec<String>>(&v).ok())
+        .unwrap_or_default())
 }
 
 /// The next free code for a project ("FLT-142").
@@ -689,6 +752,7 @@ mod tests {
                 accept: vec!["survives a quit".into(), "reattaches".into()],
                 deps: vec![bare.code.clone()],
                 workflow_def_id: Some("wf-pipeline".into()),
+                issue_url: None,
             },
         )
         .unwrap();
@@ -893,6 +957,166 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    /// The funnel's dedup key is a column, so it survives every edit to the
+    /// prose that used to carry it.
+    #[test]
+    fn a_routed_row_carries_its_issue_url_and_a_hand_typed_one_does_not() {
+        let conn = test_conn();
+        let p = project(&conn, "p1", "fletch");
+        let routed = create(
+            &conn,
+            &p,
+            &NewItem {
+                title: "Crash on save".into(),
+                why: "https://github.com/o/r/issues/7\nSaving drops the body".into(),
+                status: Some(ItemStatus::Proposed),
+                source: Some(ItemSource::Github),
+                issue_url: Some("https://github.com/o/r/issues/7".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let typed = create(&conn, &p, &titled("my own idea")).unwrap();
+        assert_eq!(
+            routed.issue_url.as_deref(),
+            Some("https://github.com/o/r/issues/7")
+        );
+        assert_eq!(typed.issue_url, None, "nothing imported this one");
+
+        // The whole point of the column: the `why` it used to be read out of is
+        // the user's to rewrite, and dedup must not notice.
+        let edited = update(
+            &conn,
+            &routed.id,
+            &ItemPatch {
+                why: Some("Because three people asked".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            edited.issue_url.as_deref(),
+            Some("https://github.com/o/r/issues/7"),
+            "an edited rationale is still the same issue"
+        );
+        // And there is no way to patch it: `ItemPatch` has no such field, so a
+        // wire patch naming it changes nothing.
+        let patch: ItemPatch = serde_json::from_str(r#"{"issue_url": "https://evil/1"}"#).unwrap();
+        let after = update(&conn, &routed.id, &patch).unwrap().unwrap();
+        assert_eq!(
+            after.issue_url.as_deref(),
+            Some("https://github.com/o/r/issues/7"),
+            "provenance is not editable"
+        );
+        assert_eq!(list(&conn, &p).unwrap().len(), 2);
+    }
+
+    /// The other half of the routing record: a refusal, which has to outlive the
+    /// row it was expressed on.
+    #[test]
+    fn a_declined_issue_is_remembered_once_per_project() {
+        let conn = test_conn();
+        let a = project(&conn, "pa", "alpha");
+        let b = project(&conn, "pb", "beta");
+        let url = "https://github.com/o/r/issues/7";
+
+        decline_issue(&conn, &a, url).unwrap();
+        // Idempotent — declining twice is one entry, not two.
+        decline_issue(&conn, &a, url).unwrap();
+        decline_issue(&conn, &a, "https://github.com/o/r/issues/9").unwrap();
+        // Per project: the same origin repo pinned in two projects means routing
+        // (and refusing) in one says nothing about the other.
+        assert!(declined_issues(&conn, &b).unwrap().is_empty());
+        assert_eq!(
+            declined_issues(&conn, &a).unwrap(),
+            vec![
+                url.to_string(),
+                "https://github.com/o/r/issues/9".to_string()
+            ]
+        );
+
+        // Stored as a JSON array under the shared key, which is how the frontend
+        // reads it (`getProjectSettings`) — no command of its own.
+        let raw: String = conn
+            .query_row(
+                "SELECT value FROM project_settings WHERE project_id = 'pa' AND key = ?1",
+                [DECLINED_ISSUES_KEY],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(raw.starts_with('['), "{raw}");
+        assert!(raw.contains(url));
+
+        // A corrupt value costs the dedup, never a panic.
+        conn.execute(
+            "UPDATE project_settings SET value = 'not json' WHERE project_id = 'pa'",
+            [],
+        )
+        .unwrap();
+        assert!(declined_issues(&conn, &a).unwrap().is_empty());
+        decline_issue(&conn, &a, url).unwrap();
+        assert_eq!(declined_issues(&conn, &a).unwrap(), vec![url.to_string()]);
+    }
+
+    /// 0036 is a plain `ADD COLUMN`, so the rows a shipped install already holds
+    /// must cross it untouched — no rebuild, no cascade, and the new column
+    /// reading NULL rather than absent.
+    #[test]
+    fn the_issue_url_migration_leaves_existing_rows_alone() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        // Everything up to and including 0035 — pinned by count for the same
+        // reason the rank backfill test pins its own: a later migration must not
+        // quietly change which schema this rebuilds.
+        const BEFORE_ISSUE_URL: usize = 35;
+        Migrations::new(
+            crate::database::MIGRATIONS[..BEFORE_ISSUE_URL]
+                .iter()
+                .map(|&sql| M::up(sql))
+                .collect(),
+        )
+        .to_latest(&mut conn)
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'one', 0);
+             INSERT INTO roadmap_items (id, project_id, code, title, why, horizon, status,
+                                        rank, created_at, updated_at) VALUES
+               ('old', 'p1', 'ONE-100', 'from before',
+                'https://github.com/o/r/issues/1\nrouted the old way',
+                'later', 'proposed', 1.0, 10, 10);",
+        )
+        .unwrap();
+
+        get_migrations().to_latest(&mut conn).unwrap();
+
+        let rows = list(&conn, "p1").unwrap();
+        assert_eq!(rows.len(), 1, "the row survived the migration");
+        assert_eq!(rows[0].code, "ONE-100");
+        assert_eq!(
+            rows[0].issue_url, None,
+            "not backfilled — the legacy URL stays in the `why`, where the \
+             frontend's fallback reader finds it"
+        );
+        assert!(rows[0].why.starts_with("https://github.com/o/r/issues/1"));
+        // And the column really is there to write.
+        decline_issue(&conn, "p1", "https://github.com/o/r/issues/1").unwrap();
+        let fresh = create(
+            &conn,
+            "p1",
+            &NewItem {
+                title: "new import".into(),
+                issue_url: Some("https://github.com/o/r/issues/2".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fresh.issue_url.as_deref(),
+            Some("https://github.com/o/r/issues/2")
+        );
     }
 
     #[test]

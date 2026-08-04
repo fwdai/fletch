@@ -70,3 +70,56 @@ export function DecisionBar({
     </div>
   );
 }
+
+/** The *board*-scoped ruling's buttons: the batch of proposals above the horizon
+ *  groups, and the PM's whole-board order ask.
+ *
+ *  Actions only, deliberately — where a card's bar is one fixed row (headline,
+ *  rationale, buttons), a board bar's left half differs per caller: the batch bar
+ *  carries a count and a hint, the order bar carries a collapsible numbered
+ *  sequence. What they share is the trio on the right, which both used to
+ *  hand-roll — three near-identical copies of markup [`DecisionBar`] exists to
+ *  own, drifting one button at a time. This is that markup's one home for them.
+ *
+ *  Drawn with the board bars' own classes (`rm-props-*`) rather than the card
+ *  bar's `Button`s: a board-level bar is an accent band across the column, and the
+ *  two vocabularies are a deliberate visual distinction between "this row" and
+ *  "this board". Any action may be absent — a read-only board hands none, and a
+ *  caller with nothing to offer shouldn't render a bar at all. */
+export function BoardRulingActions({
+  acceptLabel = "Accept",
+  queueLabel,
+  declineLabel = "Decline",
+  onAccept,
+  onAcceptQueue,
+  onDecline,
+}: {
+  acceptLabel?: string;
+  /** Label for the second accept, when the caller has one — see
+   *  [`DecisionBar`]'s `onAcceptQueue`. */
+  queueLabel?: string | null;
+  declineLabel?: string;
+  onAccept?: () => void;
+  onAcceptQueue?: () => void;
+  onDecline?: () => void;
+}) {
+  return (
+    <>
+      {onDecline && (
+        <button type="button" className="rm-props-x" onClick={onDecline}>
+          {declineLabel}
+        </button>
+      )}
+      {onAcceptQueue && queueLabel && (
+        <button type="button" className="rm-props-q iflex-center" onClick={onAcceptQueue}>
+          <Icon name="zap" size={11} /> {queueLabel}
+        </button>
+      )}
+      {onAccept && (
+        <button type="button" className="rm-props-ok iflex-center" onClick={onAccept}>
+          <Icon name="check" size={11} /> {acceptLabel}
+        </button>
+      )}
+    </>
+  );
+}

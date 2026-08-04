@@ -1,0 +1,36 @@
+-- The tracker issue a roadmap row came from, as a real column.
+--
+-- Why this exists: the issue funnel (Mission Control's "Add to roadmap") needs
+-- to answer one question every time the inbox renders — "is this issue already
+-- on that project's board?" — and until now the answer was read out of the
+-- item's `why`: the funnel wrote the issue URL alone on the first line and the
+-- inbox parsed it back. That made a *dedup key* out of a field the user is
+-- invited to edit. Retitling the rationale, or letting the PM propose a better
+-- `why`, un-deduped the issue: the inbox offered it again and one click stacked a
+-- second ghost for work already on the board.
+--
+-- So the routing record becomes a column. NULL for every row that did not come
+-- from a tracker (the overwhelming majority), the canonical URL otherwise. The
+-- funnel keys on it; the `why` goes back to being prose the user owns. Rows
+-- written before this migration keep their URL only in the `why`, so the
+-- frontend's reader falls back to that first line for them (see funnel.ts
+-- `routedIssueUrl`) — a backfill would have to re-parse user-editable text into
+-- a column claiming to be canonical, which is exactly the property we are buying.
+--
+-- Plain ADD COLUMN, deliberately: no table rebuild. 0035 had to rebuild because
+-- `parent_id`'s self-referencing FK forbids DROP COLUMN, and that rebuild is the
+-- expensive, cascade-sensitive operation this file must not repeat. A nullable
+-- TEXT column with no constraint and no default is the one shape SQLite adds in
+-- O(1) with nothing else touched.
+--
+-- No index: the only query is "the rows of one project" (`roadmap_list_items`,
+-- already indexed by `project_id`), and the URL matching happens in the frontend
+-- over that project's rows. An index on a column that is NULL for most rows and
+-- never appears in a WHERE clause would be pure write cost.
+--
+-- The other half of the routing record — an issue the user *declined* — cannot
+-- live here, because discarding a ghost deletes its row (that is what a discard
+-- is). It lives in `project_settings` under `roadmap.declined_issues`, written by
+-- the delete path when the row it removes is a `proposed` row carrying an
+-- `issue_url` (see roadmap/store.rs `decline_issue`).
+ALTER TABLE roadmap_items ADD COLUMN issue_url TEXT;

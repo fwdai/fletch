@@ -61,6 +61,17 @@ export interface RoadmapItem {
    *  exactly when `hold_reason` is. */
   held_by: RoadmapEventActor | null;
   held_at: number | null;
+  /** The tracker issue this row was routed from, or null for a row nobody
+   *  imported (migration 0036).
+   *
+   *  The issue funnel's dedup key — "is this issue already on that board?" is
+   *  answered by matching this field. It used to be answered by parsing the
+   *  `why`'s first line, which made a key out of prose the user and the PM both
+   *  edit: retitling the rationale re-offered the issue and one click stacked a
+   *  second ghost. Set once, by the funnel's create call; not patchable and not
+   *  reachable from the PM, because where a row came from is a fact rather than a
+   *  field. */
+  issue_url: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -130,6 +141,10 @@ export interface NewRoadmapItem {
   /** Workflow this item is dispatched under when queued. Omitted (or null)
    *  means "the project's default at dispatch time". */
   workflow_def_id?: string | null;
+  /** The tracker issue this row is being routed from — the issue funnel's field
+   *  and the only writer of [`RoadmapItem.issue_url`]. Settable only here,
+   *  because provenance is decided when the row is created and never after. */
+  issue_url?: string | null;
 }
 
 /** Why a queued item isn't moving, as the drainer sees it
