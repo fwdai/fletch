@@ -48,10 +48,18 @@
 //!
 //! A hold ([`super::holds`]) is the brake on step 2 only. A held item is never
 //! claimed ([`dispatchable`]) and a held project dispatches nothing at all
-//! ([`plan_and_claim`]) — but step 1 keeps running under either, because settling
-//! is not autonomy: it is the app noticing that a run it already started has
-//! finished. Refusing to reflect that would leave an `active` card lying about a
-//! run that ended hours ago, which is the opposite of what a brake is for.
+//! ([`plan_and_claim`], through [`holds::project_gate`]) — but step 1 keeps
+//! running under either, because settling is not autonomy: it is the app noticing
+//! that a run it already started has finished. Refusing to reflect that would
+//! leave an `active` card lying about a run that ended hours ago, which is the
+//! opposite of what a brake is for.
+//!
+//! A hold also stops everything *downstream* of the item, and that is stated
+//! rather than inferred: the dep gate counts an item as landed only when it is
+//! `done` **and not held** ([`done_codes`]). The inference it replaces ("a held
+//! item never reaches `done`, so its dependants wait") was false — the merge
+//! sweep ships an item when GitHub says its PR merged, which a teammate or an
+//! armed auto-merge can do at any time, hold or no hold.
 //!
 //! Holds outrank the dial in both directions: a raised cap dispatches more of
 //! what is *already* dispatchable and can't reach a held row, and autoqueue
@@ -202,11 +210,37 @@ pub(crate) enum Decision {
     Dispatch(usize),
 }
 
+/// The codes a dependant may treat as landed: `done` **and not held**.
+///
+/// The second half is what makes a hold *transitive*, and it is the whole answer
+/// to review finding B2 (.context/roadmap-pm-plan.md). A hold's promise is that
+/// nothing downstream of it proceeds, and the original implementation of that
+/// promise was indirect — a held item never reaches `done`, so its dependants
+/// wait. That reasoning had a hole: the merge sweep ships an item when *GitHub*
+/// says its PR merged, and a teammate (or an auto-merge armed before the hold) can
+/// merge a held item's PR at any time. The item then reached `done` without
+/// anything autonomous deciding it should, and every dependant unblocked.
+///
+/// So "done" for dependency purposes is stated directly here instead of inferred:
+/// a held item does not satisfy anyone's dependency, **however it got to `done`**.
+/// Dependants of a held item stop, and stay stopped until the user lifts the hold
+/// — at which point this set grows and the next tick dispatches them.
+///
+/// Only the item's own hold is read, not the board's: a held project never reaches
+/// this function at all ([`plan_and_claim`] returns before the board is read).
+pub(crate) fn done_codes(items: &[RoadmapItem]) -> HashSet<String> {
+    items
+        .iter()
+        .filter(|i| i.status == ItemStatus::Done && !i.is_held())
+        .map(|i| i.code.clone())
+        .collect()
+}
+
 /// Whether every code in `deps` counts as landed.
 ///
-/// A dep is satisfied when its item is `done`. `in_review` is *not* done: the
-/// PR is open, the work isn't in the base branch, and a dependant forked now
-/// would build on a tree that doesn't contain it.
+/// A dep is satisfied when its item counts as done ([`done_codes`]). `in_review`
+/// is *not* done: the PR is open, the work isn't in the base branch, and a
+/// dependant forked now would build on a tree that doesn't contain it.
 ///
 /// A dep code that resolves to no item at all is also satisfied. The item it
 /// pointed at was deleted off the board, and a deleted item never ships — so
@@ -243,8 +277,8 @@ pub(crate) fn unsatisfied_deps(
 ///   skip on purpose: a hold is a fact about the row, not a state of the queue,
 ///   so it is filtered here rather than encoded as a [`Decision`] — the queue is
 ///   not "blocked", this row is simply not in it. Dependants of a held item stop
-///   too, without any extra logic: they wait on a code that will not reach `done`
-///   while the hold stands.
+///   too, but *not* because of this filter: see [`done_codes`], which is where the
+///   transitive half of a hold is stated.
 ///
 /// Pure over a board snapshot, so both skips are unit-testable without a
 /// database. **Autoqueue (B3) dispatches through here, and through the project
@@ -842,18 +876,11 @@ fn claim_next(
 /// here on every claim — the *count* it is compared against ([`live_run_count`])
 /// is re-read inside this guard, which is the half that has to be fresh.
 fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
-    match holds::get_project(conn, project_id) {
-        Ok(Some(hold)) => {
-            tracing::debug!(project_id, reason = %hold.reason, "roadmap drainer: project held");
-            return Claim::Nothing;
-        }
-        Ok(None) => {}
-        // A hold we can't read is not a licence to dispatch: the whole point is
-        // that the brake holds when nobody is watching.
-        Err(e) => {
-            tracing::warn!(project_id, error = %e, "roadmap drainer: cannot read the project hold");
-            return Claim::Nothing;
-        }
+    // One authority for "is progress stopped here", fail-closed inside it: a hold
+    // we can't read is not a licence to dispatch.
+    if let Some(reason) = holds::project_gate(conn, project_id) {
+        tracing::debug!(project_id, %reason, "roadmap drainer: project held");
+        return Claim::Nothing;
     }
     let items = match store::list(conn, project_id) {
         Ok(items) => items,
@@ -862,11 +889,7 @@ fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
             return Claim::Nothing;
         }
     };
-    let done: HashSet<String> = items
-        .iter()
-        .filter(|i| i.status == ItemStatus::Done)
-        .map(|i| i.code.clone())
-        .collect();
+    let done = done_codes(&items);
     let known: HashSet<String> = items.iter().map(|i| i.code.clone()).collect();
     // What this tick may actually claim — see [`dispatchable`] for the three
     // rows that are queued and still not in the queue.

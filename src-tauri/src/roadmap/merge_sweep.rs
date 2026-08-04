@@ -37,6 +37,30 @@
 //! unchanged PR costs one round-trip and no budget, so a slow-moving review
 //! queue is effectively free to watch.
 //!
+//! # Holds, and why a held item still ships
+//!
+//! **The rule: the sweep reflects reality, and the hold is what stops everything
+//! downstream of it.**
+//!
+//! A merged pull request is a fact, and the sweep writes it whether or not the
+//! item is held — for the same reason the drainer settles a held item's run:
+//! reflecting reality is not autonomy (see `RoadmapProjectHold` in
+//! `src/api/types/roadmap.ts`). The alternative — skipping held items until
+//! release — would leave a card claiming "in review" about a PR that landed last
+//! Tuesday, and a board that lies is not a safer board.
+//!
+//! What a hold does instead is survive onto the `done` row, and that is what keeps
+//! the promise "nothing downstream proceeds": the dep gate counts an item as
+//! landed only when it is `done` **and not held**
+//! ([`drainer::done_codes`]), so a dependant queued behind a held-and-merged item
+//! waits exactly as it did before the merge. Both halves are true at once — the
+//! board reflects reality, and the hold stops the work behind it.
+//!
+//! Two things the hold does change here, both so the board can explain itself:
+//! the `shipped` line records that the hold outlived the merge ([`event_for`]),
+//! and the sweep does **not** [`drainer::nudge`], because a held landing unblocks
+//! nothing and the drainer has nothing new to do.
+//!
 //! # What it never does
 //!
 //! It never *blanks* state. A failed fetch, an unresolvable repo, a missing
@@ -55,7 +79,7 @@ use tokio::sync::Notify;
 use super::drainer::{self, QueueNote};
 use super::events::{EventActor, EventKind, TrailEntry};
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
-use super::Db;
+use super::{holds, Db};
 use crate::github::PrStatus;
 
 /// How often the sweep re-reads its watch list while anything is in review.
@@ -153,13 +177,26 @@ pub(crate) fn patch_for(verdict: &Verdict) -> Option<ItemPatch> {
     }
 }
 
+/// What the `shipped` line says when a hold outlived the merge. The trail has to
+/// carry it: without this the board shows a `done` item whose dependants are
+/// mysteriously still queued, and the only explanation is a hold chip three cards
+/// away.
+pub(crate) const SHIPPED_WHILE_HELD: &str =
+    "its PR merged while this was held — the hold stands, so nothing waiting on it moves";
+
 /// The history event a verdict writes alongside its patch — the durable half of
 /// the answer, paired with [`patch_for`] (`None` exactly when that is). The
 /// `shipped` event's timestamp is the item's `done_at`.
-pub(crate) fn event_for(verdict: &Verdict) -> Option<(EventKind, Option<String>)> {
+///
+/// `held` is the item's [`holds::gate`] answer, read fresh at verdict time. It
+/// changes the *line*, never the write: see the hold rule in the module docs.
+pub(crate) fn event_for(verdict: &Verdict, held: bool) -> Option<(EventKind, Option<String>)> {
     match verdict {
         Verdict::Waiting => None,
-        Verdict::Landed => Some((EventKind::Shipped, None)),
+        Verdict::Landed => Some((
+            EventKind::Shipped,
+            held.then(|| SHIPPED_WHILE_HELD.to_string()),
+        )),
         Verdict::Abandoned => Some((
             EventKind::Abandoned,
             Some("PR closed without merging".to_string()),
@@ -294,10 +331,14 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
         let Some(patch) = patch_for(&outcome) else {
             continue;
         };
+        // Read fresh, after the network round-trip, and only where it matters: a
+        // hold placed while we were asking GitHub is a hold that applies to this
+        // landing. It does not stop the write — see the hold rule above.
+        let held = matches!(outcome, Verdict::Landed) && held_now(db, &w.id);
         // `patch_for` and `event_for` are `Some` for exactly the same verdicts;
         // the expect documents that rather than inventing a fallback event.
-        let (kind, detail) = event_for(&outcome).expect("a verdict that writes also records");
-        tracing::info!(item = %w.code, pr = w.number, ?outcome, "roadmap merge sweep");
+        let (kind, detail) = event_for(&outcome, held).expect("a verdict that writes also records");
+        tracing::info!(item = %w.code, pr = w.number, ?outcome, held, "roadmap merge sweep");
         // Conditional on the row still being in review: the verdict was decided
         // over a network read, and a row the user moved meanwhile (marked done
         // by hand, re-queued after a delete) must not be stamped over. A miss
@@ -315,6 +356,13 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
             },
         );
         match outcome {
+            // A held landing unblocks nothing: the dep gate still refuses this
+            // item ([`drainer::done_codes`]), so there is no queue movement to
+            // hurry along. The `shipped` line already said so.
+            Verdict::Landed if held => tracing::info!(
+                item = %w.code,
+                "roadmap merge sweep: shipped a held item — nothing waiting on it may move"
+            ),
             Verdict::Landed => {
                 // The item is `done`, which is what a dependant's dep gate is
                 // waiting for. Nudge rather than let it sit until the drainer's
@@ -330,6 +378,29 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
                 },
             ),
             Verdict::Waiting => {}
+        }
+    }
+}
+
+/// Is autonomous progress on this item stopped, right now? One lock, one gate
+/// ([`holds::gate`], which answers for the item's own hold and the board's).
+///
+/// Read after the network round-trip rather than off the watch list, because the
+/// interesting case is precisely a hold placed *while* the sweep was asking GitHub
+/// — the PM holding an item as its PR lands is the scenario the whole rule exists
+/// for. A row that has since been deleted is not held; the conditional write that
+/// follows misses on its own.
+///
+/// Fail-closed on a read error, like every other hold read: the cost of being
+/// wrong the safe way is one extra clause on a `shipped` line.
+fn held_now(db: &Db, item_id: &str) -> bool {
+    let conn = db.lock();
+    match super::store::get(&conn, item_id) {
+        Ok(Some(item)) => holds::gate(&conn, &item).is_some(),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(item_id, error = %e, "roadmap merge sweep: cannot read the item's hold");
+            true
         }
     }
 }

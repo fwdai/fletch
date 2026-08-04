@@ -133,6 +133,70 @@ fn a_held_head_is_skipped_and_the_next_item_still_dispatches() {
 
 // ───────────────────────────── dependencies ─────────────────────────────
 
+/// The dep gate's own definition of "landed": `done` and not held.
+#[test]
+fn a_held_done_item_is_not_a_landed_dependency() {
+    let mut shipped = item("FLT-100", 1.0);
+    shipped.status = ItemStatus::Done;
+    let mut shipped_but_held = item("FLT-101", 2.0);
+    shipped_but_held.status = ItemStatus::Done;
+    shipped_but_held.hold_reason = Some("we agreed something else".into());
+    // Not done at all, held or otherwise.
+    let mut open = item("FLT-102", 3.0);
+    open.status = ItemStatus::Open;
+    let mut held_open = item("FLT-103", 4.0);
+    held_open.status = ItemStatus::Open;
+    held_open.hold_reason = Some("direction".into());
+
+    assert_eq!(
+        done_codes(&[shipped, shipped_but_held, open, held_open]),
+        codes(&["FLT-100"]),
+        "a held item satisfies nobody's dependency, however it got to done"
+    );
+}
+
+/// Review finding B2, as the dispatch decision sees it: the sweep shipped a held
+/// item because its PR merged (which is reality, and correct), and the dependant
+/// behind it must *still* be blocked. Before `done_codes` this dispatched.
+#[test]
+fn a_dependant_of_a_held_done_item_stays_blocked() {
+    let mut dep = item("FLT-100", 1.0);
+    dep.status = ItemStatus::Done;
+    dep.hold_reason = Some("we agreed something else".into());
+    dep.held_by = Some(EventActor::Pm);
+    let mut dependant = item("FLT-101", 2.0);
+    dependant.deps = vec!["FLT-100".into()];
+
+    let board = vec![dep.clone(), dependant.clone()];
+    let known = codes(&["FLT-100", "FLT-101"]);
+    let queue = dispatchable(&board);
+    assert_eq!(queue.len(), 1, "only the dependant is queued");
+    assert_eq!(
+        pick_next(&queue, 0, 1, &done_codes(&board), &known),
+        Decision::Blocked {
+            item_id: "id-FLT-101".into(),
+            waiting_on: vec!["FLT-100".into()],
+        },
+        "the hold survived onto the done row, so the work behind it waits"
+    );
+
+    // Release the hold and the same board dispatches — the hold was the only
+    // thing in the way, and the user lifting it is what lets the queue move.
+    dep.hold_reason = None;
+    dep.held_by = None;
+    let released = vec![dep, dependant];
+    assert_eq!(
+        pick_next(
+            &dispatchable(&released),
+            0,
+            1,
+            &done_codes(&released),
+            &known
+        ),
+        Decision::Dispatch(0)
+    );
+}
+
 #[test]
 fn a_done_dependency_lets_an_item_through() {
     let mut it = item("FLT-101", 10.0);
@@ -881,6 +945,118 @@ fn a_held_project_dispatches_nothing_and_says_nothing_on_the_cards() {
     // thing in the way.
     assert!(holds::release_project(&conn, "p1").unwrap());
     assert_eq!(reached(&conn, "p1"), "in the queue");
+}
+
+/// The transitive half, through the real read path: an item that is `done` *and*
+/// held keeps the work behind it waiting. Before this the dependant dispatched.
+#[test]
+fn the_whole_decision_keeps_a_held_done_items_dependants_waiting() {
+    let conn = test_conn();
+    let dep = db_item(&conn, ItemStatus::Done);
+    let dependant = db_item(&conn, ItemStatus::Queued);
+    set_deps(&conn, &dependant, &[&dep.code]);
+
+    // Unheld, the dependency is satisfied: the tick gets past dep selection all
+    // the way to resolving a workflow (which this bare test board has none of).
+    let Claim::Note { text, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected the dependant to be picked");
+    };
+    assert!(
+        text.contains("No workflow"),
+        "a done dependency lets it through: {text}"
+    );
+
+    holds::hold_item(&conn, &dep.id, "we agreed something else", EventActor::Pm).unwrap();
+    let Claim::Note {
+        item,
+        text,
+        recorded,
+    } = plan_and_claim(&conn, "p1", 1)
+    else {
+        panic!("expected a note about the waiting dependant");
+    };
+    assert_eq!(item.id, dependant.id);
+    assert_eq!(
+        text,
+        format!("Waiting on {}", dep.code),
+        "the dependency is done, and held, so it does not count as landed"
+    );
+    assert!(
+        recorded.is_none(),
+        "waiting on a hold resolves when the user lifts it — nothing durable"
+    );
+}
+
+/// The sweep's nudge is a wake-up, not authority: the tick it wakes still goes
+/// through the project gate. So a PR merging on a held board moves nothing.
+#[test]
+fn a_project_hold_blocks_the_dispatch_a_merge_would_have_triggered() {
+    let conn = test_conn();
+    let dep = db_item(&conn, ItemStatus::Done);
+    let dependant = db_item(&conn, ItemStatus::Queued);
+    set_deps(&conn, &dependant, &[&dep.code]);
+    assert_eq!(reached(&conn, "p1"), "in the queue");
+
+    holds::hold_project(&conn, "p1", "re-planning the quarter", EventActor::User).unwrap();
+    assert_eq!(
+        reached(&conn, "p1"),
+        "nothing",
+        "the dependency landed, and the board is stopped anyway"
+    );
+    assert_eq!(
+        store::get(&conn, &dependant.id).unwrap().unwrap().status,
+        ItemStatus::Queued
+    );
+}
+
+/// The whole of review finding B2, end to end at the seam: a held item's PR merges
+/// outside the app, the sweep writes what GitHub said, and the work behind it does
+/// not move.
+#[test]
+fn a_sweep_that_ships_a_held_item_leaves_its_dependants_waiting() {
+    use crate::roadmap::merge_sweep::{self, Verdict};
+
+    let conn = test_conn();
+    let dep = db_item(&conn, ItemStatus::InReview);
+    let dependant = db_item(&conn, ItemStatus::Queued);
+    set_deps(&conn, &dependant, &[&dep.code]);
+    holds::hold_item(&conn, &dep.id, "we agreed something else", EventActor::Pm).unwrap();
+
+    // The sweep's `Landed` write, exactly as its task performs it: conditional on
+    // the row still being in review, with the line `event_for` pairs to it.
+    let (kind, detail) = merge_sweep::event_for(&Verdict::Landed, true).expect("a merge records");
+    let (row, event) = apply_and_record(
+        &conn,
+        &dep.id,
+        Some(ItemStatus::InReview),
+        &merge_sweep::patch_for(&Verdict::Landed).expect("a merge writes"),
+        EventActor::Sweep,
+        kind,
+        detail,
+    )
+    .unwrap()
+    .expect("a merged PR is a fact the board reflects");
+    assert_eq!(row.status, ItemStatus::Done, "the board reflects reality");
+    assert!(row.is_held(), "and the hold survives onto the done row");
+    assert_eq!(
+        event.detail.as_deref(),
+        Some(merge_sweep::SHIPPED_WHILE_HELD),
+        "the trail says why the items behind it are still queued"
+    );
+
+    let Claim::Note { item, text, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected the dependant to still be waiting");
+    };
+    assert_eq!(item.id, dependant.id);
+    assert_eq!(text, format!("Waiting on {}", dep.code));
+
+    // Released by the user, the same board dispatches what the merge unblocked.
+    holds::release_item(&conn, &dep.id).unwrap();
+    let Claim::Note { item, text, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected the dependant to be picked");
+    };
+    assert_eq!(item.id, dependant.id);
+    assert!(text.contains("No workflow"), "{text}");
 }
 
 #[test]
