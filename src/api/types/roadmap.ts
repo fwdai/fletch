@@ -90,8 +90,13 @@ export type RoadmapEventActor = "user" | "pm" | "drainer" | "sweep";
 
 /** What happened to an item — one kind per transition, so a history line never
  *  re-derives meaning from a status pair. `held`/`released` arrive with the
- *  holds slice (B5). */
+ *  holds slice (B5).
+ *
+ *  `created` is the user-typed row's opening line, the mirror of the PM's
+ *  `proposed`: without it a hand-built board has no history at all, and every
+ *  "what changed since?" reader calls it unchanged. */
 export type RoadmapEventKind =
+  | "created"
   | "proposed"
   | "accepted"
   | "discarded"

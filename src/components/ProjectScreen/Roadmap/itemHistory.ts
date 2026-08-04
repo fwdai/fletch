@@ -13,6 +13,7 @@ import type { RoadmapEventKind, RoadmapItemEvent } from "@/api";
 
 /** The kind, as the card's history line says it. */
 export const EVENT_LABEL: Record<RoadmapEventKind, string> = {
+  created: "Created",
   proposed: "Proposed",
   accepted: "Accepted",
   discarded: "Discarded",

@@ -19,6 +19,8 @@
 //! an event that didn't ride a typed write path could disagree with the
 //! transition it claims to record.
 
+use std::collections::HashMap;
+
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
@@ -44,6 +46,7 @@ crate::db_enum! {
     /// `held` and `released` arrive with the holds slice (B5, see
     /// .context/roadmap-pm-plan.md) — not declared here until they have a writer.
     EventKind {
+        Created    => "created",
         Proposed   => "proposed",
         Accepted   => "accepted",
         Discarded  => "discarded",
@@ -148,6 +151,51 @@ pub fn list_for_item(conn: &Connection, item_id: &str) -> rusqlite::Result<Vec<I
     rows.collect()
 }
 
+/// Every item's newest event on one board, keyed by `item_id`.
+///
+/// The card renders an item's whole trail ([`list_for_item`]); the PM's
+/// projection only ever needs the last line of each — so this is one statement
+/// for the whole board rather than a query per row, and it never pulls a
+/// hundred rows to look at one.
+///
+/// The window function is what makes "newest per item" one pass; the ordering
+/// inside it is [`list_for_item`]'s, so the line the PM is shown and the line at
+/// the top of the card's trail are the same row even for two events written in
+/// the same millisecond.
+pub fn latest_by_item(
+    conn: &Connection,
+    project_id: &str,
+) -> rusqlite::Result<HashMap<String, ItemEvent>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM (
+           SELECT {COLUMNS}, ROW_NUMBER() OVER (
+             PARTITION BY item_id ORDER BY created_at DESC, rowid DESC
+           ) AS rn
+           FROM roadmap_item_events WHERE project_id = ?1
+         ) WHERE rn = 1"
+    ))?;
+    let rows = stmt.query_map([project_id], ItemEvent::from_row)?;
+    rows.map(|r| r.map(|e| (e.item_id.clone(), e)))
+        .collect::<rusqlite::Result<HashMap<_, _>>>()
+}
+
+/// The newest event anywhere on a board — "when did this board last move".
+///
+/// The standup digest compares exactly this against the PM chat's last turn: if
+/// nothing has happened since the two of you spoke, there is nothing to
+/// summarize, and asking for a digest anyway trains the user to ignore them.
+pub fn latest_for_project(
+    conn: &Connection,
+    project_id: &str,
+) -> rusqlite::Result<Option<ItemEvent>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM roadmap_item_events WHERE project_id = ?1
+          ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    ))?;
+    let mut rows = stmt.query_map([project_id], ItemEvent::from_row)?;
+    rows.next().transpose()
+}
+
 /// The item's newest event, or `None` for an item with no history yet.
 ///
 /// One row rather than the whole trail because of the one caller that needs it:
@@ -245,6 +293,54 @@ mod tests {
         assert_eq!(listed[0].detail.as_deref(), Some("its run failed"));
         assert_eq!(second.actor, EventActor::Drainer);
         assert_eq!(second.kind, EventKind::RunFailed);
+    }
+
+    /// Both "newest" reads agree with the head of the trail: the per-item map
+    /// `roadmap_list` projects from, and the board-wide one the standup compares
+    /// against. Same-millisecond writes tie-break on write order, which is what
+    /// keeps the PM's `last_event` and the card's top line the same row.
+    #[test]
+    fn the_newest_reads_agree_with_the_head_of_the_trail() {
+        let conn = test_conn();
+        let a = item(&conn);
+        let b = item(&conn);
+        assert!(latest_for_project(&conn, "p1").unwrap().is_none());
+        assert!(latest_by_item(&conn, "p1").unwrap().is_empty());
+
+        for kind in [EventKind::Created, EventKind::Queued, EventKind::Dispatched] {
+            record(&conn, &a.id, "p1", EventActor::User, kind, None).unwrap();
+        }
+        let b_note = record(
+            &conn,
+            &b.id,
+            "p1",
+            EventActor::Pm,
+            EventKind::Note,
+            Some("watch this one"),
+        )
+        .unwrap();
+
+        let a_head = list_for_item(&conn, &a.id).unwrap()[0].clone();
+        assert_eq!(a_head.kind, EventKind::Dispatched);
+        // Board-wide: the newest write anywhere, whichever item it landed on.
+        assert_eq!(
+            latest_for_project(&conn, "p1").unwrap(),
+            Some(b_note.clone())
+        );
+
+        let by_item = latest_by_item(&conn, "p1").unwrap();
+        assert_eq!(by_item.len(), 2);
+        assert_eq!(by_item.get(&a.id), Some(&a_head));
+        assert_eq!(by_item.get(&b.id), Some(&b_note));
+
+        // Another project's history is invisible to both board-scoped reads.
+        conn.execute(
+            "INSERT INTO projects (id, name, created_at) VALUES ('p2', 'other', 0)",
+            [],
+        )
+        .unwrap();
+        assert!(latest_for_project(&conn, "p2").unwrap().is_none());
+        assert!(latest_by_item(&conn, "p2").unwrap().is_empty());
     }
 
     #[test]
