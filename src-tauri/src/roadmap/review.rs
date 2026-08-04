@@ -46,7 +46,7 @@ use std::sync::Arc;
 use rusqlite::{Connection, OptionalExtension};
 use tauri::{AppHandle, Manager};
 
-use super::drainer::{project_setting, FinalizedPr, Settlement};
+use super::drainer::{project_flag, FinalizedPr, Settlement};
 use super::events::{self, EventActor, EventKind};
 use super::types::RoadmapItem;
 use super::{emit_item_event, Db};
@@ -56,7 +56,10 @@ use crate::supervisor::Supervisor;
 /// `workflow.default`. Absent means on: a user who has never touched the dial
 /// gets the oversight loop the product is about, and turning it off is the
 /// explicit act.
-const SETTLE_REVIEW_KEY: &str = "roadmap.settle_review";
+/// (Visible to the module so the drainer's cross-language pin can walk all three
+/// roadmap dials in one place — the frontend writes these rows, this side reads
+/// them, and a key that drifts is a setting that silently stops working.)
+pub(super) const SETTLE_REVIEW_KEY: &str = "roadmap.settle_review";
 
 /// The instruction line the review turn ends on — what the PM is being asked to
 /// *do* with the outcome, as opposed to acknowledge. Both halves matter: a
@@ -173,16 +176,13 @@ pub(crate) fn plan(conn: &Connection, project_id: &str) -> Plan {
     }
 }
 
-/// Is the settle review on for this project? Absent is on; the off spellings are
-/// the ones a checkbox or a hand-edited row would plausibly write.
+/// Is the settle review on for this project? Absent is on, and the spellings both
+/// answers are recognized in are the drainer's ([`project_flag`]) — this is one of
+/// three roadmap dials now (B3 added autoqueue and the concurrency cap), and one
+/// of them reading "off" differently from the others would be a bug nobody sees
+/// until a hand-edited row behaves two ways.
 fn enabled(conn: &Connection, project_id: &str) -> bool {
-    match project_setting(conn, project_id, SETTLE_REVIEW_KEY) {
-        None => true,
-        Some(v) => !matches!(
-            v.to_ascii_lowercase().as_str(),
-            "false" | "0" | "off" | "no"
-        ),
-    }
+    project_flag(conn, project_id, SETTLE_REVIEW_KEY, true)
 }
 
 /// The project's newest live PM chat, by the same filter and order the Roadmap

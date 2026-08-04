@@ -745,6 +745,7 @@
   color: var(--fg-3);
 }
 .rm-props-x,
+.rm-props-q,
 .rm-props-ok {
   display: inline-flex;
   align-items: center;
@@ -762,6 +763,16 @@
 }
 .rm-props-x:hover {
   color: var(--fg-0);
+  background: var(--hover);
+}
+/* The batch's "Accept all & queue": the same shape as Accept all, drawn one step
+   quieter (no border) because it is the more autonomous of the two and should not
+   be the one the eye lands on first. */
+.rm-props-q {
+  color: var(--fg-2);
+}
+.rm-props-q:hover {
+  color: var(--accent);
   background: var(--hover);
 }
 .rm-props-ok {

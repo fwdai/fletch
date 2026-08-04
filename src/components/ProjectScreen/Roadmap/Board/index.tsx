@@ -2,7 +2,9 @@ import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } fro
 import type { Horizon, RoadmapItem } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { getProjectSettings } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
+import { AUTOQUEUE_KEY, acceptActions, flagOn } from "../autonomy";
 import { NeedsYou } from "../NeedsYou";
 import { HORIZONS } from "../types";
 import { reviewGate } from "../useItemReviews";
@@ -38,6 +40,7 @@ export function Board({
   asideRef?: RefObject<HTMLElement>;
 }) {
   const {
+    projectId,
     items,
     ghosts,
     proposals,
@@ -125,6 +128,28 @@ export function Board({
 
   /** Nothing on the board at all — not even a pending proposal. */
   const blank = !loading && items.length === 0 && ghosts.length === 0;
+
+  /** The project's autoqueue dial — what an accept *does*, so the accept buttons
+   *  can say it (`acceptActions`). Read here rather than in `useRoadmap` on
+   *  purpose: this component mounts every time the user comes back to the Roadmap
+   *  tab, so a dial they just changed two tabs over is never stale on screen.
+   *  Where an accept actually lands is decided host-side either way — this only
+   *  labels the button. */
+  const [autoqueue, setAutoqueue] = useState(false);
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    getProjectSettings(projectId)
+      .then((all) => {
+        if (!cancelled) setAutoqueue(flagOn(all[AUTOQUEUE_KEY], false));
+      })
+      .catch((e) => console.error("load roadmap.autoqueue failed", e));
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+  const cardAccept = acceptActions(autoqueue, "Accept");
+  const batchAccept = acceptActions(autoqueue, "Accept all");
 
   /** The PM's asks against admitted rows only. An ask targeting a row that is
    *  itself still a ghost stays out of the batch bar — its card shows no bar
@@ -253,6 +278,25 @@ export function Board({
           >
             Discard all
           </button>
+          {/* The batch's one-click queue, on the same terms as a card's: offered
+              only while the dial is off, and only when there is a ghost to queue
+              — a bar counting nothing but pending *changes* has nothing to hand
+              the drainer (an accepted patch doesn't move a status). */}
+          {batchAccept.queue && ghosts.length > 0 && (
+            <button
+              type="button"
+              className="rm-props-q iflex-center"
+              onClick={() => {
+                void acceptItems(
+                  ghosts.map((g) => g.item.id),
+                  true,
+                );
+                if (asks.length) void acceptProposals(asks.map((p) => p.id));
+              }}
+            >
+              <Icon name="zap" size={11} /> {batchAccept.queue}
+            </button>
+          )}
           <button
             type="button"
             className="rm-props-ok iflex-center"
@@ -261,7 +305,7 @@ export function Board({
               if (asks.length) void acceptProposals(asks.map((p) => p.id));
             }}
           >
-            <Icon name="check" size={11} /> Accept all
+            <Icon name="check" size={11} /> {batchAccept.primary}
           </button>
         </div>
       )}
@@ -346,6 +390,18 @@ export function Board({
                           : () => setEditing({ item: row, horizon: row.horizon })
                       }
                       onAccept={ghost && !readOnly ? () => acceptItems([row.id]) : undefined}
+                      acceptLabel={cardAccept.primary}
+                      queueLabel={cardAccept.queue}
+                      onAcceptQueue={
+                        // Ghost rows only, and only while the dial is off: with it
+                        // on the primary Accept already queues (and says so). A
+                        // pending *proposal*'s bar never gets this — accepting a
+                        // patch changes a row's shape, not what the queue does
+                        // with it.
+                        ghost && !readOnly && cardAccept.queue
+                          ? () => acceptItems([row.id], true)
+                          : undefined
+                      }
                       onDiscard={ghost && !readOnly ? () => removeItems([row.id]) : undefined}
                       proposal={proposal}
                       onAcceptProposal={

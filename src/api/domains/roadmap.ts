@@ -38,13 +38,26 @@ export const roadmapApi = {
    *  broadcast). That is what keeps a status change sent off a stale board from
    *  overwriting one the Rust drainer made in the meantime — see `unqueueItems`
    *  in useRoadmap.ts. Without it the patch is unconditional and `applied` is
-   *  always true. */
-  roadmapUpdateItem: (id: string, patch: RoadmapItemPatch, expectStatus?: ItemStatus) =>
+   *  always true.
+   *
+   *  `queue` is "Accept & queue": on an accept (`{status:"open"}` with
+   *  `expectStatus:"proposed"`) it asks for the row to land `queued` instead, in
+   *  one click. Ignored on every other patch. The project's `roadmap.autoqueue`
+   *  dial goes through the same backend decision, so the button and the dial land
+   *  in the same place — and a hold overrules both, leaving the item `open` with
+   *  the reason on its trail. */
+  roadmapUpdateItem: (
+    id: string,
+    patch: RoadmapItemPatch,
+    expectStatus?: ItemStatus,
+    queue?: boolean,
+  ) =>
     invoke<RoadmapItemUpdate>("roadmap_update_item", {
       id,
       patch,
       // Always sent, so the argument is present-and-null rather than absent.
       expectStatus: expectStatus ?? null,
+      queue: queue ?? null,
     }),
   /** Move an item in the project's priority order — the board's drag within a
    *  horizon group. Bookkeeping, so it writes no history line (a *horizon* move
