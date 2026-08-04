@@ -861,7 +861,10 @@ fn dormant_column_drop_preserves_rows_and_rebinds_references() {
                  'wf1', 'run1', 'https://x/1', 7, 'wait for signoff', 'pm', 111, 100, 200);
          INSERT INTO roadmap_item_events
                 (id, item_id, project_id, actor, kind, detail, created_at)
-         VALUES ('e1', 'i1', 'p', 'pm', 'note', 'a durable line', 0);",
+         VALUES ('e1', 'i1', 'p', 'pm', 'note', 'a durable line', 0);
+         INSERT INTO roadmap_proposals
+                (id, project_id, item_id, kind, patch_json, note, created_at)
+         VALUES ('pr1', 'p', 'i1', 'update', '{\"title\":\"renamed\"}', 'why', 0);",
     )
     .unwrap();
     drop(conn);
@@ -869,6 +872,25 @@ fn dormant_column_drop_preserves_rows_and_rebinds_references() {
     init(dir.path()).unwrap();
 
     let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
+
+    // The child rows survived the rebuild. This must be asserted positively,
+    // *before* any deletes below: with FK enforcement on during migrations, the
+    // rebuild's DROP TABLE fires ON DELETE CASCADE and wipes exactly these rows
+    // — and a post-delete zero-count check can't tell "cascade works" from
+    // "the upgrade already destroyed everything".
+    let (events, proposals): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM roadmap_item_events),
+                    (SELECT COUNT(*) FROM roadmap_proposals)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (events, proposals),
+        (1, 1),
+        "the durable trail and pending asks must survive the rebuild"
+    );
     // Every kept column survived the copy with its value.
     let row: (
         String,
@@ -935,13 +957,34 @@ fn dormant_column_drop_preserves_rows_and_rebinds_references() {
     // flow project → item → event, exactly as before the rebuild.
     conn.execute("DELETE FROM projects WHERE id = 'p'", [])
         .unwrap();
-    let (items, events): (i64, i64) = conn
+    let (items, events, proposals): (i64, i64, i64) = conn
         .query_row(
             "SELECT (SELECT COUNT(*) FROM roadmap_items),
-                    (SELECT COUNT(*) FROM roadmap_item_events)",
+                    (SELECT COUNT(*) FROM roadmap_item_events),
+                    (SELECT COUNT(*) FROM roadmap_proposals)",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!((items, events), (0, 0), "cascade must survive the rebuild");
+    assert_eq!(
+        (items, events, proposals),
+        (0, 0, 0),
+        "cascade must survive the rebuild"
+    );
+}
+
+/// `init` turns FK enforcement off around the migration run (so table rebuilds
+/// can't cascade into child rows) — this pins that it comes back ON for the
+/// connection the app actually uses. A raw `Connection::open` would not show
+/// this: the pragma is per-connection, so the assertion must run on the handle
+/// `init` returns.
+#[test]
+fn init_returns_a_connection_with_fk_enforcement_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = init(dir.path()).unwrap();
+    let conn = db.lock();
+    let fk: i64 = conn
+        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(fk, 1, "the app's connection must enforce foreign keys");
 }

@@ -82,9 +82,30 @@ pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
     let db_path = data_dir.join(DB_FILENAME);
     let mut conn = open_db(&db_path)?;
     backup_before_upgrade(&conn, &db_path)?;
+    // Foreign-key enforcement must be OFF while migrations run, and that is the
+    // caller's job — rusqlite_migration never touches the pragma. With it on, a
+    // table-rebuild migration (CREATE new / INSERT SELECT / DROP old / RENAME,
+    // e.g. 0035) fires ON DELETE CASCADE at the DROP and silently deletes every
+    // child row pointing at the rebuilt table. The pragma is a no-op inside a
+    // transaction, so it has to be set here, outside the per-migration
+    // transactions the runner opens.
+    conn.pragma_update(None, "foreign_keys", false)?;
     get_migrations()
         .to_latest(&mut conn)
         .map_err(map_migration_error)?;
+    // The other half of running with enforcement off (SQLite's documented
+    // rebuild procedure): verify no migration left a dangling reference before
+    // trusting the schema.
+    let violations: i64 =
+        conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check()", [], |r| {
+            r.get(0)
+        })?;
+    if violations > 0 {
+        return Err(Error::Other(format!(
+            "schema migration left {violations} foreign-key violation(s)"
+        )));
+    }
+    conn.pragma_update(None, "foreign_keys", true)?;
     Ok(Arc::new(Mutex::new(conn)))
 }
 
