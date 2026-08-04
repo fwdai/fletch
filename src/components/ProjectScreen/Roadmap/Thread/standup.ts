@@ -15,11 +15,17 @@
 // tests rather than tangled into an effect.
 
 import type { AgentRecord, UserTurn } from "@/api";
+import { SYSTEM_TURN_MARKER } from "@/util/instructions";
 
 /** The message the digest sends. Ends on the tool call so the answer comes from
  *  the board and not from the transcript — the whole point is that the board
- *  moved without this conversation hearing about it. */
+ *  moved without this conversation hearing about it.
+ *
+ *  Opens on the system-turn marker, like the two turns the host sends into the
+ *  same chat (`roadmap/review.rs`): nobody typed this, so the transcript labels it
+ *  "Fletch · system" rather than showing the user a prompt they never wrote. */
 export const STANDUP_PROMPT =
+  `${SYSTEM_TURN_MARKER}\n` +
   "Summarize what shipped, failed, or got blocked since we last spoke, then " +
   "recommend what to queue next — check roadmap_list first.";
 
