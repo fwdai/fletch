@@ -31,6 +31,7 @@ fn in_review(code: &str, number: Option<i64>) -> RoadmapItem {
         hold_reason: None,
         held_by: None,
         held_at: None,
+        issue_url: None,
         created_at: 10,
         updated_at: 10,
     }

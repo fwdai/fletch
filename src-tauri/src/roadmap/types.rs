@@ -108,6 +108,18 @@ pub struct RoadmapItem {
     /// exactly when `hold_reason` is.
     pub held_by: Option<super::events::EventActor>,
     pub held_at: Option<i64>,
+    /// The tracker issue this row was routed from, or `None` for a row nobody
+    /// imported (migration 0036). The issue funnel's dedup key: "is this issue
+    /// already on that board?" is answered by matching this column, *not* by
+    /// parsing the `why` — which is prose the user and the PM both edit, and
+    /// which used to carry the URL on its first line as a de-facto key.
+    ///
+    /// Written once, at creation, by the funnel's `roadmap_create_item` call.
+    /// Deliberately absent from [`ItemPatch`] and from the PM's
+    /// [`super::proposals::ProposalPatch`]: where a row came from is a fact, not
+    /// a field — nothing that edits an item should be able to make it claim a
+    /// different origin, or claim one at all.
+    pub issue_url: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -116,7 +128,7 @@ pub struct RoadmapItem {
 /// queries can't disagree about what is available.
 pub(crate) const COLUMNS: &str = "id, project_id, code, title, why, horizon, status, \
      rank, area, source, accept_json, deps_json, agent_id, workflow_def_id, run_id, \
-     pr_url, pr_number, hold_reason, held_by, held_at, created_at, updated_at";
+     pr_url, pr_number, hold_reason, held_by, held_at, issue_url, created_at, updated_at";
 
 impl RoadmapItem {
     pub fn from_row(r: &Row) -> rusqlite::Result<Self> {
@@ -141,6 +153,7 @@ impl RoadmapItem {
             hold_reason: r.get("hold_reason")?,
             held_by: opt_enum_col(r, "held_by", super::events::EventActor::from_db)?,
             held_at: r.get("held_at")?,
+            issue_url: r.get("issue_url")?,
             created_at: r.get("created_at")?,
             updated_at: r.get("updated_at")?,
         })
@@ -184,6 +197,17 @@ pub struct NewItem {
     /// the item form can create and assign in one round-trip.
     #[serde(default)]
     pub workflow_def_id: Option<String>,
+    /// The tracker issue this row is being routed from — the issue funnel's
+    /// field, and the only writer of [`RoadmapItem::issue_url`]. Accepted at
+    /// creation because "where did this come from" is settled the moment the row
+    /// exists and never afterwards.
+    ///
+    /// Not reachable from the PM: `roadmap_propose` builds its `NewItem`s from
+    /// its own `ProposedItem` (`rpc::roadmap`), which has no such field and
+    /// rejects unknown ones. An agent cannot make a row it invented claim to be
+    /// somebody's GitHub issue.
+    #[serde(default)]
+    pub issue_url: Option<String>,
 }
 
 /// A partial update. An absent field is left alone; an explicit `null` on a

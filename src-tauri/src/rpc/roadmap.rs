@@ -513,6 +513,13 @@ fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewI
             // Which workflow builds it is the user's call, not the PM's — a
             // proposal isn't work anyone has agreed to do yet.
             workflow_def_id: None,
+            // Where a row came from is a fact about its provenance, and the only
+            // producer of one is the issue funnel's own create call. `source: pm`
+            // above is already this item's honest origin; letting the agent name a
+            // tracker URL here would let it dress an invention up as somebody's
+            // filed issue — and would collide with the funnel's dedup key.
+            // `ProposedItem` has no such field, so this is the whole exclusion.
+            issue_url: None,
         });
     }
     // The deps of the whole batch at once, because that is the only scope an
