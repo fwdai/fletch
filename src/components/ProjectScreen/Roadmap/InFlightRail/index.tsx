@@ -20,14 +20,19 @@ import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import type { RailEntry } from "./select";
 
-/** What the strip is looking at, in the counts' own words. Both halves are named
- *  because they mean different things to the reader: one is spending tokens, the
- *  other is waiting on GitHub. */
+/** What the strip is looking at, in the counts' own words. Three buckets because
+ *  they mean three different things to the reader: one is spending tokens, one is
+ *  waiting on GitHub, and one is a row in the build lane that has stopped — paused,
+ *  held, or a run that ended without the board catching up. Counting that last
+ *  group as "being built" is a claim about work nobody is doing, so it gets its own
+ *  word. */
 function hint(entries: readonly RailEntry[]): string {
-  const building = entries.filter((e) => e.kind === "active").length;
-  const shipping = entries.length - building;
+  const building = entries.filter((e) => e.building).length;
+  const stopped = entries.filter((e) => e.kind === "active" && !e.building).length;
+  const shipping = entries.filter((e) => e.kind === "in_review").length;
   const parts: string[] = [];
   if (building) parts.push(`${building} being built`);
+  if (stopped) parts.push(`${stopped} not moving`);
   if (shipping) parts.push(`${shipping} waiting to ship`);
   return `${parts.join(", ")}.`;
 }
@@ -50,7 +55,10 @@ export function InFlightRail({
       <div className="rm-rail-h flex-center text-xs">
         <span className="rm-rail-n iflex-center mono">
           <Icon name="activity" size={11} />
-          In flight
+          {/* Not "In flight": that is the `now` horizon's label (Roadmap/types.ts)
+              and this strip's membership is a different set — a `now` item that
+              hasn't started is in that horizon and not on this strip. */}
+          In motion
         </span>
         <span className="rm-rail-hint truncate">{hint(entries)}</span>
       </div>

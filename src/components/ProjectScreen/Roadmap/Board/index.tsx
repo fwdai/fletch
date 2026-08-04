@@ -258,11 +258,13 @@ export function Board({
         />
       )}
 
-      {/* What is moving, right under what is stopped. The pair is the board's
-          status line: the strip above is every decision you owe it, this is
-          everything in flight that owes you nothing. Decisions come first
-          because an item that stopped moving outranks one that hasn't, and the
-          rail renders nothing when the pipeline is idle. */}
+      {/* The pipeline, right under the decisions. The pair is the board's status
+          line: the strip above is every decision you owe it, this is the state of
+          everything the pipeline is holding. They overlap on purpose — a paused or
+          held row is a card up there *and* a line down here, because the two
+          answer different questions: what you have to do about it, and where it
+          sits. Decisions come first because an item that stopped moving outranks
+          one that hasn't, and the rail renders nothing when the pipeline is idle. */}
       {tab === "roadmap" && <InFlightRail entries={inFlight} onFocusItem={focusItem} />}
 
       {/* The whole board is stopped. Below the strip (which already carries a

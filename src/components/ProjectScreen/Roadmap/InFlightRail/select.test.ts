@@ -108,6 +108,7 @@ describe("buildInFlight — active rows", () => {
         title: "Ship the drainer",
         state: "running",
         tone: "info",
+        building: true,
         runId: "r",
         startedAt: 5_000,
       },
@@ -118,7 +119,66 @@ describe("buildInFlight — active rows", () => {
     const rail = railOf(item({ id: "a", run_id: "r" }), {
       runsById: new Map([["r", run({ id: "r", status: "paused", paused_reason: "approval" })]]),
     });
-    expect(rail[0]).toMatchObject({ state: "paused — needs approval", tone: "warn" });
+    expect(rail[0]).toMatchObject({
+      state: "paused — needs approval",
+      tone: "warn",
+      building: false,
+    });
+  });
+
+  it("calls a pause with no recorded reason a pause, not motion", () => {
+    // The reason is what names the pause; without one there is still nothing
+    // happening, and the old guard let this row through as "running".
+    const rail = railOf(item({ id: "a", run_id: "r" }), {
+      runsById: new Map([["r", run({ id: "r", status: "paused", paused_reason: null })]]),
+    });
+    expect(rail[0]).toMatchObject({ state: "paused", tone: "warn", building: false });
+    // Keeps its clock: that elapsed time is what the pause is costing.
+    expect(rail[0].startedAt).toBe(1_000);
+  });
+
+  it("says a run failed rather than showing it as still running", () => {
+    // `runsById` carries terminal rows (`wf_list_runs` filters nothing) and the
+    // drainer settles the item a tick later — or never, if that write fails.
+    const rail = railOf(item({ id: "a", run_id: "r" }), {
+      runsById: new Map([["r", run({ id: "r", status: "failed" })]]),
+    });
+    expect(rail[0]).toMatchObject({ state: "run failed", tone: "attention", building: false });
+    expect(rail[0].startedAt).toBeUndefined();
+  });
+
+  it("says a run was canceled rather than showing it as still running", () => {
+    const rail = railOf(item({ id: "a", run_id: "r" }), {
+      runsById: new Map([["r", run({ id: "r", status: "canceled" })]]),
+    });
+    expect(rail[0]).toMatchObject({ state: "run canceled", tone: "warn", building: false });
+    expect(rail[0].startedAt).toBeUndefined();
+  });
+
+  it("reads an ended run as finishing, with no clock left to run", () => {
+    const rail = railOf(item({ id: "a", run_id: "r" }), {
+      runsById: new Map([["r", run({ id: "r", status: "done", created_at: 5_000 })]]),
+    });
+    expect(rail[0]).toMatchObject({ state: "finishing", tone: "info", building: false });
+    // A span that keeps counting on a run that ended is time nothing is spending.
+    expect(rail[0].startedAt).toBeUndefined();
+  });
+
+  it("reads a run that hasn't begun as starting, and still counts it as motion", () => {
+    const rail = railOf(item({ id: "a", run_id: "r" }), {
+      runsById: new Map([["r", run({ id: "r", status: "pending" })]]),
+    });
+    expect(rail[0]).toMatchObject({ state: "starting", tone: "info", building: true });
+    expect(rail[0].startedAt).toBe(1_000);
+  });
+
+  it("lets a hold outrank a live run — a held row is not being built", () => {
+    // The Needs-you strip above carries the release; the rail only has to stop
+    // claiming the row is moving.
+    const rail = railOf(item({ id: "a", run_id: "r", hold_reason: "waiting on me" }), {
+      runsById: new Map([["r", run({ id: "r", status: "running" })]]),
+    });
+    expect(rail[0]).toMatchObject({ state: "held", tone: "attention", building: false });
   });
 
   it("still lists a row the drainer claimed before its run existed", () => {
@@ -128,11 +188,11 @@ describe("buildInFlight — active rows", () => {
     expect(rail[0]).toMatchObject({ state: "running", runId: undefined, startedAt: undefined });
   });
 
-  it("says nothing about a run this project doesn't own", () => {
+  it("falls back to plain 'running' when the run id resolves to nothing", () => {
     // `runsById` is already project-scoped; a miss must read as "no run state",
     // never as another board's.
     const rail = railOf(item({ id: "a", run_id: "elsewhere" }));
-    expect(rail[0]).toMatchObject({ state: "running", tone: "info" });
+    expect(rail[0]).toMatchObject({ state: "running", tone: "info", building: true });
   });
 });
 
@@ -174,7 +234,21 @@ describe("buildInFlight — in-review rows", () => {
 
   it("reads a missing answer as plain 'in review', never as a clean gate", () => {
     const rail = railOf(item({ id: "a", status: "in_review", pr_number: 7 }));
-    expect(rail[0]).toMatchObject({ state: "in review", tone: "info" });
+    expect(rail[0]).toMatchObject({ state: "in review", tone: "info", building: false });
+  });
+
+  it("says a PR with no number can't be watched, the way its card does", () => {
+    // A URL with no number is what `merge_sweep::pollable` skips, so no gate ever
+    // arrives: "in review" here would be a wait that never ends.
+    const rail = railOf(
+      item({
+        id: "a",
+        status: "in_review",
+        pr_url: "https://github.com/o/r/pull/5",
+        pr_number: null,
+      }),
+    );
+    expect(rail[0]).toMatchObject({ state: "can't watch this PR", tone: "warn" });
   });
 
   it("carries no run or clock — a PR's age is not this board's", () => {

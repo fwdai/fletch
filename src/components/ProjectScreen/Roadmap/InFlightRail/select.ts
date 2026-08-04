@@ -21,9 +21,10 @@ import type { MergeGateTone } from "@/mergeGate";
 import { pausedLabel } from "@/workflows/run/status";
 import { reviewGate } from "../useItemReviews";
 
-/** Which half of the pipeline an entry is in. `active` is being built, `in_review`
- *  is built and waiting on its PR — the two statuses the user did not put the item
- *  in and cannot move by hand. */
+/** Which half of the pipeline an entry is in. `active` is in the build lane (not
+ *  necessarily moving — see `building`), `in_review` is built and waiting on its
+ *  PR — the two statuses the user did not put the item in and cannot move by
+ *  hand. */
 export type RailKind = "active" | "in_review";
 
 export interface RailEntry {
@@ -39,6 +40,10 @@ export interface RailEntry {
   /** Severity for the state chip, the shared `MergeGateTone` so an `in_review`
    *  entry and its card's gate chip cannot read differently. */
   tone: MergeGateTone;
+  /** Whether tokens are actually being spent on this row right now. Only an
+   *  `active` row with a live run is; a hold, a pause or a run that already ended
+   *  is not, and the strip's count must not add it to "being built". */
+  building: boolean;
   /** The run building an `active` row, when one is recorded — the drainer flips
    *  the status a beat before the run exists, so this can be absent on a row
    *  that is legitimately active. */
@@ -63,14 +68,70 @@ export interface RailInput {
   reviews: ReadonlyMap<string, RoadmapItemReview>;
 }
 
-/** What an `active` row's run is doing. Paused outranks everything: the pearl is
- *  still pulsing and nothing is happening, which is the one thing this rail must
- *  not let pass as motion. */
-function activeState(run: WfRun | undefined): { state: string; tone: MergeGateTone } {
-  if (run?.status === "paused" && run.paused_reason) {
-    return { state: `paused — ${pausedLabel(run.paused_reason)}`, tone: "warn" };
+/** A run row that has stopped for good. These linger in `runsById` — `wf_list_runs`
+ *  filters nothing and the drainer settles the item it belongs to on a 15s tick (or
+ *  never, if that write fails) — so the rail meets them routinely and must not read
+ *  them as motion. */
+function isOver(run: WfRun | undefined): boolean {
+  return run?.status === "done" || run?.status === "failed" || run?.status === "canceled";
+}
+
+/** What an `active` row is doing.
+ *
+ *  A hold outranks the run: the row was stopped by hand, and whatever its run says
+ *  the item is not going anywhere until it is released (the Needs-you strip above
+ *  carries that affordance; this strip only has to stop claiming motion).
+ *
+ *  Then the run's own status, every branch of it. Collapsing "not paused" to
+ *  "running" is how a failed run kept a live clock on this strip for a tick — or
+ *  forever. `paused` is unconditional: a pause with no recorded reason is still a
+ *  pause, not motion. */
+function activeState(
+  item: RoadmapItem,
+  run: WfRun | undefined,
+): { state: string; tone: MergeGateTone; building: boolean } {
+  if (item.hold_reason) return { state: "held", tone: "attention", building: false };
+  switch (run?.status) {
+    case "paused":
+      return {
+        state: run.paused_reason ? `paused — ${pausedLabel(run.paused_reason)}` : "paused",
+        tone: "warn",
+        building: false,
+      };
+    case "failed":
+      return { state: "run failed", tone: "attention", building: false };
+    case "canceled":
+      return { state: "run canceled", tone: "warn", building: false };
+    // The run is over and the item hasn't caught up yet: the drainer moves it to
+    // review (or done) on its next tick. "complete" is the run's word for this and
+    // would read as a shipped item on a board row, so say what the *item* is doing.
+    case "done":
+      return { state: "finishing", tone: "info", building: false };
+    case "pending":
+      return { state: "starting", tone: "info", building: true };
+    // `running`, and the row whose run isn't in hand yet — the drainer flips the
+    // status a beat before the run exists, and a lookup miss says nothing either
+    // way. Both are the board's claim that this is being built, unrefuted.
+    default:
+      return { state: "running", tone: "info", building: true };
   }
-  return { state: "running", tone: "info" };
+}
+
+/** What an `in_review` row is doing: its PR's merge gate, in the gate's own words.
+ *
+ *  Except when there is nothing to watch — a URL with no number is exactly what
+ *  `merge_sweep::pollable` skips, so no gate will ever arrive and a bland "in
+ *  review" would sit there forever. The card says the same thing (and offers "Mark
+ *  done"); the rail must not look calmer than the card. */
+function reviewState(
+  item: RoadmapItem,
+  review: RoadmapItemReview | undefined,
+): { state: string; tone: MergeGateTone } {
+  if (item.pr_url && item.pr_number == null) {
+    return { state: "can't watch this PR", tone: "warn" };
+  }
+  const gate = review ? reviewGate(review) : null;
+  return { state: gate?.label ?? "in review", tone: gate?.tone ?? "info" };
 }
 
 /** Compose the rail from the board's current state. Board order (rank) within
@@ -89,14 +150,16 @@ export function buildInFlight(input: RailInput): RailEntry[] {
           kind: "active",
           code: item.code,
           title: item.title,
-          ...activeState(run),
+          ...activeState(item, run),
           runId: run?.id,
-          startedAt: run?.created_at,
+          // No clock on a run that has stopped: a span that keeps counting is the
+          // strip asserting work is happening, which is the lie this rail exists to
+          // avoid. A held or paused row keeps it — that elapsed time is the cost of
+          // the decision the user hasn't made.
+          startedAt: isOver(run) ? undefined : run?.created_at,
         },
       });
     } else if (item.status === "in_review") {
-      const review = input.reviews.get(item.id);
-      const gate = review ? reviewGate(review) : null;
       entries.push({
         rank: item.rank,
         entry: {
@@ -104,8 +167,8 @@ export function buildInFlight(input: RailInput): RailEntry[] {
           kind: "in_review",
           code: item.code,
           title: item.title,
-          state: gate?.label ?? "in review",
-          tone: gate?.tone ?? "info",
+          building: false,
+          ...reviewState(item, input.reviews.get(item.id)),
         },
       });
     }
