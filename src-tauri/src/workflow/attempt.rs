@@ -100,6 +100,9 @@ pub struct AttemptParams {
     /// in the RPC watcher task) and this attempt observe the same flag. Defaults
     /// to a never-set flag for runs without comms and for `MockDriver` tests.
     pub pending_ask: Arc<AtomicBool>,
+    /// Live journal for this attempt (see [`AttemptJournal`]). Every production
+    /// call site supplies one; `None` in the pure lifecycle tests.
+    pub journal: Option<AttemptJournal>,
 }
 
 /// The terminal outcome of an attempt (maps onto the §6.2 attempt states).
@@ -129,14 +132,100 @@ pub enum AttemptOutcome {
     Canceled,
 }
 
-/// One journalable event the attempt produced, in order. The scheduler attaches
-/// the `step_exec_id` and appends each to the run journal (S4b); returning them
-/// as data keeps the attempt free of DB/transaction concerns and lets S4a tests
-/// assert that every transition is journaled with a cause (spec §16).
+/// One journalable event the attempt produced, in order. Returning them as data
+/// keeps the attempt's own state machine free of DB concerns and lets tests
+/// assert that every transition is journaled with a cause (spec §16); an
+/// [`AttemptJournal`] writes them through as they happen.
 #[derive(Debug, Clone)]
 pub struct AttemptEvent {
     pub event_type: &'static str,
     pub payload: Value,
+}
+
+/// Writes an attempt's events to the run journal *as they happen*, and links the
+/// agent to its `wf_step_exec` row the moment the spawn returns.
+///
+/// Without this the whole attempt's events are journaled in one batch when it
+/// ends, and `agent_id` is stamped just as late — so for the entire length of a
+/// step (minutes) no `wf:event` fires, the monitor never refetches, and the run
+/// reads as stuck with an empty chat pane (§7.2, §14.2). Optional so the
+/// `MockDriver` lifecycle tests keep running with no DB.
+pub struct AttemptJournal {
+    pub db: super::Db,
+    pub app: Option<tauri::AppHandle>,
+    pub run_id: String,
+}
+
+impl AttemptJournal {
+    fn write(&self, exec_id: &str, e: &AttemptEvent) {
+        let conn = self.db.lock();
+        super::scheduler::journal_event(
+            &conn,
+            self.app.as_ref(),
+            &self.run_id,
+            e.event_type,
+            Some(exec_id),
+            &e.payload,
+        );
+    }
+
+    /// Link the live agent to its attempt row and mark the row `running`. This is
+    /// what lets the monitor mount the step's chat (it resolves the agent through
+    /// `wf_step_exec.agent_id`) while the turn is still in flight.
+    fn stamp_spawned(&self, exec_id: &str, agent_id: &str) {
+        let conn = self.db.lock();
+        let _ = conn.execute(
+            "UPDATE wf_step_exec SET agent_id = ?1, status = 'running', started_at = ?2
+             WHERE id = ?3",
+            rusqlite::params![agent_id, super::now_ms(), exec_id],
+        );
+    }
+}
+
+/// The attempt's event list, journaled through to `AttemptJournal` on each push.
+/// Every event is still collected for the returned [`AttemptRun`], so callers and
+/// tests see the same ordered list they always did.
+struct EventLog {
+    events: Vec<AttemptEvent>,
+    journal: Option<AttemptJournal>,
+    exec_id: String,
+}
+
+impl EventLog {
+    fn new(journal: Option<AttemptJournal>, exec_id: String) -> Self {
+        Self {
+            events: Vec::new(),
+            journal,
+            exec_id,
+        }
+    }
+
+    /// A log with nowhere to write through to — the orchestrator turn driver,
+    /// whose caller journals per turn (not per stage) and so is never blind.
+    fn detached() -> Self {
+        Self {
+            events: Vec::new(),
+            journal: None,
+            exec_id: String::new(),
+        }
+    }
+
+    fn push(&mut self, e: AttemptEvent) {
+        if let Some(j) = &self.journal {
+            j.write(&self.exec_id, &e);
+        }
+        self.events.push(e);
+    }
+
+    fn stamp_spawned(&self, agent_id: &str) {
+        if let Some(j) = &self.journal {
+            j.stamp_spawned(&self.exec_id, agent_id);
+        }
+    }
+
+    fn into_events(self) -> Vec<AttemptEvent> {
+        self.events
+    }
 }
 
 /// The result of driving one attempt.
@@ -147,6 +236,11 @@ pub struct AttemptRun {
     /// commit + ferry after a `done` (§6.3 steps 7–8). `None` if spawn failed.
     pub worktree: Option<PathBuf>,
     pub outcome: AttemptOutcome,
+    /// Every event this attempt produced, in order. Now that an [`AttemptJournal`]
+    /// writes them through as they happen, no scheduler path re-reads this list —
+    /// it remains the lifecycle tests' window into the state machine, which they
+    /// assert without a DB.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub events: Vec<AttemptEvent>,
 }
 
@@ -188,12 +282,14 @@ pub async fn run_attempt(
         reprompt_on_block,
         cancel,
         pending_ask,
+        journal,
     } = params;
 
     let fork_base = spawn_req.fork_base.clone();
-    let mut events: Vec<AttemptEvent> = Vec::new();
+    let mut events = EventLog::new(journal, exec_id.clone());
 
     // ── 1. Spawn (or adopt a pre-spawned agent, §10.2) ───────────────────
+    let spawned_here = pre_spawned.is_none();
     let spawned = match pre_spawned {
         Some(s) => s,
         None => match driver.spawn(spawn_req).await {
@@ -205,13 +301,19 @@ pub async fn run_attempt(
                     agent_id: None,
                     worktree: None,
                     outcome: AttemptOutcome::Error { error },
-                    events,
+                    events: events.into_events(),
                 };
             }
         },
     };
     let agent_id = spawned.agent_id.clone();
     let worktree = spawned.worktree.clone();
+    // Stamp the row before the first event, so a listener that refetches on that
+    // event already finds the agent linked. A pre-spawned agent was stamped by
+    // the caller that spawned it.
+    if spawned_here {
+        events.stamp_spawned(&agent_id);
+    }
     events.push(ev(
         event_type::ATTEMPT_SPAWNED,
         json!({ "agent_id": agent_id, "fork_base": fork_base }),
@@ -357,7 +459,7 @@ pub async fn run_attempt(
                 agent_id: Some(agent_id),
                 worktree: Some(worktree),
                 outcome: AttemptOutcome::AwaitingAnswer,
-                events,
+                events: events.into_events(),
             };
         }
 
@@ -425,7 +527,7 @@ pub async fn run_attempt(
                     agent_id: Some(agent_id),
                     worktree: Some(worktree),
                     outcome: AttemptOutcome::Done { verdict },
-                    events,
+                    events: events.into_events(),
                 }
             }
             GateOutcome::AwaitingApproval => {
@@ -433,7 +535,7 @@ pub async fn run_attempt(
                     agent_id: Some(agent_id),
                     worktree: Some(worktree),
                     outcome: AttemptOutcome::AwaitingApproval,
-                    events,
+                    events: events.into_events(),
                 }
             }
             GateOutcome::Blocked => {
@@ -449,7 +551,7 @@ pub async fn run_attempt(
                     outcome: AttemptOutcome::Blocked {
                         reason: result.reason,
                     },
-                    events,
+                    events: events.into_events(),
                 };
             }
         }
@@ -484,7 +586,7 @@ pub(super) async fn drive_prompt_turn(
     prompt_kind: &'static str,
     deadlines: &Deadlines,
 ) -> (OrchTurn, Vec<AttemptEvent>) {
-    let mut events = Vec::new();
+    let mut events = EventLog::detached();
     // Subscribe BEFORE sending so an arbitrarily fast Running→Idle flap is
     // unlosable (spec §6.3 step 4) — the same discipline as `run_attempt`.
     let mut rx = driver.subscribe();
@@ -492,7 +594,7 @@ pub(super) async fn drive_prompt_turn(
     if let Err(e) = driver.send_message(agent_id, prompt).await {
         let error = format!("send failed: {e}");
         events.push(ev(event_type::ATTEMPT_ERROR, json!({ "error": error })));
-        return (OrchTurn::Error(error), events);
+        return (OrchTurn::Error(error), events.into_events());
     }
     events.push(ev(event_type::PROMPT_SENT, json!({ "kind": prompt_kind })));
 
@@ -516,7 +618,7 @@ pub(super) async fn drive_prompt_turn(
         // never on its own — unreachable here (no cancel is raced).
         TurnEnd::Canceled => OrchTurn::Error("orchestrator turn canceled".into()),
     };
-    (result, events)
+    (result, events.into_events())
 }
 
 /// Stop the (still-live) agent and return an `Error` outcome. Errored/timed-out
@@ -526,7 +628,7 @@ async fn terminal_error(
     driver: &dyn AgentDriver,
     agent_id: &str,
     error: &str,
-    mut events: Vec<AttemptEvent>,
+    mut events: EventLog,
 ) -> AttemptRun {
     let _ = driver.stop(agent_id).await;
     events.push(ev(event_type::ATTEMPT_ERROR, json!({ "error": error })));
@@ -536,7 +638,7 @@ async fn terminal_error(
         outcome: AttemptOutcome::Error {
             error: error.to_string(),
         },
-        events,
+        events: events.into_events(),
     }
 }
 
@@ -547,14 +649,14 @@ async fn terminal_error(
 async fn terminal_canceled(
     driver: &dyn AgentDriver,
     agent_id: &str,
-    events: Vec<AttemptEvent>,
+    events: EventLog,
 ) -> AttemptRun {
     let _ = driver.stop(agent_id).await;
     AttemptRun {
         agent_id: Some(agent_id.to_string()),
         worktree: None,
         outcome: AttemptOutcome::Canceled,
-        events,
+        events: events.into_events(),
     }
 }
 
@@ -574,7 +676,7 @@ fn budget_exceeded_run(
     agent_id: String,
     worktree: PathBuf,
     which: BudgetLimit,
-    mut events: Vec<AttemptEvent>,
+    mut events: EventLog,
 ) -> AttemptRun {
     events.push(ev(
         event_type::BUDGET_EXCEEDED,
@@ -586,7 +688,7 @@ fn budget_exceeded_run(
         outcome: AttemptOutcome::BudgetExceeded {
             which: which.as_str().to_string(),
         },
-        events,
+        events: events.into_events(),
     }
 }
 
@@ -666,7 +768,7 @@ async fn drive_turn(
     rx: &mut Receiver<StatusEvent>,
     snapshot: Option<AgentStatus>,
     d: &Deadlines,
-    events: &mut Vec<AttemptEvent>,
+    events: &mut EventLog,
 ) -> TurnEnd {
     let mut seen_running = matches!(snapshot, Some(AgentStatus::Running));
     let start_deadline = Instant::now() + d.turn_start_timeout;
@@ -815,6 +917,7 @@ mod tests {
             reprompt_on_block: true,
             cancel: Arc::new(AtomicBool::new(false)),
             pending_ask: Arc::new(AtomicBool::new(false)),
+            journal: None,
         }
     }
 

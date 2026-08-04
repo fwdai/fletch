@@ -95,12 +95,17 @@ impl RunDetector for NodeDetector {
             ));
         }
 
+        // `run` is mandatory for `build`/`test`: bun reserves both as built-in
+        // subcommands (`bun test` is bun's own test runner, `bun build` its
+        // bundler), so the bare form silently runs something other than the
+        // project's script. `npm/pnpm/yarn run <script>` is equally valid, so
+        // one spelling serves every package manager.
         if script("build").is_some() {
             rows.push(DetectedRow::new(
                 "build",
                 RowGroup::Scripts,
                 "Build",
-                format!("{pm} build"),
+                format!("{pm} run build"),
                 "package.json · scripts.build",
             ));
         }
@@ -109,7 +114,7 @@ impl RunDetector for NodeDetector {
                 "test",
                 RowGroup::Scripts,
                 "Test",
-                format!("{pm} test"),
+                format!("{pm} run test"),
                 "package.json · scripts.test",
             ));
         }
@@ -243,8 +248,25 @@ mod tests {
         )])
         .unwrap();
         assert_eq!(val(&cfg, "dev"), "pnpm dev");
-        assert_eq!(val(&cfg, "build"), "pnpm build");
-        assert_eq!(val(&cfg, "test"), "pnpm test");
+        assert_eq!(val(&cfg, "build"), "pnpm run build");
+        assert_eq!(val(&cfg, "test"), "pnpm run test");
+    }
+
+    #[test]
+    fn bun_test_and_build_go_through_run() {
+        // `bun test` is bun's own test runner and `bun build` its bundler —
+        // neither runs the package's script. Without `run`, the tests gate
+        // verifies a suite the project never asked for.
+        let cfg = detect(&[
+            (
+                "package.json",
+                r#"{"scripts":{"build":"vite build","test":"vitest run"}}"#,
+            ),
+            ("bun.lock", ""),
+        ])
+        .unwrap();
+        assert_eq!(val(&cfg, "test"), "bun run test");
+        assert_eq!(val(&cfg, "build"), "bun run build");
     }
 
     #[test]

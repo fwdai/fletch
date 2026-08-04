@@ -314,31 +314,22 @@ pub(crate) async fn execute_step(
             // Shared with the run's `RunHandle` so the comms router and this
             // attempt observe the same pending-ask flag (§10.4).
             pending_ask: ctx.pending_ask.clone(),
+            // Journal live: the attempt writes each event and stamps the exec row
+            // as it goes, so the monitor shows this step while it runs.
+            journal: Some(attempt::AttemptJournal {
+                db: ctx.db.clone(),
+                app: ctx.app.clone(),
+                run_id: run_id.to_string(),
+            }),
         };
 
-        let started = crate::workflow::now_ms();
         let result =
             attempt::run_attempt(ctx.driver.as_ref(), &test_runner, params, ledger, &step_eff)
                 .await;
-        // Journal the attempt's events, stamp its agent id, persist the ledger.
+        // The attempt journaled its own events and stamped its agent id; persist
+        // the ledger it advanced.
         {
             let conn = ctx.db.lock();
-            if let Some(agent_id) = &result.agent_id {
-                let _ = conn.execute(
-                    "UPDATE wf_step_exec SET agent_id = ?1, started_at = ?2 WHERE id = ?3",
-                    rusqlite::params![agent_id, started, exec_id],
-                );
-            }
-            for e in &result.events {
-                journal_event(
-                    &conn,
-                    ctx.app.as_ref(),
-                    run_id,
-                    e.event_type,
-                    Some(&exec_id),
-                    &e.payload,
-                );
-            }
             ledger.checkpoint_wall(crate::workflow::now_ms());
             persist_spent(&conn, run_id, ledger);
         }

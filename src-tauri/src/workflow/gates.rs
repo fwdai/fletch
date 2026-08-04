@@ -234,15 +234,28 @@ fn tests_block_reason(tests: Option<&TestsOutcome>) -> Option<String> {
     }
 }
 
+/// How much of the runner's output tail rides in a gate reason. The verifier
+/// keeps 100 lines, which is right for a log pane but not for a reason string:
+/// this one becomes the run's `error` (the monitor's failure banner) and the
+/// re-prompt, and a per-test runner fills 100 lines with passes. Every runner
+/// prints its failure summary last, so the final lines are the signal.
+const REASON_TAIL_LINES: usize = 20;
+
 /// Compose a gate reason from a headline plus an optional output tail. The tail
 /// rides in the reason so it reaches both the `gate_evaluated` journal event and
 /// the re-prompt (spec §9.4) through the existing blocked-reason plumbing.
 fn with_tail(headline: &str, tail: &str) -> String {
     let tail = tail.trim_end();
     if tail.is_empty() {
-        headline.to_string()
+        return headline.to_string();
+    }
+    let lines: Vec<&str> = tail.lines().collect();
+    let start = lines.len().saturating_sub(REASON_TAIL_LINES);
+    let kept = lines[start..].join("\n");
+    if start > 0 {
+        format!("{headline} (last {REASON_TAIL_LINES} lines):\n{kept}")
     } else {
-        format!("{headline}:\n{tail}")
+        format!("{headline}:\n{kept}")
     }
 }
 
