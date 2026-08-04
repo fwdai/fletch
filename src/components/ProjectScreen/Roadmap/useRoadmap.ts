@@ -2,10 +2,14 @@
 // mutations every surface on this screen goes through.
 //
 // The board is persisted, per project, in `roadmap_items` (src-tauri/src/roadmap).
-// This hook loads it once for the current project and then keeps it live off the
-// `roadmap:item` / `roadmap:item-deleted` events, upserting the full row by id.
-// The load subscribes before it fetches and replays anything that arrived in
-// between (see rowSync.ts), because this board has writers other than the user.
+// The rows themselves come from `useRoadmapRows` (src/roadmapRows.ts), which
+// subscribes before it fetches and replays anything that arrived in between (see
+// rowSync.ts), because this board has writers other than the user. That hook is
+// shared: the workspace's issue inbox and a run's roadmap chip follow the same
+// stream through it, so "what is on this board" cannot mean two different things
+// on two screens. Everything else on this board — the PM's asks, the holds, the
+// brief, the history trails, the queue notes — is loaded by the effect below,
+// which applies the same discipline to six more streams.
 //
 // The PM conversation is NOT here: it is a real agent chat, owned by the Thread
 // column (see Thread/usePmChats.ts). What the two share is this contract — the
@@ -53,8 +57,6 @@ import {
   onRoadmapBrief,
   onRoadmapBriefProposal,
   onRoadmapBriefProposalDeleted,
-  onRoadmapItem,
-  onRoadmapItemDeleted,
   onRoadmapItemEvent,
   onRoadmapOrderProposal,
   onRoadmapOrderProposalDeleted,
@@ -74,11 +76,13 @@ import {
   type RoadmapProposal,
   type WfRun,
 } from "@/api";
-import { applyRowEvent, createRowSync, createSingleSync } from "@/rowSync";
+import { useRoadmapRows } from "@/roadmapRows";
+import { createRowSync, createSingleSync } from "@/rowSync";
 import { useAppStore } from "@/store";
 import { useRuns } from "@/workflows/run/useRuns";
 import { insertEvent, mergeSnapshot } from "./itemHistory";
 import { buildNeedsYou, mergeLatest, upsertLatest } from "./NeedsYou/select";
+import { revealRefusal, revealTarget } from "./reveal";
 import { reviewFeedbackPrompt } from "./reviewPrompt";
 import type { Horizon } from "./types";
 import { toBoardItem } from "./types";
@@ -129,7 +133,6 @@ export function useRoadmap(repoPath: string) {
   // of its own. Cheap: one list fetch and one subscription, both event-driven.
   const allRuns = useRuns();
 
-  const [rows, setRows] = useState<RoadmapItem[]>([]);
   /** The PM's pending asks against existing items (`roadmap:proposal` +
    *  `roadmap_list_proposals`) — at most one per item, replaced in place under
    *  a stable id. Loaded with the item snapshot through the same
@@ -154,7 +157,9 @@ export function useRoadmap(repoPath: string) {
    *  (`roadmap:brief-proposal`). Board scoped, replaced in place, ruled on from
    *  the Product brief tab. */
   const [briefProposal, setBriefProposal] = useState<RoadmapBriefProposal | null>(null);
-  const [loading, setLoading] = useState(true);
+  /** Are the six streams the effect below owns still loading? The rows have their
+   *  own answer (`rowsLoading`); the board is loading while either is. */
+  const [sideLoading, setSideLoading] = useState(true);
   /** The last failure from a mutation with no form of its own to report into
    *  (a move, a delete, an accepted proposal). */
   const [error, setError] = useState<string | null>(null);
@@ -217,40 +222,88 @@ export function useRoadmap(repoPath: string) {
     });
   }, []);
 
-  /** Upsert a row by id, appending new ones — the backend lists oldest-first
-   *  and a new row is the newest, so append keeps the two in the same order. */
-  const upsert = useCallback(
+  /** A note explains why a row isn't moving on its own. The moment the row moves,
+   *  whatever it said is history — drop it rather than leave a stale excuse under
+   *  a running item. Queued rows keep theirs: the drainer's blocked-note must
+   *  survive the row events around it. (A sweep note on an open row survives
+   *  arrival because it's emitted after the row event.) */
+  const noteStale = useCallback(
     (row: RoadmapItem) => {
-      setRows((prev) => applyRowEvent(prev, { kind: "upsert", row }));
-      // A note explains why a row isn't moving on its own. The moment the row
-      // moves, whatever it said is history — drop it rather than leave a stale
-      // excuse under a running item. Queued rows keep theirs: the drainer's
-      // blocked-note must survive the row events around it. (A sweep note on an
-      // open row survives arrival because it's emitted after the row event.)
       if (row.status !== "queued") dropNote(row.id);
     },
     [dropNote],
   );
 
-  // Load the board: subscribe first, buffer during the fetch, then replay — so a
-  // row the PM proposes while the board is loading cannot be lost. Rows change
-  // from more than this screen (the PM agent's own writes, and later the run
-  // queue), so the board follows the event rather than only its own command
-  // results; the ordering the sequencer buys us is spelled out in rowSync.ts.
+  /** Forget everything this board was holding *about* a row that has been
+   *  deleted. The backend cascades the row's history away; drop ours too, and let
+   *  a reused id (there are none, but the map shouldn't bet on that) refetch. */
+  const forgetItem = useCallback(
+    (id: string) => {
+      dropNote(id);
+      requestedEvents.current.delete(id);
+      setEvents((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+      setLatestEvents((prev) =>
+        prev.some((e) => e.item_id === id) ? prev.filter((e) => e.item_id !== id) : prev,
+      );
+    },
+    [dropNote],
+  );
+
+  // The rows, from the shared subscription (src/roadmapRows.ts). A one-project
+  // list because a board is one project's: the hook takes a set because the issue
+  // inbox follows several at once.
+  const projectIds = useMemo(() => (projectId ? [projectId] : []), [projectId]);
+  const {
+    rows,
+    load: boardLoad,
+    loading: rowsLoading,
+    error: rowsError,
+    upsert: upsertRow,
+    remove: removeRows,
+  } = useRoadmapRows(projectIds, { onRow: noteStale, onDeleted: forgetItem });
+
+  /** Fold a row a command just returned straight in — the optimistic half of a
+   *  mutation this hook already awaited. The event is coming too and says the
+   *  same thing; this is what stops the card flickering in between. */
+  const upsert = useCallback(
+    (row: RoadmapItem) => {
+      upsertRow(row);
+      noteStale(row);
+    },
+    [upsertRow, noteStale],
+  );
+
+  // A failed snapshot belongs on the board's error bar, like every other failure
+  // with nowhere else to go. Copied into the local state rather than merged at
+  // read time so "Dismiss" can actually dismiss it.
+  useEffect(() => {
+    if (rowsError) setError(rowsError);
+  }, [rowsError]);
+
+  // Load everything else this board shows: subscribe first, buffer during the
+  // fetch, then replay — so an ask the PM parks while the board is loading cannot
+  // be lost. These streams change from more than this screen (the PM agent's own
+  // writes, the run queue, the merge sweep), so the board follows the event rather
+  // than only its own command results; the ordering the sequencer buys us is
+  // spelled out in rowSync.ts.
   useEffect(() => {
     if (!projectId) {
-      setRows([]);
       setProposalRows([]);
       setOrderProposal(null);
       setProjectHold(null);
       setBrief(null);
       setBriefProposal(null);
       setLatestEvents([]);
-      setLoading(!workspaceReady);
+      setSideLoading(!workspaceReady);
       return;
     }
     let alive = true;
-    setLoading(true);
+    setSideLoading(true);
     // A new board means new trails: what the previous project's cards loaded
     // says nothing about this one's items. The generation bump is what stops an
     // already-in-flight `loadEvents` from writing the old board's history into
@@ -260,18 +313,6 @@ export function useRoadmap(repoPath: string) {
     setEvents(new Map());
     setLatestEvents([]);
 
-    // Unmounting mid-load must not write state, so every commit goes through
-    // the same `alive` gate the fetch does.
-    const sync = createRowSync<RoadmapItem>((update) => {
-      if (alive) setRows(update);
-    });
-    const off = onRoadmapItem((row) => {
-      if (row.project_id !== projectId) return;
-      sync.push({ kind: "upsert", row });
-      // Rows go through the sequencer; notes don't need to — they're a
-      // separate map, and a stale excuse should vanish even mid-load.
-      if (row.status !== "queued") dropNote(row.id);
-    });
     // The proposal stream rides its own instance of the same sequencer: the
     // same two loss windows exist for it, and a replaced ask arrives as an
     // upsert under a stable id (see rowSync.ts).
@@ -340,22 +381,6 @@ export function useRoadmap(repoPath: string) {
       if (id !== projectId) return;
       bpsync.push(null);
     });
-    const offDeleted = onRoadmapItemDeleted((id) => {
-      sync.push({ kind: "delete", id });
-      dropNote(id);
-      // The backend cascades the row's history away; drop ours too, and let a
-      // reused id (there are none, but the map shouldn't bet on that) refetch.
-      requestedEvents.current.delete(id);
-      setEvents((prev) => {
-        if (!prev.has(id)) return prev;
-        const next = new Map(prev);
-        next.delete(id);
-        return next;
-      });
-      setLatestEvents((prev) =>
-        prev.some((e) => e.item_id === id) ? prev.filter((e) => e.item_id !== id) : prev,
-      );
-    });
     // History rows, appended only to trails some card already loaded — an
     // event for a never-expanded item is dropped here and refetched whole on
     // that item's first expand, which keeps the map leak-free.
@@ -384,8 +409,6 @@ export function useRoadmap(repoPath: string) {
       // (see the drainer's `say`), so one missed during the load is not resent
       // and the card is left with no explanation at all.
       await Promise.all([
-        off,
-        offDeleted,
         offProposal,
         offProposalDeleted,
         offOrder,
@@ -405,8 +428,7 @@ export function useRoadmap(repoPath: string) {
       ]);
       if (!alive) return;
       try {
-        const [items, pending, order, latest, hold, theBrief, briefAsk] = await Promise.all([
-          api.roadmapListItems(projectId),
+        const [pending, order, latest, hold, theBrief, briefAsk] = await Promise.all([
           api.roadmapListProposals(projectId),
           api.roadmapGetOrderProposal(projectId),
           api.roadmapLatestEvents(projectId),
@@ -415,7 +437,6 @@ export function useRoadmap(repoPath: string) {
           api.roadmapGetBriefProposal(projectId),
         ]);
         if (!alive) return;
-        sync.settle(items);
         psync.settle(pending);
         // Under whatever arrived live, per item — see `mergeLatest`.
         setLatestEvents((prev) => mergeLatest(prev, latest));
@@ -423,26 +444,23 @@ export function useRoadmap(repoPath: string) {
         hsync.settle(hold);
         bsync.settle(theBrief);
         bpsync.settle(briefAsk);
-        setLoading(false);
+        setSideLoading(false);
       } catch (e) {
         if (!alive) return;
         // No snapshot to replay over — settle anyway so later events still
         // apply instead of piling up in the buffer.
-        sync.settle();
         psync.settle();
         osync.settle();
         hsync.settle();
         bsync.settle();
         bpsync.settle();
         setError(String(e));
-        setLoading(false);
+        setSideLoading(false);
       }
     })();
 
     return () => {
       alive = false;
-      void off.then((f) => f());
-      void offDeleted.then((f) => f());
       void offProposal.then((f) => f());
       void offProposalDeleted.then((f) => f());
       void offOrder.then((f) => f());
@@ -455,7 +473,20 @@ export function useRoadmap(repoPath: string) {
       void offEvent.then((f) => f());
       void offNote.then((f) => f());
     };
-  }, [projectId, workspaceReady, dropNote]);
+  }, [projectId, workspaceReady]);
+
+  /** The board's loading state: the rows *and* everything beside them. Both must
+   *  have landed before `blank` may claim there is nothing here. */
+  const loading = sideLoading || rowsLoading;
+  /** Has *this* project's row snapshot settled, either way? Distinct from
+   *  `loading`, which the six side streams also gate: a cross-screen jump has to
+   *  know whether the rows it is about to be judged against are this board's, and
+   *  on the render right after a project switch the old board's rows are still in
+   *  hand while this map already speaks about the new one. `failed` counts as
+   *  settled — a request that can never be answered must be refused, not left
+   *  pending forever. */
+  const rowsSettled =
+    projectId == null ? workspaceReady : (boardLoad.get(projectId) ?? "loading") !== "loading";
 
   /** Fetch an item's history once, on first expand. The listener above is
    *  already appending live rows for it from the moment this is called, and
@@ -530,9 +561,11 @@ export function useRoadmap(repoPath: string) {
     return by as ReadonlyMap<string, RoadmapProposal>;
   }, [proposalRows, onBoard]);
 
-  /** Every code the board holds, ghosts included — the PM quotes a code the
-   *  moment it proposes one, so a chat chip must resolve before the user has
-   *  ruled on the row.
+  /** Every code the board holds — ghosts *and* shipped items included. Ghosts
+   *  because the PM quotes a code the moment it proposes one, so a chat chip must
+   *  resolve before the user has ruled on the row; shipped items because
+   *  `revealItem` has somewhere to send them (the Activity tab), and a linkable
+   *  set is exactly the set of codes with a destination.
    *
    *  Keyed on the codes themselves rather than on `rows`: the chat re-renders
    *  every markdown block when this set's identity changes, and a retitle or a
@@ -653,14 +686,17 @@ export function useRoadmap(repoPath: string) {
   );
 
   /** Delete rows. Also how a proposal is discarded: a suggestion the user turned
-   *  down was never on the roadmap, so it leaves no trace of having been. */
+   *  down was never on the roadmap, so it leaves no trace of having been — bar one,
+   *  for a ghost the issue funnel routed: the backend records the refusal against
+   *  the issue's URL, so the inbox stops offering it (see `roadmap_delete_item`).
+   *  Any pending PM ask against the row cascades away with it. */
   const removeItems = useCallback(
     (ids: string[]) =>
       guarded(async () => {
         for (const id of ids) await api.roadmapDeleteItem(id);
-        setRows((prev) => prev.filter((r) => !ids.includes(r.id)));
+        removeRows(ids);
       }),
-    [guarded],
+    [guarded, removeRows],
   );
 
   const clearError = useCallback(() => setError(null), []);
@@ -678,22 +714,38 @@ export function useRoadmap(repoPath: string) {
     [addWorkspaceRepo, repoPath],
   );
 
-  /** Accept proposed rows: `proposed → open` is the moment a suggestion becomes
-   *  a roadmap item. The row (and its code) already exist, so nothing is
-   *  re-created and nothing is renumbered — the code the PM quoted in the chat
-   *  is the code that stays on the board. The other half of the decision is
-   *  [`removeItems`].
+  /** Say yes to pending deltas — the board's one accept, at every scale.
    *
-   *  `queue` is the "Accept & queue" click: accept and hand it to the drainer in
+   *  `ghostIds` are proposed rows to admit: `proposed → open` is the moment a
+   *  suggestion becomes a roadmap item. The row (and its code) already exist, so
+   *  nothing is re-created and nothing is renumbered — the code the PM quoted in
+   *  the chat is the code that stays on the board. `askIds` are the PM's pending
+   *  patches to apply. The other half of the decision is [`removeItems`] for a
+   *  ghost and [`rejectProposals`] for an ask.
+   *
+   *  **Admissions first, patches second, always.** A row and an ask *against that
+   *  row* can both be pending at once (the PM proposed a ticket and then revised
+   *  it), and the user rules on that pair with one click — so this is one ordered
+   *  sequence rather than two calls a caller might interleave. The order is the
+   *  meaning: the admission is the bigger question, and by the time the patch
+   *  lands the row is `open`, which the backend's `is_rulable` still allows.
+   *
+   *  A refusal in the second half leaves the first half done and the ask pending:
+   *  the item is on the roadmap, the PM's revision is still there to rule on, and
+   *  the reason is on the error bar. That is the honest outcome of "the admission
+   *  worked and the patch didn't" — and the only alternative would be to roll a
+   *  ruling back, which is not ours to undo.
+   *
+   *  `queue` is the "Accept & queue" click: admit and hand it to the drainer in
    *  one gesture. Where an accept *lands* is decided backend-side, not here — the
    *  project's autoqueue dial can queue it with `queue` unset, and a hold leaves
    *  it `open` even with `queue` set (holds trump the dial). So this reads the
    *  status off the row that comes back rather than assuming one. */
-  const acceptItems = useCallback(
-    (ids: string[], queue = false) =>
+  const acceptDeltas = useCallback(
+    (ghostIds: readonly string[], askIds: readonly string[] = [], queue = false) =>
       guarded(async () => {
         const codes: string[] = [];
-        for (const id of ids) {
+        for (const id of ghostIds) {
           // Conditional like every other status transition: accepting is only
           // meaningful on a row that is still a proposal.
           const { applied, item } = await api.roadmapUpdateItem(
@@ -706,22 +758,13 @@ export function useRoadmap(repoPath: string) {
           if (applied) codes.push(item.code);
         }
         markLanded(codes);
-      }),
-    [guarded, markLanded, upsert],
-  );
-
-  /** Apply pending PM proposals — the user's "yes" on each. The backend rules
-   *  in one lock scope per proposal: a stale ask (its item went `active` since)
-   *  is dropped there and surfaces here as the error the bar shows, while the
-   *  `roadmap:proposal-deleted` emit clears it off the card either way. */
-  const acceptProposals = useCallback(
-    (ids: string[]) =>
-      guarded(async () => {
-        // A stale ask refuses individually; it mustn't take the rest of an
-        // "Accept all" down with it, so rule on every id and report the first
-        // refusal after the fact.
+        // The backend rules in one lock scope per ask: a stale one (its item went
+        // `active` since) is dropped there and surfaces here as the error the bar
+        // shows, while the `roadmap:proposal-deleted` emit clears it off the card
+        // either way. One refusal mustn't take the rest of an "Accept all" down
+        // with it, so rule on every id and report the first after the fact.
         let refusal: unknown = null;
-        for (const id of ids) {
+        for (const id of askIds) {
           try {
             await api.roadmapAcceptProposal(id);
           } catch (e) {
@@ -730,7 +773,7 @@ export function useRoadmap(repoPath: string) {
         }
         if (refusal != null) throw refusal;
       }),
-    [guarded],
+    [guarded, markLanded, upsert],
   );
 
   /** Decline pending PM proposals. The items are untouched; each refusal lands
@@ -978,44 +1021,73 @@ export function useRoadmap(repoPath: string) {
     [loadEvents],
   );
 
-  /** Jump the board to an item: switch to the roadmap tab, expand the row,
-   *  scroll it into view (the Board's `focusCode` effect) and ring it for a
-   *  moment. Called from the PM chat's code chips, which sit beside this board,
-   *  and from the cross-screen request below. */
-  const focusItem = useCallback(
+  const setProjectScreenTab = useAppStore((s) => s.setProjectScreenTab);
+
+  /** Show the user the item a code names — wherever it actually is.
+   *
+   *  Every caller that renders a code as something clickable comes through here:
+   *  the PM chat's code chips, the "Needs you" strip, the in-flight rail, and the
+   *  cross-screen request below. They used to come through a plain board focus,
+   *  which assumed the board renders every row. It doesn't: a shipped item leaves
+   *  it entirely. So a chip for a done item was a dead click — and the standup
+   *  digest, whose whole subject is what shipped, manufactured them by the
+   *  handful.
+   *
+   *  Three destinations, decided in reveal.ts:
+   *  - a row the board draws — switch to the roadmap tab, expand it, scroll it in
+   *    (the Board's `focusCode` effect) and ring it for a moment;
+   *  - a shipped row — the Activity tab, which is where what has been built lives.
+   *    Deliberately a tab switch and nothing more: the item is a line in a record
+   *    there, not a card with a focus ring;
+   *  - no such code — a refusal on the error bar, because a click that silently
+   *    does nothing is worse than one that says why.
+   *
+   *  Returns what it did, so a caller holding a one-shot request knows it was
+   *  answered. */
+  const revealItem = useCallback(
     (code: string) => {
-      setTab("roadmap");
-      setFocusCode(code);
-      setOpenCodes((s) => new Set(s).add(code));
-      // The card lands expanded, so its trail must load exactly as if the
-      // user had expanded it by hand — otherwise the history line the caller
-      // is often pointing at ("its run failed") is invisible until a manual
-      // collapse and re-expand.
-      const row = rows.find((r) => r.code === code);
-      if (row) void loadEvents(row.id);
-      after(FOCUS_MS, () => setFocusCode(null));
+      const target = revealTarget(code, rows);
+      if (target.kind === "board") {
+        setTab("roadmap");
+        setFocusCode(code);
+        setOpenCodes((s) => new Set(s).add(code));
+        // The card lands expanded, so its trail must load exactly as if the
+        // user had expanded it by hand — otherwise the history line the caller
+        // is often pointing at ("its run failed") is invisible until a manual
+        // collapse and re-expand.
+        const row = rows.find((r) => r.code === code);
+        if (row) void loadEvents(row.id);
+        after(FOCUS_MS, () => setFocusCode(null));
+      } else if (target.kind === "shipped") {
+        setProjectScreenTab("activity");
+      } else {
+        setError(revealRefusal(target));
+      }
+      return target;
     },
-    [after, rows, loadEvents],
+    [after, rows, loadEvents, setProjectScreenTab],
   );
 
   // A jump asked for from outside this screen — a run's roadmap chip
   // (`ui.focusRoadmapItem`), which opened the project page and left the code
-  // behind. Consumed only by the board that actually holds the code, and
-  // cleared as it fires: the request is a one-shot, and a board that has just
-  // mounted for a different project must not swallow it.
+  // behind. Consumed **or refused**, never left pending: the request used to wait
+  // for a board that held the code in its *rendered* set, which meant a code that
+  // was never coming (the item shipped mid-flight, or the chip named another
+  // project's row) sat in the store forever and quietly fired at the next board
+  // that happened to hold it.
   const roadmapFocusCode = useAppStore((s) => s.roadmapFocusCode);
   const clearRoadmapFocus = useAppStore((s) => s.clearRoadmapFocus);
   useEffect(() => {
     if (!roadmapFocusCode) return;
-    // Gate on the *rendered* set, not the raw buffer: a `done` row is in
-    // `rows` but leaves the board, so matching it would consume the request,
-    // scroll nowhere, and ring nothing. (Callers already avoid sending done
-    // items here, but a race between the jump and a merge sweep can ship the
-    // item mid-flight.)
-    if (!rows.some((r) => r.code === roadmapFocusCode && isOnBoard(r))) return;
-    focusItem(roadmapFocusCode);
+    // Wait only for *this* board's rows to settle. Without that gate the render
+    // right after a project switch would judge the request against the previous
+    // board's rows and refuse it; with it, a board that can never answer (its
+    // snapshot failed, or the repo has no project) still refuses rather than
+    // holding the request hostage.
+    if (!rowsSettled) return;
+    revealItem(roadmapFocusCode);
     clearRoadmapFocus();
-  }, [roadmapFocusCode, rows, focusItem, clearRoadmapFocus]);
+  }, [roadmapFocusCode, rowsSettled, revealItem, clearRoadmapFocus]);
 
   return {
     /** The project this board belongs to; null until the workspace loads, or
@@ -1046,7 +1118,15 @@ export function useRoadmap(repoPath: string) {
     openCodes,
     toggleItem,
     focusCode,
-    focusItem,
+    /** Show the item a code names, wherever it is — the one resolution every
+     *  clickable code goes through (see `revealItem`). */
+    revealItem,
+    /** The same function under the name every caller already asks for. The chat
+     *  chips, the strip and the rail all say "focus"; what they mean is "show me
+     *  this", and for a shipped item that is not the board. Kept as an alias
+     *  rather than renamed at four call sites, two of which are another surface's
+     *  files. */
+    focusItem: revealItem,
     landed,
     /** Why a queued item isn't moving, by item id. */
     notes,
@@ -1082,8 +1162,9 @@ export function useRoadmap(repoPath: string) {
     moveItem,
     setRanks,
     removeItems,
-    acceptItems,
-    acceptProposals,
+    /** Say yes to pending deltas: admissions first, then patches. One call for a
+     *  ghost, an ask, a revised ghost, and the whole batch. */
+    acceptDeltas,
     rejectProposals,
     acceptOrder,
     rejectOrder,

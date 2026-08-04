@@ -8,9 +8,11 @@ import { AUTOQUEUE_KEY, acceptActions, flagOn } from "../autonomy";
 import { InFlightRail } from "../InFlightRail";
 import { buildInFlight } from "../InFlightRail/select";
 import { NeedsYou } from "../NeedsYou";
+import { cardRuling, pendingDeltas, pendingElsewhere } from "../ruling";
 import { HORIZONS } from "../types";
 import { reviewGate } from "../useItemReviews";
 import type { RoadmapState } from "../useRoadmap";
+import { BoardRulingActions } from "./DecisionBar";
 import { EmptyBoard } from "./EmptyBoard";
 import { HorizonGroup } from "./HorizonGroup";
 import { ItemCard } from "./ItemCard";
@@ -56,7 +58,7 @@ export function Board({
     openCodes,
     toggleItem,
     focusCode,
-    focusItem,
+    revealItem,
     needsYou,
     landed,
     loading,
@@ -72,8 +74,7 @@ export function Board({
     addItem,
     editItem,
     removeItems,
-    acceptItems,
-    acceptProposals,
+    acceptDeltas,
     rejectProposals,
     acceptOrder,
     rejectOrder,
@@ -166,13 +167,23 @@ export function Board({
   const cardAccept = acceptActions(autoqueue, "Accept");
   const batchAccept = acceptActions(autoqueue, "Accept all");
 
-  /** The PM's asks against admitted rows only. An ask targeting a row that is
-   *  itself still a ghost stays out of the batch bar — its card shows no bar
-   *  either (see ItemCard), so the count and the buttons agree. */
-  const asks = useMemo(() => {
-    const ghostIds = new Set(ghosts.map((g) => g.item.id));
-    return [...proposals.values()].filter((p) => !ghostIds.has(p.item_id));
-  }, [ghosts, proposals]);
+  /** Everything this board owes the user a ruling on, by kind — the batch bar's
+   *  count and copy, and the Product-brief tab's dot. Pure, and tested, because
+   *  three surfaces read it and they used to each count a different subset: the
+   *  bar added up ghosts and asks-on-admitted-rows (two of the four pending kinds,
+   *  dropping an ask against a ghost entirely), while the tab dot answered its own
+   *  question separately. See ruling.ts. */
+  const deltas = useMemo(
+    () =>
+      pendingDeltas({
+        ghostIds: ghosts.map((g) => g.item.id),
+        asks: [...proposals.values()],
+        orderProposal,
+        briefProposal,
+      }),
+    [ghosts, proposals, orderProposal, briefProposal],
+  );
+  const ghostIds = useMemo(() => ghosts.map((g) => g.item.id), [ghosts]);
   const openNew = (horizon: Horizon) => setEditing({ item: null, horizon });
 
   // Only the width is set inline. The stylesheet's min/max stay in force, so a
@@ -199,7 +210,7 @@ export function Board({
             onClick={() => setTab("brief")}
           >
             <Icon name="notebookPen" size={13} /> Product brief
-            {briefProposal && <span className="rm-tab-dot" aria-label="1 pending change" />}
+            {deltas.brief > 0 && <span className="rm-tab-dot" aria-label="1 pending change" />}
           </button>
         </div>
         <span className="grow" />
@@ -251,7 +262,7 @@ export function Board({
       {tab === "roadmap" && (
         <NeedsYou
           cards={needsYou}
-          onFocusItem={focusItem}
+          onFocusItem={revealItem}
           onOpenRun={openRun}
           onReleaseItem={readOnly ? undefined : releaseItem}
           onReleaseProject={readOnly ? undefined : releaseProject}
@@ -265,7 +276,7 @@ export function Board({
           answer different questions: what you have to do about it, and where it
           sits. Decisions come first because an item that stopped moving outranks
           one that hasn't, and the rail renders nothing when the pipeline is idle. */}
-      {tab === "roadmap" && <InFlightRail entries={inFlight} onFocusItem={focusItem} />}
+      {tab === "roadmap" && <InFlightRail entries={inFlight} onFocusItem={revealItem} />}
 
       {/* The whole board is stopped. Below the strip (which already carries a
           card for it, with the same one-click release) because this band is the
@@ -281,61 +292,40 @@ export function Board({
       {/* One proposal is ruled on from its own card; a batch gets a single bar,
           so accepting six tickets isn't six trips down the board. It sits above
           the scroller rather than inside it — the ghosts and pending changes it
-          acts on can be in three different horizons. Accept-all rules both:
-          ghost rows join the roadmap, pending changes are applied. An ask
-          against a row that is itself still a ghost is neither counted nor
-          bulk-ruled — its card shows no bar for it (rule on the ghost first),
-          and bulk-applying a patch to a ticket the user hasn't admitted would
-          rule two questions with one click. */}
-      {tab === "roadmap" && ghosts.length + asks.length > 1 && (
+          acts on can be in three different horizons. Accept-all rules both, in
+          the order the backend needs: ghost rows join the roadmap, then pending
+          changes are applied (see `acceptDeltas`) — which is what makes an ask
+          against a still-ghost row bulk-rulable rather than something the bar has
+          to pretend isn't there. Discard-all is not symmetrical, and can't be: a
+          discarded ghost takes its ask with it (the row is deleted and the ask
+          cascades), so only asks on rows that survive are declined by name. */}
+      {tab === "roadmap" && deltas.batch > 1 && (
         <div className="rm-props flex-center text-xs">
           <span className="rm-props-n iflex-center mono">
             <Icon name="sparkle" size={11} />
-            {ghosts.length + asks.length} proposed
+            {deltas.batch} proposed
           </span>
           <span className="rm-props-hint truncate">
             Nothing is on the roadmap until you say so.
+            {deltas.batch < deltas.total ? ` ${pendingElsewhere(deltas)}` : ""}
           </span>
           <span className="grow" />
-          <button
-            type="button"
-            className="rm-props-x"
-            onClick={() => {
-              if (ghosts.length) void removeItems(ghosts.map((g) => g.item.id));
-              if (asks.length) void rejectProposals(asks.map((p) => p.id));
+          <BoardRulingActions
+            declineLabel="Discard all"
+            acceptLabel={batchAccept.primary}
+            // The batch's one-click queue, on the same terms as a card's: offered
+            // only while the dial is off, and only when there is a ghost to queue
+            // — a bar counting nothing but pending *changes* has nothing to hand
+            // the drainer (an accepted patch doesn't move a status).
+            queueLabel={deltas.ghosts > 0 ? batchAccept.queue : null}
+            onDecline={() => {
+              if (deltas.ghosts) void removeItems(ghostIds);
+              if (deltas.declinableAskIds.length)
+                void rejectProposals([...deltas.declinableAskIds]);
             }}
-          >
-            Discard all
-          </button>
-          {/* The batch's one-click queue, on the same terms as a card's: offered
-              only while the dial is off, and only when there is a ghost to queue
-              — a bar counting nothing but pending *changes* has nothing to hand
-              the drainer (an accepted patch doesn't move a status). */}
-          {batchAccept.queue && ghosts.length > 0 && (
-            <button
-              type="button"
-              className="rm-props-q iflex-center"
-              onClick={() => {
-                void acceptItems(
-                  ghosts.map((g) => g.item.id),
-                  true,
-                );
-                if (asks.length) void acceptProposals(asks.map((p) => p.id));
-              }}
-            >
-              <Icon name="zap" size={11} /> {batchAccept.queue}
-            </button>
-          )}
-          <button
-            type="button"
-            className="rm-props-ok iflex-center"
-            onClick={() => {
-              if (ghosts.length) void acceptItems(ghosts.map((g) => g.item.id));
-              if (asks.length) void acceptProposals(asks.map((p) => p.id));
-            }}
-          >
-            <Icon name="check" size={11} /> {batchAccept.primary}
-          </button>
+            onAcceptQueue={() => void acceptDeltas(ghostIds, deltas.askIds, true)}
+            onAccept={() => void acceptDeltas(ghostIds, deltas.askIds)}
+          />
         </div>
       )}
 
@@ -386,6 +376,11 @@ export function Board({
                   const ghost = it.status === "proposed";
                   /** The PM's pending ask against this row, if any. */
                   const proposal = proposals.get(row.id);
+                  /** The single question this card asks. The card computes the
+                   *  same answer for its bar and its diff; this side of it is what
+                   *  binds the mutation each ruling means, so the words and the
+                   *  write can't disagree. */
+                  const ruling = cardRuling(ghost, proposal ?? null);
                   // The queue owns everything from `queued` on: an `active`
                   // row is the drainer's, and the user's lever on it is the
                   // run, not the row. `in_review` keeps one manual lever —
@@ -423,27 +418,48 @@ export function Board({
                           ? undefined
                           : () => setEditing({ item: row, horizon: row.horizon })
                       }
-                      onAccept={ghost && !readOnly ? () => acceptItems([row.id]) : undefined}
-                      acceptLabel={cardAccept.primary}
+                      onAccept={
+                        // One accept per card, whatever is pending on it: admit the
+                        // ghost, apply the ask, or — a revised ghost — both, in that
+                        // order. `acceptDeltas` owns the sequencing.
+                        ruling.kind === "none" || readOnly
+                          ? undefined
+                          : () =>
+                              acceptDeltas(
+                                ruling.admits ? [row.id] : [],
+                                ruling.appliesPatch && ruling.proposal ? [ruling.proposal.id] : [],
+                              )
+                      }
+                      // The ghost accept's wording is the project's autoqueue dial's
+                      // business; a patch-only ruling just says "Accept".
+                      acceptLabel={ruling.admits ? cardAccept.primary : "Accept"}
                       queueLabel={cardAccept.queue}
                       onAcceptQueue={
-                        // Ghost rows only, and only while the dial is off: with it
-                        // on the primary Accept already queues (and says so). A
-                        // pending *proposal*'s bar never gets this — accepting a
-                        // patch changes a row's shape, not what the queue does
-                        // with it.
-                        ghost && !readOnly && cardAccept.queue
-                          ? () => acceptItems([row.id], true)
+                        // Only where the ruling admits a row, and only while the
+                        // dial is off: with it on the primary Accept already queues
+                        // (and says so). A pending *patch* alone never gets this —
+                        // accepting it changes a row's shape, not what the queue
+                        // does with it.
+                        ruling.admits && !readOnly && cardAccept.queue
+                          ? () =>
+                              acceptDeltas(
+                                [row.id],
+                                ruling.appliesPatch && ruling.proposal ? [ruling.proposal.id] : [],
+                                true,
+                              )
                           : undefined
                       }
-                      onDiscard={ghost && !readOnly ? () => removeItems([row.id]) : undefined}
+                      onDiscard={
+                        // The mirror image: discarding a ghost deletes the row (and
+                        // cascades any ask on it), declining a patch leaves the row
+                        // exactly as it is.
+                        ruling.kind === "none" || readOnly
+                          ? undefined
+                          : ruling.declineRemovesRow
+                            ? () => removeItems([row.id])
+                            : () => rejectProposals(ruling.proposal ? [ruling.proposal.id] : [])
+                      }
                       proposal={proposal}
-                      onAcceptProposal={
-                        proposal && !readOnly ? () => acceptProposals([proposal.id]) : undefined
-                      }
-                      onRejectProposal={
-                        proposal && !readOnly ? () => rejectProposals([proposal.id]) : undefined
-                      }
                       onQueue={
                         // A handed-off row already has its builder; queueing it
                         // would dispatch a second one. The drainer refuses such
