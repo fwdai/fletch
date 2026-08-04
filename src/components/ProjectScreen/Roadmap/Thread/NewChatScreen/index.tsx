@@ -143,9 +143,13 @@ export function NewChatScreen({
             <Icon name="notebookPen" size={18} />
           </span>
           <h3 className="rm-blank-h text-base">Start a planning session</h3>
+          {/* The real contract, not the flattering one: the PM has two direct
+              writes (a note, a hold), and both only ever reduce autonomy. Same
+              framing as the Roadmap settings section — one story in both places. */}
           <p className="rm-blank-b text-sm">
-            A fresh thread, with its own workspace and context. It reads the repo before it answers,
-            never edits code, and nothing reaches the board until you accept it.
+            A fresh thread, with its own workspace and context. It reads the repo before it answers
+            and never edits code. Board changes are proposals you rule on — it can raise attention
+            with a note, or hold an item so nothing builds on it, but it never advances work.
           </p>
         </div>
 

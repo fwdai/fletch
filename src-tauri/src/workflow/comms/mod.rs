@@ -353,7 +353,9 @@ impl WorkflowService {
         // same non-reentrant mutex and can end in a process spawn for a resting PM
         // session, which is not something the reporting agent should wait behind —
         // and best-effort: it can neither fail nor delay the op the agent is
-        // waiting on.
+        // waiting on. (`review::midrun` now spawns its own delivery too, so both
+        // of its callers get that for free; this outer spawn composes harmlessly
+        // over the inner one and keeps even the back-link read off this thread.)
         if let Some(signal) = signal {
             let (app, db) = (self.app.clone(), self.db.clone());
             tauri::async_runtime::spawn(async move {

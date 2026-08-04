@@ -6,7 +6,11 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import { APP_ACTION_PREFIX } from "@/delegation";
 import { expandedCommandInvocation } from "@/helpers";
 import type { ChatItem } from "@/store";
-import { stripInjectedInstructions } from "@/util/instructions";
+import {
+  isSystemTurn,
+  stripInjectedInstructions,
+  stripSystemTurnMarker,
+} from "@/util/instructions";
 import { pairToolItems, rowKey, type ViewItem } from "./pair";
 import { getPresenter } from "./presenters";
 import { ToolResultItem } from "./ToolResultItem";
@@ -173,7 +177,25 @@ function UserBubble({
   queued?: boolean;
   turnId?: number;
 }) {
-  const display = stripInjectedInstructions(text);
+  const display = stripSystemTurnMarker(stripInjectedInstructions(text));
+  // A turn Fletch authored, not the user: the roadmap's settle review, a mid-run
+  // signal, the standup digest. It reaches the agent through the same
+  // `send_user_message` the composer uses, so it *is* a user-role turn — but
+  // rendering it as the user's bubble makes the user read their own history wrong,
+  // and hides that these prompts frame run output as data rather than direction.
+  // So it borrows the transcript's existing system grammar (the same treatment a
+  // compact summary gets) instead of a bubble of its own. Interim: the durable fix
+  // is an `origin: user|system` column on the turn row, which is a chat schema
+  // change — see `SYSTEM_TURN_MARKER`. The turn ordinal still rides along so
+  // ChatNav can jump to it like any other turn.
+  if (isSystemTurn(text)) {
+    return (
+      <div className="m-reasoning" data-chat-turn={turnId}>
+        <div className="label">Fletch · system</div>
+        {display}
+      </div>
+    );
+  }
   return (
     <div className="m-msg-wrap is-user">
       <div className={queued ? "m-user m-user--queued" : "m-user"} data-chat-turn={turnId}>

@@ -50,7 +50,10 @@ export function ProjectHeader({
       </nav>
 
       <div className="stat-row ps-stats text-sm">
-        <Stat label="in flight">
+        {/* Horizon counts, so they speak the horizons' planning language (see
+            `Roadmap/types.ts`) — "in flight" is a pipeline claim horizon does not
+            make, and the board's own rail already owns that word. */}
+        <Stat label="now">
           <CountUp value={counts.now} />
         </Stat>
         {/* Dropped first on a narrow window — see `.ps-stats-mid`. The wrapper
