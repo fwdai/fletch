@@ -1669,7 +1669,6 @@ pub fn run() {
             roadmap::roadmap_delete_item,
             roadmap::roadmap_list_item_events,
             roadmap::roadmap_latest_events,
-            roadmap::roadmap_latest_event,
             roadmap::roadmap_list_proposals,
             roadmap::roadmap_accept_proposal,
             roadmap::roadmap_reject_proposal,

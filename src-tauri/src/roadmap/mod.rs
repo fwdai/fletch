@@ -530,21 +530,6 @@ pub async fn roadmap_latest_events(
     events::latest_per_item(&conn, &project_id).map_err(|e| e.to_string())
 }
 
-/// The newest history row anywhere on a project's board, or `None` for a board
-/// that has never moved.
-///
-/// One row, not a trail: this answers "has the board changed since?" for the
-/// Roadmap tab's standup digest, which compares it against the PM chat's last
-/// turn and only asks for a summary when there is something to summarize.
-#[tauri::command]
-pub async fn roadmap_latest_event(
-    project_id: String,
-    db: tauri::State<'_, Db>,
-) -> Result<Option<ItemEvent>, String> {
-    let conn = db.lock();
-    events::latest_for_project(&conn, &project_id).map_err(|e| e.to_string())
-}
-
 /// Every pending PM proposal on a project's board — the board load's companion
 /// to [`roadmap_list_items`]; live rows arrive on `roadmap:proposal`.
 #[tauri::command]
