@@ -11,13 +11,14 @@ import {
   DEFAULT_MAX_CONCURRENT,
   flagOn,
   MAX_CONCURRENT_KEY,
+  MIDRUN_AWARENESS_KEY,
   parseCap,
   SETTLE_REVIEW_KEY,
 } from "./Roadmap/autonomy";
 
 /** The autonomy dial: how much of the roadmap pipeline runs without you.
  *
- *  Three per-project settings, all read host-side (`roadmap/drainer.rs`,
+ *  Four per-project settings, all read host-side (`roadmap/drainer.rs`,
  *  `roadmap/review.rs`) — the keys and the spellings live in `Roadmap/autonomy.ts`,
  *  which both this section and the board read, so nothing here decides anything
  *  the queue doesn't also see.
@@ -31,6 +32,7 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
   const [autoqueue, setAutoqueue] = useState(false);
   const [cap, setCap] = useState(DEFAULT_MAX_CONCURRENT);
   const [settleReview, setSettleReview] = useState(true);
+  const [midrunAwareness, setMidrunAwareness] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,6 +42,7 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
         setAutoqueue(flagOn(all[AUTOQUEUE_KEY], false));
         setCap(parseCap(all[MAX_CONCURRENT_KEY]));
         setSettleReview(flagOn(all[SETTLE_REVIEW_KEY], true));
+        setMidrunAwareness(flagOn(all[MIDRUN_AWARENESS_KEY], true));
       })
       .catch((e) => console.error("load roadmap settings failed", e));
     return () => {
@@ -70,6 +73,11 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
     setSettleReview(next);
     // On is the default here, so *off* is the row that has to exist.
     save(SETTLE_REVIEW_KEY, next ? null : "0");
+  };
+
+  const toggleMidrunAwareness = (next: boolean) => {
+    setMidrunAwareness(next);
+    save(MIDRUN_AWARENESS_KEY, next ? null : "0");
   };
 
   return (
@@ -130,6 +138,19 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
         what deviated — as notes on the card and proposals you rule on. On by default; turning it
         off costs one chat turn per finished run and leaves nobody watching whether the work matched
         the plan.
+      </p>
+
+      <div className="ps-field ps-name-row">
+        <label className="ps-label text-sm" htmlFor="ps-rm-midrun">
+          The PM follows runs as they happen
+        </label>
+        <Toggle value={midrunAwareness} onChange={toggleMidrunAwareness} />
+      </div>
+      <p className="ps-section-lead text-sm">
+        A run reports its progress while it works. With this on the PM reads those as they arrive,
+        so it can flag a run building the wrong thing — and hold the item — before the pull request
+        exists, instead of judging it afterwards. Off, the PM only sees finished runs. Questions a
+        run asks you are never routed here; those stay yours.
       </p>
     </section>
   );

@@ -1,6 +1,6 @@
 /** The autonomy dial: how much of the pipeline runs without a further click.
  *
- *  Two per-project settings and the words the board says because of them. Pure —
+ *  Four per-project settings and the words the board says because of them. Pure —
  *  no storage, no React — so the board and the Settings section read one
  *  implementation, and the label logic is testable without a DOM.
  *
@@ -18,6 +18,11 @@ export const MAX_CONCURRENT_KEY = "roadmap.max_concurrent";
 
 /** The PM reviews every settled run — `review::SETTLE_REVIEW_KEY`. Default on. */
 export const SETTLE_REVIEW_KEY = "roadmap.settle_review";
+
+/** A roadmap run's mid-run reports and notices reach the PM as they happen —
+ *  `review::MIDRUN_AWARENESS_KEY`. Default on, like the settle review it is the
+ *  live half of. */
+export const MIDRUN_AWARENESS_KEY = "roadmap.midrun_awareness";
 
 /** What an unset concurrency dial means — `drainer::MAX_CONCURRENT_ROADMAP_RUNS`. */
 export const DEFAULT_MAX_CONCURRENT = 1;
