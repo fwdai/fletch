@@ -419,7 +419,29 @@
   font-size: var(--fs-xs);
   color: var(--fg-3);
 }
+.mc-inbox-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .mc-inbox-start {
   flex-shrink: 0;
   height: 26px;
+}
+/* Already-routed issue: a statement, not an affordance — no hover, no pointer. */
+.mc-inbox-routed,
+.mc-inbox-routed:hover {
+  color: var(--fg-3);
+  border-color: var(--bd-soft);
+  background: transparent;
+  cursor: default;
+}
+.mc-inbox-error {
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: var(--fg-0);
+  background: color-mix(in srgb, var(--danger), var(--bg-0) 85%);
+  border: 1px solid color-mix(in srgb, var(--danger), var(--bg-0) 60%);
 }
