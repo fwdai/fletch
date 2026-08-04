@@ -29,6 +29,9 @@ struct StubDriver {
     /// Whether the "agent" commits during its turn. `false` models an agent
     /// that does nothing, so a `commit` gate stays unmet (blocked-gate test).
     commit: bool,
+    /// When set, the first prompt snapshots what the monitor could see *at that
+    /// moment* (see `peeked`) — the mid-attempt visibility the live journal buys.
+    peek: Option<Db>,
     tx: broadcast::Sender<StatusEvent>,
     state: parking_lot::Mutex<StubState>,
 }
@@ -40,15 +43,30 @@ struct StubState {
     /// How many times `stop` was called — lets a test prove that entering
     /// `paused` stops the live step agent (§6.5).
     stops: usize,
+    /// (exec.agent_id, exec.status, journaled event count) as of the first prompt.
+    peeked: Option<(Option<String>, String, i64)>,
 }
 impl StubDriver {
     fn new(root: PathBuf, commit: bool) -> Arc<Self> {
         Arc::new(Self {
             root,
             commit,
+            peek: None,
             tx: broadcast::channel(256).0,
             state: parking_lot::Mutex::new(StubState::default()),
         })
+    }
+    fn with_peek(root: PathBuf, commit: bool, db: Db) -> Arc<Self> {
+        Arc::new(Self {
+            root,
+            commit,
+            peek: Some(db),
+            tx: broadcast::channel(256).0,
+            state: parking_lot::Mutex::new(StubState::default()),
+        })
+    }
+    fn peeked(&self) -> Option<(Option<String>, String, i64)> {
+        self.state.lock().peeked.clone()
     }
     fn set(&self, id: &str, s: AgentStatus) {
         self.state.lock().statuses.insert(id.to_string(), s.clone());
@@ -107,6 +125,26 @@ impl AgentDriver for StubDriver {
     ) -> super::super::driver::BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let wt = self.state.lock().worktrees.get(id).cloned().unwrap();
+            if let Some(db) = &self.peek {
+                // Read the row the monitor reads, mid-attempt. Taken before any
+                // state lock so this never nests the two locks.
+                let row = {
+                    let conn = db.lock();
+                    conn.query_row(
+                        "SELECT agent_id, status,
+                                (SELECT COUNT(*) FROM wf_event WHERE run_id = e.run_id)
+                         FROM wf_step_exec e WHERE e.agent_id = ?1 OR e.agent_id IS NULL
+                         ORDER BY e.agent_id IS NULL LIMIT 1",
+                        [id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .ok()
+                };
+                let mut st = self.state.lock();
+                if st.peeked.is_none() {
+                    st.peeked = row;
+                }
+            }
             self.set(id, AgentStatus::Running);
             if self.commit {
                 std::fs::write(wt.join(format!("{id}.txt")), "work").unwrap();
@@ -493,6 +531,43 @@ async fn cancel_marks_run_canceled_and_runs_no_step() {
         })
         .unwrap();
     assert_eq!(status, "canceled");
+}
+
+#[tokio::test]
+async fn a_step_is_visible_while_it_runs_not_only_once_it_ends() {
+    // The monitor resolves a step's chat through `wf_step_exec.agent_id` and only
+    // refetches when a `wf:event` lands. Both used to happen after the attempt
+    // returned, so a running step showed an empty pane for its whole duration and
+    // the run read as stuck. Assert the row is linked and events are journaled by
+    // the time the agent is prompted — i.e. while the step is still working.
+    let tmp = tempfile::tempdir().unwrap();
+    let (db, ws) = scaffold_one_step(tmp.path(), "run-live", "wf/l-1", Gate::Commit);
+    let driver = StubDriver::with_peek(ws, true, db.clone());
+    let ctx = RunCtx {
+        db: db.clone(),
+        driver: driver.clone(),
+        app: None,
+        cancel: Arc::new(AtomicBool::new(false)),
+        pending_ask: Arc::new(AtomicBool::new(false)),
+        deadlines: Deadlines::default(),
+        runs: None,
+    };
+    drive_run(&ctx, "run-live").await;
+
+    let (agent_id, status, events) = driver.peeked().expect("the agent was prompted");
+    assert_eq!(
+        agent_id.as_deref(),
+        Some("stub-1"),
+        "the attempt row must name its live agent before the turn"
+    );
+    assert_eq!(
+        status, "running",
+        "a live attempt must not still read 'spawning'"
+    );
+    assert!(
+        events > 0,
+        "spawn/ready must already be journaled, so the monitor refetches mid-step"
+    );
 }
 
 #[tokio::test]

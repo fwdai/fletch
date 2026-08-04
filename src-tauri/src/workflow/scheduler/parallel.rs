@@ -981,9 +981,16 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
             // linear-run concern in S10); a never-set flag preserves existing
             // behavior until orchestrator routing lands (S11).
             pending_ask: Arc::new(AtomicBool::new(false)),
+            // Journal live (linear-path parity): each child writes its own events
+            // and stamps its exec row as it goes, so a stage's children are
+            // visible while they run rather than only once they finish.
+            journal: Some(attempt::AttemptJournal {
+                db: c.db.clone(),
+                app: c.app.clone(),
+                run_id: c.run_id.clone(),
+            }),
         };
 
-        let started = crate::workflow::now_ms();
         let result = attempt::run_attempt(
             c.driver.as_ref(),
             &test_runner,
@@ -992,27 +999,6 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
             &step_eff,
         )
         .await;
-
-        // Journal the attempt's events + stamp its agent id (linear-path parity).
-        {
-            let conn = c.db.lock();
-            if let Some(agent_id) = &result.agent_id {
-                let _ = conn.execute(
-                    "UPDATE wf_step_exec SET agent_id = ?1, started_at = ?2 WHERE id = ?3",
-                    rusqlite::params![agent_id, started, exec_id],
-                );
-            }
-            for e in &result.events {
-                journal_event(
-                    &conn,
-                    c.app.as_ref(),
-                    &c.run_id,
-                    e.event_type,
-                    Some(&exec_id),
-                    &e.payload,
-                );
-            }
-        }
 
         match result.outcome {
             AttemptOutcome::Done { .. } => {

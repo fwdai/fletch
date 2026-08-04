@@ -519,7 +519,9 @@ mod tests {
             r#"{"scripts":{"test":"vitest"}}"#,
         );
         let r = resolve(dir.path(), &None, &None, &None);
-        assert_eq!(r.test.as_deref(), Some("npm test"));
+        // `run` is explicit so the script is what runs under every package
+        // manager — `bun test` would be bun's own runner (see `run_detect::node`).
+        assert_eq!(r.test.as_deref(), Some("npm run test"));
         assert_eq!(r.install.as_deref(), Some("npm install"));
     }
 

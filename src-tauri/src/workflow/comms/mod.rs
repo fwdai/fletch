@@ -154,8 +154,7 @@ fn body_str<'a>(body: &'a Value, key: &str) -> &'a str {
 /// `None` when the op is not a message at all (`wf_decide` / `wf_compose` record
 /// decisions, which are engine plumbing) or the run is not building a board item.
 ///
-/// This side only *attributes* the message — the sender is resolvable here and
-/// nowhere else, because `wf_step_exec.agent_id` is stamped after the turn. What
+/// This side only *attributes* the message. What
 /// is worth forwarding is the roadmap's decision, not the engine's: every comms
 /// *message* kind is handed over and [`crate::roadmap::review::routes_midrun`] is
 /// the single gate (notably, it never routes an `ask` — that is the user's

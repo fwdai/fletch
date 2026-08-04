@@ -1736,6 +1736,13 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
             reprompt_on_block: true,
             cancel: c.stage_cancel.clone(),
             pending_ask: Arc::new(AtomicBool::new(false)),
+            // Journal live, like every other attempt. The exec row was already
+            // stamped with this pre-spawned agent above.
+            journal: Some(attempt::AttemptJournal {
+                db: c.db.clone(),
+                app: c.app.clone(),
+                run_id: c.run_id.clone(),
+            }),
         };
 
         let started = crate::workflow::now_ms();
@@ -1753,16 +1760,6 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
                 "UPDATE wf_step_exec SET started_at = ?1 WHERE id = ?2 AND started_at IS NULL",
                 rusqlite::params![started, exec_id],
             );
-            for e in &result.events {
-                journal_event(
-                    &conn,
-                    c.app.as_ref(),
-                    &c.run_id,
-                    e.event_type,
-                    Some(&exec_id),
-                    &e.payload,
-                );
-            }
         }
 
         // Drain the mailbox so a `wf_ask` from this turn is persisted (§10.4).

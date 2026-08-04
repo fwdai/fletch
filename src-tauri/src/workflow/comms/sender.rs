@@ -55,15 +55,15 @@ fn step_caps(spec: &Spec, step_id: &str) -> Option<Vec<CommsCap>> {
     walk(&spec.workflow, step_id).map(<[CommsCap]>::to_vec)
 }
 
-/// Resolve the live step attempt behind a run-owned agent's mailbox. Keyed by
+/// Resolve the live step attempt behind a run-owned agent's mailbox. Scoped by
 /// `run_id` (which the dispatcher captures from the agent's `owner_run_id` at
-/// spawn) rather than `agent_id`: the scheduler only stamps `wf_step_exec.
-/// agent_id` *after* the turn completes, so during the turn — exactly when a
-/// comms op fires — that column is still NULL and an agent-id lookup would miss.
-/// When the row is already linked to `agent_id` (a future/parallel case) that
-/// row is preferred; otherwise the run's single in-flight attempt is used, and
-/// concurrent in-flight attempts (parallel comms, unsupported in v1) are an
-/// explicit error rather than a silent misattribution.
+/// spawn), then matched on `agent_id`: every attempt now stamps that column when
+/// its spawn returns, so the exact match is the normal path — including for a
+/// parallel stage's concurrent children.
+///
+/// The fallback covers a row not yet linked (an attempt whose spawn is still in
+/// flight): the run's single in-flight attempt is used, and concurrent in-flight
+/// attempts are an explicit error rather than a silent misattribution.
 pub(super) fn resolve_sender(conn: &Connection, run_id: &str, agent_id: &str) -> Result<Sender> {
     let live: Vec<(String, String, Option<String>)> = conn
         .prepare(
