@@ -37,12 +37,17 @@
 //! `in_review` items and moves them to `done` when they merge on GitHub. It is
 //! host-side rather than in the webview precisely so a queue keeps draining
 //! with the window shut.
+//!
+//! [`review`] closes it a third time, upwards: every run the drainer settles is
+//! handed to the project-manager chat as a review turn, so the agent that wrote
+//! the brief is the agent that reads what came back.
 
 pub mod drainer;
 pub mod events;
 pub mod merge_sweep;
 pub mod order;
 pub mod proposals;
+pub mod review;
 pub mod store;
 pub mod types;
 
@@ -133,6 +138,12 @@ pub async fn roadmap_get_item(
 /// Add an item to a project's roadmap. The `code` is allocated here, not passed
 /// in: it's the item's identity for the rest of its life, and only the DB knows
 /// which numbers are taken.
+///
+/// The row starts its durable history here with a `created` event, the mirror of
+/// the propose RPC's `proposed`. Without it a hand-built board has no history at
+/// all, and every consumer that reads "what changed since?" off the event trail
+/// — the PM's standup digest above all — would call a board the user filled in
+/// by hand unchanged (see .context/roadmap-pm-plan.md, B4).
 #[tauri::command]
 pub async fn roadmap_create_item(
     project_id: String,
@@ -143,16 +154,41 @@ pub async fn roadmap_create_item(
     if item.title.trim().is_empty() {
         return Err("a roadmap item needs a title".into());
     }
-    let created = {
+    let (created, event) = {
         let conn = db.lock();
-        store::create(&conn, &project_id, &item).map_err(|e| e.to_string())?
+        create_and_record(&conn, &project_id, &item).map_err(|e| e.to_string())?
     };
     emit_item(&app, &created);
+    emit_item_event(&app, &event);
     // A row can arrive already `queued` (or as a dependency another queued item
     // is waiting on), so every mutation re-checks the queue rather than trying
     // to guess which ones matter.
     drainer::nudge();
     Ok(created)
+}
+
+/// The one write behind [`roadmap_create_item`]: insert the row and open its
+/// history, in one transaction inside the caller's lock scope — so an item can
+/// never exist without the line saying who put it there.
+fn create_and_record(
+    conn: &Connection,
+    project_id: &str,
+    new: &NewItem,
+) -> rusqlite::Result<(RoadmapItem, ItemEvent)> {
+    let tx = conn.unchecked_transaction()?;
+    let item = store::create(&tx, project_id, new)?;
+    let event = events::record(
+        &tx,
+        &item.id,
+        project_id,
+        // This surface is the frontend's door: a row that arrives here was typed
+        // by the user, even when it lands straight into `queued`.
+        EventActor::User,
+        EventKind::Created,
+        None,
+    )?;
+    tx.commit()?;
+    Ok((item, event))
 }
 
 /// Patch an item. Absent fields are left alone; an explicit `null` clears a
@@ -424,6 +460,21 @@ pub async fn roadmap_list_item_events(
 ) -> Result<Vec<ItemEvent>, String> {
     let conn = db.lock();
     events::list_for_item(&conn, &item_id).map_err(|e| e.to_string())
+}
+
+/// The newest history row anywhere on a project's board, or `None` for a board
+/// that has never moved.
+///
+/// One row, not a trail: this answers "has the board changed since?" for the
+/// Roadmap tab's standup digest, which compares it against the PM chat's last
+/// turn and only asks for a summary when there is something to summarize.
+#[tauri::command]
+pub async fn roadmap_latest_event(
+    project_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<Option<ItemEvent>, String> {
+    let conn = db.lock();
+    events::latest_for_project(&conn, &project_id).map_err(|e| e.to_string())
 }
 
 /// Every pending PM proposal on a project's board — the board load's companion
@@ -740,6 +791,49 @@ mod tests {
             status: Some(to),
             ..Default::default()
         }
+    }
+
+    /// A hand-built item opens its own history. Without this line a board the
+    /// user typed in has no events at all, so every "what moved since we last
+    /// spoke?" reader — the PM's standup digest above all — calls it unchanged.
+    #[test]
+    fn creating_an_item_records_created() {
+        let conn = test_conn();
+        let (item, event) = create_and_record(
+            &conn,
+            "p1",
+            &NewItem {
+                title: "hand-written".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(event.item_id, item.id);
+        assert_eq!(event.project_id, "p1");
+        assert_eq!(event.kind, EventKind::Created);
+        assert_eq!(event.actor, EventActor::User);
+        assert_eq!(event.detail, None);
+        // Exactly one, and it is the row's whole history so far.
+        assert_eq!(events::list_for_item(&conn, &item.id).unwrap(), vec![event]);
+    }
+
+    /// The insert and its history line ride one transaction, so a failed event
+    /// write can't leave a row with no provenance. Forced by pointing the write
+    /// at a project id the FK refuses.
+    #[test]
+    fn a_failed_create_leaves_no_row_behind() {
+        let conn = test_conn();
+        assert!(create_and_record(
+            &conn,
+            "no-such-project",
+            &NewItem {
+                title: "orphan".into(),
+                ..Default::default()
+            },
+        )
+        .is_err());
+        assert!(store::list(&conn, "no-such-project").unwrap().is_empty());
     }
 
     /// Every user transition the board performs writes exactly one event of the

@@ -11,13 +11,27 @@
 // thread ends up with a broken cache and a maxed-out context window, and a new
 // chat costs kilobytes (`git clone --shared`). So "New chat" is a first-class
 // action, and the picker keeps the old ones around until the user drops them.
+//
+// This hook also owns the *standup digest*: the board keeps moving with the tab
+// closed (runs dispatch, PRs open, the sweep ships), so opening an existing chat
+// that is behind the board asks it, once, to say what happened. The rule for
+// "behind" is a pure function in `standup.ts`; everything here is the plumbing
+// and the once-per-session guards.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type AgentRecord, api, onAgentStatus, onAgentTask, ROADMAP_PM_PURPOSE } from "@/api";
+import {
+  type AgentRecord,
+  api,
+  onAgentStatus,
+  onAgentTask,
+  ROADMAP_PM_PURPOSE,
+  type UserTurn,
+} from "@/api";
 import { resolveAgentSpawnProfile, resolveBaseBranch } from "@/helpers";
 import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@/starterPack";
 import { listCustomAgents } from "@/storage/customAgents";
 import { useAppStore } from "@/store";
+import { chatActiveAt, STANDUP_PROMPT, shouldAskForStandup } from "./standup";
 
 /** How the user picked the agent for a new chat: a custom agent (the Project
  *  Manager preset, or any other), or a bare provider. Mirrors what the
@@ -55,6 +69,64 @@ async function ensureProjectManager(): Promise<string | undefined> {
       });
   }
   return seeding;
+}
+
+// ── the standup digest ───────────────────────────────────────────────
+// Module-level rather than per-mount, for the same reason `seeding` is: the
+// Roadmap tab remounts on every navigation, and a guard that remounted with it
+// would ask again every time the user came back to the tab.
+
+/** Projects that have had their one digest this app session. */
+const askedProjects = new Set<string>();
+
+/** Chats spawned in this app session. Their opening turn *is* the conversation,
+ *  so there is nothing for a digest to summarize — and the spawn may have
+ *  dispatched a first message that hasn't persisted a turn row yet, which would
+ *  otherwise read as "no turns, therefore stale". */
+const freshChats = new Set<string>();
+
+/** In-flight digest checks, by project. The check awaits two fetches before it
+ *  decides, and `selected` re-identifies on every status event — so without this
+ *  two overlapping runs could both pass the `askedProjects` guard and send two
+ *  digests. Mirrors `seeding`'s shape. */
+const checkingStandup = new Map<string, Promise<void>>();
+
+/** Ask the opened chat for a digest, if the board moved since it was last live.
+ *  Never throws: a failed digest is a message the user didn't get, not an error
+ *  worth putting on the Roadmap tab. */
+async function askForStandup(projectId: string, chat: AgentRecord): Promise<void> {
+  if (askedProjects.has(projectId)) return;
+  const inFlight = checkingStandup.get(projectId);
+  if (inFlight) return inFlight;
+  const run = (async () => {
+    const [event, turns] = await Promise.all([
+      api.roadmapLatestEvent(projectId).catch(() => null),
+      api.readUserTurns(chat.id).catch(() => [] as UserTurn[]),
+    ]);
+    const ask = shouldAskForStandup({
+      boardMovedAt: event?.created_at ?? null,
+      chatActiveAt: chatActiveAt(chat, turns),
+      freshlySpawned: freshChats.has(chat.id),
+      // Re-read after the awaits: another project's check can't have set it, but
+      // a remount racing this one could.
+      alreadyAsked: askedProjects.has(projectId),
+    });
+    if (!ask) return;
+    // Claimed before the send, so a failure doesn't retry on the next remount —
+    // the digest is a nicety, and one that keeps re-firing is worse than one
+    // that was missed.
+    askedProjects.add(projectId);
+    // The digest lands as an ordinary user turn in this chat, which is what makes
+    // it self-limiting across app restarts too: the next session reads it as the
+    // chat's last activity.
+    await useAppStore.getState().sendUserMessage(chat.id, STANDUP_PROMPT);
+  })()
+    .catch(() => {})
+    .finally(() => {
+      checkingStandup.delete(projectId);
+    });
+  checkingStandup.set(projectId, run);
+  return run;
 }
 
 export interface PmChatsState {
@@ -182,6 +254,20 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
     };
   }, [patch]);
 
+  // ── the standup digest ─────────────────────────────────────────────
+  // Read the opened chat through a ref: the records re-identify on every status
+  // event (see `patch`), and depending on the object would re-run this on each
+  // one. The id is the only thing that means "a different conversation opened".
+  const chatsRef = useRef(chats);
+  chatsRef.current = chats;
+  useEffect(() => {
+    // `loading` gates it so the digest is decided against the real list, not the
+    // empty one this hook starts with.
+    if (!projectId || loading || !selectedId) return;
+    const chat = chatsRef.current.find((c) => c.id === selectedId);
+    if (chat) void askForStandup(projectId, chat);
+  }, [projectId, loading, selectedId]);
+
   // ── actions ────────────────────────────────────────────────────────
   // Read through a ref so `startChat` doesn't change identity per keystroke of
   // the picker; it only ever needs the value at call time.
@@ -231,6 +317,9 @@ export function usePmChats(projectId: string | null, repoPath: string): PmChatsS
       // on the next render reads, so the message is already on screen when the
       // transcript appears. Failures land in the store's own error channel —
       // this hook's `error` is about the spawn, and the chat now exists.
+      // Never digest into a chat this session created: there is no "since we
+      // last spoke", and the opening turn below may not have persisted a row yet.
+      freshChats.add(rec.id);
       const opening = firstMessage?.trim();
       if (opening) void useAppStore.getState().sendUserMessage(rec.id, opening);
       return true;

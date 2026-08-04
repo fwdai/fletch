@@ -21,7 +21,9 @@
 //! commands so a queue action doesn't wait out the interval) the drainer, per
 //! project that has roadmap work in flight:
 //!
-//! 1. **Settles** every `active` item against its run row ([`settle`]).
+//! 1. **Settles** every `active` item against its run row ([`settle`]), and
+//!    hands each settlement to the project-manager chat as a review turn
+//!    ([`super::review`]) — the loop back up to the agent that wrote the brief.
 //! 2. **Dispatches** at most one queued item ([`pick_next`]), if the project is
 //!    under [`MAX_CONCURRENT_ROADMAP_RUNS`] live roadmap-dispatched runs.
 //!
@@ -65,6 +67,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Notify;
 
 use super::events::{self, EventActor, EventKind, ItemEvent, TrailEntry};
+use super::review;
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
 use super::{emit_item, emit_item_event, store, Db};
 use crate::workflow::spec::{self, Spec};
@@ -417,7 +420,9 @@ struct Settled {
     adopted_run_id: Option<String>,
 }
 
-/// Reflect each `active` item's run back onto the item.
+/// Reflect each `active` item's run back onto the item, and ask the PM to review
+/// what it did ([`super::review`] — one turn per settlement, behind a
+/// per-project dial, never for a run the queue didn't dispatch).
 ///
 /// Items with an `agent_id` and no run are left alone: that's the manual "Send
 /// to an agent" hand-off, which the queue doesn't own.
@@ -532,11 +537,24 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
                 ..Default::default()
             },
         };
-        match settlement_event(&outcome, pr.as_ref()) {
+        let landed = match settlement_event(&outcome, pr.as_ref()) {
             Some((kind, detail)) => write_item_with_event(app, db, &item.id, patch, kind, detail),
             // Unreachable — `Running` bailed above — but a settlement without
             // an event must still land its patch rather than vanish.
-            None => write_item(app, db, &item.id, patch),
+            None => {
+                write_item(app, db, &item.id, patch);
+                true
+            }
+        };
+        // Ask the PM to review what the run actually did, once per settlement.
+        // Gated on the write landing: a row deleted mid-tick has no outcome to
+        // review and no card to record a deferral on. Fired before the notes
+        // below because it is the only step that can wake a resting session, and
+        // it needs no lock held (see [`review`]).
+        if landed {
+            if let Some(reviewable) = review::outcome_for(&outcome, pr.as_ref()) {
+                review::request(app, db, &item, &reviewable);
+            }
         }
         match outcome {
             Settlement::Released(why) => {
@@ -883,7 +901,9 @@ async fn dispatch(
 /// "the workflow this project runs" means one thing on both sides.
 const DEFAULT_WORKFLOW_KEY: &str = "workflow.default";
 
-fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<String> {
+/// One per-project setting, trimmed, with a blank treated as absent. Shared with
+/// [`super::review`], which reads its own dial the same way.
+pub(super) fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<String> {
     conn.query_row(
         "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
         rusqlite::params![project_id, key],
@@ -975,6 +995,9 @@ pub(crate) fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
 /// drainer write that moves an item's status; link repairs and `run_id`
 /// write-backs stay on [`write_item`], because they are bookkeeping, not
 /// history.
+///
+/// Returns whether the transition landed. A settlement's follow-on work (the PM
+/// review turn) hangs off that: a row deleted mid-tick has no state to describe.
 fn write_item_with_event(
     app: &AppHandle,
     db: &Db,
@@ -982,7 +1005,7 @@ fn write_item_with_event(
     patch: ItemPatch,
     kind: EventKind,
     detail: Option<String>,
-) {
+) -> bool {
     let updated = {
         let conn = db.lock();
         apply_and_record(&conn, id, None, &patch, EventActor::Drainer, kind, detail)
@@ -991,10 +1014,14 @@ fn write_item_with_event(
         Ok(Some((row, event))) => {
             emit_item(app, &row);
             emit_item_event(app, &event);
+            true
         }
         // The row was deleted mid-tick; its events cascaded with it.
-        Ok(None) => {}
-        Err(e) => tracing::warn!(id, error = %e, "roadmap drainer: item write failed"),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(id, error = %e, "roadmap drainer: item write failed");
+            false
+        }
     }
 }
 

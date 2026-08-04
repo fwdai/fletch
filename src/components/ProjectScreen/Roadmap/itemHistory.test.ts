@@ -55,4 +55,11 @@ describe("eventLine", () => {
     );
     expect(eventLine(event({ id: "b", kind: "shipped" }))).toBe("Shipped");
   });
+
+  it("labels a hand-built item's opening line", () => {
+    // `created` is the user-typed row's `proposed`. The label map is typed
+    // `Record<RoadmapEventKind, …>`, so omitting it would fail `tsc` — this only
+    // pins the wording the card shows.
+    expect(eventLine(event({ id: "c", kind: "created", actor: "user" }))).toBe("Created");
+  });
 });
