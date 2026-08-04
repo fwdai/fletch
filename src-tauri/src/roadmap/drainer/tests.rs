@@ -591,16 +591,13 @@ fn a_lost_run_releases_its_item_back_to_the_board() {
     // tokens all night. Re-queueing is the user's call, once they know why.
     assert_eq!(
         settle(Some(RunStatus::Failed), None),
-        Settlement::Released("its run failed")
+        Settlement::Released(RUN_FAILED)
     );
     assert_eq!(
         settle(Some(RunStatus::Canceled), None),
-        Settlement::Released("its run was canceled")
+        Settlement::Released(RUN_CANCELED)
     );
-    assert_eq!(
-        settle(None, None),
-        Settlement::Released("its run was deleted")
-    );
+    assert_eq!(settle(None, None), Settlement::Released(RUN_DELETED));
 }
 
 // ───────────────────────────── crash recovery ───────────────────────────
@@ -687,8 +684,99 @@ fn each_settlement_names_its_event() {
     );
     // The durable detail is the same reason string the transient note wraps.
     assert_eq!(
-        settlement_event(&Settlement::Released("its run failed"), None),
-        Some((EventKind::RunFailed, Some("its run failed".to_string())))
+        settlement_event(&Settlement::Released(RUN_FAILED), None),
+        Some((EventKind::RunFailed, Some(RUN_FAILED.to_string())))
+    );
+}
+
+/// A run the user *cancelled* is not a failing run, and neither is one whose row
+/// somebody deleted. All three used to land as `run_failed`, so three deliberate
+/// cancellations read as a failing pattern — the exact signal the PM's
+/// instructions tell it to hold an item over.
+#[test]
+fn each_way_a_run_ends_names_its_own_fact() {
+    assert_eq!(release_kind(RUN_FAILED), EventKind::RunFailed);
+    assert_eq!(release_kind(RUN_CANCELED), EventKind::RunCanceled);
+    assert_eq!(release_kind(RUN_DELETED), EventKind::RunDeleted);
+    // Nothing ran, and not because anyone decided so: these are failures of the
+    // attempt, and the card should show them as such.
+    assert_eq!(release_kind(RUN_NEVER_STARTED), EventKind::RunFailed);
+    assert_eq!(release_kind(RUN_UNLAUNCHABLE), EventKind::RunFailed);
+    // A reason this mapping has not been taught shows as a failure rather than
+    // vanishing: the reason string is the detail either way.
+    assert_eq!(release_kind("something new"), EventKind::RunFailed);
+
+    // End to end from the run's own status, which is where the flattening was
+    // visible: the same three statuses now produce three kinds.
+    for (status, kind) in [
+        (RunStatus::Failed, EventKind::RunFailed),
+        (RunStatus::Canceled, EventKind::RunCanceled),
+    ] {
+        let (got, _) = settlement_event(&settle(Some(status), None), None).expect("an ending");
+        assert_eq!(got, kind, "{status:?}");
+    }
+    let (deleted, detail) = settlement_event(&settle(None, None), None).expect("an ending");
+    assert_eq!(deleted, EventKind::RunDeleted);
+    assert_eq!(detail.as_deref(), Some(RUN_DELETED));
+}
+
+/// The row half of the same projection, paired with the event half over the same
+/// inputs — one ending, one answer, rather than an open-coded patch per caller.
+#[test]
+fn each_settlement_names_its_patch() {
+    let with_pr = pr(Some(42));
+
+    let review = settlement_patch(&Settlement::InReview, Some(&with_pr));
+    assert_eq!(review.status, Some(ItemStatus::InReview));
+    // Copied onto the item so the sweep never has to join back to the run.
+    assert_eq!(review.pr_url, Some(Some(with_pr.url.clone())));
+    assert_eq!(review.pr_number, Some(Some(42)));
+
+    assert_eq!(
+        settlement_patch(&Settlement::Done, None).status,
+        Some(ItemStatus::Done)
+    );
+
+    // Back to the board, never to `queued` — and the run link is dropped so a
+    // re-queue dispatches a fresh run instead of settling against the old one.
+    let released = settlement_patch(&Settlement::Released(RUN_CANCELED), None);
+    assert_eq!(released.status, Some(ItemStatus::Open));
+    assert_eq!(released.run_id, Some(None));
+
+    // `Running` is not an ending: it patches nothing, and the one caller that can
+    // see it repairs the link itself.
+    let running = settlement_patch(&Settlement::Running, None);
+    assert_eq!(running.status, None);
+    assert_eq!(running.run_id, None);
+}
+
+/// The settlement projection has to be **total** over the ways an item leaves
+/// `active`, which is what makes the launch failure route through the same
+/// `patch → event → review` sequence as everything else. It used to be a second
+/// ending open-coded beside the first, with no review turn — so the one failure
+/// the PM never heard about was the one where nothing ran at all.
+#[test]
+fn a_launch_that_never_started_is_an_ending_like_any_other() {
+    let ending = Settlement::Released(RUN_UNLAUNCHABLE);
+
+    // The same hand-back to the board every release performs.
+    let patch = settlement_patch(&ending, None);
+    assert_eq!(patch.status, Some(ItemStatus::Open));
+    assert_eq!(patch.run_id, Some(None));
+
+    // The same durable line, of the honest kind: nothing ran, and not by anyone's
+    // choice, so this one *is* a failure.
+    let (kind, detail) = settlement_event(&ending, None).expect("an ending records");
+    assert_eq!(kind, EventKind::RunFailed);
+    assert_eq!(detail.as_deref(), Some(RUN_UNLAUNCHABLE));
+
+    // And the same review turn — the half that was missing. (`conclude` overrides
+    // the detail with the launcher's own error; the kind and the review come from
+    // the projection, which is what keeps the two endings from drifting.)
+    assert_eq!(
+        review::outcome_for(&ending, None),
+        Some(review::Outcome::Failed(RUN_UNLAUNCHABLE.to_string())),
+        "every way out of `active` reaches the PM"
     );
 }
 
@@ -820,6 +908,44 @@ fn a_conditional_verdict_that_misses_records_nothing() {
 
 // ───────────────────────────── wedged queues ────────────────────────────
 
+/// A valid stored spec, so a test can get *past* the workflow-resolution wedge to
+/// whatever the queue is stuck on next. Built through the real types rather than
+/// hand-written JSON so it cannot quietly drift out of validity — `definition_spec`
+/// runs the same `spec::validate` the save path does.
+fn minimal_spec() -> String {
+    use crate::workflow::spec::{AgentSpec, Block, Gate, Step};
+    let mut agents = std::collections::BTreeMap::new();
+    agents.insert(
+        "coder".to_string(),
+        AgentSpec {
+            base: "claude".into(),
+            model: None,
+            effort: None,
+            instructions: None,
+            skills: vec![],
+            mcp_servers: vec![],
+            custom_agent: None,
+        },
+    );
+    serde_json::to_string(&Spec {
+        version: 1,
+        name: "t".into(),
+        description: None,
+        budgets: None,
+        agents,
+        workflow: vec![Block::Step(Step {
+            id: "build".into(),
+            agent: "coder".into(),
+            goal: "do it".into(),
+            gate: Gate::Verdict,
+            budgets: None,
+            comms: vec![],
+        })],
+        finalize: None,
+    })
+    .unwrap()
+}
+
 /// Give `item` a dep list, straight through the DAO — the write paths refuse a
 /// loop now, so a board that has one is built by hand here.
 fn set_deps(conn: &Connection, item: &RoadmapItem, codes: &[&str]) {
@@ -877,6 +1003,103 @@ fn a_wedged_queue_head_records_one_blocked_event_not_one_per_tick() {
     assert_eq!(events::list_for_item(&conn, &a.id).unwrap().len(), 1);
 }
 
+/// The partition, over every condition this function can reach: *standing*
+/// blockages are durable, and the one self-resolving condition is not.
+///
+/// Each of the three below used to be a transient note only — emitted at most once
+/// per row version per process lifetime, into UI state nothing persists. A queued
+/// item in a project with no repo said its piece once and then wedged in silence
+/// forever, which is precisely the shape invariant 3 exists to forbid.
+#[test]
+fn every_standing_blockage_is_durable_not_just_the_dependency_loop() {
+    // A queued item with no workflow anywhere: the first standing condition past
+    // dep selection.
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Queued);
+
+    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a note about the wedged item");
+    };
+    assert!(text.contains("No workflow"), "{text}");
+    let event = recorded.expect("a blockage that never resolves is durable");
+    assert_eq!(event.kind, EventKind::Blocked);
+    assert_eq!(event.actor, EventActor::Drainer);
+    assert_eq!(
+        event.detail.as_deref(),
+        Some(text.as_str()),
+        "one reason string for both channels"
+    );
+
+    // …and once, not once a tick — same dedup the dependency loop gets.
+    let Claim::Note { recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a note");
+    };
+    assert!(
+        recorded.is_none(),
+        "a durable line must not repeat per tick"
+    );
+    assert_eq!(events::list_for_item(&conn, &it.id).unwrap().len(), 1);
+
+    // Give the project a workflow and the wedge moves on to the next standing
+    // condition: no repo to run in. A *different* line, so it is news again.
+    conn.execute(
+        "INSERT INTO wf_definition (id, name, spec_json, created_at, updated_at)
+         VALUES ('wf-1', 'Build', ?1, 0, 0)",
+        rusqlite::params![minimal_spec()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_settings (project_id, key, value) VALUES ('p1', ?1, 'wf-1')",
+        rusqlite::params![DEFAULT_WORKFLOW_KEY],
+    )
+    .unwrap();
+
+    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a note about the missing repo");
+    };
+    assert!(text.contains("no repo"), "{text}");
+    let event = recorded.expect("a project with no repo is not going to grow one by itself");
+    assert_eq!(event.detail.as_deref(), Some(text.as_str()));
+
+    // Two standing lines, in the order they were reached — the trail is the record
+    // of what the queue has been stuck on, which is what the "Needs you" strip and
+    // the PM both read.
+    let trail = events::list_for_item(&conn, &it.id).unwrap();
+    assert_eq!(trail.len(), 2);
+    assert!(trail[0].detail.as_deref().unwrap().contains("no repo"));
+    assert!(trail[1].detail.as_deref().unwrap().contains("No workflow"));
+}
+
+/// An unparseable stored spec is the third standing condition: `launch` would
+/// refuse it, so the queue can never get past it on its own.
+#[test]
+fn an_invalid_workflow_spec_wedges_durably() {
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Queued);
+    conn.execute(
+        "INSERT INTO wf_definition (id, name, spec_json, created_at, updated_at)
+         VALUES ('wf-bad', 'Broken', '{\"nope\":1}', 0, 0)",
+        [],
+    )
+    .unwrap();
+    store::update(
+        &conn,
+        &it.id,
+        &ItemPatch {
+            workflow_def_id: Some(Some("wf-bad".into())),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a note about the invalid spec");
+    };
+    assert!(text.contains("missing or no longer valid"), "{text}");
+    let event = recorded.expect("an invalid spec does not fix itself");
+    assert_eq!(event.kind, EventKind::Blocked);
+}
+
 #[test]
 fn ordinary_dep_waiting_stays_transient() {
     // The dependency is real work that hasn't landed yet — it will, and then
@@ -924,6 +1147,10 @@ fn a_held_project_dispatches_nothing_and_says_nothing_on_the_cards() {
         "in the queue",
         "unheld, it is dispatchable"
     );
+    // Whatever that pass wrote about the row (it reached the no-workflow wedge, a
+    // standing blockage, so it wrote one `blocked` line) is the baseline: what the
+    // *hold* must add to is nothing.
+    let before = events::list_for_item(&conn, &ready.id).unwrap();
 
     holds::hold_project(&conn, "p1", "re-planning the quarter", EventActor::Pm).unwrap();
     assert_eq!(
@@ -936,8 +1163,9 @@ fn a_held_project_dispatches_nothing_and_says_nothing_on_the_cards() {
         ItemStatus::Queued,
         "the item keeps its place in the queue — a hold is not an unqueue"
     );
-    assert!(
-        events::list_for_item(&conn, &ready.id).unwrap().is_empty(),
+    assert_eq!(
+        events::list_for_item(&conn, &ready.id).unwrap(),
+        before,
         "a board-wide stop is not history about any one item"
     );
 

@@ -56,6 +56,34 @@ describe("eventLine", () => {
     expect(eventLine(event({ id: "b", kind: "shipped" }))).toBe("Shipped");
   });
 
+  it("does not call a cancelled or deleted run a failure", () => {
+    // The three endings a run has are three facts, not one. A card that reads
+    // "Run failed" over a run the user stopped on purpose is a red line on work
+    // nothing went wrong with — and the PM, told to hold on a failing pattern,
+    // reads the same trail.
+    expect(
+      eventLine(event({ id: "a", kind: "run_canceled", detail: "its run was canceled" })),
+    ).toBe("Run canceled — its run was canceled");
+    expect(eventLine(event({ id: "b", kind: "run_deleted", detail: "its run was deleted" }))).toBe(
+      "Run deleted — its run was deleted",
+    );
+  });
+
+  it("says a pull request was closed, not that the item was abandoned", () => {
+    // The item came back to the board — it is alive, and nothing about it was
+    // abandoned. The fact is what happened to the PR.
+    expect(
+      eventLine(
+        event({
+          id: "c",
+          actor: "sweep",
+          kind: "pr_closed",
+          detail: "nothing merged — the item is back on the board",
+        }),
+      ),
+    ).toBe("PR closed — nothing merged — the item is back on the board");
+  });
+
   it("labels a hand-built item's opening line", () => {
     // `created` is the user-typed row's `proposed`. The label map is typed
     // `Record<RoadmapEventKind, …>`, so omitting it would fail `tsc` — this only

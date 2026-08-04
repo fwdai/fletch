@@ -128,11 +128,13 @@ fn a_verdict_writes_and_records_together_or_not_at_all() {
         event_for(&Verdict::Landed, false),
         Some((EventKind::Shipped, None))
     );
+    // The fact is what happened to the *pull request*: the item is back on the
+    // board and nobody abandoned it. `abandoned` was the flattened kind.
     assert_eq!(
         event_for(&Verdict::Abandoned, false),
         Some((
-            EventKind::Abandoned,
-            Some("PR closed without merging".to_string())
+            EventKind::PrClosed,
+            Some("nothing merged — the item is back on the board".to_string())
         ))
     );
 }
@@ -175,6 +177,97 @@ fn a_held_item_stays_on_the_watch_list() {
     held.held_at = Some(1);
     assert!(held.is_held());
     assert_eq!(pollable(&[held]).len(), 1);
+}
+
+// ───────────────────────── a PR that stops answering ────────────────────
+
+/// The give-up rule. "No answer" is right to retry for a while and wrong to retry
+/// forever: a deleted PR, a revoked token and a non-GitHub remote all look like a
+/// rate-limit pause here, and the difference is only visible in how long it lasts.
+#[test]
+fn the_sweep_gives_up_on_a_pr_that_never_answers_and_says_so_once() {
+    let mut seen = HashMap::new();
+    assert!(
+        still_watching(&seen, "i1", 10),
+        "an item nobody has asked about yet is watched"
+    );
+
+    // Silences short of the limit change nothing: the sweep keeps asking, and says
+    // nothing, because a pause is not a wedge.
+    for _ in 1..UNANSWERED_LIMIT {
+        assert!(!record_miss(&mut seen, "i1", 10));
+        assert!(still_watching(&seen, "i1", 10));
+    }
+    // The crossing is the news, and it is news exactly once.
+    assert!(
+        record_miss(&mut seen, "i1", 10),
+        "this is the pass that gives up"
+    );
+    assert!(
+        !still_watching(&seen, "i1", 10),
+        "and the item leaves the watch list, so neither poller pays again"
+    );
+    assert!(
+        !record_miss(&mut seen, "i1", 10),
+        "a durable line must not repeat once it has been said"
+    );
+}
+
+/// Any write to the row is the question being asked again from scratch — the same
+/// key the drainer's note dedup uses, for the same reason: somebody did something
+/// about it, and the old count describes a state that no longer exists.
+#[test]
+fn a_row_that_changed_is_watched_again() {
+    let mut seen = HashMap::new();
+    for _ in 0..UNANSWERED_LIMIT {
+        record_miss(&mut seen, "i1", 10);
+    }
+    assert!(!still_watching(&seen, "i1", 10));
+    assert!(
+        still_watching(&seen, "i1", 11),
+        "the user re-queued, re-linked or edited the item: ask again"
+    );
+    // And the count restarts rather than resuming where it left off.
+    assert!(!record_miss(&mut seen, "i1", 11));
+    assert!(still_watching(&seen, "i1", 11));
+}
+
+/// An answer clears the memory, so a rate-limit pause followed by a normal read
+/// leaves nothing behind to accumulate towards a false give-up.
+#[test]
+fn an_answer_forgets_the_silence_before_it() {
+    let mut seen = HashMap::new();
+    for _ in 0..UNANSWERED_LIMIT - 1 {
+        record_miss(&mut seen, "i1", 10);
+    }
+    answered(&mut seen, "i1");
+    assert!(seen.is_empty());
+    assert!(still_watching(&seen, "i1", 10));
+    // The next silence starts its own count from one.
+    assert!(!record_miss(&mut seen, "i1", 10));
+}
+
+/// One item's silence is not another's: the memory is per item, so a deleted PR on
+/// one card cannot mute the watch on the next.
+#[test]
+fn the_count_is_per_item() {
+    let mut seen = HashMap::new();
+    for _ in 0..UNANSWERED_LIMIT {
+        record_miss(&mut seen, "i1", 10);
+    }
+    assert!(!still_watching(&seen, "i1", 10));
+    assert!(still_watching(&seen, "i2", 10));
+}
+
+#[test]
+fn the_unreachable_note_names_the_pr_and_what_to_do() {
+    let note = unreachable_note(142);
+    assert!(note.contains("#142"), "{note}");
+    // It cannot tell the three causes apart, so it names them rather than guessing.
+    assert!(note.contains("deleted"), "{note}");
+    assert!(note.contains("token"), "{note}");
+    // And it says what the user can actually do about it, since only they can.
+    assert!(note.contains("mark this done"), "{note}");
 }
 
 // ───────────────────────────── the note ─────────────────────────────────

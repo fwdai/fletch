@@ -11,7 +11,13 @@
 
 import type { RoadmapEventKind, RoadmapItemEvent } from "@/api";
 
-/** The kind, as the card's history line says it. */
+/** The kind, as the card's history line says it.
+ *
+ *  Each label names the fact its kind names, and the endings are deliberately
+ *  distinct: a run the user cancelled and a run whose row was deleted are not
+ *  failures, and a card that calls them one puts a red line on work nothing went
+ *  wrong with (see events.rs, review finding S1). Pinned against the Rust enum
+ *  both ways by `every_kind_is_declared_on_both_sides_of_the_wire`. */
 export const EVENT_LABEL: Record<RoadmapEventKind, string> = {
   created: "Created",
   proposed: "Proposed",
@@ -22,8 +28,10 @@ export const EVENT_LABEL: Record<RoadmapEventKind, string> = {
   dispatched: "Dispatched",
   pr_opened: "PR opened",
   run_failed: "Run failed",
+  run_canceled: "Run canceled",
+  run_deleted: "Run deleted",
   shipped: "Shipped",
-  abandoned: "Abandoned",
+  pr_closed: "PR closed",
   blocked: "Blocked",
   held: "Held",
   released: "Released",

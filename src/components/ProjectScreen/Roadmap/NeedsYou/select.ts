@@ -219,11 +219,24 @@ export function buildNeedsYou(input: NeedsInput): NeedsCard[] {
   }
 
   // ── items the board itself is wedged on ──
-  // `blocked` is durable (A4 writes it when a queue head sits on a dependency
-  // cycle), so this survives a reload the way the transient queue note doesn't.
+  // `blocked` is the durable kind for a *standing* blockage — one that will not
+  // resolve without a person: a dependency cycle, a queued item with no workflow
+  // to run it under, an invalid stored spec, a project with no repo, a watched
+  // pull request that stopped answering. So this survives a reload the way the
+  // transient queue note doesn't, and every one of those reaches the strip.
+  //
   // Two gates, because either alone lies: an item whose *newest* word is
   // something else has moved on, and one that is no longer `queued` is not
-  // waiting to dispatch (the user unqueued it, or it is already running).
+  // waiting to dispatch (the user unqueued it, or it is already running). The
+  // second gate is also why the unreachable-PR wedge lands on the card's trail
+  // and not here — that item is `in_review`, and the decision it needs (merge it
+  // by hand, or put it back on the board) is the review card's, not this strip's.
+  //
+  // Only `blocked` cards. The other endings a trail can carry — `run_failed`,
+  // `run_canceled`, `run_deleted`, `pr_closed` — are records of something that
+  // already finished, and each one leaves the item somewhere the user can act on
+  // it (`open`, or back on the board). A card for them would be a notification,
+  // not a decision.
   for (const e of latestByItem(input.latestEvents).values()) {
     if (e.kind !== "blocked") continue;
     // Also the join miss: an event for a row this board doesn't render.
