@@ -41,12 +41,14 @@ crate::db_enum! {
     /// What happened. One kind per transition, so a history line never has to
     /// re-derive meaning from a status pair.
     ///
-    /// `held` and `released` arrive with the holds slice (B5, see
-    /// .context/roadmap-pm-plan.md) — not declared here until they have a writer.
+    /// No variant without a writer. `held` and `released` arrive with the holds
+    /// slice (B5, see .context/roadmap-pm-plan.md); `discarded` was declared and
+    /// never written — discarding an item deletes the row (its history cascades
+    /// away with it) and declining a PM proposal writes a `note` — so it is gone
+    /// rather than left as a kind the frontend must label and nothing produces.
     EventKind {
         Proposed   => "proposed",
         Accepted   => "accepted",
-        Discarded  => "discarded",
         Edited     => "edited",
         Queued     => "queued",
         Unqueued   => "unqueued",

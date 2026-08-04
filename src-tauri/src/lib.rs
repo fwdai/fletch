@@ -1666,6 +1666,7 @@ pub fn run() {
             roadmap::roadmap_update_item,
             roadmap::roadmap_set_rank,
             roadmap::roadmap_hand_off_item,
+            roadmap::roadmap_reclaim_item,
             roadmap::roadmap_delete_item,
             roadmap::roadmap_list_item_events,
             roadmap::roadmap_list_proposals,
