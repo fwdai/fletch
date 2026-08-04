@@ -1,5 +1,7 @@
 import { issueDisplayKey } from "@/api";
 import { Icon } from "@/components/Icon";
+import type { FunnelAction } from "./funnel";
+import { IssueRoadmapAction } from "./IssueRoadmapAction";
 import type { InboxRow } from "./inbox";
 
 /** Compact "updated N ago" hint from a ms-epoch, or "" when unknown. Mirrors
@@ -16,18 +18,23 @@ function updatedAgo(ms: number | undefined): string {
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-/** One inbox row: issue number + title, quiet label chips, and a "Start work"
- *  button that lands in the composer prefilled. The row is compact and calm —
- *  secondary to the review queue above it. */
+/** One inbox row: issue number + title, quiet label chips, and the two things
+ *  it can become — a working agent now ("Start work", prefilled composer), or a
+ *  ghost row on the project's roadmap to rule on later. The row is compact and
+ *  calm — secondary to the review queue above it. */
 export function IssueRow({
   row,
   showRepo,
   onStart,
+  funnel,
+  onAddToRoadmap,
 }: {
   row: InboxRow;
   /** Show the originating repo (only meaningful when >1 repo has issues). */
   showRepo: boolean;
   onStart: () => void;
+  funnel: FunnelAction;
+  onAddToRoadmap: () => void;
 }) {
   const { issue } = row;
   const ago = updatedAgo(issue.updated_at);
@@ -64,9 +71,12 @@ export function IssueRow({
           {ago && <span className="mc-inbox-hint">{ago}</span>}
         </div>
       </div>
-      <button type="button" className="mc-btn mc-inbox-start" onClick={onStart}>
-        <Icon name="play" size={12} /> Start work
-      </button>
+      <div className="mc-inbox-actions">
+        <IssueRoadmapAction action={funnel} onAdd={onAddToRoadmap} />
+        <button type="button" className="mc-btn mc-inbox-start" onClick={onStart}>
+          <Icon name="play" size={12} /> Start work
+        </button>
+      </div>
     </div>
   );
 }
