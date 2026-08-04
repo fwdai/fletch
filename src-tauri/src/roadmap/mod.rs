@@ -514,19 +514,20 @@ pub async fn roadmap_list_item_events(
     events::list_for_item(&conn, &item_id).map_err(|e| e.to_string())
 }
 
-/// The newest history row anywhere on a project's board, or `None` for a board
-/// that has never moved.
+/// The newest event of every item on a project's board, newest first — one read
+/// for the board-wide "what does this item's trail say now" question the "Needs
+/// you" strip asks (a `blocked` item whose trail moved on is not blocked). Read
+/// only; live rows arrive on `roadmap:item-event` like every other trail row.
 ///
-/// One row, not a trail: this answers "has the board changed since?" for the
-/// Roadmap tab's standup digest, which compares it against the PM chat's last
-/// turn and only asks for a summary when there is something to summarize.
+/// Board-scoped rather than per item on purpose: [`roadmap_list_item_events`] is
+/// the lazy per-card fetch, and the strip must see items nobody expanded.
 #[tauri::command]
-pub async fn roadmap_latest_event(
+pub async fn roadmap_latest_events(
     project_id: String,
     db: tauri::State<'_, Db>,
-) -> Result<Option<ItemEvent>, String> {
+) -> Result<Vec<ItemEvent>, String> {
     let conn = db.lock();
-    events::latest_for_project(&conn, &project_id).map_err(|e| e.to_string())
+    events::latest_per_item(&conn, &project_id).map_err(|e| e.to_string())
 }
 
 /// Every pending PM proposal on a project's board — the board load's companion

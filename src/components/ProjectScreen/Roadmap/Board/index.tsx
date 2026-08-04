@@ -1,8 +1,9 @@
-import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Horizon, RoadmapItem } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
+import { NeedsYou } from "../NeedsYou";
 import { HORIZONS } from "../types";
 import type { RoadmapState } from "../useRoadmap";
 import { EmptyBoard } from "./EmptyBoard";
@@ -46,6 +47,8 @@ export function Board({
     openCodes,
     toggleItem,
     focusCode,
+    focusItem,
+    needsYou,
     landed,
     loading,
     readOnly,
@@ -72,6 +75,16 @@ export function Board({
   } = roadmap;
   const selectRun = useAppStore((s) => s.selectRun);
   const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
+
+  // The run lives in the workspace, which this full-screen page covers — select
+  // it, then get out of the way. Shared by the card's "View run" and the strip's.
+  const openRun = useCallback(
+    (runId: string) => {
+      selectRun(runId);
+      closeProjectScreen();
+    },
+    [selectRun, closeProjectScreen],
+  );
 
   // Every row the board draws, in priority order — ghosts included, since a
   // proposed row has a rank like any other and sits where it would land. One
@@ -156,6 +169,15 @@ export function Board({
             Dismiss
           </button>
         </div>
+      )}
+
+      {/* The decisions the pipeline is waiting on the user for. Above the batch
+          bar because a run that has stopped moving outranks a suggestion that
+          hasn't started, and above the scroller for the same reason both bars
+          are: the items it names can be in three different horizons. Renders
+          nothing when nothing is waiting. */}
+      {tab === "roadmap" && (
+        <NeedsYou cards={needsYou} onFocusItem={focusItem} onOpenRun={openRun} />
       )}
 
       {/* One proposal is ruled on from its own card; a batch gets a single bar,
@@ -295,17 +317,7 @@ export function Board({
                       onMarkDone={
                         writable && it.status === "in_review" ? () => markDone(row.id) : undefined
                       }
-                      onOpenRun={
-                        row.run_id
-                          ? () => {
-                              // The run lives in the workspace, which this
-                              // full-screen page covers — select it, then get
-                              // out of the way.
-                              selectRun(row.run_id as string);
-                              closeProjectScreen();
-                            }
-                          : undefined
-                      }
+                      onOpenRun={row.run_id ? () => openRun(row.run_id as string) : undefined}
                       dnd={readOnly ? undefined : dnd.cardDnd(row)}
                       cardRef={(el) => {
                         rows.current[it.code] = el;

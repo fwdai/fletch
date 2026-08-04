@@ -151,49 +151,49 @@ pub fn list_for_item(conn: &Connection, item_id: &str) -> rusqlite::Result<Vec<I
     rows.collect()
 }
 
-/// Every item's newest event on one board, keyed by `item_id`.
+/// The newest event of every item on one project's board, newest first — one
+/// read for a board-wide question, where [`list_for_item`] would be one query
+/// per card (and the board only ever loads the trails of cards someone
+/// expanded).
 ///
-/// The card renders an item's whole trail ([`list_for_item`]); the PM's
-/// projection only ever needs the last line of each — so this is one statement
-/// for the whole board rather than a query per row, and it never pulls a
-/// hundred rows to look at one.
+/// Two consumers, one query: the board's "Needs you" strip asks "is this item's
+/// *latest* word `blocked`?" (a `blocked` event a later transition superseded is
+/// history, not a decision), and the PM's `roadmap_list` projection quotes the
+/// last line of every item's trail ([`latest_by_item`] is this keyed by item).
 ///
-/// The window function is what makes "newest per item" one pass; the ordering
-/// inside it is [`list_for_item`]'s, so the line the PM is shown and the line at
-/// the top of the card's trail are the same row even for two events written in
-/// the same millisecond.
+/// A window function rather than `MAX(created_at)` so the tiebreak is the same
+/// `created_at DESC, rowid DESC` [`list_for_item`] uses: two events written in
+/// the same millisecond must resolve to the one written last, not to either.
+pub fn latest_per_item(conn: &Connection, project_id: &str) -> rusqlite::Result<Vec<ItemEvent>> {
+    // `rowid` rides along so the outer ordering can tie-break same-millisecond
+    // writes by write order too — the head of this list is "the newest event
+    // anywhere on the board" (the standup digest reads it), and that must be
+    // one row, not whichever item id sorts first.
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM (
+           SELECT {COLUMNS}, rowid AS rid,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY item_id ORDER BY created_at DESC, rowid DESC
+                  ) AS rn
+             FROM roadmap_item_events
+            WHERE project_id = ?1
+         )
+          WHERE rn = 1
+          ORDER BY created_at DESC, rid DESC"
+    ))?;
+    let rows = stmt.query_map([project_id], ItemEvent::from_row)?;
+    rows.collect()
+}
+
+/// [`latest_per_item`], keyed by `item_id` — the shape a per-row lookup wants.
 pub fn latest_by_item(
     conn: &Connection,
     project_id: &str,
 ) -> rusqlite::Result<HashMap<String, ItemEvent>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM (
-           SELECT {COLUMNS}, ROW_NUMBER() OVER (
-             PARTITION BY item_id ORDER BY created_at DESC, rowid DESC
-           ) AS rn
-           FROM roadmap_item_events WHERE project_id = ?1
-         ) WHERE rn = 1"
-    ))?;
-    let rows = stmt.query_map([project_id], ItemEvent::from_row)?;
-    rows.map(|r| r.map(|e| (e.item_id.clone(), e)))
-        .collect::<rusqlite::Result<HashMap<_, _>>>()
-}
-
-/// The newest event anywhere on a board — "when did this board last move".
-///
-/// The standup digest compares exactly this against the PM chat's last turn: if
-/// nothing has happened since the two of you spoke, there is nothing to
-/// summarize, and asking for a digest anyway trains the user to ignore them.
-pub fn latest_for_project(
-    conn: &Connection,
-    project_id: &str,
-) -> rusqlite::Result<Option<ItemEvent>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM roadmap_item_events WHERE project_id = ?1
-          ORDER BY created_at DESC, rowid DESC LIMIT 1"
-    ))?;
-    let mut rows = stmt.query_map([project_id], ItemEvent::from_row)?;
-    rows.next().transpose()
+    Ok(latest_per_item(conn, project_id)?
+        .into_iter()
+        .map(|e| (e.item_id.clone(), e))
+        .collect())
 }
 
 /// The item's newest event, or `None` for an item with no history yet.
@@ -304,7 +304,7 @@ mod tests {
         let conn = test_conn();
         let a = item(&conn);
         let b = item(&conn);
-        assert!(latest_for_project(&conn, "p1").unwrap().is_none());
+        assert!(latest_per_item(&conn, "p1").unwrap().is_empty());
         assert!(latest_by_item(&conn, "p1").unwrap().is_empty());
 
         for kind in [EventKind::Created, EventKind::Queued, EventKind::Dispatched] {
@@ -322,11 +322,9 @@ mod tests {
 
         let a_head = list_for_item(&conn, &a.id).unwrap()[0].clone();
         assert_eq!(a_head.kind, EventKind::Dispatched);
-        // Board-wide: the newest write anywhere, whichever item it landed on.
-        assert_eq!(
-            latest_for_project(&conn, "p1").unwrap(),
-            Some(b_note.clone())
-        );
+        // Board-wide: the list is newest-first, so its head is the newest write
+        // anywhere — the fact the standup digest reads off element zero.
+        assert_eq!(latest_per_item(&conn, "p1").unwrap().first(), Some(&b_note));
 
         let by_item = latest_by_item(&conn, "p1").unwrap();
         assert_eq!(by_item.len(), 2);
@@ -339,8 +337,93 @@ mod tests {
             [],
         )
         .unwrap();
-        assert!(latest_for_project(&conn, "p2").unwrap().is_none());
+        assert!(latest_per_item(&conn, "p2").unwrap().is_empty());
         assert!(latest_by_item(&conn, "p2").unwrap().is_empty());
+    }
+
+    #[test]
+    fn latest_per_item_returns_the_newest_row_for_every_item() {
+        // The strip's question is "what does this item's trail say *now*": an
+        // item whose `blocked` was superseded by a dispatch is not blocked, and
+        // an item whose last word is `blocked` is.
+        let conn = test_conn();
+        let one = item(&conn);
+        let two = item(&conn);
+
+        for (id, kind, detail) in [
+            (&one.id, EventKind::Queued, None),
+            (
+                &one.id,
+                EventKind::Blocked,
+                Some("MCA-100 → MCA-101 → MCA-100"),
+            ),
+            // Supersedes the block: same millisecond, so only the rowid
+            // tiebreak makes this the newest.
+            (&one.id, EventKind::Dispatched, Some("build")),
+            (&two.id, EventKind::Queued, None),
+            (
+                &two.id,
+                EventKind::Blocked,
+                Some("MCA-101 → MCA-100 → MCA-101"),
+            ),
+        ] {
+            record(&conn, id, "p1", EventActor::Drainer, kind, detail).unwrap();
+        }
+
+        let latest = latest_per_item(&conn, "p1").unwrap();
+        assert_eq!(latest.len(), 2, "one row per item, not one per event");
+        let by: std::collections::HashMap<&str, &ItemEvent> =
+            latest.iter().map(|e| (e.item_id.as_str(), e)).collect();
+        assert_eq!(by[one.id.as_str()].kind, EventKind::Dispatched);
+        assert_eq!(by[two.id.as_str()].kind, EventKind::Blocked);
+        assert_eq!(
+            by[two.id.as_str()].detail.as_deref(),
+            Some("MCA-101 → MCA-100 → MCA-101")
+        );
+    }
+
+    #[test]
+    fn latest_per_item_is_scoped_to_one_board() {
+        // The strip is per project; another project's wedge is not this board's
+        // decision (and the item id wouldn't resolve to a row here anyway).
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO projects (id, name, created_at) VALUES ('p2', 'other', 0)",
+            [],
+        )
+        .unwrap();
+        let mine = item(&conn);
+        let theirs = store::create(
+            &conn,
+            "p2",
+            &NewItem {
+                title: "theirs".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        record(
+            &conn,
+            &mine.id,
+            "p1",
+            EventActor::User,
+            EventKind::Queued,
+            None,
+        )
+        .unwrap();
+        record(
+            &conn,
+            &theirs.id,
+            "p2",
+            EventActor::Drainer,
+            EventKind::Blocked,
+            None,
+        )
+        .unwrap();
+
+        let latest = latest_per_item(&conn, "p1").unwrap();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].item_id, mine.id);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 // This hook loads it once for the current project and then keeps it live off the
 // `roadmap:item` / `roadmap:item-deleted` events, upserting the full row by id.
 // The load subscribes before it fetches and replays anything that arrived in
-// between (see boardSync.ts), because this board has writers other than the user.
+// between (see rowSync.ts), because this board has writers other than the user.
 //
 // The PM conversation is NOT here: it is a real agent chat, owned by the Thread
 // column (see Thread/usePmChats.ts). What the two share is this contract — the
@@ -51,11 +51,12 @@ import {
   type RoadmapProposal,
   type WfRun,
 } from "@/api";
+import { applyRowEvent, createRowSync } from "@/rowSync";
 import { useAppStore } from "@/store";
 import { useRuns } from "@/workflows/run/useRuns";
-import { applyBoardEvent, createBoardSync } from "./boardSync";
 import { insertEvent, mergeSnapshot } from "./itemHistory";
 import { PRODUCT_MAP } from "./mockData";
+import { buildNeedsYou, mergeLatest, upsertLatest } from "./NeedsYou/select";
 import type { Horizon } from "./types";
 import { toBoardItem } from "./types";
 import { useProjectWorkflows } from "./useProjectWorkflows";
@@ -131,6 +132,13 @@ export function useRoadmap(repoPath: string) {
    *  ever expanded are simply dropped, so the map only ever holds what some
    *  card has shown. */
   const [events, setEvents] = useState<ReadonlyMap<string, RoadmapItemEvent[]>>(() => new Map());
+  /** The newest event of every item on the board, one row per item
+   *  (`roadmap_latest_events` + every live `roadmap:item-event`). Held for all
+   *  items, unlike `events`: the "Needs you" strip asks a board-wide question
+   *  ("is this item's latest word `blocked`?") and must see cards nobody
+   *  expanded. One row per item, so it stays board-sized rather than
+   *  history-sized. */
+  const [latestEvents, setLatestEvents] = useState<RoadmapItemEvent[]>([]);
   /** Items whose history has been requested — the "followed live" set. In a
    *  ref because the event listener must read the current answer without
    *  resubscribing per expand. */
@@ -165,7 +173,7 @@ export function useRoadmap(repoPath: string) {
    *  and a new row is the newest, so append keeps the two in the same order. */
   const upsert = useCallback(
     (row: RoadmapItem) => {
-      setRows((prev) => applyBoardEvent(prev, { kind: "upsert", row }));
+      setRows((prev) => applyRowEvent(prev, { kind: "upsert", row }));
       // A note explains why a row isn't moving on its own. The moment the row
       // moves, whatever it said is history — drop it rather than leave a stale
       // excuse under a running item. Queued rows keep theirs: the drainer's
@@ -180,12 +188,13 @@ export function useRoadmap(repoPath: string) {
   // row the PM proposes while the board is loading cannot be lost. Rows change
   // from more than this screen (the PM agent's own writes, and later the run
   // queue), so the board follows the event rather than only its own command
-  // results; the ordering the sequencer buys us is spelled out in boardSync.ts.
+  // results; the ordering the sequencer buys us is spelled out in rowSync.ts.
   useEffect(() => {
     if (!projectId) {
       setRows([]);
       setProposalRows([]);
       setOrderProposal(null);
+      setLatestEvents([]);
       setLoading(!workspaceReady);
       return;
     }
@@ -195,10 +204,11 @@ export function useRoadmap(repoPath: string) {
     // says nothing about this one's items.
     requestedEvents.current = new Set();
     setEvents(new Map());
+    setLatestEvents([]);
 
     // Unmounting mid-load must not write state, so every commit goes through
     // the same `alive` gate the fetch does.
-    const sync = createBoardSync((update) => {
+    const sync = createRowSync<RoadmapItem>((update) => {
       if (alive) setRows(update);
     });
     const off = onRoadmapItem((row) => {
@@ -210,8 +220,8 @@ export function useRoadmap(repoPath: string) {
     });
     // The proposal stream rides its own instance of the same sequencer: the
     // same two loss windows exist for it, and a replaced ask arrives as an
-    // upsert under a stable id (see boardSync.ts).
-    const psync = createBoardSync<RoadmapProposal>((update) => {
+    // upsert under a stable id (see rowSync.ts).
+    const psync = createRowSync<RoadmapProposal>((update) => {
       if (alive) setProposalRows(update);
     });
     const offProposal = onRoadmapProposal((p) => {
@@ -256,12 +266,20 @@ export function useRoadmap(repoPath: string) {
         next.delete(id);
         return next;
       });
+      setLatestEvents((prev) =>
+        prev.some((e) => e.item_id === id) ? prev.filter((e) => e.item_id !== id) : prev,
+      );
     });
     // History rows, appended only to trails some card already loaded — an
     // event for a never-expanded item is dropped here and refetched whole on
     // that item's first expand, which keeps the map leak-free.
     const offEvent = onRoadmapItemEvent((e) => {
       if (e.project_id !== projectId) return;
+      // Before the lazy-trail gate: the strip follows every item's *newest*
+      // event, including items whose card nobody ever opened. Merged rather than
+      // buffered — "newest per item" is order-independent, so an event that
+      // arrives during the snapshot fetch survives it without a replay.
+      setLatestEvents((prev) => upsertLatest(prev, e));
       if (!requestedEvents.current.has(e.item_id)) return;
       setEvents((prev) => new Map(prev).set(e.item_id, insertEvent(prev.get(e.item_id) ?? [], e)));
     });
@@ -282,17 +300,24 @@ export function useRoadmap(repoPath: string) {
         offProposalDeleted,
         offOrder,
         offOrderDeleted,
+        // Awaited too, now that the strip decides from this stream: a `blocked`
+        // emitted before registration resolves would otherwise be lost, and the
+        // snapshot below can't backfill an event that fired after it was read.
+        offEvent,
       ]);
       if (!alive) return;
       try {
-        const [items, pending, order] = await Promise.all([
+        const [items, pending, order, latest] = await Promise.all([
           api.roadmapListItems(projectId),
           api.roadmapListProposals(projectId),
           api.roadmapGetOrderProposal(projectId),
+          api.roadmapLatestEvents(projectId),
         ]);
         if (!alive) return;
         sync.settle(items);
         psync.settle(pending);
+        // Under whatever arrived live, per item — see `mergeLatest`.
+        setLatestEvents((prev) => mergeLatest(prev, latest));
         orderSettled = true;
         commitOrder(bufferedOrder !== undefined ? bufferedOrder : order);
         setLoading(false);
@@ -360,10 +385,11 @@ export function useRoadmap(repoPath: string) {
   );
 
   // ── derived ────────────────────────────────────────────────────────
-  const items = useMemo(
-    () => rows.filter((r) => isOnBoard(r) && !isProposed(r)).map(toBoardItem),
-    [rows],
-  );
+  /** The rows the board renders — everything but the shipped ones. The strip
+   *  joins against these for the same reason the proposal lookup does: a card
+   *  about a row nothing draws is a decision the user can't reach. */
+  const onBoard = useMemo(() => rows.filter(isOnBoard), [rows]);
+  const items = useMemo(() => onBoard.filter((r) => !isProposed(r)).map(toBoardItem), [onBoard]);
   /** Shipped items aren't on the board; the header carries the count. */
   const shipped = useMemo(() => rows.filter((r) => !isOnBoard(r)).length, [rows]);
 
@@ -380,13 +406,13 @@ export function useRoadmap(repoPath: string) {
    *  invisible and immortal. The row itself survives in the DB; it comes back
    *  into view if the item ever returns to the board. */
   const proposals = useMemo(() => {
-    const visible = new Set(rows.filter(isOnBoard).map((r) => r.id));
+    const visible = new Set(onBoard.map((r) => r.id));
     const by = new Map<string, RoadmapProposal>();
     for (const p of proposalRows) {
       if (visible.has(p.item_id)) by.set(p.item_id, p);
     }
     return by as ReadonlyMap<string, RoadmapProposal>;
-  }, [proposalRows, rows]);
+  }, [proposalRows, onBoard]);
 
   /** Every code the board holds, ghosts included — the PM quotes a code the
    *  moment it proposes one, so a chat chip must resolve before the user has
@@ -401,14 +427,28 @@ export function useRoadmap(repoPath: string) {
     [codeKey],
   );
 
+  /** This project's live runs. Scoped here so a busy install's other runs reach
+   *  neither a card nor the strip. */
+  const runs = useMemo(
+    () => allRuns.filter((r) => r.project_id === projectId),
+    [allRuns, projectId],
+  );
+
   /** The runs behind the board's items, by run id — what a card needs to say
-   *  more than "running": the run's name, and why it stopped. Scoped to this
-   *  project so a busy install's other runs never reach a card. */
-  const runsById = useMemo(() => {
-    const by = new Map<string, WfRun>();
-    for (const r of allRuns) if (r.project_id === projectId) by.set(r.id, r);
-    return by as ReadonlyMap<string, WfRun>;
-  }, [allRuns, projectId]);
+   *  more than "running": the run's name, and why it stopped. */
+  const runsById = useMemo(
+    () => new Map(runs.map((r) => [r.id, r])) as ReadonlyMap<string, WfRun>,
+    [runs],
+  );
+
+  /** The open decisions this board is waiting on the user for — paused runs and
+   *  wedged items, as ordered cards. Derived from state this hook already holds,
+   *  so a pause the queue hits shows up on the next `wf:run` with no polling of
+   *  its own. The rules live in NeedsYou/select.ts. */
+  const needsYou = useMemo(
+    () => buildNeedsYou({ items: onBoard, runs, latestEvents }),
+    [onBoard, runs, latestEvents],
+  );
 
   /** The rows whose position in the order can still change, in priority order —
    *  what a drag may reorder, and the current order a proposal's preview is
@@ -735,6 +775,9 @@ export function useRoadmap(repoPath: string) {
     /** The project's live workflow runs, by run id — an item's `run_id` resolves
      *  here for the card's pearl label and pause reason. */
     runsById,
+    /** The board's open decisions, most-decidable-first — the "Needs you" strip.
+     *  Empty when nothing is waiting, and the strip then renders nothing. */
+    needsYou,
     /** Every code on this board, for the PM chat's code linkifier — exact
      *  matches only, because the prefix varies per project. */
     codes,
