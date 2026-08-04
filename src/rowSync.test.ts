@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RoadmapItem, RoadmapProposal } from "@/api";
-import { applyRowEvent, createRowSync } from "./rowSync";
+import { applyRowEvent, createRowSync, createSingleSync } from "./rowSync";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -23,6 +23,9 @@ function item(over: Partial<RoadmapItem> & { id: string }): RoadmapItem {
     run_id: null,
     pr_url: null,
     pr_number: null,
+    hold_reason: null,
+    held_by: null,
+    held_at: null,
     created_at: 0,
     updated_at: 0,
     ...over,
@@ -177,5 +180,56 @@ describe("createRowSync over proposals", () => {
 
     sync.push({ kind: "delete", id: "p" });
     expect(rows).toEqual([]);
+  });
+});
+
+describe("createSingleSync", () => {
+  /** The board's hold: one row or none, keyed by project. */
+  const hold = (reason: string) => ({ reason });
+
+  it("replays a value that arrived mid-load over the snapshot", () => {
+    let held: { reason: string } | null | undefined;
+    const sync = createSingleSync<{ reason: string }>((v) => {
+      held = v;
+    });
+
+    // The PM pulled the brake while the board was still loading.
+    sync.push(hold("re-planning"));
+    sync.settle(null);
+    expect(held).toEqual(hold("re-planning"));
+
+    // After settling, events apply straight through.
+    sync.push(null);
+    expect(held).toBeNull();
+  });
+
+  it("does not let a stale snapshot resurrect something released mid-load", () => {
+    // The distinction between `undefined` ("nothing arrived") and `null` ("it was
+    // lifted") is the whole point: the backend read the hold, the user released
+    // it, and the snapshot landed afterwards.
+    let held: { reason: string } | null | undefined = hold("stale");
+    const sync = createSingleSync<{ reason: string }>((v) => {
+      held = v;
+    });
+    sync.push(null);
+    sync.settle(hold("stale"));
+    expect(held).toBeNull();
+  });
+
+  it("leaves the held value alone when the fetch failed and nothing arrived", () => {
+    let commits = 0;
+    const sync = createSingleSync<{ reason: string }>(() => {
+      commits += 1;
+    });
+    sync.settle();
+    expect(commits, "no snapshot and no event is nothing to say").toBe(0);
+
+    // …but a value that did arrive during the failed fetch still lands.
+    const second = createSingleSync<{ reason: string }>(() => {
+      commits += 1;
+    });
+    second.push(hold("held anyway"));
+    second.settle();
+    expect(commits).toBe(1);
   });
 });

@@ -18,6 +18,7 @@ import type {
   RoadmapItem,
   RoadmapItemEvent,
   RoadmapOrderProposal,
+  RoadmapProjectHold,
   RoadmapProposal,
   RoadmapQueueNote,
 } from "./types/roadmap";
@@ -101,6 +102,25 @@ export function onRoadmapOrderProposalDeleted(
   cb: (projectId: string) => void,
 ): Promise<UnlistenFn> {
   return listen<string>("roadmap:order-proposal-deleted", (event) => cb(event.payload));
+}
+
+/** `roadmap:project-hold` fires when the whole board is stopped, or when the
+ *  reason changes (one hold per project, replaced in place); carries the full row
+ *  so the banner appears without a refetch. Fires for every project — a listener
+ *  scoped to one board filters on `project_id`.
+ *
+ *  An *item's* hold has no event of its own: it lives on the row, so it arrives
+ *  on `roadmap:item` like every other change to that row. */
+export function onRoadmapProjectHold(cb: (hold: RoadmapProjectHold) => void): Promise<UnlistenFn> {
+  return listen<RoadmapProjectHold>("roadmap:project-hold", (event) => cb(event.payload));
+}
+
+/** `roadmap:project-hold-released` fires the *project id* once the user lets the
+ *  board run again — the hold is keyed by board, so there is nothing else to
+ *  address it by. Only the user can produce this event: the PM has an op to hold
+ *  and none to release. */
+export function onRoadmapProjectHoldReleased(cb: (projectId: string) => void): Promise<UnlistenFn> {
+  return listen<string>("roadmap:project-hold-released", (event) => cb(event.payload));
 }
 
 /** `roadmap:queue-note` explains why an item isn't moving — no workflow to run

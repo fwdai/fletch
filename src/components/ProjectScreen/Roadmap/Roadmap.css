@@ -664,6 +664,38 @@
   margin-top: 4px;
 }
 
+/* ── the project hold banner ──
+   The whole board is stopped. The strip's grammar (warn ground, one accent line,
+   an action on the right) rather than the proposal bars' accent: a hold is
+   something already halted, not an invitation. Said once, above the groups —
+   repeating it per card would be the same sentence five times. */
+.rm-phold {
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 7px 10px 7px var(--rm-gut);
+  background: color-mix(in oklch, var(--warn), var(--bg-1) 90%);
+  border-bottom: 1px solid color-mix(in oklch, var(--warn), transparent 66%);
+}
+.rm-phold-i {
+  flex-shrink: 0;
+  color: var(--warn);
+}
+.rm-phold-t {
+  min-width: 0;
+  line-height: var(--lh-snug);
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
+.rm-phold-t strong {
+  font-weight: 600;
+  color: var(--warn);
+}
+.rm-phold-age {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── the proposal bar ──
    Shown only when the PM has several proposals outstanding: one ghost is ruled
    on from its own card, but a batch shouldn't cost a trip down three horizons.
@@ -1181,6 +1213,42 @@ button.rm-hist-h:hover {
   min-width: 0;
   color: var(--fg-2);
   text-wrap: pretty;
+}
+
+/* A held row: the queue will not build this until someone releases it. The queue
+   note's band, one step stronger (a solid warn rule, not a hint), because unlike
+   a note this is not a condition that resolves itself — it is waiting on the
+   person reading it, which is also why it carries the button. */
+.rm-hold {
+  gap: 6px;
+  padding: 5px 10px 5px 10px;
+  line-height: var(--lh-snug);
+  color: var(--warn);
+  border-top: 1px solid color-mix(in oklch, var(--warn), transparent 70%);
+  background: color-mix(in oklch, var(--warn), transparent 92%);
+}
+.rm-hold-t {
+  min-width: 0;
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
+.rm-hold-t strong {
+  font-weight: 600;
+  color: var(--warn);
+}
+/* Placing a hold: the reason is asked for where the button was, so the gesture
+   stays one place on the card. Grows to the row's width — a reason is a sentence,
+   and a box sized for a word invites one. */
+.rm-hold-ask {
+  gap: 6px;
+  flex: 1;
+  min-width: 160px;
+}
+.rm-hold-input {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px;
 }
 
 /* The manual hand-off: an agent the user started is on this item, and the queue

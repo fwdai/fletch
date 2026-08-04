@@ -7,6 +7,7 @@ import type {
   RoadmapItemPatch,
   RoadmapItemUpdate,
   RoadmapOrderProposal,
+  RoadmapProjectHold,
   RoadmapProposal,
 } from "../types/roadmap";
 
@@ -56,6 +57,30 @@ export const roadmapApi = {
    *  doesn't own the item. Returns the stored row. */
   roadmapHandOffItem: (itemId: string, agentId: string) =>
     invoke<RoadmapItem>("roadmap_hand_off_item", { itemId, agentId }),
+  /** Stop autonomous progress on one item until it's released: the queue never
+   *  claims a held item. The status is untouched, so the item keeps its place in
+   *  the queue and releasing is a one-click undo rather than a re-queue. Writes a
+   *  `held` event carrying the reason; holding an already-held item replaces the
+   *  reason and records another line. Returns the stored row. */
+  roadmapHoldItem: (itemId: string, reason: string) =>
+    invoke<RoadmapItem>("roadmap_hold_item", { itemId, reason }),
+  /** Lift an item's hold — **the user's alone**. The PM has an op to hold and
+   *  none to release, so every release comes through here. Writes a `released`
+   *  event whose detail is the reason being lifted. Returns the stored row. */
+  roadmapReleaseItem: (itemId: string) => invoke<RoadmapItem>("roadmap_release_item", { itemId }),
+  /** The project's hold, or `null` when the board is running. Fetched with the
+   *  item snapshot; live changes arrive on `roadmap:project-hold` /
+   *  `roadmap:project-hold-released`. */
+  roadmapGetProjectHold: (projectId: string) =>
+    invoke<RoadmapProjectHold | null>("roadmap_get_project_hold", { projectId }),
+  /** Stop the whole board: nothing dispatches until it's released. Runs already
+   *  in flight still settle — reflecting reality is not autonomy. One hold per
+   *  project; a newer one replaces the reason. */
+  roadmapHoldProject: (projectId: string, reason: string) =>
+    invoke<RoadmapProjectHold>("roadmap_hold_project", { projectId, reason }),
+  /** Let the board run again — the user's alone, like every release. */
+  roadmapReleaseProject: (projectId: string) =>
+    invoke<void>("roadmap_release_project", { projectId }),
   /** Remove an item from the board. */
   roadmapDeleteItem: (id: string) => invoke<void>("roadmap_delete_item", { id }),
   /** One item's durable history, newest first. Fetched lazily on first card

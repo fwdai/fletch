@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { RoadmapItem, RoadmapItemEvent, WfPausedReason, WfRun } from "@/api";
+import type {
+  RoadmapItem,
+  RoadmapItemEvent,
+  RoadmapProjectHold,
+  WfPausedReason,
+  WfRun,
+} from "@/api";
 import { buildNeedsYou, latestByItem, mergeLatest, upsertLatest } from "./select";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -23,8 +29,32 @@ function item(over: Partial<RoadmapItem> & { id: string }): RoadmapItem {
     run_id: null,
     pr_url: null,
     pr_number: null,
+    hold_reason: null,
+    held_by: null,
+    held_at: null,
     created_at: 0,
     updated_at: 0,
+    ...over,
+  };
+}
+
+/** A held item — the trio, as the backend writes it (all three together). */
+function held(id: string, reason: string, over: Partial<RoadmapItem> = {}): RoadmapItem {
+  return item({
+    id,
+    hold_reason: reason,
+    held_by: "pm",
+    held_at: 100,
+    ...over,
+  });
+}
+
+function projectHold(over: Partial<RoadmapProjectHold> = {}): RoadmapProjectHold {
+  return {
+    project_id: "p1",
+    reason: "re-planning the quarter",
+    held_by: "pm",
+    created_at: 50,
     ...over,
   };
 }
@@ -173,6 +203,68 @@ describe("buildNeedsYou — blocked items", () => {
   });
 });
 
+// ── the brake ─────────────────────────────────────────────────────────────────
+
+describe("buildNeedsYou — holds", () => {
+  it("cards a held item at any on-board status, quoting the reason verbatim", () => {
+    // Read off the row, not off the trail: a hold is a current fact, so there is
+    // no "has the trail moved on" question — and it applies wherever the item is,
+    // because the PM can pull the brake mid-run.
+    for (const status of ["proposed", "open", "queued", "active", "in_review"] as const) {
+      const cards = buildNeedsYou(
+        input({ items: [held("a", "confirm the scope first", { status })] }),
+      );
+      expect(cards, status).toHaveLength(1);
+      expect(cards[0]).toMatchObject({
+        id: "held:a",
+        reason: "item-held",
+        itemId: "a",
+        code: "MCA-a",
+        detail: "confirm the scope first",
+        // The hold's own timestamp, so editing a held item doesn't refloat it.
+        activityAt: 100,
+      });
+    }
+  });
+
+  it("drops the card the moment the hold is lifted", () => {
+    expect(buildNeedsYou(input({ items: [item({ id: "a", status: "queued" })] }))).toEqual([]);
+  });
+
+  it("cards the board's hold with no item to jump to", () => {
+    const cards = buildNeedsYou(input({ projectHold: projectHold() }));
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      id: "project-held:p1",
+      reason: "project-held",
+      detail: "re-planning the quarter",
+      activityAt: 50,
+    });
+    // The one card that names no row: there is nothing to focus, and the strip
+    // renders a label instead of a button.
+    expect(cards[0].itemId).toBeUndefined();
+    expect(cards[0].code).toBeUndefined();
+  });
+
+  it("cards both scopes at once, board first", () => {
+    // Two separate decisions: lifting the board's hold does not lift the item's,
+    // so both have to be visible and both have to be releasable.
+    const cards = buildNeedsYou(
+      input({ items: [held("a", "wrong scope")], projectHold: projectHold() }),
+    );
+    expect(cards.map((c) => c.id)).toEqual(["project-held:p1", "held:a"]);
+  });
+
+  it("falls back to the row's updated_at when a hold predates held_at", () => {
+    // Defensive: the trio is written together, so this is only reachable through
+    // a hand-edited row — but ordering must not turn into NaN if it happens.
+    const cards = buildNeedsYou(
+      input({ items: [held("a", "why", { held_at: null, updated_at: 7 })] }),
+    );
+    expect(cards[0].activityAt).toBe(7);
+  });
+});
+
 // ── the join ──────────────────────────────────────────────────────────────────
 
 describe("buildNeedsYou — join misses", () => {
@@ -213,7 +305,7 @@ describe("buildNeedsYou — ordering", () => {
     );
     const cards = buildNeedsYou(
       input({
-        items,
+        items: [...items, held("f", "wrong scope")],
         runs: [
           run({ id: "budget", paused_reason: "budget_exceeded", roadmap_item_id: "a" }),
           run({ id: "conflict", paused_reason: "conflict", roadmap_item_id: "b" }),
@@ -221,10 +313,15 @@ describe("buildNeedsYou — ordering", () => {
           run({ id: "question", paused_reason: "question", roadmap_item_id: "d" }),
         ],
         latestEvents: [event({ id: "ev", item_id: "e" })],
+        projectHold: projectHold(),
       }),
     );
+    // The two holds sit above the gates: Release is one click and needs no
+    // evidence surface, and the board's hold stops the most.
     expect(cards.map((c) => c.reason)).toEqual([
       "workflow-question",
+      "project-held",
+      "item-held",
       "workflow-approval",
       "workflow-conflict",
       "workflow-budget",

@@ -43,8 +43,14 @@ crate::db_enum! {
     /// What happened. One kind per transition, so a history line never has to
     /// re-derive meaning from a status pair.
     ///
-    /// `held` and `released` arrive with the holds slice (B5, see
-    /// .context/roadmap-pm-plan.md) — not declared here until they have a writer.
+    /// `held`/`released` are the odd pair: they name no status move at all (a
+    /// hold stops autonomous progress and leaves the row exactly where it is —
+    /// see [`super::holds`]), so they are the two kinds where the *detail* is the
+    /// whole record. `held` carries the reason, `released` carries the reason it
+    /// lifts, and the pair read together is "why we stopped, and that we
+    /// resumed". A re-hold writes a second `held` rather than editing the first,
+    /// which is what keeps the trail able to answer "what has this been held for"
+    /// when the row itself only ever carries the current reason.
     EventKind {
         Created    => "created",
         Proposed   => "proposed",
@@ -59,6 +65,8 @@ crate::db_enum! {
         Shipped    => "shipped",
         Abandoned  => "abandoned",
         Blocked    => "blocked",
+        Held       => "held",
+        Released   => "released",
         Note       => "note",
     }
 }
@@ -444,6 +452,69 @@ mod tests {
         assert!(store::delete(&conn, &it.id).unwrap());
         assert!(list_for_item(&conn, &it.id).unwrap().is_empty());
     }
+
+    /// Every kind the Rust side can write must exist in the frontend's union, and
+    /// vice versa. Without this pin a new kind reaches a card as `undefined` —
+    /// `EVENT_LABEL` is a `Record<RoadmapEventKind, string>`, so TypeScript
+    /// guarantees a label for every *declared* kind and nothing guarantees the
+    /// union itself keeps up with this enum (see .context/roadmap-pm-plan.md,
+    /// filed against B5). Both directions, because a union entry with no writer is
+    /// a label nobody will ever see and a lie about what the board can say.
+    #[test]
+    fn every_kind_is_declared_on_both_sides_of_the_wire() {
+        const TS: &str = include_str!("../../../src/api/types/roadmap.ts");
+        // The union's own block, so an unrelated string literal elsewhere in the
+        // file can't stand in for a missing member.
+        let union = TS
+            .split("export type RoadmapEventKind =")
+            .nth(1)
+            .and_then(|rest| rest.split_once(';'))
+            .map(|(block, _)| block)
+            .expect("the frontend declares RoadmapEventKind");
+
+        let declared: Vec<&str> = union
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .filter(|s| !s.is_empty())
+            .collect();
+        for kind in ALL_KINDS {
+            assert!(
+                declared.contains(&kind.as_str()),
+                "the frontend union is missing {:?} — it would render as `undefined`",
+                kind.as_str()
+            );
+        }
+        for spelling in &declared {
+            assert!(
+                EventKind::from_db(spelling).is_some(),
+                "the frontend declares {spelling:?}, which no writer can produce"
+            );
+        }
+        assert_eq!(declared.len(), ALL_KINDS.len());
+    }
+
+    /// Every variant, listed once so the pin above can walk them. The `db_enum!`
+    /// macro produces no iterator, and a missing entry here would quietly weaken
+    /// the pin — so the count is asserted against the frontend's union too.
+    const ALL_KINDS: [EventKind; 16] = [
+        EventKind::Created,
+        EventKind::Proposed,
+        EventKind::Accepted,
+        EventKind::Discarded,
+        EventKind::Edited,
+        EventKind::Queued,
+        EventKind::Unqueued,
+        EventKind::Dispatched,
+        EventKind::PrOpened,
+        EventKind::RunFailed,
+        EventKind::Shipped,
+        EventKind::Abandoned,
+        EventKind::Blocked,
+        EventKind::Held,
+        EventKind::Released,
+        EventKind::Note,
+    ];
 
     #[test]
     fn the_user_transitions_map_to_their_kinds() {

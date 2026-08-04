@@ -15,6 +15,7 @@ import { pausedLabel } from "@/workflows/run/status";
 import { eventLine } from "../itemHistory";
 import { buildProposalDiff, isEmptyDiff } from "../proposalDiff";
 import type { BoardItem, ItemSource, ItemStatus } from "../types";
+import { HoldAction, HoldChip } from "./HoldControl";
 import type { CardDnd } from "./useBoardDnd";
 
 /** Where the item came from, as a one-glyph tag. */
@@ -75,6 +76,13 @@ interface Props {
    *  a revoked token, a deleted PR, a repo that left the project. In-review
    *  items only, and not read-only. */
   onMarkDone?: () => void;
+  /** Stop the queue from building this until it's released, with the reason asked
+   *  for inline. Absent for a ghost (nothing is going to build a row nobody has
+   *  accepted — rule on it first) and on a read-only board. */
+  onHold?: (reason: string) => void;
+  /** Lift this item's hold. Only on a held row, and never available to the PM —
+   *  releasing is the user's alone. */
+  onRelease?: () => void;
   /** Open the run this item is being built by. Only on an item with a run. */
   onOpenRun?: () => void;
   /** The live row of the run this item is tied to (`run_id`), when the workflow
@@ -134,6 +142,8 @@ export function ItemCard({
   onQueue,
   onUnqueue,
   onMarkDone,
+  onHold,
+  onRelease,
   onOpenRun,
   run,
   workflowName,
@@ -300,6 +310,13 @@ export function ItemCard({
         </button>
       )}
 
+      {/* The brake, if it is on. Above the queue note and outside the body for
+          the same reason the ghostbar is: a row nothing is going to build must
+          say why collapsed, and the one gesture that changes it is right there. */}
+      {item.item.hold_reason && (
+        <HoldChip reason={item.item.hold_reason} by={item.item.held_by} onRelease={onRelease} />
+      )}
+
       {/* Why a queued row isn't moving. Outside the collapsible body and
           outside the header button, like the ghostbar: an item that has stalled
           must say so without the user having to go looking for it. */}
@@ -415,6 +432,10 @@ export function ItemCard({
                   <Icon name="check" size={11} /> Mark done
                 </Button>
               )}
+              {/* The user's own brake, next to the button it stops. A secondary
+                  action: most rows never need it, and the one that does needs a
+                  reason more than it needs prominence. */}
+              {onHold && <HoldAction onHold={onHold} />}
               {onQueue && (
                 <Button variant="primary" size="sm" onClick={onQueue}>
                   <Icon name="play" size={11} /> Queue

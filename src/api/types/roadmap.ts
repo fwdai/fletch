@@ -50,8 +50,35 @@ export interface RoadmapItem {
   run_id: string | null;
   pr_url: string | null;
   pr_number: number | null;
+  /** Why autonomous progress on this item is stopped, or null when it isn't
+   *  (migration 0033). The queue never claims a held item, and only the user can
+   *  lift it (`roadmapReleaseItem`) — the PM can place a hold but has no op to
+   *  release one. One hold at a time: a second replaces this reason, and the
+   *  item's durable history keeps both. */
+  hold_reason: string | null;
+  /** Who applied the hold — the same actor vocabulary the history rows use, so
+   *  "who stopped this" reads the same on the row and on the trail. Non-null
+   *  exactly when `hold_reason` is. */
+  held_by: RoadmapEventActor | null;
+  held_at: number | null;
   created_at: number;
   updated_at: number;
+}
+
+/** The whole board stopped (`roadmap_project_holds`, mirroring
+ *  src-tauri/src/roadmap/holds.rs).
+ *
+ *  Board scoped, not item scoped: at most one per project, and a newer hold
+ *  replaces it. Nothing dispatches while it exists — but runs already in flight
+ *  still settle, because reflecting reality is not autonomy. Arrives on
+ *  `roadmap:project-hold`; its removal on `roadmap:project-hold-released`. */
+export interface RoadmapProjectHold {
+  project_id: string;
+  /** What has to be agreed before the board runs again. Shown in the banner
+   *  above the board, next to the Release button — required, and capped. */
+  reason: string;
+  held_by: RoadmapEventActor;
+  created_at: number;
 }
 
 /** The payload `roadmap_create_item` accepts. Only `title` is required; the
@@ -89,12 +116,17 @@ export interface RoadmapQueueNote {
 export type RoadmapEventActor = "user" | "pm" | "drainer" | "sweep";
 
 /** What happened to an item — one kind per transition, so a history line never
- *  re-derives meaning from a status pair. `held`/`released` arrive with the
- *  holds slice (B5).
+ *  re-derives meaning from a status pair.
  *
  *  `created` is the user-typed row's opening line, the mirror of the PM's
  *  `proposed`: without it a hand-built board has no history at all, and every
- *  "what changed since?" reader calls it unchanged. */
+ *  "what changed since?" reader calls it unchanged.
+ *
+ *  `held`/`released` name no status move at all — a hold stops autonomous
+ *  progress and leaves the row where it is — so for those two the `detail` is
+ *  the whole record: the reason it was held, and the reason a release lifts.
+ *  Every kind must have a label in `EVENT_LABEL` (itemHistory.ts), which is what
+ *  keeps a new kind from rendering as "undefined" on the card. */
 export type RoadmapEventKind =
   | "created"
   | "proposed"
@@ -109,6 +141,8 @@ export type RoadmapEventKind =
   | "shipped"
   | "abandoned"
   | "blocked"
+  | "held"
+  | "released"
   | "note";
 
 /** One durable history row (`roadmap_item_events`, mirroring

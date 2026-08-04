@@ -12,6 +12,7 @@ import { ItemCard } from "./ItemCard";
 import { ItemDialog } from "./ItemDialog";
 import { OrderProposalBar } from "./OrderProposalBar";
 import { ProductMap } from "./ProductMap";
+import { ProjectHoldBanner } from "./ProjectHoldBanner";
 import { useBoardDnd } from "./useBoardDnd";
 
 /** What the form is open on: an existing row, or a new one destined for
@@ -71,6 +72,10 @@ export function Board({
     queueItems,
     unqueueItems,
     markDone,
+    projectHold,
+    holdItem,
+    releaseItem,
+    releaseProject,
     workflows,
   } = roadmap;
   const selectRun = useAppStore((s) => s.selectRun);
@@ -177,7 +182,24 @@ export function Board({
           are: the items it names can be in three different horizons. Renders
           nothing when nothing is waiting. */}
       {tab === "roadmap" && (
-        <NeedsYou cards={needsYou} onFocusItem={focusItem} onOpenRun={openRun} />
+        <NeedsYou
+          cards={needsYou}
+          onFocusItem={focusItem}
+          onOpenRun={openRun}
+          onReleaseItem={readOnly ? undefined : releaseItem}
+          onReleaseProject={readOnly ? undefined : releaseProject}
+        />
+      )}
+
+      {/* The whole board is stopped. Below the strip (which already carries a
+          card for it, with the same one-click release) because this band is the
+          standing explanation for cards that look queued and aren't moving —
+          the strip is the decision, this is the state. */}
+      {tab === "roadmap" && projectHold && (
+        <ProjectHoldBanner
+          hold={projectHold}
+          onRelease={readOnly ? undefined : () => void releaseProject()}
+        />
       )}
 
       {/* One proposal is ruled on from its own card; a batch gets a single bar,
@@ -304,8 +326,11 @@ export function Board({
                       onQueue={
                         // A handed-off row already has its builder; queueing it
                         // would dispatch a second one. The drainer refuses such
-                        // rows too — this just keeps the button honest.
-                        writable && it.status === "open" && !row.agent_id
+                        // rows too — this just keeps the button honest. A held
+                        // row hides it for the same reason: the queue will not
+                        // claim it, so offering the button would promise
+                        // something the brake overrides. Release, then queue.
+                        writable && it.status === "open" && !row.agent_id && !row.hold_reason
                           ? () => queueItems([row.id])
                           : undefined
                       }
@@ -316,6 +341,24 @@ export function Board({
                       }
                       onMarkDone={
                         writable && it.status === "in_review" ? () => markDone(row.id) : undefined
+                      }
+                      onHold={
+                        // `open` and `queued`: the two statuses where a hold
+                        // changes what this board would do next. A ghost is
+                        // excluded because nothing builds a row nobody has
+                        // accepted — rule on it first (`writable` already drops
+                        // them) — and everything from `active` on is the run's,
+                        // where the user's lever is the run itself. (The PM's op
+                        // has no such limit: mid-run is when *it* most needs the
+                        // brake, and it cannot reach the run.)
+                        writable &&
+                        !row.hold_reason &&
+                        (it.status === "open" || it.status === "queued")
+                          ? (reason: string) => holdItem(row.id, reason)
+                          : undefined
+                      }
+                      onRelease={
+                        writable && row.hold_reason ? () => releaseItem(row.id) : undefined
                       }
                       onOpenRun={row.run_id ? () => openRun(row.run_id as string) : undefined}
                       dnd={readOnly ? undefined : dnd.cardDnd(row)}
