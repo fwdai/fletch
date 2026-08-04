@@ -179,7 +179,14 @@ pub struct ItemPatch {
     pub deps: Option<Vec<String>>,
     #[serde(default, deserialize_with = "double_option")]
     pub area: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option")]
+    /// Who is building this item by hand. Deliberately **off the wire**
+    /// (`skip`): the hand-off and its undo are typed commands
+    /// ([`super::roadmap_hand_off_item`] / [`super::roadmap_reclaim_item`])
+    /// because each writes a `note` naming the agent, and a patch would record a
+    /// bare `edited` instead. Two writers of one column, saying different things
+    /// in the trail, is the bug this closes — the field stays here so those two
+    /// commands (and nothing else) can express the write.
+    #[serde(skip)]
     pub agent_id: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     pub workflow_def_id: Option<Option<String>>,
@@ -265,10 +272,26 @@ mod tests {
     /// bytes that must stay different values.
     #[test]
     fn patch_null_clears_value_sets_absent_keeps() {
-        let p: ItemPatch = serde_json::from_str(r#"{"area": null, "agent_id": "a-1"}"#).unwrap();
+        let p: ItemPatch =
+            serde_json::from_str(r#"{"area": null, "workflow_def_id": "wf-1"}"#).unwrap();
         assert_eq!(p.area, Some(None), "an explicit null means 'clear'");
-        assert_eq!(p.agent_id, Some(Some("a-1".into())), "a value means 'set'");
-        assert_eq!(p.workflow_def_id, None, "an absent key means 'leave alone'");
+        assert_eq!(
+            p.workflow_def_id,
+            Some(Some("wf-1".into())),
+            "a value means 'set'"
+        );
+        assert_eq!(p.run_id, None, "an absent key means 'leave alone'");
         assert_eq!(p.title, None);
+    }
+
+    /// `agent_id` is not patchable from the wire, however it is spelled. The
+    /// hand-off and its undo are typed commands, so that the trail always names
+    /// the agent instead of recording a bare `edited`.
+    #[test]
+    fn a_wire_patch_can_never_reassign_the_agent() {
+        for json in [r#"{"agent_id": "a-1"}"#, r#"{"agent_id": null}"#] {
+            let p: ItemPatch = serde_json::from_str(json).unwrap();
+            assert_eq!(p.agent_id, None, "{json}");
+        }
     }
 }

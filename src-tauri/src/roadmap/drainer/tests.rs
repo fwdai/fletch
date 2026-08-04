@@ -388,27 +388,64 @@ fn a_claim_records_one_dispatched_event_naming_the_workflow() {
     let conn = test_conn();
     let it = db_item(&conn, ItemStatus::Queued);
 
-    let (claimed, event) = claim_item(&conn, &it.id, "wf-1").unwrap().expect("claims");
+    let (claimed, event) = claim_item(&conn, &it.id, "wf-1", Some("Build & review"))
+        .unwrap()
+        .expect("claims");
     assert_eq!(claimed.status, ItemStatus::Active);
     assert_eq!(claimed.workflow_def_id.as_deref(), Some("wf-1"));
     assert_eq!(event.kind, EventKind::Dispatched);
     assert_eq!(event.actor, EventActor::Drainer);
-    assert_eq!(event.detail.as_deref(), Some("wf-1"));
+    // The *name*, not the id: this is the most common line in an item's trail,
+    // and the id is already pinned on the row as `workflow_def_id`.
+    assert_eq!(event.detail.as_deref(), Some("Build & review"));
     assert_eq!(events::list_for_item(&conn, &it.id).unwrap(), vec![event]);
 
     // A second claim finds the row no longer queued: no write, and no second
     // event pretending there was one.
-    assert!(claim_item(&conn, &it.id, "wf-1").unwrap().is_none());
+    assert!(claim_item(&conn, &it.id, "wf-1", Some("Build & review"))
+        .unwrap()
+        .is_none());
     assert_eq!(events::list_for_item(&conn, &it.id).unwrap().len(), 1);
+}
+
+#[test]
+fn a_claim_falls_back_to_the_definition_id_when_the_name_is_gone() {
+    // A definition renamed away or deleted between the resolve and the claim: a
+    // uuid on the card is poor, an unexplained dispatch is worse.
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Queued);
+    let (_, event) = claim_item(&conn, &it.id, "wf-orphan", None)
+        .unwrap()
+        .expect("claims");
+    assert_eq!(event.detail.as_deref(), Some("wf-orphan"));
+}
+
+#[test]
+fn a_definition_name_is_read_off_the_row_or_reported_missing() {
+    let conn = test_conn();
+    conn.execute(
+        "INSERT INTO wf_definition (id, name, spec_json, created_at, updated_at)
+         VALUES ('wf-1', 'Build & review', '{}', 0, 0), ('wf-blank', '  ', '{}', 0, 0)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        definition_name(&conn, "wf-1"),
+        Some("Build & review".to_string())
+    );
+    // A blank name is no name — the caller falls back to the id rather than
+    // writing an empty detail.
+    assert_eq!(definition_name(&conn, "wf-blank"), None);
+    assert_eq!(definition_name(&conn, "wf-gone"), None);
 }
 
 #[test]
 fn a_release_persists_its_reason_where_the_note_never_lands() {
     // The card's toast ("Back on the board — its run failed.") is a transient
-    // `roadmap:queue-note`; nothing below asserts on it because nothing stores
-    // it — the schema has no note table at all, which is the second half of
-    // this pin. The durable record is the `run_failed` event, which a reload
-    // (any fresh read of the table) still finds.
+    // `roadmap:queue-note` and is stored nowhere. What this pins is where the
+    // reason *does* live: exactly one `run_failed` event carrying it, and no
+    // `note` event doubling it up — a reload (any fresh read of the table) finds
+    // one line, not two saying the same thing in different words.
     let conn = test_conn();
     let it = db_item(&conn, ItemStatus::Active);
 
@@ -434,16 +471,18 @@ fn a_release_persists_its_reason_where_the_note_never_lands() {
     assert_eq!(listed[0].kind, EventKind::RunFailed);
     assert_eq!(listed[0].detail.as_deref(), Some("its run failed"));
 
-    // No table anywhere persists queue notes — the reason string's only durable
-    // home is the event above.
-    let note_tables: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE '%note%'",
-            [],
+    // One event, of that kind, and nothing of kind `note`: the release explains
+    // itself once, on the line the card reads as a failure.
+    let by_kind = |kind: &str| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM roadmap_item_events WHERE item_id = ?1 AND kind = ?2",
+            rusqlite::params![it.id, kind],
             |r| r.get(0),
         )
-        .unwrap();
-    assert_eq!(note_tables, 0);
+        .unwrap()
+    };
+    assert_eq!(by_kind("run_failed"), 1);
+    assert_eq!(by_kind("note"), 0);
 }
 
 #[test]

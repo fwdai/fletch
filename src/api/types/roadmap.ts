@@ -89,8 +89,10 @@ export interface RoadmapQueueNote {
 export type RoadmapEventActor = "user" | "pm" | "drainer" | "sweep";
 
 /** What happened to an item — one kind per transition, so a history line never
- *  re-derives meaning from a status pair. `held`/`released` arrive with the
- *  holds slice (B5).
+ *  re-derives meaning from a status pair. No member without a backend writer:
+ *  `held`/`released` arrive with the holds slice (B5), and `discarded` is gone
+ *  (discarding deletes the row, history and all; declining a PM ask writes a
+ *  `note`).
  *
  *  `created` is the user-typed row's opening line, the mirror of the PM's
  *  `proposed`: without it a hand-built board has no history at all, and every
@@ -99,7 +101,6 @@ export type RoadmapEventKind =
   | "created"
   | "proposed"
   | "accepted"
-  | "discarded"
   | "edited"
   | "queued"
   | "unqueued"
@@ -196,7 +197,12 @@ export interface RoadmapItemUpdate {
 
 /** A partial update. An omitted key is left alone; an explicit `null` on a
  *  nullable column clears it — so `{ area: null }` unsets the area while `{}`
- *  changes nothing. `code` and `project_id` are not patchable. */
+ *  changes nothing. `code` and `project_id` are not patchable.
+ *
+ *  Neither is `agent_id`: the hand-off and its undo are typed commands
+ *  (`roadmapHandOffItem` / `roadmapReclaimItem`) because each writes a history
+ *  note naming the agent, where a patch would record a bare "Edited". The
+ *  backend ignores the key even if something sends it. */
 export interface RoadmapItemPatch {
   title?: string;
   why?: string;
@@ -211,7 +217,6 @@ export interface RoadmapItemPatch {
   accept?: string[];
   deps?: string[];
   area?: string | null;
-  agent_id?: string | null;
   workflow_def_id?: string | null;
   run_id?: string | null;
   pr_url?: string | null;

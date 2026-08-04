@@ -92,8 +92,9 @@ pub(crate) fn nudge() {
 /// An `in_review` item *without* a number is left alone rather than guessed at.
 /// It means the run finished, opened something, and the number never made it
 /// onto the row — polling would need a number invented from the URL, and a
-/// wrong number is a wrong verdict written to the board. The card still links
-/// the PR; the user merges it and marks the item done by hand.
+/// wrong number is a wrong verdict written to the board. The card says so in as
+/// many words ("Can't watch this PR", `ItemCard.tsx`), links the PR, and keeps
+/// "Mark done" — the user merges it and ships the item by hand.
 pub(crate) fn pollable(items: &[RoadmapItem]) -> Vec<&RoadmapItem> {
     items
         .iter()

@@ -52,6 +52,7 @@ export function Board({
     landed,
     loading,
     readOnly,
+    makeProject,
     error,
     clearError,
     notes,
@@ -70,6 +71,7 @@ export function Board({
     setRanks,
     queueItems,
     unqueueItems,
+    reclaimItem,
     markDone,
     workflows,
   } = roadmap;
@@ -161,6 +163,22 @@ export function Board({
           </IconButton>
         )}
       </div>
+
+      {/* A repo with no project row of its own: the board renders, nothing on it
+          can be written, and until now nothing said what was missing or how to
+          fix it. The CTA is the sidebar's "Open a folder" path minus the picker
+          (see `useRoadmap.makeProject`) — one click, because the folder in
+          question is the one this screen is already open on. */}
+      {readOnly && (
+        <div className="rm-board-ro flex-center text-xs">
+          <Icon name="folder" size={11} />
+          <span className="rm-board-ro-t">Make this repo a project to use the roadmap</span>
+          <span className="grow" />
+          <button type="button" className="rm-board-ro-ok" onClick={makeProject}>
+            Make it a project
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="rm-board-err flex-center text-xs">
@@ -312,6 +330,14 @@ export function Board({
                       onUnqueue={
                         writable && it.status === "queued"
                           ? () => unqueueItems([row.id])
+                          : undefined
+                      }
+                      onReclaim={
+                        // The undo of a hand-off, offered exactly where the
+                        // backend allows it: a stamped row the queue hasn't
+                        // taken over. From `queued` on, the run is the lever.
+                        writable && row.agent_id && it.status === "open"
+                          ? () => reclaimItem(row.id)
                           : undefined
                       }
                       onMarkDone={

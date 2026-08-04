@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RoadmapItemEvent } from "@/api";
-import { eventLine, insertEvent, mergeSnapshot } from "./itemHistory";
+import { eventDetailUrl, eventLine, insertEvent, mergeSnapshot } from "./itemHistory";
 
 function event(over: Partial<RoadmapItemEvent> & { id: string }): RoadmapItemEvent {
   return {
@@ -61,5 +61,29 @@ describe("eventLine", () => {
     // `Record<RoadmapEventKind, …>`, so omitting it would fail `tsc` — this only
     // pins the wording the card shows.
     expect(eventLine(event({ id: "c", kind: "created", actor: "user" }))).toBe("Created");
+  });
+});
+
+describe("eventDetailUrl", () => {
+  it("recognizes a detail that is nothing but a link — the pr_opened line", () => {
+    const url = "https://github.com/o/r/pull/42";
+    expect(eventDetailUrl(event({ id: "a", kind: "pr_opened", detail: url }))).toBe(url);
+    // Whitespace around it is still just a link.
+    expect(eventDetailUrl(event({ id: "b", kind: "pr_opened", detail: ` ${url} ` }))).toBe(url);
+  });
+
+  it("leaves prose alone, however link-like", () => {
+    // A reason that mentions a URL is a sentence, not an address.
+    for (const detail of [
+      null,
+      "",
+      "its run failed",
+      "opened https://github.com/o/r/pull/42",
+      // Not https: nothing on this trail should open a non-https scheme.
+      "http://github.com/o/r/pull/42",
+      "file:///etc/passwd",
+    ]) {
+      expect(eventDetailUrl(event({ id: "c", detail }))).toBeNull();
+    }
   });
 });

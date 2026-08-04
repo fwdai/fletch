@@ -56,6 +56,13 @@ export const roadmapApi = {
    *  doesn't own the item. Returns the stored row. */
   roadmapHandOffItem: (itemId: string, agentId: string) =>
     invoke<RoadmapItem>("roadmap_hand_off_item", { itemId, agentId }),
+  /** Take a handed-off item back off its agent — the undo of
+   *  `roadmapHandOffItem`. Clears `agent_id` and writes a `note` naming the
+   *  agent it came back from; the status is untouched, so the row is simply the
+   *  queue's to dispatch again. Rejects when nothing was handed off, or when the
+   *  item has since been dispatched (from `queued` on, the run is where that
+   *  gets dealt with). Returns the stored row. */
+  roadmapReclaimItem: (itemId: string) => invoke<RoadmapItem>("roadmap_reclaim_item", { itemId }),
   /** Remove an item from the board. */
   roadmapDeleteItem: (id: string) => invoke<void>("roadmap_delete_item", { id }),
   /** One item's durable history, newest first. Fetched lazily on first card

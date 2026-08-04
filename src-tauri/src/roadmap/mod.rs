@@ -470,6 +470,86 @@ fn hand_off(
     Ok((item, event))
 }
 
+/// Take a handed-off item back off its agent ("Take it back" on the card): the
+/// `agent_id` is cleared and the row is the queue's to dispatch again.
+///
+/// The undo half of [`roadmap_hand_off_item`], and its own command for the same
+/// reason: clearing the stamp through a patch would record a bare `edited`,
+/// while the trail needs to say *which* agent stopped owning the item. Gated to
+/// `proposed | open` — the only statuses a hand-off can leave a row in, so
+/// anything else means the queue or a run has taken over since and reclaiming
+/// would strip provenance off work in flight.
+#[tauri::command]
+pub async fn roadmap_reclaim_item(
+    item_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<RoadmapItem, String> {
+    let (item, event) = {
+        let conn = db.lock();
+        reclaim(&conn, &item_id)?
+    };
+    emit_item(&app, &item);
+    emit_item_event(&app, &event);
+    // Nothing was blocking the queue from taking this row except the stamp.
+    drainer::nudge();
+    Ok(item)
+}
+
+/// The one write behind [`roadmap_reclaim_item`]: check the gate, clear the
+/// stamp, and record the note in the caller's single lock scope.
+fn reclaim(conn: &Connection, item_id: &str) -> Result<(RoadmapItem, ItemEvent), String> {
+    let current = store::get(conn, item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let Some(agent_id) = current.agent_id.clone() else {
+        return Err(format!("{} isn't with an agent", current.code));
+    };
+    match current.status {
+        ItemStatus::Proposed | ItemStatus::Open => {}
+        status => {
+            return Err(format!(
+                "{} is {} — it's already being built; deal with it from the run",
+                current.code,
+                status.as_str()
+            ))
+        }
+    }
+    // Same degradation as the hand-off: a name we can't read costs the label,
+    // not the write.
+    let name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM workspaces WHERE id = ?1",
+            [&agent_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let item = store::update(
+        conn,
+        item_id,
+        &ItemPatch {
+            agent_id: Some(None),
+            ..Default::default()
+        },
+    )
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let detail = match &name {
+        Some(name) => format!("Taken back from agent {name}"),
+        None => "Taken back from an agent".to_string(),
+    };
+    let event = events::record(
+        conn,
+        &item.id,
+        &item.project_id,
+        EventActor::User,
+        EventKind::Note,
+        Some(&detail),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((item, event))
+}
+
 /// Delete an item. Silent when the row is already gone — the caller's intent
 /// ("this should not be on the board") is satisfied either way.
 ///
@@ -1025,6 +1105,69 @@ mod tests {
             assert_eq!(row.agent_id, None, "a refusal must not stamp");
             assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
         }
+    }
+
+    /// Taking an item back clears the stamp and records a `note` naming the
+    /// agent it came back from — the undo of a hand-off, and the only other
+    /// writer of `agent_id`.
+    #[test]
+    fn reclaiming_clears_the_agent_and_names_it_in_history() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO workspaces (id, project_id, name, created_at)
+             VALUES ('w1', 'p1', 'blue-heron', 0)",
+            [],
+        )
+        .unwrap();
+        let it = with_status(&conn, ItemStatus::Open);
+        hand_off(&conn, &it.id, "w1").unwrap();
+
+        let (item, event) = reclaim(&conn, &it.id).unwrap();
+        assert_eq!(item.agent_id, None);
+        assert_eq!(item.status, ItemStatus::Open, "the status is untouched");
+        assert_eq!(event.kind, EventKind::Note);
+        assert_eq!(event.actor, EventActor::User);
+        assert_eq!(
+            event.detail.as_deref(),
+            Some("Taken back from agent blue-heron")
+        );
+        // Nothing to take back twice.
+        assert!(reclaim(&conn, &it.id).is_err());
+    }
+
+    /// The gate: an item nobody handed off has nothing to reclaim, and one the
+    /// queue has since taken is being built — the run is where that gets dealt
+    /// with. A refusal writes nothing.
+    #[test]
+    fn reclaiming_refuses_an_unhanded_or_dispatched_item() {
+        let conn = test_conn();
+        let bare = with_status(&conn, ItemStatus::Open);
+        assert!(reclaim(&conn, &bare.id)
+            .unwrap_err()
+            .contains("with an agent"));
+
+        for status in [ItemStatus::Queued, ItemStatus::Active, ItemStatus::InReview] {
+            let it = with_status(&conn, status);
+            store::update(
+                &conn,
+                &it.id,
+                &ItemPatch {
+                    agent_id: Some(Some("w1".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let err = reclaim(&conn, &it.id).unwrap_err();
+            assert!(err.contains(status.as_str()), "{err}");
+            let row = store::get(&conn, &it.id).unwrap().unwrap();
+            assert_eq!(
+                row.agent_id.as_deref(),
+                Some("w1"),
+                "a refusal writes nothing"
+            );
+            assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+        }
+        assert!(reclaim(&conn, "no-such-item").is_err());
     }
 
     /// A pending update proposal for a test item, straight through the DAO —
