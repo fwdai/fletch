@@ -12,6 +12,12 @@
 //! ([`compose_delivery`]) at a turn boundary. That keeps turn accounting
 //! deterministic and gate evaluation on the right turn.
 //!
+//! One thing does leave the run: when a run is building a roadmap item, its
+//! `report`s and `notify`s are also forwarded to that project's PM chat
+//! ([`midrun_signal`] → `roadmap::review::midrun`), so a deviation can be caught
+//! while the run is still going. Awareness only — the roadmap side writes no run
+//! state, and an `ask` is never forwarded (it belongs to the human).
+//!
 //! The routing/persistence/journaling core is written as free functions taking
 //! `Option<&AppHandle>` (mirroring the scheduler's testable seam), so the whole
 //! matrix is exercised against a temp DB with no live app. [`WorkflowService`]
@@ -31,6 +37,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::error::Result;
+use crate::roadmap::review::MidRunSignal;
 use crate::rpc::git::GitDispatcher;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
@@ -139,6 +146,63 @@ pub(super) fn compose_delivery(msgs: &[Message]) -> String {
 
 fn body_str<'a>(body: &'a Value, key: &str) -> &'a str {
     body.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+// ───────────────────────── roadmap awareness (C5) ───────────────────────────
+
+/// Describe one *successfully routed* comms op for the roadmap PM's benefit, or
+/// `None` when the op is not a message at all (`wf_decide` / `wf_compose` record
+/// decisions, which are engine plumbing) or the run is not building a board item.
+///
+/// This side only *attributes* the message — the sender is resolvable here and
+/// nowhere else, because `wf_step_exec.agent_id` is stamped after the turn. What
+/// is worth forwarding is the roadmap's decision, not the engine's: every comms
+/// *message* kind is handed over and [`crate::roadmap::review::routes_midrun`] is
+/// the single gate (notably, it never routes an `ask` — that is the user's
+/// decision card, not the PM's).
+///
+/// Cheap refusals first, expensive attribution last: nearly every run in a
+/// workspace is a hand-launched one with no `roadmap_item_id`, and it would pay
+/// [`self::sender::resolve_sender`] (a live-exec query plus a whole `spec_json`
+/// deserialize, under the global DB lock) on every report it ever files for a PM
+/// that does not exist. The back-link read is one indexed primary-key lookup.
+fn midrun_signal(
+    conn: &Connection,
+    run_id: &str,
+    agent_id: &str,
+    op: &str,
+    args: &Value,
+) -> Option<MidRunSignal> {
+    // The kind the roadmap gate reads, with the arg field carrying the text. This
+    // is the `wf_message.kind` each op persists *when it persists one* — a
+    // `wf_notify` with no live recipient writes no row and is still forwarded,
+    // because the PM's interest is in what the run said, not in who received it.
+    let (kind, body) = match op {
+        "wf_report" => ("report", body_str(args, "note")),
+        "wf_ask" => ("ask", body_str(args, "question")),
+        "wf_notify" => ("notify", body_str(args, "message")),
+        _ => return None,
+    };
+    // Not dispatched from the board: no item, so no PM this could ever reach.
+    // (The kind/dial decision stays entirely in `routes_midrun`; this only
+    // declines to *pay* for a signal that cannot route.)
+    conn.query_row(
+        "SELECT roadmap_item_id FROM wf_run WHERE id = ?1",
+        [run_id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .flatten()?;
+    Some(MidRunSignal {
+        run_id: run_id.to_string(),
+        kind: kind.to_string(),
+        step_id: self::sender::resolve_sender(conn, run_id, agent_id)
+            .ok()?
+            .step_id,
+        body: body.to_string(),
+    })
 }
 
 // ───────────────────────────── persistence ──────────────────────────────────
@@ -264,9 +328,17 @@ impl WorkflowService {
         // Validate + persist + journal under the DB lock, dropping it before we
         // touch the run registry (lock discipline: never a map lock across the
         // DB lock's work).
-        let (resp, poke) = {
+        let (resp, poke, signal) = {
             let conn = self.db.lock();
-            route(&conn, Some(&self.app), id, run_id, agent_id, op, args)
+            let (resp, poke) = route(&conn, Some(&self.app), id, run_id, agent_id, op, args);
+            // Same lock scope, because attributing the message needs the sending
+            // attempt this op just wrote against; a rejected op recorded nothing,
+            // so there is nothing to be aware of.
+            let signal = resp
+                .ok
+                .then(|| midrun_signal(&conn, run_id, agent_id, op, args))
+                .flatten();
+            (resp, poke, signal)
         };
         if let Poke::AskQueued { run_id } = poke {
             // Raise the run's pending-ask flag so the in-flight attempt defers its
@@ -274,6 +346,19 @@ impl WorkflowService {
             if let Some(flag) = self.runs.lock().get(&run_id).map(|h| h.pending_ask.clone()) {
                 flag.store(true, Ordering::SeqCst);
             }
+        }
+        // Mid-run PM awareness (C5): if this run is building a roadmap item, its
+        // reports and notices are context the PM should have *now*, while there is
+        // still a run to hold. Off this call entirely — the delivery takes this
+        // same non-reentrant mutex and can end in a process spawn for a resting PM
+        // session, which is not something the reporting agent should wait behind —
+        // and best-effort: it can neither fail nor delay the op the agent is
+        // waiting on.
+        if let Some(signal) = signal {
+            let (app, db) = (self.app.clone(), self.db.clone());
+            tauri::async_runtime::spawn(async move {
+                crate::roadmap::review::midrun(&app, &db, &signal);
+            });
         }
         (resp, Vec::new())
     }

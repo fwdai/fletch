@@ -1178,3 +1178,98 @@ fn wf_compose_rejects_over_max_sub_runs() {
     assert!(!resp.ok);
     assert!(resp.error.unwrap().contains("max_sub_runs"));
 }
+
+// ── mid-run roadmap awareness (C5) ────────────────────────────────────
+
+/// The engine half of the PM's mid-run window: which ops become a signal, which
+/// arg key each one's text lives under, and the one refusal this side owns.
+///
+/// Pinned here because nothing else would catch a drift. The kind strings are
+/// plain text to `roadmap::review::routes_midrun` (rename `report` and the gate
+/// silently stops routing), each op carries its body under a different key
+/// (rename it and every signal arrives empty), and the back-link read is what
+/// keeps a hand-launched run from paying for sender attribution it can never use.
+#[test]
+fn a_roadmap_linked_run_s_messages_become_midrun_signals() {
+    let (conn, _run, _exec) = seed(vec![CommsCap::Report, CommsCap::Ask]);
+    conn.execute(
+        "UPDATE wf_run SET roadmap_item_id = 'item-1' WHERE id = 'run'",
+        [],
+    )
+    .unwrap();
+
+    let sig = midrun_signal(
+        &conn,
+        "run",
+        "agent-1",
+        "wf_report",
+        &json!({ "note": "the multi-repo case needed a new adapter" }),
+    )
+    .expect("a report on a roadmap-linked run is a signal");
+    assert_eq!(sig.run_id, "run");
+    assert_eq!(sig.kind, "report");
+    // Attributed to the live attempt, since `wf_step_exec.agent_id` is only
+    // stamped after the turn — the reason this resolution happens here at all.
+    assert_eq!(sig.step_id, "s1");
+    assert_eq!(sig.body, "the multi-repo case needed a new adapter");
+
+    // An `ask` is handed over as well: dropping it is the roadmap gate's call,
+    // so exactly one place decides what reaches the PM.
+    let ask = midrun_signal(
+        &conn,
+        "run",
+        "agent-1",
+        "wf_ask",
+        &json!({ "question": "which db?" }),
+    )
+    .unwrap();
+    assert_eq!(ask.kind, "ask");
+    assert_eq!(ask.body, "which db?");
+
+    let notice = midrun_signal(
+        &conn,
+        "run",
+        "agent-1",
+        "wf_notify",
+        &json!({ "message": "slice B landed under you" }),
+    )
+    .unwrap();
+    assert_eq!(notice.kind, "notify");
+    assert_eq!(notice.body, "slice B landed under you");
+
+    // Decisions are engine plumbing, and a non-comms op is not ours at all.
+    assert!(midrun_signal(
+        &conn,
+        "run",
+        "agent-1",
+        "wf_decide",
+        &json!({ "verdict": "pass" })
+    )
+    .is_none());
+    assert!(midrun_signal(&conn, "run", "agent-1", "git_push", &json!({})).is_none());
+
+    // Not dispatched from the board: refused on one indexed read, before any
+    // sender attribution is paid for.
+    conn.execute(
+        "UPDATE wf_run SET roadmap_item_id = NULL WHERE id = 'run'",
+        [],
+    )
+    .unwrap();
+    assert!(midrun_signal(
+        &conn,
+        "run",
+        "agent-1",
+        "wf_report",
+        &json!({ "note": "the multi-repo case needed a new adapter" })
+    )
+    .is_none());
+    // And a run row that is gone is the same refusal, not a panic.
+    assert!(midrun_signal(
+        &conn,
+        "vanished",
+        "agent-1",
+        "wf_report",
+        &json!({ "note": "x" })
+    )
+    .is_none());
+}
