@@ -7,18 +7,24 @@
 //! surface every other agent has (its `AgentCaps::advisory()` still refuses the
 //! publish ops, one mechanism checked once).
 //!
-//! Five ops, all scoped to the project this chat belongs to. The project id is
+//! Six ops, all scoped to the project this chat belongs to. The project id is
 //! stamped at construction from the workspace record, never taken from `args`:
 //! a chat can only ever read and write its own project's board.
 //!
 //! - `roadmap_list` — the whole board, compact, in board order (which is rank
 //!   order, i.e. dispatch order), including `done` items (the PM needs to know
-//!   what already shipped before it proposes more).
+//!   what already shipped before it proposes more). Each row carries its
+//!   `last_event` and its PR link when it has one, so "why did MCA-104 fail?"
+//!   is answerable from this one call — the PM oversees execution, not just
+//!   intake.
 //! - `roadmap_propose` — creates rows with `status = "proposed"`, `source =
 //!   "pm"`. A proposed row is a *ghost* on the board: it renders where it would
 //!   land, counts for nothing, and only becomes real when the user accepts it
 //!   (`proposed → open`) or vanishes when they discard it. That is the whole
-//!   safety property of this tool — the agent can suggest, never commit.
+//!   safety property of this tool — the agent can suggest, never commit. A
+//!   batch item's `deps` may name another item in the same batch as `"#n"`,
+//!   resolved to real codes inside the insert transaction, so an ordered plan
+//!   is one call rather than one call per link.
 //! - `roadmap_propose_update` / `roadmap_propose_discard` — the same contract
 //!   for items that already exist: the ask lands as a pending delta
 //!   ([`crate::roadmap::proposals`], at most one per item, a newer one
@@ -29,6 +35,10 @@
 //!   the sequence the PM argues for. Board scoped rather than item scoped, and
 //!   refused unless it covers the orderable set exactly, so what the user rules
 //!   on is unambiguous.
+//! - `roadmap_note` — the one op that writes *directly*, because it advances
+//!   nothing: a durable `note` on the item's history. Attention, not action.
+//!   That is the whole of the PM's direct-write licence (invariant 2 in
+//!   .context/roadmap-pm-plan.md): it may raise a hand, never move a piece.
 //!
 //! Validation rejects the whole batch rather than creating a partial one: the
 //! PM gets one precise error it can fix and retry, and the user never sees half
@@ -41,11 +51,12 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
+use crate::roadmap::deps;
 use crate::roadmap::events::{self, EventActor, EventKind, ItemEvent};
 use crate::roadmap::order::{self, OrderProposal};
 use crate::roadmap::proposals::{self, Proposal, ProposalKind, ProposalPatch};
 use crate::roadmap::store;
-use crate::roadmap::types::{Horizon, ItemSource, ItemStatus, NewItem, RoadmapItem};
+use crate::roadmap::types::{Horizon, ItemPatch, ItemSource, ItemStatus, NewItem, RoadmapItem};
 use crate::roadmap::Db;
 use crate::rpc::git::GitDispatcher;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
@@ -53,12 +64,13 @@ use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 /// The ops this dispatcher owns. Pinned by a test against the instruction block
 /// so the two can't drift — an agent told about an op that doesn't exist (or
 /// given one it was never told about) is a silently broken tool.
-pub const OPS: [&str; 5] = [
+pub const OPS: [&str; 6] = [
     "roadmap_list",
     "roadmap_propose",
     "roadmap_propose_update",
     "roadmap_propose_discard",
     "roadmap_propose_order",
+    "roadmap_note",
 ];
 
 /// Most items one `roadmap_propose` call may carry. A proposal is a thing a
@@ -150,6 +162,16 @@ struct ProposeOrderArgs {
     note: Option<String>,
 }
 
+/// `roadmap_note` args: which item, and the observation. Both required — a note
+/// with no text is the one thing this op cannot record.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoteArgs {
+    code: String,
+    #[serde(default)]
+    note: String,
+}
+
 /// Decode `args` into an op's shape. A missing `args` arrives as JSON null,
 /// which is the same as `{}` for every op here.
 fn parse_args<T: Default + serde::de::DeserializeOwned>(args: &Value) -> Result<T, String> {
@@ -199,7 +221,26 @@ fn one_of(values: &[&str]) -> String {
 /// `pending` is the item's outstanding delta, if any, summarized as
 /// `pending_proposal` — so the PM knows what it has already asked for and
 /// never re-proposes blind (or mistakes "not applied yet" for "declined").
-fn compact(item: &RoadmapItem, pending: Option<&Proposal>) -> Value {
+///
+/// `last` is the item's newest history row, projected as `last_event`. This is
+/// what turns the listing from an intake queue into an execution report: the
+/// status says *where* an item is, the last event says *what happened* — a
+/// failure reason, a workflow, a note somebody left. `age` is relative on
+/// purpose, computed against `now`: an absolute epoch means nothing to an agent
+/// reasoning about "since we last spoke", and a wall-clock timestamp it would
+/// have to diff itself is a round trip and a mistake waiting to happen.
+///
+/// The PR link rides along as `pr` for the same reason — the diff is where a
+/// review actually happens, and the item's own `status` already says whether
+/// that PR is still open (`in_review`) or landed (`done`), so no polled state is
+/// invented here. Raw ids stay hidden throughout: run ids, item ids and PR
+/// numbers are the app's handles, not the PM's vocabulary.
+fn compact(
+    item: &RoadmapItem,
+    pending: Option<&Proposal>,
+    last: Option<&ItemEvent>,
+    now: i64,
+) -> Value {
     let mut o = Map::new();
     o.insert("code".into(), json!(item.code));
     o.insert("title".into(), json!(item.title));
@@ -216,6 +257,25 @@ fn compact(item: &RoadmapItem, pending: Option<&Proposal>) -> Value {
     }
     if !item.deps.is_empty() {
         o.insert("deps".into(), json!(item.deps));
+    }
+    if let Some(e) = last {
+        let mut le = Map::new();
+        le.insert("kind".into(), json!(e.kind.as_str()));
+        if let Some(detail) = &e.detail {
+            le.insert("detail".into(), json!(detail));
+        }
+        if let Some(age) = age(now, e.created_at) {
+            le.insert("age".into(), json!(age));
+        }
+        o.insert("last_event".into(), Value::Object(le));
+    }
+    if let Some(url) = item
+        .pr_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+    {
+        o.insert("pr".into(), json!({ "url": url }));
     }
     // Quoted only while the item can still be ruled: an ask whose item has
     // advanced past the gate has no card to rule it from, and quoting it
@@ -234,6 +294,24 @@ fn compact(item: &RoadmapItem, pending: Option<&Proposal>) -> Value {
         o.insert("pending_proposal".into(), Value::Object(pp));
     }
     Value::Object(o)
+}
+
+/// How long ago something happened, in the coarsest unit that is still true:
+/// `"4m"`, `"2h"`, `"3d"`. `None` for anything under a minute (and for a clock
+/// that ran backwards) — "just now" is what the absence means, and inventing
+/// `"0m"` would read as staler than it is.
+///
+/// Coarse deliberately: the PM reasons in "since we last spoke", and a precise
+/// duration would invite arithmetic it has no reason to do.
+fn age(now: i64, then: i64) -> Option<String> {
+    let ms = now.checked_sub(then).filter(|d| *d > 0)?;
+    let minutes = ms / 60_000;
+    match minutes {
+        0 => None,
+        m if m < 60 => Some(format!("{m}m")),
+        m if m < 60 * 24 => Some(format!("{}h", m / 60)),
+        m => Some(format!("{}d", m / (60 * 24))),
+    }
 }
 
 /// `roadmap_list`: the project's board as a JSON array on stdout.
@@ -286,6 +364,14 @@ fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Respo
     };
     let by_item: HashMap<&str, &Proposal> =
         pending.iter().map(|p| (p.item_id.as_str(), p)).collect();
+    // One statement for the whole board rather than a query per row: the PM
+    // reads this listing constantly, and it is the only thing between it and
+    // knowing what the runs did.
+    let last = match events::latest_by_item(conn, project_id) {
+        Ok(map) => map,
+        Err(e) => return Response::err(id, format!("roadmap_list: {e}")),
+    };
+    let now = crate::database::now_millis();
     let keep = |i: &RoadmapItem| match &filter {
         None => true,
         Some(f) => f.contains(i.status.as_str()),
@@ -293,7 +379,7 @@ fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Respo
     let rows: Vec<Value> = items
         .iter()
         .filter(|i| keep(i))
-        .map(|i| compact(i, by_item.get(i.id.as_str()).copied()))
+        .map(|i| compact(i, by_item.get(i.id.as_str()).copied(), last.get(&i.id), now))
         .collect();
     match serde_json::to_string(&rows) {
         Ok(stdout) => Response::ok(id, 0, stdout, String::new()),
@@ -304,10 +390,16 @@ fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Respo
 // ─────────────────────────── roadmap_propose ────────────────────────────
 
 /// Turn the agent's items into validated [`NewItem`]s, or explain what's wrong
-/// with the batch. `known` is every code already on this project's board —
-/// `deps` may only reference those (codes are allocated on insert, so an item
-/// cannot depend on one from the same batch).
-fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem>, String> {
+/// with the batch. `existing` is the project's board: `deps` may name a code
+/// already on it, or another item in *this* batch as `"#n"` (1-based), which is
+/// what lets one call express an ordered plan. The whole merged graph — the
+/// batch's own edges plus the board's — has to stay acyclic
+/// ([`deps::validate_batch`]).
+///
+/// The `"#n"` entries survive into the returned [`NewItem`]s untouched; only the
+/// insert transaction can resolve them, because that is where codes are
+/// allocated (see [`resolve_batch_deps`]).
+fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewItem>, String> {
     if items.is_empty() {
         return Err("`items` must be a non-empty array of tickets".into());
     }
@@ -318,7 +410,7 @@ fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem
             items.len()
         ));
     }
-    let mut out = Vec::with_capacity(items.len());
+    let mut out: Vec<NewItem> = Vec::with_capacity(items.len());
     for (n, it) in items.iter().enumerate() {
         // 1-based: "item 1" is the first thing the agent wrote.
         let at = n + 1;
@@ -340,16 +432,6 @@ fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem
                 )
             })?,
         };
-        let deps = clean_list(&it.deps);
-        for d in &deps {
-            if !known.contains(d.as_str()) {
-                return Err(format!(
-                    "item {at} ({title:?}): `deps` names {d:?}, which is not an item on this \
-                     board — depend only on codes `roadmap_list` returns (a ticket from this \
-                     same batch has no code yet)"
-                ));
-            }
-        }
         out.push(NewItem {
             title: title.to_string(),
             why: it.why.trim().to_string(),
@@ -360,13 +442,37 @@ fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem
             area: clean(it.area.as_deref()),
             source: Some(ItemSource::Pm),
             accept: clean_list(&it.accept),
-            deps,
+            deps: clean_list(&it.deps),
             // Which workflow builds it is the user's call, not the PM's — a
             // proposal isn't work anyone has agreed to do yet.
             workflow_def_id: None,
         });
     }
+    // The deps of the whole batch at once, because that is the only scope an
+    // intra-batch loop is visible in. Refused per item, with the item's own
+    // number and title — the PM fixes one ticket, not a graph.
+    let lists: Vec<Vec<String>> = out.iter().map(|n| n.deps.clone()).collect();
+    deps::validate_batch(&deps::graph_of(existing), &lists)
+        .map_err(|r| format!("item {} ({:?}): {}", r.at + 1, out[r.at].title, r.message))?;
     Ok(out)
+}
+
+/// Rewrite a batch item's `"#n"` references into the codes the insert allocated.
+///
+/// Called *inside* the insert transaction, once every row exists: `"#2"` means
+/// "the second ticket in this call", and only the transaction knows what code
+/// that ticket got. Forward references work for the same reason — the rewrite
+/// happens after all the inserts, not during them.
+///
+/// A dep that isn't a batch reference is left exactly as written; validation has
+/// already established it is a code on the board.
+fn resolve_batch_deps(raw: &[String], created: &[RoadmapItem]) -> Vec<String> {
+    raw.iter()
+        .map(|d| match deps::batch_index(d, created.len()) {
+            Some(i) => created[i].code.clone(),
+            None => d.clone(),
+        })
+        .collect()
 }
 
 /// `roadmap_propose`: validate the batch, insert it as `proposed` rows in one
@@ -397,8 +503,7 @@ fn propose_op(
         Ok(items) => items,
         Err(e) => return err(e.to_string()),
     };
-    let known: HashSet<&str> = existing.iter().map(|i| i.code.as_str()).collect();
-    let news = match validate(&args.items, &known) {
+    let news = match validate(&args.items, &existing) {
         Ok(news) => news,
         Err(msg) => return err(msg),
     };
@@ -406,7 +511,9 @@ fn propose_op(
     // All or nothing: a failure half-way through must not leave the user
     // staring at three of the five tickets they were promised. Each row's
     // `proposed` history event rides the same transaction, so a ghost can never
-    // exist without the record of who suggested it.
+    // exist without the record of who suggested it. The `"#n"` rewrite rides it
+    // too — a batch whose internal ordering half-applied would be a plan nobody
+    // proposed.
     let created = (|| -> rusqlite::Result<(Vec<RoadmapItem>, Vec<ItemEvent>)> {
         let tx = conn.unchecked_transaction()?;
         let mut created = Vec::with_capacity(news.len());
@@ -422,6 +529,25 @@ fn propose_op(
                 None,
             )?);
             created.push(item);
+        }
+        // Second pass, now that every ticket has a code: turn the batch
+        // references into real deps. Only the rows that used one are rewritten,
+        // so an ordinary batch costs no extra write.
+        for (n, new) in news.iter().enumerate() {
+            if !new.deps.iter().any(|d| d.starts_with(deps::BATCH_PREFIX)) {
+                continue;
+            }
+            let resolved = resolve_batch_deps(&new.deps, &created);
+            if let Some(row) = store::update(
+                &tx,
+                &created[n].id,
+                &ItemPatch {
+                    deps: Some(resolved),
+                    ..Default::default()
+                },
+            )? {
+                created[n] = row;
+            }
         }
         tx.commit()?;
         Ok((created, recorded))
@@ -487,12 +613,16 @@ fn rulable(status: ItemStatus) -> bool {
 }
 
 /// Normalize and validate an update's patch against the board, or say exactly
-/// what's wrong: same rules the batch propose applies, plus "don't depend on
-/// yourself" (possible here because the target already has a code).
+/// what's wrong: same rules the batch propose applies, plus the two a patch can
+/// break that a new ticket can't — depending on yourself, and closing a loop
+/// with an item that already depends on you ([`deps::validate_edit`]).
+///
+/// Checked here *and* again when the user rules on the ask: the board moves in
+/// between, and an accepted loop is a permanently wedged queue.
 fn validate_patch(
     patch: &ProposalPatch,
     item: &RoadmapItem,
-    known: &HashSet<&str>,
+    board: &[RoadmapItem],
 ) -> Result<ProposalPatch, String> {
     if patch.is_empty() {
         return Err("`patch` must change at least one field — \
@@ -520,20 +650,10 @@ fn validate_patch(
     if let Some(accept) = &out.accept {
         out.accept = Some(clean_list(accept));
     }
-    if let Some(deps) = &out.deps {
-        let deps = clean_list(deps);
-        for d in &deps {
-            if d == &item.code {
-                return Err(format!("{} cannot depend on itself", item.code));
-            }
-            if !known.contains(d.as_str()) {
-                return Err(format!(
-                    "`deps` names {d:?}, which is not an item on this board — \
-                     depend only on codes `roadmap_list` returns"
-                ));
-            }
-        }
-        out.deps = Some(deps);
+    if let Some(patched) = &out.deps {
+        let patched = clean_list(patched);
+        deps::validate_edit(&deps::graph_of(board), &item.code, &patched)?;
+        out.deps = Some(patched);
     }
     Ok(out)
 }
@@ -569,8 +689,7 @@ fn propose_update_op(
         Ok(item) => item,
         Err(e) => return err(e),
     };
-    let known: HashSet<&str> = items.iter().map(|i| i.code.as_str()).collect();
-    let patch = match validate_patch(&args.patch, item, &known) {
+    let patch = match validate_patch(&args.patch, item, &items) {
         Ok(patch) => patch,
         Err(e) => return err(e),
     };
@@ -640,6 +759,92 @@ fn propose_discard_op(
     match serde_json::to_string(&payload) {
         Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(stored)),
         Err(e) => err(e.to_string()),
+    }
+}
+
+// ───────────────────────────── roadmap_note ─────────────────────────────
+
+/// Longest note this op will store. A note is a line on a card and a line in the
+/// PM's next listing — past a couple of sentences it stops being an observation
+/// and starts being an essay nobody reads, and the thing it should have been is
+/// a proposal.
+const MAX_NOTE: usize = 500;
+
+/// `roadmap_note`: record one durable observation on an item.
+///
+/// The PM's only direct write, and it is allowed precisely because it advances
+/// nothing: no status moves, no field changes, no queue is touched. It raises
+/// attention — the conservative direction of invariant 2 — where every ask that
+/// would *do* something stays a proposal the user rules on.
+///
+/// Unlike the propose ops, the target may be at **any** status. The observation
+/// worth recording most often concerns an item that is already `active`,
+/// `in_review` or `done` ("this shipped, but it solved a narrower problem than
+/// MCA-104 asked for"), and that is exactly the item a proposal is refused on.
+/// Refusing the note too would leave the PM with nowhere to put the one thing it
+/// is uniquely positioned to notice.
+///
+/// Returns the recorded event alongside the response so the dispatcher can
+/// announce it (`roadmap:item-event`) once the lock drops — the card's trail
+/// grows mid-conversation.
+fn note_op(
+    conn: &Connection,
+    project_id: &str,
+    id: &str,
+    args: &Value,
+) -> (Response, Option<ItemEvent>) {
+    let err = |msg: String| (Response::err(id, format!("roadmap_note: {msg}")), None);
+    let args: NoteArgs = match parse_required(args) {
+        Ok(a) => a,
+        Err(e) => return err(e),
+    };
+    let note = args.note.trim();
+    if note.is_empty() {
+        return err("`note` is required — say what you observed, in one honest sentence".into());
+    }
+    // Counted in characters, not bytes: the cap is about how much a human will
+    // read, and a byte limit would refuse a shorter note for containing an
+    // em-dash.
+    let length = note.chars().count();
+    if length > MAX_NOTE {
+        return err(format!(
+            "`note` is {length} characters — keep it under {MAX_NOTE}. A note is one observation; \
+             if it needs more than that, it is a proposal"
+        ));
+    }
+    let items = match store::list(conn, project_id) {
+        Ok(items) => items,
+        Err(e) => return err(e.to_string()),
+    };
+    let code = args.code.trim();
+    // Any status: see the doc comment. Only "no such item" is refused.
+    let Some(item) = items.iter().find(|i| i.code == code) else {
+        return err(format!(
+            "no item {code:?} on this board — `roadmap_list` shows what exists"
+        ));
+    };
+    let recorded = events::record(
+        conn,
+        &item.id,
+        project_id,
+        EventActor::Pm,
+        EventKind::Note,
+        Some(note),
+    );
+    let event = match recorded {
+        Ok(event) => event,
+        Err(e) => return err(e.to_string()),
+    };
+
+    let payload = json!({ "noted": { "code": item.code } });
+    match serde_json::to_string(&payload) {
+        Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(event)),
+        // The note is on the card either way — say so rather than implying
+        // nothing happened, and still announce it.
+        Err(e) => (
+            Response::err(id, format!("roadmap_note: recorded, but {e}")),
+            Some(event),
+        ),
     }
 }
 
@@ -786,6 +991,19 @@ impl RpcDispatcher for RoadmapDispatcher {
                     }
                     (resp, Vec::new())
                 }
+                "roadmap_note" => {
+                    // The one op that writes directly. Same lock discipline all
+                    // the same: the event lands under the lock, and the card
+                    // hears about it after the guard drops.
+                    let (resp, recorded) = {
+                        let conn = self.db.lock();
+                        note_op(&conn, &self.project_id, id, args)
+                    };
+                    if let (Some(app), Some(event)) = (&self.app, &recorded) {
+                        crate::roadmap::emit_item_event(app, event);
+                    }
+                    (resp, Vec::new())
+                }
                 other => (
                     Response::err(
                         id,
@@ -863,6 +1081,11 @@ mod tests {
     fn propose_order(db: &Db, args: Value) -> (Response, Option<OrderProposal>) {
         let conn = db.lock();
         propose_order_op(&conn, "p1", "r1", &args)
+    }
+
+    fn note(db: &Db, args: Value) -> (Response, Option<ItemEvent>) {
+        let conn = db.lock();
+        note_op(&conn, "p1", "r1", &args)
     }
 
     fn one_item(title: &str) -> Value {
@@ -979,7 +1202,7 @@ mod tests {
     }
 
     #[test]
-    fn deps_must_name_codes_already_on_this_board() {
+    fn deps_must_name_a_code_on_the_board_or_an_item_in_this_batch() {
         let db = test_db("p1");
         assert!(propose(&db, one_item("first")).ok);
 
@@ -990,15 +1213,174 @@ mod tests {
         );
         assert!(resp.ok, "{resp:?}");
 
-        // One that doesn't exist rejects the batch, and says why.
+        // One that doesn't exist rejects the batch, names it, and offers the
+        // codes it could have named instead.
         let resp = propose(
             &db,
             json!({"items": [{"title": "third", "horizon": "next", "deps": ["MCA-999"]}]}),
         );
         assert!(!resp.ok);
         let e = resp.error.unwrap();
-        assert!(e.contains("MCA-999") && e.contains("roadmap_list"), "{e}");
+        assert!(
+            e.contains("MCA-999") && e.contains("MCA-100, MCA-101"),
+            "{e}"
+        );
+        // And the batch syntax is offered too, since that is the other legal
+        // spelling in this op.
+        assert!(e.contains("#n"), "{e}");
         assert_eq!(store::list(&db.lock(), "p1").unwrap().len(), 2);
+    }
+
+    /// The whole point of `"#n"`: an ordered plan in one call. The references are
+    /// resolved to the codes the insert allocated — forward ones included, since
+    /// the rewrite runs after every row exists.
+    #[test]
+    fn a_batch_can_order_itself_with_hash_references() {
+        let db = test_db("p1");
+        let resp = propose(
+            &db,
+            json!({"items": [
+                {"title": "the seam", "horizon": "now"},
+                {"title": "the drainer", "horizon": "now", "deps": ["#1"]},
+                {"title": "the card", "horizon": "next", "deps": ["#2", "#1"]},
+            ]}),
+        );
+        assert!(resp.ok, "{resp:?}");
+
+        let rows = store::list(&db.lock(), "p1").unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].deps.is_empty());
+        // Stored as real codes, so every reader (the drainer, the card, the next
+        // `roadmap_list`) sees ordinary deps — `"#n"` exists only in the ask.
+        assert_eq!(rows[1].deps, vec!["MCA-100".to_string()]);
+        assert_eq!(
+            rows[2].deps,
+            vec!["MCA-101".to_string(), "MCA-100".to_string()]
+        );
+
+        // A forward reference (item 1 after item 2) is the same mechanism.
+        let resp = propose(
+            &db,
+            json!({"items": [
+                {"title": "later", "horizon": "next", "deps": ["#2"]},
+                {"title": "first", "horizon": "next"},
+            ]}),
+        );
+        assert!(resp.ok, "{resp:?}");
+        let rows = store::list(&db.lock(), "p1").unwrap();
+        assert_eq!(rows[3].deps, vec!["MCA-104".to_string()]);
+    }
+
+    /// A batch that orders itself into a circle is refused whole — the failure
+    /// this slice exists to make unreachable, caught before a single row lands.
+    #[test]
+    fn a_batch_that_closes_a_loop_is_refused_whole() {
+        let db = test_db("p1");
+        let resp = propose(
+            &db,
+            json!({"items": [
+                {"title": "one", "horizon": "now", "deps": ["#2"]},
+                {"title": "two", "horizon": "now", "deps": ["#1"]},
+            ]}),
+        );
+        assert!(!resp.ok);
+        let e = resp.error.unwrap();
+        assert!(e.contains("loop"), "{e}");
+        assert!(
+            e.contains("#1 → #2 → #1"),
+            "the refusal spells the loop: {e}"
+        );
+        assert!(store::list(&db.lock(), "p1").unwrap().is_empty());
+    }
+
+    /// A ticket hanging off a loop that is already on the board (one written
+    /// before this check existed) is refused too: it could never be built
+    /// either, and the refusal names the loop the PM has to propose away first.
+    #[test]
+    fn a_batch_item_waiting_on_an_existing_loop_is_refused() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("a")).ok); // MCA-100
+        assert!(propose(&db, one_item("b")).ok); // MCA-101
+        {
+            // Straight through the DAO: the ops above are exactly what stops
+            // this shape being reachable now, so the legacy board is built by hand.
+            let conn = db.lock();
+            let rows = store::list(&conn, "p1").unwrap();
+            for (row, dep) in [(&rows[0], "MCA-101"), (&rows[1], "MCA-100")] {
+                store::update(
+                    &conn,
+                    &row.id,
+                    &ItemPatch {
+                        deps: Some(vec![dep.to_string()]),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+        }
+
+        let resp = propose(
+            &db,
+            json!({"items": [{"title": "after", "horizon": "now", "deps": ["MCA-100"]}]}),
+        );
+        assert!(!resp.ok);
+        let e = resp.error.unwrap();
+        assert!(e.contains("MCA-100 → MCA-101 → MCA-100"), "{e}");
+        assert_eq!(store::list(&db.lock(), "p1").unwrap().len(), 2);
+    }
+
+    /// A reference to a position the batch doesn't have is a mistake worth
+    /// naming: it would otherwise resolve to nothing and read as "no dependency".
+    #[test]
+    fn a_hash_reference_out_of_range_is_refused() {
+        let db = test_db("p1");
+        for (deps, needle) in [
+            (json!(["#3"]), "not an item in this batch"),
+            (json!(["#0"]), "not an item in this batch"),
+            (json!(["#two"]), "not an item in this batch"),
+        ] {
+            let resp = propose(
+                &db,
+                json!({"items": [
+                    {"title": "one", "horizon": "now", "deps": deps},
+                    {"title": "two", "horizon": "now"},
+                ]}),
+            );
+            assert!(!resp.ok, "should have been rejected");
+            let e = resp.error.unwrap();
+            assert!(e.contains(needle), "expected {needle:?} in {e:?}");
+            assert!(e.contains("item 1"), "the refusal names the item: {e}");
+        }
+        assert!(store::list(&db.lock(), "p1").unwrap().is_empty());
+    }
+
+    /// The urgent one (see .context/roadmap-pm-plan.md, A4): a dep patch that
+    /// closes a loop is refused at propose time, so the user is never offered a
+    /// diff whose acceptance would wedge the queue.
+    #[test]
+    fn propose_update_refuses_a_dep_patch_that_closes_a_loop() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("first")).ok); // MCA-100
+        assert!(
+            propose(
+                &db,
+                json!({"items": [{"title": "second", "horizon": "next", "deps": ["MCA-100"]}]})
+            )
+            .ok
+        ); // MCA-101, after MCA-100
+
+        let (resp, stored) = propose_update(
+            &db,
+            json!({"code": "MCA-100", "patch": {"deps": ["MCA-101"]},
+                   "note": "actually the other way round"}),
+        );
+        assert!(!resp.ok);
+        let e = resp.error.unwrap();
+        assert!(e.contains("MCA-100 → MCA-101 → MCA-100"), "{e}");
+        assert!(stored.is_none(), "a refused ask is not parked");
+        assert!(proposals::list_for_project(&db.lock(), "p1")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1041,6 +1423,280 @@ mod tests {
         let resp = list(&db, json!({ "status": ["shipped"] }));
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("unknown status"));
+    }
+
+    /// The listing is the PM's execution report, not just its intake queue: each
+    /// row carries the newest thing that happened to it, and the PR link when
+    /// there is one — enough to answer "why did MCA-101 fail?" from this one
+    /// call, with no ids leaked.
+    #[test]
+    fn the_listing_carries_each_items_last_event_and_pr() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("proposed one")).ok); // MCA-100
+        let failed = {
+            let conn = db.lock();
+            let it = store::create(
+                &conn,
+                "p1",
+                &NewItem {
+                    title: "failed one".into(),
+                    status: Some(ItemStatus::Open),
+                    ..Default::default()
+                },
+            )
+            .unwrap(); // MCA-101
+            events::record(
+                &conn,
+                &it.id,
+                "p1",
+                EventActor::Drainer,
+                EventKind::RunFailed,
+                Some("its run failed"),
+            )
+            .unwrap();
+            it
+        };
+        // An item in review, with the PR the run opened stamped on it.
+        {
+            let conn = db.lock();
+            let it = store::create(
+                &conn,
+                "p1",
+                &NewItem {
+                    title: "in review".into(),
+                    status: Some(ItemStatus::InReview),
+                    ..Default::default()
+                },
+            )
+            .unwrap(); // MCA-102
+            store::update(
+                &conn,
+                &it.id,
+                &crate::roadmap::types::ItemPatch {
+                    pr_url: Some(Some("https://github.com/o/r/pull/7".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            events::record(
+                &conn,
+                &it.id,
+                "p1",
+                EventActor::Drainer,
+                EventKind::PrOpened,
+                Some("https://github.com/o/r/pull/7"),
+            )
+            .unwrap();
+        }
+
+        let resp = list(&db, Value::Null);
+        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        assert_eq!(rows[0]["last_event"]["kind"], "proposed");
+        // No detail, no age (it happened this millisecond) — the keys are simply
+        // absent rather than null.
+        assert!(rows[0]["last_event"].get("detail").is_none());
+        assert!(rows[0]["last_event"].get("age").is_none());
+        assert!(rows[0].get("pr").is_none());
+
+        assert_eq!(rows[1]["code"], failed.code);
+        assert_eq!(rows[1]["last_event"]["kind"], "run_failed");
+        assert_eq!(rows[1]["last_event"]["detail"], "its run failed");
+
+        assert_eq!(rows[2]["last_event"]["kind"], "pr_opened");
+        assert_eq!(rows[2]["pr"]["url"], "https://github.com/o/r/pull/7");
+        // The PR's *number* is an app handle, not the PM's vocabulary.
+        assert!(rows[2]["pr"].get("number").is_none());
+
+        // An item with no history at all simply has no `last_event`.
+        {
+            let conn = db.lock();
+            store::create(
+                &conn,
+                "p1",
+                &NewItem {
+                    title: "silent".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let resp = list(&db, Value::Null);
+        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        assert!(rows[3].get("last_event").is_none());
+    }
+
+    /// `age` is coarse and relative, because "since we last spoke" is the only
+    /// question the PM asks of it. Under a minute is absent — "just now".
+    #[test]
+    fn the_age_of_an_event_reads_in_the_coarsest_true_unit() {
+        let now = 1_000_000_000_000;
+        let min = 60_000;
+        for (ago, expected) in [
+            (0, None),
+            (min - 1, None),
+            (min, Some("1m")),
+            (59 * min, Some("59m")),
+            (60 * min, Some("1h")),
+            (23 * 60 * min + 59 * min, Some("23h")),
+            (24 * 60 * min, Some("1d")),
+            (9 * 24 * 60 * min, Some("9d")),
+        ] {
+            assert_eq!(age(now, now - ago).as_deref(), expected, "{ago}ms ago");
+        }
+        // A clock that ran backwards reads as "just now" rather than negative.
+        assert_eq!(age(now, now + 5 * min), None);
+    }
+
+    /// `roadmap_note` writes one durable `note` event attributed to the PM, and
+    /// changes nothing else about the item — the whole of the direct-write
+    /// licence.
+    #[test]
+    fn note_records_an_observation_and_advances_nothing() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("target")).ok); // MCA-100
+        let before = store::list(&db.lock(), "p1").unwrap();
+
+        let (resp, event) = note(
+            &db,
+            json!({"code": "MCA-100", "note": "the run solved a narrower problem than this asked for"}),
+        );
+        assert!(resp.ok, "{resp:?}");
+        let out: Value = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        assert_eq!(out["noted"]["code"], "MCA-100");
+
+        let event = event.expect("the note is returned so the card can hear about it");
+        assert_eq!(event.kind, EventKind::Note);
+        assert_eq!(event.actor, EventActor::Pm);
+        assert_eq!(
+            event.detail.as_deref(),
+            Some("the run solved a narrower problem than this asked for")
+        );
+        assert_eq!(event.item_id, before[0].id);
+        assert_eq!(event.project_id, "p1");
+
+        // The row itself is byte-for-byte what it was: a note is attention, not
+        // action.
+        assert_eq!(store::list(&db.lock(), "p1").unwrap(), before);
+        // And it is on the trail, on top of the `proposed` that opened it.
+        let trail = events::list_for_item(&db.lock(), &before[0].id).unwrap();
+        assert_eq!(trail.len(), 2);
+        assert_eq!(trail[0], event);
+    }
+
+    /// A note is the one PM write allowed on an item a proposal is refused on —
+    /// `active`, `in_review`, `done`. That item is usually the whole reason the
+    /// op exists.
+    #[test]
+    fn note_lands_on_items_no_proposal_could_touch() {
+        let db = test_db("p1");
+        for status in [ItemStatus::Active, ItemStatus::InReview, ItemStatus::Done] {
+            let it = {
+                let conn = db.lock();
+                store::create(
+                    &conn,
+                    "p1",
+                    &NewItem {
+                        title: "shipped something".into(),
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            };
+            let (resp, event) = note(
+                &db,
+                json!({"code": it.code, "note": "narrower than agreed"}),
+            );
+            assert!(
+                resp.ok,
+                "a note on {} must be allowed: {resp:?}",
+                status.as_str()
+            );
+            assert_eq!(event.unwrap().item_id, it.id);
+            // The proposal path still refuses it — the two gates say different
+            // things on purpose.
+            let items = store::list(&db.lock(), "p1").unwrap();
+            assert!(proposable(&items, &it.code).is_err());
+        }
+    }
+
+    /// Every way a note can be wrong, named precisely, writing nothing.
+    #[test]
+    fn note_rejects_bad_asks_precisely() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("target")).ok); // MCA-100
+        let long = "x".repeat(MAX_NOTE + 1);
+
+        for (args, needle) in [
+            (json!({"code": "MCA-777", "note": "hi"}), "no item"),
+            (
+                json!({"code": "MCA-100", "note": "   "}),
+                "`note` is required",
+            ),
+            (json!({"code": "MCA-100"}), "`note` is required"),
+            (
+                json!({"code": "MCA-100", "note": long.clone()}),
+                "keep it under",
+            ),
+            // The note is not a back door to the fields the propose ops gate.
+            (
+                json!({"code": "MCA-100", "note": "hi", "status": "done"}),
+                "unknown field",
+            ),
+            (json!({"note": "no code"}), "missing field `code`"),
+        ] {
+            let (resp, event) = note(&db, args);
+            assert!(!resp.ok, "should have been rejected");
+            let e = resp.error.unwrap();
+            assert!(e.contains(needle), "expected {needle:?} in {e:?}");
+            assert!(event.is_none());
+        }
+        // Args at all are required, and nothing above wrote a line.
+        assert!(!note(&db, Value::Null).0.ok);
+        let items = store::list(&db.lock(), "p1").unwrap();
+        let trail = events::list_for_item(&db.lock(), &items[0].id).unwrap();
+        assert!(
+            trail.iter().all(|e| e.kind == EventKind::Proposed),
+            "{trail:?}"
+        );
+
+        // Exactly at the cap is fine — the refusal is for going over it.
+        let (resp, _) = note(
+            &db,
+            json!({"code": "MCA-100", "note": "y".repeat(MAX_NOTE)}),
+        );
+        assert!(resp.ok, "{resp:?}");
+    }
+
+    /// The note reaches the board through the dispatcher, which is the only path
+    /// the PM actually has.
+    #[tokio::test]
+    async fn note_routes_through_the_dispatcher() {
+        let db = test_db("p1");
+        let d = dispatcher(&db, "p1");
+        assert!(propose(&db, one_item("target")).ok); // MCA-100
+
+        let resp = d
+            .dispatch(
+                "r1",
+                "roadmap_note",
+                &json!({"code": "MCA-100", "note": "watch the migration on this one"}),
+            )
+            .await
+            .0;
+        assert!(resp.ok, "{resp:?}");
+        let items = store::list(&db.lock(), "p1").unwrap();
+        let trail = events::list_for_item(&db.lock(), &items[0].id).unwrap();
+        assert_eq!(trail[0].kind, EventKind::Note);
+        assert_eq!(trail[0].actor, EventActor::Pm);
+        // And the listing shows it back, so the PM can see its own note landed.
+        let resp = list(&db, Value::Null);
+        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        assert_eq!(rows[0]["last_event"]["kind"], "note");
+        assert_eq!(
+            rows[0]["last_event"]["detail"],
+            "watch the migration on this one"
+        );
     }
 
     #[test]

@@ -21,7 +21,9 @@
 //! commands so a queue action doesn't wait out the interval) the drainer, per
 //! project that has roadmap work in flight:
 //!
-//! 1. **Settles** every `active` item against its run row ([`settle`]).
+//! 1. **Settles** every `active` item against its run row ([`settle`]), and
+//!    hands each settlement to the project-manager chat as a review turn
+//!    ([`super::review`]) — the loop back up to the agent that wrote the brief.
 //! 2. **Dispatches** at most one queued item ([`pick_next`]), if the project is
 //!    under [`MAX_CONCURRENT_ROADMAP_RUNS`] live roadmap-dispatched runs.
 //!
@@ -53,6 +55,14 @@
 //! on the row. Notes are de-duplicated in memory *per row version* (see [`say`]),
 //! so a permanently blocked item doesn't re-emit the same string every fifteen
 //! seconds, while an item the user touched hears its explanation again.
+//!
+//! One blockage is not transient, though: a *dependency loop*. Nothing in a loop
+//! is ever `done`, so [`unsatisfied_deps`] never resolves for any of its members
+//! and the queue skips the chain on every tick, forever. That is a durable fact,
+//! so when the queue head is wedged that way the drainer also writes one
+//! `blocked` event naming the loop ([`record_wedge`]) — the writer
+//! `EventKind::Blocked` was declared for. Ordinary dep-waiting stays
+//! transient-only: it resolves itself the moment the dependency lands.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
@@ -65,8 +75,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Notify;
 
 use super::events::{self, EventActor, EventKind, ItemEvent, TrailEntry};
+use super::review;
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
-use super::{emit_item, emit_item_event, store, Db};
+use super::{deps, emit_item, emit_item_event, store, Db};
 use crate::workflow::spec::{self, Spec};
 use crate::workflow::types::RunStatus;
 
@@ -417,7 +428,9 @@ struct Settled {
     adopted_run_id: Option<String>,
 }
 
-/// Reflect each `active` item's run back onto the item.
+/// Reflect each `active` item's run back onto the item, and ask the PM to review
+/// what it did ([`super::review`] — one turn per settlement, behind a
+/// per-project dial, never for a run the queue didn't dispatch).
 ///
 /// Items with an `agent_id` and no run are left alone: that's the manual "Send
 /// to an agent" hand-off, which the queue doesn't own.
@@ -532,11 +545,24 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
                 ..Default::default()
             },
         };
-        match settlement_event(&outcome, pr.as_ref()) {
+        let landed = match settlement_event(&outcome, pr.as_ref()) {
             Some((kind, detail)) => write_item_with_event(app, db, &item.id, patch, kind, detail),
             // Unreachable — `Running` bailed above — but a settlement without
             // an event must still land its patch rather than vanish.
-            None => write_item(app, db, &item.id, patch),
+            None => {
+                write_item(app, db, &item.id, patch);
+                true
+            }
+        };
+        // Ask the PM to review what the run actually did, once per settlement.
+        // Gated on the write landing: a row deleted mid-tick has no outcome to
+        // review and no card to record a deferral on. Fired before the notes
+        // below because it is the only step that can wake a resting session, and
+        // it needs no lock held (see [`review`]).
+        if landed {
+            if let Some(reviewable) = review::outcome_for(&outcome, pr.as_ref()) {
+                review::request(app, db, &item, &reviewable);
+            }
         }
         match outcome {
             Settlement::Released(why) => {
@@ -625,11 +651,31 @@ enum Claim {
     /// Nothing to do and nothing to say.
     Nothing,
     /// Something is queued but can't run yet, and the card should say why.
-    Note(Box<RoadmapItem>, String),
+    ///
+    /// `recorded` is the durable `blocked` event a *permanent* blockage also
+    /// writes — see [`record_wedge`]. Every ordinary "waiting on …" leaves it
+    /// `None`: that condition is re-derived every tick and resolves itself the
+    /// moment the dependency lands, so persisting it would bury the trail.
+    Note {
+        item: Box<RoadmapItem>,
+        text: String,
+        recorded: Option<ItemEvent>,
+    },
     /// An item was claimed (already `active`) and is ready to launch. Carries
     /// the `dispatched` history event recorded with the claim, so it can be
     /// emitted once the lock is dropped.
     Claimed(Box<Plan>, ItemEvent),
+}
+
+impl Claim {
+    /// A transient explanation, nothing persisted.
+    fn note(item: RoadmapItem, text: String) -> Self {
+        Claim::Note {
+            item: Box::new(item),
+            text,
+            recorded: None,
+        }
+    }
 }
 
 /// Decide what to dispatch for this project and *claim* it. Returns the plan
@@ -642,8 +688,17 @@ fn claim_next(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) -> O
     };
     match claim {
         Claim::Nothing => None,
-        Claim::Note(item, text) => {
+        Claim::Note {
+            item,
+            text,
+            recorded,
+        } => {
             say(app, said, &item, &text);
+            // The durable half, when there was one: emitted after the lock
+            // dropped, exactly like every other event this module writes.
+            if let Some(event) = &recorded {
+                emit_item_event(app, event);
+            }
             None
         }
         Claim::Claimed(plan, event) => {
@@ -692,12 +747,27 @@ fn plan_and_claim(conn: &Connection, project_id: &str) -> Claim {
             item_id,
             waiting_on,
         } => {
-            return match queued.into_iter().find(|i| i.id == item_id) {
-                Some(item) => Claim::Note(
-                    Box::new(item),
-                    format!("Waiting on {}", waiting_on.join(", ")),
-                ),
-                None => Claim::Nothing,
+            let Some(item) = queued.into_iter().find(|i| i.id == item_id) else {
+                return Claim::Nothing;
+            };
+            // Two kinds of blocked, and only one of them is news. Waiting on a
+            // dependency that is still being built resolves itself — the note
+            // says so and nothing persists. A *loop* never resolves: every
+            // member waits on the next, so this item is skipped on every tick
+            // from here to the end of the app's life. That is a durable fact
+            // about the board, so it lands as a `blocked` event naming the loop
+            // (see .context/roadmap-pm-plan.md, A4).
+            return match deps::find_cycle(&deps::graph_of(&items), &item.code) {
+                Some(cycle) => {
+                    let text = format!("Stuck in a dependency loop: {}", deps::loop_path(&cycle));
+                    let recorded = record_wedge(conn, &item, &text);
+                    Claim::Note {
+                        item: Box::new(item),
+                        text,
+                        recorded,
+                    }
+                }
+                None => Claim::note(item, format!("Waiting on {}", waiting_on.join(", "))),
             };
         }
         // Nothing to say: an empty queue is silence, and being at capacity is
@@ -707,24 +777,21 @@ fn plan_and_claim(conn: &Connection, project_id: &str) -> Claim {
 
     let project_default = project_setting(conn, project_id, DEFAULT_WORKFLOW_KEY);
     let Some(definition_id) = resolve_workflow(&item, project_default.as_deref()) else {
-        return Claim::Note(
-            Box::new(item),
+        return Claim::note(
+            item,
             "No workflow to run it under. Pick one on this item, or set the project's \
              default workflow."
                 .to_string(),
         );
     };
     let Some(spec) = definition_spec(conn, &definition_id) else {
-        return Claim::Note(
-            Box::new(item),
+        return Claim::note(
+            item,
             "Its workflow is missing or no longer valid — pick another.".to_string(),
         );
     };
     let Some(repo_path) = primary_repo_path(conn, project_id) else {
-        return Claim::Note(
-            Box::new(item),
-            "This project has no repo to run in.".to_string(),
-        );
+        return Claim::note(item, "This project has no repo to run in.".to_string());
     };
 
     // Only deps that still resolve get quoted in the brief; a stale code counts
@@ -754,6 +821,43 @@ fn plan_and_claim(conn: &Connection, project_id: &str) -> Claim {
         Err(e) => {
             tracing::warn!(item = %item.code, error = %e, "roadmap drainer: claim failed");
             Claim::Nothing
+        }
+    }
+}
+
+/// Record a wedged queue head's `blocked` event — once, not once a tick.
+///
+/// The de-dup is a query rather than the in-memory [`SaidNotes`] map: that map is
+/// process-local and empty after a restart, which is fine for a transient note
+/// and useless for a durable table (every app start would append another
+/// identical row). So the check is "is the item's *newest* event already this
+/// same `blocked` line?" — newest rather than any, because a loop that was fixed
+/// and re-formed is news again, and the events in between are what say so.
+///
+/// Called with the connection lock held, in the same guard as the read the loop
+/// was detected from. A failure is logged and dropped: the transient note still
+/// reaches the card, and refusing to dispatch anything else because history
+/// couldn't be written would be a worse outcome than a missing line.
+fn record_wedge(conn: &Connection, item: &RoadmapItem, detail: &str) -> Option<ItemEvent> {
+    match events::latest_for_item(conn, &item.id) {
+        Ok(Some(last))
+            if last.kind == EventKind::Blocked && last.detail.as_deref() == Some(detail) =>
+        {
+            None
+        }
+        Ok(_) => events::record(
+            conn,
+            &item.id,
+            &item.project_id,
+            EventActor::Drainer,
+            EventKind::Blocked,
+            Some(detail),
+        )
+        .map_err(|e| tracing::warn!(item = %item.code, error = %e, "roadmap drainer: blocked event not recorded"))
+        .ok(),
+        Err(e) => {
+            tracing::warn!(item = %item.code, error = %e, "roadmap drainer: cannot read item history");
+            None
         }
     }
 }
@@ -883,7 +987,9 @@ async fn dispatch(
 /// "the workflow this project runs" means one thing on both sides.
 const DEFAULT_WORKFLOW_KEY: &str = "workflow.default";
 
-fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<String> {
+/// One per-project setting, trimmed, with a blank treated as absent. Shared with
+/// [`super::review`], which reads its own dial the same way.
+pub(super) fn project_setting(conn: &Connection, project_id: &str, key: &str) -> Option<String> {
     conn.query_row(
         "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
         rusqlite::params![project_id, key],
@@ -975,6 +1081,9 @@ pub(crate) fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
 /// drainer write that moves an item's status; link repairs and `run_id`
 /// write-backs stay on [`write_item`], because they are bookkeeping, not
 /// history.
+///
+/// Returns whether the transition landed. A settlement's follow-on work (the PM
+/// review turn) hangs off that: a row deleted mid-tick has no state to describe.
 fn write_item_with_event(
     app: &AppHandle,
     db: &Db,
@@ -982,7 +1091,7 @@ fn write_item_with_event(
     patch: ItemPatch,
     kind: EventKind,
     detail: Option<String>,
-) {
+) -> bool {
     let updated = {
         let conn = db.lock();
         apply_and_record(&conn, id, None, &patch, EventActor::Drainer, kind, detail)
@@ -991,10 +1100,14 @@ fn write_item_with_event(
         Ok(Some((row, event))) => {
             emit_item(app, &row);
             emit_item_event(app, &event);
+            true
         }
         // The row was deleted mid-tick; its events cascaded with it.
-        Ok(None) => {}
-        Err(e) => tracing::warn!(id, error = %e, "roadmap drainer: item write failed"),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(id, error = %e, "roadmap drainer: item write failed");
+            false
+        }
     }
 }
 

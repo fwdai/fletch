@@ -1378,6 +1378,67 @@ button.rm-hist-h:hover {
   line-height: var(--lh-normal);
 }
 
+/* The dependency field: chips in a box that wears `.ui-input`'s skin, with a
+   bare input trailing them. Not a `TextInput` with a comma-separated string,
+   because a dep is a *code that exists* — one chip per resolved item is the
+   whole point, and removing one has to be a click rather than careful editing.
+   The box grows down as chips wrap; it never scrolls. */
+.rm-deps {
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--bd);
+  background: var(--bg-0);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.rm-deps:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 90%);
+}
+/* Same ink as the row's `after FLT-100` chip, so the form and the card are
+   visibly talking about one thing. */
+.rm-dep-chip {
+  gap: 5px;
+  height: 22px;
+  padding: 0 4px 0 7px;
+  border-radius: var(--r-sm);
+  border: 1px solid color-mix(in oklch, var(--info), transparent 70%);
+  background: color-mix(in oklch, var(--info), transparent 88%);
+  color: var(--info);
+  line-height: var(--lh-none);
+  white-space: nowrap;
+}
+.rm-dep-x {
+  width: 16px;
+  height: 16px;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  color: inherit;
+  opacity: 0.65;
+}
+.rm-dep-x:hover {
+  opacity: 1;
+  background: color-mix(in oklch, var(--info), transparent 80%);
+}
+.rm-deps-in {
+  flex: 1;
+  min-width: 90px;
+  height: 22px;
+  border: none;
+  background: none;
+  color: var(--fg-0);
+}
+.rm-deps-in::placeholder {
+  color: var(--fg-3);
+}
+.rm-deps-in:focus {
+  outline: none;
+}
+
 /* ── product map tab ── */
 .rm-map {
   display: flex;

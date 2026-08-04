@@ -3,7 +3,8 @@
 //! Layout mirrors the workflow module: [`types`] is the row and its enums,
 //! [`store`] is the DAO (called with the connection lock held), and this file is
 //! the typed `#[tauri::command]` surface plus the row-level events the frontend
-//! syncs on.
+//! syncs on. [`deps`] holds the one rule every dep write on every surface has to
+//! pass — no loops — because a loop wedges the queue silently and forever.
 //!
 //! `roadmap_items` is deliberately absent from the generic CRUD allow-list
 //! (`database::validate`), exactly like the `wf_*` tables. Codes must be
@@ -37,12 +38,18 @@
 //! `in_review` items and moves them to `done` when they merge on GitHub. It is
 //! host-side rather than in the webview precisely so a queue keeps draining
 //! with the window shut.
+//!
+//! [`review`] closes it a third time, upwards: every run the drainer settles is
+//! handed to the project-manager chat as a review turn, so the agent that wrote
+//! the brief is the agent that reads what came back.
 
+pub mod deps;
 pub mod drainer;
 pub mod events;
 pub mod merge_sweep;
 pub mod order;
 pub mod proposals;
+pub mod review;
 pub mod store;
 pub mod types;
 
@@ -133,6 +140,12 @@ pub async fn roadmap_get_item(
 /// Add an item to a project's roadmap. The `code` is allocated here, not passed
 /// in: it's the item's identity for the rest of its life, and only the DB knows
 /// which numbers are taken.
+///
+/// The row starts its durable history here with a `created` event, the mirror of
+/// the propose RPC's `proposed`. Without it a hand-built board has no history at
+/// all, and every consumer that reads "what changed since?" off the event trail
+/// — the PM's standup digest above all — would call a board the user filled in
+/// by hand unchanged (see .context/roadmap-pm-plan.md, B4).
 #[tauri::command]
 pub async fn roadmap_create_item(
     project_id: String,
@@ -143,16 +156,53 @@ pub async fn roadmap_create_item(
     if item.title.trim().is_empty() {
         return Err("a roadmap item needs a title".into());
     }
-    let created = {
+    let (created, event) = {
         let conn = db.lock();
-        store::create(&conn, &project_id, &item).map_err(|e| e.to_string())?
+        create_checked(&conn, &project_id, &item)?
     };
     emit_item(&app, &created);
+    emit_item_event(&app, &event);
     // A row can arrive already `queued` (or as a dependency another queued item
     // is waiting on), so every mutation re-checks the queue rather than trying
     // to guess which ones matter.
     drainer::nudge();
     Ok(created)
+}
+
+/// The one write behind [`roadmap_create_item`]: check the row's deps against
+/// the board, then insert it and open its history in one transaction — all in
+/// the caller's single lock scope, so an item can never exist without the line
+/// saying who put it there.
+///
+/// The dep check first: a new row can carry deps (the dialog's chips), so the
+/// codes have to resolve — a dep naming nothing reads as *satisfied* to the
+/// drainer, which silently means "no dependency at all", the opposite of what
+/// was typed. It cannot close a loop: nothing can depend on a row that has no
+/// code yet.
+fn create_checked(
+    conn: &Connection,
+    project_id: &str,
+    item: &NewItem,
+) -> Result<(RoadmapItem, ItemEvent), String> {
+    if !item.deps.is_empty() {
+        let board = store::list(conn, project_id).map_err(|e| e.to_string())?;
+        deps::validate_new(&deps::graph_of(&board), &item.deps)?;
+    }
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let created = store::create(&tx, project_id, item).map_err(|e| e.to_string())?;
+    let event = events::record(
+        &tx,
+        &created.id,
+        project_id,
+        // This surface is the frontend's door: a row that arrives here was typed
+        // by the user, even when it lands straight into `queued`.
+        EventActor::User,
+        EventKind::Created,
+        None,
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok((created, event))
 }
 
 /// Patch an item. Absent fields are left alone; an explicit `null` clears a
@@ -177,7 +227,7 @@ pub async fn roadmap_update_item(
 ) -> Result<ItemUpdate, String> {
     let (outcome, event) = {
         let conn = db.lock();
-        update_and_record(&conn, &id, &patch, expect_status).map_err(|e| e.to_string())?
+        update_and_record(&conn, &id, &patch, expect_status)?
     };
     let outcome = outcome.ok_or_else(|| format!("roadmap item {id} no longer exists"))?;
     // A miss changed nothing, so there is nothing to announce and nothing new
@@ -207,16 +257,29 @@ pub async fn roadmap_update_item(
 /// The event is `Some` exactly when the update applied: a missed precondition
 /// wrote nothing, so there is no history to invent for it — the applied /
 /// not-applied contract is untouched. Outer `None` means the row is gone.
+///
+/// A patch carrying `deps` is checked against [`deps`] *first*, in this same
+/// guard: this command is the item dialog's door, and a dep list that closes a
+/// loop would leave the queue skipping the whole chain forever. The refusal is
+/// an `Err` the dialog renders in its error slot, not a silent drop.
 fn update_and_record(
     conn: &Connection,
     id: &str,
     patch: &ItemPatch,
     expect_status: Option<ItemStatus>,
-) -> rusqlite::Result<(Option<ItemUpdate>, Option<ItemEvent>)> {
+) -> Result<(Option<ItemUpdate>, Option<ItemEvent>), String> {
+    if let Some(new_deps) = &patch.deps {
+        // A row that is already gone falls through to the normal "no longer
+        // exists" path below rather than being refused for its deps.
+        if let Some(current) = store::get(conn, id).map_err(|e| e.to_string())? {
+            check_dep_edit(conn, &current, new_deps)?;
+        }
+    }
     let updated = match expect_status {
-        Some(expected) => store::update_where_status(conn, id, expected, patch)?,
-        None => store::update(conn, id, patch)?,
-    };
+        Some(expected) => store::update_where_status(conn, id, expected, patch),
+        None => store::update(conn, id, patch),
+    }
+    .map_err(|e| e.to_string())?;
     match updated {
         Some(item) => {
             let kind = events::transition_kind(expect_status, patch.status);
@@ -229,7 +292,8 @@ fn update_and_record(
                 EventActor::User,
                 kind,
                 None,
-            )?;
+            )
+            .map_err(|e| e.to_string())?;
             Ok((
                 Some(ItemUpdate {
                     applied: true,
@@ -243,15 +307,39 @@ fn update_and_record(
         // gets back is the state that beat it.
         None => match expect_status {
             Some(_) => Ok((
-                store::get(conn, id)?.map(|item| ItemUpdate {
-                    applied: false,
-                    item,
-                }),
+                store::get(conn, id)
+                    .map_err(|e| e.to_string())?
+                    .map(|item| ItemUpdate {
+                        applied: false,
+                        item,
+                    }),
                 None,
             )),
             None => Ok((None, None)),
         },
     }
+}
+
+/// Check a dep list an item that already exists is about to be given: the codes
+/// must resolve, and the graph the write leaves behind must be acyclic
+/// ([`deps::validate_edit`]).
+///
+/// Skipped when the list is the one the item already has. Both writers send whole
+/// lists — the dialog posts its form, a PM patch can include an unchanged `deps`
+/// — and re-stating an item's own deps cannot make the graph worse. Refusing a
+/// retitle because of a loop that was already there would strand the row instead
+/// of helping fix it; the drainer's durable `blocked` event is what surfaces
+/// those.
+fn check_dep_edit(
+    conn: &Connection,
+    item: &RoadmapItem,
+    new_deps: &[String],
+) -> Result<(), String> {
+    if item.deps == new_deps {
+        return Ok(());
+    }
+    let board = store::list(conn, &item.project_id).map_err(|e| e.to_string())?;
+    deps::validate_edit(&deps::graph_of(&board), &item.code, new_deps)
 }
 
 /// Move an item in the project's priority order — the board's drag, landing as
@@ -442,6 +530,21 @@ pub async fn roadmap_latest_events(
     events::latest_per_item(&conn, &project_id).map_err(|e| e.to_string())
 }
 
+/// The newest history row anywhere on a project's board, or `None` for a board
+/// that has never moved.
+///
+/// One row, not a trail: this answers "has the board changed since?" for the
+/// Roadmap tab's standup digest, which compares it against the PM chat's last
+/// turn and only asks for a summary when there is something to summarize.
+#[tauri::command]
+pub async fn roadmap_latest_event(
+    project_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<Option<ItemEvent>, String> {
+    let conn = db.lock();
+    events::latest_for_project(&conn, &project_id).map_err(|e| e.to_string())
+}
+
 /// Every pending PM proposal on a project's board — the board load's companion
 /// to [`roadmap_list_items`]; live rows arrive on `roadmap:proposal`.
 #[tauri::command]
@@ -465,8 +568,10 @@ enum Ruling {
     },
     /// The item was deleted at the PM's ask; emit the deletion.
     Discarded { item_id: String },
-    /// The item outran the ask (it went `active`+ since the PM proposed) — the
-    /// proposal was deleted without applying, and the message says why.
+    /// The board outran the ask — the item went `active`+ since the PM
+    /// proposed, or the dep list it asked for no longer resolves (or would now
+    /// close a loop). The proposal was deleted without applying, and the message
+    /// says why.
     Stale { message: String },
 }
 
@@ -496,9 +601,9 @@ fn ruling_detail(verb: &str, note: Option<&str>) -> String {
 
 /// The one write behind [`roadmap_accept_proposal`]: re-read the proposal and
 /// its item under the caller's lock, re-check the status gate (the item may
-/// have gone `active` since the PM asked), then apply-and-record or drop the
-/// stale ask. The proposal row is gone on every path — a ruling consumes it,
-/// and a dead ask shouldn't haunt the card.
+/// have gone `active` since the PM asked) and the dep graph ([`deps`]), then
+/// apply-and-record or drop the stale ask. The proposal row is gone on every
+/// path — a ruling consumes it, and a dead ask shouldn't haunt the card.
 fn accept_proposal(conn: &Connection, proposal_id: &str) -> Result<Ruling, String> {
     let proposal = proposals::get(conn, proposal_id)
         .map_err(|e| e.to_string())?
@@ -518,6 +623,20 @@ fn accept_proposal(conn: &Connection, proposal_id: &str) -> Result<Ruling, Strin
             let patch: ProposalPatch =
                 serde_json::from_value(proposal.patch.clone().ok_or("proposal carries no patch")?)
                     .map_err(|e| e.to_string())?;
+            // Re-checked here, not just when the PM asked: an item the patch
+            // depends on can have been deleted, and another item can have taken
+            // a dep on *this* one, since — either of which turns a dep list that
+            // was fine into a dangling reference or a loop. Same policy as a
+            // stale ask: refuse, say why, and consume the proposal rather than
+            // leaving a bar that fails every time it is clicked.
+            if let Some(new_deps) = &patch.deps {
+                if let Err(why) = check_dep_edit(conn, &item, new_deps) {
+                    proposals::delete(conn, proposal_id).map_err(|e| e.to_string())?;
+                    return Ok(Ruling::Stale {
+                        message: format!("the board changed since the PM asked — {why}"),
+                    });
+                }
+            }
             let updated = store::update(conn, &item.id, &patch.to_item_patch())
                 .map_err(|e| e.to_string())?
                 .ok_or("the item this proposal targets no longer exists")?;
@@ -756,6 +875,49 @@ mod tests {
             status: Some(to),
             ..Default::default()
         }
+    }
+
+    /// A hand-built item opens its own history. Without this line a board the
+    /// user typed in has no events at all, so every "what moved since we last
+    /// spoke?" reader — the PM's standup digest above all — calls it unchanged.
+    #[test]
+    fn creating_an_item_records_created() {
+        let conn = test_conn();
+        let (item, event) = create_checked(
+            &conn,
+            "p1",
+            &NewItem {
+                title: "hand-written".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(event.item_id, item.id);
+        assert_eq!(event.project_id, "p1");
+        assert_eq!(event.kind, EventKind::Created);
+        assert_eq!(event.actor, EventActor::User);
+        assert_eq!(event.detail, None);
+        // Exactly one, and it is the row's whole history so far.
+        assert_eq!(events::list_for_item(&conn, &item.id).unwrap(), vec![event]);
+    }
+
+    /// The insert and its history line ride one transaction, so a failed event
+    /// write can't leave a row with no provenance. Forced by pointing the write
+    /// at a project id the FK refuses.
+    #[test]
+    fn a_failed_create_leaves_no_row_behind() {
+        let conn = test_conn();
+        assert!(create_checked(
+            &conn,
+            "no-such-project",
+            &NewItem {
+                title: "orphan".into(),
+                ..Default::default()
+            },
+        )
+        .is_err());
+        assert!(store::list(&conn, "no-such-project").unwrap().is_empty());
     }
 
     /// Every user transition the board performs writes exactly one event of the
@@ -1054,6 +1216,181 @@ mod tests {
         assert!(order::get(&conn, "p1").unwrap().is_none());
         assert_eq!(store::get(&conn, &a.id).unwrap().unwrap().rank, a.rank);
         assert!(events::list_for_item(&conn, &a.id).unwrap().is_empty());
+    }
+
+    /// A dep list the dialog sends is checked before it lands: an unknown code
+    /// (which the drainer would read as "satisfied") and a loop (which would
+    /// wedge the queue forever) are both refused, with nothing written.
+    #[test]
+    fn a_dep_edit_is_refused_when_it_closes_a_loop_or_names_nothing() {
+        let conn = test_conn();
+        let a = with_status(&conn, ItemStatus::Open);
+        let b = with_status(&conn, ItemStatus::Open);
+
+        let deps_patch = |codes: &[&str]| ItemPatch {
+            deps: Some(codes.iter().map(|c| (*c).to_string()).collect()),
+            ..Default::default()
+        };
+
+        // b after a: an ordinary edge, applied.
+        let (outcome, _) = update_and_record(&conn, &b.id, &deps_patch(&[&a.code]), None).unwrap();
+        assert_eq!(outcome.unwrap().item.deps, vec![a.code.clone()]);
+
+        // a after b now closes the loop — refused, and the row is untouched.
+        let err = update_and_record(&conn, &a.id, &deps_patch(&[&b.code]), None).unwrap_err();
+        assert!(err.contains("loop"), "{err}");
+        assert!(
+            err.contains(&format!("{} → {} → {}", a.code, b.code, a.code)),
+            "the refusal names the loop: {err}"
+        );
+        assert!(store::get(&conn, &a.id).unwrap().unwrap().deps.is_empty());
+
+        // A code that isn't on the board at all is refused too.
+        let err = update_and_record(&conn, &a.id, &deps_patch(&["MCA-999"]), None).unwrap_err();
+        assert!(err.contains("MCA-999"), "{err}");
+
+        // Self-reference, and the same rule on the create path.
+        let err = update_and_record(&conn, &a.id, &deps_patch(&[&a.code]), None).unwrap_err();
+        assert!(err.contains("depend on itself"), "{err}");
+        let err = create_checked(
+            &conn,
+            "p1",
+            &NewItem {
+                title: "fresh".into(),
+                deps: vec!["MCA-999".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("MCA-999"), "{err}");
+        // A create naming a real code is fine — a new row can't be depended on.
+        assert!(create_checked(
+            &conn,
+            "p1",
+            &NewItem {
+                title: "fresh".into(),
+                deps: vec![a.code.clone()],
+                ..Default::default()
+            },
+        )
+        .is_ok());
+    }
+
+    /// Re-stating the deps an item already has is not a refusal — even when they
+    /// are part of a loop written before this check existed. The dialog posts the
+    /// whole form, so blocking a retitle would strand the row; the drainer's
+    /// durable `blocked` event is what surfaces a loop like that.
+    #[test]
+    fn resending_an_items_own_deps_is_not_refused() {
+        let conn = test_conn();
+        let a = with_status(&conn, ItemStatus::Open);
+        let b = with_status(&conn, ItemStatus::Open);
+        for (row, dep) in [(&a, &b.code), (&b, &a.code)] {
+            store::update(
+                &conn,
+                &row.id,
+                &ItemPatch {
+                    deps: Some(vec![dep.clone()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let patch = ItemPatch {
+            title: Some("retitled".into()),
+            deps: Some(vec![b.code.clone()]),
+            ..Default::default()
+        };
+        let (outcome, _) = update_and_record(&conn, &a.id, &patch, None).unwrap();
+        assert_eq!(outcome.unwrap().item.title, "retitled");
+    }
+
+    /// A dep patch that was fine when the PM asked can be a loop by the time the
+    /// user clicks: the board moved. Re-validated at ruling time, refused, and
+    /// the ask is consumed rather than left to fail on every click.
+    #[test]
+    fn accepting_a_dep_patch_that_became_a_loop_refuses_and_clears() {
+        let conn = test_conn();
+        let a = with_status(&conn, ItemStatus::Open);
+        let b = with_status(&conn, ItemStatus::Open);
+        let patch = ProposalPatch {
+            deps: Some(vec![b.code.clone()]),
+            ..Default::default()
+        };
+        let p = proposals::upsert(
+            &conn,
+            "p1",
+            &a.id,
+            ProposalKind::Update,
+            Some(&patch),
+            Some("b first"),
+        )
+        .unwrap();
+        // Meanwhile the user (or an earlier ruling) made b depend on a.
+        store::update(
+            &conn,
+            &b.id,
+            &ItemPatch {
+                deps: Some(vec![a.code.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let Ruling::Stale { message } = accept_proposal(&conn, &p.id).unwrap() else {
+            panic!("expected Stale");
+        };
+        assert!(message.contains("the board changed"), "{message}");
+        assert!(message.contains("loop"), "{message}");
+        assert!(proposals::get(&conn, &p.id).unwrap().is_none());
+        // Nothing applied, and no history invented for a write that didn't land.
+        assert!(store::get(&conn, &a.id).unwrap().unwrap().deps.is_empty());
+        assert!(events::list_for_item(&conn, &a.id).unwrap().is_empty());
+    }
+
+    /// The other half of the same re-check: the item the ask depends on was
+    /// deleted since. Applying it blind would leave a dangling code the drainer
+    /// silently treats as satisfied — so it refuses and says what vanished.
+    #[test]
+    fn accepting_a_dep_patch_whose_dependency_vanished_refuses() {
+        let conn = test_conn();
+        let a = with_status(&conn, ItemStatus::Open);
+        let gone = with_status(&conn, ItemStatus::Open);
+        let patch = ProposalPatch {
+            deps: Some(vec![gone.code.clone()]),
+            ..Default::default()
+        };
+        let p = proposals::upsert(&conn, "p1", &a.id, ProposalKind::Update, Some(&patch), None)
+            .unwrap();
+        store::delete(&conn, &gone.id).unwrap();
+
+        let Ruling::Stale { message } = accept_proposal(&conn, &p.id).unwrap() else {
+            panic!("expected Stale");
+        };
+        assert!(message.contains(&gone.code), "{message}");
+        assert!(proposals::get(&conn, &p.id).unwrap().is_none());
+        assert!(store::get(&conn, &a.id).unwrap().unwrap().deps.is_empty());
+    }
+
+    /// A dep patch that is still valid applies as any other patch does — the
+    /// re-check is a gate, not a second refusal path for good asks.
+    #[test]
+    fn accepting_a_still_valid_dep_patch_applies_it() {
+        let conn = test_conn();
+        let a = with_status(&conn, ItemStatus::Open);
+        let b = with_status(&conn, ItemStatus::Open);
+        let patch = ProposalPatch {
+            deps: Some(vec![b.code.clone()]),
+            ..Default::default()
+        };
+        let p = proposals::upsert(&conn, "p1", &a.id, ProposalKind::Update, Some(&patch), None)
+            .unwrap();
+
+        let Ruling::Updated { item, .. } = accept_proposal(&conn, &p.id).unwrap() else {
+            panic!("expected Updated");
+        };
+        assert_eq!(item.deps, vec![b.code]);
     }
 
     /// Declining leaves the item alone and writes the refusal as a durable
