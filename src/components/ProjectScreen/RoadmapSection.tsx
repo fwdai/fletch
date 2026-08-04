@@ -86,8 +86,8 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
         <h2 className="ps-section-t text-lg">Roadmap</h2>
         <p className="ps-section-lead text-sm">
           How much of the roadmap runs without you. Every item still starts as something you accept
-          — these decide what happens after that, and a hold (yours or the PM&rsquo;s) overrules all
-          three.
+          — these decide what happens after that, and a hold (yours or the PM&rsquo;s) keeps an item
+          out of the queue no matter how they are set.
         </p>
       </header>
 
@@ -148,9 +148,10 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
       </div>
       <p className="ps-section-lead text-sm">
         A run reports its progress while it works. With this on the PM reads those as they arrive,
-        so it can flag a run building the wrong thing — and hold the item — before the pull request
-        exists, instead of judging it afterwards. Off, the PM only sees finished runs. Questions a
-        run asks you are never routed here; those stay yours.
+        so it can flag a run building the wrong thing before its pull request exists, and hold the
+        item so nothing else builds on it — instead of judging it afterwards. Canceling the run
+        itself stays with you. Off, the PM only sees finished runs. Questions a run asks you are
+        never routed here either; those stay yours.
       </p>
     </section>
   );
