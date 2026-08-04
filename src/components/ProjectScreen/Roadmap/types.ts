@@ -3,8 +3,9 @@
 // The board's rows are real, persisted `roadmap_items` — their shape lives in
 // `@/api` (src/api/types/roadmap.ts, mirroring src-tauri/src/roadmap/types.rs)
 // and is re-exported here so the folder keeps importing from one place. What is
-// defined here is what the *screen* adds on top: the display row the board
-// draws, and the product map (still mock).
+// defined here is what the *screen* adds on top: the display row the board draws,
+// and its groups. (The second tab's product brief needs nothing here — it renders
+// the persisted `RoadmapBrief` markdown straight from `@/api`.)
 //
 // A PM proposal is not a separate kind of row: `roadmap_propose` persists it
 // with `status: "proposed"`, so a ghost on the board is an ordinary item that
@@ -26,7 +27,8 @@ export interface BoardItem {
   why: string;
   status: ItemStatus;
   source: ItemSource;
-  /** Product-map domain this belongs to (`MapDomain.id`). */
+  /** Free-text product area this belongs to — a label the PM may set, matched
+   *  against nothing (the brief's domains are prose, not an enum). */
   area?: string;
   /** Acceptance criteria, rendered as a checklist. */
   accept?: string[];
@@ -56,27 +58,9 @@ export function toBoardItem(item: RoadmapItem): BoardItem {
   };
 }
 
-/** A slice of the codebase the PM agent knows about, shown on the Product map
- *  tab. `heat` is how much recent work has touched it. */
-export interface MapDomain {
-  id: string;
-  label: string;
-  note: string;
-  files: number;
-  /** Roadmap items currently pointing at this domain. */
-  items: number;
-  heat: "hot" | "warm" | "cool";
-}
-
 /** Board groups, in display order. The same labels drive the header stats. */
 export const HORIZONS: { id: Horizon; label: string; note: string }[] = [
   { id: "now", label: "In flight", note: "being built" },
   { id: "next", label: "Next", note: "queued" },
   { id: "later", label: "Later", note: "backlog" },
 ];
-
-export const HEAT_LABEL: Record<MapDomain["heat"], string> = {
-  hot: "active",
-  warm: "planned",
-  cool: "quiet",
-};

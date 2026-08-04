@@ -7,7 +7,7 @@
 //! surface every other agent has (its `AgentCaps::advisory()` still refuses the
 //! publish ops, one mechanism checked once).
 //!
-//! Seven ops, all scoped to the project this chat belongs to. The project id is
+//! Nine ops, all scoped to the project this chat belongs to. The project id is
 //! stamped at construction from the workspace record, never taken from `args`:
 //! a chat can only ever read and write its own project's board.
 //!
@@ -35,6 +35,13 @@
 //!   the sequence the PM argues for. Board scoped rather than item scoped, and
 //!   refused unless it covers the orderable set exactly, so what the user rules
 //!   on is unambiguous.
+//! - `roadmap_brief` / `roadmap_propose_brief_update` — the PM's memory of the
+//!   *product*, not of the board ([`crate::roadmap::memory`]). The brief is
+//!   injected into this chat's instructions at spawn, so the read op exists for
+//!   the sessions that outlive their spawn (a long conversation, a standup after
+//!   the user ruled a change in). The write is proposal-gated like every other
+//!   ask: the PM maintains its memory and the user owns it, so it cannot quietly
+//!   rewrite the position it will cite back tomorrow.
 //! - `roadmap_note` and `roadmap_hold` — the two ops that write *directly*, and
 //!   the whole of the PM's direct-write licence (invariant 2 in
 //!   .context/roadmap-pm-plan.md): it may raise a hand or pull the brake, never
@@ -58,6 +65,7 @@ use tauri::AppHandle;
 use crate::roadmap::deps;
 use crate::roadmap::events::{self, EventActor, EventKind, ItemEvent};
 use crate::roadmap::holds::{self, ProjectHold};
+use crate::roadmap::memory::{self, BriefProposal};
 use crate::roadmap::order::{self, OrderProposal};
 use crate::roadmap::proposals::{self, Proposal, ProposalKind, ProposalPatch};
 use crate::roadmap::store;
@@ -69,7 +77,7 @@ use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 /// The ops this dispatcher owns. Pinned by a test against the instruction block
 /// so the two can't drift — an agent told about an op that doesn't exist (or
 /// given one it was never told about) is a silently broken tool.
-pub const OPS: [&str; 7] = [
+pub const OPS: [&str; 9] = [
     "roadmap_list",
     "roadmap_propose",
     "roadmap_propose_update",
@@ -77,6 +85,8 @@ pub const OPS: [&str; 7] = [
     "roadmap_propose_order",
     "roadmap_note",
     "roadmap_hold",
+    "roadmap_brief",
+    "roadmap_propose_brief_update",
 ];
 
 /// Most items one `roadmap_propose` call may carry. A proposal is a thing a
@@ -187,6 +197,26 @@ struct HoldArgs {
     scope: String,
     #[serde(default)]
     reason: String,
+}
+
+/// `roadmap_brief` args: none. An explicit empty shape rather than ignoring
+/// whatever arrives, so an agent that guesses at a filter (`{"section":"vision"}`)
+/// is told this op takes the whole document instead of silently getting it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BriefArgs {}
+
+/// `roadmap_propose_brief_update` args: the whole brief the PM wants the project
+/// to have, and one line on what changed. Whole rather than a patch — see
+/// [`crate::roadmap::memory::BriefProposal`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProposeBriefArgs {
+    #[serde(default)]
+    content: String,
+    /// What changed and why — quoted on the tab's bar next to Accept/Decline.
+    #[serde(default)]
+    note: Option<String>,
 }
 
 /// The `scope` value that means "the whole board" rather than one item. A literal
@@ -1040,6 +1070,95 @@ fn propose_order_op(
     }
 }
 
+// ──────────────── roadmap_brief / _propose_brief_update ─────────────────
+
+/// `roadmap_brief`: read the project's product brief.
+///
+/// Redundant at spawn — the brief is already in this chat's instructions
+/// (`instructions::roadmap_block`) — and that is exactly why the op exists: a PM
+/// chat outlives its spawn. The user rules a change in mid-conversation, a
+/// standup opens hours later, another window edits the board; the injected copy
+/// is then the *old* memory, and an agent citing it is worse than one that
+/// re-reads.
+///
+/// `age` rather than the raw `updated_at`, for the same reason `last_event`
+/// carries one: an epoch means nothing to an agent reasoning about "since we last
+/// spoke", and a timestamp it has to diff itself is arithmetic waiting to go
+/// wrong. Absent when the brief was written in the last minute.
+fn brief_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Response {
+    if let Err(e) = parse_args::<BriefArgs>(args) {
+        return Response::err(id, format!("roadmap_brief: takes no args — {e}"));
+    }
+    let brief = match memory::load(conn, project_id) {
+        Ok(brief) => brief,
+        Err(e) => return Response::err(id, format!("roadmap_brief: {e}")),
+    };
+    let payload = match brief {
+        // The empty marker: this project has no product memory yet. Explicit
+        // rather than an absent key, so "nothing written yet" can't be misread as
+        // a failed read.
+        None => json!({ "brief": null }),
+        Some(brief) => {
+            let mut o = Map::new();
+            o.insert("content".into(), json!(brief.content));
+            if let Some(age) = age(crate::database::now_millis(), brief.updated_at) {
+                o.insert("age".into(), json!(age));
+            }
+            json!({ "brief": Value::Object(o) })
+        }
+    };
+    match serde_json::to_string(&payload) {
+        Ok(stdout) => Response::ok(id, 0, stdout, String::new()),
+        Err(e) => Response::err(id, format!("roadmap_brief: {e}")),
+    }
+}
+
+/// `roadmap_propose_brief_update`: park an ask to replace the product brief,
+/// replacing any the project already has.
+///
+/// Proposal-gated for the reason the whole memory seam is worth building on top of
+/// this grammar: the brief is what the PM will quote back as "what we agreed", so
+/// a version of it the user never read is a way for the agent to launder its own
+/// conclusions into the user's position. Nothing here writes memory — the typed
+/// ruling (`roadmap_accept_brief_proposal`) does.
+///
+/// Board scoped, like the order ask: no item event, and the ask's own row is the
+/// durable object until the user rules.
+fn propose_brief_op(
+    conn: &Connection,
+    project_id: &str,
+    id: &str,
+    args: &Value,
+) -> (Response, Option<BriefProposal>) {
+    let err = |msg: String| {
+        (
+            Response::err(id, format!("roadmap_propose_brief_update: {msg}")),
+            None,
+        )
+    };
+    let args: ProposeBriefArgs = match parse_required(args) {
+        Ok(a) => a,
+        Err(e) => return err(e),
+    };
+    // One validator for this op and any future writer, so "what is a usable
+    // brief" is answered in the module that owns the document.
+    let content = match memory::clean_content(&args.content) {
+        Ok(content) => content,
+        Err(e) => return err(e),
+    };
+    let note = clean(args.note.as_deref());
+    let stored = match memory::propose(conn, project_id, &content, note.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return err(e.to_string()),
+    };
+
+    let payload = json!({ "proposed": { "brief": { "bytes": content.len() } } });
+    match serde_json::to_string(&payload) {
+        Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(stored)),
+        Err(e) => err(e.to_string()),
+    }
+}
+
 // ───────────────────────────── dispatcher ───────────────────────────────
 
 /// Adds the roadmap ops to a project-manager chat, over the standard git
@@ -1167,6 +1286,24 @@ impl RpcDispatcher for RoadmapDispatcher {
                     }
                     (resp, Vec::new())
                 }
+                "roadmap_brief" => {
+                    let conn = self.db.lock();
+                    (brief_op(&conn, &self.project_id, id, args), Vec::new())
+                }
+                "roadmap_propose_brief_update" => {
+                    // Same lock discipline as the order ask, and the same shape:
+                    // one board-scoped row announced after the guard drops, so
+                    // the Product brief tab grows its decision bar while the PM
+                    // is still talking.
+                    let (resp, stored) = {
+                        let conn = self.db.lock();
+                        propose_brief_op(&conn, &self.project_id, id, args)
+                    };
+                    if let (Some(app), Some(p)) = (&self.app, &stored) {
+                        crate::roadmap::emit_brief_proposal(app, p);
+                    }
+                    (resp, Vec::new())
+                }
                 // Every other `roadmap_*` name, including the release op the PM
                 // does not have: the refusal names the ops it does, so a wrong
                 // guess costs one round trip rather than a silent no-op.
@@ -1247,6 +1384,16 @@ mod tests {
     fn propose_order(db: &Db, args: Value) -> (Response, Option<OrderProposal>) {
         let conn = db.lock();
         propose_order_op(&conn, "p1", "r1", &args)
+    }
+
+    fn brief(db: &Db, args: Value) -> Response {
+        let conn = db.lock();
+        brief_op(&conn, "p1", "r1", &args)
+    }
+
+    fn propose_brief(db: &Db, args: Value) -> (Response, Option<BriefProposal>) {
+        let conn = db.lock();
+        propose_brief_op(&conn, "p1", "r1", &args)
     }
 
     fn note(db: &Db, args: Value) -> (Response, Option<ItemEvent>) {
@@ -2366,6 +2513,123 @@ mod tests {
     }
 
     #[test]
+    fn the_brief_reads_empty_until_one_is_ruled_in() {
+        let db = test_db("p1");
+
+        // The empty marker, explicit: "no memory yet" must not look like a
+        // failed read, because the PM's next move differs (draft one).
+        let resp = brief(&db, Value::Null);
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(resp.stdout.unwrap(), r#"{"brief":null}"#);
+
+        // Proposing does not write it — that is the whole gate.
+        assert!(
+            propose_brief(&db, json!({"content": "# Fletch\n\nSupervised agents."}))
+                .0
+                .ok
+        );
+        let resp = brief(&db, Value::Null);
+        let out: Value = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        assert_eq!(out["brief"], Value::Null, "an ask is not the brief");
+
+        // Only the ruling writes memory (the user's typed command, exercised
+        // here through the one function behind it).
+        {
+            let conn = db.lock();
+            crate::roadmap::memory::accept(&conn, "p1")
+                .unwrap()
+                .unwrap();
+        }
+        let resp = brief(&db, Value::Null);
+        let out: Value = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        assert_eq!(
+            out["brief"]["content"],
+            json!("# Fletch\n\nSupervised agents.")
+        );
+        // Written a moment ago, so no age — the same "just now" the item
+        // trail's absent age means.
+        assert_eq!(out["brief"]["age"], Value::Null);
+
+        // No filter, no section picker: the op takes the whole document.
+        let resp = brief(&db, json!({"section": "vision"}));
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("takes no args"));
+    }
+
+    #[test]
+    fn propose_brief_parks_one_ask_and_refuses_an_unusable_one() {
+        let db = test_db("p1");
+
+        let want = "# Fletch\n\n## Rejected\n\n- sprints";
+        let (resp, stored) = propose_brief(
+            &db,
+            json!({"content": format!("  {want}  "), "note": "records the pruning"}),
+        );
+        assert!(resp.ok, "{resp:?}");
+        let out: Value = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        // The size the app measured, so the PM can see its document didn't grow
+        // a paragraph in transit.
+        assert_eq!(out["proposed"]["brief"]["bytes"], json!(want.len()));
+        let p = stored.unwrap();
+        assert_eq!(p.content, want, "trimmed, otherwise verbatim");
+        assert_eq!(p.note.as_deref(), Some("records the pruning"));
+
+        // A newer ask replaces it: one pending document per project, so the user
+        // rules on the PM's current position.
+        let (resp, stored) = propose_brief(&db, json!({"content": "# Fletch\n\nRewritten."}));
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(
+            crate::roadmap::memory::get_proposal(&db.lock(), "p1").unwrap(),
+            stored
+        );
+        assert_eq!(stored.unwrap().note, None, "the replacement's note wins");
+
+        let over = "x".repeat(crate::roadmap::memory::MAX_CONTENT + 1);
+        for (args, needle) in [
+            (json!({"content": "   "}), "required"),
+            (json!({}), "required"),
+            (json!({"content": over}), "keep the brief under"),
+            // A misspelled field would otherwise be silently dropped.
+            (json!({"content": "fine", "notes": "why"}), "unknown field"),
+        ] {
+            let (resp, stored) = propose_brief(&db, args);
+            assert!(!resp.ok, "should have been rejected");
+            let e = resp.error.unwrap();
+            assert!(e.contains(needle), "expected {needle:?} in {e:?}");
+            assert!(stored.is_none());
+        }
+        // Args at all are required, and no refusal above disturbed the pending
+        // ask.
+        assert!(!propose_brief(&db, Value::Null).0.ok);
+        assert_eq!(
+            crate::roadmap::memory::get_proposal(&db.lock(), "p1")
+                .unwrap()
+                .unwrap()
+                .content,
+            "# Fletch\n\nRewritten."
+        );
+    }
+
+    #[tokio::test]
+    async fn the_brief_ops_route_through_the_dispatcher() {
+        let db = test_db("p1");
+        let d = dispatcher(&db, "p1");
+
+        let resp = d
+            .dispatch(
+                "r1",
+                "roadmap_propose_brief_update",
+                &json!({"content": "# Fletch"}),
+            )
+            .await
+            .0;
+        assert!(resp.ok, "{resp:?}");
+        let resp = d.dispatch("r2", "roadmap_brief", &Value::Null).await.0;
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(resp.stdout.unwrap(), r#"{"brief":null}"#);
+    }
+
+    #[test]
     fn another_projects_board_is_invisible() {
         let db = test_db("p1");
         {
@@ -2418,14 +2682,16 @@ mod tests {
         // The PM only knows an op exists because the injected block says so; a
         // rename on either side is a tool the agent can't call.
         //
-        // The count is pinned too, and the block's own prose states it ("seven
+        // The count is pinned too, and the block's own prose states it ("nine
         // extra RPC ops"): an op added without a word about it in the block is an
         // op the agent will never call, and a number in the prose that no longer
         // matches is the first thing a reader would trust and shouldn't.
-        assert_eq!(OPS.len(), 7);
-        let block = crate::instructions::roadmap_block().expect("shipped default is non-empty");
+        assert_eq!(OPS.len(), 9);
+        // Read without a product brief: the scan below must see the playbook's own
+        // prose, not a document written by a PM (which may mention anything).
+        let block = crate::instructions::roadmap_block(None).expect("shipped default is non-empty");
         assert!(
-            block.contains("seven extra RPC ops"),
+            block.contains("nine extra RPC ops"),
             "the block's own count must match OPS"
         );
         for op in OPS {

@@ -29,6 +29,11 @@
 //!   stopped, or resumed ([`holds`]). Its own pair rather than a `roadmap:item`
 //!   ride, because a project hold is a fact about the board and belongs to no
 //!   row; an *item's* hold travels on the row itself, which carries the trio.
+//! - `roadmap:brief` — the project's product brief, after the user rules a change
+//!   in ([`memory`]). Board scoped like the two above: the brief is a fact about
+//!   the *product*, not about any item.
+//! - `roadmap:brief-proposal` / `roadmap:brief-proposal-deleted` — the PM's
+//!   pending ask to replace that brief, arriving or being ruled on.
 //! - `roadmap:queue-note` — transient: why an item isn't moving on its own.
 //!   From [`drainer`] (a queued item's blocker) and [`merge_sweep`] (a PR that
 //!   closed without merging). Nothing persists it; see the drainer's docs.
@@ -52,6 +57,11 @@
 //! handed to the project-manager chat as a review turn, so the agent that wrote
 //! the brief is the agent that reads what came back.
 //!
+//! [`memory`] is the other axis entirely: not what will be built, but what the
+//! product *is* — the brief the PM keeps across sessions, injected into its
+//! instructions at spawn and changed only by the user's ruling. A seam by design;
+//! its own docs say what may be replaced behind it.
+//!
 //! [`pr_review`] is the sweep's foreground half: while a board is on screen it
 //! answers the *review* questions about an `in_review` item's PR (CI, conflicts,
 //! unresolved threads) so the user can judge, merge, or send the feedback back
@@ -61,6 +71,7 @@ pub mod deps;
 pub mod drainer;
 pub mod events;
 pub mod holds;
+pub mod memory;
 pub mod merge_sweep;
 pub mod order;
 pub mod pr_review;
@@ -77,6 +88,7 @@ use tauri::{AppHandle, Emitter};
 
 use events::{EventActor, EventKind, ItemEvent};
 use holds::ProjectHold;
+use memory::{Brief, BriefProposal};
 use order::OrderProposal;
 use proposals::{Proposal, ProposalKind, ProposalPatch};
 use types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
@@ -140,6 +152,26 @@ pub(crate) fn emit_project_hold(app: &AppHandle, hold: &ProjectHold) {
 /// because that is the hold's key — the board has nothing else to drop.
 fn emit_project_hold_released(app: &AppHandle, project_id: &str) {
     let _ = app.emit("roadmap:project-hold-released", project_id);
+}
+
+/// Notify the frontend that the project's product brief changed — which only
+/// happens when the user rules a PM ask in ([`memory`]). Carries the whole
+/// document, because that is what the tab renders.
+fn emit_brief(app: &AppHandle, brief: &Brief) {
+    let _ = app.emit("roadmap:brief", brief);
+}
+
+/// Notify the frontend that the PM parked (or replaced) an ask to rewrite the
+/// brief; carries the full row, so the tab's decision bar appears
+/// mid-conversation.
+pub(crate) fn emit_brief_proposal(app: &AppHandle, proposal: &BriefProposal) {
+    let _ = app.emit("roadmap:brief-proposal", proposal);
+}
+
+/// Notify the frontend that the brief ask is gone — ruled on either way.
+/// Addressed by project, because that is the ask's key: one per board.
+fn emit_brief_proposal_deleted(app: &AppHandle, project_id: &str) {
+    let _ = app.emit("roadmap:brief-proposal-deleted", project_id);
 }
 
 /// Every item on a project's roadmap in board order (`rank`, then `created_at`).
@@ -1193,6 +1225,75 @@ pub async fn roadmap_reject_order_proposal(
         order::delete(&conn, &project_id).map_err(|e| e.to_string())?;
     }
     emit_order_proposal_deleted(&app, &project_id);
+    Ok(())
+}
+
+// ────────────────────────── product brief ───────────────────────────────
+
+/// The project's product brief, or `None` when the PM hasn't been given one —
+/// the Product brief tab's load ([`memory`]). Live changes arrive on
+/// `roadmap:brief`.
+#[tauri::command]
+pub async fn roadmap_get_brief(
+    project_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<Option<Brief>, String> {
+    let conn = db.lock();
+    memory::load(&conn, &project_id).map_err(|e| e.to_string())
+}
+
+/// The PM's pending ask to replace that brief, if any — fetched with the brief;
+/// live rows arrive on `roadmap:brief-proposal`.
+#[tauri::command]
+pub async fn roadmap_get_brief_proposal(
+    project_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<Option<BriefProposal>, String> {
+    let conn = db.lock();
+    memory::get_proposal(&conn, &project_id).map_err(|e| e.to_string())
+}
+
+/// Accept the PM's proposed brief — the user's "yes", and the *only* thing that
+/// writes product memory.
+///
+/// One lock scope for both writes ([`memory::accept`]), so the brief can never be
+/// replaced while its ask survives to be applied a second time. No item events: a
+/// brief belongs to no item, and a line on every row would bury the trail under a
+/// fact that isn't about any of them — the brief row itself is the durable object
+/// (invariant 3), exactly as for a project hold and an order ask.
+#[tauri::command]
+pub async fn roadmap_accept_brief_proposal(
+    project_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<Brief, String> {
+    let applied = {
+        let conn = db.lock();
+        memory::accept(&conn, &project_id).map_err(|e| e.to_string())?
+    };
+    // The ask is consumed on every path, so the tab's bar clears either way.
+    emit_brief_proposal_deleted(&app, &project_id);
+    let brief = applied.ok_or("this brief update has already been ruled on")?;
+    emit_brief(&app, &brief);
+    Ok(brief)
+}
+
+/// Decline the proposed brief — the standing one is untouched.
+///
+/// Writes no history for the same reason a declined order ask doesn't: there is no
+/// item the refusal is about. What the PM learns from a decline is that the brief
+/// it reads next session is unchanged, which is the honest record.
+#[tauri::command]
+pub async fn roadmap_reject_brief_proposal(
+    project_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<(), String> {
+    {
+        let conn = db.lock();
+        memory::delete_proposal(&conn, &project_id).map_err(|e| e.to_string())?;
+    }
+    emit_brief_proposal_deleted(&app, &project_id);
     Ok(())
 }
 

@@ -83,6 +83,40 @@ export interface RoadmapProjectHold {
   created_at: number;
 }
 
+/** The project's product brief (`roadmap_briefs`, mirroring
+ *  src-tauri/src/roadmap/memory.rs).
+ *
+ *  What the product *is* — vision, domains, constraints, rejected directions —
+ *  as opposed to what will be built (that is the board). One per project,
+ *  markdown, and the PM's memory across sessions: it is injected into a PM chat's
+ *  instructions at spawn, and rendered on the Product brief tab.
+ *
+ *  A seam, deliberately naive behind it: a future memory system replaces how this
+ *  content is produced without changing this shape. Only the user's ruling on a
+ *  [`RoadmapBriefProposal`] writes it, which is why `updated_at` means "when the
+ *  user last accepted a change". Arrives on `roadmap:brief`. */
+export interface RoadmapBrief {
+  project_id: string;
+  /** The brief itself, markdown. */
+  content: string;
+  updated_at: number;
+}
+
+/** The PM's pending ask to replace the brief (`roadmap_brief_proposals`).
+ *
+ *  Board scoped like the order ask: at most one per project, a newer one replaces
+ *  it, and nothing is applied until the user accepts. `content` is the *whole*
+ *  proposed document, not a diff — the user rules on the brief they will get.
+ *  Arrives on `roadmap:brief-proposal`; its removal on
+ *  `roadmap:brief-proposal-deleted`. */
+export interface RoadmapBriefProposal {
+  project_id: string;
+  content: string;
+  /** The PM's one line on what changed and why. */
+  note: string | null;
+  created_at: number;
+}
+
 /** The payload `roadmap_create_item` accepts. Only `title` is required; the
  *  backend defaults the rest (`later` / `open` / `user`) and allocates the code,
  *  which is why there is no `code` field here. */

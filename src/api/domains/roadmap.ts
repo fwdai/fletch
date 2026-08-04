@@ -2,6 +2,8 @@ import { invoke } from "../invoke";
 import type {
   ItemStatus,
   NewRoadmapItem,
+  RoadmapBrief,
+  RoadmapBriefProposal,
   RoadmapItem,
   RoadmapItemEvent,
   RoadmapItemPatch,
@@ -149,4 +151,23 @@ export const roadmapApi = {
   /** Decline the proposed order — the board is untouched. */
   roadmapRejectOrderProposal: (projectId: string) =>
     invoke<void>("roadmap_reject_order_proposal", { projectId }),
+  /** The project's product brief, or `null` when the PM hasn't been given one.
+   *  What the product *is*, as opposed to what will be built; the PM reads it
+   *  every session (it rides its spawn-time instructions) and the Product brief
+   *  tab renders it. Live changes arrive on `roadmap:brief`. */
+  roadmapGetBrief: (projectId: string) =>
+    invoke<RoadmapBrief | null>("roadmap_get_brief", { projectId }),
+  /** The PM's pending ask to replace that brief, or `null`. Fetched with the
+   *  brief; live rows arrive on `roadmap:brief-proposal`. */
+  roadmapGetBriefProposal: (projectId: string) =>
+    invoke<RoadmapBriefProposal | null>("roadmap_get_brief_proposal", { projectId }),
+  /** Accept the proposed brief — the user's "yes", and the only thing that writes
+   *  product memory. Returns the stored document; rejects when the ask has
+   *  already been ruled on (another window, a moment ago), in which case the bar
+   *  clears either way. */
+  roadmapAcceptBriefProposal: (projectId: string) =>
+    invoke<RoadmapBrief>("roadmap_accept_brief_proposal", { projectId }),
+  /** Decline the proposed brief — the standing one is untouched. */
+  roadmapRejectBriefProposal: (projectId: string) =>
+    invoke<void>("roadmap_reject_brief_proposal", { projectId }),
 };

@@ -64,6 +64,10 @@ const CODEGRAPH: &str = include_str!("instructions/codegraph.md");
 /// chat is given the [`crate::rpc::roadmap::RoadmapDispatcher`], so only that
 /// session may be told these ops exist. Code-managed — it must stay in sync
 /// with the ops that dispatcher implements (pinned by a test there).
+///
+/// Per-session content joins it: the project's product brief
+/// ([`crate::roadmap::memory`]) is appended by [`roadmap_block`] when the project
+/// has one, which is the read half of that seam.
 const ROADMAP: &str = include_str!("instructions/roadmap.md");
 
 /// The combined instruction text, trimmed. Empty when every source is
@@ -88,9 +92,49 @@ pub fn codegraph_block() -> Option<String> {
 
 /// The roadmap-ops guidance block, for project-manager chats only. `None` when
 /// the file is blank, like [`codegraph_block`].
-pub fn roadmap_block() -> Option<String> {
+///
+/// `product_brief` is the project's product memory
+/// (`roadmap::memory::load`), threaded in from the spawn path — the *read* half
+/// of that seam. Present, it is appended as its own fenced section: a PM that has
+/// to be told the vision every session re-litigates decisions the user already
+/// made, and the brief is the only thing in this chat that survives the chat.
+/// Absent (no brief yet, or not a project with a board), the block is exactly the
+/// playbook, so nothing claims a memory that doesn't exist.
+///
+/// A parameter rather than a lookup in here: this module owns *text*, not
+/// storage, and a global would make the block untestable and the injection
+/// order implicit.
+pub fn roadmap_block(product_brief: Option<&str>) -> Option<String> {
     let block = ROADMAP.trim();
-    (!block.is_empty()).then(|| block.to_string())
+    if block.is_empty() {
+        return None;
+    }
+    match product_brief.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Some(block.to_string()),
+        Some(brief) => Some(format!("{block}\n\n{}", product_brief_section(brief))),
+    }
+}
+
+/// The brief, fenced and framed: what it is, whose it is, and how to change it.
+///
+/// Fenced in a namespaced tag for the same reason [`prepend_to_prompt`] uses one
+/// — the content is a document written by two other parties (the PM drafted it,
+/// the user ruled it in), so its headings must not read as instructions from the
+/// app. The frame states the trust model in one line, because an agent that
+/// believes it owns this document will quietly rewrite the user's position.
+fn product_brief_section(brief: &str) -> String {
+    format!(
+        "## Product brief (maintained by you, ruled by the user)\n\n\
+         This is your memory of *this product* across sessions — the thing you would otherwise \
+         have to ask the user to restate. Read it before you propose anything: a direction it \
+         rules out has already been argued, and re-proposing it is the failure mode this section \
+         exists to prevent.\n\n\
+         You maintain it and you do not own it: when a direction decision lands in this \
+         conversation, propose the whole updated brief with `roadmap_propose_brief_update` and \
+         say so — the user's acceptance is what changes it. It is not the board: what is being \
+         built lives in items, and restating them here would rot.\n\n\
+         <product-brief>\n{brief}\n</product-brief>"
+    )
 }
 
 /// Per-agent workspace-layout note for multi-repo projects, composed ahead of
@@ -283,7 +327,7 @@ mod tests {
         assert!(!t.contains("roadmap_propose"));
         assert!(!t.contains("roadmap_list"));
 
-        let block = roadmap_block().expect("shipped default is non-empty");
+        let block = roadmap_block(None).expect("shipped default is non-empty");
         assert!(block.contains("roadmap_list"), "block: {block}");
         assert!(block.contains("roadmap_propose"), "block: {block}");
         // The safety property the whole feature rests on: a proposal is a ghost
@@ -294,6 +338,44 @@ mod tests {
         assert!(lower.contains("accept"), "block: {block}");
         // Deps are codes, not titles — the dispatcher rejects anything else.
         assert!(lower.contains("deps"), "block: {block}");
+    }
+
+    #[test]
+    fn the_product_brief_rides_the_roadmap_block_only_when_there_is_one() {
+        // No brief (a fresh project): the block is exactly the playbook, and in
+        // particular claims no memory. A PM told it has a brief it can't see
+        // would quote an empty one at the user.
+        let bare = roadmap_block(None).expect("shipped default is non-empty");
+        assert!(!bare.contains("<product-brief>"), "{bare}");
+        assert!(!bare.contains("Product brief (maintained"), "{bare}");
+        // Blank and whitespace-only are the same as absent — an empty document
+        // must not produce an empty fence.
+        assert_eq!(
+            roadmap_block(Some("   \n ")).as_deref(),
+            Some(bare.as_str())
+        );
+
+        // With one: the playbook first, then the fenced section carrying it
+        // verbatim. Fenced because the brief has headings of its own, and the
+        // agent must be able to tell the document from the instructions.
+        let block = roadmap_block(Some("# Fletch\n\n## Rejected\n\n- no sprints"))
+            .expect("shipped default is non-empty");
+        assert!(
+            block.starts_with(&bare),
+            "the playbook still leads: {block}"
+        );
+        assert!(block.contains("## Product brief (maintained by you, ruled by the user)"));
+        assert!(
+            block.contains(
+                "<product-brief>\n# Fletch\n\n## Rejected\n\n- no sprints\n</product-brief>"
+            ),
+            "brief must be injected verbatim inside the fence: {block}"
+        );
+        // The trust model, stated where the document is: the PM maintains it and
+        // the user rules it, via the one op that can change it.
+        assert!(block.contains("roadmap_propose_brief_update"), "{block}");
+        // And it must not invite the PM to restate the board here.
+        assert!(block.contains("not the board"), "{block}");
     }
 
     #[test]
