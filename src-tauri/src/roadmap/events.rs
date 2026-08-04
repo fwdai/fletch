@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
 use super::types::{enum_col, ItemStatus};
@@ -194,6 +194,25 @@ pub fn latest_for_project(
     ))?;
     let mut rows = stmt.query_map([project_id], ItemEvent::from_row)?;
     rows.next().transpose()
+}
+
+/// The item's newest event, or `None` for an item with no history yet.
+///
+/// One row rather than the whole trail because of the one caller that needs it:
+/// the drainer's wedged-queue check, which writes a `blocked` line only when the
+/// last thing said about the item isn't already that same line (see
+/// [`super::drainer::record_wedge`]). Same ordering as [`list_for_item`], so
+/// "newest" means one thing in both.
+pub fn latest_for_item(conn: &Connection, item_id: &str) -> rusqlite::Result<Option<ItemEvent>> {
+    conn.query_row(
+        &format!(
+            "SELECT {COLUMNS} FROM roadmap_item_events WHERE item_id = ?1
+              ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ),
+        [item_id],
+        ItemEvent::from_row,
+    )
+    .optional()
 }
 
 /// The history kind a user patch implies, from the transition it performs.

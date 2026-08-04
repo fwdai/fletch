@@ -21,7 +21,10 @@
 //!   "pm"`. A proposed row is a *ghost* on the board: it renders where it would
 //!   land, counts for nothing, and only becomes real when the user accepts it
 //!   (`proposed → open`) or vanishes when they discard it. That is the whole
-//!   safety property of this tool — the agent can suggest, never commit.
+//!   safety property of this tool — the agent can suggest, never commit. A
+//!   batch item's `deps` may name another item in the same batch as `"#n"`,
+//!   resolved to real codes inside the insert transaction, so an ordered plan
+//!   is one call rather than one call per link.
 //! - `roadmap_propose_update` / `roadmap_propose_discard` — the same contract
 //!   for items that already exist: the ask lands as a pending delta
 //!   ([`crate::roadmap::proposals`], at most one per item, a newer one
@@ -48,11 +51,12 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
+use crate::roadmap::deps;
 use crate::roadmap::events::{self, EventActor, EventKind, ItemEvent};
 use crate::roadmap::order::{self, OrderProposal};
 use crate::roadmap::proposals::{self, Proposal, ProposalKind, ProposalPatch};
 use crate::roadmap::store;
-use crate::roadmap::types::{Horizon, ItemSource, ItemStatus, NewItem, RoadmapItem};
+use crate::roadmap::types::{Horizon, ItemPatch, ItemSource, ItemStatus, NewItem, RoadmapItem};
 use crate::roadmap::Db;
 use crate::rpc::git::GitDispatcher;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
@@ -386,10 +390,16 @@ fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Respo
 // ─────────────────────────── roadmap_propose ────────────────────────────
 
 /// Turn the agent's items into validated [`NewItem`]s, or explain what's wrong
-/// with the batch. `known` is every code already on this project's board —
-/// `deps` may only reference those (codes are allocated on insert, so an item
-/// cannot depend on one from the same batch).
-fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem>, String> {
+/// with the batch. `existing` is the project's board: `deps` may name a code
+/// already on it, or another item in *this* batch as `"#n"` (1-based), which is
+/// what lets one call express an ordered plan. The whole merged graph — the
+/// batch's own edges plus the board's — has to stay acyclic
+/// ([`deps::validate_batch`]).
+///
+/// The `"#n"` entries survive into the returned [`NewItem`]s untouched; only the
+/// insert transaction can resolve them, because that is where codes are
+/// allocated (see [`resolve_batch_deps`]).
+fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewItem>, String> {
     if items.is_empty() {
         return Err("`items` must be a non-empty array of tickets".into());
     }
@@ -400,7 +410,7 @@ fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem
             items.len()
         ));
     }
-    let mut out = Vec::with_capacity(items.len());
+    let mut out: Vec<NewItem> = Vec::with_capacity(items.len());
     for (n, it) in items.iter().enumerate() {
         // 1-based: "item 1" is the first thing the agent wrote.
         let at = n + 1;
@@ -422,16 +432,6 @@ fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem
                 )
             })?,
         };
-        let deps = clean_list(&it.deps);
-        for d in &deps {
-            if !known.contains(d.as_str()) {
-                return Err(format!(
-                    "item {at} ({title:?}): `deps` names {d:?}, which is not an item on this \
-                     board — depend only on codes `roadmap_list` returns (a ticket from this \
-                     same batch has no code yet)"
-                ));
-            }
-        }
         out.push(NewItem {
             title: title.to_string(),
             why: it.why.trim().to_string(),
@@ -442,13 +442,37 @@ fn validate(items: &[ProposedItem], known: &HashSet<&str>) -> Result<Vec<NewItem
             area: clean(it.area.as_deref()),
             source: Some(ItemSource::Pm),
             accept: clean_list(&it.accept),
-            deps,
+            deps: clean_list(&it.deps),
             // Which workflow builds it is the user's call, not the PM's — a
             // proposal isn't work anyone has agreed to do yet.
             workflow_def_id: None,
         });
     }
+    // The deps of the whole batch at once, because that is the only scope an
+    // intra-batch loop is visible in. Refused per item, with the item's own
+    // number and title — the PM fixes one ticket, not a graph.
+    let lists: Vec<Vec<String>> = out.iter().map(|n| n.deps.clone()).collect();
+    deps::validate_batch(&deps::graph_of(existing), &lists)
+        .map_err(|r| format!("item {} ({:?}): {}", r.at + 1, out[r.at].title, r.message))?;
     Ok(out)
+}
+
+/// Rewrite a batch item's `"#n"` references into the codes the insert allocated.
+///
+/// Called *inside* the insert transaction, once every row exists: `"#2"` means
+/// "the second ticket in this call", and only the transaction knows what code
+/// that ticket got. Forward references work for the same reason — the rewrite
+/// happens after all the inserts, not during them.
+///
+/// A dep that isn't a batch reference is left exactly as written; validation has
+/// already established it is a code on the board.
+fn resolve_batch_deps(raw: &[String], created: &[RoadmapItem]) -> Vec<String> {
+    raw.iter()
+        .map(|d| match deps::batch_index(d, created.len()) {
+            Some(i) => created[i].code.clone(),
+            None => d.clone(),
+        })
+        .collect()
 }
 
 /// `roadmap_propose`: validate the batch, insert it as `proposed` rows in one
@@ -479,8 +503,7 @@ fn propose_op(
         Ok(items) => items,
         Err(e) => return err(e.to_string()),
     };
-    let known: HashSet<&str> = existing.iter().map(|i| i.code.as_str()).collect();
-    let news = match validate(&args.items, &known) {
+    let news = match validate(&args.items, &existing) {
         Ok(news) => news,
         Err(msg) => return err(msg),
     };
@@ -488,7 +511,9 @@ fn propose_op(
     // All or nothing: a failure half-way through must not leave the user
     // staring at three of the five tickets they were promised. Each row's
     // `proposed` history event rides the same transaction, so a ghost can never
-    // exist without the record of who suggested it.
+    // exist without the record of who suggested it. The `"#n"` rewrite rides it
+    // too — a batch whose internal ordering half-applied would be a plan nobody
+    // proposed.
     let created = (|| -> rusqlite::Result<(Vec<RoadmapItem>, Vec<ItemEvent>)> {
         let tx = conn.unchecked_transaction()?;
         let mut created = Vec::with_capacity(news.len());
@@ -504,6 +529,25 @@ fn propose_op(
                 None,
             )?);
             created.push(item);
+        }
+        // Second pass, now that every ticket has a code: turn the batch
+        // references into real deps. Only the rows that used one are rewritten,
+        // so an ordinary batch costs no extra write.
+        for (n, new) in news.iter().enumerate() {
+            if !new.deps.iter().any(|d| d.starts_with(deps::BATCH_PREFIX)) {
+                continue;
+            }
+            let resolved = resolve_batch_deps(&new.deps, &created);
+            if let Some(row) = store::update(
+                &tx,
+                &created[n].id,
+                &ItemPatch {
+                    deps: Some(resolved),
+                    ..Default::default()
+                },
+            )? {
+                created[n] = row;
+            }
         }
         tx.commit()?;
         Ok((created, recorded))
@@ -569,12 +613,16 @@ fn rulable(status: ItemStatus) -> bool {
 }
 
 /// Normalize and validate an update's patch against the board, or say exactly
-/// what's wrong: same rules the batch propose applies, plus "don't depend on
-/// yourself" (possible here because the target already has a code).
+/// what's wrong: same rules the batch propose applies, plus the two a patch can
+/// break that a new ticket can't — depending on yourself, and closing a loop
+/// with an item that already depends on you ([`deps::validate_edit`]).
+///
+/// Checked here *and* again when the user rules on the ask: the board moves in
+/// between, and an accepted loop is a permanently wedged queue.
 fn validate_patch(
     patch: &ProposalPatch,
     item: &RoadmapItem,
-    known: &HashSet<&str>,
+    board: &[RoadmapItem],
 ) -> Result<ProposalPatch, String> {
     if patch.is_empty() {
         return Err("`patch` must change at least one field — \
@@ -602,20 +650,10 @@ fn validate_patch(
     if let Some(accept) = &out.accept {
         out.accept = Some(clean_list(accept));
     }
-    if let Some(deps) = &out.deps {
-        let deps = clean_list(deps);
-        for d in &deps {
-            if d == &item.code {
-                return Err(format!("{} cannot depend on itself", item.code));
-            }
-            if !known.contains(d.as_str()) {
-                return Err(format!(
-                    "`deps` names {d:?}, which is not an item on this board — \
-                     depend only on codes `roadmap_list` returns"
-                ));
-            }
-        }
-        out.deps = Some(deps);
+    if let Some(patched) = &out.deps {
+        let patched = clean_list(patched);
+        deps::validate_edit(&deps::graph_of(board), &item.code, &patched)?;
+        out.deps = Some(patched);
     }
     Ok(out)
 }
@@ -651,8 +689,7 @@ fn propose_update_op(
         Ok(item) => item,
         Err(e) => return err(e),
     };
-    let known: HashSet<&str> = items.iter().map(|i| i.code.as_str()).collect();
-    let patch = match validate_patch(&args.patch, item, &known) {
+    let patch = match validate_patch(&args.patch, item, &items) {
         Ok(patch) => patch,
         Err(e) => return err(e),
     };
@@ -1165,7 +1202,7 @@ mod tests {
     }
 
     #[test]
-    fn deps_must_name_codes_already_on_this_board() {
+    fn deps_must_name_a_code_on_the_board_or_an_item_in_this_batch() {
         let db = test_db("p1");
         assert!(propose(&db, one_item("first")).ok);
 
@@ -1176,15 +1213,174 @@ mod tests {
         );
         assert!(resp.ok, "{resp:?}");
 
-        // One that doesn't exist rejects the batch, and says why.
+        // One that doesn't exist rejects the batch, names it, and offers the
+        // codes it could have named instead.
         let resp = propose(
             &db,
             json!({"items": [{"title": "third", "horizon": "next", "deps": ["MCA-999"]}]}),
         );
         assert!(!resp.ok);
         let e = resp.error.unwrap();
-        assert!(e.contains("MCA-999") && e.contains("roadmap_list"), "{e}");
+        assert!(
+            e.contains("MCA-999") && e.contains("MCA-100, MCA-101"),
+            "{e}"
+        );
+        // And the batch syntax is offered too, since that is the other legal
+        // spelling in this op.
+        assert!(e.contains("#n"), "{e}");
         assert_eq!(store::list(&db.lock(), "p1").unwrap().len(), 2);
+    }
+
+    /// The whole point of `"#n"`: an ordered plan in one call. The references are
+    /// resolved to the codes the insert allocated — forward ones included, since
+    /// the rewrite runs after every row exists.
+    #[test]
+    fn a_batch_can_order_itself_with_hash_references() {
+        let db = test_db("p1");
+        let resp = propose(
+            &db,
+            json!({"items": [
+                {"title": "the seam", "horizon": "now"},
+                {"title": "the drainer", "horizon": "now", "deps": ["#1"]},
+                {"title": "the card", "horizon": "next", "deps": ["#2", "#1"]},
+            ]}),
+        );
+        assert!(resp.ok, "{resp:?}");
+
+        let rows = store::list(&db.lock(), "p1").unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].deps.is_empty());
+        // Stored as real codes, so every reader (the drainer, the card, the next
+        // `roadmap_list`) sees ordinary deps — `"#n"` exists only in the ask.
+        assert_eq!(rows[1].deps, vec!["MCA-100".to_string()]);
+        assert_eq!(
+            rows[2].deps,
+            vec!["MCA-101".to_string(), "MCA-100".to_string()]
+        );
+
+        // A forward reference (item 1 after item 2) is the same mechanism.
+        let resp = propose(
+            &db,
+            json!({"items": [
+                {"title": "later", "horizon": "next", "deps": ["#2"]},
+                {"title": "first", "horizon": "next"},
+            ]}),
+        );
+        assert!(resp.ok, "{resp:?}");
+        let rows = store::list(&db.lock(), "p1").unwrap();
+        assert_eq!(rows[3].deps, vec!["MCA-104".to_string()]);
+    }
+
+    /// A batch that orders itself into a circle is refused whole — the failure
+    /// this slice exists to make unreachable, caught before a single row lands.
+    #[test]
+    fn a_batch_that_closes_a_loop_is_refused_whole() {
+        let db = test_db("p1");
+        let resp = propose(
+            &db,
+            json!({"items": [
+                {"title": "one", "horizon": "now", "deps": ["#2"]},
+                {"title": "two", "horizon": "now", "deps": ["#1"]},
+            ]}),
+        );
+        assert!(!resp.ok);
+        let e = resp.error.unwrap();
+        assert!(e.contains("loop"), "{e}");
+        assert!(
+            e.contains("#1 → #2 → #1"),
+            "the refusal spells the loop: {e}"
+        );
+        assert!(store::list(&db.lock(), "p1").unwrap().is_empty());
+    }
+
+    /// A ticket hanging off a loop that is already on the board (one written
+    /// before this check existed) is refused too: it could never be built
+    /// either, and the refusal names the loop the PM has to propose away first.
+    #[test]
+    fn a_batch_item_waiting_on_an_existing_loop_is_refused() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("a")).ok); // MCA-100
+        assert!(propose(&db, one_item("b")).ok); // MCA-101
+        {
+            // Straight through the DAO: the ops above are exactly what stops
+            // this shape being reachable now, so the legacy board is built by hand.
+            let conn = db.lock();
+            let rows = store::list(&conn, "p1").unwrap();
+            for (row, dep) in [(&rows[0], "MCA-101"), (&rows[1], "MCA-100")] {
+                store::update(
+                    &conn,
+                    &row.id,
+                    &ItemPatch {
+                        deps: Some(vec![dep.to_string()]),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+        }
+
+        let resp = propose(
+            &db,
+            json!({"items": [{"title": "after", "horizon": "now", "deps": ["MCA-100"]}]}),
+        );
+        assert!(!resp.ok);
+        let e = resp.error.unwrap();
+        assert!(e.contains("MCA-100 → MCA-101 → MCA-100"), "{e}");
+        assert_eq!(store::list(&db.lock(), "p1").unwrap().len(), 2);
+    }
+
+    /// A reference to a position the batch doesn't have is a mistake worth
+    /// naming: it would otherwise resolve to nothing and read as "no dependency".
+    #[test]
+    fn a_hash_reference_out_of_range_is_refused() {
+        let db = test_db("p1");
+        for (deps, needle) in [
+            (json!(["#3"]), "not an item in this batch"),
+            (json!(["#0"]), "not an item in this batch"),
+            (json!(["#two"]), "not an item in this batch"),
+        ] {
+            let resp = propose(
+                &db,
+                json!({"items": [
+                    {"title": "one", "horizon": "now", "deps": deps},
+                    {"title": "two", "horizon": "now"},
+                ]}),
+            );
+            assert!(!resp.ok, "should have been rejected");
+            let e = resp.error.unwrap();
+            assert!(e.contains(needle), "expected {needle:?} in {e:?}");
+            assert!(e.contains("item 1"), "the refusal names the item: {e}");
+        }
+        assert!(store::list(&db.lock(), "p1").unwrap().is_empty());
+    }
+
+    /// The urgent one (see .context/roadmap-pm-plan.md, A4): a dep patch that
+    /// closes a loop is refused at propose time, so the user is never offered a
+    /// diff whose acceptance would wedge the queue.
+    #[test]
+    fn propose_update_refuses_a_dep_patch_that_closes_a_loop() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("first")).ok); // MCA-100
+        assert!(
+            propose(
+                &db,
+                json!({"items": [{"title": "second", "horizon": "next", "deps": ["MCA-100"]}]})
+            )
+            .ok
+        ); // MCA-101, after MCA-100
+
+        let (resp, stored) = propose_update(
+            &db,
+            json!({"code": "MCA-100", "patch": {"deps": ["MCA-101"]},
+                   "note": "actually the other way round"}),
+        );
+        assert!(!resp.ok);
+        let e = resp.error.unwrap();
+        assert!(e.contains("MCA-100 → MCA-101 → MCA-100"), "{e}");
+        assert!(stored.is_none(), "a refused ask is not parked");
+        assert!(proposals::list_for_project(&db.lock(), "p1")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
