@@ -2,8 +2,9 @@ import { Icon } from "@/components/Icon";
 import type { FunnelAction } from "./funnel";
 
 /** The roadmap half of an inbox row's actions. Three states, decided in
- *  funnel.ts: offer the route, say it's already there, or say nothing at all
- *  (the repo belongs to no project, so there is no board to route onto). */
+ *  funnel.ts: offer the route, say it's already there, or say nothing at all —
+ *  no project owns the repo, or its board hasn't answered yet, and an Add
+ *  offered without knowing what's on the board is how duplicates get made. */
 export function IssueRoadmapAction({ action, onAdd }: { action: FunnelAction; onAdd: () => void }) {
   if (action.kind === "none") return null;
   if (action.kind === "routed") {

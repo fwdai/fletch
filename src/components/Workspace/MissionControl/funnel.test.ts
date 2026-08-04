@@ -44,6 +44,18 @@ describe("distillIssueBody", () => {
   it("hard-clips a single long word rather than losing everything", () => {
     expect(distillIssueBody("aaaaaaaaaaaaaaaa", 8)).toBe("aaaaaaaa…");
   });
+
+  it("spends the budget on prose, not screenshots, code fences or link urls", () => {
+    const body =
+      "![screenshot](https://user-images.example/a-very-long-signed-url-that-eats-the-budget.png)\n" +
+      "```\nthread 'main' panicked at src/lib.rs:42\n```\n" +
+      "Saving a note [drops the body](https://github.com/o/r/issues/7#issuecomment-1) every time.";
+    expect(distillIssueBody(body)).toBe("Saving a note drops the body every time.");
+  });
+
+  it("is empty for a body that is only markdown noise", () => {
+    expect(distillIssueBody("![shot](https://x/a.png)\n\n```\nlet x = 1;\n```")).toBe("");
+  });
 });
 
 describe("composeIssueWhy", () => {
@@ -127,6 +139,23 @@ describe("funnelAction", () => {
     expect(funnelAction("p1", "https://github.com/o/r/issues/2", routed)).toEqual({
       kind: "add",
       projectId: "p1",
+    });
+  });
+
+  it("offers no action for an issue with no url to dedup on", () => {
+    expect(funnelAction("p1", "", routed)).toEqual({ kind: "none" });
+  });
+
+  // The same origin repo can be pinned in two projects; each board is judged
+  // against its own routed set, so routing in one leaves the other addable.
+  it("scopes the routed decision to the project's own board", () => {
+    const routedByProject: Record<string, Set<string>> = { p1: routed, p2: new Set() };
+    expect(funnelAction("p1", "https://github.com/o/r/issues/1", routedByProject.p1)).toEqual({
+      kind: "routed",
+    });
+    expect(funnelAction("p2", "https://github.com/o/r/issues/1", routedByProject.p2)).toEqual({
+      kind: "add",
+      projectId: "p2",
     });
   });
 });

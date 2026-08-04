@@ -16,14 +16,22 @@ const POLL_MS = 120_000;
 
 export interface IssueFunnel {
   /** What this issue's row should offer, given the project its repo belongs to
-   *  (empty/undefined when it belongs to none). */
+   *  (empty/undefined when it belongs to none). Nothing, until that project's
+   *  board has been read. */
   actionFor: (projectId: string | undefined, issue: TrackerIssue) => FunnelAction;
   /** Route the issue onto the project's board as a ghost row awaiting a ruling. */
   route: (projectId: string, issue: TrackerIssue) => Promise<void>;
 }
 
+/** A project's board as the funnel knows it. A read that failed is *not* an
+ *  empty board: the backend dedups nothing, so treating "we don't know" as
+ *  "nothing is routed" would re-enable Add on every already-routed row and let
+ *  one click stack a second ghost. A project absent from the record has not been
+ *  read yet, which is the same unknown. */
+type Board = { status: "loaded"; rows: RoadmapItem[] } | { status: "failed" };
+
 export function useIssueFunnel(projectIds: string[]): IssueFunnel {
-  const [rowsByProject, setRowsByProject] = useState<Record<string, RoadmapItem[]>>({});
+  const [boards, setBoards] = useState<Record<string, Board>>({});
   // In-flight issue urls, in a ref rather than state: two fast clicks land in
   // the same render, and a second ghost row is not something a reload undoes.
   const inFlight = useRef(new Set<string>());
@@ -31,22 +39,39 @@ export function useIssueFunnel(projectIds: string[]): IssueFunnel {
   const poll = useCallback(async () => {
     if (projectIds.length === 0) return;
     const entries = await Promise.all(
-      projectIds.map(async (id) => [id, await api.roadmapListItems(id).catch(() => [])] as const),
+      projectIds.map(async (id) => {
+        try {
+          return [id, { status: "loaded", rows: await api.roadmapListItems(id) }] as const;
+        } catch {
+          return [id, { status: "failed" }] as const;
+        }
+      }),
     );
-    setRowsByProject(Object.fromEntries(entries));
+    setBoards(Object.fromEntries(entries));
   }, [projectIds]);
 
   usePoll(poll, POLL_MS, [poll]);
 
-  const routed = useMemo(
-    () => routedIssueUrls(Object.values(rowsByProject).flat()),
-    [rowsByProject],
-  );
+  // Per project, never pooled: the same origin repo pinned at two paths in two
+  // projects would otherwise read "on roadmap" on both boards after one routing.
+  const routedByProject = useMemo(() => {
+    const byProject: Record<string, Set<string>> = {};
+    for (const [id, board] of Object.entries(boards)) {
+      if (board.status === "loaded") byProject[id] = routedIssueUrls(board.rows);
+    }
+    return byProject;
+  }, [boards]);
 
   const actionFor = useCallback(
-    (projectId: string | undefined, issue: TrackerIssue) =>
-      funnelAction(projectId, issue.url, routed),
-    [routed],
+    (projectId: string | undefined, issue: TrackerIssue) => {
+      const routed = projectId ? routedByProject[projectId] : undefined;
+      // Unknown board (unread or failed) → no roadmap action, the same quiet
+      // degradation the section gives a tracker that won't answer. Offering Add
+      // here is what creates duplicates.
+      if (!routed) return { kind: "none" } as const;
+      return funnelAction(projectId, issue.url, routed);
+    },
+    [routedByProject],
   );
 
   const route = useCallback(async (projectId: string, issue: TrackerIssue) => {
@@ -56,8 +81,13 @@ export function useIssueFunnel(projectIds: string[]): IssueFunnel {
       const row = await api.roadmapCreateItem(projectId, issueToRoadmapItem(issue));
       // Fold the stored row in rather than remembering the click: "on roadmap"
       // stays a function of board rows, so this agrees with the next poll and
-      // with a reload.
-      setRowsByProject((prev) => ({ ...prev, [projectId]: [...(prev[projectId] ?? []), row] }));
+      // with a reload. Only into a board we have actually read — inventing one
+      // from a single row would claim the rest of that board is empty.
+      setBoards((prev) => {
+        const board = prev[projectId];
+        if (board?.status !== "loaded") return prev;
+        return { ...prev, [projectId]: { status: "loaded", rows: [...board.rows, row] } };
+      });
     } finally {
       inFlight.current.delete(issue.url);
     }
