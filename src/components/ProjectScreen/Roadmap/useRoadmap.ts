@@ -56,6 +56,7 @@ import {
   type RoadmapItem,
   type RoadmapItemEvent,
   type RoadmapItemPatch,
+  type RoadmapItemReview,
   type RoadmapOrderProposal,
   type RoadmapProjectHold,
   type RoadmapProposal,
@@ -67,8 +68,10 @@ import { useRuns } from "@/workflows/run/useRuns";
 import { insertEvent, mergeSnapshot } from "./itemHistory";
 import { PRODUCT_MAP } from "./mockData";
 import { buildNeedsYou, mergeLatest, upsertLatest } from "./NeedsYou/select";
+import { reviewFeedbackPrompt } from "./reviewPrompt";
 import type { Horizon } from "./types";
 import { toBoardItem } from "./types";
+import { useItemReviews } from "./useItemReviews";
 import { useProjectWorkflows } from "./useProjectWorkflows";
 
 /** How long a row stays highlighted after landing on the board. */
@@ -105,6 +108,11 @@ export function useRoadmap(repoPath: string) {
   // What a queued item will run under. Loaded here rather than in the Board so
   // the item form and the card's queue affordance read the same answer.
   const workflows = useProjectWorkflows(projectId);
+  // The review loop's two effects live in the workspace this page covers: a fix
+  // agent is a draft in the sidebar, and sending one navigates there.
+  const createDraft = useAppStore((s) => s.createDraft);
+  const updateDraft = useAppStore((s) => s.updateDraft);
+  const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
   // The live run rows, from the same `wf:run` stream the sidebar follows — an
   // `active` card reads its run's status off this rather than polling anything
   // of its own. Cheap: one list fetch and one subscription, both event-driven.
@@ -492,6 +500,12 @@ export function useRoadmap(repoPath: string) {
     [runs],
   );
 
+  /** Live review state for the board's `in_review` items, by item id — the CI
+   *  rollup, the merge gate, and the unresolved threads a card renders and acts
+   *  on. Polled here rather than in `gitSync` because a roadmap item has no
+   *  checkout to key that machinery by; see useItemReviews.ts. */
+  const { reviews, refreshReview } = useItemReviews(rows);
+
   /** The open decisions this board is waiting on the user for — paused runs and
    *  wedged items, as ordered cards. Derived from state this hook already holds,
    *  so a pause the queue hits shows up on the next `wf:run` with no polling of
@@ -803,6 +817,59 @@ export function useRoadmap(repoPath: string) {
     [guarded, upsert],
   );
 
+  // ── the review loop (in_review items) ──────────────────────────────
+  /** Merge an in-review item's PR from its card, when the gate allows it.
+   *
+   *  Deliberately does NOT ship the item: `in_review → done` keeps its single
+   *  writer, the merge sweep, because a merge call is a *request* and only
+   *  GitHub's answer is evidence it landed. The backend nudges the sweep right
+   *  after, so the row ships within a beat rather than sitting for a tick; the
+   *  card's own read is refreshed too, so the Merge button stops offering to
+   *  merge an already-merged PR in the meantime. */
+  const mergeItemPr = useCallback(
+    (id: string) =>
+      guarded(async () => {
+        await api.roadmapMergeItemPr(id);
+        await refreshReview(id);
+      }),
+    [guarded, refreshReview],
+  );
+
+  /** Hand a PR's unresolved review threads to a fresh agent, based on the PR's
+   *  own branch — the card's "Fix review feedback".
+   *
+   *  A plain draft, not a hand-off and not a delegation. No `agent_id` is
+   *  stamped: this item's builder is the run that opened the PR (and
+   *  `roadmap_hand_off_item` refuses in-review items for exactly that reason),
+   *  and the fix agent belongs to the pull request. The item stays `in_review`
+   *  and the sweep still rules on shipment; what changes is one durable `note` on
+   *  the trail, so "why is there a second agent on this branch" has an answer
+   *  after a reload.
+   *
+   *  The draft's base is the PR's head branch, so the agent forks from the PR
+   *  and its pushes update it. Without a head ref (a degraded read) the draft
+   *  keeps the project's default base and the user can still pick the branch on
+   *  the new-agent screen — worse, but not wrong.
+   *
+   *  Navigation happens last: a failed note write leaves the user on the board
+   *  with the error, holding a draft they can still send. */
+  const sendReviewFeedback = useCallback(
+    (item: RoadmapItem, review: RoadmapItemReview) =>
+      guarded(async () => {
+        const threads = review.comments?.unresolved ?? [];
+        const prompt = reviewFeedbackPrompt(item, threads);
+        // Same emptiness the card's button reads, so the two can't disagree.
+        if (!prompt) return;
+        const draftId = await createDraft(repoPath, prompt);
+        // `createDraft` already surfaced its own failure; don't double-report.
+        if (!draftId) return;
+        if (review.head_ref) updateDraft(draftId, { base: review.head_ref });
+        await api.roadmapNoteReviewFeedback(item.id, threads.length);
+        closeProjectScreen();
+      }),
+    [guarded, createDraft, updateDraft, closeProjectScreen, repoPath],
+  );
+
   // ── board interaction ──────────────────────────────────────────────
   /** Expand/collapse a card. `itemId` (when the caller holds the row) is what
    *  triggers the item's one-time history fetch — on every toggle rather than
@@ -907,6 +974,11 @@ export function useRoadmap(repoPath: string) {
     /** The board's open decisions, most-decidable-first — the "Needs you" strip.
      *  Empty when nothing is waiting, and the strip then renders nothing. */
     needsYou,
+    /** Live review state for `in_review` items, by item id — the merge gate the
+     *  card renders and the threads its fix action hands over. Absent for an item
+     *  whose read hasn't landed (or degraded), which the card draws as no gate
+     *  rather than as a clean one. */
+    reviews,
     /** Every code on this board, for the PM chat's code linkifier — exact
      *  matches only, because the prefix varies per project. */
     codes,
@@ -924,6 +996,8 @@ export function useRoadmap(repoPath: string) {
     unqueueItems,
     reclaimItem,
     markDone,
+    mergeItemPr,
+    sendReviewFeedback,
     holdItem,
     releaseItem,
     holdProject,

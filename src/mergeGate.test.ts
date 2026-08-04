@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { Mergeable, MergeState } from "@/api";
-import { describeMergeGate } from "@/mergeGate";
+import { describeMergeGate, type MergeGateSituation, mergeGateLabel } from "@/mergeGate";
 
 // No failing required checks unless a case says otherwise — the neutral context.
 const ctx = (mergeable: Mergeable, checksFailed = 0) => ({ checksFailed, mergeable });
@@ -107,5 +107,43 @@ describe("describeMergeGate — no checks data (mergeable-only fallback)", () =>
     for (const [state, mergeable] of conservative) {
       expect(describeMergeGate(state, ctx(mergeable)).mergeAllowed).toBe(false);
     }
+  });
+});
+
+// The terse phrasing moved here out of StatusHeader when the roadmap card became
+// its second consumer. These pin the two things a shared label owes both: every
+// situation says something (a missing arm is a chip rendering "undefined"), and
+// the branch-relative ones name a real branch — or the honest generic word for a
+// caller with no checkout to read one from.
+describe("mergeGateLabel", () => {
+  it("has a phrase for every situation", () => {
+    const situations: MergeGateSituation[] = [
+      "ready",
+      "mergeable-soft",
+      "checks-failing",
+      "review-required",
+      "behind",
+      "conflicts",
+      "draft",
+      "computing",
+      "no-conflicts",
+    ];
+    for (const s of situations) {
+      const label = mergeGateLabel(s, "main");
+      expect(label, s).toBeTruthy();
+      expect(label, s).not.toContain("undefined");
+    }
+  });
+
+  it("names the base branch on the two situations that are about it", () => {
+    expect(mergeGateLabel("behind", "main")).toBe("behind main");
+    expect(mergeGateLabel("conflicts", "develop")).toBe("conflicts with develop");
+  });
+
+  it("falls back to the generic word when the caller has no base branch", () => {
+    expect(mergeGateLabel("behind")).toBe("behind base");
+    expect(mergeGateLabel("conflicts")).toBe("conflicts with base");
+    // Everything else ignores the argument entirely.
+    expect(mergeGateLabel("ready")).toBe("ready to merge");
   });
 });

@@ -218,6 +218,50 @@ pub async fn pr_state_live(checkout: &Path, number: u32) -> Result<Option<PrStat
     Ok(Some(parse_pr_state_rest(&pr)))
 }
 
+/// Fetch one PR's branch pair (`head` → `base`) by number over conditional REST.
+///
+/// Third read of the same PR object [`pr_state_live`] and [`pr_checks_live`]
+/// already warm, and deliberately so: it is a `304` on the shared ETag, which
+/// GitHub does not bill, whereas threading two more strings through
+/// [`PrState`] would change a type six other surfaces persist. The two callers
+/// that need it hold a PR number without a checkout of its branch (the roadmap
+/// board), so there is no `git` answer to read instead.
+///
+/// `Ok(None)` on every degradation the other two share — backoff, no token,
+/// unresolvable slug, a PR the API won't serve — plus a PR whose refs came back
+/// empty, because an empty branch name is not a branch anything can fork from.
+pub async fn pr_refs_live(checkout: &Path, number: u32) -> Result<Option<PrRefs>> {
+    if client::is_backing_off() {
+        return Ok(None);
+    }
+    let Some((owner, repo)) = resolve_slug(checkout, None).await else {
+        return Ok(None);
+    };
+    // Background poll path: not being connected is a normal state, not an error.
+    let Ok(client) = client::Client::new() else {
+        return Ok(None);
+    };
+    let (status, pr) = client
+        .rest_get_conditional(&format!("/repos/{owner}/{repo}/pulls/{number}"))
+        .await?;
+    if !status.is_success() {
+        return Ok(None);
+    }
+    Ok(parse_pr_refs(&pr))
+}
+
+/// The branch pair out of a REST pull-request object. `None` unless *both*
+/// refs are present and non-empty: a half-answer would have the card claim a
+/// base it doesn't know, or hand a fix agent an empty branch to fork from.
+pub(crate) fn parse_pr_refs(pr: &Value) -> Option<PrRefs> {
+    let head = pr["head"]["ref"].as_str().filter(|s| !s.is_empty())?;
+    let base = pr["base"]["ref"].as_str().filter(|s| !s.is_empty())?;
+    Some(PrRefs {
+        head: head.to_string(),
+        base: base.to_string(),
+    })
+}
+
 /// Fetch the merge gate + CI rollup for one **open** PR by number, over
 /// conditional REST.
 ///
@@ -332,6 +376,23 @@ mod tests {
             "number": 11, "state": "open", "merged": false, "mergeable": false
         }));
         assert_eq!(conflicting.mergeable, MergeableState::Conflicting);
+    }
+
+    /// The branch pair is all-or-nothing: a fix agent forked from an empty
+    /// `head` would silently branch off whatever the checkout was on, so a
+    /// half-answer must read as no answer.
+    #[test]
+    fn rest_refs_need_both_branches() {
+        let refs = parse_pr_refs(&json!({
+            "head": {"ref": "wf/thing-abc"}, "base": {"ref": "main"}
+        }))
+        .expect("both refs present");
+        assert_eq!(refs.head, "wf/thing-abc");
+        assert_eq!(refs.base, "main");
+
+        assert!(parse_pr_refs(&json!({"head": {"ref": ""}, "base": {"ref": "main"}})).is_none());
+        assert!(parse_pr_refs(&json!({"head": {"ref": "wf/x"}})).is_none());
+        assert!(parse_pr_refs(&json!({})).is_none());
     }
 
     /// A PR merged via the API can report `merged_at` without `merged:true`;

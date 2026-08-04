@@ -189,6 +189,16 @@ pub struct PrComments {
     pub unresolved: Vec<PrComment>,
 }
 
+/// A PR's branch pair. Read for callers that hold a PR number but no checkout
+/// of its branch — the roadmap board, whose items are built in disposable run
+/// repos: `head` is the branch a fix agent must fork from to work *on* the PR,
+/// and `base` is what the merge gate's "behind / conflicts with X" names.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrRefs {
+    pub head: String,
+    pub base: String,
+}
+
 /// The Git panel's fast-tick PR read: current state plus CI, both from
 /// ETag-conditional REST in one pass (see `github::live`). `checks` is
 /// `None` when the commit reads didn't resolve — distinct from a rollup of

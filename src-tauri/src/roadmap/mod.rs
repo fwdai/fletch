@@ -51,6 +51,11 @@
 //! [`review`] closes it a third time, upwards: every run the drainer settles is
 //! handed to the project-manager chat as a review turn, so the agent that wrote
 //! the brief is the agent that reads what came back.
+//!
+//! [`pr_review`] is the sweep's foreground half: while a board is on screen it
+//! answers the *review* questions about an `in_review` item's PR (CI, conflicts,
+//! unresolved threads) so the user can judge, merge, or send the feedback back
+//! to an agent without leaving the board.
 
 pub mod deps;
 pub mod drainer;
@@ -58,6 +63,7 @@ pub mod events;
 pub mod holds;
 pub mod merge_sweep;
 pub mod order;
+pub mod pr_review;
 pub mod proposals;
 pub mod review;
 pub mod store;
@@ -492,6 +498,103 @@ fn hand_off(
     )
     .map_err(|e| e.to_string())?;
     Ok((item, event))
+}
+
+/// One `in_review` item's live review state: the CI rollup, the unresolved
+/// review threads, and the PR's branch pair ([`pr_review`]).
+///
+/// Read-only and degrading by design. `None` means "there is nothing to read
+/// here" — the item isn't under review, has no PR number, or its project has no
+/// repo — and every *field* of a `Some` degrades independently, so a GraphQL
+/// budget that ran out leaves the CI rollup on screen. The board polls this
+/// while it is mounted; nothing here writes, emits, or nudges.
+#[tauri::command]
+pub async fn roadmap_item_review(
+    item_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<Option<pr_review::ItemReview>, String> {
+    // The lock is taken and dropped by `target`, before the network reads — a
+    // board-cadence poll must never hold the app's one connection across an
+    // HTTP round-trip.
+    let Some((repo, number)) = pr_review::target(&db, &item_id) else {
+        return Ok(None);
+    };
+    Ok(Some(pr_review::fetch(&repo, number).await))
+}
+
+/// Merge an `in_review` item's pull request, from its card.
+///
+/// The same host merge path the Git panel's Merge button takes
+/// ([`crate::github::pr_merge_number`] — auto-merge with the documented
+/// direct-merge fallback), addressed by number because the project's checkout is
+/// on its base branch, not on the PR's.
+///
+/// **This does not ship the item.** `in_review → done` has exactly one writer,
+/// the merge sweep, and that stays true (invariant 1): a merge is a request to
+/// GitHub, and only GitHub's answer is evidence it landed. What this does is
+/// [`merge_sweep::nudge`] afterwards, so the sweep asks within a beat instead of
+/// waiting out its two-minute tick — reality catches up in a moment rather than
+/// a coffee break, without anyone else learning to write `done`.
+#[tauri::command]
+pub async fn roadmap_merge_item_pr(
+    item_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<(), String> {
+    let (repo, number) = pr_review::target(&db, &item_id).ok_or(
+        "this item has no pull request to merge — it may have shipped or come back to the board",
+    )?;
+    // Loud on failure, unlike the read above: this is a click, and a refused
+    // merge (gate closed, no permission, revoked token) is the answer the user
+    // asked for. It lands on the board's error bar.
+    crate::github::pr_merge_number(&repo, number)
+        .await
+        .map_err(|e| e.to_string())?;
+    merge_sweep::nudge();
+    Ok(())
+}
+
+/// Record that this item's review feedback went to an agent — the durable half
+/// of "Fix review feedback" on an `in_review` card.
+///
+/// A `note`, not an `agent_id` stamp, and deliberately *not*
+/// [`roadmap_hand_off_item`]: that gate refuses anything past `open` because an
+/// item's builder is singular, and this item already has one (the run that
+/// opened the PR). The fix agent belongs to the *pull request*, not to the item,
+/// so the item's history gains a line and nothing else about it changes — it
+/// stays `in_review`, and the sweep still rules on shipment.
+#[tauri::command]
+pub async fn roadmap_note_review_feedback(
+    item_id: String,
+    threads: usize,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<ItemEvent, String> {
+    let event = {
+        let conn = db.lock();
+        let item = store::get(&conn, &item_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+        // Gated for the same reason the note is worth writing at all: it claims
+        // a PR was handed to an agent, and only an item under review has one.
+        if item.status != ItemStatus::InReview {
+            return Err(format!(
+                "{} is {} — only an item under review has feedback to send",
+                item.code,
+                item.status.as_str()
+            ));
+        }
+        events::record(
+            &conn,
+            &item.id,
+            &item.project_id,
+            EventActor::User,
+            EventKind::Note,
+            Some(&pr_review::feedback_detail(threads)),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    emit_item_event(&app, &event);
+    Ok(event)
 }
 
 // ───────────────────────────── holds ────────────────────────────────────

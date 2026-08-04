@@ -3,6 +3,7 @@ import { useState } from "react";
 import type {
   RoadmapItem,
   RoadmapItemEvent,
+  RoadmapItemReview,
   RoadmapProposal,
   RoadmapProposalPatch,
   WfRun,
@@ -15,6 +16,7 @@ import { pausedLabel } from "@/workflows/run/status";
 import { EVENT_LABEL, eventDetailUrl, eventLine } from "../itemHistory";
 import { buildProposalDiff, isEmptyDiff } from "../proposalDiff";
 import type { BoardItem, ItemSource, ItemStatus } from "../types";
+import { reviewGate } from "../useItemReviews";
 import { DecisionBar } from "./DecisionBar";
 import { HoldAction, HoldChip } from "./HoldControl";
 import type { CardDnd } from "./useBoardDnd";
@@ -81,6 +83,18 @@ interface Props {
    *  a revoked token, a deleted PR, a repo that left the project. In-review
    *  items only, and not read-only. */
   onMarkDone?: () => void;
+  /** This item's PR as GitHub currently sees it: the merge gate, the CI rollup,
+   *  and the unresolved review threads. Absent until the board's poll lands (or
+   *  when it degraded), which draws as no gate rather than a clean one — an
+   *  optimistic "ready to merge" is the one thing this surface must never
+   *  invent. */
+  review?: RoadmapItemReview;
+  /** Merge the PR. Passed only when the gate is open, so the card renders the
+   *  action's availability without re-deciding it. */
+  onMergePr?: () => void;
+  /** Hand the unresolved threads to a fresh agent on the PR's branch. Passed
+   *  only when there are threads to hand over. */
+  onFixReview?: () => void;
   /** Stop the queue from building this until it's released, with the reason asked
    *  for inline. Absent for a ghost (nothing is going to build a row nobody has
    *  accepted — rule on it first) and on a read-only board. */
@@ -148,6 +162,9 @@ export function ItemCard({
   onUnqueue,
   onReclaim,
   onMarkDone,
+  review,
+  onMergePr,
+  onFixReview,
   onHold,
   onRelease,
   onOpenRun,
@@ -347,6 +364,12 @@ export function ItemCard({
         <HoldChip reason={item.item.hold_reason} by={item.item.held_by} onRelease={onRelease} />
       )}
 
+      {/* What GitHub says about this item's PR right now. Outside the
+          collapsible body for the same reason the note is: "checks failing" is a
+          demand on the reader, and an item blocked behind red CI must not need an
+          expand to say so. Absent until the poll lands — never optimistic. */}
+      {review && item.status === "in_review" && <ReviewGate review={review} />}
+
       {/* Why a queued row isn't moving. Outside the collapsible body and
           outside the header button, like the ghostbar: an item that has stalled
           must say so without the user having to go looking for it. */}
@@ -457,6 +480,15 @@ export function ItemCard({
                   Take off the queue
                 </Button>
               )}
+              {/* The review loop's two levers, between reading the PR and
+                  shipping it. "Fix review feedback" first: it's the one that
+                  needs no judgment call — there are threads, they need
+                  answering. */}
+              {onFixReview && (
+                <Button variant="ghost" size="sm" onClick={onFixReview}>
+                  <Icon name="feedback" size={11} /> Fix review feedback
+                </Button>
+              )}
               {/* The one in-review state the merge sweep can't act on: a PR it
                   has a link to but no number for, so there is nothing to poll
                   (see merge_sweep.rs `pollable` — a number guessed off the URL
@@ -478,6 +510,16 @@ export function ItemCard({
                   <Icon name="check" size={11} /> Mark done
                 </Button>
               )}
+              {/* Only rendered when the gate is open — the board decides that
+                  from the same `mergeGate` verdict the chip above states, so a
+                  card can never offer a merge it just called blocked. The item
+                  does not become `done` here: the merge sweep sees the merge and
+                  ships the row, a beat later. */}
+              {onMergePr && (
+                <Button variant="primary" size="sm" onClick={onMergePr}>
+                  <Icon name="merge" size={11} /> Merge
+                </Button>
+              )}
               {/* The user's own brake, next to the button it stops. A secondary
                   action: most rows never need it, and the one that does needs a
                   reason more than it needs prominence. */}
@@ -491,6 +533,35 @@ export function ItemCard({
           </div>
           {events && events.length > 0 && <ItemHistory events={events} />}
         </div>
+      )}
+    </div>
+  );
+}
+
+/** The PR's gate, on the card: one situation chip in the shared vocabulary, plus
+ *  the counts that say how much work is behind it.
+ *
+ *  The chip's words and severity both come from `mergeGate.ts` — the same verdict
+ *  the Git panel's header renders — so the two surfaces can never describe one PR
+ *  differently. The counts are only drawn when nonzero: "0 unresolved threads" is
+ *  noise, and their absence is the good news. */
+function ReviewGate({ review }: { review: RoadmapItemReview }) {
+  const gate = reviewGate(review);
+  return (
+    <div className="rm-gate flex-center text-xs">
+      <span className={`rm-gate-s iflex-center tone-${gate.tone}`}>
+        <Icon name="pr" size={11} />
+        {gate.label}
+      </span>
+      {gate.failing > 0 && (
+        <span className="rm-gate-n iflex-center mono">
+          {gate.failing} {gate.failing === 1 ? "check" : "checks"} failing
+        </span>
+      )}
+      {gate.threads > 0 && (
+        <span className="rm-gate-n iflex-center mono">
+          {gate.threads} unresolved {gate.threads === 1 ? "thread" : "threads"}
+        </span>
       )}
     </div>
   );

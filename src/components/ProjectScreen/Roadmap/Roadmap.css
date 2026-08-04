@@ -1266,6 +1266,62 @@ button.rm-hist-h:hover {
   text-wrap: pretty;
 }
 
+/* ── the review gate ──
+   What GitHub says about an in-review item's PR. Between the header and the body
+   like the note, and for the same reason: "checks failing" is a demand on the
+   reader, so it must be legible collapsed.
+
+   Neutral surface, tinted chip. The bar itself carries no colour because two of
+   the four tones (info, ready) are not demands and a full-width tint for them
+   would shout as loudly as a real blocker; the situation chip carries the
+   severity, and the counts beside it stay quiet numbers. `tone-*` is the shared
+   `MergeGateTone` verbatim (see mergeGate.ts) — the class is the tone, so a new
+   tone would show up here as an untinted chip rather than a wrong one. */
+.rm-gate {
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--bd-soft);
+  background: var(--bg-3);
+}
+.rm-gate-s,
+.rm-gate-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 18px;
+  flex-shrink: 0;
+  line-height: var(--lh-none);
+  white-space: nowrap;
+}
+.rm-gate-s {
+  padding: 0 8px;
+  font-weight: 500;
+  border-radius: 999px;
+  color: var(--fg-2);
+  background: var(--bg-2);
+}
+.rm-gate-s.tone-ready {
+  color: var(--success);
+  background: color-mix(in oklch, var(--success), transparent 88%);
+}
+.rm-gate-s.tone-warn {
+  color: var(--warn);
+  background: color-mix(in oklch, var(--warn), transparent 88%);
+}
+.rm-gate-s.tone-attention {
+  color: var(--att);
+  background: color-mix(in oklch, var(--att), transparent 88%);
+}
+.rm-gate-s.tone-info {
+  color: var(--info);
+  background: color-mix(in oklch, var(--info), transparent 88%);
+}
+/* The counts. Drawn only when nonzero, so their absence is the good news. */
+.rm-gate-n {
+  color: var(--fg-2);
+}
+
 /* A held row: the queue will not build this until someone releases it. The queue
    note's band, one step stronger (a solid warn rule, not a hint), because unlike
    a note this is not a condition that resolves itself — it is waiting on the
