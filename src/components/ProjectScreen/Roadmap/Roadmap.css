@@ -692,6 +692,108 @@
   margin-top: 4px;
 }
 
+/* ── the "In flight" rail ──
+   What the pipeline is doing, directly under what it needs. Same band grammar as
+   the "Needs you" strip above it (a flat row per item, the header's mono label,
+   the gutter alignment) but read as neutral: nothing here is a demand, so the
+   ground is the plain surface tint and the only colour is the state chip. That
+   contrast is the point — the two strips sit together and must not look like the
+   same kind of thing. */
+.rm-rail {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--bd-soft);
+}
+.rm-rail-h {
+  gap: 10px;
+  padding: 7px 10px 4px var(--rm-gut);
+}
+.rm-rail-n {
+  gap: 5px;
+  font-weight: 600;
+  color: var(--fg-2);
+}
+.rm-rail-hint {
+  min-width: 0;
+  color: var(--fg-3);
+}
+/* One in-flight item. A button, because its one gesture is the jump to its card
+   — the same navigation the decision strip's item gives. */
+.rm-rail-e {
+  gap: 8px;
+  min-height: 24px;
+  padding: 2px 10px 2px var(--rm-gut);
+  font-size: 11.5px;
+  color: var(--fg-1);
+  text-align: left;
+  transition: var(--transition-ui);
+}
+.rm-rail-e:last-child {
+  margin-bottom: 6px;
+}
+.rm-rail-e:hover {
+  background: var(--hover);
+}
+.rm-rail-glyph {
+  flex-shrink: 0;
+  color: var(--info);
+}
+/* Takes the slack, the way the card's own title does — so the state chip and the
+   clock sit hard against the right edge without a spacer element. */
+.rm-rail-title {
+  flex: 1;
+  min-width: 0;
+}
+.rm-rail-e:hover .rm-rail-title {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* The state chip, drawn exactly like the card's gate chip — `tone-*` is the
+   shared `MergeGateTone` (see mergeGate.ts), so an unknown tone renders untinted
+   rather than wrong. */
+.rm-rail-s {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  gap: 4px;
+  height: 18px;
+  padding: 0 8px;
+  line-height: var(--lh-none);
+  white-space: nowrap;
+  font-weight: 500;
+  border-radius: 999px;
+  color: var(--fg-2);
+  background: var(--bg-2);
+}
+.rm-rail-s.tone-ready {
+  color: var(--success);
+  background: color-mix(in oklch, var(--success), transparent 88%);
+}
+.rm-rail-s.tone-warn {
+  color: var(--warn);
+  background: color-mix(in oklch, var(--warn), transparent 88%);
+}
+.rm-rail-s.tone-attention {
+  color: var(--att);
+  background: color-mix(in oklch, var(--att), transparent 88%);
+}
+.rm-rail-s.tone-info {
+  color: var(--info);
+  background: color-mix(in oklch, var(--info), transparent 88%);
+}
+/* How long the run has been at it. Tabular, so a column of them doesn't jitter
+   as the minute clock ticks. */
+.rm-rail-age {
+  flex-shrink: 0;
+  min-width: 26px;
+  text-align: right;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── the project hold banner ──
    The whole board is stopped. The strip's grammar (warn ground, one accent line,
    an action on the right) rather than the proposal bars' accent: a hold is
