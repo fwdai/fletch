@@ -27,6 +27,15 @@
 //! 2. **Dispatches** at most one queued item ([`pick_next`]), if the project is
 //!    under [`MAX_CONCURRENT_ROADMAP_RUNS`] live roadmap-dispatched runs.
 //!
+//! # Holds
+//!
+//! A hold ([`super::holds`]) is the brake on step 2 only. A held item is never
+//! claimed ([`dispatchable`]) and a held project dispatches nothing at all
+//! ([`plan_and_claim`]) — but step 1 keeps running under either, because settling
+//! is not autonomy: it is the app noticing that a run it already started has
+//! finished. Refusing to reflect that would leave an `active` card lying about a
+//! run that ended hours ago, which is the opposite of what a brake is for.
+//!
 //! An item settled into `in_review` leaves the drainer's world entirely —
 //! `projects_with_work` only looks at `queued`/`active`, so a board waiting on
 //! reviews is inert here. [`super::merge_sweep`] owns it from there and hands it
@@ -77,7 +86,7 @@ use tokio::sync::Notify;
 use super::events::{self, EventActor, EventKind, ItemEvent, TrailEntry};
 use super::review;
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
-use super::{deps, emit_item, emit_item_event, store, Db};
+use super::{deps, emit_item, emit_item_event, holds, store, Db};
 use crate::workflow::spec::{self, Spec};
 use crate::workflow::types::RunStatus;
 
@@ -182,11 +191,49 @@ pub(crate) fn unsatisfied_deps(
         .collect()
 }
 
+/// The queue, out of a whole board: the `queued` items this tick may actually
+/// claim, in the order the board draws them.
+///
+/// Three rows are queued and still not dispatchable, for reasons that are not
+/// about priority or dependencies, so they are filtered out before [`pick_next`]
+/// ever sees them — otherwise the head of the queue would be an item nothing can
+/// launch, and every ready item behind it would wait on a decision that isn't
+/// coming:
+///
+/// - Not `queued` at all. The queue *is* the status (see the module docs).
+/// - Handed to a named agent by hand (`agent_id`). The hand-off is its dispatch,
+///   so claiming it would put two builders on one brief. The hand-off command
+///   refuses `queued`+ rows and the card hides Queue on handed-off ones; this is
+///   the belt to those braces, and it holds even for a row a typed command
+///   queued directly.
+/// - **Held** ([`super::holds`]). The reason is on the row, the card says it, and
+///   the user is the only one who can lift it. Same shape as the agent-linked
+///   skip on purpose: a hold is a fact about the row, not a state of the queue,
+///   so it is filtered here rather than encoded as a [`Decision`] — the queue is
+///   not "blocked", this row is simply not in it. Dependants of a held item stop
+///   too, without any extra logic: they wait on a code that will not reach `done`
+///   while the hold stands.
+///
+/// Pure over a board snapshot, so both skips are unit-testable without a
+/// database. **When autoqueue lands (B3, see .context/roadmap-pm-plan.md), it
+/// must dispatch through this filter and the project check in
+/// [`plan_and_claim`]** — a dial that moves `open → queued` on accept would
+/// otherwise walk straight past both brakes, which is exactly the mode holds
+/// exist to make safe.
+pub(crate) fn dispatchable(items: &[RoadmapItem]) -> Vec<RoadmapItem> {
+    items
+        .iter()
+        .filter(|i| i.status == ItemStatus::Queued && i.agent_id.is_none() && !i.is_held())
+        .cloned()
+        .collect()
+}
+
 /// Pick the highest-priority queued item whose dependencies have all landed.
 ///
-/// `queued` must be in *rank* order — the DAO lists by `rank, created_at, rowid`
-/// (0032), which is exactly the order the board draws, so the item the user
-/// dragged to the top is the item this dispatches. An item with unsatisfied deps
+/// `queued` is [`dispatchable`]'s output: in *rank* order — the DAO lists by
+/// `rank, created_at, rowid` (0032), which is exactly the order the board draws,
+/// so the item the user dragged to the top is the item this dispatches — and
+/// already stripped of the rows nothing may claim. An item with unsatisfied deps
 /// is *skipped*, never failed — its turn comes when the thing it waits on lands.
 pub(crate) fn pick_next(
     queued: &[RoadmapItem],
@@ -715,7 +762,28 @@ fn claim_next(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) -> O
 /// runs, pick, resolve, and claim. No `.await`, no emits — so the read the
 /// decision is made on and the write that acts on it cannot be interleaved with
 /// another writer (the app has one connection behind one mutex).
+///
+/// The project hold is the first thing checked, and it is checked *here* rather
+/// than in the tick so that settlement is unaffected: the tick settles before it
+/// calls this, so a held board still reflects the runs it already started
+/// (see the module docs — settling is not autonomy). A held project says nothing
+/// on the cards either: the reason is one banner above the board, and repeating
+/// it per row would be the same sentence five times. **Autoqueue (B3) must come
+/// through this function**, or it would dispatch straight past this check.
 fn plan_and_claim(conn: &Connection, project_id: &str) -> Claim {
+    match holds::get_project(conn, project_id) {
+        Ok(Some(hold)) => {
+            tracing::debug!(project_id, reason = %hold.reason, "roadmap drainer: project held");
+            return Claim::Nothing;
+        }
+        Ok(None) => {}
+        // A hold we can't read is not a licence to dispatch: the whole point is
+        // that the brake holds when nobody is watching.
+        Err(e) => {
+            tracing::warn!(project_id, error = %e, "roadmap drainer: cannot read the project hold");
+            return Claim::Nothing;
+        }
+    }
     let items = match store::list(conn, project_id) {
         Ok(items) => items,
         Err(e) => {
@@ -729,16 +797,9 @@ fn plan_and_claim(conn: &Connection, project_id: &str) -> Claim {
         .map(|i| i.code.clone())
         .collect();
     let known: HashSet<String> = items.iter().map(|i| i.code.clone()).collect();
-    // An item with an `agent_id` was handed to a specific agent by hand — the
-    // hand-off *is* its dispatch, so the queue must never put a second builder
-    // on it. The hand-off command refuses `queued`+ items and the card hides
-    // Queue on handed-off rows, so this filter is the belt to those braces:
-    // it holds even for a row a typed command queued directly.
-    let queued: Vec<RoadmapItem> = items
-        .iter()
-        .filter(|i| i.status == ItemStatus::Queued && i.agent_id.is_none())
-        .cloned()
-        .collect();
+    // What this tick may actually claim — see [`dispatchable`] for the three
+    // rows that are queued and still not in the queue.
+    let queued = dispatchable(&items);
 
     let live = live_run_count(conn, project_id);
     let item = match pick_next(&queued, live, &done, &known) {

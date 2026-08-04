@@ -33,6 +33,9 @@ fn item(code: &str, rank: f64) -> RoadmapItem {
         run_id: None,
         pr_url: None,
         pr_number: None,
+        hold_reason: None,
+        held_by: None,
+        held_at: None,
         created_at: 0,
         updated_at: 0,
     }
@@ -74,6 +77,56 @@ fn the_queue_follows_rank() {
 #[test]
 fn an_empty_queue_decides_nothing() {
     assert_eq!(pick_next(&[], 0, &codes(&[]), &codes(&[])), Decision::Empty);
+}
+
+// ───────────────────────────── what is in the queue ─────────────────────
+
+/// The three rows that are `queued` and still not claimable. Pure over a board
+/// snapshot, so the skips are pinned without a database — and so a future edit
+/// can't quietly drop one and leave the queue dispatching work it must not.
+#[test]
+fn a_held_a_handed_off_and_an_unqueued_row_are_not_in_the_queue() {
+    let ready = item("FLT-100", 1.0);
+
+    let mut held = item("FLT-101", 2.0);
+    held.hold_reason = Some("direction unclear".into());
+    held.held_by = Some(EventActor::Pm);
+    held.held_at = Some(1);
+    assert!(held.is_held());
+
+    let mut handed = item("FLT-102", 3.0);
+    handed.agent_id = Some("w1".into());
+
+    let mut open = item("FLT-103", 4.0);
+    open.status = ItemStatus::Open;
+
+    let board = vec![ready.clone(), held, handed, open];
+    assert_eq!(
+        dispatchable(&board)
+            .iter()
+            .map(|i| i.code.clone())
+            .collect::<Vec<_>>(),
+        vec![ready.code],
+        "only the plain queued row is claimable"
+    );
+}
+
+/// The one that matters most: a held item is skipped even when it is the head of
+/// the queue with every dependency landed — and the ready item behind it still
+/// goes. A hold stops one item, not the board (that is the project hold).
+#[test]
+fn a_held_head_is_skipped_and_the_next_item_still_dispatches() {
+    let mut held = item("FLT-100", 1.0);
+    held.hold_reason = Some("wrong scope".into());
+    let ready = item("FLT-101", 2.0);
+
+    let queue = dispatchable(&[held, ready]);
+    assert_eq!(queue.len(), 1);
+    assert_eq!(
+        pick_next(&queue, 0, &codes(&[]), &codes(&["FLT-100", "FLT-101"])),
+        Decision::Dispatch(0),
+    );
+    assert_eq!(queue[0].code, "FLT-101");
 }
 
 // ───────────────────────────── dependencies ─────────────────────────────
@@ -586,6 +639,77 @@ fn ordinary_dep_waiting_stays_transient() {
     assert!(events::list_for_item(&conn, &waiting.id)
         .unwrap()
         .is_empty());
+}
+
+// ───────────────────────────── holds ────────────────────────────────────
+
+/// How far this project's tick got, in one word. A queued item with no workflow
+/// resolves to a `Note` ("No workflow to run it under…"), which is *past* the
+/// queue selection — so it is the honest signal that the item was in the queue,
+/// without a `wf_definition` and a repo row to make a real claim possible.
+fn reached(conn: &Connection, project_id: &str) -> &'static str {
+    match plan_and_claim(conn, project_id) {
+        Claim::Nothing => "nothing",
+        Claim::Note { .. } => "in the queue",
+        Claim::Claimed(..) => "claimed",
+    }
+}
+
+#[test]
+fn a_held_project_dispatches_nothing_and_says_nothing_on_the_cards() {
+    // The board-wide brake. Not a note per row: the reason is one banner above
+    // the board, and repeating it on five cards would be the same sentence five
+    // times. Nothing is claimed and nothing is recorded — the hold row is
+    // already the durable record of why.
+    let conn = test_conn();
+    let ready = db_item(&conn, ItemStatus::Queued);
+    assert_eq!(
+        reached(&conn, "p1"),
+        "in the queue",
+        "unheld, it is dispatchable"
+    );
+
+    holds::hold_project(&conn, "p1", "re-planning the quarter", EventActor::Pm).unwrap();
+    assert_eq!(
+        reached(&conn, "p1"),
+        "nothing",
+        "a held project never reaches its queue at all"
+    );
+    assert_eq!(
+        store::get(&conn, &ready.id).unwrap().unwrap().status,
+        ItemStatus::Queued,
+        "the item keeps its place in the queue — a hold is not an unqueue"
+    );
+    assert!(
+        events::list_for_item(&conn, &ready.id).unwrap().is_empty(),
+        "a board-wide stop is not history about any one item"
+    );
+
+    // Released, the same board is dispatchable again: the brake was the only
+    // thing in the way.
+    assert!(holds::release_project(&conn, "p1").unwrap());
+    assert_eq!(reached(&conn, "p1"), "in the queue");
+}
+
+#[test]
+fn a_held_item_is_never_claimed_through_the_whole_decision() {
+    // The pure filter is pinned above; this is the same rule reached through the
+    // real read path, so nothing between the snapshot and the claim can put a
+    // held row back in play.
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Queued);
+    assert_eq!(reached(&conn, "p1"), "in the queue");
+
+    holds::hold_item(&conn, &it.id, "confirm the scope first", EventActor::Pm).unwrap();
+    assert_eq!(
+        reached(&conn, "p1"),
+        "nothing",
+        "a held item is not a blocked queue — it simply isn't in the queue"
+    );
+    assert_eq!(
+        store::get(&conn, &it.id).unwrap().unwrap().status,
+        ItemStatus::Queued
+    );
 }
 
 // ───────────────────────────── note dedup ───────────────────────────────

@@ -586,9 +586,13 @@ mod tests {
     fn the_migration_backfills_existing_rows_in_board_order() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        // Everything up to and including 0031 — the state a shipped install is
-        // in before this slice.
-        let before = crate::database::MIGRATIONS.len() - 1;
+        // Everything up to and including 0031 — the state a shipped install was
+        // in before the rank slice. Pinned by count rather than as "all but the
+        // last", so a migration added after 0032 doesn't quietly change which
+        // schema this test rebuilds (it would then apply 0032 itself, and there
+        // would be no backfill left to assert).
+        const BEFORE_RANK: usize = 31;
+        let before = BEFORE_RANK;
         Migrations::new(
             crate::database::MIGRATIONS[..before]
                 .iter()

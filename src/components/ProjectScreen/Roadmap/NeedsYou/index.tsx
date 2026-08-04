@@ -25,12 +25,19 @@ export function NeedsYou({
   cards,
   onFocusItem,
   onOpenRun,
+  onReleaseItem,
+  onReleaseProject,
 }: {
   cards: readonly NeedsCard[];
   /** Jump the board to an item by code — the hook's `focusItem`. */
   onFocusItem: (code: string) => void;
   /** Select a run and get out of the way — the card's "View run". */
   onOpenRun: (runId: string) => void;
+  /** Lift one item's hold. Absent on a read-only board, where the strip is a
+   *  report rather than a set of levers. */
+  onReleaseItem?: (itemId: string) => void;
+  /** Lift the board's hold. Absent for the same reason. */
+  onReleaseProject?: () => void;
 }) {
   const [reviewRunId, setReviewRunId] = useState<string | null>(null);
 
@@ -52,9 +59,15 @@ export function NeedsYou({
         <DecisionCard
           key={card.id}
           card={card}
-          onFocusItem={() => onFocusItem(card.code)}
+          onFocusItem={() => card.code && onFocusItem(card.code)}
           onOpenRun={() => card.runId && onOpenRun(card.runId)}
           onReview={() => card.runId && setReviewRunId(card.runId)}
+          // One prop for both scopes: which release this is follows from the
+          // card's reason, and the card should not have to know two callbacks.
+          onRelease={() => {
+            if (card.reason === "project-held") onReleaseProject?.();
+            else if (card.itemId) onReleaseItem?.(card.itemId);
+          }}
         />
       ))}
       {/* The same modal the review queue mounts: evidence from the run's

@@ -37,6 +37,27 @@ crate::db_enum! {
     }
 }
 
+impl ItemStatus {
+    /// May an ask against an item at this status still be ruled on?
+    ///
+    /// Anything from `active` on is being built or judged: its shape belongs to
+    /// the run now, and reshaping it mid-flight would make the PR answer a brief
+    /// nobody wrote. The one predicate both gates read — the PM-side refusal
+    /// (`rpc::roadmap::proposable`, which won't park an ask it knows the user
+    /// can't rule) and the ruling-side one (`roadmap::proposal_gate`, which
+    /// re-checks at click time because the board moves in between). They keep
+    /// their own message texts, because they are said to different readers; what
+    /// they must never disagree about is the *set*, which is here.
+    ///
+    /// A **hold** deliberately does not enter this predicate. A held item is
+    /// paused, not sealed: the whole reason to stop autonomous progress is
+    /// usually that the item's shape is wrong, so refusing the proposal that
+    /// would fix it would make the hold a dead end.
+    pub fn is_rulable(self) -> bool {
+        matches!(self, Self::Proposed | Self::Open | Self::Queued)
+    }
+}
+
 crate::db_enum! {
     /// Where the item came from. `user` is a hand-written row, `pm` came out of
     /// the roadmap conversation, the rest are imports.
@@ -78,6 +99,17 @@ pub struct RoadmapItem {
     pub run_id: Option<String>,
     pub pr_url: Option<String>,
     pub pr_number: Option<i64>,
+    /// Why autonomous progress on this item is stopped, or `None` when it isn't
+    /// (see [`super::holds`] and migration 0033). One hold at a time: a second
+    /// one replaces the reason, and the durable trail keeps both. Written only by
+    /// the hold commands and the PM's `roadmap_hold` op — deliberately absent
+    /// from [`ItemPatch`], so no generic edit can stop the queue by accident.
+    pub hold_reason: Option<String>,
+    /// Who applied the hold — the [`super::events::EventActor`] spelling, so
+    /// "who stopped this" reads the same on the row and in the trail. `Some`
+    /// exactly when `hold_reason` is.
+    pub held_by: Option<super::events::EventActor>,
+    pub held_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -90,7 +122,7 @@ pub struct RoadmapItem {
 /// (see .context/roadmap-pm-plan.md).
 pub(crate) const COLUMNS: &str = "id, project_id, code, parent_id, title, why, horizon, status, \
      rank, area, source, accept_json, deps_json, agent_id, workflow_def_id, run_id, \
-     pr_url, pr_number, created_at, updated_at";
+     pr_url, pr_number, hold_reason, held_by, held_at, created_at, updated_at";
 
 impl RoadmapItem {
     pub fn from_row(r: &Row) -> rusqlite::Result<Self> {
@@ -113,9 +145,20 @@ impl RoadmapItem {
             run_id: r.get("run_id")?,
             pr_url: r.get("pr_url")?,
             pr_number: r.get("pr_number")?,
+            hold_reason: r.get("hold_reason")?,
+            held_by: opt_enum_col(r, "held_by", super::events::EventActor::from_db)?,
+            held_at: r.get("held_at")?,
             created_at: r.get("created_at")?,
             updated_at: r.get("updated_at")?,
         })
+    }
+
+    /// Is autonomous progress on this item stopped? The one question the
+    /// drainer's queue filter, the card's chip and the strip's card all ask, so
+    /// they can't disagree about which of the three hold columns is load-bearing
+    /// (it is the reason: `held_by`/`held_at` are provenance).
+    pub fn is_held(&self) -> bool {
+        self.hold_reason.is_some()
     }
 }
 
@@ -250,6 +293,23 @@ fn strings_col(r: &Row, col: &str) -> rusqlite::Result<Vec<String>> {
 pub(crate) fn enum_col<T>(r: &Row, col: &str, parse: fn(&str) -> Option<T>) -> rusqlite::Result<T> {
     let raw: String = r.get(col)?;
     parse(&raw).ok_or_else(|| conversion_err(col, format!("unexpected value {raw:?}")))
+}
+
+/// Parse a *nullable* enum TEXT column. NULL reads as `None`; a value that
+/// doesn't parse is still an error, because a column holding a spelling no writer
+/// produces means the row is corrupt, not empty.
+pub(crate) fn opt_enum_col<T>(
+    r: &Row,
+    col: &str,
+    parse: fn(&str) -> Option<T>,
+) -> rusqlite::Result<Option<T>> {
+    let raw: Option<String> = r.get(col)?;
+    match raw.as_deref() {
+        None => Ok(None),
+        Some(s) => parse(s)
+            .map(Some)
+            .ok_or_else(|| conversion_err(col, format!("unexpected value {s:?}"))),
+    }
 }
 
 /// Serialize a string list for its `*_json` column. An empty list stores as

@@ -25,6 +25,8 @@ export const EVENT_LABEL: Record<RoadmapEventKind, string> = {
   shipped: "Shipped",
   abandoned: "Abandoned",
   blocked: "Blocked",
+  held: "Held",
+  released: "Released",
   note: "Note",
 };
 
