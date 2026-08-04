@@ -830,3 +830,107 @@ fn project_repo_agent_worktree_hierarchy() {
     assert_eq!(db_count(&conn, "workspaces", json!({})).unwrap(), 0);
     assert_eq!(db_count(&conn, "worktrees", json!({})).unwrap(), 0);
 }
+
+/// Schema version just before the dormant-column drop (0035) — the state an
+/// existing install upgrades from. Pinned like `V_WORKTREE_PRS`, for the same
+/// reason.
+const V_BEFORE_DORMANT_DROP: usize = 34;
+
+/// The dormant-column drop (0035) is a full table rebuild (SQLite can't DROP a
+/// column named in an FK constraint, which `parent_id` was). A rebuild has two
+/// ways to lose data that a plain ALTER doesn't: the copy can drop or reorder
+/// values, and the DROP/RENAME can sever the `REFERENCES roadmap_items` clauses
+/// other roadmap tables carry. Both are asserted against a row that populates
+/// every kept column *and* all three dropped ones.
+#[test]
+fn dormant_column_drop_preserves_rows_and_rebinds_references() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_BEFORE_DORMANT_DROP)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO roadmap_items
+                (id, project_id, code, parent_id, title, why, horizon, status, size, epic,
+                 rank, area, source, accept_json, deps_json, agent_id, workflow_def_id,
+                 run_id, pr_url, pr_number, hold_reason, held_by, held_at,
+                 created_at, updated_at)
+         VALUES ('i1', 'p', 'PRJ-100', NULL, 'the item', 'because', 'now', 'queued', 'M',
+                 'an epic', 12.5, 'auth', 'pm', '[\"a\",\"b\"]', '[\"PRJ-90\"]', 'ag1',
+                 'wf1', 'run1', 'https://x/1', 7, 'wait for signoff', 'pm', 111, 100, 200);
+         INSERT INTO roadmap_item_events
+                (id, item_id, project_id, actor, kind, detail, created_at)
+         VALUES ('e1', 'i1', 'p', 'pm', 'note', 'a durable line', 0);",
+    )
+    .unwrap();
+    drop(conn);
+
+    init(dir.path()).unwrap();
+
+    let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
+    // Every kept column survived the copy with its value.
+    let row: (String, String, f64, String, String, String, String, i64, String, i64) = conn
+        .query_row(
+            "SELECT code, title, rank, source, accept_json, deps_json, pr_url, pr_number,
+                    hold_reason, held_at
+               FROM roadmap_items WHERE id = 'i1' AND status = 'queued'",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(row.0, "PRJ-100");
+    assert_eq!(row.2, 12.5);
+    assert_eq!(row.4, "[\"a\",\"b\"]");
+    assert_eq!((row.7, row.8.as_str(), row.9), (7, "wait for signoff", 111));
+
+    // The dropped columns are gone from the schema, not merely unread.
+    for gone in ["size", "epic", "parent_id"] {
+        assert!(
+            conn.query_row(
+                &format!("SELECT {gone} FROM roadmap_items LIMIT 1"),
+                [],
+                |_| Ok(())
+            )
+            .is_err(),
+            "{gone} must not survive the rebuild"
+        );
+    }
+
+    // UNIQUE(project_id, code) crossed the rebuild.
+    assert!(conn
+        .execute(
+            "INSERT INTO roadmap_items (id, project_id, code, title, horizon, status,
+                                        created_at, updated_at)
+             VALUES ('i2', 'p', 'PRJ-100', 'dup', 'now', 'open', 0, 0)",
+            [],
+        )
+        .is_err());
+
+    // The rename re-bound the FK clauses pointing at the table: cascades still
+    // flow project → item → event, exactly as before the rebuild.
+    conn.execute("DELETE FROM projects WHERE id = 'p'", [])
+        .unwrap();
+    let (items, events): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM roadmap_items),
+                    (SELECT COUNT(*) FROM roadmap_item_events)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((items, events), (0, 0), "cascade must survive the rebuild");
+}

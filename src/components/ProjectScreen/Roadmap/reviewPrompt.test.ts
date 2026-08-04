@@ -7,7 +7,6 @@ function item(over: Partial<RoadmapItem> = {}): RoadmapItem {
     id: "i1",
     project_id: "p1",
     code: "FLT-142",
-    parent_id: null,
     title: "Say what the board is waiting on",
     why: "the why nobody should be re-litigating here",
     horizon: "now",

@@ -570,7 +570,6 @@ mod tests {
             id: "i1".into(),
             project_id: "p1".into(),
             code: "MCA-104".into(),
-            parent_id: None,
             title: "Add the queue drainer".into(),
             why: "queued items sit forever with nothing to launch them".into(),
             horizon: crate::roadmap::types::Horizon::Now,

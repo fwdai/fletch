@@ -8,7 +8,6 @@ function item(over: Partial<RoadmapItem> & { id: string }): RoadmapItem {
   return {
     project_id: "p1",
     code: `FLT-${over.id}`,
-    parent_id: null,
     title: `Item ${over.id}`,
     why: "",
     horizon: "later",

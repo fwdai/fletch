@@ -76,8 +76,6 @@ pub struct RoadmapItem {
     pub project_id: String,
     /// Short human id ("FLT-142"), unique per project and never reallocated.
     pub code: String,
-    /// Reserved for sub-items; always `None` today (no UI writes it).
-    pub parent_id: Option<String>,
     pub title: String,
     /// The one line that justifies the item's place on the board.
     pub why: String,
@@ -116,11 +114,7 @@ pub struct RoadmapItem {
 
 /// The columns every read selects, in one place so the row decoder and the
 /// queries can't disagree about what is available.
-///
-/// The table also carries `size` and `epic`, cut from every surface and left
-/// dormant until the cleanup migration that drops them alongside `parent_id`
-/// (see .context/roadmap-pm-plan.md).
-pub(crate) const COLUMNS: &str = "id, project_id, code, parent_id, title, why, horizon, status, \
+pub(crate) const COLUMNS: &str = "id, project_id, code, title, why, horizon, status, \
      rank, area, source, accept_json, deps_json, agent_id, workflow_def_id, run_id, \
      pr_url, pr_number, hold_reason, held_by, held_at, created_at, updated_at";
 
@@ -130,7 +124,6 @@ impl RoadmapItem {
             id: r.get("id")?,
             project_id: r.get("project_id")?,
             code: r.get("code")?,
-            parent_id: r.get("parent_id")?,
             title: r.get("title")?,
             why: r.get("why")?,
             horizon: enum_col(r, "horizon", Horizon::from_db)?,
