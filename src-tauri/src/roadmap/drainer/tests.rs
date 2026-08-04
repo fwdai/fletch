@@ -133,6 +133,70 @@ fn a_held_head_is_skipped_and_the_next_item_still_dispatches() {
 
 // ───────────────────────────── dependencies ─────────────────────────────
 
+/// The dep gate's own definition of "landed": `done` and not held.
+#[test]
+fn a_held_done_item_is_not_a_landed_dependency() {
+    let mut shipped = item("FLT-100", 1.0);
+    shipped.status = ItemStatus::Done;
+    let mut shipped_but_held = item("FLT-101", 2.0);
+    shipped_but_held.status = ItemStatus::Done;
+    shipped_but_held.hold_reason = Some("we agreed something else".into());
+    // Not done at all, held or otherwise.
+    let mut open = item("FLT-102", 3.0);
+    open.status = ItemStatus::Open;
+    let mut held_open = item("FLT-103", 4.0);
+    held_open.status = ItemStatus::Open;
+    held_open.hold_reason = Some("direction".into());
+
+    assert_eq!(
+        done_codes(&[shipped, shipped_but_held, open, held_open]),
+        codes(&["FLT-100"]),
+        "a held item satisfies nobody's dependency, however it got to done"
+    );
+}
+
+/// Review finding B2, as the dispatch decision sees it: the sweep shipped a held
+/// item because its PR merged (which is reality, and correct), and the dependant
+/// behind it must *still* be blocked. Before `done_codes` this dispatched.
+#[test]
+fn a_dependant_of_a_held_done_item_stays_blocked() {
+    let mut dep = item("FLT-100", 1.0);
+    dep.status = ItemStatus::Done;
+    dep.hold_reason = Some("we agreed something else".into());
+    dep.held_by = Some(EventActor::Pm);
+    let mut dependant = item("FLT-101", 2.0);
+    dependant.deps = vec!["FLT-100".into()];
+
+    let board = vec![dep.clone(), dependant.clone()];
+    let known = codes(&["FLT-100", "FLT-101"]);
+    let queue = dispatchable(&board);
+    assert_eq!(queue.len(), 1, "only the dependant is queued");
+    assert_eq!(
+        pick_next(&queue, 0, 1, &done_codes(&board), &known),
+        Decision::Blocked {
+            item_id: "id-FLT-101".into(),
+            waiting_on: vec!["FLT-100".into()],
+        },
+        "the hold survived onto the done row, so the work behind it waits"
+    );
+
+    // Release the hold and the same board dispatches — the hold was the only
+    // thing in the way, and the user lifting it is what lets the queue move.
+    dep.hold_reason = None;
+    dep.held_by = None;
+    let released = vec![dep, dependant];
+    assert_eq!(
+        pick_next(
+            &dispatchable(&released),
+            0,
+            1,
+            &done_codes(&released),
+            &known
+        ),
+        Decision::Dispatch(0)
+    );
+}
+
 #[test]
 fn a_done_dependency_lets_an_item_through() {
     let mut it = item("FLT-101", 10.0);
@@ -527,16 +591,13 @@ fn a_lost_run_releases_its_item_back_to_the_board() {
     // tokens all night. Re-queueing is the user's call, once they know why.
     assert_eq!(
         settle(Some(RunStatus::Failed), None),
-        Settlement::Released("its run failed")
+        Settlement::Released(RUN_FAILED)
     );
     assert_eq!(
         settle(Some(RunStatus::Canceled), None),
-        Settlement::Released("its run was canceled")
+        Settlement::Released(RUN_CANCELED)
     );
-    assert_eq!(
-        settle(None, None),
-        Settlement::Released("its run was deleted")
-    );
+    assert_eq!(settle(None, None), Settlement::Released(RUN_DELETED));
 }
 
 // ───────────────────────────── crash recovery ───────────────────────────
@@ -623,8 +684,99 @@ fn each_settlement_names_its_event() {
     );
     // The durable detail is the same reason string the transient note wraps.
     assert_eq!(
-        settlement_event(&Settlement::Released("its run failed"), None),
-        Some((EventKind::RunFailed, Some("its run failed".to_string())))
+        settlement_event(&Settlement::Released(RUN_FAILED), None),
+        Some((EventKind::RunFailed, Some(RUN_FAILED.to_string())))
+    );
+}
+
+/// A run the user *cancelled* is not a failing run, and neither is one whose row
+/// somebody deleted. All three used to land as `run_failed`, so three deliberate
+/// cancellations read as a failing pattern — the exact signal the PM's
+/// instructions tell it to hold an item over.
+#[test]
+fn each_way_a_run_ends_names_its_own_fact() {
+    assert_eq!(release_kind(RUN_FAILED), EventKind::RunFailed);
+    assert_eq!(release_kind(RUN_CANCELED), EventKind::RunCanceled);
+    assert_eq!(release_kind(RUN_DELETED), EventKind::RunDeleted);
+    // Nothing ran, and not because anyone decided so: these are failures of the
+    // attempt, and the card should show them as such.
+    assert_eq!(release_kind(RUN_NEVER_STARTED), EventKind::RunFailed);
+    assert_eq!(release_kind(RUN_UNLAUNCHABLE), EventKind::RunFailed);
+    // A reason this mapping has not been taught shows as a failure rather than
+    // vanishing: the reason string is the detail either way.
+    assert_eq!(release_kind("something new"), EventKind::RunFailed);
+
+    // End to end from the run's own status, which is where the flattening was
+    // visible: the same three statuses now produce three kinds.
+    for (status, kind) in [
+        (RunStatus::Failed, EventKind::RunFailed),
+        (RunStatus::Canceled, EventKind::RunCanceled),
+    ] {
+        let (got, _) = settlement_event(&settle(Some(status), None), None).expect("an ending");
+        assert_eq!(got, kind, "{status:?}");
+    }
+    let (deleted, detail) = settlement_event(&settle(None, None), None).expect("an ending");
+    assert_eq!(deleted, EventKind::RunDeleted);
+    assert_eq!(detail.as_deref(), Some(RUN_DELETED));
+}
+
+/// The row half of the same projection, paired with the event half over the same
+/// inputs — one ending, one answer, rather than an open-coded patch per caller.
+#[test]
+fn each_settlement_names_its_patch() {
+    let with_pr = pr(Some(42));
+
+    let review = settlement_patch(&Settlement::InReview, Some(&with_pr));
+    assert_eq!(review.status, Some(ItemStatus::InReview));
+    // Copied onto the item so the sweep never has to join back to the run.
+    assert_eq!(review.pr_url, Some(Some(with_pr.url.clone())));
+    assert_eq!(review.pr_number, Some(Some(42)));
+
+    assert_eq!(
+        settlement_patch(&Settlement::Done, None).status,
+        Some(ItemStatus::Done)
+    );
+
+    // Back to the board, never to `queued` — and the run link is dropped so a
+    // re-queue dispatches a fresh run instead of settling against the old one.
+    let released = settlement_patch(&Settlement::Released(RUN_CANCELED), None);
+    assert_eq!(released.status, Some(ItemStatus::Open));
+    assert_eq!(released.run_id, Some(None));
+
+    // `Running` is not an ending: it patches nothing, and the one caller that can
+    // see it repairs the link itself.
+    let running = settlement_patch(&Settlement::Running, None);
+    assert_eq!(running.status, None);
+    assert_eq!(running.run_id, None);
+}
+
+/// The settlement projection has to be **total** over the ways an item leaves
+/// `active`, which is what makes the launch failure route through the same
+/// `patch → event → review` sequence as everything else. It used to be a second
+/// ending open-coded beside the first, with no review turn — so the one failure
+/// the PM never heard about was the one where nothing ran at all.
+#[test]
+fn a_launch_that_never_started_is_an_ending_like_any_other() {
+    let ending = Settlement::Released(RUN_UNLAUNCHABLE);
+
+    // The same hand-back to the board every release performs.
+    let patch = settlement_patch(&ending, None);
+    assert_eq!(patch.status, Some(ItemStatus::Open));
+    assert_eq!(patch.run_id, Some(None));
+
+    // The same durable line, of the honest kind: nothing ran, and not by anyone's
+    // choice, so this one *is* a failure.
+    let (kind, detail) = settlement_event(&ending, None).expect("an ending records");
+    assert_eq!(kind, EventKind::RunFailed);
+    assert_eq!(detail.as_deref(), Some(RUN_UNLAUNCHABLE));
+
+    // And the same review turn — the half that was missing. (`conclude` overrides
+    // the detail with the launcher's own error; the kind and the review come from
+    // the projection, which is what keeps the two endings from drifting.)
+    assert_eq!(
+        review::outcome_for(&ending, None),
+        Some(review::Outcome::Failed(RUN_UNLAUNCHABLE.to_string())),
+        "every way out of `active` reaches the PM"
     );
 }
 
@@ -756,6 +908,44 @@ fn a_conditional_verdict_that_misses_records_nothing() {
 
 // ───────────────────────────── wedged queues ────────────────────────────
 
+/// A valid stored spec, so a test can get *past* the workflow-resolution wedge to
+/// whatever the queue is stuck on next. Built through the real types rather than
+/// hand-written JSON so it cannot quietly drift out of validity — `definition_spec`
+/// runs the same `spec::validate` the save path does.
+fn minimal_spec() -> String {
+    use crate::workflow::spec::{AgentSpec, Block, Gate, Step};
+    let mut agents = std::collections::BTreeMap::new();
+    agents.insert(
+        "coder".to_string(),
+        AgentSpec {
+            base: "claude".into(),
+            model: None,
+            effort: None,
+            instructions: None,
+            skills: vec![],
+            mcp_servers: vec![],
+            custom_agent: None,
+        },
+    );
+    serde_json::to_string(&Spec {
+        version: 1,
+        name: "t".into(),
+        description: None,
+        budgets: None,
+        agents,
+        workflow: vec![Block::Step(Step {
+            id: "build".into(),
+            agent: "coder".into(),
+            goal: "do it".into(),
+            gate: Gate::Verdict,
+            budgets: None,
+            comms: vec![],
+        })],
+        finalize: None,
+    })
+    .unwrap()
+}
+
 /// Give `item` a dep list, straight through the DAO — the write paths refuse a
 /// loop now, so a board that has one is built by hand here.
 fn set_deps(conn: &Connection, item: &RoadmapItem, codes: &[&str]) {
@@ -813,6 +1003,103 @@ fn a_wedged_queue_head_records_one_blocked_event_not_one_per_tick() {
     assert_eq!(events::list_for_item(&conn, &a.id).unwrap().len(), 1);
 }
 
+/// The partition, over every condition this function can reach: *standing*
+/// blockages are durable, and the one self-resolving condition is not.
+///
+/// Each of the three below used to be a transient note only — emitted at most once
+/// per row version per process lifetime, into UI state nothing persists. A queued
+/// item in a project with no repo said its piece once and then wedged in silence
+/// forever, which is precisely the shape invariant 3 exists to forbid.
+#[test]
+fn every_standing_blockage_is_durable_not_just_the_dependency_loop() {
+    // A queued item with no workflow anywhere: the first standing condition past
+    // dep selection.
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Queued);
+
+    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a note about the wedged item");
+    };
+    assert!(text.contains("No workflow"), "{text}");
+    let event = recorded.expect("a blockage that never resolves is durable");
+    assert_eq!(event.kind, EventKind::Blocked);
+    assert_eq!(event.actor, EventActor::Drainer);
+    assert_eq!(
+        event.detail.as_deref(),
+        Some(text.as_str()),
+        "one reason string for both channels"
+    );
+
+    // …and once, not once a tick — same dedup the dependency loop gets.
+    let Claim::Note { recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a note");
+    };
+    assert!(
+        recorded.is_none(),
+        "a durable line must not repeat per tick"
+    );
+    assert_eq!(events::list_for_item(&conn, &it.id).unwrap().len(), 1);
+
+    // Give the project a workflow and the wedge moves on to the next standing
+    // condition: no repo to run in. A *different* line, so it is news again.
+    conn.execute(
+        "INSERT INTO wf_definition (id, name, spec_json, created_at, updated_at)
+         VALUES ('wf-1', 'Build', ?1, 0, 0)",
+        rusqlite::params![minimal_spec()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_settings (project_id, key, value) VALUES ('p1', ?1, 'wf-1')",
+        rusqlite::params![DEFAULT_WORKFLOW_KEY],
+    )
+    .unwrap();
+
+    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a note about the missing repo");
+    };
+    assert!(text.contains("no repo"), "{text}");
+    let event = recorded.expect("a project with no repo is not going to grow one by itself");
+    assert_eq!(event.detail.as_deref(), Some(text.as_str()));
+
+    // Two standing lines, in the order they were reached — the trail is the record
+    // of what the queue has been stuck on, which is what the "Needs you" strip and
+    // the PM both read.
+    let trail = events::list_for_item(&conn, &it.id).unwrap();
+    assert_eq!(trail.len(), 2);
+    assert!(trail[0].detail.as_deref().unwrap().contains("no repo"));
+    assert!(trail[1].detail.as_deref().unwrap().contains("No workflow"));
+}
+
+/// An unparseable stored spec is the third standing condition: `launch` would
+/// refuse it, so the queue can never get past it on its own.
+#[test]
+fn an_invalid_workflow_spec_wedges_durably() {
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Queued);
+    conn.execute(
+        "INSERT INTO wf_definition (id, name, spec_json, created_at, updated_at)
+         VALUES ('wf-bad', 'Broken', '{\"nope\":1}', 0, 0)",
+        [],
+    )
+    .unwrap();
+    store::update(
+        &conn,
+        &it.id,
+        &ItemPatch {
+            workflow_def_id: Some(Some("wf-bad".into())),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a note about the invalid spec");
+    };
+    assert!(text.contains("missing or no longer valid"), "{text}");
+    let event = recorded.expect("an invalid spec does not fix itself");
+    assert_eq!(event.kind, EventKind::Blocked);
+}
+
 #[test]
 fn ordinary_dep_waiting_stays_transient() {
     // The dependency is real work that hasn't landed yet — it will, and then
@@ -860,6 +1147,10 @@ fn a_held_project_dispatches_nothing_and_says_nothing_on_the_cards() {
         "in the queue",
         "unheld, it is dispatchable"
     );
+    // Whatever that pass wrote about the row (it reached the no-workflow wedge, a
+    // standing blockage, so it wrote one `blocked` line) is the baseline: what the
+    // *hold* must add to is nothing.
+    let before = events::list_for_item(&conn, &ready.id).unwrap();
 
     holds::hold_project(&conn, "p1", "re-planning the quarter", EventActor::Pm).unwrap();
     assert_eq!(
@@ -872,8 +1163,9 @@ fn a_held_project_dispatches_nothing_and_says_nothing_on_the_cards() {
         ItemStatus::Queued,
         "the item keeps its place in the queue — a hold is not an unqueue"
     );
-    assert!(
-        events::list_for_item(&conn, &ready.id).unwrap().is_empty(),
+    assert_eq!(
+        events::list_for_item(&conn, &ready.id).unwrap(),
+        before,
         "a board-wide stop is not history about any one item"
     );
 
@@ -881,6 +1173,118 @@ fn a_held_project_dispatches_nothing_and_says_nothing_on_the_cards() {
     // thing in the way.
     assert!(holds::release_project(&conn, "p1").unwrap());
     assert_eq!(reached(&conn, "p1"), "in the queue");
+}
+
+/// The transitive half, through the real read path: an item that is `done` *and*
+/// held keeps the work behind it waiting. Before this the dependant dispatched.
+#[test]
+fn the_whole_decision_keeps_a_held_done_items_dependants_waiting() {
+    let conn = test_conn();
+    let dep = db_item(&conn, ItemStatus::Done);
+    let dependant = db_item(&conn, ItemStatus::Queued);
+    set_deps(&conn, &dependant, &[&dep.code]);
+
+    // Unheld, the dependency is satisfied: the tick gets past dep selection all
+    // the way to resolving a workflow (which this bare test board has none of).
+    let Claim::Note { text, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected the dependant to be picked");
+    };
+    assert!(
+        text.contains("No workflow"),
+        "a done dependency lets it through: {text}"
+    );
+
+    holds::hold_item(&conn, &dep.id, "we agreed something else", EventActor::Pm).unwrap();
+    let Claim::Note {
+        item,
+        text,
+        recorded,
+    } = plan_and_claim(&conn, "p1", 1)
+    else {
+        panic!("expected a note about the waiting dependant");
+    };
+    assert_eq!(item.id, dependant.id);
+    assert_eq!(
+        text,
+        format!("Waiting on {}", dep.code),
+        "the dependency is done, and held, so it does not count as landed"
+    );
+    assert!(
+        recorded.is_none(),
+        "waiting on a hold resolves when the user lifts it — nothing durable"
+    );
+}
+
+/// The sweep's nudge is a wake-up, not authority: the tick it wakes still goes
+/// through the project gate. So a PR merging on a held board moves nothing.
+#[test]
+fn a_project_hold_blocks_the_dispatch_a_merge_would_have_triggered() {
+    let conn = test_conn();
+    let dep = db_item(&conn, ItemStatus::Done);
+    let dependant = db_item(&conn, ItemStatus::Queued);
+    set_deps(&conn, &dependant, &[&dep.code]);
+    assert_eq!(reached(&conn, "p1"), "in the queue");
+
+    holds::hold_project(&conn, "p1", "re-planning the quarter", EventActor::User).unwrap();
+    assert_eq!(
+        reached(&conn, "p1"),
+        "nothing",
+        "the dependency landed, and the board is stopped anyway"
+    );
+    assert_eq!(
+        store::get(&conn, &dependant.id).unwrap().unwrap().status,
+        ItemStatus::Queued
+    );
+}
+
+/// The whole of review finding B2, end to end at the seam: a held item's PR merges
+/// outside the app, the sweep writes what GitHub said, and the work behind it does
+/// not move.
+#[test]
+fn a_sweep_that_ships_a_held_item_leaves_its_dependants_waiting() {
+    use crate::roadmap::merge_sweep::{self, Verdict};
+
+    let conn = test_conn();
+    let dep = db_item(&conn, ItemStatus::InReview);
+    let dependant = db_item(&conn, ItemStatus::Queued);
+    set_deps(&conn, &dependant, &[&dep.code]);
+    holds::hold_item(&conn, &dep.id, "we agreed something else", EventActor::Pm).unwrap();
+
+    // The sweep's `Landed` write, exactly as its task performs it: conditional on
+    // the row still being in review, with the line `event_for` pairs to it.
+    let (kind, detail) = merge_sweep::event_for(&Verdict::Landed, true).expect("a merge records");
+    let (row, event) = apply_and_record(
+        &conn,
+        &dep.id,
+        Some(ItemStatus::InReview),
+        &merge_sweep::patch_for(&Verdict::Landed).expect("a merge writes"),
+        EventActor::Sweep,
+        kind,
+        detail,
+    )
+    .unwrap()
+    .expect("a merged PR is a fact the board reflects");
+    assert_eq!(row.status, ItemStatus::Done, "the board reflects reality");
+    assert!(row.is_held(), "and the hold survives onto the done row");
+    assert_eq!(
+        event.detail.as_deref(),
+        Some(merge_sweep::SHIPPED_WHILE_HELD),
+        "the trail says why the items behind it are still queued"
+    );
+
+    let Claim::Note { item, text, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected the dependant to still be waiting");
+    };
+    assert_eq!(item.id, dependant.id);
+    assert_eq!(text, format!("Waiting on {}", dep.code));
+
+    // Released by the user, the same board dispatches what the merge unblocked.
+    holds::release_item(&conn, &dep.id).unwrap();
+    let Claim::Note { item, text, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected the dependant to be picked");
+    };
+    assert_eq!(item.id, dependant.id);
+    assert!(text.contains("No workflow"), "{text}");
 }
 
 #[test]

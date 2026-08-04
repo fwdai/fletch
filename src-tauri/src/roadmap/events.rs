@@ -10,10 +10,20 @@
 //! connection-lock scope as the item write it describes, and the frontend
 //! follows along on `roadmap:item-event`.
 //!
-//! What deliberately does *not* land here: the drainer's re-derived-every-tick
-//! conditions (waiting on deps, no workflow, no repo). Persisting one of those
-//! per tick would bury the transitions in noise; they stay on the transient
-//! `roadmap:queue-note` channel. Only failures and transitions persist.
+//! What deliberately does *not* land here is decided by one question — does the
+//! condition resolve itself? **Self-resolving** conditions stay on the transient
+//! `roadmap:queue-note` channel, and there is exactly one: waiting on a dependency
+//! that is still being built, which ends the moment that work lands. Persisting
+//! one of those per tick would bury the transitions in noise.
+//!
+//! Everything **standing** persists, as a `blocked` line written once
+//! ([`super::drainer::record_wedge`]): a dependency loop, a queued item with no
+//! workflow to run it under, an invalid stored spec, a project with no repo, a
+//! watched pull request that stopped answering. None of those ends without a human
+//! doing something, and a transient note is emitted at most once per row version
+//! *per process lifetime* — so before this partition existed, a queued item in a
+//! repo-less project wedged silently and forever (invariant 3 in
+//! .context/roadmap-pm-plan.md, review finding S1).
 //!
 //! Like `roadmap_items`, the table is absent from the generic CRUD allow-list:
 //! an event that didn't ride a typed write path could disagree with the
@@ -43,10 +53,22 @@ crate::db_enum! {
     /// What happened. One kind per transition, so a history line never has to
     /// re-derive meaning from a status pair.
     ///
+    /// **A kind names a fact, never a category of facts.** That rule is load-
+    /// bearing rather than tidy, because two readers act on these: the card, where
+    /// a wrong label is a wrong story, and the PM, which is instructed to hold an
+    /// item when it sees a failing pattern across runs. A user who cancels three
+    /// runs deliberately must not manufacture that pattern — so `run_canceled` and
+    /// `run_deleted` are their own kinds rather than three flavours of
+    /// `run_failed`, and a pull request closed unmerged is `pr_closed` (the fact)
+    /// rather than `abandoned` (a verdict on an item that is back on the board and
+    /// perfectly alive). See [`super::drainer::release_kind`] for the mapping and
+    /// .context/roadmap-pm-plan.md (review finding S1) for the argument.
+    ///
     /// No variant without a writer: `discarded` was declared and never written —
     /// discarding an item deletes the row (its history cascades away with it)
     /// and declining a PM proposal writes a `note` — so it is gone rather than
-    /// left as a kind the frontend must label and nothing produces.
+    /// left as a kind the frontend must label and nothing produces. `abandoned`
+    /// went the same way when its one writer started naming its fact.
     ///
     /// `held`/`released` are the odd pair: they name no status move at all (a
     /// hold stops autonomous progress and leaves the row exactly where it is —
@@ -57,21 +79,23 @@ crate::db_enum! {
     /// which is what keeps the trail able to answer "what has this been held for"
     /// when the row itself only ever carries the current reason.
     EventKind {
-        Created    => "created",
-        Proposed   => "proposed",
-        Accepted   => "accepted",
-        Edited     => "edited",
-        Queued     => "queued",
-        Unqueued   => "unqueued",
-        Dispatched => "dispatched",
-        PrOpened   => "pr_opened",
-        RunFailed  => "run_failed",
-        Shipped    => "shipped",
-        Abandoned  => "abandoned",
-        Blocked    => "blocked",
-        Held       => "held",
-        Released   => "released",
-        Note       => "note",
+        Created     => "created",
+        Proposed    => "proposed",
+        Accepted    => "accepted",
+        Edited      => "edited",
+        Queued      => "queued",
+        Unqueued    => "unqueued",
+        Dispatched  => "dispatched",
+        PrOpened    => "pr_opened",
+        RunFailed   => "run_failed",
+        RunCanceled => "run_canceled",
+        RunDeleted  => "run_deleted",
+        Shipped     => "shipped",
+        PrClosed    => "pr_closed",
+        Blocked     => "blocked",
+        Held        => "held",
+        Released    => "released",
+        Note        => "note",
     }
 }
 
@@ -498,10 +522,53 @@ mod tests {
         assert_eq!(declared.len(), ALL_KINDS.len());
     }
 
-    /// Every variant, listed once so the pin above can walk them. The `db_enum!`
+    /// The pin's third leg: the PM's own instructions.
+    ///
+    /// `instructions/roadmap.md` enumerates the kinds a `last_event` can carry,
+    /// which is the PM's entire model of what a trail can say — and nothing read
+    /// it, so it drifted: it advertised `discarded` long after that variant was
+    /// deleted (review finding S3). A kind the doc omits is a line the PM cannot
+    /// interpret; a kind the doc invents is one it will look for and never see.
+    /// Both directions, same as the frontend leg.
+    #[test]
+    fn every_kind_is_declared_in_the_pms_instructions() {
+        const DOC: &str = include_str!("../instructions/roadmap.md");
+        // The `last_event` bullet's own parenthesised list, which wraps across
+        // lines — so each spelling is rejoined before it is compared.
+        let list = DOC
+            .split("`kind` (`")
+            .nth(1)
+            .and_then(|rest| rest.split_once("`)"))
+            .map(|(block, _)| block)
+            .expect("the instructions enumerate the kinds a last_event carries");
+        let documented: Vec<String> = list
+            .split('|')
+            .map(|s| s.split_whitespace().collect::<String>())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        for kind in ALL_KINDS {
+            assert!(
+                documented.iter().any(|d| d == kind.as_str()),
+                "instructions/roadmap.md never mentions {:?} — the PM cannot read a line it \
+                 doesn't know exists",
+                kind.as_str()
+            );
+        }
+        for spelling in &documented {
+            assert!(
+                EventKind::from_db(spelling).is_some(),
+                "instructions/roadmap.md advertises {spelling:?}, which no writer can produce"
+            );
+        }
+        assert_eq!(documented.len(), ALL_KINDS.len());
+    }
+
+    /// Every variant, listed once so the pins above can walk them. The `db_enum!`
     /// macro produces no iterator, and a missing entry here would quietly weaken
-    /// the pin — so the count is asserted against the frontend's union too.
-    const ALL_KINDS: [EventKind; 15] = [
+    /// them — so the count is asserted against both the frontend's union and the
+    /// instructions' list.
+    const ALL_KINDS: [EventKind; 17] = [
         EventKind::Created,
         EventKind::Proposed,
         EventKind::Accepted,
@@ -511,8 +578,10 @@ mod tests {
         EventKind::Dispatched,
         EventKind::PrOpened,
         EventKind::RunFailed,
+        EventKind::RunCanceled,
+        EventKind::RunDeleted,
         EventKind::Shipped,
-        EventKind::Abandoned,
+        EventKind::PrClosed,
         EventKind::Blocked,
         EventKind::Held,
         EventKind::Released,

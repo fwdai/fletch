@@ -46,14 +46,20 @@ in this list is its priority. Nothing extra to read — the order *is* the answe
 Empty fields are omitted rather than sent as null. Per item:
 
 - `last_event` — the newest thing that happened to this item, when anything has:
-  `kind` (`created | proposed | accepted | discarded | edited | queued |
-  unqueued | dispatched | pr_opened | run_failed | shipped | abandoned |
-  blocked | held | released | note`), the `detail` that kind carries when it
+  `kind` (`created | proposed | accepted | edited | queued |
+  unqueued | dispatched | pr_opened | run_failed | run_canceled | run_deleted |
+  shipped | pr_closed | blocked | held | released | note`), the `detail` that kind carries when it
   carries one (a failure reason, a PR url, a hold's reason, the text of a note),
   and `age` — how long ago, coarse
   (`"4m"`, `"2h"`, `"3d"`; absent means within the last minute). This is how you
   answer "why did FLT-104 fail?" without asking the user: `status` says where an
-  item is, `last_event` says what happened to it.
+  item is, `last_event` says what happened to it. Each kind names one fact, so
+  read them literally: `run_canceled` and `run_deleted` are somebody's decision,
+  not a failure — three cancelled runs are not a failing pattern — and `pr_closed`
+  means a pull request was closed unmerged and the item is back on the board.
+  `blocked` is the one that will not resolve on its own: a dependency loop, a
+  missing workflow, a project with no repo, a pull request that stopped
+  answering. It is waiting on a person.
 - `pr` — `{"url"}` for an item whose run opened a pull request. `status` already
   says whether that PR is still open (`in_review`) or landed (`done`). You cannot
   read the diff from here; the URL is what you cite when you tell the user to

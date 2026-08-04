@@ -48,10 +48,18 @@
 //!
 //! A hold ([`super::holds`]) is the brake on step 2 only. A held item is never
 //! claimed ([`dispatchable`]) and a held project dispatches nothing at all
-//! ([`plan_and_claim`]) — but step 1 keeps running under either, because settling
-//! is not autonomy: it is the app noticing that a run it already started has
-//! finished. Refusing to reflect that would leave an `active` card lying about a
-//! run that ended hours ago, which is the opposite of what a brake is for.
+//! ([`plan_and_claim`], through [`holds::project_gate`]) — but step 1 keeps
+//! running under either, because settling is not autonomy: it is the app noticing
+//! that a run it already started has finished. Refusing to reflect that would
+//! leave an `active` card lying about a run that ended hours ago, which is the
+//! opposite of what a brake is for.
+//!
+//! A hold also stops everything *downstream* of the item, and that is stated
+//! rather than inferred: the dep gate counts an item as landed only when it is
+//! `done` **and not held** ([`done_codes`]). The inference it replaces ("a held
+//! item never reaches `done`, so its dependants wait") was false — the merge
+//! sweep ships an item when GitHub says its PR merged, which a teammate or an
+//! armed auto-merge can do at any time, hold or no hold.
 //!
 //! Holds outrank the dial in both directions: a raised cap dispatches more of
 //! what is *already* dispatchable and can't reach a held row, and autoqueue
@@ -88,13 +96,20 @@
 //! so a permanently blocked item doesn't re-emit the same string every fifteen
 //! seconds, while an item the user touched hears its explanation again.
 //!
-//! One blockage is not transient, though: a *dependency loop*. Nothing in a loop
-//! is ever `done`, so [`unsatisfied_deps`] never resolves for any of its members
-//! and the queue skips the chain on every tick, forever. That is a durable fact,
-//! so when the queue head is wedged that way the drainer also writes one
-//! `blocked` event naming the loop ([`record_wedge`]) — the writer
-//! `EventKind::Blocked` was declared for. Ordinary dep-waiting stays
-//! transient-only: it resolves itself the moment the dependency lands.
+//! A transient note is the whole story for exactly one condition, though. The
+//! partition is **self-resolving vs standing**:
+//!
+//! - *Self-resolving*: waiting on a dependency that is still being built. It ends
+//!   when that work lands, without anyone deciding anything, and it is re-derived
+//!   every tick — [`Claim::note`], transient only.
+//! - *Standing*: a dependency loop (nothing in a loop is ever `done`, so
+//!   [`unsatisfied_deps`] never resolves for any member), no resolvable workflow,
+//!   an invalid stored spec, and a project with no repo. None of those ends without
+//!   the user changing something, and the note's dedup is per row version *per
+//!   process lifetime* — so a queued item in a repo-less project used to say its
+//!   piece once and then wedge in silence forever. All four write one durable
+//!   `blocked` event through [`Claim::wedge`], which is also what surfaces them on
+//!   the board's "Needs you" strip.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
@@ -202,11 +217,37 @@ pub(crate) enum Decision {
     Dispatch(usize),
 }
 
+/// The codes a dependant may treat as landed: `done` **and not held**.
+///
+/// The second half is what makes a hold *transitive*, and it is the whole answer
+/// to review finding B2 (.context/roadmap-pm-plan.md). A hold's promise is that
+/// nothing downstream of it proceeds, and the original implementation of that
+/// promise was indirect — a held item never reaches `done`, so its dependants
+/// wait. That reasoning had a hole: the merge sweep ships an item when *GitHub*
+/// says its PR merged, and a teammate (or an auto-merge armed before the hold) can
+/// merge a held item's PR at any time. The item then reached `done` without
+/// anything autonomous deciding it should, and every dependant unblocked.
+///
+/// So "done" for dependency purposes is stated directly here instead of inferred:
+/// a held item does not satisfy anyone's dependency, **however it got to `done`**.
+/// Dependants of a held item stop, and stay stopped until the user lifts the hold
+/// — at which point this set grows and the next tick dispatches them.
+///
+/// Only the item's own hold is read, not the board's: a held project never reaches
+/// this function at all ([`plan_and_claim`] returns before the board is read).
+pub(crate) fn done_codes(items: &[RoadmapItem]) -> HashSet<String> {
+    items
+        .iter()
+        .filter(|i| i.status == ItemStatus::Done && !i.is_held())
+        .map(|i| i.code.clone())
+        .collect()
+}
+
 /// Whether every code in `deps` counts as landed.
 ///
-/// A dep is satisfied when its item is `done`. `in_review` is *not* done: the
-/// PR is open, the work isn't in the base branch, and a dependant forked now
-/// would build on a tree that doesn't contain it.
+/// A dep is satisfied when its item counts as done ([`done_codes`]). `in_review`
+/// is *not* done: the PR is open, the work isn't in the base branch, and a
+/// dependant forked now would build on a tree that doesn't contain it.
 ///
 /// A dep code that resolves to no item at all is also satisfied. The item it
 /// pointed at was deleted off the board, and a deleted item never ships — so
@@ -243,8 +284,8 @@ pub(crate) fn unsatisfied_deps(
 ///   skip on purpose: a hold is a fact about the row, not a state of the queue,
 ///   so it is filtered here rather than encoded as a [`Decision`] — the queue is
 ///   not "blocked", this row is simply not in it. Dependants of a held item stop
-///   too, without any extra logic: they wait on a code that will not reach `done`
-///   while the hold stands.
+///   too, but *not* because of this filter: see [`done_codes`], which is where the
+///   transitive half of a hold is stated.
 ///
 /// Pure over a board snapshot, so both skips are unit-testable without a
 /// database. **Autoqueue (B3) dispatches through here, and through the project
@@ -354,26 +395,68 @@ pub(crate) enum Settlement {
     Released(&'static str),
 }
 
+/// The five ways a claim ends with the item back on the board, as the reason
+/// strings [`Settlement::Released`] carries.
+///
+/// Consts rather than literals at the call sites because they are read twice: once
+/// as prose (the card's note, and the PM's review turn, which quotes the reason
+/// verbatim) and once as a *fact* — [`release_kind`] maps each one to the event
+/// kind that names it. A release whose reason is spelled somewhere else is a
+/// release whose card would read "run failed" about a run nobody ran.
+pub(crate) const RUN_FAILED: &str = "its run failed";
+/// The user stopped it. Deliberate, and not a failure — see [`release_kind`].
+pub(crate) const RUN_CANCELED: &str = "its run was canceled";
+/// The run row is gone (`wf_delete_run`, or a project half-deleted under us).
+pub(crate) const RUN_DELETED: &str = "its run was deleted";
+/// Claimed, but the launch never wrote a run row — the crash window between
+/// `claim_item` and the `run_id` write-back, with no live back-link to adopt.
+pub(crate) const RUN_NEVER_STARTED: &str = "its run never started";
+/// The launch itself was refused (no such spec on disk, no repo to clone, the
+/// scheduler declined). Nothing ran, and the reason came from the launcher.
+pub(crate) const RUN_UNLAUNCHABLE: &str = "its run couldn't be started";
+
+/// The fact a release names, as a history kind.
+///
+/// Three endings, not one. `run_failed` used to carry all of them, which made the
+/// card claim a failure about a run the *user* cancelled and about a run row
+/// somebody deleted — and the PM, whose instructions tell it to hold an item when
+/// runs keep failing, read the same flattened line (review finding S1 in
+/// .context/roadmap-pm-plan.md). A user cancelling three runs is not a failing
+/// pattern, and an event vocabulary that can't tell the difference manufactures
+/// one.
+///
+/// The fallback is a failure on purpose: an unrecognized reason is one this
+/// function has not been taught, and showing it as a failure is the safe way to be
+/// wrong — the reason string itself is the detail either way.
+pub(crate) fn release_kind(why: &str) -> EventKind {
+    match why {
+        RUN_CANCELED => EventKind::RunCanceled,
+        RUN_DELETED => EventKind::RunDeleted,
+        _ => EventKind::RunFailed,
+    }
+}
+
 /// Map a roadmap-dispatched run's state onto its item. `status` is `None` when
 /// the run row no longer exists (a `wf_delete_run`, or a project half-deleted
 /// under us).
 pub(crate) fn settle(status: Option<RunStatus>, pr: Option<&FinalizedPr>) -> Settlement {
     match status {
-        None => Settlement::Released("its run was deleted"),
+        None => Settlement::Released(RUN_DELETED),
         Some(RunStatus::Pending) | Some(RunStatus::Running) | Some(RunStatus::Paused) => {
             Settlement::Running
         }
         Some(RunStatus::Done) if pr.is_some() => Settlement::InReview,
         Some(RunStatus::Done) => Settlement::Done,
-        Some(RunStatus::Failed) => Settlement::Released("its run failed"),
-        Some(RunStatus::Canceled) => Settlement::Released("its run was canceled"),
+        Some(RunStatus::Failed) => Settlement::Released(RUN_FAILED),
+        Some(RunStatus::Canceled) => Settlement::Released(RUN_CANCELED),
     }
 }
 
 /// The history event a settlement writes alongside its item patch — `None` for
-/// a run that is still going. The `run_failed` detail is the same reason string
-/// the transient queue note wraps, so the durable record and the toast never
-/// tell two stories; unlike the note, this one survives a reload.
+/// a run that is still going. A release's detail is the same reason string the
+/// transient queue note wraps, so the durable record and the toast never tell two
+/// stories; unlike the note, this one survives a reload. Its *kind* is the fact
+/// that reason names ([`release_kind`]).
 pub(crate) fn settlement_event(
     outcome: &Settlement,
     pr: Option<&FinalizedPr>,
@@ -382,7 +465,42 @@ pub(crate) fn settlement_event(
         Settlement::Running => None,
         Settlement::InReview => Some((EventKind::PrOpened, pr.map(|p| p.url.clone()))),
         Settlement::Done => Some((EventKind::Shipped, None)),
-        Settlement::Released(why) => Some((EventKind::RunFailed, Some((*why).to_string()))),
+        Settlement::Released(why) => Some((release_kind(why), Some((*why).to_string()))),
+    }
+}
+
+/// The item patch a settlement implies.
+///
+/// Paired with [`settlement_event`] over the same two inputs, so the row and its
+/// history line are one projection of one ending rather than two open-coded
+/// answers that can drift. [`Settlement::Running`] patches nothing: the caller
+/// handles the run-link repair, which is bookkeeping and not an ending at all.
+pub(crate) fn settlement_patch(outcome: &Settlement, pr: Option<&FinalizedPr>) -> ItemPatch {
+    match outcome {
+        Settlement::Running => ItemPatch::default(),
+        Settlement::InReview => ItemPatch {
+            status: Some(ItemStatus::InReview),
+            // Copied off the run row onto the item, so the item's own columns are
+            // authoritative from here on: the merge sweep selects on
+            // `status = 'in_review' AND pr_number IS NOT NULL` and never has to
+            // join back to a run that may since have been deleted, nor to a run
+            // repo that has since been cleaned up.
+            pr_url: Some(pr.map(|p| p.url.clone())),
+            pr_number: Some(pr.and_then(|p| p.number)),
+            ..Default::default()
+        },
+        Settlement::Done => ItemPatch {
+            status: Some(ItemStatus::Done),
+            ..Default::default()
+        },
+        Settlement::Released(_) => ItemPatch {
+            status: Some(ItemStatus::Open),
+            // The run is over; the item is not "the thing that run is doing" any
+            // more. Clearing the link keeps a re-queue from settling instantly
+            // against the old, terminal run.
+            run_id: Some(None),
+            ..Default::default()
+        },
     }
 }
 
@@ -587,7 +705,7 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
                     // A claim whose run never reached the database. `settle`
                     // can't tell this from a deleted run — the item can, and
                     // "never started" is the honest thing to put on the card.
-                    None => Settlement::Released("its run never started"),
+                    None => Settlement::Released(RUN_NEVER_STARTED),
                     Some(_) => settle(status, pr.as_ref()),
                 };
                 Settled {
@@ -609,68 +727,25 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
         adopted_run_id,
     } in settled
     {
-        let patch = match &outcome {
-            Settlement::Running => {
-                // Recovered only: repair the link and leave the item running.
-                write_item(
-                    app,
-                    db,
-                    &item.id,
-                    ItemPatch {
-                        run_id: Some(adopted_run_id.clone()),
-                        ..Default::default()
-                    },
-                );
-                tracing::info!(
-                    item = %item.code,
-                    run = ?adopted_run_id,
-                    "roadmap drainer: re-attached item to its run"
-                );
-                continue;
-            }
-            Settlement::InReview => ItemPatch {
-                status: Some(ItemStatus::InReview),
-                // Copied off the run row onto the item, so the item's own
-                // columns are authoritative from here on: the merge sweep
-                // selects on `status = 'in_review' AND pr_number IS NOT NULL`
-                // and never has to join back to a run that may since have been
-                // deleted, nor to a run repo that has since been cleaned up.
-                pr_url: Some(pr.as_ref().map(|p| p.url.clone())),
-                pr_number: Some(pr.as_ref().and_then(|p| p.number)),
-                ..Default::default()
-            },
-            Settlement::Done => ItemPatch {
-                status: Some(ItemStatus::Done),
-                ..Default::default()
-            },
-            Settlement::Released(_) => ItemPatch {
-                status: Some(ItemStatus::Open),
-                // The run is over; the item is not "the thing that run is
-                // doing" any more. Clearing the link keeps a re-queue from
-                // settling instantly against the old, terminal run.
-                run_id: Some(None),
-                ..Default::default()
-            },
-        };
-        let landed = match settlement_event(&outcome, pr.as_ref()) {
-            Some((kind, detail)) => write_item_with_event(app, db, &item.id, patch, kind, detail),
-            // Unreachable — `Running` bailed above — but a settlement without
-            // an event must still land its patch rather than vanish.
-            None => {
-                write_item(app, db, &item.id, patch);
-                true
-            }
-        };
-        // Ask the PM to review what the run actually did, once per settlement.
-        // Gated on the write landing: a row deleted mid-tick has no outcome to
-        // review and no card to record a deferral on. Fired before the notes
-        // below because it is the only step that can wake a resting session, and
-        // it needs no lock held (see [`review`]).
-        if landed {
-            if let Some(reviewable) = review::outcome_for(&outcome, pr.as_ref()) {
-                review::request(app, db, &item, &reviewable);
-            }
+        if outcome == Settlement::Running {
+            // Recovered only: repair the link and leave the item running.
+            write_item(
+                app,
+                db,
+                &item.id,
+                ItemPatch {
+                    run_id: Some(adopted_run_id.clone()),
+                    ..Default::default()
+                },
+            );
+            tracing::info!(
+                item = %item.code,
+                run = ?adopted_run_id,
+                "roadmap drainer: re-attached item to its run"
+            );
+            continue;
         }
+        conclude(app, db, &item, &outcome, pr.as_ref(), None);
         match outcome {
             Settlement::Released(why) => {
                 tracing::info!(item = %item.code, %why, "roadmap drainer: released item");
@@ -687,6 +762,60 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
             _ => forget(said, &item.id),
         }
     }
+}
+
+/// End one item's turn as `active`: the patch, the durable line, and the PM's
+/// review turn — in that order, once.
+///
+/// **Every way an item leaves `active` comes through here.** That is the point:
+/// there used to be two endings, and only one of them was complete. A settlement
+/// wrote its event *and* asked the PM to review the outcome; a launch that failed
+/// open-coded a second ending beside it — same `run_failed` kind, same hand-back
+/// to `open` — and silently skipped the review, so the one failure the PM never
+/// heard about was the one where nothing ran at all (review finding S5 in
+/// .context/roadmap-pm-plan.md). Making the projection *total* over the ways an
+/// item stops being active is what closes that class of gap rather than the one
+/// instance of it.
+///
+/// `detail` overrides the reason [`settlement_event`] projects, for the one caller
+/// with something more specific to say: the launcher's own error. The *kind* still
+/// comes from the projection, so the card can't disagree with itself about what
+/// sort of ending this was.
+///
+/// Returns whether the write landed. A row deleted mid-tick has no state to
+/// describe, so nothing follows it — no event, and no review turn.
+fn conclude(
+    app: &AppHandle,
+    db: &Db,
+    item: &RoadmapItem,
+    outcome: &Settlement,
+    pr: Option<&FinalizedPr>,
+    detail: Option<String>,
+) -> bool {
+    let patch = settlement_patch(outcome, pr);
+    let landed = match settlement_event(outcome, pr) {
+        Some((kind, projected)) => {
+            write_item_with_event(app, db, &item.id, patch, kind, detail.or(projected))
+        }
+        // Unreachable — `Running` is not an ending, and its one caller bails
+        // before here — but an ending without an event must still land its patch
+        // rather than vanish.
+        None => {
+            write_item(app, db, &item.id, patch);
+            true
+        }
+    };
+    // Ask the PM to review what the run actually did, once per ending. Gated on
+    // the write landing: a row deleted mid-tick has no outcome to review and no
+    // card to record a deferral on. Fired before the caller's notes because it is
+    // the only step that can wake a resting session, and it needs no lock held
+    // (see [`review`]).
+    if landed {
+        if let Some(reviewable) = review::outcome_for(outcome, pr) {
+            review::request(app, db, item, &reviewable);
+        }
+    }
+    landed
 }
 
 /// The *live* run dispatched for this item, newest first — the reverse of the
@@ -759,10 +888,10 @@ enum Claim {
     Nothing,
     /// Something is queued but can't run yet, and the card should say why.
     ///
-    /// `recorded` is the durable `blocked` event a *permanent* blockage also
-    /// writes — see [`record_wedge`]. Every ordinary "waiting on …" leaves it
-    /// `None`: that condition is re-derived every tick and resolves itself the
-    /// moment the dependency lands, so persisting it would bury the trail.
+    /// `recorded` is the durable `blocked` event a **standing** blockage also
+    /// writes — see [`Claim::wedge`] and [`record_wedge`]. It is `None` for the one
+    /// *self-resolving* condition, an ordinary "waiting on …": that resolves itself
+    /// the moment the dependency lands, so persisting it would bury the trail.
     Note {
         item: Box<RoadmapItem>,
         text: String,
@@ -775,12 +904,41 @@ enum Claim {
 }
 
 impl Claim {
-    /// A transient explanation, nothing persisted.
+    /// A **self-resolving** blockage: the transient note and nothing else.
+    ///
+    /// One condition qualifies — waiting on a dependency that is still being built.
+    /// It ends without anyone deciding anything, and it is re-derived every tick,
+    /// so a durable line would be a history of "still waiting" nobody reads.
     fn note(item: RoadmapItem, text: String) -> Self {
         Claim::Note {
             item: Box::new(item),
             text,
             recorded: None,
+        }
+    }
+
+    /// A **standing** blockage: the transient note *and* the durable line
+    /// ([`record_wedge`], which writes it once and survives restarts).
+    ///
+    /// The partition is "does this resolve itself", not "is it a dependency loop".
+    /// The loop was the first standing condition anyone noticed, so it got the
+    /// durable line and its three siblings in this same function did not — no
+    /// resolvable workflow, an invalid stored spec, a project with no repo. None of
+    /// those ends on its own either, and the transient note is emitted at most once
+    /// per row version *per process lifetime*, so a queued item in a repo-less
+    /// project said its piece once and then wedged in silence forever (invariant 3,
+    /// review finding S1 in .context/roadmap-pm-plan.md). All four come through
+    /// here now, which is also what puts them on the "Needs you" strip — the strip
+    /// reads `blocked` events, and a wedge nobody can see is a wedge nobody fixes.
+    ///
+    /// Called with the connection lock held; the event is emitted by [`claim_next`]
+    /// once it drops, like every other event this module writes.
+    fn wedge(conn: &Connection, item: RoadmapItem, text: String) -> Self {
+        let recorded = record_wedge(conn, &item, &text);
+        Claim::Note {
+            item: Box::new(item),
+            text,
+            recorded,
         }
     }
 }
@@ -842,18 +1000,11 @@ fn claim_next(
 /// here on every claim — the *count* it is compared against ([`live_run_count`])
 /// is re-read inside this guard, which is the half that has to be fresh.
 fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
-    match holds::get_project(conn, project_id) {
-        Ok(Some(hold)) => {
-            tracing::debug!(project_id, reason = %hold.reason, "roadmap drainer: project held");
-            return Claim::Nothing;
-        }
-        Ok(None) => {}
-        // A hold we can't read is not a licence to dispatch: the whole point is
-        // that the brake holds when nobody is watching.
-        Err(e) => {
-            tracing::warn!(project_id, error = %e, "roadmap drainer: cannot read the project hold");
-            return Claim::Nothing;
-        }
+    // One authority for "is progress stopped here", fail-closed inside it: a hold
+    // we can't read is not a licence to dispatch.
+    if let Some(reason) = holds::project_gate(conn, project_id) {
+        tracing::debug!(project_id, %reason, "roadmap drainer: project held");
+        return Claim::Nothing;
     }
     let items = match store::list(conn, project_id) {
         Ok(items) => items,
@@ -862,11 +1013,7 @@ fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
             return Claim::Nothing;
         }
     };
-    let done: HashSet<String> = items
-        .iter()
-        .filter(|i| i.status == ItemStatus::Done)
-        .map(|i| i.code.clone())
-        .collect();
+    let done = done_codes(&items);
     let known: HashSet<String> = items.iter().map(|i| i.code.clone()).collect();
     // What this tick may actually claim — see [`dispatchable`] for the three
     // rows that are queued and still not in the queue.
@@ -890,15 +1037,11 @@ fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
             // about the board, so it lands as a `blocked` event naming the loop
             // (see .context/roadmap-pm-plan.md, A4).
             return match deps::find_cycle(&deps::graph_of(&items), &item.code) {
-                Some(cycle) => {
-                    let text = format!("Stuck in a dependency loop: {}", deps::loop_path(&cycle));
-                    let recorded = record_wedge(conn, &item, &text);
-                    Claim::Note {
-                        item: Box::new(item),
-                        text,
-                        recorded,
-                    }
-                }
+                Some(cycle) => Claim::wedge(
+                    conn,
+                    item,
+                    format!("Stuck in a dependency loop: {}", deps::loop_path(&cycle)),
+                ),
                 None => Claim::note(item, format!("Waiting on {}", waiting_on.join(", "))),
             };
         }
@@ -907,9 +1050,13 @@ fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
         Decision::Empty | Decision::AtCapacity => return Claim::Nothing,
     };
 
+    // The three standing conditions past dep selection. None of them resolves
+    // without the user changing something, so all three take the durable path —
+    // see [`Claim::wedge`] for why that is the partition rather than "is it a loop".
     let project_default = project_setting(conn, project_id, DEFAULT_WORKFLOW_KEY);
     let Some(definition_id) = resolve_workflow(&item, project_default.as_deref()) else {
-        return Claim::note(
+        return Claim::wedge(
+            conn,
             item,
             "No workflow to run it under. Pick one on this item, or set the project's \
              default workflow."
@@ -917,13 +1064,18 @@ fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
         );
     };
     let Some(spec) = definition_spec(conn, &definition_id) else {
-        return Claim::note(
+        return Claim::wedge(
+            conn,
             item,
             "Its workflow is missing or no longer valid — pick another.".to_string(),
         );
     };
     let Some(repo_path) = primary_repo_path(conn, project_id) else {
-        return Claim::note(item, "This project has no repo to run in.".to_string());
+        return Claim::wedge(
+            conn,
+            item,
+            "This project has no repo to run in.".to_string(),
+        );
     };
 
     // Only deps that still resolve get quoted in the brief; a stale code counts
@@ -963,20 +1115,28 @@ fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
     }
 }
 
-/// Record a wedged queue head's `blocked` event — once, not once a tick.
+/// Record a standing blockage's `blocked` event — once, not once a tick.
+///
+/// The one durable path for every wedge, wherever it is noticed: the drainer's
+/// four conditions ([`Claim::wedge`]) and the merge sweep's watched pull request
+/// that stopped answering ([`super::merge_sweep`]).
 ///
 /// The de-dup is a query rather than the in-memory [`SaidNotes`] map: that map is
 /// process-local and empty after a restart, which is fine for a transient note
 /// and useless for a durable table (every app start would append another
 /// identical row). So the check is "is the item's *newest* event already this
-/// same `blocked` line?" — newest rather than any, because a loop that was fixed
+/// same `blocked` line?" — newest rather than any, because a wedge that was fixed
 /// and re-formed is news again, and the events in between are what say so.
 ///
-/// Called with the connection lock held, in the same guard as the read the loop
+/// Called with the connection lock held, in the same guard as the read the wedge
 /// was detected from. A failure is logged and dropped: the transient note still
 /// reaches the card, and refusing to dispatch anything else because history
 /// couldn't be written would be a worse outcome than a missing line.
-fn record_wedge(conn: &Connection, item: &RoadmapItem, detail: &str) -> Option<ItemEvent> {
+pub(crate) fn record_wedge(
+    conn: &Connection,
+    item: &RoadmapItem,
+    detail: &str,
+) -> Option<ItemEvent> {
     match events::latest_for_item(conn, &item.id) {
         Ok(Some(last))
             if last.kind == EventKind::Blocked && last.detail.as_deref() == Some(detail) =>
@@ -1100,18 +1260,18 @@ async fn dispatch(
             // to run, so hand it back rather than leaving a phantom.
             tracing::warn!(item = %item.code, error = %e, "roadmap drainer: launch failed");
             // One reason string for both channels: the transient note the card
-            // shows now, and the durable `run_failed` event that still says so
-            // after a reload.
+            // shows now, and the durable event that still says so after a reload.
             let reason = format!("Couldn't start a run — {e}");
-            write_item_with_event(
+            // The same ending every other exit from `active` takes ([`conclude`]),
+            // rather than a second open-coded one beside it. The launcher's error
+            // is more specific than the projection's reason, so it is what the
+            // durable line carries; the PM's review turn quotes the projection.
+            conclude(
                 app,
                 db,
-                &item.id,
-                ItemPatch {
-                    status: Some(ItemStatus::Open),
-                    ..Default::default()
-                },
-                EventKind::RunFailed,
+                &item,
+                &Settlement::Released(RUN_UNLAUNCHABLE),
+                None,
                 Some(reason.clone()),
             );
             emit_note(

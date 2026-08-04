@@ -188,6 +188,45 @@ describe("buildNeedsYou — blocked items", () => {
     }
   });
 
+  it("cards every standing wedge, not just the dependency cycle", () => {
+    // `blocked` is written for anything that will not resolve without a person:
+    // a cycle, a queued item with no workflow, an invalid spec, a project with no
+    // repo. They differ only in the detail, and each is a decision on this strip.
+    for (const detail of [
+      "Stuck in a dependency loop: MCA-101 → MCA-104 → MCA-101",
+      "No workflow to run it under. Pick one on this item, or set the project's default workflow.",
+      "Its workflow is missing or no longer valid — pick another.",
+      "This project has no repo to run in.",
+    ]) {
+      const cards = buildNeedsYou(
+        input({
+          items: [item({ id: "a", status: "queued" })],
+          latestEvents: [event({ id: "e", item_id: "a", detail })],
+        }),
+      );
+      expect(
+        cards.map((c) => c.reason),
+        detail,
+      ).toEqual(["item-blocked"]);
+      expect(cards[0].detail).toBe(detail);
+    }
+  });
+
+  it("never cards an ending — those are records, not decisions", () => {
+    // A run that failed, was cancelled or was deleted leaves the item `open`, and
+    // a closed PR puts it back on the board: the user can act on the row itself.
+    // A card for each would be a notification feed.
+    for (const kind of ["run_failed", "run_canceled", "run_deleted", "pr_closed"] as const) {
+      const cards = buildNeedsYou(
+        input({
+          items: [item({ id: "a", status: "queued" })],
+          latestEvents: [event({ id: "e", item_id: "a", kind })],
+        }),
+      );
+      expect(cards, kind).toEqual([]);
+    }
+  });
+
   it("drops it once the trail moves on, even with the block still in the list", () => {
     const cards = buildNeedsYou(
       input({

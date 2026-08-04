@@ -485,28 +485,21 @@ pub(crate) fn accept_landing(queue_requested: bool, autoqueue: bool, held: bool)
     Landing::Queue
 }
 
-/// [`accept_landing`] against the database: read the project's dial and both
-/// brakes for the row being accepted. Called with the connection lock held, in the
-/// same guard as the write it decides.
+/// [`accept_landing`] against the database: read the project's dial and the brake
+/// for the row being accepted. Called with the connection lock held, in the same
+/// guard as the write it decides.
 ///
 /// `None` when the row is gone — the caller's write then misses on its own and
 /// reports the row as it is.
 fn landing_for(conn: &Connection, id: &str, queue: bool) -> Option<Landing> {
     let item = store::get(conn, id).ok().flatten()?;
-    // An unreadable project hold counts as held: the drainer refuses to dispatch
-    // when it can't read one (see `plan_and_claim`), and this must not be the door
-    // that queues something anyway.
-    let project_held = match holds::get_project(conn, &item.project_id) {
-        Ok(hold) => hold.is_some(),
-        Err(e) => {
-            tracing::warn!(id, error = %e, "roadmap: cannot read the project hold — accepting without queueing");
-            true
-        }
-    };
     Some(accept_landing(
         queue,
         drainer::autoqueue(conn, &item.project_id),
-        item.is_held() || project_held,
+        // One gate for both scopes, fail-closed inside it ([`holds::gate`]): this
+        // must never be the door that queues something the drainer would then
+        // refuse to dispatch.
+        holds::gate(conn, &item).is_some(),
     ))
 }
 
@@ -695,11 +688,19 @@ pub async fn roadmap_item_review(
 /// [`merge_sweep::nudge`] afterwards, so the sweep asks within a beat instead of
 /// waiting out its two-minute tick — reality catches up in a moment rather than
 /// a coffee break, without anyone else learning to write `done`.
+///
+/// **A hold refuses the click** ([`merge_hold_gate`]). This button is the one
+/// place the app itself arms an auto-merge, which is how a hold placed afterwards
+/// used to be outrun by GitHub — the merge fires later, the sweep ships the item,
+/// and the work behind it goes. Saying "this is held, and here is the reason" is
+/// the answer the user asked for; releasing first is one click away, and it is
+/// theirs alone.
 #[tauri::command]
 pub async fn roadmap_merge_item_pr(
     item_id: String,
     db: tauri::State<'_, Db>,
 ) -> Result<(), String> {
+    merge_hold_gate(&db, &item_id)?;
     let (repo, number) = pr_review::target(&db, &item_id).ok_or(
         "this item has no pull request to merge — it may have shipped or come back to the board",
     )?;
@@ -711,6 +712,30 @@ pub async fn roadmap_merge_item_pr(
         .map_err(|e| e.to_string())?;
     merge_sweep::nudge();
     Ok(())
+}
+
+/// Refuse a Merge click while a hold stands, naming the reason.
+///
+/// The same [`holds::gate`] every autonomous writer consults, asked here for the
+/// one *user* action that would otherwise hand a held item to GitHub — and
+/// therefore, a beat later, to the sweep. A refusal rather than a silent no-op
+/// because this is a button press: the user is owed the reason, and the board's
+/// error bar is where it lands.
+///
+/// A row that is gone falls through to the missing-PR message below, which is the
+/// more accurate complaint about it.
+fn merge_hold_gate(db: &Db, item_id: &str) -> Result<(), String> {
+    let conn = db.lock();
+    let Some(item) = store::get(&conn, item_id).map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    match holds::gate(&conn, &item) {
+        Some(reason) => Err(format!(
+            "{} is held — {reason}. Release the hold before merging its pull request.",
+            item.code
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Record that this item's review feedback went to an agent — the durable half
@@ -1455,6 +1480,46 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    /// The app's one connection, as the commands take it.
+    fn test_db(conn: Connection) -> Db {
+        Arc::new(Mutex::new(conn))
+    }
+
+    /// The Merge button is the one *user* action that can hand a held item to
+    /// GitHub — it arms an auto-merge, and the sweep ships whatever merges. So it
+    /// refuses while either scope's hold stands, and names the reason.
+    #[test]
+    fn merging_is_refused_while_a_hold_stands() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::InReview);
+        let other = with_status(&conn, ItemStatus::InReview);
+        let db = test_db(conn);
+
+        assert!(merge_hold_gate(&db, &it.id).is_ok(), "nothing stops it");
+        {
+            let conn = db.lock();
+            holds::hold_item(&conn, &it.id, "we agreed something else", EventActor::Pm).unwrap();
+        }
+        let refused = merge_hold_gate(&db, &it.id).unwrap_err();
+        assert!(refused.contains(&it.code), "{refused}");
+        assert!(refused.contains("we agreed something else"), "{refused}");
+        assert!(refused.contains("Release the hold"), "{refused}");
+        // One item's hold is not the board's: the other card still merges.
+        assert!(merge_hold_gate(&db, &other.id).is_ok());
+
+        // The board-wide brake refuses every card, including one with no hold of
+        // its own — this is the scope the merge path never used to read.
+        {
+            let conn = db.lock();
+            holds::hold_project(&conn, "p1", "re-planning the quarter", EventActor::User).unwrap();
+        }
+        let board = merge_hold_gate(&db, &other.id).unwrap_err();
+        assert!(board.contains("re-planning the quarter"), "{board}");
+
+        // A row that is gone is the missing-PR complaint's business, not the hold's.
+        assert!(merge_hold_gate(&db, "no-such-item").is_ok());
     }
 
     fn status_patch(to: ItemStatus) -> ItemPatch {

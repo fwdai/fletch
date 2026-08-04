@@ -199,6 +199,63 @@ pub fn release_project(conn: &Connection, project_id: &str) -> rusqlite::Result<
     Ok(n > 0)
 }
 
+// ───────────────────────────── the gate ─────────────────────────────────
+
+/// What a hold nobody can read counts as. There is no third answer: a brake
+/// whose state is unknown is a brake that is on.
+const UNREADABLE: &str = "the board's hold could not be read";
+
+/// Why autonomous progress on this item is stopped, or `None` when nothing stops
+/// it — **the** gate, and the only place either scope is consulted.
+///
+/// One authority rather than one check per writer. Before this existed, the item
+/// hold was read off the row by the drainer's queue filter, the project hold was
+/// read (fail-closed) by the drainer and again by the accept path, and the merge
+/// sweep read neither — so a pull request that merged outside the app shipped a
+/// held item, nudged the drainer, and dispatched its dependants into exactly the
+/// direction the hold had stopped (review finding B2 in
+/// .context/roadmap-pm-plan.md). Every autonomous writer now asks one question,
+/// here:
+///
+/// - the drainer, before claiming — the row's own hold through the pure filter
+///   ([`super::drainer::dispatchable`]), the board's through [`project_gate`];
+/// - the drainer's dep gate, which counts an item as landed only when it is
+///   `done` *and* not held ([`super::drainer::done_codes`]) — the transitive half;
+/// - the accept path, so an accept can never land `queued` on a stopped board
+///   ([`super::accept_landing`]);
+/// - the merge sweep, where the answer deliberately does **not** stop the status
+///   write (a merged PR is a fact — see the rule in [`super::merge_sweep`]);
+/// - the card's Merge button, which refuses rather than arming auto-merge on work
+///   the board has been told to stop.
+///
+/// The item's own reason wins when both scopes hold: it is the more specific
+/// answer, and it is the one the row itself can already show.
+pub fn gate(conn: &Connection, item: &RoadmapItem) -> Option<String> {
+    item.hold_reason
+        .clone()
+        .or_else(|| project_gate(conn, &item.project_id))
+}
+
+/// [`gate`] at board scope, for the callers with no row in hand — chiefly the
+/// drainer, which stops before it even reads the board.
+///
+/// Fail-closed on a read error, which is the convention every hold read follows:
+/// the whole point of a brake is that it holds when nobody is watching, so an
+/// unreadable hold is a held one.
+pub fn project_gate(conn: &Connection, project_id: &str) -> Option<String> {
+    match get_project(conn, project_id) {
+        Ok(hold) => hold.map(|h| h.reason),
+        Err(e) => {
+            tracing::warn!(
+                project_id,
+                error = %e,
+                "roadmap: cannot read the project hold — treating the board as held"
+            );
+            Some(UNREADABLE.to_string())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +386,53 @@ mod tests {
         conn.execute("DELETE FROM projects WHERE id = 'p1'", [])
             .unwrap();
         assert!(get_project(&conn, "p1").unwrap().is_none());
+    }
+
+    /// The one gate every autonomous writer consults: either scope stops the
+    /// item, the item's own reason is the more specific answer, and lifting both
+    /// re-opens it.
+    #[test]
+    fn the_gate_answers_for_both_scopes_at_once() {
+        let conn = test_conn();
+        let it = item(&conn);
+        assert_eq!(gate(&conn, &it), None, "nothing stops a plain row");
+        assert_eq!(project_gate(&conn, "p1"), None);
+
+        // Board scope alone stops a row that carries no hold of its own — this is
+        // the half the merge sweep and the accept path used to read separately.
+        hold_project(&conn, "p1", "re-planning the quarter", EventActor::Pm).unwrap();
+        assert_eq!(gate(&conn, &it).as_deref(), Some("re-planning the quarter"));
+        assert_eq!(
+            project_gate(&conn, "p1").as_deref(),
+            Some("re-planning the quarter")
+        );
+
+        // Item scope wins when both stand: it is the reason the card already
+        // shows, and the more specific of the two.
+        let held = hold_item(&conn, &it.id, "wrong direction", EventActor::Pm)
+            .unwrap()
+            .unwrap();
+        assert_eq!(gate(&conn, &held).as_deref(), Some("wrong direction"));
+
+        // And the item's hold outlives the board's.
+        assert!(release_project(&conn, "p1").unwrap());
+        assert_eq!(gate(&conn, &held).as_deref(), Some("wrong direction"));
+        let (freed, _) = release_item(&conn, &it.id).unwrap().unwrap();
+        assert_eq!(gate(&conn, &freed), None);
+    }
+
+    /// A hold nobody can read is a hold that is on. The table is dropped out from
+    /// under the read, which is the closest a test gets to the real failure (a
+    /// corrupt page, a schema the process didn't migrate) — and the answer must be
+    /// "held", never "go ahead".
+    #[test]
+    fn an_unreadable_hold_reads_as_held() {
+        let conn = test_conn();
+        let it = item(&conn);
+        conn.execute("DROP TABLE roadmap_project_holds", [])
+            .unwrap();
+        assert_eq!(project_gate(&conn, "p1").as_deref(), Some(UNREADABLE));
+        assert_eq!(gate(&conn, &it).as_deref(), Some(UNREADABLE));
     }
 
     /// Another board's hold is invisible: the drainer checks per project, and a

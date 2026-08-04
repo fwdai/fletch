@@ -37,25 +37,63 @@
 //! unchanged PR costs one round-trip and no budget, so a slow-moving review
 //! queue is effectively free to watch.
 //!
+//! # Holds, and why a held item still ships
+//!
+//! **The rule: the sweep reflects reality, and the hold is what stops everything
+//! downstream of it.**
+//!
+//! A merged pull request is a fact, and the sweep writes it whether or not the
+//! item is held — for the same reason the drainer settles a held item's run:
+//! reflecting reality is not autonomy (see `RoadmapProjectHold` in
+//! `src/api/types/roadmap.ts`). The alternative — skipping held items until
+//! release — would leave a card claiming "in review" about a PR that landed last
+//! Tuesday, and a board that lies is not a safer board.
+//!
+//! What a hold does instead is survive onto the `done` row, and that is what keeps
+//! the promise "nothing downstream proceeds": the dep gate counts an item as
+//! landed only when it is `done` **and not held**
+//! ([`drainer::done_codes`]), so a dependant queued behind a held-and-merged item
+//! waits exactly as it did before the merge. Both halves are true at once — the
+//! board reflects reality, and the hold stops the work behind it.
+//!
+//! Two things the hold does change here, both so the board can explain itself:
+//! the `shipped` line records that the hold outlived the merge ([`event_for`]),
+//! and the sweep does **not** [`drainer::nudge`], because a held landing unblocks
+//! nothing and the drainer has nothing new to do.
+//!
 //! # What it never does
 //!
 //! It never *blanks* state. A failed fetch, an unresolvable repo, a missing
 //! token — all leave the item exactly as it was and try again later, the same
 //! policy `supervisor::resolve_pr_state` follows. The only writes are the two
 //! definite verdicts GitHub gave us.
+//!
+//! # A PR that stops answering
+//!
+//! "Try again later" is right for a rate-limit pause and wrong forever: a deleted
+//! pull request, a revoked token, a remote that isn't GitHub any more all answer
+//! nothing, every two minutes, for the life of the install — and the item sits in
+//! review with a card that reads exactly like a PR nobody has got round to
+//! merging. So the sweep counts consecutive silences per watched item
+//! ([`still_watching`] / [`record_miss`], the sweep's own memory in the shape the
+//! drainer's note-dedup already uses) and past [`UNANSWERED_LIMIT`] it writes one
+//! durable `blocked` line saying so and stops asking until the row changes. A
+//! standing blockage is a durable object (invariant 3); a silent one is a wedge
+//! nobody can see and two pollers paying for it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use tauri::AppHandle;
 use tokio::sync::Notify;
 
 use super::drainer::{self, QueueNote};
 use super::events::{EventActor, EventKind, TrailEntry};
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
-use super::Db;
+use super::{holds, Db};
 use crate::github::PrStatus;
 
 /// How often the sweep re-reads its watch list while anything is in review.
@@ -84,6 +122,30 @@ fn signal() -> &'static Notify {
 pub(crate) fn nudge() {
     signal().notify_one();
 }
+
+/// How many consecutive sweeps may learn nothing about one pull request before the
+/// sweep says so out loud and stops asking.
+///
+/// Five, which at [`SWEEP`] is ten minutes. Long enough that no ordinary
+/// interruption reaches it — a rate-limit pause, a laptop asleep between two
+/// passes, a token being re-authorized — and short enough that a PR someone
+/// deleted is named while the user still remembers deleting it.
+const UNANSWERED_LIMIT: u32 = 5;
+
+/// What the sweep remembers about one watched item between passes: the version of
+/// the row it was watching (`updated_at`), and how many consecutive passes have
+/// learned nothing about its PR.
+///
+/// The row version is half the key for the same reason it is in the drainer's note
+/// dedup: any write to the item is the user (or another writer) doing something
+/// about it, and the answer to "is this PR reachable" is worth asking again from
+/// scratch after that.
+type Misses = (i64, u32);
+
+/// The sweep's per-item memory. Behind a mutex because each pass runs in its own
+/// task (panic containment, see [`spawn`]) and the map has to outlive any one of
+/// them; never held across an `.await`.
+type Unanswered = Mutex<HashMap<String, Misses>>;
 
 // ───────────────────────────── pure decisions ───────────────────────────
 
@@ -153,25 +215,93 @@ pub(crate) fn patch_for(verdict: &Verdict) -> Option<ItemPatch> {
     }
 }
 
+/// What the `shipped` line says when a hold outlived the merge. The trail has to
+/// carry it: without this the board shows a `done` item whose dependants are
+/// mysteriously still queued, and the only explanation is a hold chip three cards
+/// away.
+pub(crate) const SHIPPED_WHILE_HELD: &str =
+    "its PR merged while this was held — the hold stands, so nothing waiting on it moves";
+
 /// The history event a verdict writes alongside its patch — the durable half of
 /// the answer, paired with [`patch_for`] (`None` exactly when that is). The
 /// `shipped` event's timestamp is the item's `done_at`.
-pub(crate) fn event_for(verdict: &Verdict) -> Option<(EventKind, Option<String>)> {
+///
+/// `held` is the item's [`holds::gate`] answer, read fresh at verdict time. It
+/// changes the *line*, never the write: see the hold rule in the module docs.
+pub(crate) fn event_for(verdict: &Verdict, held: bool) -> Option<(EventKind, Option<String>)> {
     match verdict {
         Verdict::Waiting => None,
-        Verdict::Landed => Some((EventKind::Shipped, None)),
+        Verdict::Landed => Some((
+            EventKind::Shipped,
+            held.then(|| SHIPPED_WHILE_HELD.to_string()),
+        )),
+        // `pr_closed`, not `abandoned`: the fact is what happened to the pull
+        // request, and the item it belonged to is back on the board and perfectly
+        // alive. Nobody abandoned it — the label used to say they had (review
+        // finding S1 in .context/roadmap-pm-plan.md).
         Verdict::Abandoned => Some((
-            EventKind::Abandoned,
-            Some("PR closed without merging".to_string()),
+            EventKind::PrClosed,
+            Some("nothing merged — the item is back on the board".to_string()),
         )),
     }
+}
+
+/// Is this item still worth a request? `false` once the sweep has given up on this
+/// version of the row — which is what stops both pollers paying forever for a PR
+/// that will never answer. A write to the item resets the question.
+///
+/// Pure over the memory map, so the give-up rule is testable without a network, a
+/// clock, or a database.
+fn still_watching(seen: &HashMap<String, Misses>, id: &str, updated_at: i64) -> bool {
+    match seen.get(id) {
+        Some((version, misses)) => *version != updated_at || *misses < UNANSWERED_LIMIT,
+        None => true,
+    }
+}
+
+/// Fold in a pass that learned nothing, and report whether *this* is the pass that
+/// gives up — the one that writes the durable line, once.
+///
+/// Strictly `==` rather than `>=`: the count keeps rising while the row is
+/// untouched (harmlessly — [`still_watching`] has already stopped the polling), and
+/// only the crossing is news.
+fn record_miss(seen: &mut HashMap<String, Misses>, id: &str, updated_at: i64) -> bool {
+    let entry = seen.entry(id.to_string()).or_insert((updated_at, 0));
+    // A different row version is a fresh question, not a continuation.
+    if entry.0 != updated_at {
+        *entry = (updated_at, 0);
+    }
+    entry.1 += 1;
+    entry.1 == UNANSWERED_LIMIT
+}
+
+/// An answer clears the memory: whatever was wrong is over, and the next silence
+/// starts its own count.
+fn answered(seen: &mut HashMap<String, Misses>, id: &str) {
+    seen.remove(id);
+}
+
+/// What the board is told, durably and once, when a watched PR stops answering.
+///
+/// Names the three causes rather than guessing between them: the sweep genuinely
+/// cannot tell a deleted PR from a revoked token from a remote that is no longer
+/// this GitHub repo ([`poll`] collapses all of them), and the actions are the same
+/// either way — look at the PR, then either mark the item done by hand or put it
+/// back on the board.
+pub(crate) fn unreachable_note(number: i64) -> String {
+    format!(
+        "Can't reach PR #{number} — nothing has answered for {UNANSWERED_LIMIT} sweeps. It may \
+         have been deleted, or this repo's remote or token can't see it. Merge it yourself and \
+         mark this done, or put the item back on the board."
+    )
 }
 
 /// What the board is told when a PR is closed unmerged. Nothing persists it —
 /// same transient `roadmap:queue-note` channel the drainer explains a stuck
 /// queue on, for the same reason: it is true until the user does something
 /// about it, and the row's own next change supersedes it. The durable record is
-/// the `abandoned` event [`event_for`] pairs with the same verdict.
+/// the `pr_closed` event [`event_for`] pairs with the same verdict — named for the
+/// pull request, because the *item* was never abandoned.
 pub(crate) fn abandoned_note(number: i64) -> String {
     format!("PR #{number} was closed without merging — back on the board.")
 }
@@ -184,6 +314,9 @@ struct Watched {
     code: String,
     project_id: String,
     number: i64,
+    /// The row version this was read at — half the key of the sweep's
+    /// unanswered-PR memory (see [`Misses`]).
+    updated_at: i64,
 }
 
 /// Start the sweep. Called once from setup, beside [`drainer::spawn`].
@@ -192,19 +325,23 @@ struct Watched {
 /// finished and the only remaining authority is GitHub.
 pub fn spawn(app: AppHandle, db: Db) {
     tauri::async_runtime::spawn(async move {
+        // How many consecutive passes have learned nothing about each watched PR.
+        // Shared rather than owned by this loop because each pass runs in its own
+        // task; the same shape the drainer's note-dedup map has, for the same
+        // reason.
+        let seen: Arc<Unanswered> = Arc::new(Mutex::new(HashMap::new()));
         loop {
             // Each pass runs in its own task so a panic is contained: silently
             // dead until the next app start is the worst possible failure mode
             // for the thing that ships merged work — the same guard the
             // drainer's tick carries.
             let pass = {
-                let app = app.clone();
-                let db = db.clone();
+                let (app, db, seen) = (app.clone(), db.clone(), seen.clone());
                 tauri::async_runtime::spawn(async move {
                     let watching = watch_list(&db);
                     let idle = watching.is_empty();
                     if !idle {
-                        sweep(&app, &db, watching).await;
+                        sweep(&app, &db, watching, &seen).await;
                     }
                     idle
                 })
@@ -262,6 +399,7 @@ fn watch_list(db: &Db) -> Vec<Watched> {
                 code: i.code.clone(),
                 project_id: i.project_id.clone(),
                 number: i.pr_number?,
+                updated_at: i.updated_at,
             })
         })
         .collect()
@@ -274,30 +412,53 @@ fn watch_list(db: &Db) -> Vec<Watched> {
 /// unchanged PR nearly free (a 304 isn't billed). A project that raises its cap
 /// fills this list faster, which is the honest cost of the dial (see the drainer's
 /// docs) rather than a problem this loop has to solve.
-async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
+async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>, seen: &Unanswered) {
     // One repo path per project per sweep — resolving it is a database read,
     // and every item in a project shares the answer.
     let mut repos: HashMap<String, Option<PathBuf>> = HashMap::new();
     for w in watching {
+        // Already given up on this version of the row: neither this poll nor the
+        // GraphQL one the card makes is paid for again until something changes.
+        if !still_watching(&seen.lock(), &w.id, w.updated_at) {
+            continue;
+        }
         let repo = repos
             .entry(w.project_id.clone())
             .or_insert_with(|| project_repo(db, &w.project_id))
             .clone();
-        let Some(repo) = repo else {
-            // No repo row, or the project was deleted under us: there is no
-            // remote to ask. Say nothing and touch nothing.
-            tracing::debug!(item = %w.code, "roadmap merge sweep: no repo to resolve the PR against");
-            continue;
+        // No repo row, or the project was deleted under us: there is no remote to
+        // ask. One more way to learn nothing, counted as such rather than skipped
+        // in silence — an item under review in a repo-less project is exactly the
+        // forever-wedge this count exists to name.
+        let state = match &repo {
+            Some(repo) => poll(repo, w.number).await,
+            None => {
+                tracing::debug!(item = %w.code, "roadmap merge sweep: no repo to resolve the PR against");
+                None
+            }
         };
-        let state = poll(&repo, w.number).await;
+        if state.is_none() {
+            // `None` is `Waiting`, which writes nothing to the board either way —
+            // the only question left is whether it has been nothing for too long.
+            if record_miss(&mut seen.lock(), &w.id, w.updated_at) {
+                unreachable(app, db, &w);
+            }
+            continue;
+        }
+        // Answered: whatever was wrong is over, and the next silence starts fresh.
+        answered(&mut seen.lock(), &w.id);
         let outcome = verdict(state);
         let Some(patch) = patch_for(&outcome) else {
             continue;
         };
+        // Read fresh, after the network round-trip, and only where it matters: a
+        // hold placed while we were asking GitHub is a hold that applies to this
+        // landing. It does not stop the write — see the hold rule above.
+        let held = matches!(outcome, Verdict::Landed) && held_now(db, &w.id);
         // `patch_for` and `event_for` are `Some` for exactly the same verdicts;
         // the expect documents that rather than inventing a fallback event.
-        let (kind, detail) = event_for(&outcome).expect("a verdict that writes also records");
-        tracing::info!(item = %w.code, pr = w.number, ?outcome, "roadmap merge sweep");
+        let (kind, detail) = event_for(&outcome, held).expect("a verdict that writes also records");
+        tracing::info!(item = %w.code, pr = w.number, ?outcome, held, "roadmap merge sweep");
         // Conditional on the row still being in review: the verdict was decided
         // over a network read, and a row the user moved meanwhile (marked done
         // by hand, re-queued after a delete) must not be stamped over. A miss
@@ -315,6 +476,13 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
             },
         );
         match outcome {
+            // A held landing unblocks nothing: the dep gate still refuses this
+            // item ([`drainer::done_codes`]), so there is no queue movement to
+            // hurry along. The `shipped` line already said so.
+            Verdict::Landed if held => tracing::info!(
+                item = %w.code,
+                "roadmap merge sweep: shipped a held item — nothing waiting on it may move"
+            ),
             Verdict::Landed => {
                 // The item is `done`, which is what a dependant's dep gate is
                 // waiting for. Nudge rather than let it sit until the drainer's
@@ -330,6 +498,74 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>) {
                 },
             ),
             Verdict::Waiting => {}
+        }
+    }
+}
+
+/// Say — durably, and once — that a watched pull request has stopped answering.
+///
+/// The durable half goes through [`drainer::record_wedge`], the one writer of
+/// standing-blockage lines: same `blocked` kind as the drainer's four wedges, and
+/// the same dedup against the item's newest event, which is what keeps a restart
+/// (which empties this sweep's memory and starts the count again) from appending a
+/// second identical line. The transient half is the note channel the card shows
+/// now, exactly as the drainer explains a stuck queue.
+///
+/// Writes no *row*: the item is still under review, because it still is — nothing
+/// here knows what happened to the PR, only that nobody will say. Leaving the
+/// status alone is also what keeps the memory's row-version key stable, so a
+/// give-up cannot re-trigger itself.
+fn unreachable(app: &AppHandle, db: &Db, w: &Watched) {
+    let text = unreachable_note(w.number);
+    tracing::warn!(
+        item = %w.code,
+        pr = w.number,
+        "roadmap merge sweep: giving up on a PR that stopped answering"
+    );
+    let recorded = {
+        let conn = db.lock();
+        match super::store::get(&conn, &w.id) {
+            Ok(Some(item)) => drainer::record_wedge(&conn, &item, &text),
+            // The row went while we were asking: nothing to record it against.
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(item = %w.code, error = %e, "roadmap merge sweep: cannot read the item");
+                None
+            }
+        }
+    };
+    if let Some(event) = &recorded {
+        super::emit_item_event(app, event);
+    }
+    drainer::emit_note(
+        app,
+        &QueueNote {
+            item_id: w.id.clone(),
+            code: w.code.clone(),
+            note: text,
+        },
+    );
+}
+
+/// Is autonomous progress on this item stopped, right now? One lock, one gate
+/// ([`holds::gate`], which answers for the item's own hold and the board's).
+///
+/// Read after the network round-trip rather than off the watch list, because the
+/// interesting case is precisely a hold placed *while* the sweep was asking GitHub
+/// — the PM holding an item as its PR lands is the scenario the whole rule exists
+/// for. A row that has since been deleted is not held; the conditional write that
+/// follows misses on its own.
+///
+/// Fail-closed on a read error, like every other hold read: the cost of being
+/// wrong the safe way is one extra clause on a `shipped` line.
+fn held_now(db: &Db, item_id: &str) -> bool {
+    let conn = db.lock();
+    match super::store::get(&conn, item_id) {
+        Ok(Some(item)) => holds::gate(&conn, &item).is_some(),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(item_id, error = %e, "roadmap merge sweep: cannot read the item's hold");
+            true
         }
     }
 }
