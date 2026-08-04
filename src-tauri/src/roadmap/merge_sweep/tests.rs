@@ -14,7 +14,6 @@ fn in_review(code: &str, number: Option<i64>) -> RoadmapItem {
         id: format!("id-{code}"),
         project_id: "p1".into(),
         code: code.into(),
-        parent_id: None,
         title: format!("do {code}"),
         why: String::new(),
         horizon: Horizon::Now,

@@ -27,8 +27,6 @@ export interface RoadmapItem {
   project_id: string;
   /** Short human id ("FLT-142"), unique per project and never reallocated. */
   code: string;
-  /** Reserved for sub-items; always null today (no UI writes it). */
-  parent_id: string | null;
   title: string;
   /** The one line that justifies the item's place on the board. */
   why: string;

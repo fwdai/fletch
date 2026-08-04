@@ -74,9 +74,9 @@ pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::R
     let now = now_millis();
     conn.execute(
         "INSERT INTO roadmap_items
-           (id, project_id, code, parent_id, title, why, horizon, status, rank, area, source,
+           (id, project_id, code, title, why, horizon, status, rank, area, source,
             accept_json, deps_json, workflow_def_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
         params![
             id,
             project_id,
@@ -675,7 +675,6 @@ mod tests {
         assert_eq!(bare.source, ItemSource::User);
         assert!(bare.accept.is_empty() && bare.deps.is_empty());
         assert_eq!(bare.why, "");
-        assert!(bare.parent_id.is_none(), "v1 never writes a parent");
 
         let full = create(
             &conn,

@@ -139,7 +139,6 @@ mod tests {
             id: "i1".into(),
             project_id: "p1".into(),
             code: "FLT-1".into(),
-            parent_id: None,
             title: "t".into(),
             why: String::new(),
             horizon: Horizon::Now,
