@@ -135,9 +135,9 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
       </div>
       <p className="ps-section-lead text-sm">
         When a run settles, the PM agent reads the outcome against the item it wrote and records
-        what deviated — as notes on the card and proposals you rule on. On by default; turning it
-        off costs one chat turn per finished run and leaves nobody watching whether the work matched
-        the plan.
+        what deviated — as notes on the card and proposals you rule on. On by default; it costs one
+        chat turn per finished run, and turning it off leaves nobody watching whether the work
+        matched the plan.
       </p>
 
       <div className="ps-field ps-name-row">

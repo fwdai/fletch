@@ -71,7 +71,7 @@
   color: var(--success);
 }
 /* Below this the three zones stop fitting side by side. The two middle counts
- * go first: "in flight" and "shipped" are the ends of the pipeline and carry
+ * go first: "now" and "shipped" are the ends of the board and carry
  * the most on their own. `display: contents` means the wrapper is invisible to
  * the flex layout at full width — the strip lays out as if it weren't there. */
 .ps-stats-mid {

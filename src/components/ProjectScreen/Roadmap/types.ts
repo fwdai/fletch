@@ -58,9 +58,16 @@ export function toBoardItem(item: RoadmapItem): BoardItem {
   };
 }
 
-/** Board groups, in display order. The same labels drive the header stats. */
+/** Board groups, in display order. The same labels drive the header stats.
+ *
+ *  Planning altitude, deliberately not pipeline state: a horizon says how
+ *  committed the team is to an item, and gates *nothing* — the drainer dispatches
+ *  on status, rank and deps, and will happily build a `later` item the user
+ *  queues. The pipeline words belong to the surfaces that own them (the in-motion
+ *  rail, the status chips), and the same wording is what the PM is told in
+ *  `src-tauri/src/instructions/roadmap.md`. */
 export const HORIZONS: { id: Horizon; label: string; note: string }[] = [
-  { id: "now", label: "In flight", note: "being built" },
-  { id: "next", label: "Next", note: "queued" },
-  { id: "later", label: "Later", note: "backlog" },
+  { id: "now", label: "Now", note: "committed" },
+  { id: "next", label: "Next", note: "up next" },
+  { id: "later", label: "Later", note: "someday" },
 ];

@@ -78,7 +78,11 @@ Fields, per item:
 
 - `title` — required, one line, imperative ("Add the queue drainer").
 - `why` — the one line that justifies its place on the board. Write it.
-- `horizon` — required: `now` (being built), `next` (up next), `later` (backlog).
+- `horizon` — required, and it is planning altitude, not pipeline state: `now`
+  (committed), `next` (up next), `later` (someday). It says how committed the
+  roadmap is to an item; it gates nothing, so a `now` item is not necessarily
+  building and a `later` one can still be queued. What is actually happening to
+  an item is its `status`.
 - `area` — optional product-map domain.
 - `accept` — optional array of acceptance criteria: what makes it done.
 - `deps` — optional array of what this must land after. Either a **code**
