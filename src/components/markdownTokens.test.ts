@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitTokens, tokenPattern } from "./markdownTokens";
+import { remarkTokenChips, splitTokens, TOKEN_CHIP_ATTR, tokenPattern } from "./markdownTokens";
 
 const pattern = (...tokens: string[]) => {
   const p = tokenPattern(new Set(tokens));
@@ -61,5 +61,108 @@ describe("splitTokens", () => {
     const p = pattern("FLT-104");
     expect(splitTokens("FLT-104", p)).toEqual([{ token: "FLT-104" }]);
     expect(splitTokens("FLT-104", p)).toEqual([{ token: "FLT-104" }]);
+  });
+});
+
+// The mdast half: `remarkTokenChips` walks a real tree shape and rewrites in
+// place. Literal trees rather than a parsed document, because what is under test
+// is the traversal (which nodes it enters, which it refuses) and the exact node
+// the renderer receives — not markdown parsing.
+describe("remarkTokenChips", () => {
+  /** The plugin applied to a tree, in place. `remarkTokenChips` is a plugin
+   *  *factory* (built per token set so the pattern compiles once), so it is
+   *  called twice: once for the set, once as unified would call it. */
+  const run = (tree: unknown, ...tokens: string[]) => {
+    remarkTokenChips(new Set(tokens.length ? tokens : ["FLT-104"]))()(
+      tree as Parameters<ReturnType<ReturnType<typeof remarkTokenChips>>>[0],
+    );
+    return tree;
+  };
+
+  const text = (value: string) => ({ type: "text", value });
+  /** The chip node the renderer turns into a `<button>`: an `emphasis` carrying
+   *  the hast overrides, with the matched token as its only child. */
+  const chip = (token: string) => ({
+    type: "emphasis",
+    children: [{ type: "text", value: token }],
+    data: {
+      hName: "button",
+      hProperties: { type: "button", className: "md-chip", [TOKEN_CHIP_ATTR]: token },
+    },
+  });
+
+  it("turns a token in prose into a chip node, leaving the prose around it", () => {
+    const tree = {
+      type: "root",
+      children: [{ type: "paragraph", children: [text("see FLT-104")] }],
+    };
+    run(tree);
+    expect(tree).toEqual({
+      type: "root",
+      children: [{ type: "paragraph", children: [text("see "), chip("FLT-104")] }],
+    });
+  });
+
+  it("never touches code — a sample that mentions a code is a sample", () => {
+    // `inlineCode` and `code` are their own node types carrying a `value` and no
+    // children, so the walk has nothing to rewrite inside them.
+    const tree = {
+      type: "root",
+      children: [
+        { type: "paragraph", children: [{ type: "inlineCode", value: "FLT-104" }] },
+        { type: "code", lang: "ts", value: "// FLT-104\n" },
+      ],
+    };
+    const before = structuredClone(tree);
+    run(tree);
+    expect(tree).toEqual(before);
+  });
+
+  it("never touches a link — a token inside one is already a link", () => {
+    const tree = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            { type: "link", url: "https://x/y", children: [text("FLT-104")] },
+            { type: "linkReference", identifier: "r", children: [text("FLT-104")] },
+          ],
+        },
+      ],
+    };
+    const before = structuredClone(tree);
+    run(tree);
+    expect(tree).toEqual(before);
+  });
+
+  it("recurses through nested inline content", () => {
+    // `strong` inside a `heading`: two levels below the root, and the rewrite has
+    // to reach it — the PM quotes codes in headings and bold text as readily as
+    // in paragraphs.
+    const tree = {
+      type: "root",
+      children: [
+        {
+          type: "heading",
+          depth: 2,
+          children: [{ type: "strong", children: [text("FLT-104 first")] }],
+        },
+      ],
+    };
+    run(tree);
+    expect(tree.children[0].children[0]).toEqual({
+      type: "strong",
+      children: [chip("FLT-104"), text(" first")],
+    });
+  });
+
+  it("does nothing at all with no tokens to match", () => {
+    // No pattern to compile, so the tree is never walked — the case every chat
+    // outside the roadmap is in.
+    const tree = { type: "root", children: [{ type: "paragraph", children: [text("FLT-104")] }] };
+    const before = structuredClone(tree);
+    remarkTokenChips(new Set())()(tree);
+    expect(tree).toEqual(before);
   });
 });

@@ -7,7 +7,7 @@
 //! surface every other agent has (its `AgentCaps::advisory()` still refuses the
 //! publish ops, one mechanism checked once).
 //!
-//! Six ops, all scoped to the project this chat belongs to. The project id is
+//! Seven ops, all scoped to the project this chat belongs to. The project id is
 //! stamped at construction from the workspace record, never taken from `args`:
 //! a chat can only ever read and write its own project's board.
 //!
@@ -35,10 +35,14 @@
 //!   the sequence the PM argues for. Board scoped rather than item scoped, and
 //!   refused unless it covers the orderable set exactly, so what the user rules
 //!   on is unambiguous.
-//! - `roadmap_note` — the one op that writes *directly*, because it advances
-//!   nothing: a durable `note` on the item's history. Attention, not action.
-//!   That is the whole of the PM's direct-write licence (invariant 2 in
-//!   .context/roadmap-pm-plan.md): it may raise a hand, never move a piece.
+//! - `roadmap_note` and `roadmap_hold` — the two ops that write *directly*, and
+//!   the whole of the PM's direct-write licence (invariant 2 in
+//!   .context/roadmap-pm-plan.md): it may raise a hand or pull the brake, never
+//!   move a piece. `roadmap_note` advances nothing (a durable `note` on the
+//!   item's history — attention, not action); `roadmap_hold` only ever *reduces*
+//!   autonomy, stopping dispatch on one item or the whole board until the user
+//!   signs off. There is deliberately no release op: releasing is the user's
+//!   alone, so an agent can never lift its own brake.
 //!
 //! Validation rejects the whole batch rather than creating a partial one: the
 //! PM gets one precise error it can fix and retry, and the user never sees half
@@ -53,6 +57,7 @@ use tauri::AppHandle;
 
 use crate::roadmap::deps;
 use crate::roadmap::events::{self, EventActor, EventKind, ItemEvent};
+use crate::roadmap::holds::{self, ProjectHold};
 use crate::roadmap::order::{self, OrderProposal};
 use crate::roadmap::proposals::{self, Proposal, ProposalKind, ProposalPatch};
 use crate::roadmap::store;
@@ -64,13 +69,14 @@ use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 /// The ops this dispatcher owns. Pinned by a test against the instruction block
 /// so the two can't drift — an agent told about an op that doesn't exist (or
 /// given one it was never told about) is a silently broken tool.
-pub const OPS: [&str; 6] = [
+pub const OPS: [&str; 7] = [
     "roadmap_list",
     "roadmap_propose",
     "roadmap_propose_update",
     "roadmap_propose_discard",
     "roadmap_propose_order",
     "roadmap_note",
+    "roadmap_hold",
 ];
 
 /// Most items one `roadmap_propose` call may carry. A proposal is a thing a
@@ -172,6 +178,22 @@ struct NoteArgs {
     note: String,
 }
 
+/// `roadmap_hold` args: what to stop, and why. Both required — a brake with no
+/// reason leaves the user a button and no way to know what it undoes.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HoldArgs {
+    /// An item code, or the literal `"project"` for the whole board.
+    scope: String,
+    #[serde(default)]
+    reason: String,
+}
+
+/// The `scope` value that means "the whole board" rather than one item. A literal
+/// rather than a second op, because the two holds are one decision at two
+/// altitudes and the PM should pick the altitude, not the tool.
+const PROJECT_SCOPE: &str = "project";
+
 /// Decode `args` into an op's shape. A missing `args` arrives as JSON null,
 /// which is the same as `{}` for every op here.
 fn parse_args<T: Default + serde::de::DeserializeOwned>(args: &Value) -> Result<T, String> {
@@ -221,6 +243,8 @@ fn one_of(values: &[&str]) -> String {
 /// `pending` is the item's outstanding delta, if any, summarized as
 /// `pending_proposal` — so the PM knows what it has already asked for and
 /// never re-proposes blind (or mistakes "not applied yet" for "declined").
+/// A hold projects the same way, as `held`: the brake is a state the PM can set
+/// and cannot lift, so it has to be able to read it.
 ///
 /// `last` is the item's newest history row, projected as `last_event`. This is
 /// what turns the listing from an intake queue into an execution report: the
@@ -276,6 +300,19 @@ fn compact(
         .filter(|u| !u.is_empty())
     {
         o.insert("pr".into(), json!({ "url": url }));
+    }
+    // The brake, if it is on. Projected for the same reason `pending_proposal`
+    // is: the PM has to be able to see the state of a thing it can set, or it
+    // would re-hold an item that is already held (and quote a stale reason back
+    // to the user). `by` matters because only one of the two answers is the PM's
+    // own doing.
+    if let Some(reason) = &item.hold_reason {
+        let mut h = Map::new();
+        h.insert("reason".into(), json!(reason));
+        if let Some(by) = item.held_by {
+            h.insert("by".into(), json!(by.as_str()));
+        }
+        o.insert("held".into(), Value::Object(h));
     }
     // Quoted only while the item can still be ruled: an ask whose item has
     // advanced past the gate has no card to rule it from, and quoting it
@@ -600,16 +637,18 @@ fn proposable<'a>(items: &'a [RoadmapItem], code: &str) -> Result<&'a RoadmapIte
     }
 }
 
-/// May an ask against an item with this status still be ruled on? Anything
-/// from `active` on is being built or judged. Shared by the propose-time gate
-/// above and the `compact` projection, so the PM is never quoted an ask the
-/// user has no card to rule. (The ruling-side copy of this set lives in
-/// `roadmap::proposal_gate`; unifying them is filed for B5.)
+/// May an ask against an item with this status still be ruled on?
+///
+/// One predicate for both gates: this side refuses to *park* an ask the user
+/// could never rule, and `roadmap::proposal_gate` re-checks at ruling time
+/// (the board moves in between). The set lives on the status
+/// ([`ItemStatus::is_rulable`]) so the two can't drift; each keeps its own
+/// message, because one is read by the agent and one by the user.
+///
+/// Also read by the `compact` projection, so the PM is never quoted an ask the
+/// user has no card to rule.
 fn rulable(status: ItemStatus) -> bool {
-    matches!(
-        status,
-        ItemStatus::Proposed | ItemStatus::Open | ItemStatus::Queued
-    )
+    status.is_rulable()
 }
 
 /// Normalize and validate an update's patch against the board, or say exactly
@@ -848,6 +887,109 @@ fn note_op(
     }
 }
 
+// ───────────────────────────── roadmap_hold ─────────────────────────────
+
+/// What a hold stopped, so the dispatcher can announce the right thing once the
+/// lock drops: an item's hold rides its row (which carries the trio) plus the
+/// `held` line, a project's is the table row itself.
+enum Held {
+    Item(Box<RoadmapItem>, Box<ItemEvent>),
+    Project(ProjectHold),
+}
+
+/// `roadmap_hold`: stop autonomous progress on one item, or on the whole board,
+/// until the user signs off.
+///
+/// The PM's second (and last) direct write, and it is allowed for the same reason
+/// the first is — the conservative direction of **invariant 2** (see
+/// .context/roadmap-pm-plan.md): a hold can only ever *reduce* autonomy. It
+/// dispatches nothing, queues nothing, edits nothing; it takes something the app
+/// would have done on its own and makes it wait for a human. Every ask that would
+/// *advance* state stays a proposal the user rules on.
+///
+/// The asymmetry is the safety property: there is **no release op**. Only the
+/// typed commands (`roadmap_release_item` / `roadmap_release_project`) lift a
+/// hold, so every release is a user action by construction and an agent can never
+/// undo its own brake.
+///
+/// Like `roadmap_note`, the target may be at **any** status: the moment a hold is
+/// most worth placing is usually mid-run, on the `active` item whose PR is about
+/// to answer the wrong question — exactly the item a proposal is refused on.
+/// Holding an already-held scope replaces the reason and records another `held`,
+/// so the trail keeps what was superseded.
+fn hold_op(
+    conn: &Connection,
+    project_id: &str,
+    id: &str,
+    args: &Value,
+) -> (Response, Option<Held>) {
+    let err = |msg: String| (Response::err(id, format!("roadmap_hold: {msg}")), None);
+    let args: HoldArgs = match parse_required(args) {
+        Ok(a) => a,
+        Err(e) => return err(e),
+    };
+    let reason = match holds::clean_reason(&args.reason) {
+        Ok(reason) => reason,
+        Err(e) => return err(e),
+    };
+    let scope = args.scope.trim();
+    if scope.is_empty() {
+        return err(format!(
+            "`scope` is required — an item code, or {PROJECT_SCOPE:?} for the whole board"
+        ));
+    }
+
+    if scope == PROJECT_SCOPE {
+        // No item event: a board-wide stop belongs to no row (see
+        // `roadmap::roadmap_hold_project`). The hold row is the durable record.
+        let stored = match holds::hold_project(conn, project_id, &reason, EventActor::Pm) {
+            Ok(hold) => hold,
+            Err(e) => return err(e.to_string()),
+        };
+        let payload = json!({ "held": { "scope": PROJECT_SCOPE } });
+        return match serde_json::to_string(&payload) {
+            Ok(stdout) => (
+                Response::ok(id, 0, stdout, String::new()),
+                Some(Held::Project(stored)),
+            ),
+            // The board is stopped either way — say so rather than implying
+            // nothing happened, and still announce it.
+            Err(e) => (
+                Response::err(id, format!("roadmap_hold: held, but {e}")),
+                Some(Held::Project(stored)),
+            ),
+        };
+    }
+
+    let items = match store::list(conn, project_id) {
+        Ok(items) => items,
+        Err(e) => return err(e.to_string()),
+    };
+    let Some(item) = items.iter().find(|i| i.code == scope) else {
+        return err(format!(
+            "no item {scope:?} on this board — `roadmap_list` shows what exists, or use \
+             {PROJECT_SCOPE:?} to hold the whole board"
+        ));
+    };
+    // One write path for both doors: the command layer's `hold_item` places the
+    // hold and records the `held` line in this same guard, so a held row can
+    // never exist without the line saying who stopped it.
+    let (item, event) = match crate::roadmap::hold_item(conn, &item.id, &reason, EventActor::Pm) {
+        Ok(pair) => pair,
+        Err(e) => return err(e),
+    };
+
+    let payload = json!({ "held": { "scope": item.code } });
+    let held = Some(Held::Item(Box::new(item), Box::new(event)));
+    match serde_json::to_string(&payload) {
+        Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), held),
+        Err(e) => (
+            Response::err(id, format!("roadmap_hold: held, but {e}")),
+            held,
+        ),
+    }
+}
+
 // ───────────────────────── roadmap_propose_order ────────────────────────
 
 /// `roadmap_propose_order`: park a whole-board order ask, replacing any the
@@ -1004,6 +1146,30 @@ impl RpcDispatcher for RoadmapDispatcher {
                     }
                     (resp, Vec::new())
                 }
+                "roadmap_hold" => {
+                    // The second direct write, same lock discipline: the hold and
+                    // its `held` line land under the lock, and the board hears
+                    // about them after the guard drops.
+                    let (resp, held) = {
+                        let conn = self.db.lock();
+                        hold_op(&conn, &self.project_id, id, args)
+                    };
+                    if let (Some(app), Some(held)) = (&self.app, &held) {
+                        match held {
+                            Held::Item(item, event) => {
+                                // The row carries the hold trio, so the card's
+                                // chip appears on the ordinary item stream.
+                                crate::roadmap::emit_item(app, item);
+                                crate::roadmap::emit_item_event(app, event);
+                            }
+                            Held::Project(hold) => crate::roadmap::emit_project_hold(app, hold),
+                        }
+                    }
+                    (resp, Vec::new())
+                }
+                // Every other `roadmap_*` name, including the release op the PM
+                // does not have: the refusal names the ops it does, so a wrong
+                // guess costs one round trip rather than a silent no-op.
                 other => (
                     Response::err(
                         id,
@@ -1086,6 +1252,11 @@ mod tests {
     fn note(db: &Db, args: Value) -> (Response, Option<ItemEvent>) {
         let conn = db.lock();
         note_op(&conn, "p1", "r1", &args)
+    }
+
+    fn hold(db: &Db, args: Value) -> (Response, Option<Held>) {
+        let conn = db.lock();
+        hold_op(&conn, "p1", "r1", &args)
     }
 
     fn one_item(title: &str) -> Value {
@@ -1699,6 +1870,248 @@ mod tests {
         );
     }
 
+    // ───────────────────────────── roadmap_hold ─────────────────────────
+
+    /// The PM's brake on one item: the trio lands on the row, a `held` line lands
+    /// on the trail attributed to the PM, and nothing about the item *advances* —
+    /// which is the whole reason this direct write is licensed (invariant 2).
+    #[test]
+    fn hold_stops_one_item_and_advances_nothing() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("target")).ok); // MCA-100
+        let before = store::list(&db.lock(), "p1").unwrap();
+
+        let (resp, held) = hold(
+            &db,
+            json!({"scope": "MCA-100", "reason": "the run is building the case this ticket scoped out"}),
+        );
+        assert!(resp.ok, "{resp:?}");
+        let out: Value = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        assert_eq!(out["held"]["scope"], "MCA-100");
+
+        let Some(Held::Item(item, event)) = held else {
+            panic!("an item hold announces the row and its line");
+        };
+        assert_eq!(
+            item.hold_reason.as_deref(),
+            Some("the run is building the case this ticket scoped out")
+        );
+        assert_eq!(item.held_by, Some(EventActor::Pm));
+        // Status, rank, title: byte-for-byte what they were.
+        assert_eq!(item.status, before[0].status);
+        assert_eq!(item.rank, before[0].rank);
+        assert_eq!(item.title, before[0].title);
+        assert_eq!(event.kind, EventKind::Held);
+        assert_eq!(event.actor, EventActor::Pm);
+        assert_eq!(event.detail.as_deref(), item.hold_reason.as_deref());
+
+        // And the listing shows the brake back, so the PM never re-holds blind.
+        let resp = list(&db, Value::Null);
+        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        assert_eq!(
+            rows[0]["held"]["reason"],
+            "the run is building the case this ticket scoped out"
+        );
+        assert_eq!(rows[0]["held"]["by"], "pm");
+        assert_eq!(rows[0]["last_event"]["kind"], "held");
+    }
+
+    /// The board-scope hold: one row per project, no item touched.
+    #[test]
+    fn hold_project_stops_the_whole_board() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("target")).ok); // MCA-100
+
+        let (resp, held) = hold(
+            &db,
+            json!({"scope": "project", "reason": "the same workflow has failed the same way twice"}),
+        );
+        assert!(resp.ok, "{resp:?}");
+        let out: Value = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        assert_eq!(out["held"]["scope"], "project");
+
+        let Some(Held::Project(stored)) = held else {
+            panic!("a project hold announces its row");
+        };
+        assert_eq!(
+            stored.reason,
+            "the same workflow has failed the same way twice"
+        );
+        assert_eq!(stored.held_by, EventActor::Pm);
+        assert_eq!(holds::get_project(&db.lock(), "p1").unwrap(), Some(stored));
+
+        // No item was touched, and no item history invented.
+        let rows = store::list(&db.lock(), "p1").unwrap();
+        assert!(rows.iter().all(|i| !i.is_held()));
+        let trail = events::list_for_item(&db.lock(), &rows[0].id).unwrap();
+        assert!(trail.iter().all(|e| e.kind == EventKind::Proposed));
+    }
+
+    /// Every way a hold can be wrong, named precisely, stopping nothing.
+    #[test]
+    fn hold_rejects_bad_asks_precisely() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("target")).ok); // MCA-100
+        let long = "x".repeat(holds::MAX_REASON + 1);
+
+        for (args, needle) in [
+            (json!({"scope": "MCA-777", "reason": "why"}), "no item"),
+            // The refusal points at the other legal spelling, since a PM that
+            // meant the whole board would otherwise guess.
+            (json!({"scope": "MCA-777", "reason": "why"}), "\"project\""),
+            (
+                json!({"scope": "MCA-100", "reason": "  "}),
+                "`reason` is required",
+            ),
+            (json!({"scope": "MCA-100"}), "`reason` is required"),
+            (
+                json!({"scope": "  ", "reason": "why"}),
+                "`scope` is required",
+            ),
+            (
+                json!({"scope": "MCA-100", "reason": long.clone()}),
+                "keep it under",
+            ),
+            // A hold is not a back door to the fields the propose ops gate.
+            (
+                json!({"scope": "MCA-100", "reason": "why", "status": "done"}),
+                "unknown field",
+            ),
+            (json!({"reason": "no scope"}), "missing field `scope`"),
+        ] {
+            let (resp, held) = hold(&db, args);
+            assert!(!resp.ok, "should have been rejected");
+            let e = resp.error.unwrap();
+            assert!(e.contains(needle), "expected {needle:?} in {e:?}");
+            assert!(held.is_none());
+        }
+        // Args at all are required, and nothing above stopped anything.
+        assert!(!hold(&db, Value::Null).0.ok);
+        let rows = store::list(&db.lock(), "p1").unwrap();
+        assert!(rows.iter().all(|i| !i.is_held()));
+        assert!(holds::get_project(&db.lock(), "p1").unwrap().is_none());
+
+        // Exactly at the cap is fine — the refusal is for going over it.
+        let (resp, _) = hold(
+            &db,
+            json!({"scope": "MCA-100", "reason": "y".repeat(holds::MAX_REASON)}),
+        );
+        assert!(resp.ok, "{resp:?}");
+    }
+
+    /// Holding an already-held scope replaces the reason, at both scopes. The
+    /// user rules on the PM's current position, not a backlog of superseded ones —
+    /// and the item's trail keeps the line that was replaced.
+    #[test]
+    fn holding_an_already_held_scope_replaces_the_reason() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("target")).ok); // MCA-100
+
+        assert!(
+            hold(&db, json!({"scope": "MCA-100", "reason": "first"}))
+                .0
+                .ok
+        );
+        let (resp, held) = hold(&db, json!({"scope": "MCA-100", "reason": "second"}));
+        assert!(resp.ok, "{resp:?}");
+        let Some(Held::Item(item, _)) = held else {
+            panic!("expected an item hold");
+        };
+        assert_eq!(item.hold_reason.as_deref(), Some("second"));
+        let trail = events::list_for_item(&db.lock(), &item.id).unwrap();
+        let held_lines: Vec<&str> = trail
+            .iter()
+            .filter(|e| e.kind == EventKind::Held)
+            .filter_map(|e| e.detail.as_deref())
+            .collect();
+        assert_eq!(held_lines, vec!["second", "first"]);
+
+        assert!(hold(&db, json!({"scope": "project", "reason": "one"})).0.ok);
+        assert!(hold(&db, json!({"scope": "project", "reason": "two"})).0.ok);
+        let stored = holds::get_project(&db.lock(), "p1").unwrap().unwrap();
+        assert_eq!(stored.reason, "two", "one hold per board");
+    }
+
+    /// A hold lands where a proposal is refused — `active`, `in_review`, `done`.
+    /// Mid-run is exactly when the brake is worth pulling, and that is exactly
+    /// the item the propose ops turn away.
+    #[test]
+    fn hold_lands_on_items_no_proposal_could_touch() {
+        let db = test_db("p1");
+        for status in [ItemStatus::Active, ItemStatus::InReview, ItemStatus::Done] {
+            let it = {
+                let conn = db.lock();
+                store::create(
+                    &conn,
+                    "p1",
+                    &NewItem {
+                        title: "in flight".into(),
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            };
+            let (resp, held) = hold(
+                &db,
+                json!({"scope": it.code, "reason": "this answers a narrower question than agreed"}),
+            );
+            assert!(
+                resp.ok,
+                "a hold on {} must be allowed: {resp:?}",
+                status.as_str()
+            );
+            let Some(Held::Item(item, _)) = held else {
+                panic!("expected an item hold");
+            };
+            assert!(item.is_held());
+            // The proposal path still refuses it — the two gates say different
+            // things on purpose.
+            let items = store::list(&db.lock(), "p1").unwrap();
+            assert!(proposable(&items, &it.code).is_err());
+        }
+    }
+
+    /// The brake reaches the board through the dispatcher, which is the only path
+    /// the PM actually has — and the release the PM does *not* have gets the
+    /// precise unknown-op refusal naming the real ops.
+    #[tokio::test]
+    async fn hold_routes_through_the_dispatcher_and_release_does_not_exist() {
+        let db = test_db("p1");
+        let d = dispatcher(&db, "p1");
+        assert!(propose(&db, one_item("target")).ok); // MCA-100
+
+        let resp = d
+            .dispatch(
+                "r1",
+                "roadmap_hold",
+                &json!({"scope": "MCA-100", "reason": "confirm the direction first"}),
+            )
+            .await
+            .0;
+        assert!(resp.ok, "{resp:?}");
+        let rows = store::list(&db.lock(), "p1").unwrap();
+        assert_eq!(
+            rows[0].hold_reason.as_deref(),
+            Some("confirm the direction first")
+        );
+
+        // Releasing is the user's alone: there is no op, and the plausible guess
+        // is refused with the list of ops that do exist.
+        let resp = d
+            .dispatch("r2", "roadmap_release", &json!({"scope": "MCA-100"}))
+            .await
+            .0;
+        assert!(!resp.ok);
+        let e = resp.error.unwrap();
+        assert!(e.contains("unknown roadmap op"), "{e}");
+        assert!(e.contains("roadmap_hold"), "{e}");
+        assert!(!e.contains("roadmap_release,"), "{e}");
+        // And nothing was lifted.
+        let rows = store::list(&db.lock(), "p1").unwrap();
+        assert!(rows[0].is_held());
+    }
+
     #[test]
     fn propose_update_parks_a_delta_and_the_listing_shows_it() {
         let db = test_db("p1");
@@ -2004,7 +2417,17 @@ mod tests {
     fn the_instruction_block_documents_exactly_these_ops() {
         // The PM only knows an op exists because the injected block says so; a
         // rename on either side is a tool the agent can't call.
+        //
+        // The count is pinned too, and the block's own prose states it ("seven
+        // extra RPC ops"): an op added without a word about it in the block is an
+        // op the agent will never call, and a number in the prose that no longer
+        // matches is the first thing a reader would trust and shouldn't.
+        assert_eq!(OPS.len(), 7);
         let block = crate::instructions::roadmap_block().expect("shipped default is non-empty");
+        assert!(
+            block.contains("seven extra RPC ops"),
+            "the block's own count must match OPS"
+        );
         for op in OPS {
             assert!(block.contains(op), "instruction block never mentions {op}");
         }

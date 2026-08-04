@@ -23,6 +23,9 @@ function item(over: Partial<RoadmapItem> = {}): RoadmapItem {
     pr_url: null,
     pr_number: 1,
     created_at: 0,
+    hold_reason: null,
+    held_by: null,
+    held_at: null,
     updated_at: 0,
     ...over,
   };

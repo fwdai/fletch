@@ -13,10 +13,12 @@ import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { formatAge } from "@/util/format";
 import { pausedLabel } from "@/workflows/run/status";
-import { eventLine } from "../itemHistory";
+import { EVENT_LABEL, eventDetailUrl, eventLine } from "../itemHistory";
 import { buildProposalDiff, isEmptyDiff } from "../proposalDiff";
 import type { BoardItem, ItemSource, ItemStatus } from "../types";
 import { reviewGate } from "../useItemReviews";
+import { DecisionBar } from "./DecisionBar";
+import { HoldAction, HoldChip } from "./HoldControl";
 import type { CardDnd } from "./useBoardDnd";
 
 /** Where the item came from, as a one-glyph tag. */
@@ -73,6 +75,10 @@ interface Props {
   onQueue?: () => void;
   /** Take it back off the queue before it's dispatched (`queued → open`). */
   onUnqueue?: () => void;
+  /** Take the item back off the agent it was handed to — clears `agent_id` and
+   *  returns the row to the queue's world. Only on a handed-off row that hasn't
+   *  been dispatched since (`proposed | open`), and not read-only. */
+  onReclaim?: () => void;
   /** Ship it by hand (`in_review → done`) when the sweep can't see the merge —
    *  a revoked token, a deleted PR, a repo that left the project. In-review
    *  items only, and not read-only. */
@@ -89,6 +95,13 @@ interface Props {
   /** Hand the unresolved threads to a fresh agent on the PR's branch. Passed
    *  only when there are threads to hand over. */
   onFixReview?: () => void;
+  /** Stop the queue from building this until it's released, with the reason asked
+   *  for inline. Absent for a ghost (nothing is going to build a row nobody has
+   *  accepted — rule on it first) and on a read-only board. */
+  onHold?: (reason: string) => void;
+  /** Lift this item's hold. Only on a held row, and never available to the PM —
+   *  releasing is the user's alone. */
+  onRelease?: () => void;
   /** Open the run this item is being built by. Only on an item with a run. */
   onOpenRun?: () => void;
   /** The live row of the run this item is tied to (`run_id`), when the workflow
@@ -147,10 +160,13 @@ export function ItemCard({
   onRejectProposal,
   onQueue,
   onUnqueue,
+  onReclaim,
   onMarkDone,
   review,
   onMergePr,
   onFixReview,
+  onHold,
+  onRelease,
   onOpenRun,
   run,
   workflowName,
@@ -165,14 +181,24 @@ export function ItemCard({
   const agentId = item.item.agent_id;
   /** The agent named on the row, if the workspace still exists. A hand-off is
    *  recorded permanently but the agent it names is disposable, so a stale link
-   *  resolves to nothing and the card simply stops mentioning it — never a
-   *  dangling id. */
+   *  resolves to nothing — the row says it is spoken for without offering a
+   *  dangling id to click. */
   const agentName = useAppStore((s) =>
     agentId ? (s.workspace?.agents.find((a) => a.id === agentId)?.name ?? null) : null,
   );
   /** The manual hand-off ("Send to an agent"): an agent is on this item and no
-   *  run owns it, so the queue isn't driving — the user is. */
-  const handedOff = agentName != null && !item.item.run_id;
+   *  run owns it, so the queue isn't driving — the user is.
+   *
+   *  Keyed on the *stamp*, not on the name resolving: the stamp is what hides
+   *  Queue and what makes the drainer skip the row, so an item whose agent has
+   *  since been deleted must still show that — otherwise it sits on the board
+   *  with no builder, no queue affordance, and no explanation. That row is
+   *  exactly the one that needs "Take it back". */
+  const handedOff = !!agentId && !item.item.run_id;
+  /** In review with a PR the merge sweep can't poll: it has the URL but no
+   *  number, which is exactly the state `merge_sweep::pollable` skips. */
+  const unpollable =
+    item.status === "in_review" && !!item.item.pr_url && item.item.pr_number == null;
   const paused = run?.status === "paused" ? run.paused_reason : null;
   const source = SOURCE[item.source];
   const state = STATE[item.status];
@@ -254,67 +280,88 @@ export function ItemCard({
           ghost never costs an expand — reading it first is what the expand is
           for. */}
       {ghost && (onAccept || onDiscard) && (
-        <div className="rm-ghostbar flex-center">
-          <span className="rm-ghostbar-l text-xs">Proposed — not on the roadmap yet</span>
-          <span className="grow" />
-          {onDiscard && (
-            <Button variant="ghost" size="sm" onClick={onDiscard}>
-              Discard
-            </Button>
-          )}
-          {onAccept && (
-            <Button variant="primary" size="sm" onClick={onAccept}>
-              <Icon name="check" size={11} /> Accept
-            </Button>
-          )}
-        </div>
+        <DecisionBar
+          label="Proposed — not on the roadmap yet"
+          declineLabel="Discard"
+          onAccept={onAccept}
+          onDecline={onDiscard}
+        />
       )}
 
-      {/* The PM's pending ask against this row — the ghost bar's grammar for a
-          delta instead of a new ticket: always visible, ruled on without an
-          expand. The expanded body carries the per-field diff. Never rendered
-          on a ghost: two stacked bars whose Accepts mean different things
-          ("put it on the board" vs "apply the patch") is a coin-flip for the
-          user — rule on the ghost first, the ask stays pending. */}
+      {/* The PM's pending ask against this row — the same bar for a delta
+          instead of a new ticket: always visible, ruled on without an expand.
+          The expanded body carries the per-field diff. Never rendered on a
+          ghost: two stacked bars whose Accepts mean different things ("put it
+          on the board" vs "apply the patch") is a coin-flip for the user —
+          rule on the ghost first, the ask stays pending. */}
       {proposal && !ghost && (onAcceptProposal || onRejectProposal) && (
-        <div className="rm-propbar flex-center">
-          <span className="rm-propbar-l text-xs truncate">
-            <strong>
-              {proposal.kind === "discard" ? "PM proposes discarding" : "PM proposes changes"}
-            </strong>
-            {proposal.note ? ` — ${proposal.note}` : ""}
-          </span>
-          <span className="grow" />
-          {onRejectProposal && (
-            <Button variant="ghost" size="sm" onClick={onRejectProposal}>
-              Decline
-            </Button>
-          )}
-          {onAcceptProposal && (
-            <Button variant="primary" size="sm" onClick={onAcceptProposal}>
-              <Icon name="check" size={11} /> Accept
-            </Button>
-          )}
-        </div>
+        <DecisionBar
+          variant="prop"
+          label={proposal.kind === "discard" ? "PM proposes discarding" : "PM proposes changes"}
+          note={proposal.note}
+          declineLabel="Decline"
+          onAccept={onAcceptProposal}
+          onDecline={onRejectProposal}
+        />
       )}
 
       {/* The manual hand-off, visible without an expand: the queue doesn't own
-          this item, a named agent does. Clicking goes there — the agent lives in
-          the workspace this full-screen page covers, so selecting it and getting
-          out of the way is the whole navigation (same move as "View run"). */}
+          this item, an agent does. Clicking goes there — the agent lives in the
+          workspace this full-screen page covers, so selecting it and getting out
+          of the way is the whole navigation (same move as "View run") — and
+          "Take it back" is the way out of the state entirely. */}
       {handedOff && (
-        <button
-          type="button"
-          className="rm-handoff flex-center text-xs"
-          onClick={() => {
-            selectAgent(agentId as string);
-            closeProjectScreen();
-          }}
-        >
-          <Icon name="zap" size={11} />
-          <span className="rm-handoff-t truncate">Handed to {agentName}</span>
-          <Icon name="arrowR" size={11} className="rm-handoff-go" />
-        </button>
+        <div className="rm-handoff-row flex-center">
+          {agentName ? (
+            <button
+              type="button"
+              className="rm-handoff flex-center text-xs"
+              onClick={() => {
+                selectAgent(agentId as string);
+                closeProjectScreen();
+              }}
+            >
+              <Icon name="zap" size={11} />
+              <span className="rm-handoff-t truncate">Handed to {agentName}</span>
+              <Icon name="arrowR" size={11} className="rm-handoff-go" />
+            </button>
+          ) : (
+            // The agent was deleted after the hand-off. Nowhere to go, so this
+            // is a statement rather than a link — but the stamp is still what
+            // keeps the row out of the queue, so it has to be visible.
+            <span className="rm-handoff flex-center text-xs">
+              <Icon name="zap" size={11} />
+              <span className="rm-handoff-t truncate">
+                Handed to an agent that no longer exists
+              </span>
+            </span>
+          )}
+          {/* The undo, beside the fact it undoes: a hand-off is the item's
+              dispatch, so taking it back is the only way the row returns to the
+              queue's world. Its own command rather than a patch, so the trail
+              says which agent it came back from (`roadmapReclaimItem`). */}
+          {onReclaim && (
+            <button
+              type="button"
+              className="rm-handoff-undo text-xs"
+              title={
+                agentName
+                  ? `Clear ${agentName} off this item and put it back on the board`
+                  : "Clear the agent off this item and put it back on the board"
+              }
+              onClick={onReclaim}
+            >
+              Take it back
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* The brake, if it is on. Above the queue note and outside the body for
+          the same reason the ghostbar is: a row nothing is going to build must
+          say why collapsed, and the one gesture that changes it is right there. */}
+      {item.item.hold_reason && (
+        <HoldChip reason={item.item.hold_reason} by={item.item.held_by} onRelease={onRelease} />
       )}
 
       {/* What GitHub says about this item's PR right now. Outside the
@@ -442,6 +489,22 @@ export function ItemCard({
                   <Icon name="feedback" size={11} /> Fix review feedback
                 </Button>
               )}
+              {/* The one in-review state the merge sweep can't act on: a PR it
+                  has a link to but no number for, so there is nothing to poll
+                  (see merge_sweep.rs `pollable` — a number guessed off the URL
+                  would be a wrong verdict written to the board). The card used to
+                  say nothing at all, leaving the item to sit in review forever
+                  while the "merge it and this ships on its own" promise quietly
+                  didn't apply. Sits beside "Mark done", which is the answer. */}
+              {unpollable && (
+                <span
+                  className="rm-unpollable iflex-center text-xs"
+                  title="This item's pull request has no number on the row, so the app can't watch it for a merge"
+                >
+                  <Icon name="hand" size={11} />
+                  Can't watch this PR — mark it done when it merges
+                </span>
+              )}
               {onMarkDone && (
                 <Button variant="outline" size="sm" onClick={onMarkDone}>
                   <Icon name="check" size={11} /> Mark done
@@ -457,6 +520,10 @@ export function ItemCard({
                   <Icon name="merge" size={11} /> Merge
                 </Button>
               )}
+              {/* The user's own brake, next to the button it stops. A secondary
+                  action: most rows never need it, and the one that does needs a
+                  reason more than it needs prominence. */}
+              {onHold && <HoldAction onHold={onHold} />}
               {onQueue && (
                 <Button variant="primary" size="sm" onClick={onQueue}>
                   <Icon name="play" size={11} /> Queue
@@ -555,12 +622,41 @@ function ItemHistory({ events }: { events: RoadmapItemEvent[] }) {
   const [open, setOpen] = useState(false);
   const now = Date.now();
   const latest = events[0];
-  const line = (e: RoadmapItemEvent) => (
-    <>
-      <span className="rm-hist-t truncate">{eventLine(e)}</span>
-      <span className="rm-hist-age mono">{formatAge(e.created_at, now)}</span>
-    </>
-  );
+  /** A line whose detail is nothing but a URL (`pr_opened`) is drawn with the
+   *  address as a real link, so the trail's most useful entry is one click
+   *  instead of a string to copy out by eye. Plain-text details are untouched.
+   *
+   *  `linkable` is off wherever the line already sits inside a `<button>` (the
+   *  disclosure header): a button inside a button is invalid, and the latest
+   *  entry repeats as the first row of the expanded list, where it *is*
+   *  clickable. */
+  const line = (e: RoadmapItemEvent, linkable = true) => {
+    const url = linkable ? eventDetailUrl(e) : null;
+    return (
+      <>
+        <span className="rm-hist-t truncate">
+          {url ? (
+            <>
+              {EVENT_LABEL[e.kind]} —{" "}
+              <button
+                type="button"
+                className="rm-hist-link"
+                title={url}
+                onClick={() => {
+                  void openExternal(url).catch(() => {});
+                }}
+              >
+                {url}
+              </button>
+            </>
+          ) : (
+            eventLine(e)
+          )}
+        </span>
+        <span className="rm-hist-age mono">{formatAge(e.created_at, now)}</span>
+      </>
+    );
+  };
   if (events.length === 1) {
     return (
       <div className="rm-hist">
@@ -580,7 +676,7 @@ function ItemHistory({ events }: { events: RoadmapItemEvent[] }) {
         aria-expanded={open}
       >
         <Icon name="history" size={11} />
-        {line(latest)}
+        {line(latest, false)}
         <Icon name="chevD" size={9} className="rm-hist-chev" />
       </button>
       {open && (

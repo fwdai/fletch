@@ -13,6 +13,7 @@ import { ItemCard } from "./ItemCard";
 import { ItemDialog } from "./ItemDialog";
 import { OrderProposalBar } from "./OrderProposalBar";
 import { ProductMap } from "./ProductMap";
+import { ProjectHoldBanner } from "./ProjectHoldBanner";
 import { useBoardDnd } from "./useBoardDnd";
 
 /** What the form is open on: an existing row, or a new one destined for
@@ -53,6 +54,7 @@ export function Board({
     landed,
     loading,
     readOnly,
+    makeProject,
     error,
     clearError,
     notes,
@@ -72,9 +74,14 @@ export function Board({
     setRanks,
     queueItems,
     unqueueItems,
+    reclaimItem,
     markDone,
     mergeItemPr,
     sendReviewFeedback,
+    projectHold,
+    holdItem,
+    releaseItem,
+    releaseProject,
     workflows,
   } = roadmap;
   const selectRun = useAppStore((s) => s.selectRun);
@@ -166,6 +173,22 @@ export function Board({
         )}
       </div>
 
+      {/* A repo with no project row of its own: the board renders, nothing on it
+          can be written, and until now nothing said what was missing or how to
+          fix it. The CTA is the sidebar's "Open a folder" path minus the picker
+          (see `useRoadmap.makeProject`) — one click, because the folder in
+          question is the one this screen is already open on. */}
+      {readOnly && (
+        <div className="rm-board-ro flex-center text-xs">
+          <Icon name="folder" size={11} />
+          <span className="rm-board-ro-t">Make this repo a project to use the roadmap</span>
+          <span className="grow" />
+          <button type="button" className="rm-board-ro-ok" onClick={makeProject}>
+            Make it a project
+          </button>
+        </div>
+      )}
+
       {error && (
         <div className="rm-board-err flex-center text-xs">
           <span className="rm-board-err-t">{error}</span>
@@ -181,7 +204,24 @@ export function Board({
           are: the items it names can be in three different horizons. Renders
           nothing when nothing is waiting. */}
       {tab === "roadmap" && (
-        <NeedsYou cards={needsYou} onFocusItem={focusItem} onOpenRun={openRun} />
+        <NeedsYou
+          cards={needsYou}
+          onFocusItem={focusItem}
+          onOpenRun={openRun}
+          onReleaseItem={readOnly ? undefined : releaseItem}
+          onReleaseProject={readOnly ? undefined : releaseProject}
+        />
+      )}
+
+      {/* The whole board is stopped. Below the strip (which already carries a
+          card for it, with the same one-click release) because this band is the
+          standing explanation for cards that look queued and aren't moving —
+          the strip is the decision, this is the state. */}
+      {tab === "roadmap" && projectHold && (
+        <ProjectHoldBanner
+          hold={projectHold}
+          onRelease={readOnly ? undefined : () => void releaseProject()}
+        />
       )}
 
       {/* One proposal is ruled on from its own card; a batch gets a single bar,
@@ -317,14 +357,25 @@ export function Board({
                       onQueue={
                         // A handed-off row already has its builder; queueing it
                         // would dispatch a second one. The drainer refuses such
-                        // rows too — this just keeps the button honest.
-                        writable && it.status === "open" && !row.agent_id
+                        // rows too — this just keeps the button honest. A held
+                        // row hides it for the same reason: the queue will not
+                        // claim it, so offering the button would promise
+                        // something the brake overrides. Release, then queue.
+                        writable && it.status === "open" && !row.agent_id && !row.hold_reason
                           ? () => queueItems([row.id])
                           : undefined
                       }
                       onUnqueue={
                         writable && it.status === "queued"
                           ? () => unqueueItems([row.id])
+                          : undefined
+                      }
+                      onReclaim={
+                        // The undo of a hand-off, offered exactly where the
+                        // backend allows it: a stamped row the queue hasn't
+                        // taken over. From `queued` on, the run is the lever.
+                        writable && row.agent_id && it.status === "open"
+                          ? () => reclaimItem(row.id)
                           : undefined
                       }
                       onMarkDone={
@@ -338,6 +389,24 @@ export function Board({
                         writable && review && threads > 0
                           ? () => sendReviewFeedback(row, review)
                           : undefined
+                      }
+                      onHold={
+                        // `open` and `queued`: the two statuses where a hold
+                        // changes what this board would do next. A ghost is
+                        // excluded because nothing builds a row nobody has
+                        // accepted — rule on it first (`writable` already drops
+                        // them) — and everything from `active` on is the run's,
+                        // where the user's lever is the run itself. (The PM's op
+                        // has no such limit: mid-run is when *it* most needs the
+                        // brake, and it cannot reach the run.)
+                        writable &&
+                        !row.hold_reason &&
+                        (it.status === "open" || it.status === "queued")
+                          ? (reason: string) => holdItem(row.id, reason)
+                          : undefined
+                      }
+                      onRelease={
+                        writable && row.hold_reason ? () => releaseItem(row.id) : undefined
                       }
                       onOpenRun={row.run_id ? () => openRun(row.run_id as string) : undefined}
                       dnd={readOnly ? undefined : dnd.cardDnd(row)}

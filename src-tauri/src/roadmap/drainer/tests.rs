@@ -33,6 +33,9 @@ fn item(code: &str, rank: f64) -> RoadmapItem {
         run_id: None,
         pr_url: None,
         pr_number: None,
+        hold_reason: None,
+        held_by: None,
+        held_at: None,
         created_at: 0,
         updated_at: 0,
     }
@@ -74,6 +77,56 @@ fn the_queue_follows_rank() {
 #[test]
 fn an_empty_queue_decides_nothing() {
     assert_eq!(pick_next(&[], 0, &codes(&[]), &codes(&[])), Decision::Empty);
+}
+
+// ───────────────────────────── what is in the queue ─────────────────────
+
+/// The three rows that are `queued` and still not claimable. Pure over a board
+/// snapshot, so the skips are pinned without a database — and so a future edit
+/// can't quietly drop one and leave the queue dispatching work it must not.
+#[test]
+fn a_held_a_handed_off_and_an_unqueued_row_are_not_in_the_queue() {
+    let ready = item("FLT-100", 1.0);
+
+    let mut held = item("FLT-101", 2.0);
+    held.hold_reason = Some("direction unclear".into());
+    held.held_by = Some(EventActor::Pm);
+    held.held_at = Some(1);
+    assert!(held.is_held());
+
+    let mut handed = item("FLT-102", 3.0);
+    handed.agent_id = Some("w1".into());
+
+    let mut open = item("FLT-103", 4.0);
+    open.status = ItemStatus::Open;
+
+    let board = vec![ready.clone(), held, handed, open];
+    assert_eq!(
+        dispatchable(&board)
+            .iter()
+            .map(|i| i.code.clone())
+            .collect::<Vec<_>>(),
+        vec![ready.code],
+        "only the plain queued row is claimable"
+    );
+}
+
+/// The one that matters most: a held item is skipped even when it is the head of
+/// the queue with every dependency landed — and the ready item behind it still
+/// goes. A hold stops one item, not the board (that is the project hold).
+#[test]
+fn a_held_head_is_skipped_and_the_next_item_still_dispatches() {
+    let mut held = item("FLT-100", 1.0);
+    held.hold_reason = Some("wrong scope".into());
+    let ready = item("FLT-101", 2.0);
+
+    let queue = dispatchable(&[held, ready]);
+    assert_eq!(queue.len(), 1);
+    assert_eq!(
+        pick_next(&queue, 0, &codes(&[]), &codes(&["FLT-100", "FLT-101"])),
+        Decision::Dispatch(0),
+    );
+    assert_eq!(queue[0].code, "FLT-101");
 }
 
 // ───────────────────────────── dependencies ─────────────────────────────
@@ -388,27 +441,64 @@ fn a_claim_records_one_dispatched_event_naming_the_workflow() {
     let conn = test_conn();
     let it = db_item(&conn, ItemStatus::Queued);
 
-    let (claimed, event) = claim_item(&conn, &it.id, "wf-1").unwrap().expect("claims");
+    let (claimed, event) = claim_item(&conn, &it.id, "wf-1", Some("Build & review"))
+        .unwrap()
+        .expect("claims");
     assert_eq!(claimed.status, ItemStatus::Active);
     assert_eq!(claimed.workflow_def_id.as_deref(), Some("wf-1"));
     assert_eq!(event.kind, EventKind::Dispatched);
     assert_eq!(event.actor, EventActor::Drainer);
-    assert_eq!(event.detail.as_deref(), Some("wf-1"));
+    // The *name*, not the id: this is the most common line in an item's trail,
+    // and the id is already pinned on the row as `workflow_def_id`.
+    assert_eq!(event.detail.as_deref(), Some("Build & review"));
     assert_eq!(events::list_for_item(&conn, &it.id).unwrap(), vec![event]);
 
     // A second claim finds the row no longer queued: no write, and no second
     // event pretending there was one.
-    assert!(claim_item(&conn, &it.id, "wf-1").unwrap().is_none());
+    assert!(claim_item(&conn, &it.id, "wf-1", Some("Build & review"))
+        .unwrap()
+        .is_none());
     assert_eq!(events::list_for_item(&conn, &it.id).unwrap().len(), 1);
+}
+
+#[test]
+fn a_claim_falls_back_to_the_definition_id_when_the_name_is_gone() {
+    // A definition renamed away or deleted between the resolve and the claim: a
+    // uuid on the card is poor, an unexplained dispatch is worse.
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Queued);
+    let (_, event) = claim_item(&conn, &it.id, "wf-orphan", None)
+        .unwrap()
+        .expect("claims");
+    assert_eq!(event.detail.as_deref(), Some("wf-orphan"));
+}
+
+#[test]
+fn a_definition_name_is_read_off_the_row_or_reported_missing() {
+    let conn = test_conn();
+    conn.execute(
+        "INSERT INTO wf_definition (id, name, spec_json, created_at, updated_at)
+         VALUES ('wf-1', 'Build & review', '{}', 0, 0), ('wf-blank', '  ', '{}', 0, 0)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        definition_name(&conn, "wf-1"),
+        Some("Build & review".to_string())
+    );
+    // A blank name is no name — the caller falls back to the id rather than
+    // writing an empty detail.
+    assert_eq!(definition_name(&conn, "wf-blank"), None);
+    assert_eq!(definition_name(&conn, "wf-gone"), None);
 }
 
 #[test]
 fn a_release_persists_its_reason_where_the_note_never_lands() {
     // The card's toast ("Back on the board — its run failed.") is a transient
-    // `roadmap:queue-note`; nothing below asserts on it because nothing stores
-    // it — the schema has no note table at all, which is the second half of
-    // this pin. The durable record is the `run_failed` event, which a reload
-    // (any fresh read of the table) still finds.
+    // `roadmap:queue-note` and is stored nowhere. What this pins is where the
+    // reason *does* live: exactly one `run_failed` event carrying it, and no
+    // `note` event doubling it up — a reload (any fresh read of the table) finds
+    // one line, not two saying the same thing in different words.
     let conn = test_conn();
     let it = db_item(&conn, ItemStatus::Active);
 
@@ -434,16 +524,18 @@ fn a_release_persists_its_reason_where_the_note_never_lands() {
     assert_eq!(listed[0].kind, EventKind::RunFailed);
     assert_eq!(listed[0].detail.as_deref(), Some("its run failed"));
 
-    // No table anywhere persists queue notes — the reason string's only durable
-    // home is the event above.
-    let note_tables: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE '%note%'",
-            [],
+    // One event, of that kind, and nothing of kind `note`: the release explains
+    // itself once, on the line the card reads as a failure.
+    let by_kind = |kind: &str| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM roadmap_item_events WHERE item_id = ?1 AND kind = ?2",
+            rusqlite::params![it.id, kind],
             |r| r.get(0),
         )
-        .unwrap();
-    assert_eq!(note_tables, 0);
+        .unwrap()
+    };
+    assert_eq!(by_kind("run_failed"), 1);
+    assert_eq!(by_kind("note"), 0);
 }
 
 #[test]
@@ -547,6 +639,77 @@ fn ordinary_dep_waiting_stays_transient() {
     assert!(events::list_for_item(&conn, &waiting.id)
         .unwrap()
         .is_empty());
+}
+
+// ───────────────────────────── holds ────────────────────────────────────
+
+/// How far this project's tick got, in one word. A queued item with no workflow
+/// resolves to a `Note` ("No workflow to run it under…"), which is *past* the
+/// queue selection — so it is the honest signal that the item was in the queue,
+/// without a `wf_definition` and a repo row to make a real claim possible.
+fn reached(conn: &Connection, project_id: &str) -> &'static str {
+    match plan_and_claim(conn, project_id) {
+        Claim::Nothing => "nothing",
+        Claim::Note { .. } => "in the queue",
+        Claim::Claimed(..) => "claimed",
+    }
+}
+
+#[test]
+fn a_held_project_dispatches_nothing_and_says_nothing_on_the_cards() {
+    // The board-wide brake. Not a note per row: the reason is one banner above
+    // the board, and repeating it on five cards would be the same sentence five
+    // times. Nothing is claimed and nothing is recorded — the hold row is
+    // already the durable record of why.
+    let conn = test_conn();
+    let ready = db_item(&conn, ItemStatus::Queued);
+    assert_eq!(
+        reached(&conn, "p1"),
+        "in the queue",
+        "unheld, it is dispatchable"
+    );
+
+    holds::hold_project(&conn, "p1", "re-planning the quarter", EventActor::Pm).unwrap();
+    assert_eq!(
+        reached(&conn, "p1"),
+        "nothing",
+        "a held project never reaches its queue at all"
+    );
+    assert_eq!(
+        store::get(&conn, &ready.id).unwrap().unwrap().status,
+        ItemStatus::Queued,
+        "the item keeps its place in the queue — a hold is not an unqueue"
+    );
+    assert!(
+        events::list_for_item(&conn, &ready.id).unwrap().is_empty(),
+        "a board-wide stop is not history about any one item"
+    );
+
+    // Released, the same board is dispatchable again: the brake was the only
+    // thing in the way.
+    assert!(holds::release_project(&conn, "p1").unwrap());
+    assert_eq!(reached(&conn, "p1"), "in the queue");
+}
+
+#[test]
+fn a_held_item_is_never_claimed_through_the_whole_decision() {
+    // The pure filter is pinned above; this is the same rule reached through the
+    // real read path, so nothing between the snapshot and the claim can put a
+    // held row back in play.
+    let conn = test_conn();
+    let it = db_item(&conn, ItemStatus::Queued);
+    assert_eq!(reached(&conn, "p1"), "in the queue");
+
+    holds::hold_item(&conn, &it.id, "confirm the scope first", EventActor::Pm).unwrap();
+    assert_eq!(
+        reached(&conn, "p1"),
+        "nothing",
+        "a held item is not a blocked queue — it simply isn't in the queue"
+    );
+    assert_eq!(
+        store::get(&conn, &it.id).unwrap().unwrap().status,
+        ItemStatus::Queued
+    );
 }
 
 // ───────────────────────────── note dedup ───────────────────────────────

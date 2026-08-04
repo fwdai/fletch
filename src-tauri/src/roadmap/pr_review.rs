@@ -155,6 +155,9 @@ mod tests {
             pr_url: pr_number.map(|n| format!("https://github.com/o/r/pull/{n}")),
             pr_number,
             created_at: 1,
+            hold_reason: None,
+            held_by: None,
+            held_at: None,
             updated_at: 1,
         }
     }

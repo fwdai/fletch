@@ -21,6 +21,10 @@
 //   - the run list (`wf:run`) — a *pause*, which has no follow-up event to
 //     repair it: a run that stops for a human question emits once and then waits,
 //     so a clobbered pause stays invisible until something else moves.
+//
+// `createSingleSync` is the same discipline for a stream that is one row or none
+// (the PM's whole-board order ask; the board's hold), where "last write wins" is
+// the whole merge.
 
 /** A row change from the backend, tagged so upserts and deletes can share one
  *  ordered buffer. */
@@ -65,6 +69,43 @@ export function createRowSync<Row extends { id: string }>(
       const pending = buffered ?? [];
       buffered = null;
       commit((prev) => pending.reduce(applyRowEvent, snapshot ?? prev));
+    },
+  };
+}
+
+export interface SingleSync<Row> {
+  /** Feed in the current value (`null` = gone). Buffered until `settle`. */
+  push(value: Row | null): void;
+  /** The initial load finished: whatever arrived live wins over `fetched`, and
+   *  buffering stops. Called with no argument when the fetch failed, which leaves
+   *  the held value alone unless something did arrive live. */
+  settle(fetched?: Row | null): void;
+}
+
+/** [`createRowSync`] for a stream that is *one row, or none*, keyed by something
+ *  the board already knows (a project id) rather than by a row id.
+ *
+ *  Same two loss windows, so the same subscribe-then-fetch-then-replay
+ *  discipline — collapsed to "last write wins", because there is no list to
+ *  merge into and no relative order to preserve: the newest value simply *is* the
+ *  state. Used for the PM's whole-board order ask and for the board's hold, both
+ *  of which the backend replaces in place and addresses by project.
+ *
+ *  Note the deliberate distinction between `undefined` ("nothing arrived") and
+ *  `null` ("it was released"): folding them together would let a stale snapshot
+ *  resurrect a hold the user lifted while it was in flight. */
+export function createSingleSync<Row>(commit: (value: Row | null) => void): SingleSync<Row> {
+  let settled = false;
+  let buffered: Row | null | undefined;
+  return {
+    push(value) {
+      if (settled) commit(value);
+      else buffered = value;
+    },
+    settle(fetched) {
+      settled = true;
+      if (buffered !== undefined) commit(buffered);
+      else if (fetched !== undefined) commit(fetched);
     },
   };
 }

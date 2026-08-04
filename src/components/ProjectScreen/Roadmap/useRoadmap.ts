@@ -25,6 +25,13 @@
 // hook never writes those; it only ever asks for `queued`, takes it back, or
 // ships an `in_review` item by hand when the merge sweep can't see the merge.
 //
+// Holds (migration 0033) are the exception that proves the contract. They are the
+// one thing the PM writes directly, because they only ever *stop* the queue — so
+// a hold can arrive here on `roadmap:item` (an item's, carried on the row) or on
+// `roadmap:project-hold` (the board's) without the user having ruled on anything.
+// The reverse is impossible: releasing is a typed command with no RPC op behind
+// it, so every release on this board is a click someone made.
+//
 // Order is the third thing the two parties share. `rank` (migration 0032) is what
 // the board draws a group by *and* what the drainer dispatches by, so dragging a
 // card up the list moves it up the queue. The user writes it directly (a drag);
@@ -41,6 +48,8 @@ import {
   onRoadmapItemEvent,
   onRoadmapOrderProposal,
   onRoadmapOrderProposalDeleted,
+  onRoadmapProjectHold,
+  onRoadmapProjectHoldReleased,
   onRoadmapProposal,
   onRoadmapProposalDeleted,
   onRoadmapQueueNote,
@@ -49,10 +58,11 @@ import {
   type RoadmapItemPatch,
   type RoadmapItemReview,
   type RoadmapOrderProposal,
+  type RoadmapProjectHold,
   type RoadmapProposal,
   type WfRun,
 } from "@/api";
-import { applyRowEvent, createRowSync } from "@/rowSync";
+import { applyRowEvent, createRowSync, createSingleSync } from "@/rowSync";
 import { useAppStore } from "@/store";
 import { useRuns } from "@/workflows/run/useRuns";
 import { insertEvent, mergeSnapshot } from "./itemHistory";
@@ -119,6 +129,11 @@ export function useRoadmap(repoPath: string) {
    *  (`roadmap:order-proposal`, keyed by project rather than by row), replaced in
    *  place when the PM changes its mind. */
   const [orderProposal, setOrderProposal] = useState<RoadmapOrderProposal | null>(null);
+  /** The board's own hold, or null (`roadmap:project-hold` +
+   *  `roadmap_get_project_hold`). One per project like the order ask, and kept
+   *  here rather than derived from the rows because it belongs to no row: nothing
+   *  dispatches while it exists, and the banner above the board is what says so. */
+  const [projectHold, setProjectHold] = useState<RoadmapProjectHold | null>(null);
   const [loading, setLoading] = useState(true);
   /** The last failure from a mutation with no form of its own to report into
    *  (a move, a delete, an accepted proposal). */
@@ -151,6 +166,11 @@ export function useRoadmap(repoPath: string) {
    *  ref because the event listener must read the current answer without
    *  resubscribing per expand. */
   const requestedEvents = useRef<Set<string>>(new Set());
+  /** Which board the trails in `events` belong to. Bumped by the load effect on
+   *  every project switch, so a history fetch that resolves after the switch can
+   *  tell that its answer is about someone else's item and drop it — the map is
+   *  reset synchronously there, but an in-flight request isn't. */
+  const eventsGeneration = useRef(0);
 
   // Every pending highlight timer, so unmounting can't set state on a dead
   // component.
@@ -202,6 +222,7 @@ export function useRoadmap(repoPath: string) {
       setRows([]);
       setProposalRows([]);
       setOrderProposal(null);
+      setProjectHold(null);
       setLatestEvents([]);
       setLoading(!workspaceReady);
       return;
@@ -209,8 +230,11 @@ export function useRoadmap(repoPath: string) {
     let alive = true;
     setLoading(true);
     // A new board means new trails: what the previous project's cards loaded
-    // says nothing about this one's items.
+    // says nothing about this one's items. The generation bump is what stops an
+    // already-in-flight `loadEvents` from writing the old board's history into
+    // this map.
     requestedEvents.current = new Set();
+    eventsGeneration.current += 1;
     setEvents(new Map());
     setLatestEvents([]);
 
@@ -240,27 +264,36 @@ export function useRoadmap(repoPath: string) {
       // Addressed by proposal id; one we don't hold is simply never rendered.
       psync.push({ kind: "delete", id });
     });
-    // The order ask is one row per board, so the list sequencer would be the
-    // wrong shape — but the same two loss windows exist, so the same
-    // subscribe-then-fetch-then-replay discipline applies, collapsed to
-    // "last write wins": anything that arrives during the fetch is remembered
-    // and replayed over the snapshot instead of being clobbered by it.
-    let orderSettled = false;
-    let bufferedOrder: RoadmapOrderProposal | null | undefined;
-    const commitOrder = (p: RoadmapOrderProposal | null) => {
+    // The order ask and the board's hold are one row per board, so the list
+    // sequencer would be the wrong shape — but the same two loss windows exist,
+    // so the same subscribe-then-fetch-then-replay discipline applies, collapsed
+    // to "last write wins" (see `createSingleSync`): anything that arrives during
+    // the fetch is remembered and replayed over the snapshot instead of being
+    // clobbered by it.
+    const osync = createSingleSync<RoadmapOrderProposal>((p) => {
       if (alive) setOrderProposal(p);
-    };
-    const takeOrder = (p: RoadmapOrderProposal | null) => {
-      if (orderSettled) commitOrder(p);
-      else bufferedOrder = p;
-    };
+    });
     const offOrder = onRoadmapOrderProposal((p) => {
       if (p.project_id !== projectId) return;
-      takeOrder(p);
+      osync.push(p);
     });
     const offOrderDeleted = onRoadmapOrderProposalDeleted((id) => {
       if (id !== projectId) return;
-      takeOrder(null);
+      osync.push(null);
+    });
+    // The hold matters most of the three: it is the reason nothing is
+    // dispatching, so a lost one leaves a board that looks broken rather than
+    // held — and a lost *release* leaves a banner over a board that is running.
+    const hsync = createSingleSync<RoadmapProjectHold>((h) => {
+      if (alive) setProjectHold(h);
+    });
+    const offHold = onRoadmapProjectHold((h) => {
+      if (h.project_id !== projectId) return;
+      hsync.push(h);
+    });
+    const offHoldReleased = onRoadmapProjectHoldReleased((id) => {
+      if (id !== projectId) return;
+      hsync.push(null);
     });
     const offDeleted = onRoadmapItemDeleted((id) => {
       sync.push({ kind: "delete", id });
@@ -300,7 +333,11 @@ export function useRoadmap(repoPath: string) {
 
     void (async () => {
       // Registration has to be awaited, not just started: an event emitted
-      // before `listen` resolves never reaches us at all.
+      // before `listen` resolves never reaches us at all. Every stream whose
+      // loss the user would see is in here — the history rows and the queue
+      // notes included: a note is deduped against the row version it describes
+      // (see the drainer's `say`), so one missed during the load is not resent
+      // and the card is left with no explanation at all.
       await Promise.all([
         off,
         offDeleted,
@@ -308,26 +345,32 @@ export function useRoadmap(repoPath: string) {
         offProposalDeleted,
         offOrder,
         offOrderDeleted,
+        offHold,
+        offHoldReleased,
         // Awaited too, now that the strip decides from this stream: a `blocked`
         // emitted before registration resolves would otherwise be lost, and the
         // snapshot below can't backfill an event that fired after it was read.
+        // Same for the notes stream — the drainer dedupes per row version, so a
+        // note lost during the load is never resent.
         offEvent,
+        offNote,
       ]);
       if (!alive) return;
       try {
-        const [items, pending, order, latest] = await Promise.all([
+        const [items, pending, order, latest, hold] = await Promise.all([
           api.roadmapListItems(projectId),
           api.roadmapListProposals(projectId),
           api.roadmapGetOrderProposal(projectId),
           api.roadmapLatestEvents(projectId),
+          api.roadmapGetProjectHold(projectId),
         ]);
         if (!alive) return;
         sync.settle(items);
         psync.settle(pending);
         // Under whatever arrived live, per item — see `mergeLatest`.
         setLatestEvents((prev) => mergeLatest(prev, latest));
-        orderSettled = true;
-        commitOrder(bufferedOrder !== undefined ? bufferedOrder : order);
+        osync.settle(order);
+        hsync.settle(hold);
         setLoading(false);
       } catch (e) {
         if (!alive) return;
@@ -335,8 +378,8 @@ export function useRoadmap(repoPath: string) {
         // apply instead of piling up in the buffer.
         sync.settle();
         psync.settle();
-        orderSettled = true;
-        if (bufferedOrder !== undefined) commitOrder(bufferedOrder);
+        osync.settle();
+        hsync.settle();
         setError(String(e));
         setLoading(false);
       }
@@ -350,6 +393,8 @@ export function useRoadmap(repoPath: string) {
       void offProposalDeleted.then((f) => f());
       void offOrder.then((f) => f());
       void offOrderDeleted.then((f) => f());
+      void offHold.then((f) => f());
+      void offHoldReleased.then((f) => f());
       void offEvent.then((f) => f());
       void offNote.then((f) => f());
     };
@@ -363,15 +408,21 @@ export function useRoadmap(repoPath: string) {
   const loadEvents = useCallback(async (itemId: string) => {
     if (requestedEvents.current.has(itemId)) return;
     requestedEvents.current.add(itemId);
+    // The board this fetch is for. A project switch resets the map and the
+    // requested set, so a resolution that arrives afterwards is answering a
+    // question about a board nobody is looking at — writing it would put another
+    // project's trail under one of this project's item ids.
+    const generation = eventsGeneration.current;
     try {
       const snapshot = await api.roadmapListItemEvents(itemId);
+      if (eventsGeneration.current !== generation) return;
       setEvents((prev) =>
         new Map(prev).set(itemId, mergeSnapshot(prev.get(itemId) ?? [], snapshot)),
       );
     } catch {
       // History is a footnote: not worth the board's error bar. The card
       // simply has no trail until a later expand succeeds.
-      requestedEvents.current.delete(itemId);
+      if (eventsGeneration.current === generation) requestedEvents.current.delete(itemId);
     }
   }, []);
 
@@ -460,8 +511,8 @@ export function useRoadmap(repoPath: string) {
    *  so a pause the queue hits shows up on the next `wf:run` with no polling of
    *  its own. The rules live in NeedsYou/select.ts. */
   const needsYou = useMemo(
-    () => buildNeedsYou({ items: onBoard, runs, latestEvents }),
-    [onBoard, runs, latestEvents],
+    () => buildNeedsYou({ items: onBoard, runs, latestEvents, projectHold }),
+    [onBoard, runs, latestEvents, projectHold],
   );
 
   /** The rows whose position in the order can still change, in priority order —
@@ -556,6 +607,19 @@ export function useRoadmap(repoPath: string) {
   );
 
   const clearError = useCallback(() => setError(null), []);
+
+  /** Give this repo a project, so the board it is already showing becomes
+   *  writable. The same entry point the sidebar's "Open a folder" uses
+   *  (`NewProjectPopover` → `addWorkspaceRepo`), minus the folder picker — the
+   *  path is the one this screen is open on. Deliberately not the New Project
+   *  modal: that creates a *different*, brand-new repo, which is not what a user
+   *  looking at this repo's read-only roadmap is asking for. Failures land on the
+   *  store's `lastError` banner, as they do from the sidebar. */
+  const addWorkspaceRepo = useAppStore((s) => s.addWorkspaceRepo);
+  const makeProject = useCallback(
+    () => void addWorkspaceRepo(repoPath),
+    [addWorkspaceRepo, repoPath],
+  );
 
   /** Accept proposed rows: `proposed → open` is the moment a suggestion becomes
    *  a roadmap item. The row (and its code) already exist, so nothing is
@@ -678,6 +742,65 @@ export function useRoadmap(repoPath: string) {
         }
       }),
     [guarded, upsert],
+  );
+
+  /** Stop the queue from building one item until it's released. Not an unqueue:
+   *  the row keeps its status and its place in the order, so releasing is a
+   *  one-click undo. The row comes back carrying the hold trio, so the card's
+   *  chip and the strip's card both follow from the ordinary item stream. */
+  const holdItem = useCallback(
+    (id: string, reason: string) =>
+      guarded(async () => {
+        upsert(await api.roadmapHoldItem(id, reason));
+      }),
+    [guarded, upsert],
+  );
+
+  /** Lift one item's hold — the user's alone (the PM has an op to hold and none
+   *  to release). The backend records what was lifted, so the trail reads as a
+   *  pair rather than as an unexplained resumption. */
+  const releaseItem = useCallback(
+    (id: string) =>
+      guarded(async () => {
+        upsert(await api.roadmapReleaseItem(id));
+      }),
+    [guarded, upsert],
+  );
+
+  /** Take a handed-off item back off its agent — the undo of "Send to an agent".
+   *  Clears `agent_id` and lands a history note naming the agent; the row is then
+   *  the queue's to dispatch again. The backend re-checks the gate (something to
+   *  take back, and nothing dispatched since), so a refusal shows up on the
+   *  board's error bar rather than being swallowed. */
+  const reclaimItem = useCallback(
+    (id: string) =>
+      guarded(async () => {
+        upsert(await api.roadmapReclaimItem(id));
+      }),
+    [guarded, upsert],
+  );
+
+  /** Stop the whole board. Runs already in flight still settle — reflecting
+   *  reality is not autonomy — so this freezes what *starts*, not what finishes.
+   *  The banner and the strip both read the row this returns. */
+  const holdProject = useCallback(
+    (reason: string) =>
+      guarded(async () => {
+        if (projectId) setProjectHold(await api.roadmapHoldProject(projectId, reason));
+      }),
+    [guarded, projectId],
+  );
+
+  /** Let the board run again. Optimistic on the state the banner reads: the
+   *  backend also emits the release, and both say the same thing. */
+  const releaseProject = useCallback(
+    () =>
+      guarded(async () => {
+        if (!projectId) return;
+        await api.roadmapReleaseProject(projectId);
+        setProjectHold(null);
+      }),
+    [guarded, projectId],
   );
 
   /** Ship an in-review item by hand: `in_review → done`. The sweep normally
@@ -815,8 +938,11 @@ export function useRoadmap(repoPath: string) {
     shipped,
     loading,
     /** No project row for this repo — the board can be read but not written,
-     *  so the write affordances stay out of the way. */
+     *  so the write affordances stay out of the way. [`makeProject`] is the way
+     *  out of it. */
     readOnly: workspaceReady && projectId == null,
+    /** Make this repo a project, which is what a read-only board is missing. */
+    makeProject,
     error,
     clearError,
     map: PRODUCT_MAP,
@@ -836,6 +962,9 @@ export function useRoadmap(repoPath: string) {
     proposals,
     /** The PM's pending whole-board reordering, or null. */
     orderProposal,
+    /** The board's own hold, or null — why nothing is dispatching. An item's own
+     *  hold rides its row (`hold_reason`), so only this one needs its own state. */
+    projectHold,
     /** Every row whose position can still change, in board order — the drag's
      *  domain and the order preview's reference. */
     orderable,
@@ -865,9 +994,14 @@ export function useRoadmap(repoPath: string) {
     rejectOrder,
     queueItems,
     unqueueItems,
+    reclaimItem,
     markDone,
     mergeItemPr,
     sendReviewFeedback,
+    holdItem,
+    releaseItem,
+    holdProject,
+    releaseProject,
     /** Definitions + the project default, for the queue affordance and the
      *  item form. */
     workflows,

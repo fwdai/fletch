@@ -335,6 +335,9 @@ mod tests {
             run_id: None,
             pr_url: None,
             pr_number: None,
+            hold_reason: None,
+            held_by: None,
+            held_at: None,
             created_at: 0,
             updated_at: 0,
         }

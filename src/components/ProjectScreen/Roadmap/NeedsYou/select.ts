@@ -1,9 +1,9 @@
 // NeedsYou/select.ts — the roadmap board's decision-card derivation. A pure
 // function that composes state the board already holds (its rows, the `wf:run`
-// list, and the newest durable event per item) into one ordered list of "needs
-// you" cards. No store, no IPC, no React — so the join, the ordering and the
-// reason vocabulary are unit-testable in isolation (select.test.ts) and the strip
-// is a thin renderer over this.
+// list, the newest durable event per item, and the board's own hold) into one
+// ordered list of "needs you" cards. No store, no IPC, no React — so the join,
+// the ordering and the reason vocabulary are unit-testable in isolation
+// (select.test.ts) and the strip is a thin renderer over this.
 //
 // Modelled on MissionControl/queue.ts, deliberately: the two surfaces answer the
 // same question at different altitudes (one fleet-wide, one for this project's
@@ -14,16 +14,28 @@
 // What is NOT here: dismissal. Mission Control lets the user hide a card until
 // its signal changes because it is a fleet-wide inbox nobody finishes; this strip
 // is one project's open decisions and every card has an action that resolves it,
-// so a card leaves only when the underlying state moves.
+// so a card leaves only when the underlying state moves. A hold is the clearest
+// case of that: Release *is* the resolution, and it is the user's alone — the PM
+// can pull the brake and has no way to lift it, so this strip is the only place
+// (with the card itself) a hold can end.
 
-import type { RoadmapItem, RoadmapItemEvent, WfPausedReason, WfRun } from "@/api";
+import type {
+  RoadmapItem,
+  RoadmapItemEvent,
+  RoadmapProjectHold,
+  WfPausedReason,
+  WfRun,
+} from "@/api";
 
 /** Why a card is on the strip. `workflow-approval` / `workflow-conflict` are
  *  Mission Control's names for the same two signals (queue.ts `ReviewReason`);
  *  the rest are roadmap-scoped, named the same way — `workflow-*` for something
- *  a run is waiting on, `item-*` for something the board itself is wedged on. */
+ *  a run is waiting on, `item-*` for something the board itself is wedged on,
+ *  and `project-*` for something about the whole board. */
 export type NeedsReason =
   | "workflow-question"
+  | "project-held"
+  | "item-held"
   | "workflow-approval"
   | "workflow-conflict"
   | "workflow-budget"
@@ -32,18 +44,25 @@ export type NeedsReason =
 /** Ordering buckets, most-decidable-first — the same principle as queue.ts's
  *  BUCKET (a card you can clear in one gesture floats above one that needs a
  *  detour), and the same relative order for the two reasons both surfaces carry.
- *   0 question — answered inline on the card, one gesture, nothing else to open.
- *   1 approval — a dedicated evidence surface plus a one-click approve.
- *   2 conflict — a decision with a defined action, taken in the run.
- *   3 budget   — a decision with a defined action, but "is it worth more" needs
- *                the run's spend to answer.
- *   4 blocked  — the wedge that needs editing dependencies, not a ruling. */
+ *   0 question     — answered inline on the card, one gesture, nothing else to open.
+ *   1 project-held — one click, and it is the widest thing stopped: nothing on
+ *                    this board dispatches until it is lifted.
+ *   2 item-held    — one click, one item. Below the board-wide hold because it
+ *                    stops less, above the gates because Release needs no
+ *                    evidence surface: the reason is on the card.
+ *   3 approval     — a dedicated evidence surface plus a one-click approve.
+ *   4 conflict     — a decision with a defined action, taken in the run.
+ *   5 budget       — a decision with a defined action, but "is it worth more"
+ *                    needs the run's spend to answer.
+ *   6 blocked      — the wedge that needs editing dependencies, not a ruling. */
 export const BUCKET: Record<NeedsReason, number> = {
   "workflow-question": 0,
-  "workflow-approval": 1,
-  "workflow-conflict": 2,
-  "workflow-budget": 3,
-  "item-blocked": 4,
+  "project-held": 1,
+  "item-held": 2,
+  "workflow-approval": 3,
+  "workflow-conflict": 4,
+  "workflow-budget": 5,
+  "item-blocked": 6,
 };
 
 /** Which pauses are the *user's* to clear, and under which reason. A pause left
@@ -58,25 +77,29 @@ const PAUSE_REASON: Partial<Record<WfPausedReason, NeedsReason>> = {
 
 export interface NeedsCard {
   /** Stable id — `run:<runId>` for a run's pause, `blocked:<itemId>` for a
-   *  board wedge. Drives the render key and nothing else: there is no dismissal
-   *  to key on. */
+   *  board wedge, `held:<itemId>` / `project-held:<projectId>` for a hold. Drives
+   *  the render key and nothing else: there is no dismissal to key on. */
   id: string;
   reason: NeedsReason;
   /** Ordering bucket (see BUCKET). Lower = more decidable = higher up. */
   bucket: number;
   /** Deterministic within-bucket tiebreak — most recent activity first. */
   activityAt: number;
-  /** The item the card is about; every card names one (`CODE · title`). */
-  itemId: string;
-  code: string;
-  title: string;
+  /** The item the card is about (`CODE · title`). Absent only for
+   *  `project-held`, the one decision that belongs to the board rather than to
+   *  any row — there is no card to jump to, so the strip renders a plain label
+   *  instead of the item button. */
+  itemId?: string;
+  code?: string;
+  title?: string;
   /** The run whose pause this is, for the run-scoped reasons. */
   runId?: string;
   /** The pause as the engine named it, so the card can label it with the same
    *  `pausedLabel` the item card and the sidebar use. */
   pausedReason?: WfPausedReason;
-  /** The event detail behind an `item-blocked` card — the named cycle
-   *  ("MCA-101 → MCA-104 → MCA-101"). Absent when the writer recorded none. */
+  /** Why, in the writer's own words: the named cycle behind `item-blocked`
+   *  ("MCA-101 → MCA-104 → MCA-101"), or a hold's reason. Absent when the writer
+   *  recorded none (a hold always has one — it is required). */
   detail?: string;
 }
 
@@ -91,6 +114,10 @@ export interface NeedsInput {
    *  `roadmap:item-event` rows). Several rows for one item are tolerated — the
    *  newest wins — so a caller need not pre-reduce. */
   latestEvents: readonly RoadmapItemEvent[];
+  /** The board's own hold, or null. Read from the row rather than from the event
+   *  trail (there isn't one — a board-wide stop belongs to no item), which is
+   *  also why it is the one card with no item. */
+  projectHold?: RoadmapProjectHold | null;
 }
 
 /** The newest event per item id. `created_at` ties fall to the row seen last,
@@ -157,6 +184,37 @@ export function buildNeedsYou(input: NeedsInput): NeedsCard[] {
       title: item.title,
       runId: run.id,
       pausedReason: run.paused_reason,
+    });
+  }
+
+  // ── the brake, at both scopes ──
+  // Read off state, not off the trail: a hold is a *current* fact (the row's
+  // trio, the hold row), so there is no "has the trail moved on" question to
+  // ask — the card is here exactly while the hold is, and the one gesture that
+  // clears it is the Release the card carries. Nothing else on the strip can be
+  // resolved without leaving it.
+  if (input.projectHold) {
+    cards.push({
+      id: `project-held:${input.projectHold.project_id}`,
+      reason: "project-held",
+      bucket: BUCKET["project-held"],
+      activityAt: input.projectHold.created_at,
+      detail: input.projectHold.reason,
+    });
+  }
+  for (const item of input.items) {
+    if (!item.hold_reason) continue;
+    cards.push({
+      id: `held:${item.id}`,
+      reason: "item-held",
+      bucket: BUCKET["item-held"],
+      // The hold's own timestamp, not the row's `updated_at`: an edit to a held
+      // item must not float its card back to the top of the bucket.
+      activityAt: item.held_at ?? item.updated_at,
+      itemId: item.id,
+      code: item.code,
+      title: item.title,
+      detail: item.hold_reason,
     });
   }
 

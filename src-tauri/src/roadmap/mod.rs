@@ -25,6 +25,10 @@
 //!   delta arriving or being ruled on ([`proposals`]).
 //! - `roadmap:order-proposal` / `roadmap:order-proposal-deleted` — the PM's
 //!   whole-board order ask ([`order`]), keyed by project rather than by row.
+//! - `roadmap:project-hold` / `roadmap:project-hold-released` — the whole board
+//!   stopped, or resumed ([`holds`]). Its own pair rather than a `roadmap:item`
+//!   ride, because a project hold is a fact about the board and belongs to no
+//!   row; an *item's* hold travels on the row itself, which carries the trio.
 //! - `roadmap:queue-note` — transient: why an item isn't moving on its own.
 //!   From [`drainer`] (a queued item's blocker) and [`merge_sweep`] (a PR that
 //!   closed without merging). Nothing persists it; see the drainer's docs.
@@ -33,6 +37,11 @@
 //! Autonomous dispatch lives in [`drainer`]: `queued` items become running
 //! workflows there, and every mutation on this surface [`drainer::nudge`]s it so
 //! a queue action doesn't wait out the tick interval.
+//!
+//! [`holds`] is the brake on that dispatch, and the one place where the two
+//! doors are deliberately asymmetric: the PM may *place* a hold (its only
+//! state-stopping write, invariant 2), and only the typed commands here can lift
+//! one. Every release is therefore a user action by construction.
 //!
 //! [`merge_sweep`] closes the loop at the other end: it watches the PRs of
 //! `in_review` items and moves them to `done` when they merge on GitHub. It is
@@ -51,6 +60,7 @@
 pub mod deps;
 pub mod drainer;
 pub mod events;
+pub mod holds;
 pub mod merge_sweep;
 pub mod order;
 pub mod pr_review;
@@ -66,6 +76,7 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Emitter};
 
 use events::{EventActor, EventKind, ItemEvent};
+use holds::ProjectHold;
 use order::OrderProposal;
 use proposals::{Proposal, ProposalKind, ProposalPatch};
 use types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
@@ -116,6 +127,19 @@ pub(crate) fn emit_order_proposal(app: &AppHandle, proposal: &OrderProposal) {
 /// Addressed by project, because that is the ask's key: one per board.
 fn emit_order_proposal_deleted(app: &AppHandle, project_id: &str) {
     let _ = app.emit("roadmap:order-proposal-deleted", project_id);
+}
+
+/// Notify the frontend that the whole board is held (or that the reason changed —
+/// one row per project, replaced in place); carries the full row, so the banner
+/// appears mid-conversation when the PM pulls the brake.
+pub(crate) fn emit_project_hold(app: &AppHandle, hold: &ProjectHold) {
+    let _ = app.emit("roadmap:project-hold", hold);
+}
+
+/// Notify the frontend that the board is running again. Addressed by project,
+/// because that is the hold's key — the board has nothing else to drop.
+fn emit_project_hold_released(app: &AppHandle, project_id: &str) {
+    let _ = app.emit("roadmap:project-hold-released", project_id);
 }
 
 /// Every item on a project's roadmap in board order (`rank`, then `created_at`).
@@ -573,6 +597,248 @@ pub async fn roadmap_note_review_feedback(
     Ok(event)
 }
 
+// ───────────────────────────── holds ────────────────────────────────────
+
+/// Stop autonomous progress on one item until the user lifts it — the user's own
+/// brake, the same write the PM's `roadmap_hold` op makes ([`holds`]).
+///
+/// The status is deliberately untouched, at any status. A hold is not an unqueue:
+/// the item keeps its place in the queue (and its rank), it simply isn't
+/// dispatchable while the reason stands, which is what makes releasing a
+/// one-click undo rather than a re-queue. Allowed on `active`+ rows too — a run
+/// already in flight is exactly when "wait, we agreed something else" is worth
+/// recording, and the hold is then what stops the *next* dispatch of that item.
+///
+/// Records a `held` event carrying the reason, attributed to the user. Holding an
+/// already-held item replaces the reason and writes a second `held`, so the trail
+/// answers "what has this been held for" while the row carries only the reason in
+/// force.
+#[tauri::command]
+pub async fn roadmap_hold_item(
+    item_id: String,
+    reason: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<RoadmapItem, String> {
+    let reason = holds::clean_reason(&reason)?;
+    let (item, event) = {
+        let conn = db.lock();
+        hold_item(&conn, &item_id, &reason, EventActor::User)?
+    };
+    emit_item(&app, &item);
+    emit_item_event(&app, &event);
+    Ok(item)
+}
+
+/// The one write behind [`roadmap_hold_item`] and the PM's op: place the hold and
+/// record it in the caller's single lock scope, so an item that says it is held
+/// always carries the line saying who stopped it and why.
+pub(crate) fn hold_item(
+    conn: &Connection,
+    item_id: &str,
+    reason: &str,
+    by: EventActor,
+) -> Result<(RoadmapItem, ItemEvent), String> {
+    let item = holds::hold_item(conn, item_id, reason, by)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let event = events::record(
+        conn,
+        &item.id,
+        &item.project_id,
+        by,
+        EventKind::Held,
+        Some(reason),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((item, event))
+}
+
+/// Lift an item's hold — **the user's alone**. There is no RPC op for this: an
+/// agent that could release its own brake has no brake (see [`holds`]).
+///
+/// Records a `released` event whose detail is the reason being lifted, so the
+/// trail reads as a pair — why we stopped, and that we resumed — rather than as
+/// an unexplained resumption. Nudges the drainer, because this item may be the
+/// head of the queue.
+#[tauri::command]
+pub async fn roadmap_release_item(
+    item_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<RoadmapItem, String> {
+    let (item, event) = {
+        let conn = db.lock();
+        release_item(&conn, &item_id)?
+    };
+    emit_item(&app, &item);
+    // No event when the row wasn't held: releasing something nobody stopped is a
+    // no-op, and a `released` line for it would be a fact that never happened.
+    if let Some(event) = &event {
+        emit_item_event(&app, event);
+        drainer::nudge();
+    }
+    Ok(item)
+}
+
+/// The one write behind [`roadmap_release_item`]: clear the hold and record what
+/// was lifted, in the caller's single lock scope.
+fn release_item(
+    conn: &Connection,
+    item_id: &str,
+) -> Result<(RoadmapItem, Option<ItemEvent>), String> {
+    let (item, lifted) = holds::release_item(conn, item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let Some(lifted) = lifted else {
+        return Ok((item, None));
+    };
+    let event = events::record(
+        conn,
+        &item.id,
+        &item.project_id,
+        EventActor::User,
+        EventKind::Released,
+        Some(&lifted),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((item, Some(event)))
+}
+
+/// The project's hold, or `None` when the board is running — the board load's
+/// fourth companion to [`roadmap_list_items`]; live changes arrive on
+/// `roadmap:project-hold` / `roadmap:project-hold-released`.
+#[tauri::command]
+pub async fn roadmap_get_project_hold(
+    project_id: String,
+    db: tauri::State<'_, Db>,
+) -> Result<Option<ProjectHold>, String> {
+    let conn = db.lock();
+    holds::get_project(&conn, &project_id).map_err(|e| e.to_string())
+}
+
+/// Stop the whole board: nothing dispatches until the user lifts it.
+///
+/// No history event, unlike an item hold — there is no one item a board-wide
+/// stop belongs to, and writing a `held` line onto every row would bury the trail
+/// under a fact that isn't about any of them. The hold row *is* the durable
+/// record (invariant 3), and it is what the banner and the strip read.
+#[tauri::command]
+pub async fn roadmap_hold_project(
+    project_id: String,
+    reason: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<ProjectHold, String> {
+    let reason = holds::clean_reason(&reason)?;
+    let hold = {
+        let conn = db.lock();
+        holds::hold_project(&conn, &project_id, &reason, EventActor::User)
+            .map_err(|e| e.to_string())?
+    };
+    emit_project_hold(&app, &hold);
+    Ok(hold)
+}
+
+/// Let the board run again — the user's alone, like every release. Nudges the
+/// drainer, because a queue that was frozen may have work waiting.
+#[tauri::command]
+pub async fn roadmap_release_project(
+    project_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<(), String> {
+    {
+        let conn = db.lock();
+        holds::release_project(&conn, &project_id).map_err(|e| e.to_string())?;
+    }
+    // Announced even when nothing was removed: the caller's board should end up
+    // showing no banner either way, and a second release is not an error.
+    emit_project_hold_released(&app, &project_id);
+    drainer::nudge();
+    Ok(())
+}
+
+/// Take a handed-off item back off its agent ("Take it back" on the card): the
+/// `agent_id` is cleared and the row is the queue's to dispatch again.
+///
+/// The undo half of [`roadmap_hand_off_item`], and its own command for the same
+/// reason: clearing the stamp through a patch would record a bare `edited`,
+/// while the trail needs to say *which* agent stopped owning the item. Gated to
+/// `proposed | open` — the only statuses a hand-off can leave a row in, so
+/// anything else means the queue or a run has taken over since and reclaiming
+/// would strip provenance off work in flight.
+#[tauri::command]
+pub async fn roadmap_reclaim_item(
+    item_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<RoadmapItem, String> {
+    let (item, event) = {
+        let conn = db.lock();
+        reclaim(&conn, &item_id)?
+    };
+    emit_item(&app, &item);
+    emit_item_event(&app, &event);
+    // Nothing was blocking the queue from taking this row except the stamp.
+    drainer::nudge();
+    Ok(item)
+}
+
+/// The one write behind [`roadmap_reclaim_item`]: check the gate, clear the
+/// stamp, and record the note in the caller's single lock scope.
+fn reclaim(conn: &Connection, item_id: &str) -> Result<(RoadmapItem, ItemEvent), String> {
+    let current = store::get(conn, item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let Some(agent_id) = current.agent_id.clone() else {
+        return Err(format!("{} isn't with an agent", current.code));
+    };
+    match current.status {
+        ItemStatus::Proposed | ItemStatus::Open => {}
+        status => {
+            return Err(format!(
+                "{} is {} — it's already being built; deal with it from the run",
+                current.code,
+                status.as_str()
+            ))
+        }
+    }
+    // Same degradation as the hand-off: a name we can't read costs the label,
+    // not the write.
+    let name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM workspaces WHERE id = ?1",
+            [&agent_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let item = store::update(
+        conn,
+        item_id,
+        &ItemPatch {
+            agent_id: Some(None),
+            ..Default::default()
+        },
+    )
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let detail = match &name {
+        Some(name) => format!("Taken back from agent {name}"),
+        None => "Taken back from an agent".to_string(),
+    };
+    let event = events::record(
+        conn,
+        &item.id,
+        &item.project_id,
+        EventActor::User,
+        EventKind::Note,
+        Some(&detail),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((item, event))
+}
+
 /// Delete an item. Silent when the row is already gone — the caller's intent
 /// ("this should not be on the board") is satisfied either way.
 ///
@@ -663,17 +929,21 @@ enum Ruling {
     Stale { message: String },
 }
 
-/// May a proposal still be applied to this item? Anything from `active` on is
-/// being built or judged — its shape belongs to the run now, and reshaping it
-/// mid-flight would make the PR answer a brief nobody wrote.
+/// May a proposal still be applied to this item? The set lives on the status
+/// itself ([`ItemStatus::is_rulable`]) — one predicate, shared with the PM-side
+/// refusal in `rpc::roadmap`, so the two gates can never drift apart. Only the
+/// message stays here: this one is read by the user, on the card's bar.
+///
+/// A held item still passes. It is paused, not sealed — see the predicate's docs.
 fn proposal_gate(item: &RoadmapItem) -> Result<(), String> {
-    match item.status {
-        ItemStatus::Proposed | ItemStatus::Open | ItemStatus::Queued => Ok(()),
-        status => Err(format!(
+    if item.status.is_rulable() {
+        Ok(())
+    } else {
+        Err(format!(
             "{} is {} — an item being built or reviewed can't be reshaped by proposal",
             item.code,
-            status.as_str()
-        )),
+            item.status.as_str()
+        ))
     }
 }
 
@@ -1128,6 +1398,191 @@ mod tests {
             assert_eq!(row.agent_id, None, "a refusal must not stamp");
             assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
         }
+    }
+
+    // ───────────────────────────── holds ────────────────────────────────
+
+    /// The item brake, end to end through the command layer's one write: the
+    /// trio lands on the row, a `held` line lands on the trail carrying the
+    /// reason, and the status doesn't move — a hold stops progress, it doesn't
+    /// take the item off the queue.
+    #[test]
+    fn holding_an_item_records_the_reason_and_moves_nothing() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Queued);
+
+        let (held, event) = hold_item(&conn, &it.id, "confirm the scope", EventActor::Pm).unwrap();
+        assert_eq!(held.hold_reason.as_deref(), Some("confirm the scope"));
+        assert_eq!(held.held_by, Some(EventActor::Pm));
+        assert!(held.held_at.is_some());
+        assert_eq!(held.status, ItemStatus::Queued, "a hold is not an unqueue");
+        assert_eq!(event.kind, EventKind::Held);
+        assert_eq!(event.actor, EventActor::Pm);
+        assert_eq!(event.detail.as_deref(), Some("confirm the scope"));
+        assert_eq!(events::list_for_item(&conn, &it.id).unwrap(), vec![event]);
+
+        // A release names what it lifted, so the trail reads as a pair.
+        let (released, event) = release_item(&conn, &it.id).unwrap();
+        assert!(!released.is_held());
+        assert_eq!(released.held_by, None);
+        assert_eq!(released.held_at, None);
+        assert_eq!(released.status, ItemStatus::Queued);
+        let event = event.expect("lifting a real hold is history");
+        assert_eq!(event.kind, EventKind::Released);
+        // Always the user: there is no release op, so nothing else can get here.
+        assert_eq!(event.actor, EventActor::User);
+        assert_eq!(event.detail.as_deref(), Some("confirm the scope"));
+    }
+
+    /// A second hold replaces the reason on the row and *adds* to the trail —
+    /// the row answers "why is it held", the trail answers "what has it been
+    /// held for".
+    #[test]
+    fn re_holding_replaces_the_reason_and_keeps_both_lines() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        hold_item(&conn, &it.id, "first reason", EventActor::Pm).unwrap();
+        let (held, _) = hold_item(&conn, &it.id, "sharper reason", EventActor::User).unwrap();
+
+        assert_eq!(held.hold_reason.as_deref(), Some("sharper reason"));
+        assert_eq!(held.held_by, Some(EventActor::User));
+        let trail = events::list_for_item(&conn, &it.id).unwrap();
+        assert_eq!(trail.len(), 2, "the superseded reason survives as history");
+        assert_eq!(trail[0].detail.as_deref(), Some("sharper reason"));
+        assert_eq!(trail[1].detail.as_deref(), Some("first reason"));
+        assert!(trail.iter().all(|e| e.kind == EventKind::Held));
+    }
+
+    /// Releasing something nobody held writes no line: a `released` event for a
+    /// hold that never existed would be a fact that didn't happen. The row still
+    /// comes back, so the strip's one-click release can't fail because someone
+    /// else lifted it a moment earlier.
+    #[test]
+    fn releasing_an_unheld_item_is_a_quiet_no_op() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let (row, event) = release_item(&conn, &it.id).unwrap();
+        assert_eq!(row.id, it.id);
+        assert!(event.is_none());
+        assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+        assert!(release_item(&conn, "no-such-item").is_err());
+    }
+
+    /// The board brake: the hold row is the whole record (no per-item history),
+    /// and it survives a fresh read — which is what makes it a durable object
+    /// rather than a toast.
+    #[test]
+    fn holding_a_project_records_the_row_and_no_item_history() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Queued);
+
+        let hold =
+            holds::hold_project(&conn, "p1", "waiting on the design call", EventActor::Pm).unwrap();
+        assert_eq!(hold.reason, "waiting on the design call");
+        assert_eq!(hold.held_by, EventActor::Pm);
+        assert_eq!(holds::get_project(&conn, "p1").unwrap(), Some(hold));
+        assert!(
+            events::list_for_item(&conn, &it.id).unwrap().is_empty(),
+            "a board-wide stop belongs to no row"
+        );
+
+        assert!(holds::release_project(&conn, "p1").unwrap());
+        assert!(holds::get_project(&conn, "p1").unwrap().is_none());
+    }
+
+    /// The gate-unification pin (the follow-up B5 was named for): `rulable` in
+    /// the RPC and `proposal_gate` here read the same predicate, and **a hold is
+    /// not part of it**. A held item is paused, not sealed — the reason to stop
+    /// autonomous progress is usually that the item's shape is wrong, so the
+    /// proposal that fixes it has to be rulable while the hold stands.
+    #[test]
+    fn a_hold_pauses_an_item_without_sealing_it_to_proposals() {
+        use ItemStatus::{Active, Done, InReview, Open, Proposed, Queued};
+        // One set, both gates.
+        for status in [Proposed, Open, Queued] {
+            assert!(status.is_rulable(), "{}", status.as_str());
+            assert!(proposal_gate(&with_status(&test_conn(), status)).is_ok());
+        }
+        for status in [Active, InReview, Done] {
+            assert!(!status.is_rulable(), "{}", status.as_str());
+            let refusal = proposal_gate(&with_status(&test_conn(), status)).unwrap_err();
+            assert!(refusal.contains(status.as_str()), "{refusal}");
+        }
+
+        // And the ruling still applies on a held row.
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Queued);
+        let p = pending_update(&conn, &it, Some("this is what it should have said"));
+        hold_item(&conn, &it.id, "the scope is wrong", EventActor::Pm).unwrap();
+
+        let Ruling::Updated { item, .. } = accept_proposal(&conn, &p.id).unwrap() else {
+            panic!("a held item is paused, not sealed");
+        };
+        assert_eq!(item.title, "reshaped");
+        assert!(item.is_held(), "and the hold outlives the ruling");
+    }
+
+    /// Taking an item back clears the stamp and records a `note` naming the
+    /// agent it came back from — the undo of a hand-off, and the only other
+    /// writer of `agent_id`.
+    #[test]
+    fn reclaiming_clears_the_agent_and_names_it_in_history() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO workspaces (id, project_id, name, created_at)
+             VALUES ('w1', 'p1', 'blue-heron', 0)",
+            [],
+        )
+        .unwrap();
+        let it = with_status(&conn, ItemStatus::Open);
+        hand_off(&conn, &it.id, "w1").unwrap();
+
+        let (item, event) = reclaim(&conn, &it.id).unwrap();
+        assert_eq!(item.agent_id, None);
+        assert_eq!(item.status, ItemStatus::Open, "the status is untouched");
+        assert_eq!(event.kind, EventKind::Note);
+        assert_eq!(event.actor, EventActor::User);
+        assert_eq!(
+            event.detail.as_deref(),
+            Some("Taken back from agent blue-heron")
+        );
+        // Nothing to take back twice.
+        assert!(reclaim(&conn, &it.id).is_err());
+    }
+
+    /// The gate: an item nobody handed off has nothing to reclaim, and one the
+    /// queue has since taken is being built — the run is where that gets dealt
+    /// with. A refusal writes nothing.
+    #[test]
+    fn reclaiming_refuses_an_unhanded_or_dispatched_item() {
+        let conn = test_conn();
+        let bare = with_status(&conn, ItemStatus::Open);
+        assert!(reclaim(&conn, &bare.id)
+            .unwrap_err()
+            .contains("with an agent"));
+
+        for status in [ItemStatus::Queued, ItemStatus::Active, ItemStatus::InReview] {
+            let it = with_status(&conn, status);
+            store::update(
+                &conn,
+                &it.id,
+                &ItemPatch {
+                    agent_id: Some(Some("w1".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let err = reclaim(&conn, &it.id).unwrap_err();
+            assert!(err.contains(status.as_str()), "{err}");
+            let row = store::get(&conn, &it.id).unwrap().unwrap();
+            assert_eq!(
+                row.agent_id.as_deref(),
+                Some("w1"),
+                "a refusal writes nothing"
+            );
+            assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+        }
+        assert!(reclaim(&conn, "no-such-item").is_err());
     }
 
     /// A pending update proposal for a test item, straight through the DAO —

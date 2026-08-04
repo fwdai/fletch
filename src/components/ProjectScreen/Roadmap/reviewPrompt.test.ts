@@ -23,6 +23,9 @@ function item(over: Partial<RoadmapItem> = {}): RoadmapItem {
     pr_url: "https://github.com/o/r/pull/598",
     pr_number: 598,
     created_at: 0,
+    hold_reason: null,
+    held_by: null,
+    held_at: null,
     updated_at: 0,
     ...over,
   };

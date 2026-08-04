@@ -29,6 +29,9 @@ fn in_review(code: &str, number: Option<i64>) -> RoadmapItem {
         run_id: Some("run-1".into()),
         pr_url: number.map(|n| format!("https://github.com/o/r/pull/{n}")),
         pr_number: number,
+        hold_reason: None,
+        held_by: None,
+        held_at: None,
         created_at: 10,
         updated_at: 10,
     }
