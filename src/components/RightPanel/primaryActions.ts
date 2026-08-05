@@ -263,10 +263,15 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
         case "ready":
           return merge("ready to merge", "success");
         case "mergeable-soft":
-          // Only NON-required checks failing — merging is allowed, but say so.
-          return merge("optional checks failing");
+          // Nothing failing, not everything green yet — merging is allowed, but
+          // say what's outstanding.
+          return merge("checks still running");
         case "checks-failing":
-          // Failing required checks are agent-fixable.
+          // A failing check is agent-fixable, so offer the fix as the primary
+          // action even when the gate would still let the merge through. Merge
+          // stays in the menu (`secondaryFor` lists it unconditionally for an
+          // open PR) and stays enabled — see `describeMergeGate`'s `unstable`
+          // arm — so this steers without taking the decision away.
           return {
             key: "agent-fix",
             label: "Fix checks with agent",

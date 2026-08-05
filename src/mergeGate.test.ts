@@ -13,13 +13,33 @@ const ctx = (mergeable: Mergeable, checksFailed = 0) => ({ checksFailed, mergeab
 
 describe("describeMergeGate — real merge_state", () => {
   it("opens the gate only on clean and unstable", () => {
-    // clean = green light; unstable = only non-required checks fail, still
-    // mergeable. Everything else is a closed gate.
+    // clean = green light; unstable = mergeable anyway. Everything else is a
+    // closed gate.
     expect(describeMergeGate("clean", ctx("mergeable"))).toMatchObject({
       situation: "ready",
       mergeAllowed: true,
     });
     expect(describeMergeGate("unstable", ctx("mergeable"))).toMatchObject({
+      situation: "mergeable-soft",
+      mergeAllowed: true,
+    });
+  });
+
+  it("calls a failing check failing even when the gate stays open", () => {
+    // The regression this pins. A repo with no REQUIRED status checks — GitHub's
+    // default — reports a failing run as `unstable`, not `blocked`. Classifying
+    // that as "only optional checks failing" left a red PR with no surface
+    // offering to fix it and autopilot concluding it had nothing to do.
+    expect(describeMergeGate("unstable", ctx("mergeable", 1))).toEqual({
+      situation: "checks-failing",
+      tone: "attention",
+      // Still true, and deliberately: GitHub really would take this merge. The
+      // situation names the problem; this names the forge's verdict.
+      mergeAllowed: true,
+      needsUpdate: false,
+    });
+    // Nothing failing → the arm's only remaining meaning, checks still running.
+    expect(describeMergeGate("unstable", ctx("mergeable", 0))).toMatchObject({
       situation: "mergeable-soft",
       mergeAllowed: true,
     });
@@ -138,6 +158,11 @@ describe("mergeGateLabel", () => {
   it("names the base branch on the two situations that are about it", () => {
     expect(mergeGateLabel("behind", "main")).toBe("behind main");
     expect(mergeGateLabel("conflicts", "develop")).toBe("conflicts with develop");
+  });
+
+  it("says what `mergeable-soft` now means, which is not 'optional failures'", () => {
+    expect(mergeGateLabel("mergeable-soft")).toBe("checks still running");
+    expect(mergeGateLabel("checks-failing")).toBe("checks failing");
   });
 
   it("falls back to the generic word when the caller has no base branch", () => {

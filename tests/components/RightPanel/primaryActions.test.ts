@@ -177,11 +177,25 @@ describe("pr-open primary by merge_state (§7)", () => {
     expect(p.statusLabel).toContain("ready to merge");
   });
 
-  it("unstable → Merge PR enabled, warn status", () => {
-    const p = primaryFor("pr-open", { ...base, mergeState: "unstable", checksFailed: 1 });
+  it("unstable with nothing failing → Merge PR enabled, warn status", () => {
+    const p = primaryFor("pr-open", { ...base, mergeState: "unstable", checksFailed: 0 });
     expect(p.key).toBe("merge");
     expect(p.tone).toBeUndefined();
     expect(p.statusKind).toBe("warn");
+    expect(p.statusLabel).toContain("checks still running");
+  });
+
+  it("unstable WITH a failing check → Fix with agent, not Merge", () => {
+    // A repo with no required status checks reports every failure as `unstable`,
+    // so this — not `blocked` — is the common shape of a red PR. Offering Merge
+    // here is what let a failing spec sit unfixed. Merge stays in the menu and
+    // stays enabled (the gate really is open); it just isn't what we suggest.
+    const counts = { ...base, mergeState: "unstable" as const, checksFailed: 1 };
+    const p = primaryFor("pr-open", counts);
+    expect(p.key).toBe("agent-fix");
+    expect(p.statusKind).toBe("attention");
+    expect(p.statusLabel).toContain("1 check failing");
+    expect(secondaryFor("pr-open", counts).map((s) => s.key)).toContain("merge");
   });
 
   it("blocked with failing checks → Fix with agent", () => {
