@@ -10,16 +10,18 @@ import { highlightToHtml } from "@/util/highlight";
 export const extOf = (path: string) => path.split(".").pop() ?? "";
 
 /** Fetch + parse a file's unified diff vs the parent branch. `dep` lets the
- *  caller force a refetch (e.g. when the file's +/- counts move during a turn). */
+ *  caller force a refetch (e.g. when the file's +/- counts move during a turn).
+ *  `error` is the failure's actual message (null when healthy) — surfacing it
+ *  is what turns "Couldn't load diff" from a dead end into a bug report. */
 export function useFileDiff(agentId: string, path: string | null, dep?: string) {
   const [hunks, setHunks] = useState<DiffHunk[]>([]);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     if (!path) {
       setHunks([]);
-      setError(false);
+      setError(null);
       setLoaded(false);
       return;
     }
@@ -29,14 +31,14 @@ export function useFileDiff(agentId: string, path: string | null, dep?: string) 
       .then((t) => {
         if (!cancelled) {
           setHunks(parseUnifiedDiff(t));
-          setError(false);
+          setError(null);
           setLoaded(true);
         }
       })
-      .catch(() => {
+      .catch((e) => {
         if (!cancelled) {
           setHunks([]);
-          setError(true);
+          setError(e instanceof Error ? e.message : String(e));
           setLoaded(true);
         }
       });
@@ -124,7 +126,7 @@ export function FileDiff({
     return (
       <div className="empty-msg" style={{ margin: "auto" }}>
         <div className="et">Couldn't load diff</div>
-        <div>Try toggling back and forth, or reopen the file.</div>
+        <div>{error}</div>
       </div>
     );
   }

@@ -71,7 +71,10 @@ pub async fn diff_refs(
     path: Option<&str>,
 ) -> Result<String> {
     let range = format!("{from_sha}..{to_sha}");
-    let mut args = vec!["diff", "--no-color", "-U3", &range];
+    // --no-ext-diff: patch output must come from git's own engine, not a
+    // configured `diff.external` (see `hardening::NEUTRALISED` on why this
+    // can't be neutralised at the spawn seam).
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-U3", &range];
     if let Some(p) = path {
         args.push("--");
         args.push(p);
