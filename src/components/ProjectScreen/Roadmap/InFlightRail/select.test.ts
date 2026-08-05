@@ -201,7 +201,7 @@ describe("buildInFlight — active rows", () => {
 describe("buildInFlight — in-review rows", () => {
   const gates: { merge_state: PrChecks["merge_state"]; state: string; tone: string }[] = [
     { merge_state: "clean", state: "ready to merge", tone: "ready" },
-    { merge_state: "unstable", state: "optional checks failing", tone: "warn" },
+    { merge_state: "unstable", state: "checks still running", tone: "warn" },
     { merge_state: "dirty", state: "conflicts with main", tone: "attention" },
     { merge_state: "behind", state: "behind main", tone: "attention" },
     { merge_state: "draft", state: "draft", tone: "info" },

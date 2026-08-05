@@ -145,8 +145,14 @@ describe("detectBlockers", () => {
     // Blocked with nothing failing is a pure review gate, not a checks problem.
     expect(gate({ merge_state: "blocked" })).toEqual(["review-required"]);
     expect(gate({ merge_state: "draft" })).toEqual(["draft"]);
-    // Only non-required checks failing → mergeable, so not a blocker.
+    // `unstable` with nothing failing is just "checks still running".
     expect(gate({ merge_state: "unstable", required_failing: [] })).toEqual([]);
+    // But a failing check blocks whether or not it shuts the gate. A repo with no
+    // required status checks (GitHub's default) reports every failure as
+    // `unstable`, and skipping those is how a red PR read as nothing to do.
+    expect(gate({ merge_state: "unstable", required_failing: ["rust-test"] })).toEqual([
+      "checks-failing",
+    ]);
   });
 
   it("never invents a conflict from a not-yet-computed mergeable verdict", () => {
@@ -168,15 +174,16 @@ describe("detectBlockers", () => {
     expect(b).toEqual([{ kind: "checks-failing", checks: ["build", "test (18)"] }]);
   });
 
-  it("uses required_failing, not the raw failed count, for the gate decision", () => {
-    // The drift this module ends: `failed` counts every failing run (reruns
-    // included), `required_failing` names the ones that gate the merge. A PR whose
-    // only failures are non-required must not read as agent-fixable.
+  it("reads the failing NAMES, never the raw failed count", () => {
+    // The drift this module ends: `failed` counts every failing run, so a rerun
+    // double-counts, and the fix-checks trigger needs names anyway. A report that
+    // claims failures but names none yields no blocker — there is nothing to hand
+    // an agent — rather than a phantom one off the count.
     expect(
       kinds(
         input({
           pr: pr(),
-          checks: checks({ merge_state: "unstable", failed: 3 }),
+          checks: checks({ merge_state: "unstable", failed: 3, required_failing: [] }),
           comments: comments(0),
         }),
       ),

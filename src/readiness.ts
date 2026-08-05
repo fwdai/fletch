@@ -52,7 +52,10 @@ export type Blocker =
   | { kind: "diverged"; mainline: string }
   /** Failing checks. Carries their names — CI can't currently tell us which are
    *  *required* (that needs an API call the app token often can't make), so this
-   *  is every failing check, and it is deliberately NOT split into tests-vs-lint:
+   *  is every failing check, blocking whether or not it shuts the merge gate: a
+   *  repo with no required checks (GitHub's default) reports a red run as
+   *  `unstable`, and a failing spec is worth fixing there too. Deliberately NOT
+   *  split into tests-vs-lint:
    *  check names are free-form, and guessing from them would be a heuristic
    *  masquerading as a fact. The local verifier (`verify.rs`) *does* know the
    *  difference — when its report becomes an input, the split can be real. */
@@ -156,8 +159,10 @@ export function detectBlockers({ git, pr, checks, comments }: ReadinessInput): B
         break;
       default:
         // ready / mergeable-soft / no-conflicts / computing add no blocker of
-        // their own. `mergeable-soft` means only non-required checks fail, so
-        // the failing names are informational, not blocking.
+        // their own. `mergeable-soft` now means only "checks still running": a
+        // failing check reaches `checks-failing` above whether or not it shuts
+        // the merge gate, because what's being asked is "is this work finished",
+        // not "would GitHub take it as it stands".
         break;
     }
     // Split by who holds the conversation. A thread we replied to last is a

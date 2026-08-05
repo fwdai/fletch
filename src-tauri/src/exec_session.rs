@@ -564,7 +564,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("slowagent.sh");
         // Exit promptly on SIGINT; otherwise outlive the test's timeout.
-        std::fs::write(&script, "#!/bin/sh\ntrap 'exit 130' INT\nsleep 30\n").unwrap();
+        //
+        // The sleep runs in the BACKGROUND with an explicit `wait`, which is load
+        // -bearing rather than stylistic: a POSIX shell defers a trapped signal
+        // until the current FOREGROUND command finishes, so a plain `sleep 30`
+        // swallows the SIGINT for its full 30s whenever the signal lands after
+        // the sleep has started — and it does exactly that whenever this thread
+        // is descheduled between `send_user_message` publishing the child and
+        // signalling it. That made this test flaky on a loaded machine, failing
+        // as "turn never reported exit" while the code under test was fine. POSIX
+        // `wait` returns immediately on a trapped signal, so the trap now fires
+        // whenever the SIGINT arrives; the trap kills the sleep so no orphan
+        // outlives the test.
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ntrap 'kill $child 2>/dev/null; exit 130' INT\nsleep 30 &\nchild=$!\nwait\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         // Holding a write fd to the script makes exec() return ETXTBSY, so the

@@ -5,16 +5,18 @@ import { describeMergeGate, type MergeGateSituation } from "@/mergeGate";
 import { ChecksSection } from "./ChecksSection";
 import { CommentsSection } from "./CommentsSection";
 
-/** The card's verbose merge-gate line. `blocked` collapses its two sub-states
- *  (failing checks vs. review gate) into one message here. */
+/** The card's verbose merge-gate line. Failing checks and a review gate get
+ *  their own message: `checks-failing` no longer implies the gate is shut (an
+ *  `unstable` PR is both red and mergeable), so one collapsed "blocked by checks
+ *  or reviews" line would misstate both halves. */
 const CARD_GATE_BY_SITUATION: Record<
   MergeGateSituation,
   { cls: string; text: (base: string) => string }
 > = {
   ready: { cls: "ok", text: () => "✓ Ready to merge" },
-  "mergeable-soft": { cls: "ok", text: () => "✓ Mergeable — optional checks failing" },
-  "checks-failing": { cls: "att", text: () => "△ Blocked by required checks or reviews" },
-  "review-required": { cls: "att", text: () => "△ Blocked by required checks or reviews" },
+  "mergeable-soft": { cls: "ok", text: () => "✓ Mergeable — checks still running" },
+  "checks-failing": { cls: "att", text: () => "△ Checks failing" },
+  "review-required": { cls: "att", text: () => "△ Blocked by a review gate" },
   behind: { cls: "att", text: (base) => `△ Behind ${base} — update your branch` },
   conflicts: { cls: "att", text: (base) => `△ Conflicts with ${base} — update your branch` },
   draft: { cls: "ok", text: () => "Draft — mark ready on GitHub to merge" },
@@ -38,7 +40,10 @@ export function PRCard({
   // One merge-gate line. Gate semantics live in describeMergeGate (spec §6);
   // the card just renders the verbose copy for the resulting situation.
   const { situation } = describeMergeGate(checks?.merge_state ?? null, {
-    checksFailed: checks?.failed ?? 0,
+    // `required_failing` (the named failing runs), not `failed` — the latter
+    // double-counts a rerun. `readiness.ts` owns that definition and every other
+    // caller now derives it the same way.
+    checksFailed: checks?.required_failing.length ?? 0,
     mergeable: pr.mergeable,
   });
   const gate = CARD_GATE_BY_SITUATION[situation];

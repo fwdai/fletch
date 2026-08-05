@@ -216,6 +216,23 @@ describe("autopilot opens a cycle", () => {
     });
   });
 
+  it("fixes a failing check on a repo with no required checks", () => {
+    // The shape that actually reaches production, and the one that sat there doing
+    // nothing: no branch-protection required checks (GitHub's default) means a red
+    // run reports `unstable`, not `blocked`. Autopilot read that as a merge it
+    // wasn't allowed to make and waited forever. `fix-checks` must reach it — the
+    // goal is finished work, not work the forge happens to accept.
+    const softFailing: ReadinessInput = {
+      ...FAILING,
+      checks: checks({ merge_state: "unstable", required_failing: ["rust-test"], failed: 1 }),
+    };
+    expect(step({ readiness: softFailing })).toMatchObject({
+      do: "dispatch",
+      rung: "fix-checks",
+      params: { failing: "rust-test" },
+    });
+  });
+
   it("refuses to re-enter a world it already failed to change", () => {
     // Checked BEFORE the budget: a repeat of a barren world is futile even with
     // attempts to spare.

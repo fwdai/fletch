@@ -13,8 +13,8 @@ import type { Mergeable, MergeState } from "@/api";
  *  changes, so surfaces switch on this rather than on raw `MergeState`. */
 export type MergeGateSituation =
   | "ready" // clean — green light, merge now
-  | "mergeable-soft" // unstable — only optional (non-required) checks failing
-  | "checks-failing" // blocked by failing required checks — agent-fixable
+  | "mergeable-soft" // unstable with nothing failing — checks still running, merge allowed
+  | "checks-failing" // a check is failing — agent-fixable, whether or not it shuts the gate
   | "review-required" // blocked purely by a review/other gate — send to GitHub
   | "behind" // behind base — update the branch
   | "conflicts" // dirty — conflicts with base, update the branch
@@ -30,7 +30,11 @@ export interface MergeGate {
   situation: MergeGateSituation;
   tone: MergeGateTone;
   /** The merge CTA is actually clickable (gate open). Drives the disabled
-   *  state of a "Merge" button regardless of whether it's the primary action. */
+   *  state of a "Merge" button regardless of whether it's the primary action.
+   *
+   *  Independent of `situation`, deliberately: `checks-failing` on an `unstable`
+   *  PR is a real problem to fix AND a merge GitHub would accept. Two questions
+   *  — "is something wrong" and "would the forge take it" — so two fields. */
   mergeAllowed: boolean;
   /** Branch is out of sync with base (behind / conflicting / unmergeable
    *  fallback); gates the "Update branch with agent" remediation. */
@@ -53,7 +57,7 @@ export function mergeGateLabel(situation: MergeGateSituation, base = "base"): st
     case "ready":
       return "ready to merge";
     case "mergeable-soft":
-      return "optional checks failing";
+      return "checks still running";
     case "checks-failing":
       return "checks failing";
     case "review-required":
@@ -92,9 +96,25 @@ export function describeMergeGate(
     case "clean":
       return { situation: "ready", tone: "ready", mergeAllowed: true, needsUpdate: false };
     case "unstable":
-      return { situation: "mergeable-soft", tone: "warn", mergeAllowed: true, needsUpdate: false };
+      // A failing check is something to fix even when GitHub would let the merge
+      // through. `unstable` is exactly what a repo with no REQUIRED status checks
+      // reports for a failing run — the GitHub default, so the common case — and
+      // reading it as "merely optional" is how a red PR sat there with no surface
+      // offering to fix it and autopilot deciding it had nothing to do. Split on
+      // the failing count the same way `blocked` does; what differs between the
+      // two is only whether the gate is shut, and here it isn't — claiming
+      // otherwise would disable a merge GitHub accepts.
+      return checksFailed > 0
+        ? {
+            situation: "checks-failing",
+            tone: "attention",
+            mergeAllowed: true,
+            needsUpdate: false,
+          }
+        : { situation: "mergeable-soft", tone: "warn", mergeAllowed: true, needsUpdate: false };
     case "blocked":
-      // Failing required checks are agent-fixable; a pure review gate is not.
+      // Same split, gate shut: failing checks are agent-fixable, a pure review
+      // gate is not.
       return checksFailed > 0
         ? {
             situation: "checks-failing",
