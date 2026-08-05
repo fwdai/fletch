@@ -2,16 +2,22 @@
 // editor's "Diff" toggle both fetch a file's unified diff and render it here,
 // so there's a single implementation of the diff markup + syntax highlighting.
 import { useEffect, useMemo, useState } from "react";
-import { api } from "@/api";
+import { api, type DiffBaseMode } from "@/api";
 import { hljsLang } from "@/data/languages";
 import { type DiffHunk, type DiffLine, parseUnifiedDiff } from "@/util/diff";
 import { highlightToHtml } from "@/util/highlight";
 
 export const extOf = (path: string) => path.split(".").pop() ?? "";
 
-/** Fetch + parse a file's unified diff vs the parent branch. `dep` lets the
- *  caller force a refetch (e.g. when the file's +/- counts move during a turn). */
-export function useFileDiff(agentId: string, path: string | null, dep?: string) {
+/** Fetch + parse a file's unified diff vs `base` (fork point when omitted).
+ *  `dep` lets the caller force a refetch (e.g. when the file's +/- counts move
+ *  during a turn). */
+export function useFileDiff(
+  agentId: string,
+  path: string | null,
+  dep?: string,
+  base?: DiffBaseMode,
+) {
   const [hunks, setHunks] = useState<DiffHunk[]>([]);
   const [error, setError] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -25,7 +31,7 @@ export function useFileDiff(agentId: string, path: string | null, dep?: string) 
     }
     let cancelled = false;
     api
-      .getFileDiff(agentId, path)
+      .getFileDiff(agentId, path, base)
       .then((t) => {
         if (!cancelled) {
           setHunks(parseUnifiedDiff(t));
@@ -43,7 +49,7 @@ export function useFileDiff(agentId: string, path: string | null, dep?: string) 
     return () => {
       cancelled = true;
     };
-  }, [agentId, path, dep]);
+  }, [agentId, path, dep, base]);
 
   return { hunks, error, loaded };
 }
@@ -105,13 +111,15 @@ export function FileDiff({
   path,
   lang,
   isBuiltInTheme,
+  base,
 }: {
   agentId: string;
   path: string;
   lang: string;
   isBuiltInTheme: boolean;
+  base?: DiffBaseMode;
 }) {
-  const { hunks, error, loaded } = useFileDiff(agentId, path);
+  const { hunks, error, loaded } = useFileDiff(agentId, path, undefined, base);
 
   if (!loaded) {
     return (

@@ -2,7 +2,7 @@
 // preview" message for binary / too-large / unreadable files, a loading
 // state, or the editable FileEditor.
 import { useEffect, useState } from "react";
-import { type AgentRecord, api, type CheckoutFileContents } from "@/api";
+import { type AgentRecord, api, type CheckoutFileContents, type DiffBaseMode } from "@/api";
 import { basename, parentDir } from "@/util/format";
 import { FileEditor } from "./FileEditor";
 import { ViewerHeader } from "./ViewerHeader";
@@ -10,10 +10,11 @@ import { ViewerHeader } from "./ViewerHeader";
 interface FileViewerProps {
   agent: AgentRecord;
   path: string;
+  diffBase: DiffBaseMode;
   onBack: () => void;
 }
 
-export function FileViewer({ agent, path, onBack }: FileViewerProps) {
+export function FileViewer({ agent, path, diffBase, onBack }: FileViewerProps) {
   const name = basename(path);
   const dir = parentDir(path);
 
@@ -25,7 +26,7 @@ export function FileViewer({ agent, path, onBack }: FileViewerProps) {
     setContents(null);
     setError(false);
     api
-      .readCheckoutFile(agent.id, path)
+      .readCheckoutFile(agent.id, path, diffBase)
       .then((c) => {
         if (!cancelled) setContents(c);
       })
@@ -35,7 +36,7 @@ export function FileViewer({ agent, path, onBack }: FileViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [agent.id, path]);
+  }, [agent.id, path, diffBase]);
 
   if (error || (contents && (contents.binary || contents.too_large))) {
     return (
@@ -80,6 +81,7 @@ export function FileViewer({ agent, path, onBack }: FileViewerProps) {
       name={name}
       dir={dir}
       file={contents}
+      diffBase={diffBase}
       onBack={onBack}
     />
   );

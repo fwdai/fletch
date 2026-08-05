@@ -7,7 +7,7 @@
 // and fetches each file's diff via `get_file_diff`. True edit-streaming (a
 // typing cursor per keystroke) is a deferred follow-up.
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentRecord, FileStatus } from "@/api";
+import type { AgentRecord, DiffBaseMode, FileStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { useHljsTheme } from "@/util/codeTheme";
@@ -18,6 +18,8 @@ interface CodeLivePanelProps {
   agent: AgentRecord;
   /** The file shared with Files mode; may be null or point at an unchanged file. */
   selectedPath: string | null;
+  /** The Code panel's base switch: what the rendered diff measures against. */
+  diffBase: DiffBaseMode;
   onSelect: (path: string) => void;
   onOpenInEditor: (path: string) => void;
 }
@@ -46,6 +48,7 @@ const sigOf = (f: FileStatus) => `${f.additions}:${f.deletions}`;
 export function CodeLivePanel({
   agent,
   selectedPath,
+  diffBase,
   onSelect,
   onOpenInEditor,
 }: CodeLivePanelProps) {
@@ -147,7 +150,7 @@ export function CodeLivePanel({
 
   // ── diff fetch ──────────────────────────────────────────────────────────
   // Refetch when the shown file changes or its +/- counts move during a turn.
-  const { hunks, error: diffErr } = useFileDiff(agent.id, displayPath, displaySigStr);
+  const { hunks, error: diffErr } = useFileDiff(agent.id, displayPath, displaySigStr, diffBase);
 
   // ── fresh-line highlighting ──────────────────────────────────────────────
   // Mark added lines that weren't present last time we rendered this same file
