@@ -15,6 +15,16 @@ function num(v: unknown, key: string): number | undefined {
   return undefined;
 }
 
+/** Whether a run's budgets JSON carries any cap the meter would render. Lets
+ *  callers decide to mount the strip that hosts the meters at all. */
+export function hasBudgets(budgets: unknown): boolean {
+  return (
+    num(budgets, "turns") !== undefined ||
+    num(budgets, "tokens") !== undefined ||
+    num(budgets, "wall_clock_mins") !== undefined
+  );
+}
+
 interface Meter {
   label: string;
   used: number;
