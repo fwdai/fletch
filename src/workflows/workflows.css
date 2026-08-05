@@ -1357,7 +1357,7 @@ button.ag-wf-tile {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-bottom: 8px;
+  padding: 0 8px 8px;
   border-bottom: 1px solid var(--bd-soft);
   flex-shrink: 0;
 }
@@ -1540,7 +1540,9 @@ button.wf-run-rm:hover {
 }
 /* Section eyebrow inside the Activity side panel (sub-runs). */
 .wf-side-head {
-  padding: 9px 14px 5px;
+  /* Lives inside .wf-subruns (8px inset) — 6px more lands the text at the
+     same 14px gutter the timeline rows use. */
+  padding: 9px 6px 5px;
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -1569,11 +1571,7 @@ button.wf-run-rm:hover {
   flex: 1;
   min-width: 0;
   overflow-x: auto;
-  scrollbar-width: none;
   padding: 6px 0;
-}
-.wf-stepper-track::-webkit-scrollbar {
-  display: none;
 }
 /* Connector between nodes — a short hairline; brightened once the flow has
    passed it, so progress reads along the strip itself. */
@@ -1773,12 +1771,8 @@ button.wf-run-rm:hover {
   padding: 5px 14px;
   flex-shrink: 0;
   overflow-x: auto;
-  scrollbar-width: none;
   border-bottom: 1px solid var(--bd-soft);
   background: var(--bg-1);
-}
-.wf-attempt-strip::-webkit-scrollbar {
-  display: none;
 }
 .wf-as-label {
   font-family: var(--font-mono);

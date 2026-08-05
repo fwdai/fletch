@@ -21,7 +21,7 @@ import { useAppStore } from "../../../store";
 import { resolveAlias } from "../../shared";
 import type { Spec } from "../../spec";
 import { runChip } from "../status";
-import { BudgetMeter } from "./BudgetMeter";
+import { BudgetMeter, hasBudgets } from "./BudgetMeter";
 import { flattenSteps, type StepDesc } from "./flatten";
 import { PausedBanner } from "./PausedBanner";
 import { selectPendingQuestion } from "./pendingQuestion";
@@ -237,7 +237,9 @@ export function RunView({ id }: { id: string }) {
         <PanelToggle side="right" />
       </div>
 
-      {steps.length > 0 && (
+      {/* Also mounted for step-less specs when budgets exist — the strip is the
+          meters' only home, so it must not vanish with the nodes. */}
+      {(steps.length > 0 || hasBudgets(run.budgets)) && (
         <Stepper
           steps={steps}
           attempts={attempts}
