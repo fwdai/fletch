@@ -23,6 +23,19 @@ pub(super) fn diff_base(repo: &TrackedRepo) -> Option<String> {
     repo.base_sha.clone().or_else(|| repo.parent_branch.clone())
 }
 
+/// Which ref the Code panel's diff surfaces measure against — the user's
+/// persisted base switch. `Fork` is everything the agent changed in this
+/// workspace (vs [`diff_base`]); `Head` is only uncommitted work (vs the
+/// checkout's latest commit), matching the base the file lists already use
+/// (`git_state::query` reads status/numstat vs HEAD).
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffBaseMode {
+    #[default]
+    Fork,
+    Head,
+}
+
 // ---------------------------------------------------------------------------
 // File panel — browse the checkout, view & edit file contents.
 // ---------------------------------------------------------------------------
@@ -461,14 +474,21 @@ pub async fn list_dir(path: String) -> Result<DirListing> {
 }
 
 /// Read a checkout file for the viewer/editor: contents, language hint,
-/// git status, and the changed-line numbers driving the gutter.
+/// git status, and the changed-line numbers driving the gutter. `base_mode`
+/// picks the ref the gutter (and a deleted file's prior contents) diff
+/// against; omitted means the fork point.
 #[tauri::command]
 pub async fn read_checkout_file(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     path: String,
+    base_mode: Option<DiffBaseMode>,
 ) -> Result<CheckoutFileContents> {
     let (checkout, parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
+    let parent = match base_mode.unwrap_or_default() {
+        DiffBaseMode::Head => "HEAD".to_string(),
+        DiffBaseMode::Fork => parent,
+    };
     let abs = safe_join(&checkout, &path)?;
     let lang = lang_for(&path);
 
@@ -528,15 +548,21 @@ pub async fn read_checkout_file(
     })
 }
 
-/// Full unified diff of one checkout file versus the parent branch — the data
-/// behind the Code panel's Live view. Returns "" when the file is unchanged.
+/// Full unified diff of one checkout file — the data behind the Code panel's
+/// Live view and the editor's Diff toggle. `base_mode` picks the base ref
+/// (fork point when omitted). Returns "" when the file is unchanged.
 #[tauri::command]
 pub async fn get_file_diff(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     path: String,
+    base_mode: Option<DiffBaseMode>,
 ) -> Result<String> {
     let (checkout, parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
+    let parent = match base_mode.unwrap_or_default() {
+        DiffBaseMode::Head => "HEAD".to_string(),
+        DiffBaseMode::Fork => parent,
+    };
     git::file_diff(&checkout, &parent, &path).await
 }
 

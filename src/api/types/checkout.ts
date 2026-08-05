@@ -1,3 +1,9 @@
+/** Which ref the Code panel's diff surfaces measure against — the panel's
+ *  persisted base switch. "fork" = everything the agent changed in this
+ *  workspace (vs its starting commit); "head" = only uncommitted work (vs the
+ *  checkout's latest commit). */
+export type DiffBaseMode = "fork" | "head";
+
 /** One file in the checkout, as returned by `list_checkout_tree`.
  *  `status` is the single-letter git status vs the parent branch
  *  ("M" | "A" | "D" | "R"), or null when the file is unchanged.

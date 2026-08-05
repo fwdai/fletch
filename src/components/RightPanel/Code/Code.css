@@ -16,6 +16,10 @@
    an inset filled-thumb pill, not an underline tab — so it reads as a control
    within the Code panel rather than as switching between panels. */
 .code-modes {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 7px 10px;
   border-bottom: 1px solid var(--bd-soft);
   background: var(--bg-1);

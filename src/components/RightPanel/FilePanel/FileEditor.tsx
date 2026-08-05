@@ -3,7 +3,7 @@
 // Edit, ⌘S to save, Revert to restore the agent's version. The "Diff" toggle
 // swaps the editor for a read-only unified diff of the agent's changes.
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { type AgentRecord, api, type CheckoutFileContents } from "@/api";
+import { type AgentRecord, api, type CheckoutFileContents, type DiffBaseMode } from "@/api";
 import { Icon } from "@/components/Icon";
 import { FileDiff } from "@/components/RightPanel/Code/DiffView";
 import { CODE_THEMES } from "@/data/codeThemes";
@@ -19,10 +19,11 @@ interface FileEditorProps {
   name: string;
   dir: string;
   file: CheckoutFileContents;
+  diffBase: DiffBaseMode;
   onBack: () => void;
 }
 
-export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorProps) {
+export function FileEditor({ agent, path, name, dir, file, diffBase, onBack }: FileEditorProps) {
   const originalText = file.text;
   const [value, setValue] = useState(originalText);
   // Files auto-save a short beat after you stop typing — no Save button. This
@@ -217,7 +218,13 @@ export function FileEditor({ agent, path, name, dir, file, onBack }: FileEditorP
       />
 
       {diffView ? (
-        <FileDiff agentId={agent.id} path={path} lang={file.lang} isBuiltInTheme={isBuiltInTheme} />
+        <FileDiff
+          agentId={agent.id}
+          path={path}
+          lang={file.lang}
+          isBuiltInTheme={isBuiltInTheme}
+          base={diffBase}
+        />
       ) : (
         <>
           {isDeleted && (

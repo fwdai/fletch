@@ -15,7 +15,7 @@
 // Faithful port of the design (fletch v2 files.jsx), wired to the real
 // checkout via the `*_checkout_*` Tauri commands.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { type AgentRecord, api, type CheckoutFile } from "@/api";
+import { type AgentRecord, api, type CheckoutFile, type DiffBaseMode } from "@/api";
 import { type ContextMenuEntry, FileContextMenu } from "@/components/RightPanel/FileContextMenu";
 import { joinPath, parentDir } from "@/util/format";
 import { usePoll } from "@/util/hooks";
@@ -38,9 +38,12 @@ interface FilePanelProps {
   // Live mode (and so "Open in editor" from Live can target it).
   openPath: string | null;
   onOpenPath: (path: string | null) => void;
+  // The Code panel's base switch: what the editor's gutter and Diff view
+  // measure against.
+  diffBase: DiffBaseMode;
 }
 
-export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
+export function FilePanel({ agent, openPath, onOpenPath, diffBase }: FilePanelProps) {
   const [files, setFiles] = useState<CheckoutFile[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
@@ -285,6 +288,7 @@ export function FilePanel({ agent, openPath, onOpenPath }: FilePanelProps) {
         key={openPath}
         agent={agent}
         path={openPath}
+        diffBase={diffBase}
         onBack={() => {
           onOpenPath(null);
           void refresh();
