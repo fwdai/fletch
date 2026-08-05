@@ -262,6 +262,7 @@ export function CodeLivePanel({
       {diffErr ? (
         <div className="empty-msg" style={{ margin: "auto" }}>
           <div className="et">Couldn't load diff</div>
+          <div>{diffErr}</div>
           <div>Retrying on the next change.</div>
         </div>
       ) : hunks.length === 0 ? (

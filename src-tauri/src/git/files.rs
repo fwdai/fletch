@@ -67,6 +67,11 @@ pub async fn file_diff(checkout: &Path, base_ref: &str, path: &str) -> Result<St
 /// (agent-created, never `git add`ed) file diffs as empty; when that happens,
 /// re-diff it against /dev/null with `--no-index`, which renders the whole
 /// file as one added hunk.
+///
+/// `--no-ext-diff` because patch output otherwise runs whatever `diff.external`
+/// is configured — a user's difftastic would corrupt the parsed output, and
+/// there is no `-c` value that disables it (`hardening::NEUTRALISED` explains
+/// why it can't be neutralised at the spawn seam).
 async fn file_diff_unified(
     checkout: &Path,
     base_ref: &str,
@@ -75,7 +80,15 @@ async fn file_diff_unified(
 ) -> Result<String> {
     let out = run_git(
         checkout,
-        &["diff", "--no-color", unified, base_ref, "--", path],
+        &[
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            unified,
+            base_ref,
+            "--",
+            path,
+        ],
         &format!("diff {unified} {base_ref} -- {path}"),
     )
     .await?;
@@ -88,6 +101,7 @@ async fn file_diff_unified(
         &[
             "diff",
             "--no-color",
+            "--no-ext-diff",
             unified,
             "--no-index",
             "--",
@@ -238,5 +252,68 @@ diff --git a/f b/f
 +b
 \\ No newline at end of file";
         assert_eq!(parse_changed_lines(diff), (vec![], vec![1]));
+    }
+}
+
+#[cfg(test)]
+mod file_diff_tests {
+    use super::super::worktree::{commit_all, init_repo};
+    use super::*;
+
+    async fn config(repo: &Path, key: &str, val: &str) {
+        let out = tokio::process::Command::new("git")
+            .current_dir(repo)
+            .args(["config", key, val])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success());
+    }
+
+    async fn base_repo() -> (tempfile::TempDir, std::path::PathBuf) {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().to_path_buf();
+        init_repo(&repo).await.unwrap();
+        config(&repo, "user.email", "t@example.com").await;
+        config(&repo, "user.name", "Tester").await;
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        commit_all(&repo, "init").await.unwrap();
+        (td, repo)
+    }
+
+    /// The Code panel's new-file case: an untracked file has no index entry, so
+    /// the diff comes from the `--no-index` fallback. This runs through the
+    /// hardened spawn seam, so it also guards against a config override that
+    /// breaks patch output — `-c diff.external=` once made git exec the empty
+    /// string here and every new file showed "Couldn't load diff".
+    #[tokio::test]
+    async fn file_diff_renders_untracked_file_as_added() {
+        let (_td, repo) = base_repo().await;
+        std::fs::write(repo.join("new.txt"), "hello\nworld\n").unwrap();
+
+        let diff = file_diff(&repo, "HEAD", "new.txt").await.unwrap();
+        assert!(diff.contains("+hello"), "no added hunk in: {diff}");
+        assert!(diff.contains("+world"), "no added hunk in: {diff}");
+    }
+
+    /// A user's own repo may legitimately configure `diff.external` (difftastic
+    /// and friends). Patch output must still come from git's internal engine —
+    /// `--no-ext-diff` — or the parsed diff would be whatever that program
+    /// prints (or a hard failure, as with a value git can't exec).
+    #[tokio::test]
+    async fn file_diff_ignores_configured_external_diff() {
+        let (_td, repo) = base_repo().await;
+        config(&repo, "diff.external", "/nonexistent-external-diff").await;
+        std::fs::write(repo.join("base.txt"), "base\nedited\n").unwrap();
+
+        let diff = file_diff(&repo, "HEAD", "base.txt").await.unwrap();
+        assert!(diff.contains("+edited"), "no internal patch in: {diff}");
+
+        std::fs::write(repo.join("new.txt"), "hello\n").unwrap();
+        let diff = file_diff(&repo, "HEAD", "new.txt").await.unwrap();
+        assert!(
+            diff.contains("+hello"),
+            "no-index leg ran external diff: {diff}"
+        );
     }
 }

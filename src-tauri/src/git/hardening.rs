@@ -69,12 +69,22 @@ use crate::error::{Error, Result};
 /// commit under `commit.gpgsign` — and each needs a config *write* to exploit,
 /// which policy invariant 3 denies. The boundary belongs there, not here.
 ///
-/// Verified against git 2.50: without its row, each of `core.hooksPath`,
-/// `core.fsmonitor` and `diff.external` executes agent-authored code host-side.
+/// Verified against git 2.50: without its row, each of `core.hooksPath` and
+/// `core.fsmonitor` executes agent-authored code host-side.
+///
+/// `diff.external` is deliberately NOT here, though it belongs in spirit: git
+/// has no config value that *disables* external diff. Setting it to `""` sets
+/// it to the empty program, which git then tries to execute — killing every
+/// patch-producing `git diff` with `fatal: external diff died` (stat forms
+/// like `--numstat`/`--shortstat`/`--name-only` never invoke it). The off
+/// switch is the `--no-ext-diff` flag, passed by the patch-producing call
+/// sites themselves (`git::files::file_diff_unified`, `git::diff::diff_refs`);
+/// that also keeps a user's own `diff.external` (difftastic and friends) from
+/// corrupting parsed output. Agent checkouts that plant it are refused
+/// outright — it's in [`EXEC_CONFIG`].
 const NEUTRALISED: &[(&str, &str)] = &[
     ("core.hooksPath", "/dev/null"), // not a directory, so no hook resolves
     ("core.fsmonitor", "false"),     // fires on nearly every index refresh
-    ("diff.external", ""),           // replaces the diff engine — hit by diff polling
     ("core.pager", "cat"),           // Fletch captures output; a pager only adds a program
     ("core.editor", "false"),        // an interactive editor would hang an automated op
     ("sequence.editor", "false"),    // `rebase -i`'s todo-list editor, same hazard
@@ -272,7 +282,7 @@ mod tests {
     }
 
     /// Every row must reach git as a well-formed `-c key=value` pair, and the
-    /// three empirically-confirmed executable keys must be present.
+    /// empirically-confirmed executable keys must be present.
     #[test]
     fn overrides_are_well_formed_c_flags() {
         let overrides = config_overrides();
@@ -289,7 +299,10 @@ mod tests {
             value_of(&overrides, "core.fsmonitor").as_deref(),
             Some("false")
         );
-        assert_eq!(value_of(&overrides, "diff.external").as_deref(), Some(""));
+        // No `-c` value disables external diff — an empty value made git exec
+        // the empty string and every patch diff died (`--no-ext-diff` at the
+        // patch-producing call sites is the off switch; see the const's doc).
+        assert_eq!(value_of(&overrides, "diff.external"), None);
     }
 
     /// The keys that carry a *user's* real remote auth and signing config must
