@@ -16,8 +16,7 @@ import {
   type WfEvent,
   type WfRunDetail,
 } from "../../../api";
-
-const PAGE = 500;
+import { loadAllEvents } from "../useRunEvents";
 
 export interface RunDetailState {
   detail: WfRunDetail | null;
@@ -26,20 +25,6 @@ export interface RunDetailState {
   agents: AgentRecord[];
   /** True until the first load resolves (distinguishes "loading" from "empty"). */
   loading: boolean;
-}
-
-/** Page the whole journal forward from `after`, following short pages to the end. */
-async function loadAllEvents(runId: string, after: number): Promise<WfEvent[]> {
-  const acc: WfEvent[] = [];
-  let cursor = after;
-  for (;;) {
-    const page = await api.wfEvents(runId, cursor, PAGE);
-    if (page.length === 0) break;
-    acc.push(...page);
-    cursor = page[page.length - 1].seq;
-    if (page.length < PAGE) break;
-  }
-  return acc;
 }
 
 export function useRunDetail(runId: string): RunDetailState {

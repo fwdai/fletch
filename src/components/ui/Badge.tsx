@@ -4,6 +4,7 @@ export type BadgeVariant =
   | "neutral"
   | "new"
   | "err"
+  | "warn"
   | "docker"
   | "pr-open"
   | "pr-merged"

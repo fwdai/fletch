@@ -1,15 +1,18 @@
-// run/RunRow.tsx — a workflow run as a sidebar row. Rendered with the exact
-// same markup/classes as an agent row (AgentRow): a leading workflow glyph marks
-// it as a run, a chip shows the flow's lead agent, a paused-reason badge names
-// why it's waiting, and it can be stopped the same way as an agent.
+// run/RunRow.tsx — a workflow run as a sidebar row. Same skeleton and status
+// vocabulary as an agent row (AgentRow) so it reads as native, with one
+// deliberate difference: a persistent accent-tinted workflow tile where an
+// agent row starts with its name. The tile doubles as the expander for the
+// run's live step agents — the workflow mark never disappears, the chevron is
+// revealed on hover (progressive disclosure, constant identity).
 
 import { type KeyboardEvent, type MouseEvent, useState } from "react";
 import { api, type WfRun } from "../../api";
 import { Icon } from "../../components/Icon";
 import { StepAgentRow } from "../../components/Sidebar/StepAgentRow";
 import { deriveStepChildren } from "../../components/Sidebar/stepChildren";
+import { Badge } from "../../components/ui/Badge";
 import { useAppStore } from "../../store";
-import { formatAge } from "../../util/format";
+import { firstLine, formatAge } from "../../util/format";
 import { useMinuteClock } from "../../util/hooks";
 import { AgentAvatar } from "../builder/AgentAvatar";
 import { resolveAlias } from "../shared";
@@ -58,18 +61,31 @@ export function RunRow({
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const expanded = canExpand && (userExpanded ?? true);
   const stepChildren = deriveStepChildren(useRunAgents(run.id, expanded));
-  // Same left-spine vocabulary as an agent row: live → accent, failed → danger,
-  // everything else (pending/paused/done/canceled) → the faint idle grey.
-  const railClass = working ? "run" : run.status === "failed" ? "err" : "idle";
+  // Same left-spine vocabulary as an agent row: live → green, paused → amber
+  // (the turn is the user's, same as an agent awaiting input), failed → danger,
+  // everything else (pending/done/canceled) → the faint idle grey.
+  const railClass = working
+    ? "run"
+    : run.status === "paused"
+      ? "wait"
+      : run.status === "failed"
+        ? "err"
+        : "idle";
   const age = formatAge(new Date(run.created_at).toISOString(), now);
 
-  // The flow's lead (first) agent — a representative chip, the combine prefix is
+  // The flow's lead (first) agent — a representative chip; the workflow tile is
   // what marks the row as a run. Resolved from the launch-snapshot spec.
   const spec = run.spec as Spec | null;
   const first = flattenSteps(spec)[0];
   const a = first
     ? resolveAlias(spec?.agents, first.agentAlias, customAgents, modelsByAgent)
     : null;
+
+  // The status meta is wider than the reserved 21px slot when it carries a text
+  // badge; and when the row offers no hover actions, the meta must not fade out
+  // on hover (there is nothing to cross-fade to).
+  const wideMeta = (run.status === "paused" && !!run.paused_reason) || run.status === "failed";
+  const hasActions = stoppable || deletable;
 
   const onStop = async (e: MouseEvent) => {
     e.stopPropagation();
@@ -102,7 +118,9 @@ export function RunRow({
   return (
     <>
       <div
-        className={`agent ${selected ? "active" : ""} ${nested ? "run-nested" : ""}`}
+        className={`agent ${selected ? "active" : ""} ${nested ? "run-nested" : ""} ${
+          hasActions ? "" : "no-actions"
+        }`}
         role="button"
         tabIndex={0}
         aria-current={selected ? "page" : undefined}
@@ -118,22 +136,23 @@ export function RunRow({
         onMouseLeave={() => setConfirmDelete(false)}
       >
         <span className={`ag-rail ${railClass}`} />
-        <div className="agent-row">
+        <div className="agent-row flex-center">
           {canExpand ? (
             <button
-              className={`ag-wf-expander ${expanded ? "open" : ""}`}
+              className={`ag-wf-tile expandable ${expanded ? "open" : ""}`}
               onClick={onToggleExpand}
               aria-label={expanded ? "Collapse steps" : "Expand steps"}
               aria-expanded={expanded}
             >
-              <Icon name="chevR" size={10} />
+              <Icon name="combine" size={11} className="wf-glyph" />
+              <Icon name="chevR" size={11} className="wf-chev" />
             </button>
           ) : (
-            <span className="ag-wf-prefix tip" data-tip="Workflow" data-tip-down="">
-              <Icon name="combine" size={12} />
+            <span className="ag-wf-tile tip" data-tip="Workflow run" data-tip-down="">
+              <Icon name="combine" size={11} className="wf-glyph" />
             </span>
           )}
-          <span className={`ag-name ${working ? "shimmer" : ""}`}>{run.name}</span>
+          <span className={`ag-name ag-name-run ${working ? "shimmer" : ""}`}>{run.name}</span>
           {a && (
             <span className="ag-prov-chip">
               <AgentAvatar
@@ -145,18 +164,23 @@ export function RunRow({
               />
             </span>
           )}
-          <span className="ag-slot">
-            <span className="ag-meta">
+          <span className="ag-slot iflex-center">
+            <span className={`ag-meta ${wideMeta ? "wide" : ""}`}>
               {working && <span className="ag-loader" aria-label="Working" />}
               {run.status === "paused" && run.paused_reason && (
-                <span className="ag-badge warn">{pausedLabel(run.paused_reason)}</span>
+                <Badge variant="warn">{pausedLabel(run.paused_reason)}</Badge>
               )}
-              {run.status === "failed" && <span className="ag-badge err">failed</span>}
+              {run.status === "failed" && <Badge variant="err">failed</Badge>}
+              {run.status === "done" && (
+                <span className="ag-run-done tip" data-tip="Completed" aria-label="Completed">
+                  <Icon name="check" size={12} />
+                </span>
+              )}
             </span>
             <span className="ag-actions">
               {stoppable && (
                 <button
-                  className="ag-act tip"
+                  className="ag-act iflex-center tip"
                   data-tip="Stop"
                   onClick={(e) => void onStop(e)}
                   aria-label="Stop"
@@ -166,7 +190,7 @@ export function RunRow({
               )}
               {deletable && (
                 <button
-                  className={`ag-act tip ${confirmDelete ? "confirm-del" : ""}`}
+                  className={`ag-act iflex-center tip ${confirmDelete ? "confirm-del" : ""}`}
                   data-tip={
                     confirmDelete
                       ? "Deletes this run's chats too — click again to confirm"
@@ -181,8 +205,8 @@ export function RunRow({
             </span>
           </span>
         </div>
-        <div className="agent-sub">
-          <span className="a-task">{run.task || "workflow run"}</span>
+        <div className="agent-sub flex-center">
+          <span className="a-task">{firstLine(run.task || "Workflow run")}</span>
           <span className="a-time">{age}</span>
         </div>
       </div>

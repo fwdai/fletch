@@ -22,6 +22,7 @@ import { useGitSync } from "./store/gitSync";
 import { useGlobalShortcuts } from "./util/shortcuts";
 import { useSplitter } from "./util/splitter";
 import { setAppBadgeCount } from "./util/window";
+import { RunActivityPanel } from "./workflows/run/ActivityPanel";
 
 export function App() {
   const init = useAppStore((s) => s.init);
@@ -40,6 +41,7 @@ export function App() {
   const clearError = useAppStore((s) => s.clearError);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
+  const selectedRunId = useAppStore((s) => s.selectedRunId);
   const workspace = useAppStore((s) => s.workspace);
   const historyOpen = useAppStore((s) => s.historyOpen);
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
@@ -85,7 +87,10 @@ export function App() {
   const onRightDrag = useSplitter(rightWidth, setRightWidth, "right", commitRightWidth);
 
   const selectedAgent = workspace?.agents.find((a) => a.id === selectedAgentId);
-  const rightPaneVisible = !rightCollapsed && !activeDraftId && selectedAgent;
+  // The right rail serves two masters: an agent's Code/Git/Run/Terminal panels,
+  // and a workflow run's Activity panel. Same pane, same splitter, same ⌘/.
+  const rightPaneContent = selectedAgent || selectedRunId;
+  const rightPaneVisible = !rightCollapsed && !activeDraftId && rightPaneContent;
 
   return (
     <div className="app">
@@ -111,11 +116,12 @@ export function App() {
             </ErrorBoundary>
 
             {rightPaneVisible && <div className="splitter" onMouseDown={onRightDrag} />}
-            {/* Only mount the right pane when an agent is selected — its content
-             *  needs one. Without this gate the container still claims layout
-             *  width on Home / the run view, stranding the center pane in a
-             *  narrow column beside an empty rail. */}
-            {!activeDraftId && selectedAgent && (
+            {/* Only mount the right pane when something is selected that has
+             *  panel content — an agent (Code/Git/Run/Terminal) or a workflow
+             *  run (Activity). Without this gate the container still claims
+             *  layout width on Home, stranding the center pane in a narrow
+             *  column beside an empty rail. */}
+            {!activeDraftId && rightPaneContent && (
               <div
                 className={`pane right ${rightCollapsed ? "collapsed" : ""}`}
                 style={{
@@ -129,11 +135,15 @@ export function App() {
                     : `min(${rightWidth}px, calc((100% - ${leftCollapsed ? 0 : leftWidth}px) / 2))`,
                 }}
               >
-                {!rightCollapsed && selectedAgent && (
+                {!rightCollapsed && selectedAgent ? (
                   <ErrorBoundary label="the side panel" key={selectedAgent.id}>
                     <RightPanel agent={selectedAgent} />
                   </ErrorBoundary>
-                )}
+                ) : !rightCollapsed && selectedRunId ? (
+                  <ErrorBoundary label="the side panel" key={selectedRunId}>
+                    <RunActivityPanel runId={selectedRunId} />
+                  </ErrorBoundary>
+                ) : null}
               </div>
             )}
           </>

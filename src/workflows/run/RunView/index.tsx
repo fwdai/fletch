@@ -1,47 +1,48 @@
 // RunView — the workflows-v1 run monitor (spec §14.2). Journal-driven: the run
-// row, attempts and messages come from `wf_get_run`, the timeline from the paged
-// `wf_events` journal, and both stay live over `wf:run` / `wf:event`. The pane is
-// a pure view + command surface — the Rust scheduler owns all execution.
+// row, attempts and messages come from `wf_get_run`, and both stay live over
+// `wf:run` / `wf:event`. The pane is a pure view + command surface — the Rust
+// scheduler owns all execution.
 //
-// Layout: a header with the run status, a budget meter, a paused/failed banner
-// with its action, then three columns — the step/attempt rail, the selected
-// attempt's preserved chat (the existing ChatView), and the event timeline.
+// Layout: one column, like every other center pane. The header carries the
+// run's identity, status, and its one control (Stop); the Stepper under it is
+// the run's spine — each step's state and duration at a glance, details on
+// hover, click to focus a step's chat. The chat fills the rest. The event
+// timeline lives in the right rail (RunActivityPanel), mounted by App the same
+// way the agent panels are.
 
 import { useEffect, useMemo, useState } from "react";
-import type { AgentRecord, GateEvidence, WfStepExec } from "../../../api";
+import type { AgentRecord, GateEvidence, WfRunStatus, WfStepExec } from "../../../api";
+import { api } from "../../../api";
 import { Icon } from "../../../components/Icon";
 import { PanelToggle } from "../../../components/PanelToggle";
+import { Button } from "../../../components/ui/Button";
 import { ChatView } from "../../../components/Workspace/ChatView";
 import { useAppStore } from "../../../store";
 import { resolveAlias } from "../../shared";
 import type { Spec } from "../../spec";
 import { runChip } from "../status";
-import { useRuns } from "../useRuns";
-import { AttemptRail } from "./AttemptRail";
 import { BudgetMeter } from "./BudgetMeter";
-import { flattenSteps } from "./flatten";
+import { flattenSteps, type StepDesc } from "./flatten";
 import { PausedBanner } from "./PausedBanner";
 import { selectPendingQuestion } from "./pendingQuestion";
 import { RoadmapChip } from "./RoadmapChip";
-import { Timeline } from "./Timeline";
+import { AttemptStrip, latestAttempt, Stepper, stepAttempts } from "./Stepper";
 import { useRunDetail } from "./useRunDetail";
 
 export function RunView({ id }: { id: string }) {
   const customAgents = useAppStore((s) => s.customAgents);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
-  const selectRun = useAppStore((s) => s.selectRun);
   const focusedStepAgentId = useAppStore((s) => s.focusedStepAgentId);
   const clearFocusedStepAgent = useAppStore((s) => s.clearFocusedStepAgent);
-
-  // Composed sub-runs (§10.3) nest under this run in the monitor; each links to
-  // its own RunView. Sourced from the live run list, filtered to our children.
-  const allRuns = useRuns();
-  const subRuns = useMemo(() => allRuns.filter((r) => r.parent_run_id === id), [allRuns, id]);
+  const setLastError = useAppStore((s) => s.setLastError);
 
   // Run-owned step agents come from the run (they're hidden from the workspace
   // snapshot); the monitor renders each attempt's chat from these records.
   const { detail, events, agents, loading } = useRunDetail(id);
   const [pickedAttemptId, setPickedAttemptId] = useState<string | null>(null);
+  // A step the user focused before it has any attempt — shows the "hasn't
+  // started" state; cleared the moment the step spawns its first attempt.
+  const [pickedStepId, setPickedStepId] = useState<string | null>(null);
 
   const run = detail?.run ?? null;
   const spec = (run?.spec ?? null) as Spec | null;
@@ -82,7 +83,9 @@ export function RunView({ id }: { id: string }) {
   }, [attempts]);
 
   // Keep the picked attempt valid across refreshes; fall back to the auto pick.
-  const selected: WfStepExec | null = attempts.find((a) => a.id === pickedAttemptId) ?? autoAttempt;
+  // A picked not-yet-started step suspends attempt selection entirely.
+  const pickedAttempt = attempts.find((a) => a.id === pickedAttemptId) ?? null;
+  const selected: WfStepExec | null = pickedStepId ? null : (pickedAttempt ?? autoAttempt);
 
   // If the picked attempt vanished (e.g. a fresh run), clear the stale pick.
   useEffect(() => {
@@ -90,6 +93,17 @@ export function RunView({ id }: { id: string }) {
       setPickedAttemptId(null);
     }
   }, [attempts, pickedAttemptId]);
+
+  // A picked pending step that has since started: hand focus to its attempt.
+  useEffect(() => {
+    if (!pickedStepId) return;
+    const rows = stepAttempts(attempts, pickedStepId);
+    const latest = latestAttempt(rows);
+    if (latest) {
+      setPickedAttemptId(latest.id);
+      setPickedStepId(null);
+    }
+  }, [attempts, pickedStepId]);
 
   // A sidebar step child was clicked: focus that step's chat by driving the
   // attempt selection to the (latest) attempt owned by the requested agent,
@@ -107,6 +121,7 @@ export function RunView({ id }: { id: string }) {
         return cur.attempt > best.attempt ? cur : best;
       });
       setPickedAttemptId(latest.id);
+      setPickedStepId(null);
     }
     clearFocusedStepAgent();
   }, [focusedStepAgentId, attempts, loading, clearFocusedStepAgent]);
@@ -134,7 +149,7 @@ export function RunView({ id }: { id: string }) {
   if (loading && !run) {
     return (
       <div className="pane center">
-        <div className="center-h">
+        <div className="center-h flex-center">
           <PanelToggle side="left" />
         </div>
         <div className="empty-msg" style={{ margin: "auto" }}>
@@ -147,7 +162,7 @@ export function RunView({ id }: { id: string }) {
   if (!run) {
     return (
       <div className="pane center">
-        <div className="center-h">
+        <div className="center-h flex-center">
           <PanelToggle side="left" />
         </div>
         <div className="empty-msg" style={{ margin: "auto", maxWidth: 320 }}>
@@ -158,18 +173,44 @@ export function RunView({ id }: { id: string }) {
     );
   }
 
-  const rc = runChip(run.status);
   const selAgent: AgentRecord | undefined = selected?.agent_id
     ? agents.find((a) => a.id === selected.agent_id)
     : undefined;
 
+  // The step the stepper highlights: an explicit pending pick, else the step
+  // that owns the focused attempt.
+  const selectedStepId = pickedStepId ?? selected?.step_id ?? null;
+  const selectedStepRows = selected ? stepAttempts(attempts, selected.step_id) : [];
+
+  const onSelectStep = (step: StepDesc) => {
+    const latest = latestAttempt(stepAttempts(attempts, step.id));
+    if (latest) {
+      setPickedAttemptId(latest.id);
+      setPickedStepId(null);
+    } else {
+      setPickedAttemptId(null);
+      setPickedStepId(step.id);
+    }
+  };
+
+  const stoppable = run.status === "running" || run.status === "pending";
+  const onStop = async () => {
+    try {
+      await api.wfCancel(run.id);
+    } catch (err) {
+      setLastError(`Failed to stop run: ${err}`);
+    }
+  };
+
   return (
     <div className="pane center wf-run">
-      <div className="center-h">
+      <div className="center-h flex-center">
         <PanelToggle side="left" />
         <div className="task">
           <div className="t-name">
-            <Icon name="combine" size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />
+            <span className="wf-run-mark" aria-hidden="true">
+              <Icon name="combine" size={12} />
+            </span>
             <span className="t-ellipsis">{run.task || run.name}</span>
           </div>
           <div className="t-meta">
@@ -180,13 +221,34 @@ export function RunView({ id }: { id: string }) {
         {run.roadmap_item_id && (
           <RoadmapChip itemId={run.roadmap_item_id} projectId={run.project_id} />
         )}
-        <span className="wf-run-status" style={{ color: rc.tone }}>
-          <span className="wf-srow-dot" style={{ background: rc.tone }} />
-          {rc.label}
-        </span>
+        <StatusPill status={run.status} />
+        {stoppable && (
+          <Button
+            variant="outline"
+            danger
+            size="sm"
+            tip="Stop this run"
+            onClick={() => void onStop()}
+          >
+            <Icon name="stop" size={10} />
+            Stop
+          </Button>
+        )}
+        <PanelToggle side="right" />
       </div>
 
-      <BudgetMeter budgets={run.budgets} spent={run.spent} createdAt={run.created_at} />
+      {steps.length > 0 && (
+        <Stepper
+          steps={steps}
+          attempts={attempts}
+          resolve={resolve}
+          selectedStepId={selectedStepId}
+          onSelectStep={onSelectStep}
+          trailing={
+            <BudgetMeter budgets={run.budgets} spent={run.spent} createdAt={run.created_at} />
+          }
+        />
+      )}
 
       <PausedBanner
         run={run}
@@ -196,57 +258,48 @@ export function RunView({ id }: { id: string }) {
         evidencePending={loading}
       />
 
-      <div className="wf-run-main">
-        <AttemptRail
-          steps={steps}
-          attempts={attempts}
-          resolve={resolve}
-          selectedId={selected?.id ?? null}
-          onSelect={(a) => setPickedAttemptId(a.id)}
+      {/* Attempt history for the focused step — only when there is history. */}
+      {selected && selectedStepRows.length > 1 && (
+        <AttemptStrip
+          stepId={selected.step_id}
+          rows={selectedStepRows}
+          selectedId={selected.id}
+          onSelect={(a) => {
+            setPickedAttemptId(a.id);
+            setPickedStepId(null);
+          }}
         />
+      )}
 
-        <div className="wf-run-chat">
-          {selAgent ? (
-            <ChatView agent={selAgent} key={selAgent.id} />
-          ) : (
-            <div className="empty-msg" style={{ margin: "auto", maxWidth: 320 }}>
-              <div className="et">{selected ? "Chat unavailable" : "Step hasn't started"}</div>
-              <div>
-                {selected
-                  ? "This attempt's agent is no longer loaded."
-                  : "This step begins once the previous one hands off."}
-              </div>
+      <div className="wf-run-chat">
+        {selAgent ? (
+          <ChatView agent={selAgent} key={selAgent.id} />
+        ) : (
+          <div className="empty-msg" style={{ margin: "auto", maxWidth: 320 }}>
+            <div className="et">{selected ? "Chat unavailable" : "Step hasn't started"}</div>
+            <div>
+              {selected
+                ? "This attempt's agent is no longer loaded."
+                : "This step begins once the previous one hands off."}
             </div>
-          )}
-        </div>
-
-        <div className="wf-run-side">
-          {subRuns.length > 0 && (
-            <div className="wf-subruns">
-              <div className="wf-side-head">Sub-runs</div>
-              {subRuns.map((sr) => {
-                const c = runChip(sr.status);
-                return (
-                  <button
-                    key={sr.id}
-                    type="button"
-                    className="wf-subrun-row"
-                    onClick={() => selectRun(sr.id)}
-                  >
-                    <span className="wf-srow-dot" style={{ background: c.tone }} />
-                    <span className="wf-subrun-name">{sr.name}</span>
-                    <span className="wf-subrun-status" style={{ color: c.tone }}>
-                      {c.label}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          <div className="wf-side-head">Timeline</div>
-          <Timeline events={events} />
-        </div>
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+/** The run's status as a tinted pill — dot + word, colored by state. The dot
+ *  breathes while the run is live so "running" reads without parsing text. */
+function StatusPill({ status }: { status: WfRunStatus }) {
+  const rc = runChip(status);
+  return (
+    <span
+      className={`wf-status-pill ${status === "running" ? "live" : ""}`}
+      style={{ "--pill-tone": rc.tone } as React.CSSProperties}
+    >
+      <span className="wf-pill-dot" />
+      {rc.label}
+    </span>
   );
 }

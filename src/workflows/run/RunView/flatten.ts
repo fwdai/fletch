@@ -13,6 +13,8 @@ export interface StepDesc {
   /** Alias into `Spec.agents`. */
   agentAlias: string;
   goal: string;
+  /** The gate kind that marks this step done (spec §9), for the hover card. */
+  gate?: string;
   /** The enclosing container, if the step isn't a top-level sequence step. */
   container?: ContainerKind;
 }
@@ -32,7 +34,13 @@ function walk(blocks: Block[], out: StepDesc[], container?: ContainerKind): void
 }
 
 function pushStep(step: Step, out: StepDesc[], container?: ContainerKind): void {
-  out.push({ id: step.id, agentAlias: step.agent, goal: step.goal, container });
+  out.push({
+    id: step.id,
+    agentAlias: step.agent,
+    goal: step.goal,
+    gate: step.gate?.type,
+    container,
+  });
 }
 
 /** The spec's steps in document order — the rail's backbone. */

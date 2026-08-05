@@ -1,13 +1,14 @@
-// RunView/Timeline.tsx — the journal timeline (spec §14.2). A virtualized list
-// over uniform rows (fixed height, so windowing stays simple and correct) fed by
-// the paged journal + live appends. Rows render product-language summaries only;
-// the raw payload JSON is available behind an expand affordance — a footer drawer
-// that keeps the row heights uniform (the guardrail: no raw JSON inline).
+// run/Timeline.tsx — the journal timeline (spec §14.2), the body of the
+// Activity side panel. A virtualized list over uniform rows (fixed height, so
+// windowing stays simple and correct) fed by the paged journal + live appends.
+// Rows render product-language summaries only; the raw payload JSON is
+// available behind an expand affordance — a footer drawer that keeps the row
+// heights uniform (the guardrail: no raw JSON inline).
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { WfEvent } from "../../../api";
-import { Icon } from "../../../components/Icon";
-import { summarizeEvent } from "../eventSummary";
+import type { WfEvent } from "../../api";
+import { Icon } from "../../components/Icon";
+import { summarizeEvent } from "./eventSummary";
 
 const ROW_H = 34;
 const OVERSCAN = 8;
