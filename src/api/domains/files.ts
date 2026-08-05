@@ -1,5 +1,10 @@
 import { invoke } from "../invoke";
-import type { CheckoutFile, CheckoutFileContents, DirListing } from "../types/checkout";
+import type {
+  CheckoutFile,
+  CheckoutFileContents,
+  DiffBaseMode,
+  DirListing,
+} from "../types/checkout";
 
 export const filesApi = {
   listCheckoutTree: (agentId: string) => invoke<CheckoutFile[]>("list_checkout_tree", { agentId }),
@@ -7,10 +12,10 @@ export const filesApi = {
   // Draft (new-workspace) composer variants, keyed by repo path since a draft
   // has no agent/checkout yet.
   listRepoTree: (repoPath: string) => invoke<string[]>("list_repo_tree", { repoPath }),
-  readCheckoutFile: (agentId: string, path: string) =>
-    invoke<CheckoutFileContents>("read_checkout_file", { agentId, path }),
-  getFileDiff: (agentId: string, path: string) =>
-    invoke<string>("get_file_diff", { agentId, path }),
+  readCheckoutFile: (agentId: string, path: string, baseMode?: DiffBaseMode) =>
+    invoke<CheckoutFileContents>("read_checkout_file", { agentId, path, baseMode }),
+  getFileDiff: (agentId: string, path: string, baseMode?: DiffBaseMode) =>
+    invoke<string>("get_file_diff", { agentId, path, baseMode }),
   writeCheckoutFile: (agentId: string, path: string, contents: string) =>
     invoke<void>("write_checkout_file", { agentId, path, contents }),
   renameCheckoutPath: (agentId: string, from: string, to: string) =>
