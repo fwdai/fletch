@@ -311,6 +311,9 @@ mod file_diff_tests {
 
         std::fs::write(repo.join("new.txt"), "hello\n").unwrap();
         let diff = file_diff(&repo, "HEAD", "new.txt").await.unwrap();
-        assert!(diff.contains("+hello"), "no-index leg ran external diff: {diff}");
+        assert!(
+            diff.contains("+hello"),
+            "no-index leg ran external diff: {diff}"
+        );
     }
 }
