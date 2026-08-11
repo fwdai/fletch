@@ -474,6 +474,11 @@ function validateStep(s: EStep, v: Validation, seen: Map<string, EStep>): void {
   if (s.gate.type === "artifact" && badArtifactPath(s.gate.path)) {
     push("artifact path must be repo-relative (no leading '/' and no '..')");
   }
+  // An approval gate's reviewed file obeys the same rules when set (spec §9);
+  // unset means an ordinary approval pause, so only a present value is checked.
+  if (s.gate.type === "approval" && s.gate.artifact && badArtifactPath(s.gate.artifact)) {
+    push("the reviewed file must be repo-relative (no leading '/' and no '..')");
+  }
   validateBudgets(s.budgets, push);
   if (errs.length) v.byNode[s.nid] = errs;
 }

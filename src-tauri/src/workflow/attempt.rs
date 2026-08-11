@@ -474,9 +474,12 @@ pub async fn run_attempt(
         } else {
             None
         };
-        let artifact_present = match &gate {
-            Gate::Artifact { path } => artifact_exists(&spawned.worktree, path),
-            _ => false,
+        // Probed for both file-naming gates: the `artifact` gate's path and an
+        // `approval` gate's reviewed artifact (spec §9) — a missing file blocks
+        // the approval pause exactly like an unmet `require`.
+        let artifact_present = match gate.artifact_path() {
+            Some(path) => artifact_exists(&spawned.worktree, path),
+            None => false,
         };
         // Tests gate (spec §9.4): resolve + run the project's tests in the step
         // worktree now, then let the pure gate turn the outcome into done/blocked.
@@ -835,19 +838,26 @@ async fn drive_turn(
     }
 }
 
-/// Existence check for the `artifact` gate. `spec.rs` already rejects absolute
-/// paths and `..` at spec time; this re-validates defensively (the path is a
-/// filesystem probe against the agent's worktree).
-fn artifact_exists(worktree: &Path, rel: &str) -> bool {
+/// Resolve a gate's artifact path inside the worktree, or `None` for a path
+/// that escapes it. `spec.rs` already rejects absolute paths and `..` at spec
+/// time; this re-validates defensively (the path is a filesystem probe against
+/// the agent's worktree). Shared by the existence check here and the evidence
+/// capture in the scheduler, so both apply one rule.
+pub(super) fn artifact_probe_path(worktree: &Path, rel: &str) -> Option<PathBuf> {
     let candidate = Path::new(rel);
     if candidate.is_absolute()
         || candidate
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
     {
-        return false;
+        return None;
     }
-    worktree.join(candidate).exists()
+    Some(worktree.join(candidate))
+}
+
+/// Existence check for the file-naming gates (`artifact`, `approval.artifact`).
+fn artifact_exists(worktree: &Path, rel: &str) -> bool {
+    artifact_probe_path(worktree, rel).is_some_and(|p| p.exists())
 }
 
 fn gate_mode(gate: &Gate) -> &'static str {
@@ -1194,7 +1204,10 @@ mod tests {
             d.as_ref(),
             &NeverTests,
             params(
-                Gate::Approval { require: vec![] },
+                Gate::Approval {
+                    require: vec![],
+                    artifact: None,
+                },
                 bb.path().to_path_buf(),
                 fast(),
             ),

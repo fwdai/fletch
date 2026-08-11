@@ -373,6 +373,33 @@ pub(crate) async fn execute_step(
                             pause_question(ctx, run_id, &exec_id, result.agent_id.as_deref()).await;
                             return Ok(StepFlow::Halt);
                         }
+                        // A passing autonomous `artifact` gate journals the file
+                        // it gated on (spec §9) — same `gate_evidence` payload as
+                        // an approval pause minus the checks, so an unattended
+                        // run's plan is readable after the worktree is gone.
+                        if matches!(step.gate, Gate::Artifact { .. }) {
+                            let evidence = assemble_gate_evidence(
+                                env,
+                                &step.id,
+                                &step.gate,
+                                &wt,
+                                &head,
+                                step_eff.tests_timeout_secs.max(1) as u64,
+                                ledger,
+                                false,
+                                &[],
+                            )
+                            .await;
+                            let conn = ctx.db.lock();
+                            journal_event(
+                                &conn,
+                                ctx.app.as_ref(),
+                                run_id,
+                                event_type::GATE_EVIDENCE,
+                                Some(&exec_id),
+                                &evidence,
+                            );
+                        }
                         if let Some(agent_id) = &result.agent_id {
                             let _ = ctx.driver.archive(agent_id).await;
                         }
@@ -440,10 +467,12 @@ pub(crate) async fn execute_step(
                 let evidence = assemble_gate_evidence(
                     env,
                     &step.id,
+                    &step.gate,
                     worktree,
                     &head,
                     step_eff.tests_timeout_secs.max(1) as u64,
                     ledger,
+                    true,
                     &run_env,
                 )
                 .await;
@@ -606,37 +635,50 @@ pub(crate) async fn execute_step(
     }
 }
 
-/// Assemble an `approval` gate's review evidence (spec §9), as the `gate_evidence`
-/// payload (snake_case, like every IPC payload): the verification report (the
-/// shared `Verifier` primitive run install→test→lint in the step worktree —
+/// Assemble a gate's review evidence (spec §9), as the `gate_evidence` payload
+/// (snake_case, like every IPC payload): the verification report (the shared
+/// `Verifier` primitive run install→test→lint in the step worktree —
 /// all-`Skipped` when the project configures nothing or the host can't sandbox),
 /// the ferried diff versus the run base (shortstat + per-file numstat, both taken
 /// in the run repo where the ferried ref and the base commit live), budget spend
-/// versus cap, and the step's `verdict.json`. Best-effort: any piece that can't be
-/// gathered is omitted / `null` so evidence collection never blocks the pause.
-/// Holds no DB lock across its async verification + git work.
+/// versus cap, the step's `verdict.json`, and the gate's artifact (when it names
+/// one). Best-effort: any piece that can't be gathered is omitted / `null` so
+/// evidence collection never blocks the pause. Holds no DB lock across its async
+/// verification + git work.
+///
+/// Two callers: the approval pause (`run_checks` — the human decides off this,
+/// so the checks run), and a passing autonomous `artifact` gate (`!run_checks` —
+/// the gate already decided; this is capture for after-the-fact reading, and
+/// re-running the project's checks on every artifact step would be pure cost).
+#[allow(clippy::too_many_arguments)]
 async fn assemble_gate_evidence(
     env: &StepEnv<'_>,
     step_id: &str,
+    gate: &Gate,
     worktree: &Path,
     head_sha: &str,
     tests_timeout_secs: u64,
     ledger: &Ledger,
+    run_checks: bool,
     run_env: &[(String, String)],
 ) -> Value {
     // Reuse the engine-owned verifier. Lint resolves by detection (no project
     // lint override is plumbed to the linear path); a HOME-less host yields no
     // verifier, reported as `null` rather than a fake empty report. `run_env`
     // is the project's shared run env (`run_env::resolve`), resolved by the
-    // caller against this attempt's checkout.
-    let verification = match crate::verify::Verifier::new(
-        env.test_override.clone(),
-        env.setup_override.clone(),
-        None,
-        tests_timeout_secs,
-    ) {
-        Ok(v) => serde_json::to_value(v.verify(worktree, run_env).await).ok(),
-        Err(_) => None,
+    // caller that runs checks; `&[]` when the checks are skipped.
+    let verification = if run_checks {
+        match crate::verify::Verifier::new(
+            env.test_override.clone(),
+            env.setup_override.clone(),
+            None,
+            tests_timeout_secs,
+        ) {
+            Ok(v) => serde_json::to_value(v.verify(worktree, run_env).await).ok(),
+            Err(_) => None,
+        }
+    } else {
+        None
     };
 
     let (additions, deletions) = crate::git::diff_shortstat(env.run_repo, env.base_sha, head_sha)
@@ -668,7 +710,34 @@ async fn assemble_gate_evidence(
             "wall_clock_cap_mins": env.eff.wall_clock_mins,
         },
         "verdict": verdict,
+        "artifact": artifact_evidence(gate, worktree),
     })
+}
+
+/// The journal is the artifact's only after-the-fact home (worktrees are
+/// pruned), but it is a SQLite row — cap the captured content so one huge file
+/// can't bloat `wf_event`. 128 KiB comfortably holds any plan a human would
+/// actually read; `truncated` tells the surface to say so.
+const ARTIFACT_EVIDENCE_CAP: usize = 128 * 1024;
+
+/// Read the gate's declared artifact from the step worktree for the evidence
+/// payload — `{ path, content, truncated }`. `Null` when the gate names no
+/// file or it can't be read (best-effort, like every other evidence piece).
+/// The one capture point for both the approval pause and a passing autonomous
+/// `artifact` gate (spec §9).
+fn artifact_evidence(gate: &Gate, worktree: &Path) -> Value {
+    let read = || -> Option<Value> {
+        let path = gate.artifact_path()?;
+        let bytes = std::fs::read(attempt::artifact_probe_path(worktree, path)?).ok()?;
+        let truncated = bytes.len() > ARTIFACT_EVIDENCE_CAP;
+        let end = bytes.len().min(ARTIFACT_EVIDENCE_CAP);
+        Some(json!({
+            "path": path,
+            "content": String::from_utf8_lossy(&bytes[..end]),
+            "truncated": truncated,
+        }))
+    };
+    read().unwrap_or(Value::Null)
 }
 
 pub(crate) fn gate_mode(gate: &Gate) -> &'static str {

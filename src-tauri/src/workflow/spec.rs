@@ -154,6 +154,13 @@ pub enum Gate {
     Approval {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         require: Vec<Require>,
+        /// A repo-relative file the human reviews (spec §9) — `artifact` and
+        /// `approval` are two ends of one dial, and this is the middle: the
+        /// pause is unreachable until the file exists (missing → blocked +
+        /// re-prompt, exactly like an unmet `require`), and its content rides
+        /// in the `gate_evidence` payload. Same path rules as `Gate::Artifact`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact: Option<String>,
     },
 }
 
@@ -175,8 +182,23 @@ impl Gate {
     pub fn requires_tests(&self) -> bool {
         match self {
             Gate::Tests => true,
-            Gate::Approval { require } => require.contains(&Require::Tests),
+            Gate::Approval { require, .. } => require.contains(&Require::Tests),
             _ => false,
+        }
+    }
+
+    /// The repo-relative artifact this gate watches, if any: the `artifact`
+    /// gate's path, or an `approval` gate's optional reviewed file. One answer
+    /// for validation, the attempt's existence probe, and evidence capture, so
+    /// the two gate shapes can't drift apart.
+    pub fn artifact_path(&self) -> Option<&str> {
+        match self {
+            Gate::Artifact { path } => Some(path),
+            Gate::Approval {
+                artifact: Some(path),
+                ..
+            } => Some(path),
+            _ => None,
         }
     }
 }
@@ -513,7 +535,9 @@ fn check_step(
         ));
     }
     check_agent_ref(&format!("step '{}'", step.id), &step.agent, spec, errors);
-    if let Gate::Artifact { path } = &step.gate {
+    // Both gate shapes that name a file (`artifact`, `approval.artifact`)
+    // share the repo-relative rules — one probe, one rule set.
+    if let Some(path) = step.gate.artifact_path() {
         check_artifact_path(&step.id, path, errors);
     }
     if let Some(b) = &step.budgets {
@@ -922,10 +946,41 @@ mod tests {
         for require in [vec![], vec![Require::Tests]] {
             let mut s = minimal();
             if let Block::Step(step) = &mut s.workflow[0] {
-                step.gate = Gate::Approval { require };
+                step.gate = Gate::Approval {
+                    require,
+                    artifact: None,
+                };
             }
             assert!(validate(&s).is_ok(), "{:?}", errors(&s));
         }
+    }
+
+    #[test]
+    fn approval_artifact_path_shares_the_artifact_gate_rules() {
+        // `approval.artifact` names a file exactly like the `artifact` gate, so
+        // it obeys the same repo-relative rules (no absolute path, no `..`,
+        // non-empty) — and a valid path validates.
+        for bad in ["/etc/passwd", "../secrets", "  "] {
+            let mut s = minimal();
+            if let Block::Step(step) = &mut s.workflow[0] {
+                step.gate = Gate::Approval {
+                    require: vec![],
+                    artifact: Some(bad.into()),
+                };
+            }
+            assert!(
+                !errors(&s).is_empty(),
+                "expected rejection for approval artifact '{bad}'"
+            );
+        }
+        let mut s = minimal();
+        if let Block::Step(step) = &mut s.workflow[0] {
+            step.gate = Gate::Approval {
+                require: vec![Require::Tests],
+                artifact: Some("PLAN.md".into()),
+            };
+        }
+        assert!(validate(&s).is_ok(), "{:?}", errors(&s));
     }
 
     #[test]
@@ -934,7 +989,13 @@ mod tests {
         // deserialize (empty `require`), and an empty `require` must serialize
         // back to that exact shape so old definitions round-trip byte-for-byte.
         let bare: Gate = serde_json::from_str(r#"{"type":"approval"}"#).unwrap();
-        assert_eq!(bare, Gate::Approval { require: vec![] });
+        assert_eq!(
+            bare,
+            Gate::Approval {
+                require: vec![],
+                artifact: None
+            }
+        );
         assert_eq!(
             serde_json::to_string(&bare).unwrap(),
             r#"{"type":"approval"}"#
@@ -944,12 +1005,30 @@ mod tests {
         assert_eq!(
             with,
             Gate::Approval {
-                require: vec![Require::Tests]
+                require: vec![Require::Tests],
+                artifact: None
             }
         );
         assert!(with.requires_tests());
         assert!(!bare.requires_tests());
         assert!(Gate::Tests.requires_tests());
+        // The reviewed-artifact shape round-trips, and `artifact_path` answers
+        // for both file-naming gates.
+        let reviewed: Gate =
+            serde_json::from_str(r#"{"type":"approval","artifact":"PLAN.md"}"#).unwrap();
+        assert_eq!(reviewed.artifact_path(), Some("PLAN.md"));
+        assert_eq!(
+            serde_json::to_string(&reviewed).unwrap(),
+            r#"{"type":"approval","artifact":"PLAN.md"}"#
+        );
+        assert_eq!(
+            Gate::Artifact {
+                path: "PLAN.md".into()
+            }
+            .artifact_path(),
+            Some("PLAN.md")
+        );
+        assert_eq!(bare.artifact_path(), None);
     }
 
     #[test]

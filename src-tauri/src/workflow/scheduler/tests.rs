@@ -631,7 +631,15 @@ async fn unmet_commit_gate_pauses_blocked() {
 /// Drive a single approval-gated step to its pause and return the db + run id.
 /// commit=true so the step ferries real work; the gate then awaits a human.
 async fn drive_to_approval(tmp: &Path, run_id: &str, branch: &str) -> Db {
-    let (db, ws) = scaffold_one_step(tmp, run_id, branch, Gate::Approval { require: vec![] });
+    let (db, ws) = scaffold_one_step(
+        tmp,
+        run_id,
+        branch,
+        Gate::Approval {
+            require: vec![],
+            artifact: None,
+        },
+    );
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, true),
@@ -685,6 +693,139 @@ async fn approval_pause_journals_review_evidence() {
     assert!(v.get("diff").is_some(), "evidence has a diff: {v}");
     assert!(v.get("budget").is_some(), "evidence has a budget: {v}");
     assert!(v.get("verification").is_some(), "evidence has verification");
+}
+
+#[tokio::test]
+async fn approval_with_missing_artifact_pauses_blocked_not_approval() {
+    // §9: an approval gate's declared artifact is a prerequisite — while the
+    // file is missing the run blocks (with the path in the reason) exactly like
+    // an unmet `require`, never pausing `approval` over a document that isn't
+    // there for the human to read.
+    let tmp = tempfile::tempdir().unwrap();
+    let (db, ws) = scaffold_one_step(
+        tmp.path(),
+        "run-appr-art",
+        "wf/aa-1",
+        Gate::Approval {
+            require: vec![],
+            artifact: Some("PLAN.md".into()),
+        },
+    );
+    // commit=false: the stub never writes PLAN.md (a second commit on the
+    // re-prompt would be empty and fail the stub's `git commit`).
+    let ctx = RunCtx {
+        db: db.clone(),
+        driver: StubDriver::new(ws, false),
+        app: None,
+        cancel: Arc::new(AtomicBool::new(false)),
+        pending_ask: Arc::new(AtomicBool::new(false)),
+        deadlines: Deadlines::default(),
+        runs: None,
+    };
+    drive_run(&ctx, "run-appr-art").await;
+    let (status, reason, detail): (String, Option<String>, Option<String>) = db
+        .lock()
+        .query_row(
+            "SELECT r.status, r.paused_reason,
+                    (SELECT json_extract(payload_json,'$.detail') FROM wf_event
+                     WHERE run_id='run-appr-art' AND type='run_paused'
+                     ORDER BY seq DESC LIMIT 1)
+                 FROM wf_run r WHERE r.id='run-appr-art'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "paused");
+    assert_eq!(reason.as_deref(), Some("blocked_gate"));
+    assert!(
+        detail.as_deref().unwrap_or_default().contains("PLAN.md"),
+        "the pause names the missing artifact: {detail:?}"
+    );
+}
+
+#[tokio::test]
+async fn approval_with_present_artifact_pauses_with_its_content_in_evidence() {
+    // §9: when the reviewed artifact exists, the run pauses `approval` and the
+    // `gate_evidence` payload carries `{ path, content, truncated }` read from
+    // the step worktree — what ReviewSurface renders above the diff. The stub
+    // agent writes `stub-1.txt` ("work") during its turn, so gate on that.
+    let tmp = tempfile::tempdir().unwrap();
+    let (db, ws) = scaffold_one_step(
+        tmp.path(),
+        "run-appr-doc",
+        "wf/ad-1",
+        Gate::Approval {
+            require: vec![],
+            artifact: Some("stub-1.txt".into()),
+        },
+    );
+    let ctx = RunCtx {
+        db: db.clone(),
+        driver: StubDriver::new(ws, true),
+        app: None,
+        cancel: Arc::new(AtomicBool::new(false)),
+        pending_ask: Arc::new(AtomicBool::new(false)),
+        deadlines: Deadlines::default(),
+        runs: None,
+    };
+    drive_run(&ctx, "run-appr-doc").await;
+    assert_eq!(run_status_str(&db, "run-appr-doc"), "paused");
+    let payload: String = db
+        .lock()
+        .query_row(
+            "SELECT payload_json FROM wf_event
+                 WHERE run_id='run-appr-doc' AND type=?1 LIMIT 1",
+            [event_type::GATE_EVIDENCE],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let v: Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(v["artifact"]["path"], "stub-1.txt", "{v}");
+    assert_eq!(v["artifact"]["content"], "work", "{v}");
+    assert_eq!(v["artifact"]["truncated"], false, "{v}");
+}
+
+#[tokio::test]
+async fn passing_artifact_gate_journals_the_artifact_as_evidence() {
+    // §9: a passing autonomous `artifact` gate journals the file it gated on —
+    // same `gate_evidence` payload as an approval pause minus the checks — so
+    // an unattended run's plan is readable after the worktree is pruned.
+    let tmp = tempfile::tempdir().unwrap();
+    let (db, ws) = scaffold_one_step(
+        tmp.path(),
+        "run-art-ev",
+        "wf/ae-1",
+        Gate::Artifact {
+            path: "stub-1.txt".into(),
+        },
+    );
+    let ctx = RunCtx {
+        db: db.clone(),
+        driver: StubDriver::new(ws, true),
+        app: None,
+        cancel: Arc::new(AtomicBool::new(false)),
+        pending_ask: Arc::new(AtomicBool::new(false)),
+        deadlines: Deadlines::default(),
+        runs: None,
+    };
+    drive_run(&ctx, "run-art-ev").await;
+    assert_eq!(run_status_str(&db, "run-art-ev"), "done");
+    let payload: String = db
+        .lock()
+        .query_row(
+            "SELECT payload_json FROM wf_event
+                 WHERE run_id='run-art-ev' AND type=?1 LIMIT 1",
+            [event_type::GATE_EVIDENCE],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let v: Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(v["artifact"]["path"], "stub-1.txt", "{v}");
+    assert_eq!(v["artifact"]["content"], "work", "{v}");
+    assert!(
+        v["verification"].is_null(),
+        "autonomous capture runs no checks: {v}"
+    );
 }
 
 #[tokio::test]

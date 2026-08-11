@@ -388,17 +388,30 @@ fn gate_statement(gate: &Gate) -> String {
         Gate::Artifact { path } => {
             format!("You are done when the file `{path}` exists in the repository.")
         }
-        Gate::Approval { require } if require.contains(&Require::Tests) => {
-            "When you believe the work is complete, write your handoff notes and \
-             `verdict.json`. The project's test suite must pass first — the workflow \
-             runs it after your turn; make it green. A human then reviews and approves \
-             before the workflow continues."
-                .to_string()
+        Gate::Approval { require, artifact } => {
+            // Compose the prerequisites the agent can act on (spec §9): the
+            // reviewed artifact and/or green tests must hold before the human
+            // pause is reachable — a step that never writes the file (or never
+            // greens the suite) can only ever block.
+            let mut s = String::from(
+                "When you believe the work is complete, write your handoff notes and \
+                 `verdict.json`.",
+            );
+            if let Some(path) = artifact {
+                s.push_str(&format!(
+                    " The file `{path}` must exist in the repository first — it is the \
+                     document the human reviews, so write it before you finish."
+                ));
+            }
+            if require.contains(&Require::Tests) {
+                s.push_str(
+                    " The project's test suite must pass first — the workflow runs it \
+                     after your turn; make it green.",
+                );
+            }
+            s.push_str(" A human then reviews and approves before the workflow continues.");
+            s
         }
-        Gate::Approval { .. } => "When you believe the work is complete, write your handoff notes \
-             and `verdict.json`. A human will review and approve before the workflow \
-             continues."
-            .to_string(),
         Gate::Tests => "You are done when the project's test suite passes. The workflow runs \
              the project's tests for you after your turn; make them green. Still write \
              `verdict.json` and handoff notes so the next step has your summary."
@@ -483,15 +496,27 @@ mod tests {
             path: "X.md".into()
         })
         .contains("X.md"));
-        assert!(gate_statement(&Gate::Approval { require: vec![] }).contains("human"));
+        assert!(gate_statement(&Gate::Approval {
+            require: vec![],
+            artifact: None,
+        })
+        .contains("human"));
         let tests = gate_statement(&Gate::Tests);
         assert!(tests.contains("test suite passes"), "{tests}");
         // An approval gate that requires tests reminds the agent about them too.
         let approval_tests = gate_statement(&Gate::Approval {
             require: vec![Require::Tests],
+            artifact: None,
         });
         assert!(approval_tests.contains("test suite"), "{approval_tests}");
         assert!(approval_tests.contains("human"), "{approval_tests}");
+        // …and one with a reviewed artifact names the file the human will read.
+        let approval_artifact = gate_statement(&Gate::Approval {
+            require: vec![],
+            artifact: Some("PLAN.md".into()),
+        });
+        assert!(approval_artifact.contains("PLAN.md"), "{approval_artifact}");
+        assert!(approval_artifact.contains("human"), "{approval_artifact}");
     }
 
     #[test]

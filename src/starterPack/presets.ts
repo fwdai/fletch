@@ -178,8 +178,8 @@ export function buildFeaturePipelineSpec(idByRole: Record<string, string>): Spec
         step: {
           id: "plan",
           agent: "architect",
-          goal: "Analyze the task and write PLAN.md describing small, independently testable slices in dependency order.",
-          gate: { type: "artifact", path: "PLAN.md" },
+          goal: "Analyze the task and write PLAN.md describing small, independently testable slices in dependency order. The run pauses on PLAN.md for human review before implementation.",
+          gate: { type: "approval", artifact: "PLAN.md" },
         },
       },
       {

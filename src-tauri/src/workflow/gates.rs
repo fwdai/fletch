@@ -108,7 +108,9 @@ pub fn evaluate(gate: &Gate, inputs: &GateInputs) -> GateResult {
         Gate::Verdict => evaluate_verdict(inputs),
         Gate::Commit => evaluate_commit(inputs),
         Gate::Artifact { path } => evaluate_artifact(path, inputs),
-        Gate::Approval { require } => evaluate_approval(require, inputs),
+        Gate::Approval { require, artifact } => {
+            evaluate_approval(require, artifact.as_deref(), inputs)
+        }
         Gate::Tests => evaluate_tests(inputs),
     }
 }
@@ -155,7 +157,22 @@ fn evaluate_artifact(path: &str, inputs: &GateInputs) -> GateResult {
     }
 }
 
-fn evaluate_approval(require: &[Require], inputs: &GateInputs) -> GateResult {
+fn evaluate_approval(
+    require: &[Require],
+    artifact: Option<&str>,
+    inputs: &GateInputs,
+) -> GateResult {
+    // A declared review artifact (spec §9) is a deterministic prerequisite,
+    // exactly like `require: [tests]`: the pause is unreachable until the file
+    // exists, and a missing file blocks with the same reason the `artifact`
+    // gate would give — never `AwaitingApproval` over a document that isn't
+    // there for the human to read.
+    if let Some(path) = artifact {
+        let presence = evaluate_artifact(path, inputs);
+        if presence.outcome == GateOutcome::Blocked {
+            return presence;
+        }
+    }
     // `require: [tests]` (spec §9): the deterministic gate is evaluated first, so
     // the approval pause is unreachable while tests are red — a failing/timed-out/
     // setup-failed run blocks exactly like a `tests` gate, quoting the same reason
@@ -397,7 +414,10 @@ mod tests {
 
     #[test]
     fn approval_gate_awaits_then_passes() {
-        let bare = Gate::Approval { require: vec![] };
+        let bare = Gate::Approval {
+            require: vec![],
+            artifact: None,
+        };
         let waiting = evaluate(&bare, &GateInputs::default());
         assert_eq!(waiting.outcome, GateOutcome::AwaitingApproval);
 
@@ -412,12 +432,67 @@ mod tests {
     }
 
     #[test]
+    fn approval_with_missing_artifact_blocks_not_awaits() {
+        // An approval gate's declared artifact is a prerequisite exactly like an
+        // unmet `require: [tests]` (spec §9): while the file is missing the human
+        // pause is unreachable — the step blocks (re-prompt) with a reason naming
+        // the path, never `AwaitingApproval` over a document that doesn't exist.
+        let gate = Gate::Approval {
+            require: vec![],
+            artifact: Some("PLAN.md".into()),
+        };
+        let r = evaluate(&gate, &GateInputs::default());
+        assert_eq!(r.outcome, GateOutcome::Blocked);
+        assert!(r.reason.contains("PLAN.md"), "reason: {}", r.reason);
+
+        // Present → the ordinary approval pause; approved → done.
+        let waiting = evaluate(
+            &gate,
+            &GateInputs {
+                artifact_present: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(waiting.outcome, GateOutcome::AwaitingApproval);
+        let approved = evaluate(
+            &gate,
+            &GateInputs {
+                artifact_present: true,
+                approved: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(approved.outcome, GateOutcome::Done);
+    }
+
+    #[test]
+    fn approval_missing_artifact_blocks_even_when_approved_and_green() {
+        // The artifact prerequisite is checked before everything else: neither a
+        // prior approval nor green tests can carry the gate past a missing file.
+        let gate = Gate::Approval {
+            require: vec![Require::Tests],
+            artifact: Some("PLAN.md".into()),
+        };
+        let r = evaluate(
+            &gate,
+            &GateInputs {
+                approved: true,
+                tests: Some(&TestsOutcome::Passed),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, GateOutcome::Blocked);
+        assert!(r.reason.contains("PLAN.md"), "reason: {}", r.reason);
+    }
+
+    #[test]
     fn approval_require_tests_blocks_before_asking_a_human() {
         // With `require: [tests]`, a red test run must block (and quote the tail)
         // rather than reach the human-approval pause — the deterministic gate is
         // evaluated first (spec §9).
         let gate = Gate::Approval {
             require: vec![Require::Tests],
+            artifact: None,
         };
         let failed = TestsOutcome::Failed {
             tail: "FAIL src/x.test.ts\n  ✕ adds".into(),
@@ -439,6 +514,7 @@ mod tests {
         // pause — the engine never blocks on tests it can't or didn't fail to run.
         let gate = Gate::Approval {
             require: vec![Require::Tests],
+            artifact: None,
         };
         for outcome in [TestsOutcome::Passed, TestsOutcome::NoCommand] {
             let r = evaluate(
@@ -464,6 +540,7 @@ mod tests {
         // approve, so it blocks first.
         let gate = Gate::Approval {
             require: vec![Require::Tests],
+            artifact: None,
         };
         let v = verdict(VerdictResult::Revise, "flaky assertion");
         let r = evaluate(
