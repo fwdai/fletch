@@ -93,6 +93,23 @@ describe("composeIssueBrief", () => {
     const brief = composeIssueBrief(issue({ key: "5", title: "T", body: "  " }));
     expect(brief).not.toContain("\n\n\n");
   });
+
+  it("lays out the discussion between body and url, oldest first", () => {
+    const brief = composeIssueBrief(issue({ key: "7", title: "T", body: "B", url: "https://x/7" }), [
+      { author: "ada", body: "repro attached" },
+      { body: "fixed by the config change" },
+    ]);
+    expect(brief).toContain("Discussion on the issue (oldest first):");
+    expect(brief).toContain("ada: repro attached");
+    expect(brief).toContain("someone: fixed by the config change");
+    expect(brief.indexOf("Discussion")).toBeGreaterThan(brief.indexOf("B"));
+    expect(brief.indexOf("Discussion")).toBeLessThan(brief.indexOf("https://x/7"));
+  });
+
+  it("composes without a discussion section when there are no comments", () => {
+    expect(composeIssueBrief(issue(), [])).not.toContain("Discussion");
+    expect(composeIssueBrief(issue())).not.toContain("Discussion");
+  });
 });
 
 describe("deriveInboxRows", () => {

@@ -40,12 +40,73 @@ pub fn live_issue_ref(agent_id: &str) -> Option<String> {
 }
 
 /// Which tracker an issue came from. Serialized lowercase — the frontend's
-/// `IssueSource` union mirrors it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+/// `IssueSource` union mirrors it. `Deserialize` so the `issue_comments`
+/// command can take the source back from a picked issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IssueSource {
     Github,
     Linear,
+}
+
+/// One comment on a tracker issue — just enough for the brief's discussion
+/// section (author display name + body). Both adapters normalize to this
+/// shape, mirroring how [`TrackerIssue`] absorbs source differences.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct IssueComment {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    pub body: String,
+}
+
+/// Per-comment body ceiling (chars): one pasted stack trace or log dump must
+/// not flood the composed brief — the agent can open the issue URL for the
+/// full text.
+const COMMENT_BODY_CAP: usize = 2000;
+
+/// Clamp a comment body to [`COMMENT_BODY_CAP`] chars, marking the cut.
+fn clamp_body(body: String) -> String {
+    if body.chars().count() <= COMMENT_BODY_CAP {
+        return body;
+    }
+    let cut: String = body.chars().take(COMMENT_BODY_CAP).collect();
+    format!("{cut}… [truncated]")
+}
+
+/// Keep the trailing `limit` comments — with a long thread, the newest
+/// comments carry the decisions that supersede the earlier discussion.
+pub(crate) fn keep_last(mut comments: Vec<IssueComment>, limit: usize) -> Vec<IssueComment> {
+    if comments.len() > limit {
+        comments.drain(..comments.len() - limit);
+    }
+    comments
+}
+
+/// The discussion on one issue — oldest-first, capped to the newest `limit`
+/// comments, each body clamped. Degrades to empty on any source failure (no
+/// token, non-GitHub origin, API error), the same quiet contract as
+/// [`issue_list`]: the brief simply composes without a discussion section.
+pub async fn issue_comments(
+    checkout: &Path,
+    source: IssueSource,
+    key: &str,
+    limit: u32,
+) -> Vec<IssueComment> {
+    let comments = match source {
+        IssueSource::Github => github::issue_comments(checkout, key, limit)
+            .await
+            .ok()
+            .flatten(),
+        IssueSource::Linear => crate::linear::issue_comments(key, limit).await.ok().flatten(),
+    };
+    comments
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| IssueComment {
+            body: clamp_body(c.body),
+            ..c
+        })
+        .collect()
 }
 
 /// One label on an issue. `color` is a 6-hex assignment with no leading `#`

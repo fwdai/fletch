@@ -207,6 +207,9 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 listDir={api.listDir}
                 listPrs={() => api.listRepoPrs(draft.repoPath)}
                 listIssues={() => api.listTrackerIssues(draft.repoPath, linearTeamId)}
+                listIssueComments={(issue) =>
+                  api.issueComments(draft.repoPath, issue.source, issue.key)
+                }
                 onPickIssue={(issue) => updateDraft(draft.id, { issueRef: issue.key })}
                 defaultModel={draft.model}
                 defaultCustomAgentId={draft.customAgentId}

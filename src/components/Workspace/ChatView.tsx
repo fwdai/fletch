@@ -206,6 +206,11 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
               listIssues={
                 repoPath ? () => api.listTrackerIssues(repoPath, linearTeamId) : undefined
               }
+              listIssueComments={
+                repoPath
+                  ? (issue) => api.issueComments(repoPath, issue.source, issue.key)
+                  : undefined
+              }
               onPickIssue={(issue) => {
                 // Persist the pick so the agent's eventual PR closes this
                 // issue — the brief insert alone wouldn't survive to the

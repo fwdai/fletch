@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { hasUsage } from "@/adapters/usage";
-import type { DirListing, PrSummary, TrackerIssue } from "@/api";
+import type { DirListing, IssueComment, PrSummary, TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Chip } from "@/components/ui/Chip";
 import { IconButton } from "@/components/ui/IconButton";
@@ -79,6 +79,10 @@ interface Props {
    *  picking one appends its brief to the prompt so the agent works that
    *  exact issue. Omit to hide the picker. */
   listIssues?: () => Promise<TrackerIssue[]>;
+  /** Fetches the picked issue's discussion so the brief carries the thread,
+   *  not just the body. Optional and best-effort: absent or failing, the
+   *  brief composes without a discussion section. */
+  listIssueComments?: (issue: TrackerIssue) => Promise<IssueComment[]>;
   /** Fired after an issue pick (in addition to the brief insert), so parents
    *  with a draft can tag it (`issueRef`) for the PR closing trailer. */
   onPickIssue?: (issue: TrackerIssue) => void;
@@ -166,6 +170,7 @@ export function Composer({
   listDir,
   listPrs,
   listIssues,
+  listIssueComments,
   onPickIssue,
   seed,
   onSeedConsumed,
@@ -381,9 +386,12 @@ export function Composer({
               onPick={(issue) => {
                 // The brief lands in the prompt for the user to review/edit;
                 // the parent additionally tags its draft so the eventual PR
-                // closes the issue.
-                input.append(composeIssueBrief(issue));
+                // closes the issue. The discussion is fetched first so the
+                // brief appends once, as one reviewable block — on a failed
+                // fetch it composes without the discussion section.
                 onPickIssue?.(issue);
+                const comments = listIssueComments?.(issue).catch(() => []) ?? Promise.resolve([]);
+                void comments.then((thread) => input.append(composeIssueBrief(issue, thread)));
               }}
             />
           )}

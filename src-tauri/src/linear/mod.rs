@@ -9,7 +9,7 @@ pub mod client;
 use serde_json::{json, Value};
 
 use crate::error::Result;
-use crate::issues::{IssueSource, TrackerIssue, TrackerLabel};
+use crate::issues::{IssueComment, IssueSource, TrackerIssue, TrackerLabel};
 
 pub use client::{seed_token, set_token, TOKEN_SETTING};
 
@@ -110,6 +110,60 @@ pub async fn issue_list(team_id: &str, limit: u32) -> Result<Option<Vec<TrackerI
         Ok(data) => Ok(Some(parse_issue_list(&data))),
         Err(_) => Ok(None),
     }
+}
+
+/// The comments on one issue, for the composed brief's discussion section.
+/// `issue(id:)` accepts the human identifier ("ENG-123") in addition to the
+/// UUID — exactly the `key` we store. Same degradation contract as
+/// [`issue_list`]: `Ok(None)` on no key or API/transport error.
+pub async fn issue_comments(key: &str, limit: u32) -> Result<Option<Vec<IssueComment>>> {
+    let client = match client::Client::new() {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    const QUERY: &str = r#"
+        query IssueComments($id: String!) {
+          issue(id: $id) {
+            comments(first: 100) {
+              nodes { body createdAt user { displayName } }
+            }
+          }
+        }
+    "#;
+    match client.graphql(QUERY, json!({ "id": key })).await {
+        Ok(data) => Ok(Some(parse_comment_list(&data, limit as usize))),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Parse the comments payload into normalized comments ordered oldest-first
+/// (the API's node order isn't contractual, so sort by `createdAt`), keeping
+/// the trailing `limit`. Pure, so it's unit-tested without the network.
+fn parse_comment_list(data: &Value, limit: usize) -> Vec<IssueComment> {
+    let mut dated: Vec<(i64, IssueComment)> = data["issue"]["comments"]["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|n| {
+                    let body = n["body"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|b| !b.is_empty())?
+                        .to_string();
+                    Some((
+                        time_ms(n, "createdAt").unwrap_or(0),
+                        IssueComment {
+                            author: n["user"]["displayName"].as_str().map(str::to_string),
+                            body,
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    dated.sort_by_key(|(t, _)| *t);
+    crate::issues::keep_last(dated.into_iter().map(|(_, c)| c).collect(), limit)
 }
 
 /// ISO-8601 timestamp → ms-epoch (mirror of `github::query::gh_time_ms`).
@@ -229,5 +283,42 @@ mod tests {
         let teams = parse_teams(&data);
         assert_eq!(teams.len(), 1);
         assert_eq!(teams[0].key, "ENG");
+    }
+
+    /// Comments parse oldest-first regardless of node order (sorted by
+    /// `createdAt`), blank bodies are dropped, and capping keeps the newest.
+    #[test]
+    fn comment_list_sorts_drops_blank_and_keeps_newest() {
+        let data = json!({ "issue": { "comments": { "nodes": [
+            {
+                "body": "latest decision",
+                "createdAt": "2024-01-03T00:00:00.000Z",
+                "user": { "displayName": "Ada" }
+            },
+            { "body": "  ", "createdAt": "2024-01-02T00:00:00.000Z" },
+            {
+                "body": "first question",
+                "createdAt": "2024-01-01T00:00:00.000Z",
+                "user": { "displayName": "Grace" }
+            }
+        ] } } });
+        let all = parse_comment_list(&data, 10);
+        assert_eq!(all.len(), 2, "the blank body must be dropped");
+        assert_eq!(all[0].author.as_deref(), Some("Grace"));
+        assert_eq!(all[1].body, "latest decision");
+
+        let capped = parse_comment_list(&data, 1);
+        assert_eq!(capped.len(), 1);
+        assert_eq!(
+            capped[0].body, "latest decision",
+            "capping must keep the newest comment"
+        );
+    }
+
+    /// A non-object payload (an error shape) parses to empty, not a panic.
+    #[test]
+    fn comment_list_tolerates_error_payloads() {
+        assert!(parse_comment_list(&json!(null), 5).is_empty());
+        assert!(parse_comment_list(&json!({ "issue": null }), 5).is_empty());
     }
 }

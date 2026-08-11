@@ -147,6 +147,67 @@ pub async fn issue_list(checkout: &Path, limit: u32) -> Result<Option<Vec<IssueS
     Ok(Some(issues))
 }
 
+/// One node from the REST comments payload → the normalized
+/// [`crate::issues::IssueComment`], dropping an empty body.
+fn parse_comment(node: &Value) -> Option<crate::issues::IssueComment> {
+    let body = node["body"]
+        .as_str()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())?
+        .to_string();
+    Some(crate::issues::IssueComment {
+        author: node["user"]["login"].as_str().map(str::to_string),
+        body,
+    })
+}
+
+/// Parse the REST comments array (oldest-first, the endpoint's default
+/// order), keeping the trailing `limit`. Pure, so it's unit-tested without
+/// the network.
+fn parse_comment_list(body: &Value, limit: usize) -> Vec<crate::issues::IssueComment> {
+    let comments = body
+        .as_array()
+        .map(|arr| arr.iter().filter_map(parse_comment).collect())
+        .unwrap_or_default();
+    crate::issues::keep_last(comments, limit)
+}
+
+/// The comments on one issue, for the composed brief's discussion section.
+/// Same quiet read-op contract as [`issue_list`]: `Ok(None)` on any
+/// degradation — no token, non-GitHub origin, rate-limit pause, a key that
+/// isn't a bare issue number, transport/HTTP error. Plain `rest` (not the
+/// ETag-cached variant): this is an on-pick fetch, not a poll path.
+pub async fn issue_comments(
+    checkout: &Path,
+    key: &str,
+    limit: u32,
+) -> Result<Option<Vec<crate::issues::IssueComment>>> {
+    if client::is_backing_off() {
+        return Ok(None);
+    }
+    // The key is the bare issue number ("123"); anything else can't be a
+    // GitHub issue and must not reach the URL path.
+    let Ok(number) = key.parse::<u64>() else {
+        return Ok(None);
+    };
+    let Some((owner, repo)) = repo_ref(checkout).await else {
+        return Ok(None);
+    };
+    let client = match client::Client::new() {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    let path = format!("/repos/{owner}/{repo}/issues/{number}/comments?per_page=100");
+    let (status, body) = match client.rest(reqwest::Method::GET, &path, None).await {
+        Ok(pair) => pair,
+        Err(_) => return Ok(None),
+    };
+    if !status.is_success() {
+        return Ok(None);
+    }
+    Ok(Some(parse_comment_list(&body, limit as usize)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +317,36 @@ mod tests {
             .map(|i| i.number)
             .collect();
         assert_eq!(numbers, vec![1, 2]);
+    }
+
+    /// The comments payload parses to normalized comments (author + body),
+    /// dropping empty bodies, and a beyond-limit thread keeps the newest
+    /// entries (the array arrives oldest-first).
+    #[test]
+    fn comment_list_parses_and_keeps_newest() {
+        let body = json!([
+            { "user": { "login": "octocat" }, "body": "first" },
+            { "user": { "login": "alice" }, "body": "  " },
+            { "body": "no author" },
+            { "user": { "login": "bob" }, "body": "latest" }
+        ]);
+        let all = parse_comment_list(&body, 10);
+        assert_eq!(all.len(), 3, "the blank body must be dropped");
+        assert_eq!(all[0].author.as_deref(), Some("octocat"));
+        assert_eq!(all[1].author, None);
+        assert_eq!(all[2].body, "latest");
+
+        let capped = parse_comment_list(&body, 2);
+        assert_eq!(capped.len(), 2);
+        assert_eq!(
+            capped[0].body, "no author",
+            "capping must keep the trailing (newest) comments"
+        );
+    }
+
+    /// A non-array comments payload (an error object) parses to empty.
+    #[test]
+    fn comment_list_tolerates_non_array() {
+        assert!(parse_comment_list(&json!({ "message": "Not Found" }), 5).is_empty());
     }
 }
