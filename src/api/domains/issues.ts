@@ -1,5 +1,11 @@
 import { invoke } from "../invoke";
-import type { LinearStatus, LinearTeam, TrackerIssue } from "../types/issues";
+import type {
+  IssueComment,
+  IssueSource,
+  LinearStatus,
+  LinearTeam,
+  TrackerIssue,
+} from "../types/issues";
 
 export const issuesApi = {
   /** Open, relevant issues for a repo across every configured tracker source
@@ -13,6 +19,11 @@ export const issuesApi = {
       repoPath,
       linearTeamId: linearTeamId ?? null,
     }),
+  /** The picked issue's discussion for the composed brief — the newest ~20
+   *  comments, oldest-first, bodies clamped. Degrades to `[]` (never errors),
+   *  so a failed fetch only loses the discussion section. */
+  issueComments: (repoPath: string, source: IssueSource, key: string) =>
+    invoke<IssueComment[]>("issue_comments", { repoPath, source, key }),
   /** Re-tag a running agent with the issue it's working (a mid-session pick
    *  in the composer), so its eventual PR carries the closing trailer. */
   setAgentIssueRef: (agentId: string, issueRef: string) =>

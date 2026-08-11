@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::error::Result;
-use crate::issues::TrackerIssue;
+use crate::issues::{IssueComment, IssueSource, TrackerIssue};
 use crate::linear;
 use crate::supervisor::Supervisor;
 
@@ -39,6 +39,30 @@ pub async fn list_tracker_issues(
     linear_team_id: Option<String>,
 ) -> Result<Vec<TrackerIssue>> {
     Ok(crate::issues::issue_list(&expand_tilde(&repo_path), linear_team_id.as_deref(), 30).await)
+}
+
+/// Discussion cap for the composed brief: enough to carry a real thread's
+/// decisions without flooding the prompt (bodies are additionally clamped
+/// per-comment in `crate::issues`).
+const ISSUE_COMMENTS_LIMIT: u32 = 20;
+
+/// The picked issue's discussion, for the composer's brief — the newest
+/// [`ISSUE_COMMENTS_LIMIT`] comments, oldest-first. Degrades to `[]` on any
+/// source failure (never errors): a missing discussion must not block
+/// starting work on the issue.
+#[tauri::command]
+pub async fn issue_comments(
+    repo_path: String,
+    source: IssueSource,
+    key: String,
+) -> Result<Vec<IssueComment>> {
+    Ok(crate::issues::issue_comments(
+        &expand_tilde(&repo_path),
+        source,
+        &key,
+        ISSUE_COMMENTS_LIMIT,
+    )
+    .await)
 }
 
 /// Re-tag a running agent with the issue it's working — the composer's issue

@@ -5,7 +5,7 @@
 // sources) flow through the same code. Kept side-effect-free so each piece
 // is unit-tested without the network or the store (inbox.test.ts).
 
-import { issueDisplayKey, type TrackerIssue, type TrackerLabel } from "@/api";
+import { type IssueComment, issueDisplayKey, type TrackerIssue, type TrackerLabel } from "@/api";
 
 /** A tracked repo's fetched issues, tagged with its display label. */
 export interface InboxRepo {
@@ -69,14 +69,20 @@ const SOURCE_LABEL: Record<TrackerIssue["source"], string> = {
 };
 
 /** Compose the new-task brief for "Start work" / the composer's issue picker:
- *  issue reference, title, body, and a visible/editable branch suggestion.
- *  The closing trailer (`Closes #N` / `Fixes ENG-N`) is added reliably by the
- *  backend at PR time, so the brief needn't instruct it. */
-export function composeIssueBrief(issue: TrackerIssue): string {
+ *  issue reference, title, body, the issue's discussion (when fetched), and a
+ *  visible/editable branch suggestion. The closing trailer (`Closes #N` /
+ *  `Fixes ENG-N`) is added reliably by the backend at PR time, so the brief
+ *  needn't instruct it. Comments arrive oldest-first and already capped by
+ *  the backend; here they only get laid out. */
+export function composeIssueBrief(issue: TrackerIssue, comments: IssueComment[] = []): string {
   const branch = suggestBranchName(issue);
   const parts = [`${SOURCE_LABEL[issue.source]} issue ${issueDisplayKey(issue)}: ${issue.title}`];
   const body = issue.body?.trim();
   if (body) parts.push(body);
+  if (comments.length > 0) {
+    const thread = comments.map((c) => `${c.author ?? "someone"}: ${c.body.trim()}`).join("\n\n");
+    parts.push(`Discussion on the issue (oldest first):\n\n${thread}`);
+  }
   parts.push(issue.url);
   parts.push(`When you open the PR, use the branch name \`${branch}\`.`);
   return parts.join("\n\n");

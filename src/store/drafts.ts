@@ -193,8 +193,12 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     };
     // Seed the composer for this draft (read as its initial text on mount) with
     // the issue brief, so "Start work" lands fully prefilled — the user reviews
-    // and hits ↵ to launch (two clicks from issue to working agent).
-    get().setComposerDraft(draft.id, composeIssueBrief(issue));
+    // and hits ↵ to launch (two clicks from issue to working agent). The
+    // discussion is fetched first (best-effort — a failure only loses the
+    // section) so the seed is one complete block, not text that shifts under
+    // the user after mount.
+    const comments = await api.issueComments(repoPath, issue.source, issue.key).catch(() => []);
+    get().setComposerDraft(draft.id, composeIssueBrief(issue, comments));
     set((s) => ({
       drafts: [draft, ...s.drafts],
       activeDraftId: draft.id,

@@ -28,6 +28,13 @@ export interface TrackerIssue {
   body?: string;
 }
 
+/** One comment on a tracker issue — the frontend mirror of Rust's
+ *  `issues::IssueComment`. Bodies arrive pre-clamped by the backend. */
+export interface IssueComment {
+  author?: string;
+  body: string;
+}
+
 /** The human-facing form of an issue's key: GitHub numbers read as `#123`,
  *  tracker keys (`ENG-123`) as themselves. */
 export function issueDisplayKey(issue: Pick<TrackerIssue, "source" | "key">): string {
