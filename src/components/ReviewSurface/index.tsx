@@ -7,6 +7,7 @@
 
 import type { GateEvidence } from "../../api";
 import { Icon } from "../Icon";
+import { ArtifactPanel } from "./ArtifactPanel";
 import { BudgetSummary } from "./BudgetSummary";
 import { Checks } from "./Checks";
 import { DiffPanel } from "./DiffPanel";
@@ -113,6 +114,18 @@ function Evidence({
         </div>
         <Checks verification={evidence.verification} />
       </section>
+
+      {evidence.artifact && (
+        // The reviewed document goes above the diff: at an artifact-bearing
+        // gate the plan is what the human decides on, the diff is how it got
+        // there. Rejection feedback stays the existing note — no thread UI.
+        <section className="rv-sect">
+          <div className="rv-sect-head">
+            <Icon name="file" size={13} /> {evidence.artifact.path}
+          </div>
+          <ArtifactPanel artifact={evidence.artifact} />
+        </section>
+      )}
 
       <section className="rv-sect rv-sect-diff">
         <div className="rv-sect-head">

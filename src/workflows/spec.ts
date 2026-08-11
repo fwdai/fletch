@@ -69,13 +69,15 @@ export type Require = "tests";
 
 /** The deterministic predicate that marks a step attempt done (spec §9). An
  *  `approval` gate may list `require: [tests]` — the human pause is unreachable
- *  until the project's tests pass (optional, defaults to none). */
+ *  until the project's tests pass (optional, defaults to none) — and may name a
+ *  repo-relative `artifact` the human reviews: the pause is likewise unreachable
+ *  until that file exists, and its content rides in the gate evidence. */
 export type Gate =
   | { type: "verdict" }
   | { type: "commit" }
   | { type: "artifact"; path: string }
   | { type: "tests" }
-  | { type: "approval"; require?: Require[] };
+  | { type: "approval"; require?: Require[]; artifact?: string };
 
 export interface Step {
   id: string;

@@ -15,12 +15,20 @@ export function StepInspector({ step, ctx }: { step: EStep; ctx: BuilderCtx }) {
 
   const pickGate = (kind: GateKind) => {
     const cur = step.gate;
+    // `artifact` and `approval.artifact` are one dial (autonomous ↔ reviewed),
+    // so the file path survives switching between them instead of being retyped.
+    const path =
+      cur.type === "artifact" ? cur.path : cur.type === "approval" ? cur.artifact : undefined;
     const gate: Gate =
       kind === "artifact"
-        ? { type: "artifact", path: cur.type === "artifact" ? cur.path : "" }
+        ? { type: "artifact", path: path ?? "" }
         : // Re-picking approval preserves any existing `require: [tests]`.
           kind === "approval"
-          ? { type: "approval", require: cur.type === "approval" ? cur.require : undefined }
+          ? {
+              type: "approval",
+              require: cur.type === "approval" ? cur.require : undefined,
+              artifact: path || undefined,
+            }
           : { type: kind };
     ctx.patchStep(step.nid, { gate });
   };
@@ -32,8 +40,10 @@ export function StepInspector({ step, ctx }: { step: EStep; ctx: BuilderCtx }) {
     });
   };
 
-  const requireTests =
-    step.gate.type === "approval" && (step.gate.require?.includes("tests") ?? false);
+  // A narrowed binding so the patch closures below can spread the approval
+  // gate without TS losing the discriminant.
+  const approvalGate = step.gate.type === "approval" ? step.gate : null;
+  const requireTests = approvalGate?.require?.includes("tests") ?? false;
 
   return (
     <>
@@ -88,21 +98,36 @@ export function StepInspector({ step, ctx }: { step: EStep; ctx: BuilderCtx }) {
             }
           />
         )}
-        {step.gate.type === "approval" && (
-          // One extra prerequisite the approval gate can require first — the human
-          // pause stays unreachable until the project's tests pass (spec §9).
-          <label className="wb-toggle" style={{ marginTop: 9 }}>
+        {approvalGate && (
+          <>
+            {/* The optional reviewed file (spec §9): the pause waits for it to
+                exist and shows it for your review, above the diff. */}
             <input
-              type="checkbox"
-              checked={requireTests}
+              className="ca-input"
+              style={{ marginTop: 9 }}
+              value={approvalGate.artifact ?? ""}
+              placeholder="Optional: a file to pause for your review, e.g. PLAN.md"
               onChange={(e) =>
                 ctx.patchStep(step.nid, {
-                  gate: { type: "approval", require: e.target.checked ? ["tests"] : undefined },
+                  gate: { ...approvalGate, artifact: e.target.value || undefined },
                 })
               }
             />
-            Require passing tests first
-          </label>
+            {/* One extra prerequisite the approval gate can require first — the
+                human pause stays unreachable until the project's tests pass (§9). */}
+            <label className="wb-toggle" style={{ marginTop: 9 }}>
+              <input
+                type="checkbox"
+                checked={requireTests}
+                onChange={(e) =>
+                  ctx.patchStep(step.nid, {
+                    gate: { ...approvalGate, require: e.target.checked ? ["tests"] : undefined },
+                  })
+                }
+              />
+              Require passing tests first
+            </label>
+          </>
         )}
       </Field>
 

@@ -509,6 +509,37 @@ finalize: { push: true, open_pr: true, pr_base: main }
     }
 
     #[test]
+    fn approval_gate_artifact_and_require_round_trip() {
+        // The full approval dial (spec §9) — `require: [tests]` plus the
+        // reviewed `artifact` — must survive spec → yaml → spec, and a bare
+        // approval must not grow either field.
+        use super::super::spec::Require;
+        let mut spec = from_yaml(CANONICAL).unwrap();
+        if let Block::Step(step) = &mut spec.workflow[0] {
+            step.gate = Gate::Approval {
+                require: vec![Require::Tests],
+                artifact: Some("PLAN.md".into()),
+            };
+        }
+        let yaml = to_yaml(&spec).unwrap();
+        assert!(yaml.contains("artifact: PLAN.md"), "{yaml}");
+        let back = from_yaml(&yaml).unwrap();
+        assert_eq!(spec, back, "approval artifact + require must round-trip");
+
+        // Bare approval stays bare on the wire.
+        if let Block::Step(step) = &mut spec.workflow[0] {
+            step.gate = Gate::Approval {
+                require: vec![],
+                artifact: None,
+            };
+        }
+        let yaml = to_yaml(&spec).unwrap();
+        assert!(!yaml.contains("artifact:"), "{yaml}");
+        assert!(!yaml.contains("require"), "{yaml}");
+        assert_eq!(from_yaml(&yaml).unwrap(), spec);
+    }
+
+    #[test]
     fn custom_agent_id_is_never_exported() {
         let mut spec = from_yaml(CANONICAL).unwrap();
         spec.agents.get_mut("coder").unwrap().custom_agent = Some("ca-local-123".into());
