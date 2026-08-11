@@ -95,10 +95,10 @@ describe("composeIssueBrief", () => {
   });
 
   it("lays out the discussion between body and url, oldest first", () => {
-    const brief = composeIssueBrief(issue({ key: "7", title: "T", body: "B", url: "https://x/7" }), [
-      { author: "ada", body: "repro attached" },
-      { body: "fixed by the config change" },
-    ]);
+    const brief = composeIssueBrief(
+      issue({ key: "7", title: "T", body: "B", url: "https://x/7" }),
+      [{ author: "ada", body: "repro attached" }, { body: "fixed by the config change" }],
+    );
     expect(brief).toContain("Discussion on the issue (oldest first):");
     expect(brief).toContain("ada: repro attached");
     expect(brief).toContain("someone: fixed by the config change");

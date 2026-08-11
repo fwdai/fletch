@@ -5,12 +5,7 @@
 // sources) flow through the same code. Kept side-effect-free so each piece
 // is unit-tested without the network or the store (inbox.test.ts).
 
-import {
-  type IssueComment,
-  issueDisplayKey,
-  type TrackerIssue,
-  type TrackerLabel,
-} from "@/api";
+import { type IssueComment, issueDisplayKey, type TrackerIssue, type TrackerLabel } from "@/api";
 
 /** A tracked repo's fetched issues, tagged with its display label. */
 export interface InboxRepo {
@@ -85,9 +80,7 @@ export function composeIssueBrief(issue: TrackerIssue, comments: IssueComment[] 
   const body = issue.body?.trim();
   if (body) parts.push(body);
   if (comments.length > 0) {
-    const thread = comments
-      .map((c) => `${c.author ?? "someone"}: ${c.body.trim()}`)
-      .join("\n\n");
+    const thread = comments.map((c) => `${c.author ?? "someone"}: ${c.body.trim()}`).join("\n\n");
     parts.push(`Discussion on the issue (oldest first):\n\n${thread}`);
   }
   parts.push(issue.url);

@@ -97,7 +97,10 @@ pub async fn issue_comments(
             .await
             .ok()
             .flatten(),
-        IssueSource::Linear => crate::linear::issue_comments(key, limit).await.ok().flatten(),
+        IssueSource::Linear => crate::linear::issue_comments(key, limit)
+            .await
+            .ok()
+            .flatten(),
     };
     comments
         .unwrap_or_default()
