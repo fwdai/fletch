@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type EnvEntry } from "@/api";
+import { api, type EnvEntry, type EnvFileKeys } from "@/api";
 import {
   loadRunEnvDoc,
   type RunEnvDoc,
@@ -24,6 +24,10 @@ interface Props {
  *  is shared by default. Autosaves per edit, like the run-config section. */
 export function EnvVarsSection({ projectId, repoPath }: Props) {
   const [entries, setEntries] = useState<EnvEntry[] | null>(null);
+  // Keys declared by `.env.example`/`.env.sample` but absent from `.env` —
+  // the project wants them, no value is set (and example placeholders are
+  // never treated as values).
+  const [declared, setDeclared] = useState<string[]>([]);
   const [doc, setDoc] = useState<RunEnvDoc>({ version: 1, vars: [] });
   // Override values (from the keychain), fetched for overridden vars so the
   // chip can show and edit them. Keyed by var name.
@@ -40,12 +44,13 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [envEntries, loadedDoc] = await Promise.all([
-        api.readEnvFileKeys(repoPath).catch(() => [] as EnvEntry[]),
+      const [envKeys, loadedDoc] = await Promise.all([
+        api.readEnvFileKeys(repoPath).catch((): EnvFileKeys => ({ env: [], declared: [] })),
         loadRunEnvDoc(projectId),
       ]);
       if (cancelled) return;
-      setEntries(envEntries);
+      setEntries(envKeys.env);
+      setDeclared(envKeys.declared);
       docRef.current = loadedDoc;
       setDoc(loadedDoc);
       // Pull the current override values for any overridden vars.
@@ -64,13 +69,20 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
 
   const envMap = useMemo(() => new Map((entries ?? []).map((e) => [e.key, e.value])), [entries]);
 
-  // Every `.env` key, plus any configured var missing from `.env` (an
-  // override-only or stale entry) so nothing the user set silently vanishes.
+  // Every `.env` key, then the project-declared keys (`.env.example` /
+  // `.env.sample`) not set in `.env`, plus any configured var missing from
+  // both (an override-only or stale entry) so nothing the user set silently
+  // vanishes.
   const rows = useMemo(() => {
-    const keys = [...envMap.keys()];
-    for (const v of doc.vars) if (!envMap.has(v.key)) keys.push(v.key);
-    return keys.map((key) => ({ key, envValue: envMap.get(key) }));
-  }, [envMap, doc]);
+    const keys = new Set(envMap.keys());
+    for (const k of declared) keys.add(k);
+    for (const v of doc.vars) keys.add(v.key);
+    return [...keys].map((key) => ({
+      key,
+      envValue: envMap.get(key),
+      declaredOnly: !envMap.has(key) && declared.includes(key),
+    }));
+  }, [envMap, declared, doc]);
 
   // Every key already on screen — for rejecting a duplicate add.
   const existingKeys = useMemo(() => new Set(rows.map((r) => r.key)), [rows]);
@@ -213,11 +225,12 @@ export function EnvVarsSection({ projectId, repoPath }: Props) {
         </div>
       ) : (
         <div className="ev-list">
-          {rows.map(({ key, envValue }) => (
+          {rows.map(({ key, envValue, declaredOnly }) => (
             <EnvVarRow
               key={key}
               varKey={key}
               envValue={envValue}
+              declaredOnly={declaredOnly}
               overrideValue={overrides[key]}
               cfg={varConfig(doc, key)}
               onToggleShare={(shared) => onToggleShare(key, shared)}

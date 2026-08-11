@@ -201,6 +201,7 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     // loop executor share a single `execute_step` (spec §6.6).
     let env = StepEnv {
         repo: &repo,
+        project_id: &run.project_id,
         run_repo: &run_repo,
         blackboard: &blackboard,
         eff: &eff,

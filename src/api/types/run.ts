@@ -44,6 +44,14 @@ export interface EnvEntry {
   value: string;
 }
 
+/** A project's discovered env keys (Rust `run_env::EnvFileKeys`): the real
+ *  `.env` entries plus keys only *declared* by `.env.example`/`.env.sample` —
+ *  bare names, because example values are placeholders, never real values. */
+export interface EnvFileKeys {
+  env: EnvEntry[];
+  declared: string[];
+}
+
 export interface RunOutputEvent {
   agent_id: string;
   bytes: number[];

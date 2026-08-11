@@ -179,9 +179,14 @@ impl Supervisor {
                 return;
             }
         };
+        // The project's shared run env — same membrane as the ad-hoc
+        // `run_verification` command, resolved for this agent's checkout.
+        let env = self
+            .workspace
+            .run_env(&project_id, &primary.repo_path, &agent_id, &checkout);
         let inflight = self.verify_inflight.clone();
         tauri::async_runtime::spawn(async move {
-            let report = verifier.verify(&checkout).await;
+            let report = verifier.verify(&checkout, &env).await;
             inflight.lock().remove(&agent_id);
             emit_verification(&app, &agent_id, report);
         });
