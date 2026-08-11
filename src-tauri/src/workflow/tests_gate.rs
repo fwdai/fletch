@@ -17,13 +17,14 @@
 //! `sandbox-exec`) yields the same `NoCommand` rather than running a repo-derived
 //! command unsandboxed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::verify::{CheckOutcome, VerificationReport, Verifier};
 
 use super::driver::BoxFuture;
 use super::gates::TestsOutcome;
+use super::Db;
 
 /// Resolves and runs the `tests` gate. Behind a trait so the attempt lifecycle
 /// is unit-testable with a scripted mock (`AgentDriver`'s pattern).
@@ -37,6 +38,38 @@ pub trait TestRunner: Send + Sync {
 /// to a [`TestsOutcome`].
 pub struct SandboxTestRunner {
     verifier: Verifier,
+    run_env: RunEnvSource,
+}
+
+/// Inputs for [`crate::run_env::resolve`] at gate time. Resolution is deferred
+/// to `run_tests` because `{{worktree}}` interpolates against the step agent's
+/// checkout, which exists only once an attempt has spawned it; the run id
+/// stands in for `{{agent_id}}` because the runner outlives any single
+/// attempt's agent.
+pub struct RunEnvSource {
+    pub db: Db,
+    pub project_id: String,
+    /// The *source* repo — where the (gitignored) `.env` lives.
+    pub repo_path: PathBuf,
+    pub run_id: String,
+}
+
+impl RunEnvSource {
+    /// The shared `(NAME, VALUE)` pairs for `worktree`. Same posture as
+    /// `run_env::resolve`: nothing configured (or nothing resolvable) is an
+    /// empty env, never an error — a missing membrane must not brick a gate.
+    fn resolve(&self, worktree: &Path) -> Vec<(String, String)> {
+        let conn = self.db.lock();
+        crate::run_env::resolve(
+            &conn,
+            &self.project_id,
+            &self.repo_path,
+            &crate::run_env::InterpCtx {
+                agent_id: &self.run_id,
+                worktree,
+            },
+        )
+    }
 }
 
 impl SandboxTestRunner {
@@ -44,10 +77,11 @@ impl SandboxTestRunner {
         test_override: Option<String>,
         setup_override: Option<String>,
         timeout_secs: u64,
+        run_env: RunEnvSource,
     ) -> Result<Self> {
         // The tests gate never lints; `lint_override` is `None`.
         let verifier = Verifier::new(test_override, setup_override, None, timeout_secs)?;
-        Ok(Self { verifier })
+        Ok(Self { verifier, run_env })
     }
 }
 
@@ -67,7 +101,13 @@ impl TestRunner for SandboxTestRunner {
                 );
                 return TestsOutcome::NoCommand;
             }
-            let report = self.verifier.verify_tests_only(worktree).await;
+            // The project's shared env, resolved against this attempt's
+            // checkout — the gate runs the same trust class of process as the
+            // Run panel, so it gets the same membrane. Without it a `tests`
+            // gate fails on a project whose tests need e.g. DATABASE_URL even
+            // though the user shared it.
+            let env = self.run_env.resolve(worktree);
+            let report = self.verifier.verify_tests_only(worktree, &env).await;
             map_tests_outcome(&report)
         })
     }

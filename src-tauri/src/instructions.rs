@@ -178,6 +178,52 @@ pub fn multi_repo_workspace_note(repos: &[crate::workspace::TrackedRepo]) -> Opt
     ))
 }
 
+/// Per-agent env-awareness note: which of the project's env keys reach the
+/// processes the app runs on the agent's behalf (the Run panel and the
+/// verifier/tests gate), and which exist — in `.env` or declared by
+/// `.env.example`/`.env.sample` — but were not shared. Composed ahead of any
+/// custom brief by the spawn path, like [`multi_repo_workspace_note`].
+///
+/// Key NAMES only, never values: a value in the system prompt would defeat the
+/// membrane (`run_env`), which never lets values into the agent's process or
+/// its checkout. `None` when the project declares no env at all, so the common
+/// case injects nothing extra.
+pub fn env_awareness_note(shared: &[String], unshared: &[String]) -> Option<String> {
+    if shared.is_empty() && unshared.is_empty() {
+        return None;
+    }
+    let list = |keys: &[String]| {
+        keys.iter()
+            .map(|k| format!("`{k}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let shared_line = if shared.is_empty() {
+        "- Shared with app-run processes: none yet.\n".to_string()
+    } else {
+        format!("- Shared with app-run processes: {}.\n", list(shared))
+    };
+    let unshared_line = if unshared.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "- Present in the project's env config but NOT shared: {}.\n",
+            list(unshared)
+        )
+    };
+    Some(format!(
+        "## Project environment variables\n\n\
+         This project's env values live outside your workspace (its `.env` is gitignored and \
+         deliberately absent from this checkout). Fletch injects the shared ones into the \
+         sandboxed processes it runs for you — the Run panel and the verifier/tests gate — \
+         never into your own environment.\n\n\
+         {shared_line}{unshared_line}\n\
+         Do not fabricate `.env` files or hardcode values to compensate. Run env-dependent \
+         commands through the app (Run panel / verification), or tell the user which key you \
+         need shared."
+    ))
+}
+
 /// Per-agent heads-up for a workspace whose base branch could not be fetched
 /// from `origin` while it was being provisioned (offline, no credentials, the
 /// branch gone from the remote). Composed ahead of any custom brief by the
@@ -473,6 +519,31 @@ mod tests {
         assert!(note.contains("args"), "must point at args.repo: {note}");
         // No redundant "frontend — frontend" suffix when label == subdir.
         assert!(!note.contains("frontend/` — frontend"), "note: {note}");
+    }
+
+    #[test]
+    fn env_note_lists_key_names_only_and_is_conditional() {
+        // No env at all (the common case): no note.
+        assert_eq!(env_awareness_note(&[], &[]), None);
+
+        let note = env_awareness_note(
+            &["DATABASE_URL".into()],
+            &["SECRET_KEY".into(), "API_KEY".into()],
+        )
+        .unwrap();
+        // Both lists render by key NAME — the note carries names, never values.
+        assert!(note.contains("`DATABASE_URL`"), "note: {note}");
+        assert!(note.contains("`SECRET_KEY`"), "note: {note}");
+        assert!(note.contains("`API_KEY`"), "note: {note}");
+        assert!(note.contains("NOT shared"), "note: {note}");
+        // The failure modes the note exists to prevent.
+        assert!(note.contains("Do not fabricate"), "note: {note}");
+        assert!(note.contains("Run panel"), "note: {note}");
+
+        // Nothing shared yet, keys discovered: the note says so rather than
+        // listing an empty set.
+        let none_shared = env_awareness_note(&[], &["API_KEY".into()]).unwrap();
+        assert!(none_shared.contains("none yet"), "note: {none_shared}");
     }
 
     #[test]

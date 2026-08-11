@@ -1,5 +1,5 @@
 import { invoke } from "../invoke";
-import type { DetectedConfig, EnvEntry, ProjectRunConfig, RunStateSnapshot } from "../types/run";
+import type { DetectedConfig, EnvFileKeys, ProjectRunConfig, RunStateSnapshot } from "../types/run";
 import type { VerificationReport } from "../types/verify";
 
 export const runApi = {
@@ -14,7 +14,7 @@ export const runApi = {
     invoke<VerificationReport>("run_verification", { agentId, subdir: subdir ?? null }),
   projectRunConfig: (repoPath: string) =>
     invoke<ProjectRunConfig>("project_run_config", { repoPath }),
-  readEnvFileKeys: (repoPath: string) => invoke<EnvEntry[]>("read_env_file_keys", { repoPath }),
+  readEnvFileKeys: (repoPath: string) => invoke<EnvFileKeys>("read_env_file_keys", { repoPath }),
   getEnvOverride: (projectId: string, key: string) =>
     invoke<string | null>("get_env_override", { projectId, key }),
   setEnvOverride: (projectId: string, key: string, value: string) =>

@@ -63,11 +63,23 @@ export interface GateVerdict {
   target: string | null;
 }
 
+/** The gate's reviewed artifact, captured into the evidence while the step
+ *  worktree is intact (spec §9): the `approval` gate's declared file at the
+ *  pause, or the file a passing autonomous `artifact` gate watched. `content`
+ *  is capped server-side (128 KiB); `truncated` marks a capped read. */
+export interface GateArtifact {
+  path: string;
+  content: string;
+  truncated: boolean;
+}
+
 /** The review evidence assembled when an approval gate pauses a run (the Rust
  *  `gate_evidence` event payload, spec §9): verification, the ferried diff vs the
  *  run base, budget spend, and the step's verdict. `verification` is null when the
- *  host couldn't build a verifier; its checks are all `skipped` when the project
- *  configures no commands. `base_sha`/`head_sha` feed `api.wfRunDiff`. */
+ *  host couldn't build a verifier (or the capture ran no checks — a passing
+ *  autonomous `artifact` gate journals the same payload); its checks are all
+ *  `skipped` when the project configures no commands. `base_sha`/`head_sha` feed
+ *  `api.wfRunDiff`. `artifact` is absent on payloads journaled before it existed. */
 export interface GateEvidence {
   base_sha: string;
   head_sha: string;
@@ -75,4 +87,5 @@ export interface GateEvidence {
   diff: GateDiff;
   budget: GateBudget;
   verdict: GateVerdict | null;
+  artifact?: GateArtifact | null;
 }

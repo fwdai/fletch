@@ -983,7 +983,18 @@ impl Supervisor {
             })
             .flatten()
             .map(crate::instructions::stale_base_note);
-        let notes = [stale_note, workspace_note]
+        // Which env keys reach app-run processes vs. exist but were withheld —
+        // key names only, never values (see `run_env`; a value in the
+        // instructions would defeat the membrane). Keyed on the primary repo,
+        // where the (gitignored) `.env` lives. Recomputed every launch, like
+        // the other layers, so a sharing change lands on the next spawn/resume.
+        let env_note = record.repos.first().and_then(|primary| {
+            let (shared, unshared) = self
+                .workspace
+                .run_env_key_names(&record.project_id, &primary.repo_path);
+            crate::instructions::env_awareness_note(&shared, &unshared)
+        });
+        let notes = [stale_note, workspace_note, env_note]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()

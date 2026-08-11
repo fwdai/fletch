@@ -156,6 +156,24 @@
   min-height: 240px;
 }
 
+/* ── artifact (the reviewed document, above the diff) ────────────────────── */
+.rv-artifact {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* The `.m-agent` prose skin (Chat.css) does the markdown typography; this box
+ * frames it like the other evidence panels and keeps a runaway plan scrollable
+ * instead of swallowing the surface. */
+.rv-artifact-body {
+  padding: 10px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  max-height: 360px;
+  overflow-y: auto;
+}
+
 /* ── checks ──────────────────────────────────────────────────────────────── */
 .rv-checks {
   display: flex;
