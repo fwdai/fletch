@@ -39,6 +39,12 @@ pub const RUN_ENV_SETTING: &str = "run_env";
 /// `.env` for now; `.env.local` and friends are a deliberate later addition.
 const ENV_FILENAME: &str = ".env";
 
+/// Example/template files read for key *discovery* only — the industry
+/// convention for declaring the keys a project needs. Their values are
+/// placeholders and are never used as real values: only [`read_env_file`]
+/// feeds resolution.
+const EXAMPLE_ENV_FILENAMES: [&str; 2] = [".env.example", ".env.sample"];
+
 /// Where a shared variable's value comes from. Serialized as a bare lowercase
 /// string (`"mirror"` / `"override"`) so the frontend document stays trivial;
 /// a future `computed` variant slots in without a document migration.
@@ -184,6 +190,44 @@ pub fn read_env_file(repo_path: &Path) -> Vec<EnvEntry> {
         Ok(text) => parse_env(&text),
         Err(_) => Vec::new(),
     }
+}
+
+/// Keys declared by the repo's example env files ([`EXAMPLE_ENV_FILENAMES`]).
+/// Discovery only: values are deliberately dropped here so a placeholder can
+/// never masquerade as a real value. Missing/unreadable files → fewer keys,
+/// never an error.
+pub fn read_example_env_keys(repo_path: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in EXAMPLE_ENV_FILENAMES {
+        let Ok(text) = std::fs::read_to_string(repo_path.join(name)) else {
+            continue;
+        };
+        for e in parse_env(&text) {
+            if !out.contains(&e.key) {
+                out.push(e.key);
+            }
+        }
+    }
+    out
+}
+
+/// Key discovery for the settings UI and the agent env note: the real `.env`
+/// entries plus the keys only *declared* by an example file — "declared by the
+/// project, not set" — carried as bare names because a placeholder is not a
+/// value.
+#[derive(Debug, Serialize)]
+pub struct EnvFileKeys {
+    pub env: Vec<EnvEntry>,
+    pub declared: Vec<String>,
+}
+
+pub fn discover_env_keys(repo_path: &Path) -> EnvFileKeys {
+    let env = read_env_file(repo_path);
+    let declared = read_example_env_keys(repo_path)
+        .into_iter()
+        .filter(|k| !env.iter().any(|e| &e.key == k))
+        .collect();
+    EnvFileKeys { env, declared }
 }
 
 /// Load the project's run-environment document. Absent or malformed → default
@@ -487,6 +531,56 @@ LEADING= # only a comment
             got,
             vec![("DATABASE_URL".into(), "postgres://real/dev".into())]
         );
+    }
+
+    #[test]
+    fn example_files_declare_keys_but_never_values() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "DATABASE_URL=postgres://real/dev\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".env.example"),
+            "DATABASE_URL=placeholder\nAPI_KEY=your-key-here\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".env.sample"), "API_KEY=dupe\nEXTRA=x\n").unwrap();
+        let got = discover_env_keys(dir.path());
+        // `.env` keeps its real value; example keys surface once, as bare
+        // names, and a key already in `.env` is not re-declared.
+        assert_eq!(got.env.len(), 1);
+        assert_eq!(got.env[0].value, "postgres://real/dev");
+        assert_eq!(
+            got.declared,
+            vec!["API_KEY".to_string(), "EXTRA".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_never_reads_example_values() {
+        // A shared mirror var declared only by `.env.example` has no resolvable
+        // value — skipped, never injected with the placeholder.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env.example"), "API_KEY=placeholder\n").unwrap();
+        let db = crate::database::init(dir.path()).unwrap();
+        let conn = db.lock();
+        let project_id = seed(&conn);
+        set_doc(
+            &conn,
+            &project_id,
+            &RunEnvDoc {
+                version: 1,
+                vars: vec![EnvVar {
+                    key: "API_KEY".into(),
+                    shared: true,
+                    source: Source::Mirror,
+                }],
+            },
+        );
+        let wt = PathBuf::from("/tmp/wt");
+        assert!(resolve(&conn, &project_id, dir.path(), &ctx("a", &wt)).is_empty());
     }
 
     #[test]

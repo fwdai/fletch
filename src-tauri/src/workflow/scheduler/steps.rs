@@ -200,6 +200,12 @@ pub(crate) async fn execute_step(
         env.test_override.clone(),
         env.setup_override.clone(),
         step_eff.tests_timeout_secs.max(1) as u64,
+        crate::workflow::tests_gate::RunEnvSource {
+            db: ctx.db.clone(),
+            project_id: env.project_id.to_string(),
+            repo_path: env.repo.to_path_buf(),
+            run_id: run_id.to_string(),
+        },
     )?;
 
     let mut attempt_no = next_attempt_no(&ctx.db.lock(), run_id, &step.id, iteration as i64);
@@ -416,6 +422,21 @@ pub(crate) async fn execute_step(
                 // spend, and the step's verdict — journaled so ReviewSurface can
                 // render it without re-deriving anything. No lock is held across
                 // the (async) verification + git work.
+                // The project's shared run env for the evidence checks — the
+                // same membrane the tests gate applies, resolved against this
+                // attempt's checkout (the step agent's id is known here).
+                let run_env = {
+                    let conn = ctx.db.lock();
+                    crate::run_env::resolve(
+                        &conn,
+                        env.project_id,
+                        env.repo,
+                        &crate::run_env::InterpCtx {
+                            agent_id: result.agent_id.as_deref().unwrap_or(run_id),
+                            worktree,
+                        },
+                    )
+                };
                 let evidence = assemble_gate_evidence(
                     env,
                     &step.id,
@@ -423,6 +444,7 @@ pub(crate) async fn execute_step(
                     &head,
                     step_eff.tests_timeout_secs.max(1) as u64,
                     ledger,
+                    &run_env,
                 )
                 .await;
                 {
@@ -600,17 +622,20 @@ async fn assemble_gate_evidence(
     head_sha: &str,
     tests_timeout_secs: u64,
     ledger: &Ledger,
+    run_env: &[(String, String)],
 ) -> Value {
     // Reuse the engine-owned verifier. Lint resolves by detection (no project
     // lint override is plumbed to the linear path); a HOME-less host yields no
-    // verifier, reported as `null` rather than a fake empty report.
+    // verifier, reported as `null` rather than a fake empty report. `run_env`
+    // is the project's shared run env (`run_env::resolve`), resolved by the
+    // caller against this attempt's checkout.
     let verification = match crate::verify::Verifier::new(
         env.test_override.clone(),
         env.setup_override.clone(),
         None,
         tests_timeout_secs,
     ) {
-        Ok(v) => serde_json::to_value(v.verify(worktree).await).ok(),
+        Ok(v) => serde_json::to_value(v.verify(worktree, run_env).await).ok(),
         Err(_) => None,
     };
 

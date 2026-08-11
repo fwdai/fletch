@@ -226,6 +226,7 @@ pub(crate) async fn run_parallel_stage(
             eff: eff.clone(),
             run_id: run_id.to_string(),
             run_task: run.task.clone(),
+            project_id: run.project_id.clone(),
             step: step.clone(),
             agent_spec: agent_spec.clone(),
             fork_base: fork_base.to_string(),
@@ -794,6 +795,7 @@ async fn resume_merge_stage(
             };
             let env = StepEnv {
                 repo,
+                project_id: &run.project_id,
                 run_repo,
                 blackboard,
                 eff,
@@ -896,6 +898,12 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
         c.test_override.clone(),
         c.setup_override.clone(),
         step_eff.tests_timeout_secs.max(1) as u64,
+        crate::workflow::tests_gate::RunEnvSource {
+            db: c.db.clone(),
+            project_id: c.project_id.clone(),
+            repo_path: c.repo.clone(),
+            run_id: c.run_id.clone(),
+        },
     ) {
         Ok(r) => r,
         Err(e) => {

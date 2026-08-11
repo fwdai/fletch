@@ -142,18 +142,34 @@ impl Verifier {
     }
 
     /// Run the full suite — `install` (once) → `test` → `lint` — and report every
-    /// check. Used by the ad-hoc `run_verification` command.
-    pub async fn verify(&self, worktree: &Path) -> VerificationReport {
-        self.run(worktree, /* include_lint = */ true).await
+    /// check. Used by the ad-hoc `run_verification` command and the turn-end
+    /// verification. `env` is the project's shared run-env pairs
+    /// ([`crate::run_env::resolve`]) injected into every check command — these
+    /// are app-spawned sandboxed processes, the same trust class as the Run
+    /// panel, so they get the same membrane. Pass `&[]` where the caller has no
+    /// project context. A parameter rather than a field because the tests gate
+    /// resolves per step worktree (the `{{worktree}}` interpolation target),
+    /// which exists only once an attempt has spawned its agent.
+    pub async fn verify(&self, worktree: &Path, env: &[(String, String)]) -> VerificationReport {
+        self.run(worktree, /* include_lint = */ true, env).await
     }
 
     /// Run only `install` (once) → `test`, for the workflow tests gate, which has
     /// no use for a lint result and must stay byte-identical to its prior shape.
-    pub async fn verify_tests_only(&self, worktree: &Path) -> VerificationReport {
-        self.run(worktree, /* include_lint = */ false).await
+    pub async fn verify_tests_only(
+        &self,
+        worktree: &Path,
+        env: &[(String, String)],
+    ) -> VerificationReport {
+        self.run(worktree, /* include_lint = */ false, env).await
     }
 
-    async fn run(&self, worktree: &Path, include_lint: bool) -> VerificationReport {
+    async fn run(
+        &self,
+        worktree: &Path,
+        include_lint: bool,
+        env: &[(String, String)],
+    ) -> VerificationReport {
         // The checks run under the Run-panel seatbelt profile, which needs macOS
         // `sandbox-exec`. Where it isn't present we can't safely run a
         // repo-derived command, so skip every check rather than run unsandboxed
@@ -198,7 +214,8 @@ impl Verifier {
             if already {
                 checks.push(passed_cached("install", setup));
             } else {
-                let (outcome, duration_ms, tail) = self.run_check(worktree, "install", setup).await;
+                let (outcome, duration_ms, tail) =
+                    self.run_check(worktree, "install", setup, env).await;
                 if matches!(outcome, CheckOutcome::Passed) {
                     self.setup_done
                         .lock()
@@ -234,7 +251,8 @@ impl Verifier {
                     tail: Vec::new(),
                 }),
                 Some(cmd) => {
-                    let (outcome, duration_ms, tail) = self.run_check(worktree, name, cmd).await;
+                    let (outcome, duration_ms, tail) =
+                        self.run_check(worktree, name, cmd, env).await;
                     checks.push(CheckResult {
                         name: name.to_string(),
                         command: cmd.clone(),
@@ -257,9 +275,10 @@ impl Verifier {
         worktree: &Path,
         name: &str,
         cmd: &str,
+        env: &[(String, String)],
     ) -> (CheckOutcome, u64, Vec<String>) {
         let started = Instant::now();
-        let bounded = self.run_sandboxed(worktree, cmd).await;
+        let bounded = self.run_sandboxed(worktree, cmd, env).await;
         let duration_ms = started.elapsed().as_millis() as u64;
         let outcome_tail = match bounded {
             Bounded::Exited { success: true, .. } => (CheckOutcome::Passed, Vec::new()),
@@ -314,12 +333,12 @@ impl Verifier {
         Ok((PathBuf::from(crate::sandbox::SANDBOX_EXEC), args))
     }
 
-    async fn run_sandboxed(&self, worktree: &Path, cmd: &str) -> Bounded {
+    async fn run_sandboxed(&self, worktree: &Path, cmd: &str, env: &[(String, String)]) -> Bounded {
         let (program, args) = match self.sandbox_command(worktree, cmd) {
             Ok(t) => t,
             Err(e) => return Bounded::Unrunnable(format!("could not build sandbox profile: {e}")),
         };
-        run_bounded(&program, &args, worktree, self.timeout).await
+        run_bounded(&program, &args, worktree, self.timeout, env).await
     }
 }
 
@@ -428,13 +447,22 @@ enum Bounded {
 }
 
 /// Run `program args` in `cwd`, capturing combined stdout+stderr, bounded by
-/// `deadline`. On timeout the child is killed (`kill_on_drop`) and `TimedOut` is
-/// returned. Pure of any workflow/Tauri state so it is directly unit-testable.
-async fn run_bounded(program: &Path, args: &[String], cwd: &Path, deadline: Duration) -> Bounded {
+/// `deadline`. `env` is layered over the inherited environment (the shared
+/// run-env membrane; empty for callers without one). On timeout the child is
+/// killed (`kill_on_drop`) and `TimedOut` is returned. Pure of any
+/// workflow/Tauri state so it is directly unit-testable.
+async fn run_bounded(
+    program: &Path,
+    args: &[String],
+    cwd: &Path,
+    deadline: Duration,
+    env: &[(String, String)],
+) -> Bounded {
     let mut command = Command::new(program);
     command
         .args(args)
         .current_dir(cwd)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -635,6 +663,7 @@ mod tests {
             &["-c".into(), "echo ok; exit 0".into()],
             cwd.path(),
             Duration::from_secs(10),
+            &[],
         )
         .await;
         match b {
@@ -654,6 +683,7 @@ mod tests {
             &["-c".into(), "echo boom 1>&2; exit 3".into()],
             cwd.path(),
             Duration::from_secs(10),
+            &[],
         )
         .await;
         match b {
@@ -673,6 +703,7 @@ mod tests {
             &["-c".into(), "sleep 30".into()],
             cwd.path(),
             Duration::from_millis(150),
+            &[],
         )
         .await;
         assert!(matches!(b, Bounded::TimedOut));
@@ -686,9 +717,35 @@ mod tests {
             &[],
             cwd.path(),
             Duration::from_secs(5),
+            &[],
         )
         .await;
         assert!(matches!(b, Bounded::Unrunnable(_)));
+    }
+
+    #[tokio::test]
+    async fn run_bounded_injects_shared_env() {
+        // The env plumbing seam: a shared pair must reach the spawned command's
+        // environment (layered over the inherited one).
+        let cwd = tempfile::tempdir().unwrap();
+        let b = run_bounded(
+            Path::new("/bin/sh"),
+            &["-c".into(), "echo val=$FLETCH_TEST_SHARED".into()],
+            cwd.path(),
+            Duration::from_secs(10),
+            &[("FLETCH_TEST_SHARED".into(), "sesame".into())],
+        )
+        .await;
+        match b {
+            Bounded::Exited { success, tail } => {
+                assert!(success);
+                assert!(
+                    tail.iter().any(|l| l.contains("val=sesame")),
+                    "tail: {tail:?}"
+                );
+            }
+            _ => panic!("expected Exited"),
+        }
     }
 
     #[test]

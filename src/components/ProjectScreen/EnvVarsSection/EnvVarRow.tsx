@@ -9,6 +9,9 @@ interface Props {
   varKey: string;
   /** The value in the repo's `.env`; `undefined` if the var isn't in `.env`. */
   envValue: string | undefined;
+  /** Key declared by `.env.example`/`.env.sample` but absent from `.env` —
+   *  the project wants it, no value is set. */
+  declaredOnly?: boolean;
   /** The override value (from the keychain) when `cfg.source === "override"`. */
   overrideValue: string | undefined;
   cfg: EnvVarCfg;
@@ -30,6 +33,7 @@ interface Props {
 export function EnvVarRow({
   varKey,
   envValue,
+  declaredOnly,
   overrideValue,
   cfg,
   onToggleShare,
@@ -66,6 +70,10 @@ export function EnvVarRow({
       <>
         <span className="dot" /> Overridden · differs from <code>.env</code>
       </>
+    ) : declaredOnly ? (
+      <>
+        <span className="dot" /> Overridden · declared in <code>.env.example</code>
+      </>
     ) : (
       <>
         <span className="dot" /> Added · not in <code>.env</code>
@@ -74,6 +82,10 @@ export function EnvVarRow({
   ) : inEnv ? (
     <>
       from <code>.env</code>
+    </>
+  ) : declaredOnly ? (
+    <>
+      declared in <code>.env.example</code> · not set
     </>
   ) : (
     <>
@@ -96,7 +108,10 @@ export function EnvVarRow({
               <Icon name="refresh" size={12} />
             </IconButton>
           )}
-          {!inEnv && !busy && (
+          {/* A declared-only row with no override has nothing to remove — it
+              re-derives from the example file. Once overridden, remove clears
+              the override and the row falls back to "declared · not set". */}
+          {!inEnv && (!declaredOnly || isOverride) && !busy && (
             <IconButton
               size="sm"
               tip="Remove variable"

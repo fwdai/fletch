@@ -1429,6 +1429,7 @@ async fn resume_subrun_merge(
             };
             let env = StepEnv {
                 repo,
+                project_id: &run.project_id,
                 run_repo,
                 blackboard,
                 eff,
@@ -1524,6 +1525,7 @@ fn build_orch_child_ctx(
         eff: eff.clone(),
         run_id: run_id.to_string(),
         run_task: run.task.clone(),
+        project_id: run.project_id.clone(),
         step,
         agent_spec,
         fork_base: fork_base.to_string(),
@@ -1580,6 +1582,12 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
         c.test_override.clone(),
         c.setup_override.clone(),
         step_eff.tests_timeout_secs.max(1) as u64,
+        crate::workflow::tests_gate::RunEnvSource {
+            db: c.db.clone(),
+            project_id: c.project_id.clone(),
+            repo_path: c.repo.clone(),
+            run_id: c.run_id.clone(),
+        },
     ) {
         Ok(r) => r,
         Err(e) => {

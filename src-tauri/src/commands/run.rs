@@ -74,7 +74,7 @@ pub async fn run_verification(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<crate::verify::VerificationReport> {
-    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
+    let (repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
     // Serialize against the turn-end verification (`trigger_turn_end_verification`)
     // and any other in-flight run for this agent. Both drive the same install /
     // test / lint commands in the agent's checkout, so two at once race on the
@@ -116,7 +116,17 @@ pub async fn run_verification(
         setting("run.lint"),
         VERIFY_TIMEOUT_SECS,
     )?;
-    let report = verifier.verify(&checkout).await;
+    // The project's shared run env — the verifier runs the same trust class of
+    // sandboxed process as the Run panel, so it gets the same membrane. Empty
+    // project (or nothing shared) → no vars, and the checks run as before.
+    let env = if project_id.is_empty() {
+        Vec::new()
+    } else {
+        supervisor
+            .workspace
+            .run_env(&project_id, &repo.repo_path, &agent_id, &checkout)
+    };
+    let report = verifier.verify(&checkout, &env).await;
     tracing::info!(
         agent_id = %agent_id,
         passed = report.passed(),
@@ -148,13 +158,16 @@ pub fn project_run_config(
     supervisor.project_run_config(&repo_path)
 }
 
-/// Discover the `KEY=value` pairs in a project's `.env` (in the *source* repo,
-/// where gitignored env files live), for the Run & Environment settings list.
-/// Missing/unreadable `.env` → empty. Values are returned so the UI can show
-/// them masked and flag overrides that differ; it never writes them anywhere.
+/// Discover a project's env keys (in the *source* repo, where gitignored env
+/// files live), for the Run & Environment settings list: the `KEY=value` pairs
+/// in `.env`, plus the keys only *declared* by `.env.example`/`.env.sample` —
+/// bare names, because example values are placeholders and must never be
+/// treated as real values. Missing/unreadable files → empty. `.env` values are
+/// returned so the UI can show them masked and flag overrides that differ; it
+/// never writes them anywhere.
 #[tauri::command]
-pub fn read_env_file_keys(repo_path: String) -> Result<Vec<crate::run_env::EnvEntry>> {
-    Ok(crate::run_env::read_env_file(&expand_tilde(&repo_path)))
+pub fn read_env_file_keys(repo_path: String) -> Result<crate::run_env::EnvFileKeys> {
+    Ok(crate::run_env::discover_env_keys(&expand_tilde(&repo_path)))
 }
 
 /// Read a project variable's override value (keychain-backed) so the settings

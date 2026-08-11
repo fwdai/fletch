@@ -88,6 +88,9 @@ pub(crate) struct ChildCtx {
     pub(crate) eff: EffectiveBudgets,
     pub(crate) run_id: String,
     pub(crate) run_task: String,
+    /// The run's project — scopes the shared run-env lookup a `tests`-gated
+    /// child resolves at gate time (see `tests_gate::RunEnvSource`).
+    pub(crate) project_id: String,
     pub(crate) step: Step,
     pub(crate) agent_spec: AgentSpec,
     pub(crate) fork_base: String,
@@ -141,6 +144,9 @@ pub(crate) enum ChildStatus {
 /// loop executor share a single [`execute_step`] without a dozen positional args.
 pub(crate) struct StepEnv<'a> {
     pub(crate) repo: &'a Path,
+    /// The run's project — scopes the shared run-env lookup for the tests gate
+    /// and the approval-gate evidence checks (see `run_env`).
+    pub(crate) project_id: &'a str,
     pub(crate) run_repo: &'a Path,
     pub(crate) blackboard: &'a Path,
     pub(crate) eff: &'a EffectiveBudgets,

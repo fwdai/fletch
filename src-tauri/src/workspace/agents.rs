@@ -562,6 +562,43 @@ impl WorkspaceManager {
         )
     }
 
+    /// Key-name facts for the per-agent env note
+    /// ([`crate::instructions::env_awareness_note`]): `(shared, unshared)`,
+    /// where `shared` are the keys the user shares into app-run processes and
+    /// `unshared` are the keys discovered in the repo's env files (`.env` plus
+    /// `.env.example`/`.env.sample`) but not shared. Names only — values never
+    /// leave `run_env`'s resolution paths. Never errors: missing files or
+    /// config simply yield fewer (or no) names.
+    pub fn run_env_key_names(
+        &self,
+        project_id: &str,
+        repo_path: &std::path::Path,
+    ) -> (Vec<String>, Vec<String>) {
+        let doc = {
+            let conn = self.db.lock();
+            crate::run_env::load_doc(&conn, project_id)
+        };
+        let shared: Vec<String> = doc
+            .vars
+            .iter()
+            .filter(|v| v.shared)
+            .map(|v| v.key.clone())
+            .collect();
+        let discovered = crate::run_env::discover_env_keys(repo_path);
+        let mut unshared: Vec<String> = Vec::new();
+        for key in discovered
+            .env
+            .iter()
+            .map(|e| e.key.as_str())
+            .chain(discovered.declared.iter().map(String::as_str))
+        {
+            if !shared.iter().any(|s| s == key) && !unshared.iter().any(|s| s == key) {
+                unshared.push(key.to_string());
+            }
+        }
+        (shared, unshared)
+    }
+
     /// Resolve the project_id for a repo path (creating the project/repo
     /// record if it doesn't exist yet — idempotent). The sidebar keys its
     /// project groups by repo path, so the Project Settings surface uses
