@@ -350,13 +350,9 @@ fn compact(
         }
         o.insert("held".into(), Value::Object(h));
     }
-    // Why a rejected row was ruled off, on the row itself: `last_event` also
-    // says it right after the ruling, but a later note displaces it there, and
-    // the instructions tell the PM to *read the reason before proposing* — a
-    // fact it must be able to read cannot live only in a queue position.
-    if let Some(reason) = &item.close_reason {
-        o.insert("close_reason".into(), json!(reason));
-    }
+    // No `close_reason` here: a rejected row never rides this projection —
+    // `list_op` filters it out of `items`, and [`compact_rejected`] is the
+    // decision log's own shape, which is where the reason lives.
     // Quoted only while the item can still be ruled: an ask whose item has
     // advanced past the gate has no card to rule it from, and quoting it
     // forever would read as "still waiting on the user" when nothing is.
@@ -2349,28 +2345,6 @@ mod tests {
         assert!(held.is_none());
         let rows = store::list(&db.lock(), "p1").unwrap();
         assert!(!rows[0].is_held(), "nothing written");
-    }
-
-    /// The listing carries a rejected row's `close_reason` on the row itself.
-    /// `last_event` says it too — but only until the next note displaces it,
-    /// and the instructions tell the PM to read the reason before proposing.
-    #[test]
-    fn list_carries_a_rejected_rows_reason() {
-        let db = test_db("p1");
-        assert!(propose(&db, one_item("target")).ok); // MCA-100
-        {
-            let conn = db.lock();
-            let item = &store::list(&conn, "p1").unwrap()[0];
-            store::reject(&conn, &item.id, "superseded by the settings redesign").unwrap();
-        }
-
-        let resp = list(&db, Value::Null);
-        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
-        assert_eq!(rows[0]["status"], "rejected");
-        assert_eq!(
-            rows[0]["close_reason"],
-            "superseded by the settings redesign"
-        );
     }
 
     /// Holding an already-held scope replaces the reason, at both scopes. The
