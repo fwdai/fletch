@@ -2989,6 +2989,33 @@ mod tests {
         assert!(store::get(&conn, &a.id).unwrap().unwrap().deps.is_empty());
     }
 
+    /// The race the write-time refusal can't cover: the PM asks for a dep, the
+    /// user rejects that dep, and only then rules on the stale ask. The ruling
+    /// must land on the Stale path — refused, consumed, nothing written — with
+    /// the rejection named, not apply an edge the drainer would instantly
+    /// wedge on.
+    #[test]
+    fn accepting_a_dep_patch_whose_dependency_was_rejected_refuses() {
+        let conn = test_conn();
+        let a = with_status(&conn, ItemStatus::Open);
+        let dep = with_status(&conn, ItemStatus::Open);
+        let patch = ProposalPatch {
+            deps: Some(vec![dep.code.clone()]),
+            ..Default::default()
+        };
+        let p = proposals::upsert(&conn, "p1", &a.id, ProposalKind::Update, Some(&patch), None)
+            .unwrap();
+        reject_item(&conn, &dep.id, "parked").unwrap();
+
+        let Ruling::Stale { message } = accept_proposal(&conn, &p.id).unwrap() else {
+            panic!("expected Stale");
+        };
+        assert!(message.contains(&dep.code), "{message}");
+        assert!(message.contains("was rejected"), "{message}");
+        assert!(proposals::get(&conn, &p.id).unwrap().is_none());
+        assert!(store::get(&conn, &a.id).unwrap().unwrap().deps.is_empty());
+    }
+
     /// A dep patch that is still valid applies as any other patch does — the
     /// re-check is a gate, not a second refusal path for good asks.
     #[test]
