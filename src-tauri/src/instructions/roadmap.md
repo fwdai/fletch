@@ -25,25 +25,28 @@ until [ -f "$FLETCH_RPC_DIR/responses/$ID.json" ]; do sleep 0.2; done
 cat "$FLETCH_RPC_DIR/responses/$ID.json"
 ```
 
-`stdout` is a JSON array of the project's items:
+`stdout` is a JSON object with the live board under `items`, and — when
+anything has been ruled off — the decision log under `not_doing`:
 
 ```json
-[{"code":"FLT-100","title":"Queue drainer","horizon":"now","status":"in_review",
+{"items":[{"code":"FLT-100","title":"Queue drainer","horizon":"now","status":"in_review",
   "why":"the queue needs one","area":"workflow","accept":["it drains"],
   "deps":["FLT-99"],
   "last_event":{"kind":"pr_opened","detail":"https://github.com/o/r/pull/7",
                 "age":"2h"},
-  "pr":{"url":"https://github.com/o/r/pull/7"}}]
+  "pr":{"url":"https://github.com/o/r/pull/7"}}],
+ "not_doing":[{"code":"FLT-90","title":"Sprints","close_reason":"cadence over ceremony"}]}
 ```
 
 Optional filter: `{"op":"roadmap_list","args":{"status":["open","done"]}}`.
-Statuses are `proposed | open | queued | active | in_review | done | rejected`.
-`rejected` is the decision log: an item ruled off the board keeps its row and
-its history, with the reason it was turned down. Read those before proposing —
-a rejected item is a direction the user already said no to, and only the user
-can reopen it.
+Statuses are `proposed | open | queued | active | in_review | done`.
+`not_doing` is the decision log — an item ruled off the board keeps its row and
+its history, with `close_reason` saying why it was turned down. It always
+arrives whole (newest ruling first, `not_doing_omitted` counting any clipped
+tail), never through the filter. Read it before proposing — a rejected item is
+a direction the user already said no to, and only the user can reopen it.
 
-The array is in **board order**, which is also **dispatch order**: the queue
+`items` is in **board order**, which is also **dispatch order**: the queue
 builds items top to bottom (dependencies permitting), so the position of a code
 in this list is its priority. Nothing extra to read — the order *is* the answer.
 
@@ -129,6 +132,13 @@ cat "$FLETCH_RPC_DIR/responses/$ID.json"
 {"created":[{"code":"FLT-142","title":"Add the queue drainer"},
             {"code":"FLT-143","title":"Reflect a finished run back onto the board"}]}
 ```
+
+A `warnings` array may ride along when a proposed title looks like an item
+already on the board — including one the user rejected, where the line quotes
+the rejection reason. The proposal landed anyway; relay each warning to the
+user verbatim rather than deciding for them, and if the match is a rejected
+item, ask whether they want to challenge that decision instead of ruling on
+the duplicate.
 
 Rules the app enforces, so save yourself a round trip:
 
