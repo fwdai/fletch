@@ -30,11 +30,12 @@ export function NotDoing({
 }) {
   const [open, setOpen] = useState(false);
   // A reveal can name a rejected row (revealTarget calls every non-shipped row
-  // "board"), and a closed section would swallow the jump. Latched during
-  // render, not in an effect: the row's ref must be mounted before the board's
-  // scroll effect goes looking for it, and an effect here would run too late.
+  // "board"), and a closed section would swallow the jump. Derived, not
+  // latched: the rows must be mounted in the same render the board's scroll
+  // effect goes looking for them, so the focus forces `shown` directly — no
+  // effect (too late) and no render-phase setState.
   const focused = focusCode != null && items.some((i) => i.code === focusCode);
-  if (focused && !open) setOpen(true);
+  const shown = open || focused;
 
   if (items.length === 0) return null;
   return (
@@ -42,15 +43,15 @@ export function NotDoing({
       <button
         type="button"
         className="rm-nd-h flex-center text-xs"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
+        onClick={() => setOpen(!shown)}
+        aria-expanded={shown}
       >
         <Icon name="archive" size={11} />
         <span className="rm-nd-l mono">Not doing</span>
         <span className="rm-nd-c mono">{items.length}</span>
         <Icon name="chevD" size={9} className="rm-nd-chev" />
       </button>
-      {open && (
+      {shown && (
         <ul className="rm-nd-list">
           {items.map((i) => (
             <li

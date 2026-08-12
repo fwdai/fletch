@@ -268,7 +268,10 @@ pub fn reject(conn: &Connection, id: &str, reason: &str) -> rusqlite::Result<Opt
 
 /// Put a rejected item back on the board: `rejected → open`, `close_reason`
 /// cleared — an item back in play owes nobody an epitaph; the trail keeps the
-/// reason it just shed.
+/// reason it just shed. The hold trio is cleared in the same statement:
+/// [`reject`] enforces "a rejection supersedes a pause" going in, and this
+/// enforces it coming out, so a hand-edited or legacy held-while-rejected row
+/// can't return to the board secretly paused.
 ///
 /// The `status = rejected` precondition rides the `UPDATE`'s own `WHERE`, like
 /// [`update_where_status`], so the check and the write are one statement:
@@ -277,7 +280,9 @@ pub fn reject(conn: &Connection, id: &str, reason: &str) -> rusqlite::Result<Opt
 pub fn reopen(conn: &Connection, id: &str) -> rusqlite::Result<Option<RoadmapItem>> {
     let changed = conn.execute(
         "UPDATE roadmap_items
-            SET status = ?1, close_reason = NULL, updated_at = ?2
+            SET status = ?1, close_reason = NULL,
+                hold_reason = NULL, held_by = NULL, held_at = NULL,
+                updated_at = ?2
           WHERE id = ?3 AND status = ?4",
         params![
             ItemStatus::Open.as_str(),

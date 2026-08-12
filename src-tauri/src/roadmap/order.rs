@@ -128,9 +128,12 @@ pub fn validate_order(codes: &[String], items: &[RoadmapItem]) -> Result<Vec<Str
         ));
     }
     if !closed.is_empty() {
+        // Three ways out of the order, one refusal: dispatched work's place is
+        // settled, shipped work has left the board, and a rejected item was
+        // ruled off it — none of them has a queue position to argue about.
         return Err(format!(
-            "{} — an item being built or reviewed has already been dispatched, so its place in \
-             the order is settled; list only the proposed, open, and queued ones",
+            "{} — dispatched, shipped, or rejected items have no place in the queue \
+             order; list only the proposed, open, and queued ones",
             closed.join(", ")
         ));
     }
@@ -266,6 +269,7 @@ mod tests {
         let c = item(&conn, ItemStatus::Proposed); // FLE-102
         let building = item(&conn, ItemStatus::Active); // FLE-103
         let shipped = item(&conn, ItemStatus::Done); // FLE-104
+        let ruled_off = item(&conn, ItemStatus::Rejected); // FLE-105
         let items = crate::roadmap::store::list(&conn, "p1").unwrap();
 
         // The whole orderable set, in an order of the PM's choosing: resolved to
@@ -293,6 +297,16 @@ mod tests {
             (
                 codes(&[&a.code, &b.code, &c.code, &shipped.code]),
                 "FLE-104 is done",
+            ),
+            // A ruled-off item has no queue position to argue about — and the
+            // refusal must say "rejected", not claim it was dispatched.
+            (
+                codes(&[&a.code, &b.code, &c.code, &ruled_off.code]),
+                "FLE-105 is rejected",
+            ),
+            (
+                codes(&[&a.code, &b.code, &c.code, &ruled_off.code]),
+                "rejected items have no place",
             ),
             // The same code twice — an order that names a position twice is not
             // an order.
