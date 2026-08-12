@@ -18,8 +18,18 @@ export type ItemSource = "user" | "pm" | "linear" | "github";
 
 /** Item lifecycle. `proposed` is a PM suggestion the user hasn't accepted yet
  *  (a ghost row); `active` means an agent is on it right now; `done` items leave
- *  the board and become the header's "shipped" count. */
-export type ItemStatus = "proposed" | "open" | "queued" | "active" | "in_review" | "done";
+ *  the board and become the header's "shipped" count. `rejected` items leave the
+ *  horizons and live in the board's collapsed "Not doing" section — ruled off
+ *  rather than deleted, so the decision and its reason survive, and the item can
+ *  be reopened. */
+export type ItemStatus =
+  | "proposed"
+  | "open"
+  | "queued"
+  | "active"
+  | "in_review"
+  | "done"
+  | "rejected";
 
 /** One `roadmap_items` row. */
 export interface RoadmapItem {
@@ -61,6 +71,11 @@ export interface RoadmapItem {
    *  exactly when `hold_reason` is. */
   held_by: RoadmapEventActor | null;
   held_at: number | null;
+  /** Why this item was ruled off the board, or null while it hasn't been.
+   *  Non-null exactly when `status` is `rejected` — the reason is required
+   *  (`roadmapRejectItem` refuses a blank one), because a "Not doing" row with
+   *  no why is a decision nobody can revisit. Cleared by a reopen. */
+  close_reason: string | null;
   /** The tracker issue this row was routed from, or null for a row nobody
    *  imported (migration 0036).
    *
@@ -176,6 +191,12 @@ export type RoadmapEventActor = "user" | "pm" | "drainer" | "sweep";
  *  `held`/`released` name no status move at all — a hold stops autonomous
  *  progress and leaves the row where it is — so for those two the `detail` is
  *  the whole record: the reason it was held, and the reason a release lifts.
+ *
+ *  `rejected`/`reopened` are the decision log's pair: ruling an item off the
+ *  board (the detail is the required `close_reason`) and putting it back
+ *  (`rejected → open`). Unlike a discard, a rejection keeps the row and its
+ *  trail — which is the point.
+ *
  *  Every kind must have a label in `EVENT_LABEL` (itemHistory.ts), which is what
  *  keeps a new kind from rendering as "undefined" on the card. */
 export type RoadmapEventKind =
@@ -195,6 +216,8 @@ export type RoadmapEventKind =
   | "blocked"
   | "held"
   | "released"
+  | "rejected"
+  | "reopened"
   | "note";
 
 /** One durable history row (`roadmap_item_events`, mirroring
@@ -303,7 +326,11 @@ export interface RoadmapItemUpdate {
  *  Neither is `agent_id`: the hand-off and its undo are typed commands
  *  (`roadmapHandOffItem` / `roadmapReclaimItem`) because each writes a history
  *  note naming the agent, where a patch would record a bare "Edited". The
- *  backend ignores the key even if something sends it. */
+ *  backend ignores the key even if something sends it.
+ *
+ *  Rejection and its undo are typed commands too (`roadmapRejectItem` /
+ *  `roadmapReopenItem`), for the same reason: a rejection carries a required
+ *  reason the trail must keep, where a bare status patch would record none. */
 export interface RoadmapItemPatch {
   title?: string;
   why?: string;

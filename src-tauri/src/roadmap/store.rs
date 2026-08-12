@@ -242,6 +242,56 @@ pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     Ok(n > 0)
 }
 
+/// Rule an item off the board: `status = rejected`, `close_reason` = why, and
+/// every claim on the row's future cleared in the same statement — the hold
+/// trio (a rejection supersedes a pause; the trail keeps the hold's history)
+/// and the agent stamp (nobody builds a rejected item). `None` when the row is
+/// gone.
+///
+/// Deliberately its own SQL rather than [`ItemPatch`] fields, for the same
+/// reason as [`super::holds::hold_item`]: `close_reason` is absent from the
+/// patch surface, so no generic edit can rule an item off the board — only the
+/// typed reject command and the discard ruling can express this write. The
+/// status gate (which statuses may be rejected at all) is the caller's, checked
+/// under the same connection lock this runs in.
+pub fn reject(conn: &Connection, id: &str, reason: &str) -> rusqlite::Result<Option<RoadmapItem>> {
+    conn.execute(
+        "UPDATE roadmap_items
+            SET status = ?1, close_reason = ?2,
+                hold_reason = NULL, held_by = NULL, held_at = NULL,
+                agent_id = NULL, updated_at = ?3
+          WHERE id = ?4",
+        params![ItemStatus::Rejected.as_str(), reason, now_millis(), id],
+    )?;
+    get(conn, id)
+}
+
+/// Put a rejected item back on the board: `rejected → open`, `close_reason`
+/// cleared — an item back in play owes nobody an epitaph; the trail keeps the
+/// reason it just shed.
+///
+/// The `status = rejected` precondition rides the `UPDATE`'s own `WHERE`, like
+/// [`update_where_status`], so the check and the write are one statement:
+/// `None` means the row moved on (or was never rejected, or is gone), and the
+/// caller treats that as a miss rather than reopening something else.
+pub fn reopen(conn: &Connection, id: &str) -> rusqlite::Result<Option<RoadmapItem>> {
+    let changed = conn.execute(
+        "UPDATE roadmap_items
+            SET status = ?1, close_reason = NULL, updated_at = ?2
+          WHERE id = ?3 AND status = ?4",
+        params![
+            ItemStatus::Open.as_str(),
+            now_millis(),
+            id,
+            ItemStatus::Rejected.as_str()
+        ],
+    )?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    get(conn, id)
+}
+
 /// `project_settings` key holding the tracker issues the user has *turned down* —
 /// a JSON array of URLs.
 ///

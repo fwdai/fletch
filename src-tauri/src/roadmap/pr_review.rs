@@ -157,6 +157,7 @@ mod tests {
             hold_reason: None,
             held_by: None,
             held_at: None,
+            close_reason: None,
             issue_url: None,
             updated_at: 1,
         }

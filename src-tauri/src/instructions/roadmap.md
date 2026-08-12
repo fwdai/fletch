@@ -37,7 +37,11 @@ cat "$FLETCH_RPC_DIR/responses/$ID.json"
 ```
 
 Optional filter: `{"op":"roadmap_list","args":{"status":["open","done"]}}`.
-Statuses are `proposed | open | queued | active | in_review | done`.
+Statuses are `proposed | open | queued | active | in_review | done | rejected`.
+`rejected` is the decision log: an item ruled off the board keeps its row and
+its history, with the reason it was turned down. Read those before proposing —
+a rejected item is a direction the user already said no to, and only the user
+can reopen it.
 
 The array is in **board order**, which is also **dispatch order**: the queue
 builds items top to bottom (dependencies permitting), so the position of a code
@@ -48,7 +52,8 @@ Empty fields are omitted rather than sent as null. Per item:
 - `last_event` — the newest thing that happened to this item, when anything has:
   `kind` (`created | proposed | accepted | edited | queued |
   unqueued | dispatched | pr_opened | run_failed | run_canceled | run_deleted |
-  shipped | pr_closed | blocked | held | released | note`), the `detail` that kind carries when it
+  shipped | pr_closed | blocked | held | released | rejected | reopened |
+  note`), the `detail` that kind carries when it
   carries one (a failure reason, a PR url, a hold's reason, the text of a note),
   and `age` — how long ago, coarse
   (`"4m"`, `"2h"`, `"3d"`; absent means within the last minute). This is how you
@@ -58,8 +63,10 @@ Empty fields are omitted rather than sent as null. Per item:
   not a failure — three cancelled runs are not a failing pattern — and `pr_closed`
   means a pull request was closed unmerged and the item is back on the board.
   `blocked` is the one that will not resolve on its own: a dependency loop, a
-  missing workflow, a project with no repo, a pull request that stopped
-  answering. It is waiting on a person.
+  missing workflow, a project with no repo, a dependency that was rejected, a
+  pull request that stopped answering. It is waiting on a person. `rejected`
+  carries the reason the item was ruled off the board — a decision, already
+  made; `reopened` says the user reversed it and the item is back at `open`.
 - `pr` — `{"url"}` for an item whose run opened a pull request. `status` already
   says whether that PR is still open (`in_review`) or landed (`done`). You cannot
   read the diff from here; the URL is what you cite when you tell the user to
@@ -176,8 +183,10 @@ ask is dropped and the user is told which loop it would have made — read a fre
 ### `roadmap_propose_discard` — propose retiring an item
 
 When a ticket is obsolete — superseded, out of scope, wrong from the start —
-propose discarding it. `reason` is required: you are asking to remove work
-someone agreed to, so say why.
+propose discarding it. `reason` is required, and it outlives the ruling: an
+accepted discard does not delete the row, it marks the item `rejected` with
+your reason as the record of why. You are asking to rule out work someone
+agreed to, so write the sentence the decision log should keep.
 
 ```sh
 ID=$(uuidgen)
@@ -193,7 +202,9 @@ Rules for both, enforced by the app:
 
 - Only items that are `proposed`, `open`, or `queued` can be reshaped. An item
   that is `active` or `in_review` is being built or judged — the refusal names
-  its status; wait for it to settle back onto the board.
+  its status; wait for it to settle back onto the board. A `rejected` item was
+  ruled off the board: don't lobby it by proposal — if you think the decision
+  was wrong, say so in the conversation, and the user can reopen it.
 - One pending ask per item. Proposing again **replaces** your outstanding ask
   for that item, so send the whole change you want, not increments.
 - The ask is not the deed: the board applies nothing until the user accepts,

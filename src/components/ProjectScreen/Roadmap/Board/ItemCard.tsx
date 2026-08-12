@@ -20,6 +20,7 @@ import type { BoardItem, ItemSource, ItemStatus } from "../types";
 import { reviewGate } from "../useItemReviews";
 import { DecisionBar } from "./DecisionBar";
 import { HoldAction, HoldChip } from "./HoldControl";
+import { ReasonAction } from "./ReasonAction";
 import type { CardDnd } from "./useBoardDnd";
 
 /** Where the item came from, as a one-glyph tag. */
@@ -50,6 +51,14 @@ const STATE: Partial<Record<ItemStatus, { label: string; cls: string; tip: strin
     // done" on the card is the manual fallback for when the watch can't see
     // the merge (revoked token, deleted PR).
     tip: "Its run opened a pull request — merge it and this ships on its own",
+  },
+  // Rejected rows normally render in the board's "Not doing" section rather
+  // than as cards — this entry is what keeps a card that does hold one (a
+  // future surface, a race during the move) from drawing an unlabeled row.
+  rejected: {
+    label: "Not doing",
+    cls: "x",
+    tip: "Ruled off the board — its reason is kept in the Not doing section",
   },
 };
 
@@ -112,6 +121,11 @@ interface Props {
    *  for inline. Absent for a ghost (nothing is going to build a row nobody has
    *  accepted — rule on it first) and on a read-only board. */
   onHold?: (reason: string) => void;
+  /** Rule the item off the board, with the required reason asked for inline —
+   *  it moves to the "Not doing" section instead of being deleted. Only for the
+   *  statuses the backend allows (`proposed`/`open`/`queued`): anything
+   *  dispatched is the run's to finish first. */
+  onReject?: (reason: string) => void;
   /** Lift this item's hold. Only on a held row, and never available to the PM —
    *  releasing is the user's alone. */
   onRelease?: () => void;
@@ -180,6 +194,7 @@ export function ItemCard({
   onMergePr,
   onFixReview,
   onHold,
+  onReject,
   onRelease,
   onOpenRun,
   run,
@@ -531,6 +546,21 @@ export function ItemCard({
                 <Button variant="primary" size="sm" onClick={onMergePr}>
                   <Icon name="merge" size={11} /> Merge
                 </Button>
+              )}
+              {/* The way off the board that keeps the record: the item lands in
+                  "Not doing" with the reason, instead of being deleted without
+                  one. The ellipsis is the promise that a click only opens the
+                  question — same inline ask as Hold's, because both commands
+                  refuse a blank reason. */}
+              {onReject && (
+                <ReasonAction
+                  icon="archive"
+                  label="Reject…"
+                  commitLabel="Reject"
+                  tip="Take this off the board — it moves to Not doing with your reason"
+                  placeholder="Why isn't this being done?"
+                  onCommit={onReject}
+                />
               )}
               {/* The user's own brake, next to the button it stops. A secondary
                   action: most rows never need it, and the one that does needs a

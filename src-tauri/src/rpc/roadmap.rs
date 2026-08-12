@@ -657,7 +657,9 @@ fn propose_op(
 
 /// Find the item an ask targets and check it may still be reshaped. Anything
 /// from `active` on belongs to its run: a proposal against it would be ruled
-/// on against work that no longer matches the diff.
+/// on against work that no longer matches the diff. A `rejected` item is out
+/// for the opposite reason — the user ruled it off the board, and an ask
+/// against it would be lobbying against a decision already made.
 fn proposable<'a>(items: &'a [RoadmapItem], code: &str) -> Result<&'a RoadmapItem, String> {
     let item = items.iter().find(|i| i.code == code).ok_or_else(|| {
         format!("no item {code:?} on this board — `roadmap_list` shows what exists")
@@ -665,9 +667,16 @@ fn proposable<'a>(items: &'a [RoadmapItem], code: &str) -> Result<&'a RoadmapIte
     if rulable(item.status) {
         Ok(item)
     } else {
+        // Name the actual objection: telling the PM a rejected item is "being
+        // built" would invite it to wait for a run that is never coming.
+        let why = match item.status {
+            ItemStatus::Done => "shipped work can't be reshaped by proposal",
+            ItemStatus::Rejected => "the user ruled it off the board; only the user can reopen it",
+            _ => "an item being built or reviewed can't be reshaped by proposal",
+        };
         Err(format!(
-            "{} is {} — an item being built or reviewed can't be reshaped by proposal; \
-             use the codes `roadmap_list` shows as proposed, open, or queued",
+            "{} is {} — {why}; use the codes `roadmap_list` shows as proposed, open, \
+             or queued",
             item.code,
             item.status.as_str()
         ))

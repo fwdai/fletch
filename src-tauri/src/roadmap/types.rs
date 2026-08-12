@@ -27,6 +27,13 @@ crate::db_enum! {
     /// Item lifecycle: `proposed → open → queued → active → in_review → done`.
     /// `proposed` is a PM suggestion the user hasn't accepted (a ghost row);
     /// `done` items leave the board and become the header's "shipped" count.
+    ///
+    /// `rejected` sits off that line: an item ruled off the board — the decision
+    /// log's status. Reached only from the pre-work statuses (a shipped item
+    /// can't be un-decided, and an `active`/`in_review` one has an agent on it),
+    /// and left only by reopening, which lands the item back at `open`. The row
+    /// and its trail survive the ruling; that survival is the point (see
+    /// migration 0037).
     ItemStatus {
         Proposed => "proposed",
         Open     => "open",
@@ -34,6 +41,7 @@ crate::db_enum! {
         Active   => "active",
         InReview => "in_review",
         Done     => "done",
+        Rejected => "rejected",
     }
 }
 
@@ -42,7 +50,9 @@ impl ItemStatus {
     ///
     /// Anything from `active` on is being built or judged: its shape belongs to
     /// the run now, and reshaping it mid-flight would make the PR answer a brief
-    /// nobody wrote. The one predicate both gates read — the PM-side refusal
+    /// nobody wrote. A `rejected` item is out for the opposite reason — it has
+    /// been ruled off the board, and nothing proposes onto a corpse; reopening
+    /// it is the user's move, not an ask. The one predicate both gates read — the PM-side refusal
     /// (`rpc::roadmap::proposable`, which won't park an ask it knows the user
     /// can't rule) and the ruling-side one (`roadmap::proposal_gate`, which
     /// re-checks at click time because the board moves in between). They keep
@@ -108,6 +118,12 @@ pub struct RoadmapItem {
     /// exactly when `hold_reason` is.
     pub held_by: Option<super::events::EventActor>,
     pub held_at: Option<i64>,
+    /// Why this item was ruled off the board, `Some` exactly when `status` is
+    /// `rejected` (see migration 0037). Written only by the typed reject command
+    /// and the PM discard ruling — deliberately absent from [`ItemPatch`] and
+    /// [`NewItem`], so no generic edit can silently reject an item; reopening
+    /// clears it, and the durable trail keeps the reason it cleared.
+    pub close_reason: Option<String>,
     /// The tracker issue this row was routed from, or `None` for a row nobody
     /// imported (migration 0036). The issue funnel's dedup key: "is this issue
     /// already on that board?" is answered by matching this column, *not* by
@@ -128,7 +144,8 @@ pub struct RoadmapItem {
 /// queries can't disagree about what is available.
 pub(crate) const COLUMNS: &str = "id, project_id, code, title, why, horizon, status, \
      rank, area, source, accept_json, deps_json, agent_id, workflow_def_id, run_id, \
-     pr_url, pr_number, hold_reason, held_by, held_at, issue_url, created_at, updated_at";
+     pr_url, pr_number, hold_reason, held_by, held_at, close_reason, issue_url, \
+     created_at, updated_at";
 
 impl RoadmapItem {
     pub fn from_row(r: &Row) -> rusqlite::Result<Self> {
@@ -153,6 +170,7 @@ impl RoadmapItem {
             hold_reason: r.get("hold_reason")?,
             held_by: opt_enum_col(r, "held_by", super::events::EventActor::from_db)?,
             held_at: r.get("held_at")?,
+            close_reason: r.get("close_reason")?,
             issue_url: r.get("issue_url")?,
             created_at: r.get("created_at")?,
             updated_at: r.get("updated_at")?,
@@ -359,6 +377,24 @@ mod tests {
         );
         assert_eq!(p.run_id, None, "an absent key means 'leave alone'");
         assert_eq!(p.title, None);
+    }
+
+    /// The shared rulability set, pinned: asks land only on the three pre-work
+    /// statuses. `rejected` is excluded like `done` — an item ruled off the
+    /// board takes no proposals; reopening it is the user's move, not an ask.
+    #[test]
+    fn only_pre_work_statuses_are_rulable() {
+        for status in [ItemStatus::Proposed, ItemStatus::Open, ItemStatus::Queued] {
+            assert!(status.is_rulable(), "{status:?}");
+        }
+        for status in [
+            ItemStatus::Active,
+            ItemStatus::InReview,
+            ItemStatus::Done,
+            ItemStatus::Rejected,
+        ] {
+            assert!(!status.is_rulable(), "{status:?}");
+        }
     }
 
     /// `agent_id` is not patchable from the wire, however it is spelled. The

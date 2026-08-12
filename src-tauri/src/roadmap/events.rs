@@ -64,11 +64,15 @@ crate::db_enum! {
     /// perfectly alive). See [`super::drainer::release_kind`] for the mapping and
     /// .context/roadmap-pm-plan.md (review finding S1) for the argument.
     ///
-    /// No variant without a writer: `discarded` was declared and never written —
-    /// discarding an item deletes the row (its history cascades away with it)
-    /// and declining a PM proposal writes a `note` — so it is gone rather than
-    /// left as a kind the frontend must label and nothing produces. `abandoned`
-    /// went the same way when its one writer started naming its fact.
+    /// No variant without a writer: an early `discarded` kind was declared and
+    /// never written, so it was removed rather than left as a kind the frontend
+    /// must label and nothing produces; `abandoned` went the same way when its
+    /// one writer started naming its fact. `rejected` is not that kind reborn —
+    /// it has two writers from the day it exists (the typed reject command and
+    /// the PM discard ruling), because ruling an item off the board now keeps
+    /// the row as the decision log instead of deleting it. Only the *hard*
+    /// delete (`roadmap_delete_item`, typo cleanup) still removes rows, and it
+    /// still records nothing — its trail cascades away with the row.
     ///
     /// `held`/`released` are the odd pair: they name no status move at all (a
     /// hold stops autonomous progress and leaves the row exactly where it is —
@@ -95,6 +99,8 @@ crate::db_enum! {
         Blocked     => "blocked",
         Held        => "held",
         Released    => "released",
+        Rejected    => "rejected",
+        Reopened    => "reopened",
         Note        => "note",
     }
 }
@@ -568,7 +574,7 @@ mod tests {
     /// macro produces no iterator, and a missing entry here would quietly weaken
     /// them — so the count is asserted against both the frontend's union and the
     /// instructions' list.
-    const ALL_KINDS: [EventKind; 17] = [
+    const ALL_KINDS: [EventKind; 19] = [
         EventKind::Created,
         EventKind::Proposed,
         EventKind::Accepted,
@@ -585,6 +591,8 @@ mod tests {
         EventKind::Blocked,
         EventKind::Held,
         EventKind::Released,
+        EventKind::Rejected,
+        EventKind::Reopened,
         EventKind::Note,
     ];
 

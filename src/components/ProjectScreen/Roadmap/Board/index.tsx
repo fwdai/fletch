@@ -17,6 +17,7 @@ import { EmptyBoard } from "./EmptyBoard";
 import { HorizonGroup } from "./HorizonGroup";
 import { ItemCard } from "./ItemCard";
 import { ItemDialog } from "./ItemDialog";
+import { NotDoing } from "./NotDoing";
 import { OrderProposalBar } from "./OrderProposalBar";
 import { ProductBrief } from "./ProductBrief";
 import { ProjectHoldBanner } from "./ProjectHoldBanner";
@@ -48,6 +49,7 @@ export function Board({
     projectId,
     items,
     ghosts,
+    rejected,
     proposals,
     orderProposal,
     orderable,
@@ -91,6 +93,8 @@ export function Board({
     projectHold,
     holdItem,
     releaseItem,
+    rejectItem,
+    reopenItem,
     releaseProject,
     workflows,
   } = roadmap;
@@ -130,7 +134,9 @@ export function Board({
   /** The row the form is editing, if it isn't creating one. */
   const editRow = editing?.item ?? null;
   const scroll = useRef<HTMLDivElement>(null);
-  const rows = useRef<Record<string, HTMLDivElement | null>>({});
+  // HTMLElement, not HTMLDivElement: the Not-doing rows register here too (a
+  // reveal can land on a rejected item), and those are list items.
+  const rows = useRef<Record<string, HTMLElement | null>>({});
 
   // Bring a jumped-to row into the upper third of the viewport.
   useEffect(() => {
@@ -352,6 +358,9 @@ export function Board({
             onDecline={readOnly ? undefined : () => void rejectBrief()}
           />
         ) : blank ? (
+          // Deliberately still shown over a non-empty decision log below: a
+          // board whose every item was rejected has nothing to *work*, which is
+          // what this state claims.
           <EmptyBoard readOnly={readOnly} onAdd={() => openNew("next")} />
         ) : (
           HORIZONS.map((h) => {
@@ -511,6 +520,18 @@ export function Board({
                           ? (reason: string) => holdItem(row.id, reason)
                           : undefined
                       }
+                      onReject={
+                        // The three statuses the backend allows — the ones the
+                        // queue hasn't dispatched. A ghost gets it too (rejecting
+                        // a suggestion with a reason is the decision log's whole
+                        // point; Discard remains the traceless alternative),
+                        // which is why this reads `!readOnly` rather than
+                        // `writable`.
+                        !readOnly &&
+                        (it.status === "proposed" || it.status === "open" || it.status === "queued")
+                          ? (reason: string) => rejectItem(row.id, reason)
+                          : undefined
+                      }
                       onRelease={
                         writable && row.hold_reason ? () => releaseItem(row.id) : undefined
                       }
@@ -525,6 +546,21 @@ export function Board({
               </HorizonGroup>
             );
           })
+        )}
+        {/* The decision log, under the last group: rejected items keep their
+            row and their reason here instead of being deleted. Outside the
+            `blank` ternary on purpose — a board whose only rows are rejected
+            still owes the reader its record — and it renders nothing when the
+            log is empty. */}
+        {tab === "roadmap" && (
+          <NotDoing
+            items={rejected}
+            focusCode={focusCode}
+            onReopen={readOnly ? undefined : (id) => void reopenItem(id)}
+            rowRef={(code, el) => {
+              rows.current[code] = el;
+            }}
+          />
         )}
       </div>
 
