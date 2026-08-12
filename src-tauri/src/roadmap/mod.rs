@@ -349,6 +349,17 @@ fn update_and_record(
     expect_status: Option<ItemStatus>,
     queue: bool,
 ) -> Result<(Option<ItemUpdate>, Option<ItemEvent>), String> {
+    // `rejected` is not a status a generic edit may write: it would land with a
+    // NULL `close_reason` and a bare "Edited" line — a decision-log entry with
+    // no decision, the exact row migration 0037 promises cannot exist. The one
+    // door is the typed reject command, which demands the reason.
+    if patch.status == Some(ItemStatus::Rejected) {
+        return Err(
+            "an item is ruled off the board with roadmap_reject_item, which requires a \
+             reason — not a status edit"
+                .into(),
+        );
+    }
     if let Some(new_deps) = &patch.deps {
         // A row that is already gone falls through to the normal "no longer
         // exists" path below rather than being refused for its deps.
@@ -1081,6 +1092,17 @@ fn reject_item(
                 .into(),
         );
     }
+    // Same ceiling as a hold's reason, for the same reason: this line renders on
+    // a card and in the PM's listing. The ruling belongs here; the argument for
+    // it belongs in the conversation.
+    let length = reason.chars().count();
+    if length > holds::MAX_REASON {
+        return Err(format!(
+            "`reason` is {length} characters — keep it under {}. Say the ruling; the \
+             argument for it belongs in the conversation",
+            holds::MAX_REASON
+        ));
+    }
     let current = store::get(conn, item_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
@@ -1137,7 +1159,7 @@ pub async fn roadmap_reopen_item(
     app: AppHandle,
     db: tauri::State<'_, Db>,
 ) -> Result<RoadmapItem, String> {
-    let (item, event) = {
+    let (item, event, corrections) = {
         let conn = db.lock();
         reopen_item(&conn, &item_id)?
     };
@@ -1149,6 +1171,9 @@ pub async fn roadmap_reopen_item(
         emit_item_event(&app, event);
         // A dependant wedged on this item's rejection is merely waiting again.
         drainer::nudge();
+    }
+    for note in &corrections {
+        emit_item_event(&app, note);
     }
     Ok(item)
 }
@@ -1162,14 +1187,14 @@ pub async fn roadmap_reopen_item(
 fn reopen_item(
     conn: &Connection,
     item_id: &str,
-) -> Result<(RoadmapItem, Option<ItemEvent>), String> {
+) -> Result<(RoadmapItem, Option<ItemEvent>, Vec<ItemEvent>), String> {
     // Read before the flip: the detail the `reopened` event quotes is the
     // reason the write is about to clear.
     let current = store::get(conn, item_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
     let Some(item) = store::reopen(conn, item_id).map_err(|e| e.to_string())? else {
-        return Ok((current, None));
+        return Ok((current, None, Vec::new()));
     };
     // `close_reason` is `Some` exactly when the row is rejected, but a row
     // written before that invariant held costs a shorter line, not a panic.
@@ -1186,7 +1211,62 @@ fn reopen_item(
         Some(&detail),
     )
     .map_err(|e| e.to_string())?;
-    Ok((item, Some(event)))
+    let corrections = correct_wedged_dependants(conn, &item)?;
+    Ok((item, Some(event), corrections))
+}
+
+/// Un-say the rejection on the items that were told about it. The drainer
+/// writes a *durable* `blocked` line on a queued dependant when its dep is
+/// rejected ("…which was rejected — remove or replace that dependency"), and
+/// that line is what "Needs you" and the PM's `last_event` read — so once the
+/// dep is reopened, the trail is asserting an instruction that is no longer
+/// true, and nothing else would ever correct it (the drainer's re-derived note
+/// flips back, the durable trail doesn't). One `note` per wedged dependant
+/// displaces the stale line; it also un-jams [`drainer`]'s wedge dedup, which
+/// compares against the latest event — so a later re-rejection writes a fresh
+/// wedge instead of being swallowed as "already said".
+///
+/// Only dependants whose latest durable line IS that wedge get one: a dependant
+/// the drainer never got to (or one wedged on something else since) has no
+/// false line to correct, and a note there would be noise.
+fn correct_wedged_dependants(
+    conn: &Connection,
+    reopened: &RoadmapItem,
+) -> Result<Vec<ItemEvent>, String> {
+    let board = store::list(conn, &reopened.project_id).map_err(|e| e.to_string())?;
+    let mut notes = Vec::new();
+    for dep in board
+        .iter()
+        .filter(|i| i.status == ItemStatus::Queued && i.deps.contains(&reopened.code))
+    {
+        let latest = events::list_for_item(conn, &dep.id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .next();
+        let wedged = latest.is_some_and(|e| {
+            e.kind == EventKind::Blocked
+                && e.detail
+                    .as_deref()
+                    .is_some_and(|d| d.contains(&reopened.code) && d.contains("rejected"))
+        });
+        if !wedged {
+            continue;
+        }
+        let note = events::record(
+            conn,
+            &dep.id,
+            &dep.project_id,
+            EventActor::User,
+            EventKind::Note,
+            Some(&format!(
+                "{} was reopened — waiting on it normally again",
+                reopened.code
+            )),
+        )
+        .map_err(|e| e.to_string())?;
+        notes.push(note);
+    }
+    Ok(notes)
 }
 
 /// Delete an item. Silent when the row is already gone — the caller's intent
@@ -2387,7 +2467,7 @@ mod tests {
         let it = with_status(&conn, ItemStatus::Queued);
         reject_item(&conn, &it.id, "parked for the rewrite").unwrap();
 
-        let (item, event) = reopen_item(&conn, &it.id).unwrap();
+        let (item, event, _) = reopen_item(&conn, &it.id).unwrap();
         assert_eq!(item.status, ItemStatus::Open);
         assert_eq!(
             item.close_reason, None,
@@ -2404,7 +2484,7 @@ mod tests {
         assert_eq!(events::list_for_item(&conn, &it.id).unwrap().len(), 2);
 
         // A second click races the first and loses cleanly: no second stamp.
-        let (again, event) = reopen_item(&conn, &it.id).unwrap();
+        let (again, event, _) = reopen_item(&conn, &it.id).unwrap();
         assert_eq!(again.status, ItemStatus::Open);
         assert!(event.is_none());
     }
@@ -2418,12 +2498,138 @@ mod tests {
         let conn = test_conn();
         for status in [ItemStatus::Open, ItemStatus::Queued, ItemStatus::Done] {
             let it = with_status(&conn, status);
-            let (item, event) = reopen_item(&conn, &it.id).unwrap();
+            let (item, event, _) = reopen_item(&conn, &it.id).unwrap();
             assert_eq!(item.status, status, "the row comes back as it actually is");
             assert!(event.is_none());
             assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
         }
         assert!(reopen_item(&conn, "no-such-item").is_err());
+    }
+
+    /// Reopening un-says the rejection on the items that were told about it.
+    /// The drainer's rejected-dep wedge is a *durable* line — "Needs you" and
+    /// the PM's `last_event` read it — and nothing else corrects it once the
+    /// dep is back: the corrective note must displace it, which is also what
+    /// lets a later re-rejection write a fresh wedge (the drainer's dedup
+    /// compares against the latest event).
+    #[test]
+    fn reopening_corrects_the_wedge_on_queued_dependants() {
+        let conn = test_conn();
+        let dep = with_status(&conn, ItemStatus::Open);
+        // A queued dependant the drainer wedged, and two rows that must NOT be
+        // touched: a queued item with no dep on it, and an open dependant.
+        let wedged = with_status(&conn, ItemStatus::Queued);
+        store::update(
+            &conn,
+            &wedged.id,
+            &ItemPatch {
+                deps: Some(vec![dep.code.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let unrelated = with_status(&conn, ItemStatus::Queued);
+        let unwedged = with_status(&conn, ItemStatus::Open);
+        store::update(
+            &conn,
+            &unwedged.id,
+            &ItemPatch {
+                deps: Some(vec![dep.code.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        reject_item(&conn, &dep.id, "parked").unwrap();
+        // The wedge, exactly as the drainer records it.
+        events::record(
+            &conn,
+            &wedged.id,
+            "p1",
+            EventActor::Drainer,
+            EventKind::Blocked,
+            Some(&format!(
+                "Waiting on {}, which was rejected — remove or replace that dependency.",
+                dep.code
+            )),
+        )
+        .unwrap();
+
+        let (_, _, corrections) = reopen_item(&conn, &dep.id).unwrap();
+        assert_eq!(corrections.len(), 1, "only the wedged dependant is told");
+        assert_eq!(corrections[0].item_id, wedged.id);
+        assert_eq!(corrections[0].kind, EventKind::Note);
+
+        // The note is now the dependant's latest line — which is what clears
+        // "Needs you", fixes the PM's `last_event`, and un-jams the drainer's
+        // wedge dedup for a future re-rejection.
+        let latest = events::list_for_item(&conn, &wedged.id).unwrap();
+        assert_eq!(latest[0].kind, EventKind::Note);
+        assert_eq!(
+            latest[0].detail.as_deref(),
+            Some(format!("{} was reopened — waiting on it normally again", dep.code).as_str())
+        );
+        assert!(events::list_for_item(&conn, &unrelated.id)
+            .unwrap()
+            .is_empty());
+        assert!(events::list_for_item(&conn, &unwedged.id)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A legacy held-while-rejected row (hand-edited, or written before the
+    /// hold gate existed) comes back to the board unheld: [`store::reject`]
+    /// enforces "a rejection supersedes a pause" going in, [`store::reopen`]
+    /// enforces it coming out.
+    #[test]
+    fn reopening_clears_a_legacy_hold() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        reject_item(&conn, &it.id, "parked").unwrap();
+        conn.execute(
+            "UPDATE roadmap_items SET hold_reason = 'stale', held_by = 'pm', held_at = 1
+             WHERE id = ?1",
+            [&it.id],
+        )
+        .unwrap();
+
+        let (item, _, _) = reopen_item(&conn, &it.id).unwrap();
+        assert_eq!(item.hold_reason, None, "no secret pause survives a reopen");
+        assert_eq!(item.held_by, None);
+        assert_eq!(item.held_at, None);
+    }
+
+    /// `rejected` is unreachable by generic edit: it would land without a
+    /// reason and without a `rejected` line — a decision-log entry with no
+    /// decision. The typed command is the only door.
+    #[test]
+    fn a_generic_status_patch_cannot_reject() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let err = update_and_record(
+            &conn,
+            &it.id,
+            &status_patch(ItemStatus::Rejected),
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("roadmap_reject_item"), "{err}");
+        let row = store::get(&conn, &it.id).unwrap().unwrap();
+        assert_eq!(row.status, ItemStatus::Open, "nothing written");
+        assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+    }
+
+    /// The reason shares a hold's ceiling: it renders as one line on the card
+    /// and in the PM's listing, and past that it's the argument, not the
+    /// ruling. Counted in characters, like the hold's, so an em-dash costs one.
+    #[test]
+    fn an_oversize_reason_refuses_the_rejection() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let err = reject_item(&conn, &it.id, &"x".repeat(holds::MAX_REASON + 1)).unwrap_err();
+        assert!(err.contains("characters"), "{err}");
+        assert!(reject_item(&conn, &it.id, &"—".repeat(holds::MAX_REASON)).is_ok());
     }
 
     /// A pending update proposal for a test item, straight through the DAO —
