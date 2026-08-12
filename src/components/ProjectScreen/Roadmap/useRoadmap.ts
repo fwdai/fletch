@@ -19,8 +19,9 @@
 // src-tauri/src/rpc/roadmap.rs) writes real rows with `status: "proposed"`, and
 // they arrive here on the same `roadmap:item` event as everything else — so the
 // board grows ghost rows live while the PM is still talking. Accepting one is a
-// status patch (`proposed → open`); discarding it is a delete. Those two are
-// the only ways a proposed row leaves that state.
+// status patch (`proposed → open`); discarding it is a delete; rejecting it
+// (`roadmapRejectItem`) parks it in the decision log with a reason. Those three
+// are the only ways a proposed row leaves that state.
 //
 // Queueing works the same way, one status further along: `open → queued` is the
 // user handing an item to the Rust drainer (src-tauri/src/roadmap/drainer.rs),
@@ -82,6 +83,7 @@ import { useAppStore } from "@/store";
 import { useRuns } from "@/workflows/run/useRuns";
 import { insertEvent, mergeSnapshot } from "./itemHistory";
 import { buildNeedsYou, mergeLatest, upsertLatest } from "./NeedsYou/select";
+import { isOnBoard, isOrderable, isProposed, isShipped, rejectedRows } from "./partition";
 import { revealRefusal, revealTarget } from "./reveal";
 import { reviewFeedbackPrompt } from "./reviewPrompt";
 import type { Horizon } from "./types";
@@ -95,21 +97,6 @@ const LANDED_MS = 2200;
 const FOCUS_MS = 2200;
 
 export type BoardTab = "roadmap" | "brief";
-
-/** A shipped item leaves the board entirely and survives only as the header's
- *  count, so "on the board" is every status but `done`. */
-const isOnBoard = (i: RoadmapItem) => i.status !== "done";
-
-/** A row the PM has suggested and the user hasn't ruled on. Drawn as a ghost:
- *  in its target horizon, but counted for nothing. */
-const isProposed = (i: RoadmapItem) => i.status === "proposed";
-
-/** Can this row's position in the order be changed — by a drag, or by an
- *  accepted PM reordering? Everything from `active` on has been dispatched, so
- *  its place in the queue is settled and moving it would mean nothing (the same
- *  three statuses the backend's `order::is_orderable` allows). */
-const isOrderable = (i: RoadmapItem) =>
-  i.status === "proposed" || i.status === "open" || i.status === "queued";
 
 export function useRoadmap(repoPath: string) {
   // The board is per project, not per repo: a multi-repo project has one
@@ -532,13 +519,16 @@ export function useRoadmap(repoPath: string) {
   );
 
   // ── derived ────────────────────────────────────────────────────────
-  /** The rows the board renders — everything but the shipped ones. The strip
-   *  joins against these for the same reason the proposal lookup does: a card
-   *  about a row nothing draws is a decision the user can't reach. */
+  /** The rows the horizon groups render — neither shipped nor rejected. The
+   *  strip joins against these for the same reason the proposal lookup does: a
+   *  card about a row nothing draws is a decision the user can't reach. */
   const onBoard = useMemo(() => rows.filter(isOnBoard), [rows]);
   const items = useMemo(() => onBoard.filter((r) => !isProposed(r)).map(toBoardItem), [onBoard]);
   /** Shipped items aren't on the board; the header carries the count. */
-  const shipped = useMemo(() => rows.filter((r) => !isOnBoard(r)).length, [rows]);
+  const shipped = useMemo(() => rows.filter(isShipped).length, [rows]);
+  /** The decision log: items ruled off the board, newest ruling first — the
+   *  collapsed "Not doing" section under the horizon groups. */
+  const rejected = useMemo(() => rejectedRows(rows), [rows]);
 
   /** The PM's outstanding proposals, drawn on the board as ghosts until the
    *  user accepts or discards them. Kept out of `items` so they don't move a
@@ -547,11 +537,12 @@ export function useRoadmap(repoPath: string) {
 
   /** The PM's pending asks against existing items, by the item they target —
    *  the shape the card lookup wants, and one-per-item by construction (the
-   *  backend replaces an item's ask in place). Restricted to items the board
-   *  actually renders: an ask whose item advanced to `done` has no card to
-   *  rule it from, and counting or quoting it would make a single orphan both
-   *  invisible and immortal. The row itself survives in the DB; it comes back
-   *  into view if the item ever returns to the board. */
+   *  backend replaces an item's ask in place). Restricted to items the horizon
+   *  groups actually render: an ask whose item advanced to `done` — or was
+   *  rejected — has no card to rule it from, and counting or quoting it would
+   *  make a single orphan both invisible and immortal. The row itself survives
+   *  in the DB; it comes back into view if the item ever returns to the board
+   *  (a rejected one on reopen). */
   const proposals = useMemo(() => {
     const visible = new Set(onBoard.map((r) => r.id));
     const by = new Map<string, RoadmapProposal>();
@@ -901,6 +892,30 @@ export function useRoadmap(repoPath: string) {
     [guarded, upsert],
   );
 
+  /** Rule an item off the board, with the required reason. Not a delete: the
+   *  row keeps its code and its history and moves to the "Not doing" section,
+   *  so the decision can be read later and undone (`reopenItem`). The backend
+   *  refuses anything already dispatched or shipped — for those the lever is
+   *  the run or nothing — and that refusal lands on the error bar. */
+  const rejectItem = useCallback(
+    (id: string, reason: string) =>
+      guarded(async () => {
+        upsert(await api.roadmapRejectItem(id, reason));
+      }),
+    [guarded, upsert],
+  );
+
+  /** Put a rejected item back on the board (`rejected → open`). The reason is
+   *  cleared off the row but survives on the trail as the `rejected` event, so
+   *  "why was this off the board" still has an answer. */
+  const reopenItem = useCallback(
+    (id: string) =>
+      guarded(async () => {
+        upsert(await api.roadmapReopenItem(id));
+      }),
+    [guarded, upsert],
+  );
+
   /** Take a handed-off item back off its agent — the undo of "Send to an agent".
    *  Clears `agent_id` and lands a history note naming the agent; the row is then
    *  the queue's to dispatch again. The backend re-checks the gate (something to
@@ -1099,6 +1114,9 @@ export function useRoadmap(repoPath: string) {
     ghosts,
     counts,
     shipped,
+    /** The decision log — rejected items, newest ruling first. Rendered as the
+     *  board's collapsed "Not doing" section, never in a horizon group. */
+    rejected,
     loading,
     /** No project row for this repo — the board can be read but not written,
      *  so the write affordances stay out of the way. [`makeProject`] is the way
@@ -1178,6 +1196,8 @@ export function useRoadmap(repoPath: string) {
     sendReviewFeedback,
     holdItem,
     releaseItem,
+    rejectItem,
+    reopenItem,
     holdProject,
     releaseProject,
     /** Definitions + the project default, for the queue affordance and the

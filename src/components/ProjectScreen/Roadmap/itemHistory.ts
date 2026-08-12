@@ -35,6 +35,8 @@ export const EVENT_LABEL: Record<RoadmapEventKind, string> = {
   blocked: "Blocked",
   held: "Held",
   released: "Released",
+  rejected: "Rejected",
+  reopened: "Reopened",
   note: "Note",
 };
 

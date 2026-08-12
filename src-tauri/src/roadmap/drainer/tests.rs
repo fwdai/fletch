@@ -35,6 +35,7 @@ fn item(code: &str, rank: f64) -> RoadmapItem {
         hold_reason: None,
         held_by: None,
         held_at: None,
+        close_reason: None,
         issue_url: None,
         created_at: 0,
         updated_at: 0,
@@ -195,6 +196,33 @@ fn a_dependant_of_a_held_done_item_stays_blocked() {
             &known
         ),
         Decision::Dispatch(0)
+    );
+}
+
+/// Ruled off the board is not shipped: a dependant must never fork on work
+/// that was decided against. The rejected item's code stays `known` (the row
+/// still exists), so the dependant blocks — it does not sail through the
+/// deleted-dep hole, and it does not dispatch.
+#[test]
+fn a_rejected_item_is_never_a_landed_dependency() {
+    let mut dep = item("FLT-100", 1.0);
+    dep.status = ItemStatus::Rejected;
+    dep.close_reason = Some("out of scope".into());
+    let mut dependant = item("FLT-101", 2.0);
+    dependant.deps = vec!["FLT-100".into()];
+
+    let board = vec![dep, dependant];
+    let known = codes(&["FLT-100", "FLT-101"]);
+    assert!(
+        done_codes(&board).is_empty(),
+        "a rejected item satisfies nobody's dependency"
+    );
+    assert_eq!(
+        pick_next(&dispatchable(&board), 0, 1, &done_codes(&board), &known),
+        Decision::Blocked {
+            item_id: "id-FLT-101".into(),
+            waiting_on: vec!["FLT-100".into()],
+        }
     );
 }
 
@@ -1002,6 +1030,71 @@ fn a_wedged_queue_head_records_one_blocked_event_not_one_per_tick() {
         "a durable line must not repeat per tick"
     );
     assert_eq!(events::list_for_item(&conn, &a.id).unwrap().len(), 1);
+}
+
+/// A dep still being built is a wait; a dep the user *rejected* is a wedge.
+/// The code is known, never done, and no run is ever coming to make it so —
+/// only editing the dep list ends it. So the same "Waiting on" shape flips
+/// from the transient note to the durable line the moment the ruling lands,
+/// and lands once, not once a tick.
+#[test]
+fn a_dependant_of_a_rejected_item_wedges_durably() {
+    let conn = test_conn();
+    let dep = db_item(&conn, ItemStatus::Active);
+    let dependant = db_item(&conn, ItemStatus::Queued);
+    set_deps(&conn, &dependant, &[&dep.code]);
+
+    // While the dep is being built the wait resolves itself: a note, no row.
+    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a waiting note");
+    };
+    assert!(text.contains(&dep.code), "{text}");
+    assert!(recorded.is_none(), "a dep still being built is transient");
+
+    // The user rules the dep off the board: the same wait is now standing.
+    store::reject(&conn, &dep.id, "not doing this").unwrap();
+    let Claim::Note {
+        item,
+        text,
+        recorded,
+    } = plan_and_claim(&conn, "p1", 1)
+    else {
+        panic!("expected a note about the wedged dependant");
+    };
+    assert_eq!(item.id, dependant.id);
+    assert!(
+        text.contains(&dep.code) && text.contains("rejected"),
+        "the wedge names the dep and the decision: {text}"
+    );
+    assert!(text.contains("remove or replace"), "{text}");
+    let event = recorded.expect("a dep nobody will build is a durable blockage");
+    assert_eq!(event.kind, EventKind::Blocked);
+    assert_eq!(event.actor, EventActor::Drainer);
+    assert_eq!(event.detail.as_deref(), Some(text.as_str()));
+
+    // Once, not once a tick — the same dedup every standing wedge gets.
+    let Claim::Note { recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a note");
+    };
+    assert!(
+        recorded.is_none(),
+        "a durable line must not repeat per tick"
+    );
+    assert_eq!(
+        events::list_for_item(&conn, &dependant.id).unwrap().len(),
+        1
+    );
+
+    // Reopening the dep turns the standing wedge back into an ordinary wait.
+    store::reopen(&conn, &dep.id).unwrap();
+    let Claim::Note { text, recorded, .. } = plan_and_claim(&conn, "p1", 1) else {
+        panic!("expected a waiting note");
+    };
+    assert!(!text.contains("rejected"), "{text}");
+    assert!(
+        recorded.is_none(),
+        "waiting on live work is transient again"
+    );
 }
 
 /// The partition, over every condition this function can reach: *standing*

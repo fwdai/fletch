@@ -349,6 +349,17 @@ fn update_and_record(
     expect_status: Option<ItemStatus>,
     queue: bool,
 ) -> Result<(Option<ItemUpdate>, Option<ItemEvent>), String> {
+    // `rejected` is not a status a generic edit may write: it would land with a
+    // NULL `close_reason` and a bare "Edited" line — a decision-log entry with
+    // no decision, the exact row migration 0037 promises cannot exist. The one
+    // door is the typed reject command, which demands the reason.
+    if patch.status == Some(ItemStatus::Rejected) {
+        return Err(
+            "an item is ruled off the board with roadmap_reject_item, which requires a \
+             reason — not a status edit"
+                .into(),
+        );
+    }
     if let Some(new_deps) = &patch.deps {
         // A row that is already gone falls through to the normal "no longer
         // exists" path below rather than being refused for its deps.
@@ -1024,12 +1035,248 @@ fn reclaim(conn: &Connection, item_id: &str) -> Result<(RoadmapItem, ItemEvent),
     Ok((item, event))
 }
 
+// ───────────────────────── the decision log ─────────────────────────────
+
+/// Rule an item off the board — the decision that used to be a delete, kept as
+/// a row instead. The item becomes `rejected` with `close_reason` = why, its
+/// trail intact and a `rejected` line appended, so "we are not doing this, and
+/// here is why" survives to be read — by the card, by the PM's next session,
+/// and by whoever wonders in three months. Reopening
+/// ([`roadmap_reopen_item`]) is the undo.
+///
+/// The reason is mandatory: the row this leaves behind *is* the decision log,
+/// and a rejection that can't say why is just a slower delete. Allowed from the
+/// pre-work statuses only (`proposed | open | queued` — a queued item leaves
+/// the queue by being rejected); an `active`/`in_review` item has an agent on
+/// it, and a `done` one already shipped — neither can be un-decided from here.
+///
+/// A rejection supersedes a pause: any hold is cleared (the trail keeps the
+/// hold's history), the agent stamp comes off, and a pending PM proposal on the
+/// item is consumed — a dead item's ask shouldn't haunt anything.
+#[tauri::command]
+pub async fn roadmap_reject_item(
+    item_id: String,
+    reason: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<RoadmapItem, String> {
+    let (item, event, pending) = {
+        let conn = db.lock();
+        reject_item(&conn, &item_id, &reason)?
+    };
+    emit_item(&app, &item);
+    emit_item_event(&app, &event);
+    if let Some(p) = &pending {
+        emit_proposal_deleted(&app, &p.id);
+    }
+    // A rejected item leaves the queue, and a dependant waiting on it is now
+    // wedged rather than waiting — the drainer should say which within a beat,
+    // not a tick.
+    drainer::nudge();
+    Ok(item)
+}
+
+/// The one write behind [`roadmap_reject_item`]: check the gate, consume any
+/// pending proposal, flip the row, and record the ruling — one lock scope, so a
+/// row that says it is rejected always carries the line saying why.
+fn reject_item(
+    conn: &Connection,
+    item_id: &str,
+    reason: &str,
+) -> Result<(RoadmapItem, ItemEvent, Option<Proposal>), String> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err(
+            "`reason` is required — the rejected row is the decision log, and the reason \
+             is the decision"
+                .into(),
+        );
+    }
+    // Same ceiling as a hold's reason, for the same reason: this line renders on
+    // a card and in the PM's listing. The ruling belongs here; the argument for
+    // it belongs in the conversation.
+    let length = reason.chars().count();
+    if length > holds::MAX_REASON {
+        return Err(format!(
+            "`reason` is {length} characters — keep it under {}. Say the ruling; the \
+             argument for it belongs in the conversation",
+            holds::MAX_REASON
+        ));
+    }
+    let current = store::get(conn, item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    match current.status {
+        ItemStatus::Proposed | ItemStatus::Open | ItemStatus::Queued => {}
+        ItemStatus::Active | ItemStatus::InReview => {
+            return Err(format!(
+                "{} is {} — an agent is on it; cancel or settle the run before ruling \
+                 this off the board",
+                current.code,
+                current.status.as_str()
+            ))
+        }
+        ItemStatus::Done => {
+            return Err(format!(
+                "{} is done — shipped work can't be un-decided",
+                current.code
+            ))
+        }
+        ItemStatus::Rejected => {
+            return Err(format!("{} is already rejected", current.code));
+        }
+    }
+    // Consumed under the same lock as the ruling, like the delete path: the
+    // board would otherwise count a ghost proposal forever.
+    let pending = proposals::for_item(conn, item_id).map_err(|e| e.to_string())?;
+    if let Some(p) = &pending {
+        proposals::delete(conn, &p.id).map_err(|e| e.to_string())?;
+    }
+    let item = store::reject(conn, item_id, reason)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let event = events::record(
+        conn,
+        &item.id,
+        &item.project_id,
+        EventActor::User,
+        EventKind::Rejected,
+        Some(reason),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((item, event, pending))
+}
+
+/// Put a rejected item back on the board, at `open` — the decision log's undo,
+/// and the only exit from `rejected`.
+///
+/// Records a `reopened` event whose detail quotes the reason being shed
+/// ("was rejected — …"), so the trail reads as a pair — why we ruled it off,
+/// and that we changed our mind — rather than as an unexplained resurrection.
+#[tauri::command]
+pub async fn roadmap_reopen_item(
+    item_id: String,
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<RoadmapItem, String> {
+    let (item, event, corrections) = {
+        let conn = db.lock();
+        reopen_item(&conn, &item_id)?
+    };
+    emit_item(&app, &item);
+    // No event when the row wasn't rejected: like a release on an unheld row,
+    // reopening something already open is a no-op, and a `reopened` line for it
+    // would be a fact that never happened.
+    if let Some(event) = &event {
+        emit_item_event(&app, event);
+        // A dependant wedged on this item's rejection is merely waiting again.
+        drainer::nudge();
+    }
+    for note in &corrections {
+        emit_item_event(&app, note);
+    }
+    Ok(item)
+}
+
+/// The one write behind [`roadmap_reopen_item`]: the guarded flip and its
+/// record, in the caller's single lock scope. The precondition rides
+/// [`store::reopen`]'s own `WHERE` (`status = rejected`), so a stale click —
+/// the item was already reopened, or was never rejected — misses cleanly:
+/// nothing is written, nothing is stamped, and the caller gets the row as it
+/// actually is.
+fn reopen_item(
+    conn: &Connection,
+    item_id: &str,
+) -> Result<(RoadmapItem, Option<ItemEvent>, Vec<ItemEvent>), String> {
+    // Read before the flip: the detail the `reopened` event quotes is the
+    // reason the write is about to clear.
+    let current = store::get(conn, item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let Some(item) = store::reopen(conn, item_id).map_err(|e| e.to_string())? else {
+        return Ok((current, None, Vec::new()));
+    };
+    // `close_reason` is `Some` exactly when the row is rejected, but a row
+    // written before that invariant held costs a shorter line, not a panic.
+    let detail = match &current.close_reason {
+        Some(reason) => format!("was rejected — {reason}"),
+        None => "was rejected".to_string(),
+    };
+    let event = events::record(
+        conn,
+        &item.id,
+        &item.project_id,
+        EventActor::User,
+        EventKind::Reopened,
+        Some(&detail),
+    )
+    .map_err(|e| e.to_string())?;
+    let corrections = correct_wedged_dependants(conn, &item)?;
+    Ok((item, Some(event), corrections))
+}
+
+/// Un-say the rejection on the items that were told about it. The drainer
+/// writes a *durable* `blocked` line on a queued dependant when its dep is
+/// rejected ("…which was rejected — remove or replace that dependency"), and
+/// that line is what "Needs you" and the PM's `last_event` read — so once the
+/// dep is reopened, the trail is asserting an instruction that is no longer
+/// true, and nothing else would ever correct it (the drainer's re-derived note
+/// flips back, the durable trail doesn't). One `note` per wedged dependant
+/// displaces the stale line; it also un-jams [`drainer`]'s wedge dedup, which
+/// compares against the latest event — so a later re-rejection writes a fresh
+/// wedge instead of being swallowed as "already said".
+///
+/// Only dependants whose latest durable line IS that wedge get one: a dependant
+/// the drainer never got to (or one wedged on something else since) has no
+/// false line to correct, and a note there would be noise.
+fn correct_wedged_dependants(
+    conn: &Connection,
+    reopened: &RoadmapItem,
+) -> Result<Vec<ItemEvent>, String> {
+    let board = store::list(conn, &reopened.project_id).map_err(|e| e.to_string())?;
+    let mut notes = Vec::new();
+    for dep in board
+        .iter()
+        .filter(|i| i.status == ItemStatus::Queued && i.deps.contains(&reopened.code))
+    {
+        let latest = events::list_for_item(conn, &dep.id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .next();
+        let wedged = latest.is_some_and(|e| {
+            e.kind == EventKind::Blocked
+                && e.detail
+                    .as_deref()
+                    .is_some_and(|d| d.contains(&reopened.code) && d.contains("rejected"))
+        });
+        if !wedged {
+            continue;
+        }
+        let note = events::record(
+            conn,
+            &dep.id,
+            &dep.project_id,
+            EventActor::User,
+            EventKind::Note,
+            Some(&format!(
+                "{} was reopened — waiting on it normally again",
+                reopened.code
+            )),
+        )
+        .map_err(|e| e.to_string())?;
+        notes.push(note);
+    }
+    Ok(notes)
+}
+
 /// Delete an item. Silent when the row is already gone — the caller's intent
 /// ("this should not be on the board") is satisfied either way.
 ///
-/// Deletion records no history event on purpose: `roadmap_item_events` cascades
-/// with the row, so a deleted item (including a discarded proposal) takes its
-/// trail with it — an item ruled off the board needs no history.
+/// This is typo cleanup, not a ruling: the write for "we decided against this"
+/// is [`roadmap_reject_item`], which keeps the row and the reason. Deletion
+/// records no history event on purpose — `roadmap_item_events` cascades with
+/// the row, so a deleted item takes its trail with it, which is exactly right
+/// for a row that should never have existed and exactly wrong for a decision.
 ///
 /// One thing does have to outlive the row: a *routed issue's* refusal. A ghost
 /// the issue funnel created carries the tracker URL it came from
@@ -1117,15 +1364,15 @@ pub async fn roadmap_list_proposals(
 /// What ruling on a proposal did, decided under one lock scope so the check,
 /// the write, and the history it records can never disagree.
 enum Ruling {
-    /// The patch landed; emit the row and the `edited` event. Boxed: a ruling
-    /// is almost always this variant, but the enum's size is set by it, and
-    /// the row + event pair dwarfs the other arms.
+    /// The row changed; emit it and its event. Both kinds of ask land here — an
+    /// update's patch, and a discard's rejection (the item stays on the board as
+    /// the decision log, `rejected` with the PM's note as its `close_reason`).
+    /// Boxed: a ruling is almost always this variant, but the enum's size is
+    /// set by it, and the row + event pair dwarfs the other arm.
     Updated {
         item: Box<RoadmapItem>,
         event: Box<ItemEvent>,
     },
-    /// The item was deleted at the PM's ask; emit the deletion.
-    Discarded { item_id: String },
     /// The board outran the ask — the item went `active`+ since the PM
     /// proposed, or the dep list it asked for no longer resolves (or would now
     /// close a loop). The proposal was deleted without applying, and the message
@@ -1141,14 +1388,19 @@ enum Ruling {
 /// A held item still passes. It is paused, not sealed — see the predicate's docs.
 fn proposal_gate(item: &RoadmapItem) -> Result<(), String> {
     if item.status.is_rulable() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{} is {} — an item being built or reviewed can't be reshaped by proposal",
-            item.code,
-            item.status.as_str()
-        ))
+        return Ok(());
     }
+    // Name the actual objection, not a generic one: "being built or reviewed"
+    // said of a shipped or rejected item would make the bar's refusal read as a
+    // bug rather than an answer.
+    let why = match item.status {
+        ItemStatus::Done => "shipped work can't be reshaped by proposal",
+        ItemStatus::Rejected => {
+            "an item ruled off the board can't be reshaped by proposal — reopen it first"
+        }
+        _ => "an item being built or reviewed can't be reshaped by proposal",
+    };
+    Err(format!("{} is {} — {why}", item.code, item.status.as_str()))
 }
 
 /// The ruling's history line: the PM's rationale rides along, prefixed with
@@ -1220,11 +1472,34 @@ fn accept_proposal(conn: &Connection, proposal_id: &str) -> Result<Ruling, Strin
             })
         }
         ProposalKind::Discard => {
-            // No event: the row's deletion cascades its history (and this
-            // proposal) away — an item ruled off the board needs no trail,
-            // exactly like `roadmap_delete_item`.
-            store::delete(conn, &item.id).map_err(|e| e.to_string())?;
-            Ok(Ruling::Discarded { item_id: item.id })
+            // An accepted discard used to delete the row — "an item ruled off
+            // the board needs no trail". The decision log reverses that: ruled-
+            // off items ARE the trail, so the row stays, `rejected`, with the
+            // PM's rationale as its `close_reason`. The op requires a note, so
+            // the fallback is for a stored ask that predates the requirement.
+            let reason = proposal
+                .note
+                .as_deref()
+                .unwrap_or("discarded at the PM's ask");
+            let rejected = store::reject(conn, &item.id, reason)
+                .map_err(|e| e.to_string())?
+                .ok_or("the item this proposal targets no longer exists")?;
+            let event = events::record(
+                conn,
+                &rejected.id,
+                &rejected.project_id,
+                // The ruling writes history, not the ask — same doctrine as the
+                // Update arm above.
+                EventActor::User,
+                EventKind::Rejected,
+                Some(&ruling_detail("Rejected", proposal.note.as_deref())),
+            )
+            .map_err(|e| e.to_string())?;
+            proposals::delete(conn, proposal_id).map_err(|e| e.to_string())?;
+            Ok(Ruling::Updated {
+                item: Box::new(rejected),
+                event: Box::new(event),
+            })
         }
     }
 }
@@ -1248,14 +1523,10 @@ pub async fn roadmap_accept_proposal(
         Ruling::Updated { item, event } => {
             emit_item(&app, &item);
             emit_item_event(&app, &event);
-            // The patch can change horizon or deps, which can unblock (or
-            // re-order) whatever is queued behind this item.
-            drainer::nudge();
-            Ok(())
-        }
-        Ruling::Discarded { item_id } => {
-            emit_item_deleted(&app, &item_id);
-            // A deleted item can be the dep something queued was waiting on.
+            // A patch can change horizon or deps, which can unblock (or
+            // re-order) whatever is queued behind this item; a discard takes a
+            // row out of the queue and wedges its dependants, which the drainer
+            // should say within a beat.
             drainer::nudge();
             Ok(())
         }
@@ -2078,6 +2349,289 @@ mod tests {
         assert!(reclaim(&conn, "no-such-item").is_err());
     }
 
+    // ────────────────────────── the decision log ────────────────────────
+
+    /// The ruling that used to be a delete: every pre-work status may be ruled
+    /// off the board, and the row that stays says why — trimmed, on the row
+    /// *and* as the `rejected` line's detail, so the card and the trail quote
+    /// the same sentence.
+    #[test]
+    fn rejecting_keeps_the_row_and_the_reason_from_any_prework_status() {
+        let conn = test_conn();
+        for status in [ItemStatus::Proposed, ItemStatus::Open, ItemStatus::Queued] {
+            let it = with_status(&conn, status);
+            let (item, event, pending) =
+                reject_item(&conn, &it.id, "  out of scope for v1  ").unwrap();
+            assert_eq!(item.status, ItemStatus::Rejected);
+            assert_eq!(item.close_reason.as_deref(), Some("out of scope for v1"));
+            assert!(pending.is_none(), "nothing was pending on this item");
+            assert_eq!(event.kind, EventKind::Rejected);
+            assert_eq!(event.actor, EventActor::User);
+            assert_eq!(event.detail.as_deref(), Some("out of scope for v1"));
+            assert_eq!(events::list_for_item(&conn, &it.id).unwrap(), vec![event]);
+        }
+    }
+
+    /// A rejection supersedes a pause: the hold trio and the agent stamp come
+    /// off with the status flip. The trail keeps the hold's history — the row
+    /// only ever carries the state in force, and `rejected` is now that state.
+    #[test]
+    fn rejecting_clears_a_hold_and_the_agent_stamp() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        holds::hold_item(&conn, &it.id, "direction unclear", EventActor::Pm).unwrap();
+        store::update(
+            &conn,
+            &it.id,
+            &ItemPatch {
+                agent_id: Some(Some("w1".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (item, _, _) = reject_item(&conn, &it.id, "not doing this after all").unwrap();
+        assert!(!item.is_held());
+        assert_eq!(item.held_by, None);
+        assert_eq!(item.held_at, None);
+        assert_eq!(item.agent_id, None);
+        assert_eq!(
+            item.close_reason.as_deref(),
+            Some("not doing this after all")
+        );
+    }
+
+    /// A blank reason refuses the whole rejection: the rejected row is the
+    /// decision log, and a rejection that can't say why is just a slower
+    /// delete. Nothing is written on refusal.
+    #[test]
+    fn a_blank_reason_refuses_the_rejection() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let err = reject_item(&conn, &it.id, "   ").unwrap_err();
+        assert!(err.contains("reason"), "{err}");
+        let row = store::get(&conn, &it.id).unwrap().unwrap();
+        assert_eq!(row.status, ItemStatus::Open);
+        assert_eq!(row.close_reason, None);
+        assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+    }
+
+    /// The gate, naming the status it refuses for: an `active`/`in_review`
+    /// item has an agent on it, a `done` one already shipped, and a `rejected`
+    /// one has already been ruled on. A refusal writes nothing.
+    #[test]
+    fn rejecting_refuses_inflight_shipped_and_already_rejected_items() {
+        let conn = test_conn();
+        for status in [
+            ItemStatus::Active,
+            ItemStatus::InReview,
+            ItemStatus::Done,
+            ItemStatus::Rejected,
+        ] {
+            let it = with_status(&conn, status);
+            let err = reject_item(&conn, &it.id, "changed our minds").unwrap_err();
+            assert!(err.contains(&it.code), "{err}");
+            assert!(err.contains(status.as_str()), "{err}");
+            let row = store::get(&conn, &it.id).unwrap().unwrap();
+            assert_eq!(row.status, status, "a refusal writes nothing");
+            assert_eq!(row.close_reason, None);
+            assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+        }
+        assert!(reject_item(&conn, "no-such-item", "why").is_err());
+    }
+
+    /// A dead item's ask shouldn't haunt anything: rejecting consumes the
+    /// item's pending proposal, and hands it back so the caller can announce
+    /// the deletion the board is watching for.
+    #[test]
+    fn rejecting_consumes_the_items_pending_proposal() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let p = pending_update(&conn, &it, Some("reshape it"));
+
+        let (_, _, pending) = reject_item(&conn, &it.id, "no longer relevant").unwrap();
+        assert_eq!(
+            pending.map(|p| p.id),
+            Some(p.id.clone()),
+            "returned so the caller can emit `roadmap:proposal-deleted`"
+        );
+        assert!(proposals::get(&conn, &p.id).unwrap().is_none());
+    }
+
+    /// The decision log's undo: reopening lands the item back at `open` (not
+    /// back in the queue — re-queueing is a fresh decision), sheds the reason,
+    /// and quotes it in the trail so the pair reads honestly.
+    #[test]
+    fn reopening_returns_a_rejected_item_to_the_board() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Queued);
+        reject_item(&conn, &it.id, "parked for the rewrite").unwrap();
+
+        let (item, event, _) = reopen_item(&conn, &it.id).unwrap();
+        assert_eq!(item.status, ItemStatus::Open);
+        assert_eq!(
+            item.close_reason, None,
+            "an item back in play owes nobody an epitaph"
+        );
+        let event = event.expect("a real reopen records itself");
+        assert_eq!(event.kind, EventKind::Reopened);
+        assert_eq!(event.actor, EventActor::User);
+        assert_eq!(
+            event.detail.as_deref(),
+            Some("was rejected — parked for the rewrite")
+        );
+        // The trail keeps the pair: why it left the board, and that it's back.
+        assert_eq!(events::list_for_item(&conn, &it.id).unwrap().len(), 2);
+
+        // A second click races the first and loses cleanly: no second stamp.
+        let (again, event, _) = reopen_item(&conn, &it.id).unwrap();
+        assert_eq!(again.status, ItemStatus::Open);
+        assert!(event.is_none());
+    }
+
+    /// Reopening something nobody rejected is a no-op that doesn't stamp: the
+    /// precondition rides the write's own `WHERE`, so a stale click can't move
+    /// a row that isn't rejected or invent history for a reopen that never
+    /// happened.
+    #[test]
+    fn reopening_an_unrejected_item_is_a_noop_that_records_nothing() {
+        let conn = test_conn();
+        for status in [ItemStatus::Open, ItemStatus::Queued, ItemStatus::Done] {
+            let it = with_status(&conn, status);
+            let (item, event, _) = reopen_item(&conn, &it.id).unwrap();
+            assert_eq!(item.status, status, "the row comes back as it actually is");
+            assert!(event.is_none());
+            assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+        }
+        assert!(reopen_item(&conn, "no-such-item").is_err());
+    }
+
+    /// Reopening un-says the rejection on the items that were told about it.
+    /// The drainer's rejected-dep wedge is a *durable* line — "Needs you" and
+    /// the PM's `last_event` read it — and nothing else corrects it once the
+    /// dep is back: the corrective note must displace it, which is also what
+    /// lets a later re-rejection write a fresh wedge (the drainer's dedup
+    /// compares against the latest event).
+    #[test]
+    fn reopening_corrects_the_wedge_on_queued_dependants() {
+        let conn = test_conn();
+        let dep = with_status(&conn, ItemStatus::Open);
+        // A queued dependant the drainer wedged, and two rows that must NOT be
+        // touched: a queued item with no dep on it, and an open dependant.
+        let wedged = with_status(&conn, ItemStatus::Queued);
+        store::update(
+            &conn,
+            &wedged.id,
+            &ItemPatch {
+                deps: Some(vec![dep.code.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let unrelated = with_status(&conn, ItemStatus::Queued);
+        let unwedged = with_status(&conn, ItemStatus::Open);
+        store::update(
+            &conn,
+            &unwedged.id,
+            &ItemPatch {
+                deps: Some(vec![dep.code.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        reject_item(&conn, &dep.id, "parked").unwrap();
+        // The wedge, exactly as the drainer records it.
+        events::record(
+            &conn,
+            &wedged.id,
+            "p1",
+            EventActor::Drainer,
+            EventKind::Blocked,
+            Some(&format!(
+                "Waiting on {}, which was rejected — remove or replace that dependency.",
+                dep.code
+            )),
+        )
+        .unwrap();
+
+        let (_, _, corrections) = reopen_item(&conn, &dep.id).unwrap();
+        assert_eq!(corrections.len(), 1, "only the wedged dependant is told");
+        assert_eq!(corrections[0].item_id, wedged.id);
+        assert_eq!(corrections[0].kind, EventKind::Note);
+
+        // The note is now the dependant's latest line — which is what clears
+        // "Needs you", fixes the PM's `last_event`, and un-jams the drainer's
+        // wedge dedup for a future re-rejection.
+        let latest = events::list_for_item(&conn, &wedged.id).unwrap();
+        assert_eq!(latest[0].kind, EventKind::Note);
+        assert_eq!(
+            latest[0].detail.as_deref(),
+            Some(format!("{} was reopened — waiting on it normally again", dep.code).as_str())
+        );
+        assert!(events::list_for_item(&conn, &unrelated.id)
+            .unwrap()
+            .is_empty());
+        assert!(events::list_for_item(&conn, &unwedged.id)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A legacy held-while-rejected row (hand-edited, or written before the
+    /// hold gate existed) comes back to the board unheld: [`store::reject`]
+    /// enforces "a rejection supersedes a pause" going in, [`store::reopen`]
+    /// enforces it coming out.
+    #[test]
+    fn reopening_clears_a_legacy_hold() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        reject_item(&conn, &it.id, "parked").unwrap();
+        conn.execute(
+            "UPDATE roadmap_items SET hold_reason = 'stale', held_by = 'pm', held_at = 1
+             WHERE id = ?1",
+            [&it.id],
+        )
+        .unwrap();
+
+        let (item, _, _) = reopen_item(&conn, &it.id).unwrap();
+        assert_eq!(item.hold_reason, None, "no secret pause survives a reopen");
+        assert_eq!(item.held_by, None);
+        assert_eq!(item.held_at, None);
+    }
+
+    /// `rejected` is unreachable by generic edit: it would land without a
+    /// reason and without a `rejected` line — a decision-log entry with no
+    /// decision. The typed command is the only door.
+    #[test]
+    fn a_generic_status_patch_cannot_reject() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let err = update_and_record(
+            &conn,
+            &it.id,
+            &status_patch(ItemStatus::Rejected),
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("roadmap_reject_item"), "{err}");
+        let row = store::get(&conn, &it.id).unwrap().unwrap();
+        assert_eq!(row.status, ItemStatus::Open, "nothing written");
+        assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
+    }
+
+    /// The reason shares a hold's ceiling: it renders as one line on the card
+    /// and in the PM's listing, and past that it's the argument, not the
+    /// ruling. Counted in characters, like the hold's, so an em-dash costs one.
+    #[test]
+    fn an_oversize_reason_refuses_the_rejection() {
+        let conn = test_conn();
+        let it = with_status(&conn, ItemStatus::Open);
+        let err = reject_item(&conn, &it.id, &"x".repeat(holds::MAX_REASON + 1)).unwrap_err();
+        assert!(err.contains("characters"), "{err}");
+        assert!(reject_item(&conn, &it.id, &"—".repeat(holds::MAX_REASON)).is_ok());
+    }
+
     /// A pending update proposal for a test item, straight through the DAO —
     /// the RPC op's validation is exercised in `rpc::roadmap`'s own tests.
     fn pending_update(conn: &Connection, item: &RoadmapItem, note: Option<&str>) -> Proposal {
@@ -2144,10 +2698,11 @@ mod tests {
         assert!(events::list_for_item(&conn, &it.id).unwrap().is_empty());
     }
 
-    /// Accepting a discard deletes the item row; its history and the proposal
-    /// itself cascade away with it.
+    /// Accepting a discard keeps the row as the decision log: `rejected`, with
+    /// the PM's rationale as its `close_reason` and a `rejected` line in the
+    /// trail — where it used to delete the row and everything it knew.
     #[test]
-    fn accepting_a_discard_deletes_the_row() {
+    fn accepting_a_discard_keeps_the_row_as_rejected() {
         let conn = test_conn();
         let it = with_status(&conn, ItemStatus::Open);
         let p = proposals::upsert(
@@ -2160,12 +2715,23 @@ mod tests {
         )
         .unwrap();
 
-        let Ruling::Discarded { item_id } = accept_proposal(&conn, &p.id).unwrap() else {
-            panic!("expected Discarded");
+        let Ruling::Updated { item, event } = accept_proposal(&conn, &p.id).unwrap() else {
+            panic!("expected Updated");
         };
-        assert_eq!(item_id, it.id);
-        assert!(store::get(&conn, &it.id).unwrap().is_none());
+        assert_eq!(item.id, it.id, "the row survives the ruling");
+        assert_eq!(item.status, ItemStatus::Rejected);
+        assert_eq!(item.close_reason.as_deref(), Some("superseded by MCA-101"));
+        // The ruling writes history, not the ask — the user rejected, carrying
+        // the PM's rationale.
+        assert_eq!(event.kind, EventKind::Rejected);
+        assert_eq!(event.actor, EventActor::User);
+        assert_eq!(
+            event.detail.as_deref(),
+            Some("Rejected a PM proposal — superseded by MCA-101")
+        );
         assert!(proposals::get(&conn, &p.id).unwrap().is_none());
+        // Ruling twice is refused, not replayed.
+        assert!(accept_proposal(&conn, &p.id).is_err());
     }
 
     /// Accepting an order rewrites every orderable row's rank as 1.0, 2.0, …

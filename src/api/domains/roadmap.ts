@@ -103,6 +103,18 @@ export const roadmapApi = {
    *  none to release, so every release comes through here. Writes a `released`
    *  event whose detail is the reason being lifted. Returns the stored row. */
   roadmapReleaseItem: (itemId: string) => invoke<RoadmapItem>("roadmap_release_item", { itemId }),
+  /** Rule an item off the board: status `rejected`, with the required reason
+   *  stored as `close_reason` — the decision log keeps the row and its history
+   *  where a delete would erase both. Allowed from `proposed`/`open`/`queued`;
+   *  the backend refuses anything dispatched (`active`/`in_review`) or shipped,
+   *  with a message saying so. Writes a `rejected` event carrying the reason.
+   *  Returns the stored row. */
+  roadmapRejectItem: (itemId: string, reason: string) =>
+    invoke<RoadmapItem>("roadmap_reject_item", { itemId, reason }),
+  /** Put a rejected item back on the board (`rejected → open`), clearing its
+   *  `close_reason`. Only from `rejected` — everything else already is on the
+   *  board or shipped. Writes a `reopened` event. Returns the stored row. */
+  roadmapReopenItem: (itemId: string) => invoke<RoadmapItem>("roadmap_reopen_item", { itemId }),
   /** The project's hold, or `null` when the board is running. Fetched with the
    *  item snapshot; live changes arrive on `roadmap:project-hold` /
    *  `roadmap:project-hold-released`. */

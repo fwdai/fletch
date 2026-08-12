@@ -1035,14 +1035,48 @@ fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
             // member waits on the next, so this item is skipped on every tick
             // from here to the end of the app's life. That is a durable fact
             // about the board, so it lands as a `blocked` event naming the loop
-            // (see .context/roadmap-pm-plan.md, A4).
+            // (see .context/roadmap-pm-plan.md, A4). A dependency that was
+            // *rejected* is the same kind of standing fact wearing a waiting
+            // note's clothes: the code still resolves, is never `done`, and no
+            // run is ever coming to make it so — only the user editing the dep
+            // list ends it, so it takes the durable path too.
             return match deps::find_cycle(&deps::graph_of(&items), &item.code) {
                 Some(cycle) => Claim::wedge(
                     conn,
                     item,
                     format!("Stuck in a dependency loop: {}", deps::loop_path(&cycle)),
                 ),
-                None => Claim::note(item, format!("Waiting on {}", waiting_on.join(", "))),
+                None => {
+                    let rejected: Vec<&str> = waiting_on
+                        .iter()
+                        .filter(|code| {
+                            items
+                                .iter()
+                                .any(|i| &i.code == *code && i.status == ItemStatus::Rejected)
+                        })
+                        .map(String::as_str)
+                        .collect();
+                    match rejected.as_slice() {
+                        [] => Claim::note(item, format!("Waiting on {}", waiting_on.join(", "))),
+                        [code] => Claim::wedge(
+                            conn,
+                            item,
+                            format!(
+                                "Waiting on {code}, which was rejected — remove or replace \
+                                 that dependency."
+                            ),
+                        ),
+                        many => Claim::wedge(
+                            conn,
+                            item,
+                            format!(
+                                "Waiting on {}, which were rejected — remove or replace \
+                                 those dependencies.",
+                                many.join(", ")
+                            ),
+                        ),
+                    }
+                }
             };
         }
         // Nothing to say: an empty queue is silence, and being at capacity is

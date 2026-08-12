@@ -29,6 +29,8 @@
 .rm-board-ro .grow,
 .rm-props .grow,
 .rm-decbar .grow,
+.rm-hold .grow,
+.rm-nd-line .grow,
 .rm-dialog .modal-foot .grow,
 .rm-composer-wrap .composer-foot .grow {
   flex: 1;
@@ -1024,6 +1026,81 @@
   font-style: italic;
 }
 
+/* ── not doing ──
+   The decision log: items ruled off the board keep their code, title and
+   close_reason here instead of being deleted. Everything about it is quieter
+   than the groups above — fg-3 header, bg-1 rows, collapsed by default —
+   because this is an archive to consult, not a fourth column to work. */
+.rm-nd {
+  margin-top: 26px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bd-soft);
+}
+.rm-nd-h {
+  width: 100%;
+  gap: 7px;
+  padding: 0 4px;
+  color: var(--fg-3);
+  text-align: left;
+  transition: var(--transition-ui);
+}
+.rm-nd-h:hover {
+  color: var(--fg-2);
+}
+/* The group headers' lettering, one shade down — same vocabulary, less claim. */
+.rm-nd-l {
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.rm-nd-c {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.rm-nd-chev {
+  flex-shrink: 0;
+  opacity: 0.75;
+  transition: transform 0.15s var(--ease);
+}
+.rm-nd-h[aria-expanded="true"] .rm-nd-chev {
+  transform: rotate(180deg);
+}
+.rm-nd-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* bg-1, not the cards' bg-2: a log row must read as settled, not as one more
+   card competing with the groups above it. */
+.rm-nd-row {
+  padding: 6px 10px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  transition: border-color 0.14s var(--ease);
+}
+/* A reveal landed here — the same ring-for-a-moment the cards get, reduced to
+   the accent edge (there is no pulse to earn on an archived row). */
+.rm-nd-row.focus {
+  border-color: var(--accent-line);
+}
+.rm-nd-line {
+  gap: 9px;
+}
+.rm-nd-t {
+  min-width: 0;
+  color: var(--fg-2);
+}
+.rm-nd-why {
+  margin-top: 2px;
+  color: var(--fg-3);
+  line-height: var(--lh-snug);
+  text-wrap: pretty;
+}
+
 /* ── chips ───────────────────────────────────────────────────────────
    Every small tag on this surface — filled pills on the row header, bare
    icon+label meta in the footer and the strips — is built from one block, so
@@ -1179,6 +1256,12 @@
 .rm-state.st-r {
   color: var(--info);
   background: color-mix(in oklch, var(--info), transparent 88%);
+}
+/* Ruled off the board. Neutral like `queued`, not a warn: a rejection is a
+   decision made, not a condition waiting on anyone. */
+.rm-state.st-x {
+  color: var(--fg-3);
+  background: var(--bg-3);
 }
 
 /* Provenance glyph. A fixed square so the chevron after it sits on the same

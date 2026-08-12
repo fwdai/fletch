@@ -84,6 +84,15 @@ describe("eventLine", () => {
     ).toBe("PR closed — nothing merged — the item is back on the board");
   });
 
+  it("labels the decision log's pair", () => {
+    // A rejection's detail is the required close_reason — the line must quote
+    // it, because on a reopened item this trail is where the reason survives.
+    expect(eventLine(event({ id: "a", kind: "rejected", detail: "duplicate of FLT-9" }))).toBe(
+      "Rejected — duplicate of FLT-9",
+    );
+    expect(eventLine(event({ id: "b", kind: "reopened" }))).toBe("Reopened");
+  });
+
   it("labels a hand-built item's opening line", () => {
     // `created` is the user-typed row's `proposed`. The label map is typed
     // `Record<RoadmapEventKind, …>`, so omitting it would fail `tsc` — this only

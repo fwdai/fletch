@@ -31,6 +31,7 @@ function item(over: Partial<RoadmapItem> & { id: string }): RoadmapItem {
     hold_reason: null,
     held_by: null,
     held_at: null,
+    close_reason: null,
     issue_url: null,
     created_at: 0,
     updated_at: 0,

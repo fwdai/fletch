@@ -1,0 +1,29 @@
+-- The decision log: why an item was ruled off the board.
+--
+-- Why this exists: until now, ruling an item off the board deleted its row —
+-- the PM's discard ask, once accepted, called the same DELETE as the trash
+-- button, and the item's whole history cascaded away with it. That made the
+-- board's most consequential decisions its least documented ones: "we are not
+-- doing this, and here is why" evaporated the moment it was made, so the PM's
+-- next session could re-propose the same work and nobody could say it had
+-- already been turned down. So items ruled off the board now become `rejected`
+-- instead of gone: the row stays, the trail stays, and this column carries the
+-- reason in force. Reopening clears it — an item back on the board owes nobody
+-- an epitaph.
+--
+-- NULL for every row that hasn't been rejected; `Some` exactly when `status`
+-- is 'rejected', the same pairing discipline as `hold_reason`/`held_by` (0033).
+-- Written only by the typed reject command and the discard ruling — the column
+-- is deliberately absent from the generic patch surface, so no edit can rule an
+-- item off the board by accident.
+--
+-- `status` needs no schema change of its own: it is a plain TEXT column with no
+-- CHECK constraint (see 0035's rebuild), so the new 'rejected' spelling is a
+-- code-level fact, enforced by the enum that reads and writes it.
+--
+-- Plain ADD COLUMN, deliberately, like 0036: no table rebuild. A nullable TEXT
+-- column with no constraint and no default is the one shape SQLite adds in O(1).
+--
+-- The hard delete (`roadmap_delete_item`) survives this migration unchanged —
+-- it is typo cleanup, not a ruling, and rows removed by it still record nothing.
+ALTER TABLE roadmap_items ADD COLUMN close_reason TEXT;
