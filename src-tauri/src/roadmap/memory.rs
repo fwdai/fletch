@@ -7,10 +7,11 @@
 //! the hole* it plugs into, and that is what this file fixes in place. Exactly
 //! three surfaces cross the boundary:
 //!
-//! 1. **Load** — [`load`], used twice: the PM's spawn-time instruction block
-//!    (`instructions::roadmap_block`, threaded from `supervisor::lifecycle`) and
-//!    the `roadmap_brief` read op, which is how a long-lived chat or a standup
-//!    re-reads the current state without being respawned.
+//! 1. **Load** — [`load`], used twice: [`product_context`], which composes the
+//!    PM's spawn-time instruction block (`instructions::roadmap_block`, threaded
+//!    from `supervisor::lifecycle`) out of the brief and the board's not-doing
+//!    digest, and the `roadmap_brief` read op, which is how a long-lived chat or
+//!    a standup re-reads the current *document* without being respawned.
 //! 2. **Write** — [`propose`], behind the `roadmap_propose_brief_update` op. The
 //!    PM may propose its own memory and never commit it: the user's ruling
 //!    ([`accept`] / [`delete_proposal`], driven by the typed commands in
@@ -38,6 +39,8 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
+use super::store;
+use super::types::{ItemStatus, RoadmapItem};
 use crate::database::now_millis;
 
 /// The project's product brief, as every surface sees it: the markdown, and when
@@ -137,9 +140,10 @@ impl BriefProposal {
 /// **Surface 1 (read).** The project's brief, or `None` when the PM has never
 /// been given one. Must be called with the connection lock held.
 ///
-/// The one function every reader goes through — the spawn-time injection, the
-/// read op, the tab's fetch — so a future implementation has exactly one entry
-/// point to replace.
+/// The one function every reader of the *document* goes through — the read op,
+/// the tab's fetch, and [`product_context`] (the spawn-time injection reads the
+/// brief through here) — so a future implementation has exactly one entry point
+/// to replace.
 pub fn load(conn: &Connection, project_id: &str) -> rusqlite::Result<Option<Brief>> {
     conn.query_row(
         &format!("SELECT {BRIEF_COLUMNS} FROM roadmap_briefs WHERE project_id = ?1"),
@@ -234,10 +238,80 @@ pub fn accept(conn: &Connection, project_id: &str) -> rusqlite::Result<Option<Br
     Ok(Some(brief))
 }
 
+// ───────────────────────── the composed context ──────────────────────────
+
+/// How many rejected items the "Not doing" digest names, newest ruling first.
+///
+/// Like [`MAX_CONTENT`], the cap refuses a *category* error — a decision log so
+/// long it crowds the instructions it rides in — not an honest one: a board has
+/// to have rejected thirty things before this clips, and when it does the digest
+/// says so and keeps the newest, which are the decisions still worth not
+/// re-litigating.
+pub const NOT_DOING_MAX: usize = 30;
+
+/// A board's rejected rows, newest ruling first (`updated_at`, which the reject
+/// write stamps), capped at [`NOT_DOING_MAX`] — plus how many the cap dropped,
+/// so every renderer states the clip rather than silently shortening the log.
+///
+/// Shared by both read surfaces of the decision log — [`product_context`]'s
+/// digest and the PM's `roadmap_list` (`not_doing` key) — so they cannot
+/// disagree about which rejections are worth a line.
+pub fn not_doing(items: &[RoadmapItem]) -> (Vec<&RoadmapItem>, usize) {
+    let mut rejected: Vec<&RoadmapItem> = items
+        .iter()
+        .filter(|i| i.status == ItemStatus::Rejected)
+        .collect();
+    rejected.sort_by_key(|i| std::cmp::Reverse(i.updated_at));
+    let dropped = rejected.len().saturating_sub(NOT_DOING_MAX);
+    rejected.truncate(NOT_DOING_MAX);
+    (rejected, dropped)
+}
+
+/// The PM's product context, composed as named markdown sections — the one
+/// function every consumer reads, so a future source (or a remote backend)
+/// plugs in at exactly one point. Must be called with the connection lock held.
+///
+/// Two sections today. `## Product brief` is [`load`]'s document, verbatim.
+/// `## Not doing` is the board's decision log as one line per rejected item —
+/// `CODE — title — close_reason`, newest ruling first, capped by [`not_doing`]
+/// with the clip stated — which is what stops a fresh session re-proposing an
+/// idea the user already killed. A section with nothing to say is absent rather
+/// than an empty heading, and `None` means the project has no context at all,
+/// so the instruction block claims no memory that doesn't exist.
+pub fn product_context(conn: &Connection, project_id: &str) -> rusqlite::Result<Option<String>> {
+    let mut sections: Vec<String> = Vec::new();
+    if let Some(brief) = load(conn, project_id)? {
+        sections.push(format!("## Product brief\n\n{}", brief.content));
+    }
+    let items = store::list(conn, project_id)?;
+    let (rejected, dropped) = not_doing(&items);
+    if !rejected.is_empty() {
+        let mut lines: Vec<String> = rejected.iter().map(|i| not_doing_line(i)).collect();
+        if dropped > 0 {
+            lines.push(format!(
+                "…and {dropped} older rejected item(s) not shown — the {NOT_DOING_MAX} newest are"
+            ));
+        }
+        sections.push(format!("## Not doing\n\n{}", lines.join("\n")));
+    }
+    Ok((!sections.is_empty()).then(|| sections.join("\n\n")))
+}
+
+/// One rejected item as the digest states it. `close_reason` is `Some` exactly
+/// when a row is rejected, but a row written before that invariant held costs a
+/// shorter line, not a panic — the same tolerance the reopen trail applies.
+fn not_doing_line(item: &RoadmapItem) -> String {
+    match item.close_reason.as_deref() {
+        Some(reason) => format!("- {} — {} — {reason}", item.code, item.title),
+        None => format!("- {} — {}", item.code, item.title),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::get_migrations;
+    use crate::roadmap::types::NewItem;
 
     fn test_conn() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -351,5 +425,119 @@ mod tests {
             .unwrap();
         assert!(load(&conn, "p1").unwrap().is_none());
         assert!(get_proposal(&conn, "p1").unwrap().is_none());
+    }
+
+    // ─────────────────────── the composed context ────────────────────────
+
+    /// A rejected row whose ruling landed at a chosen moment — `updated_at` is
+    /// what the digest orders by, and two rejections in one test tick would
+    /// otherwise share a millisecond.
+    fn rejected_item(conn: &Connection, title: &str, reason: &str, ruled_at: i64) -> RoadmapItem {
+        let item = store::create(
+            conn,
+            "p1",
+            &NewItem {
+                title: title.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        store::reject(conn, &item.id, reason).unwrap().unwrap();
+        conn.execute(
+            "UPDATE roadmap_items SET updated_at = ?1 WHERE id = ?2",
+            params![ruled_at, item.id],
+        )
+        .unwrap();
+        store::get(conn, &item.id).unwrap().unwrap()
+    }
+
+    #[test]
+    fn the_context_carries_the_brief_and_the_digest_newest_ruling_first() {
+        let conn = test_conn();
+        save(&conn, "p1", "# Fletch\n\nSupervised agents.").unwrap();
+        let old = rejected_item(&conn, "Sprint mode", "no ceremony features", 1_000);
+        let new = rejected_item(&conn, "Burndown chart", "same reason, still no", 2_000);
+
+        let context = product_context(&conn, "p1")
+            .unwrap()
+            .expect("both sections");
+        // The brief section is the document verbatim, under its named heading.
+        assert!(
+            context.contains("## Product brief\n\n# Fletch\n\nSupervised agents."),
+            "{context}"
+        );
+        // One line per rejected item: code, title, and the reason the user gave.
+        let digest = context
+            .split("## Not doing\n\n")
+            .nth(1)
+            .expect("digest section");
+        assert_eq!(
+            digest.lines().collect::<Vec<_>>(),
+            vec![
+                format!("- {} — Burndown chart — same reason, still no", new.code),
+                format!("- {} — Sprint mode — no ceremony features", old.code),
+            ],
+            "newest ruling first — the decision still fresh enough to re-propose"
+        );
+    }
+
+    #[test]
+    fn a_section_with_nothing_to_say_is_absent_and_an_empty_context_is_none() {
+        let conn = test_conn();
+        // No brief, nothing rejected: no context at all, so the instruction
+        // block claims no memory that doesn't exist.
+        assert_eq!(product_context(&conn, "p1").unwrap(), None);
+
+        // A live item is not a decision — the digest stays absent.
+        store::create(
+            &conn,
+            "p1",
+            &NewItem {
+                title: "still on the board".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        save(&conn, "p1", "the brief").unwrap();
+        let context = product_context(&conn, "p1").unwrap().unwrap();
+        assert_eq!(context, "## Product brief\n\nthe brief");
+        assert!(!context.contains("## Not doing"), "{context}");
+    }
+
+    #[test]
+    fn the_digest_stands_alone_when_the_project_has_no_brief_yet() {
+        let conn = test_conn();
+        let dead = rejected_item(&conn, "Sprint mode", "no ceremony features", 1_000);
+
+        let context = product_context(&conn, "p1").unwrap().unwrap();
+        assert!(!context.contains("## Product brief"), "{context}");
+        assert!(
+            context.starts_with("## Not doing\n\n"),
+            "the digest is still a named section on its own: {context}"
+        );
+        assert!(context.contains(&dead.code), "{context}");
+    }
+
+    #[test]
+    fn the_digest_clips_at_the_cap_keeps_the_newest_and_says_so() {
+        let conn = test_conn();
+        // Two more rejections than the digest carries, rejected oldest-first.
+        let items: Vec<RoadmapItem> = (0..NOT_DOING_MAX as i64 + 2)
+            .map(|n| rejected_item(&conn, &format!("idea {n}"), "no", 1_000 + n))
+            .collect();
+
+        let context = product_context(&conn, "p1").unwrap().unwrap();
+        let lines: Vec<&str> = context.lines().filter(|l| l.starts_with("- ")).collect();
+        assert_eq!(lines.len(), NOT_DOING_MAX, "capped, not the whole log");
+        // The newest ruling leads, and the two oldest fell off the end.
+        assert!(lines[0].contains(&items.last().unwrap().code), "{context}");
+        for dropped in &items[..2] {
+            assert!(!context.contains(&dropped.code), "{context}");
+        }
+        // The clip is stated, so the PM knows it is reading a prefix.
+        assert!(
+            context.contains("…and 2 older rejected item(s) not shown"),
+            "{context}"
+        );
     }
 }

@@ -1010,27 +1010,28 @@ impl Supervisor {
         // project-manager chat (the only purpose given the
         // `rpc::roadmap::RoadmapDispatcher` — see `launch_agent_process`).
         let roadmap_pm = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_ROADMAP_PM);
-        // The PM's product memory (`roadmap::memory`), read here because this is
+        // The PM's product context (`roadmap::memory::product_context` — the
+        // brief plus the board's not-doing digest), read here because this is
         // the site that knows *which project* this chat belongs to — the same
         // stamp `launch_agent_process` gives the RPC dispatcher. Read on every
         // launch path, like every other instruction layer, so a resumed chat
-        // whose brief the user changed comes back with the current one rather
-        // than the one it spawned with. A read failure (or no DB state, which is
-        // unreachable once setup ran) degrades to no brief: an agent with one
-        // section missing is worth more than a spawn that fails.
-        let product_brief = roadmap_pm
+        // whose brief the user changed (or whose board rejected something)
+        // comes back with the current memory rather than the one it spawned
+        // with. A read failure (or no DB state, which is unreachable once setup
+        // ran) degrades to no context: an agent with one section missing is
+        // worth more than a spawn that fails.
+        let product_context = roadmap_pm
             .then(|| app.try_state::<crate::roadmap::Db>())
             .flatten()
             .and_then(|db| {
                 let conn = db.lock();
-                crate::roadmap::memory::load(&conn, &record.project_id).ok()
+                crate::roadmap::memory::product_context(&conn, &record.project_id).ok()
             })
-            .flatten()
-            .map(|brief| brief.content);
+            .flatten();
         let blocks = crate::agent_profile::Blocks {
             codegraph: codegraph_available,
             roadmap_pm,
-            product_brief: product_brief.as_deref(),
+            product_context: product_context.as_deref(),
         };
         let instructions = crate::agent_profile::effective_instructions(
             brief.as_deref(),

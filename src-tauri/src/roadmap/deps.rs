@@ -13,13 +13,22 @@
 //! *again* when a stored ask is applied (the board moves between the ask and the
 //! click), and answers the drainer's "is this queue head wedged for good?".
 //!
-//! Pure by construction: a `code → deps` map in, a refusal naming the problem
-//! out. No connection, no clock, no app handle — so the table below is the
-//! whole specification of the rule.
+//! The second rule is the decision log's: a *new* dep list may not name a
+//! `rejected` item. A rejected item never satisfies a dependency
+//! ([`super::drainer::unsatisfied_deps`]), so the write would land only to
+//! wedge in the drainer with a fix-it message — refusing here, with the reopen
+//! path named, is the same wedge caught while the author can still act on it.
+//! Only *new* lists: edges that predate the rejection stay on the board (the
+//! drainer's wedge covers those), and re-stating an item's own deps is skipped
+//! by the callers for the same reason it is for loops.
+//!
+//! Pure by construction: a `code → deps` map and the board's rejected codes in,
+//! a refusal naming the problem out. No connection, no clock, no app handle —
+//! so this file is the whole specification of the rule.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use super::types::RoadmapItem;
+use super::types::{ItemStatus, RoadmapItem};
 
 /// Every code on a board mapped to the codes it must land after.
 ///
@@ -37,11 +46,24 @@ pub const BATCH_PREFIX: char = '#';
 /// PM has to read (or the dialog has to fit) stops helping past a dozen.
 const LISTED: usize = 12;
 
-/// The dependency graph of a project's board, exactly as stored.
+/// The dependency graph of a project's board, exactly as stored. Rejected
+/// items keep their nodes and edges: they are still rows, and the cycle walk
+/// has to see the board the drainer sees.
 pub fn graph_of(items: &[RoadmapItem]) -> Graph {
     items
         .iter()
         .map(|i| (i.code.clone(), i.deps.clone()))
+        .collect()
+}
+
+/// The board's rejected codes — what a *new* dep list may not name. A
+/// `BTreeSet` for the same reason [`Graph`] is a `BTreeMap`: any message built
+/// from it must read the same on two identical calls.
+pub fn rejected_of(items: &[RoadmapItem]) -> BTreeSet<String> {
+    items
+        .iter()
+        .filter(|i| i.status == ItemStatus::Rejected)
+        .map(|i| i.code.clone())
         .collect()
 }
 
@@ -63,19 +85,29 @@ pub fn batch_index(dep: &str, batch_len: usize) -> Option<usize> {
 
 /// Validate the deps of an item that does not exist yet — the create path.
 ///
-/// Only the codes are checked: nothing can depend on a row that has no code, so
-/// a brand-new item cannot close a loop no matter what it names.
-pub fn validate_new(graph: &Graph, deps: &[String]) -> Result<(), String> {
-    check_codes(graph, None, deps, "")
+/// Only the codes are checked (against the board, and against the rejected
+/// set): nothing can depend on a row that has no code, so a brand-new item
+/// cannot close a loop no matter what it names.
+pub fn validate_new(
+    graph: &Graph,
+    rejected: &BTreeSet<String>,
+    deps: &[String],
+) -> Result<(), String> {
+    check_codes(graph, rejected, None, deps, "")
 }
 
 /// Validate a new dep list for an item that already exists — the dialog's edit,
 /// the PM's patch, and the ruling that applies one.
 ///
-/// Refuses an unknown code, a self-reference, and any loop the edit would leave
-/// reachable from this item.
-pub fn validate_edit(graph: &Graph, code: &str, deps: &[String]) -> Result<(), String> {
-    check_codes(graph, Some(code), deps, "")?;
+/// Refuses an unknown code, a self-reference, a dep on a rejected item, and any
+/// loop the edit would leave reachable from this item.
+pub fn validate_edit(
+    graph: &Graph,
+    rejected: &BTreeSet<String>,
+    code: &str,
+    deps: &[String],
+) -> Result<(), String> {
+    check_codes(graph, rejected, Some(code), deps, "")?;
     // The graph as it would be *after* the write: the check has to be about the
     // board this edit produces, not the one it was computed from.
     let mut after = graph.clone();
@@ -100,10 +132,14 @@ pub struct BatchRefusal {
 ///
 /// `batch` is each proposed item's dep list, in batch order; an entry may name a
 /// real code or another item in the same batch as `"#n"`. Refuses an unknown
-/// code, an out-of-range or self `"#n"`, and any loop — including one made
-/// entirely of the batch's own edges, which is the whole reason intra-batch
-/// references need checking at all.
-pub fn validate_batch(graph: &Graph, batch: &[Vec<String>]) -> Result<(), BatchRefusal> {
+/// code, a rejected one, an out-of-range or self `"#n"`, and any loop —
+/// including one made entirely of the batch's own edges, which is the whole
+/// reason intra-batch references need checking at all.
+pub fn validate_batch(
+    graph: &Graph,
+    rejected: &BTreeSet<String>,
+    batch: &[Vec<String>],
+) -> Result<(), BatchRefusal> {
     let refuse = |at: usize, message: String| BatchRefusal { at, message };
     let batch_note = ", and not a \"#n\" reference to an item in this batch";
     let mut merged = graph.clone();
@@ -129,6 +165,8 @@ pub fn validate_batch(graph: &Graph, batch: &[Vec<String>]) -> Result<(), BatchR
                 }
             } else if !graph.contains_key(d.as_str()) {
                 return Err(refuse(n, unknown_code(d, graph, batch_note)));
+            } else if rejected.contains(d.as_str()) {
+                return Err(refuse(n, rejected_code(d)));
             }
         }
         merged.insert(placeholder(n), deps.clone());
@@ -216,10 +254,11 @@ fn loop_message(code: &str, cycle: &[String]) -> String {
     }
 }
 
-/// Check every dep resolves, and that the item isn't naming itself. `code` is
-/// `None` for an item that has none yet (the create path).
+/// Check every dep resolves, isn't the item itself, and isn't a rejected item.
+/// `code` is `None` for an item that has none yet (the create path).
 fn check_codes(
     graph: &Graph,
+    rejected: &BTreeSet<String>,
     code: Option<&str>,
     deps: &[String],
     batch_note: &str,
@@ -231,8 +270,21 @@ fn check_codes(
         if !graph.contains_key(d.as_str()) {
             return Err(unknown_code(d, graph, batch_note));
         }
+        if rejected.contains(d.as_str()) {
+            return Err(rejected_code(d));
+        }
     }
     Ok(())
+}
+
+/// A dep naming an item the user ruled off the board. The two exits are named
+/// because they are different people's moves: removing the dep is the author's,
+/// reopening the item is the user's.
+fn rejected_code(dep: &str) -> String {
+    format!(
+        "{dep} was rejected — remove it or reopen it first; a rejected item never satisfies a \
+         dependency, so anything waiting on it would sit wedged"
+    )
 }
 
 /// A dep naming nothing on the board, with what it could have named instead —
@@ -276,11 +328,21 @@ mod tests {
         codes.iter().map(|c| (*c).to_string()).collect()
     }
 
+    /// The rejected half of the input, spelled like [`graph`] — most tests
+    /// have none, which is what `no_rejects()` says.
+    fn rejects(codes: &[&str]) -> BTreeSet<String> {
+        codes.iter().map(|c| (*c).to_string()).collect()
+    }
+
+    fn no_rejects() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
     #[test]
     fn an_item_with_no_deps_is_always_fine() {
         let g = graph(&[("MCA-100", &[]), ("MCA-101", &[])]);
-        assert_eq!(validate_edit(&g, "MCA-100", &[]), Ok(()));
-        assert_eq!(validate_new(&g, &[]), Ok(()));
+        assert_eq!(validate_edit(&g, &no_rejects(), "MCA-100", &[]), Ok(()));
+        assert_eq!(validate_new(&g, &no_rejects(), &[]), Ok(()));
         assert_eq!(find_cycle(&g, "MCA-100"), None);
     }
 
@@ -293,10 +355,13 @@ mod tests {
             ("MCA-102", &["MCA-101"]),
             ("MCA-103", &[]),
         ]);
-        assert_eq!(validate_edit(&g, "MCA-103", &list(&["MCA-102"])), Ok(()));
+        assert_eq!(
+            validate_edit(&g, &no_rejects(), "MCA-103", &list(&["MCA-102"])),
+            Ok(())
+        );
         // Two routes into the same node is not a loop either.
         assert_eq!(
-            validate_edit(&g, "MCA-103", &list(&["MCA-102", "MCA-100"])),
+            validate_edit(&g, &no_rejects(), "MCA-103", &list(&["MCA-102", "MCA-100"])),
             Ok(())
         );
         assert_eq!(find_cycle(&g, "MCA-102"), None);
@@ -306,7 +371,7 @@ mod tests {
     fn a_direct_cycle_is_refused_and_spelled_out() {
         // 104 already depends on 101; making 101 depend on 104 closes the loop.
         let g = graph(&[("MCA-101", &[]), ("MCA-104", &["MCA-101"])]);
-        let err = validate_edit(&g, "MCA-101", &list(&["MCA-104"])).unwrap_err();
+        let err = validate_edit(&g, &no_rejects(), "MCA-101", &list(&["MCA-104"])).unwrap_err();
         assert!(
             err.contains("MCA-101 → MCA-104 → MCA-101"),
             "the refusal must name the loop: {err}"
@@ -322,7 +387,7 @@ mod tests {
             ("MCA-102", &["MCA-103"]),
             ("MCA-103", &[]),
         ]);
-        let err = validate_edit(&g, "MCA-103", &list(&["MCA-101"])).unwrap_err();
+        let err = validate_edit(&g, &no_rejects(), "MCA-103", &list(&["MCA-101"])).unwrap_err();
         assert!(
             err.contains("MCA-103 → MCA-101 → MCA-102 → MCA-103"),
             "{err}"
@@ -337,7 +402,7 @@ mod tests {
             ("MCA-102", &["MCA-101"]),
             ("MCA-200", &[]),
         ]);
-        let err = validate_edit(&g, "MCA-200", &list(&["MCA-101"])).unwrap_err();
+        let err = validate_edit(&g, &no_rejects(), "MCA-200", &list(&["MCA-101"])).unwrap_err();
         assert!(
             err.contains("MCA-200 would wait on a dependency loop"),
             "{err}"
@@ -348,23 +413,23 @@ mod tests {
     #[test]
     fn an_item_cannot_depend_on_itself() {
         let g = graph(&[("MCA-100", &[])]);
-        let err = validate_edit(&g, "MCA-100", &list(&["MCA-100"])).unwrap_err();
+        let err = validate_edit(&g, &no_rejects(), "MCA-100", &list(&["MCA-100"])).unwrap_err();
         assert!(err.contains("depend on itself"), "{err}");
     }
 
     #[test]
     fn an_unknown_code_is_refused_and_the_board_is_listed() {
         let g = graph(&[("MCA-100", &[]), ("MCA-101", &[])]);
-        let err = validate_edit(&g, "MCA-100", &list(&["MCA-999"])).unwrap_err();
+        let err = validate_edit(&g, &no_rejects(), "MCA-100", &list(&["MCA-999"])).unwrap_err();
         assert!(err.contains("MCA-999"), "{err}");
         assert!(
             err.contains("MCA-100, MCA-101"),
             "the codes it could name: {err}"
         );
         // The create path applies the same rule without a code of its own.
-        assert!(validate_new(&g, &list(&["MCA-999"])).is_err());
+        assert!(validate_new(&g, &no_rejects(), &list(&["MCA-999"])).is_err());
         // An empty board says so rather than offering an empty list.
-        let err = validate_new(&Graph::new(), &list(&["MCA-999"])).unwrap_err();
+        let err = validate_new(&Graph::new(), &no_rejects(), &list(&["MCA-999"])).unwrap_err();
         assert!(err.contains("no items to depend on yet"), "{err}");
     }
 
@@ -372,8 +437,34 @@ mod tests {
     fn a_long_board_lists_only_the_first_codes() {
         let codes: Vec<String> = (0..20).map(|n| format!("MCA-1{n:02}")).collect();
         let g: Graph = codes.iter().map(|c| (c.clone(), Vec::new())).collect();
-        let err = validate_edit(&g, "MCA-100", &list(&["nope"])).unwrap_err();
+        let err = validate_edit(&g, &no_rejects(), "MCA-100", &list(&["nope"])).unwrap_err();
         assert!(err.contains("and 8 more"), "{err}");
+    }
+
+    /// The decision log's rule, on every surface that writes a new dep list: a
+    /// rejected item's code resolves, and is refused anyway — landing it would
+    /// only wedge in the drainer, so the refusal names the two exits instead.
+    #[test]
+    fn a_dep_on_a_rejected_item_is_refused_with_the_reopen_path_named() {
+        let g = graph(&[("MCA-100", &[]), ("MCA-101", &[])]);
+        let dead = rejects(&["MCA-100"]);
+
+        for err in [
+            validate_new(&g, &dead, &list(&["MCA-100"])).unwrap_err(),
+            validate_edit(&g, &dead, "MCA-101", &list(&["MCA-100"])).unwrap_err(),
+            validate_batch(&g, &dead, &[list(&["MCA-100"])])
+                .unwrap_err()
+                .message,
+        ] {
+            assert!(err.contains("MCA-100 was rejected"), "{err}");
+            assert!(err.contains("reopen"), "{err}");
+        }
+
+        // The live item is still a fine dep — the set gates, it doesn't leak.
+        assert_eq!(validate_new(&g, &dead, &list(&["MCA-101"])), Ok(()));
+        // And a batch refusal still names the offending item's position.
+        let batch = vec![Vec::new(), list(&["MCA-100"])];
+        assert_eq!(validate_batch(&g, &dead, &batch).unwrap_err().at, 1);
     }
 
     // ─────────────────────────── batches ────────────────────────────────
@@ -389,7 +480,7 @@ mod tests {
             list(&["MCA-100", "#4"]),
             Vec::new(),
         ];
-        assert_eq!(validate_batch(&g, &batch), Ok(()));
+        assert_eq!(validate_batch(&g, &no_rejects(), &batch), Ok(()));
         // And the positions resolve for the caller that rewrites them.
         assert_eq!(batch_index("#3", 4), Some(2));
         assert_eq!(batch_index("MCA-100", 4), None);
@@ -399,7 +490,7 @@ mod tests {
     #[test]
     fn a_batch_internal_cycle_is_refused() {
         let batch = vec![list(&["#2"]), list(&["#3"]), list(&["#1"])];
-        let refusal = validate_batch(&Graph::new(), &batch).unwrap_err();
+        let refusal = validate_batch(&Graph::new(), &no_rejects(), &batch).unwrap_err();
         assert_eq!(refusal.at, 0);
         assert!(refusal.message.contains("#1 → #2 → #3 → #1"), "{refusal:?}");
     }
@@ -411,7 +502,7 @@ mod tests {
         // that can never be built.
         let g = graph(&[("MCA-101", &["MCA-102"]), ("MCA-102", &["MCA-101"])]);
         let batch = vec![Vec::new(), list(&["MCA-101"])];
-        let refusal = validate_batch(&g, &batch).unwrap_err();
+        let refusal = validate_batch(&g, &no_rejects(), &batch).unwrap_err();
         assert_eq!(refusal.at, 1);
         assert!(
             refusal.message.contains("MCA-101 → MCA-102 → MCA-101"),
@@ -430,7 +521,7 @@ mod tests {
         ] {
             let mut batch = batch.clone();
             batch[at] = deps;
-            let refusal = validate_batch(&Graph::new(), &batch).unwrap_err();
+            let refusal = validate_batch(&Graph::new(), &no_rejects(), &batch).unwrap_err();
             assert_eq!(refusal.at, at);
             assert!(refusal.message.contains(needle), "{refusal:?}");
         }
@@ -440,7 +531,7 @@ mod tests {
     fn a_batch_dep_on_an_unknown_code_names_the_batch_syntax_too() {
         let g = graph(&[("MCA-100", &[])]);
         let batch = vec![list(&["MCA-999"])];
-        let refusal = validate_batch(&g, &batch).unwrap_err();
+        let refusal = validate_batch(&g, &no_rejects(), &batch).unwrap_err();
         assert_eq!(refusal.at, 0);
         assert!(refusal.message.contains("MCA-999"), "{refusal:?}");
         assert!(refusal.message.contains("#n"), "{refusal:?}");

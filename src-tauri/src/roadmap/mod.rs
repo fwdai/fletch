@@ -240,8 +240,9 @@ pub async fn roadmap_create_item(
 /// The dep check first: a new row can carry deps (the dialog's chips), so the
 /// codes have to resolve — a dep naming nothing reads as *satisfied* to the
 /// drainer, which silently means "no dependency at all", the opposite of what
-/// was typed. It cannot close a loop: nothing can depend on a row that has no
-/// code yet.
+/// was typed — and may not name a rejected item, which would never satisfy and
+/// wedge the row on arrival. It cannot close a loop: nothing can depend on a
+/// row that has no code yet.
 fn create_checked(
     conn: &Connection,
     project_id: &str,
@@ -249,7 +250,11 @@ fn create_checked(
 ) -> Result<(RoadmapItem, ItemEvent), String> {
     if !item.deps.is_empty() {
         let board = store::list(conn, project_id).map_err(|e| e.to_string())?;
-        deps::validate_new(&deps::graph_of(&board), &item.deps)?;
+        deps::validate_new(
+            &deps::graph_of(&board),
+            &deps::rejected_of(&board),
+            &item.deps,
+        )?;
     }
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let created = store::create(&tx, project_id, item).map_err(|e| e.to_string())?;
@@ -504,15 +509,15 @@ fn landing_for(conn: &Connection, id: &str, queue: bool) -> Option<Landing> {
 }
 
 /// Check a dep list an item that already exists is about to be given: the codes
-/// must resolve, and the graph the write leaves behind must be acyclic
-/// ([`deps::validate_edit`]).
+/// must resolve, none may be a rejected item, and the graph the write leaves
+/// behind must be acyclic ([`deps::validate_edit`]).
 ///
 /// Skipped when the list is the one the item already has. Both writers send whole
 /// lists — the dialog posts its form, a PM patch can include an unchanged `deps`
 /// — and re-stating an item's own deps cannot make the graph worse. Refusing a
-/// retitle because of a loop that was already there would strand the row instead
-/// of helping fix it; the drainer's durable `blocked` event is what surfaces
-/// those.
+/// retitle because of a loop (or a dep rejected since) that was already there
+/// would strand the row instead of helping fix it; the drainer's durable
+/// `blocked` event is what surfaces those.
 fn check_dep_edit(
     conn: &Connection,
     item: &RoadmapItem,
@@ -522,7 +527,12 @@ fn check_dep_edit(
         return Ok(());
     }
     let board = store::list(conn, &item.project_id).map_err(|e| e.to_string())?;
-    deps::validate_edit(&deps::graph_of(&board), &item.code, new_deps)
+    deps::validate_edit(
+        &deps::graph_of(&board),
+        &deps::rejected_of(&board),
+        &item.code,
+        new_deps,
+    )
 }
 
 /// Move an item in the project's priority order — the board's drag, landing as

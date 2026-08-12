@@ -11,12 +11,15 @@
 //! stamped at construction from the workspace record, never taken from `args`:
 //! a chat can only ever read and write its own project's board.
 //!
-//! - `roadmap_list` — the whole board, compact, in board order (which is rank
-//!   order, i.e. dispatch order), including `done` items (the PM needs to know
-//!   what already shipped before it proposes more). Each row carries its
-//!   `last_event` and its PR link when it has one, so "why did MCA-104 fail?"
-//!   is answerable from this one call — the PM oversees execution, not just
-//!   intake.
+//! - `roadmap_list` — the whole board, compact: `items` in board order (which
+//!   is rank order, i.e. dispatch order), including `done` items (the PM needs
+//!   to know what already shipped before it proposes more). Each row carries
+//!   its `last_event` and its PR link when it has one, so "why did MCA-104
+//!   fail?" is answerable from this one call — the PM oversees execution, not
+//!   just intake. Rejected items ride separately, under `not_doing`, as bare
+//!   `code`/`title`/`close_reason` entries: they are the decision log, and
+//!   mixing an archive entry into the live listing is how it gets mistaken for
+//!   a workable row.
 //! - `roadmap_propose` — creates rows with `status = "proposed"`, `source =
 //!   "pm"`. A proposed row is a *ghost* on the board: it renders where it would
 //!   land, counts for nothing, and only becomes real when the user accepts it
@@ -24,7 +27,10 @@
 //!   safety property of this tool — the agent can suggest, never commit. A
 //!   batch item's `deps` may name another item in the same batch as `"#n"`,
 //!   resolved to real codes inside the insert transaction, so an ordered plan
-//!   is one call rather than one call per link.
+//!   is one call rather than one call per link. A title that looks like an
+//!   item already on the board — a rejected one above all — comes back with a
+//!   `warnings` line naming the match; the proposal still lands, because the
+//!   user's ruling is the real gate and the PM is informed, never refused.
 //! - `roadmap_propose_update` / `roadmap_propose_discard` — the same contract
 //!   for items that already exist: the ask lands as a pending delta
 //!   ([`crate::roadmap::proposals`], at most one per item, a newer one
@@ -381,7 +387,27 @@ fn age(now: i64, then: i64) -> Option<String> {
     }
 }
 
-/// `roadmap_list`: the project's board as a JSON array on stdout.
+/// One rejected row, as the archive shows it: the decision and its reason,
+/// stripped of everything that would make it look workable — no horizon, no
+/// deps, no status the PM could try to advance.
+fn compact_rejected(item: &RoadmapItem) -> Value {
+    let mut o = Map::new();
+    o.insert("code".into(), json!(item.code));
+    o.insert("title".into(), json!(item.title));
+    if let Some(reason) = &item.close_reason {
+        o.insert("close_reason".into(), json!(reason));
+    }
+    Value::Object(o)
+}
+
+/// `roadmap_list`: the project's board on stdout — the live rows under
+/// `items`, and the decision log under `not_doing`.
+///
+/// Rejected rows are deliberately *not* in `items`: an archive entry that
+/// renders like a live row is how the PM comes to treat a killed idea as a
+/// workable one. They arrive as their own key, in [`memory::not_doing`]'s
+/// order and under its cap — the same selection the spawn-time digest makes,
+/// so the two surfaces can't tell different stories.
 ///
 /// Pure over the connection so it is testable without an app handle; the
 /// dispatcher holds the lock around it.
@@ -396,6 +422,17 @@ fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Respo
             let mut set = HashSet::new();
             for s in raw {
                 match ItemStatus::from_db(s.trim()) {
+                    // `rejected` parses, and is refused anyway: it is not a
+                    // live status, and a filter that always matched nothing
+                    // would read as "the decision log is empty".
+                    Some(ItemStatus::Rejected) => {
+                        return Response::err(
+                            id,
+                            "roadmap_list: `status` filters the live board — rejected items \
+                             always arrive under `not_doing`, so there is nothing to filter for"
+                                .to_string(),
+                        )
+                    }
                     Some(st) => {
                         set.insert(st.as_str());
                     }
@@ -445,10 +482,27 @@ fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Respo
     };
     let rows: Vec<Value> = items
         .iter()
+        .filter(|i| i.status != ItemStatus::Rejected)
         .filter(|i| keep(i))
         .map(|i| compact(i, by_item.get(i.id.as_str()).copied(), last.get(&i.id), now))
         .collect();
-    match serde_json::to_string(&rows) {
+    let mut payload = Map::new();
+    payload.insert("items".into(), json!(rows));
+    let (rejected, omitted) = memory::not_doing(&items);
+    if !rejected.is_empty() {
+        payload.insert(
+            "not_doing".into(),
+            json!(rejected
+                .iter()
+                .map(|i| compact_rejected(i))
+                .collect::<Vec<_>>()),
+        );
+        // The clip, stated — the JSON spelling of the digest's "…and n more".
+        if omitted > 0 {
+            payload.insert("not_doing_omitted".into(), json!(omitted));
+        }
+    }
+    match serde_json::to_string(&Value::Object(payload)) {
         Ok(stdout) => Response::ok(id, 0, stdout, String::new()),
         Err(e) => Response::err(id, format!("roadmap_list: {e}")),
     }
@@ -526,9 +580,76 @@ fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewI
     // intra-batch loop is visible in. Refused per item, with the item's own
     // number and title — the PM fixes one ticket, not a graph.
     let lists: Vec<Vec<String>> = out.iter().map(|n| n.deps.clone()).collect();
-    deps::validate_batch(&deps::graph_of(existing), &lists)
-        .map_err(|r| format!("item {} ({:?}): {}", r.at + 1, out[r.at].title, r.message))?;
+    deps::validate_batch(
+        &deps::graph_of(existing),
+        &deps::rejected_of(existing),
+        &lists,
+    )
+    .map_err(|r| format!("item {} ({:?}): {}", r.at + 1, out[r.at].title, r.message))?;
     Ok(out)
+}
+
+// ────────────────────── near-duplicate warnings ─────────────────────────
+
+/// Words that carry no signal about what a ticket is for. Deliberately tiny:
+/// this list exists so "Add the queue drainer" and "Add a queue drainer" read
+/// as the same idea, not to do linguistics.
+const STOPWORDS: [&str; 9] = ["a", "an", "the", "of", "for", "to", "in", "on", "and"];
+
+/// A title as a bag of meaningful words: lowercased, split on anything that
+/// isn't alphanumeric, stopwords dropped.
+fn title_words(title: &str) -> HashSet<String> {
+    title
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty() && !STOPWORDS.contains(w))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Do two titles look like the same idea? True when the smaller title's word
+/// set is substantially contained in the other's: at least two shared words,
+/// covering at least 60% of the smaller set.
+///
+/// Deliberately dumb and dependency-free — no stemming, no embeddings, no
+/// dials. It only has to catch the PM re-typing an idea in slightly different
+/// words; a miss costs nothing (the user still rules), and a false hit costs
+/// one advisory line.
+fn similar_titles(a: &str, b: &str) -> bool {
+    let (a, b) = (title_words(a), title_words(b));
+    let shared = a.intersection(&b).count();
+    let smaller = a.len().min(b.len());
+    // Integer form of `shared / smaller >= 0.6`, so no float ever decides.
+    shared >= 2 && 10 * shared >= 6 * smaller
+}
+
+/// Advisory lines for a batch whose titles look like items already on the
+/// board — every item, `rejected` included, because the killed idea is exactly
+/// the one worth flagging. Never a refusal: the proposal lands either way, the
+/// user's ruling is the real gate, and each line is worded for the PM to relay.
+fn duplicate_warnings(news: &[NewItem], board: &[RoadmapItem]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (n, new) in news.iter().enumerate() {
+        for item in board {
+            if !similar_titles(&new.title, &item.title) {
+                continue;
+            }
+            let at = n + 1;
+            warnings.push(match item.status {
+                ItemStatus::Rejected => format!(
+                    "item {at} ({:?}) is similar to {}, which was REJECTED — {}",
+                    new.title,
+                    item.code,
+                    item.close_reason.as_deref().unwrap_or("no reason recorded")
+                ),
+                _ => format!(
+                    "item {at} ({:?}) is similar to {} — {:?}",
+                    new.title, item.code, item.title
+                ),
+            });
+        }
+    }
+    warnings
 }
 
 /// Rewrite a batch item's `"#n"` references into the codes the insert allocated.
@@ -550,7 +671,10 @@ fn resolve_batch_deps(raw: &[String], created: &[RoadmapItem]) -> Vec<String> {
 }
 
 /// `roadmap_propose`: validate the batch, insert it as `proposed` rows in one
-/// transaction, and hand back the allocated codes.
+/// transaction, and hand back the allocated codes — plus a `warnings` array
+/// when a title looks like an item already on the board
+/// ([`duplicate_warnings`]), so the PM learns about the near-duplicate in the
+/// same breath as the codes and can raise it instead of ignoring it.
 ///
 /// Returns the created rows — and the `proposed` history events recorded with
 /// them — alongside the response so the caller can announce both to the
@@ -581,6 +705,9 @@ fn propose_op(
         Ok(news) => news,
         Err(msg) => return err(msg),
     };
+    // Computed against the board the batch was validated against, before the
+    // insert — a batch must not warn about itself.
+    let warnings = duplicate_warnings(&news, &existing);
 
     // All or nothing: a failure half-way through must not leave the user
     // staring at three of the five tickets they were promised. Each row's
@@ -631,12 +758,20 @@ fn propose_op(
         Err(e) => return err(e.to_string()),
     };
 
-    let payload = json!({
-        "created": created
+    let mut payload = Map::new();
+    payload.insert(
+        "created".into(),
+        json!(created
             .iter()
             .map(|i| json!({ "code": i.code, "title": i.title }))
-            .collect::<Vec<_>>(),
-    });
+            .collect::<Vec<_>>()),
+    );
+    // Advisory only, and only when there is something to say: the rows above
+    // exist regardless, so this key must never read as a partial failure.
+    if !warnings.is_empty() {
+        payload.insert("warnings".into(), json!(warnings));
+    }
+    let payload = Value::Object(payload);
     match serde_json::to_string(&payload) {
         Ok(stdout) => (
             Response::ok(id, 0, stdout, String::new()),
@@ -737,7 +872,12 @@ fn validate_patch(
     }
     if let Some(patched) = &out.deps {
         let patched = clean_list(patched);
-        deps::validate_edit(&deps::graph_of(board), &item.code, &patched)?;
+        deps::validate_edit(
+            &deps::graph_of(board),
+            &deps::rejected_of(board),
+            &item.code,
+            &patched,
+        )?;
         out.deps = Some(patched);
     }
     Ok(out)
@@ -1387,6 +1527,13 @@ mod tests {
         list_op(&conn, "p1", "r1", &args)
     }
 
+    /// The live rows of a `roadmap_list` response — the payload's `items`.
+    /// Most tests read only the board half; `not_doing` has its own tests.
+    fn board_rows(resp: &Response) -> Vec<Value> {
+        let payload: Value = serde_json::from_str(resp.stdout.as_ref().unwrap()).unwrap();
+        payload["items"].as_array().unwrap().clone()
+    }
+
     fn propose_update(db: &Db, args: Value) -> (Response, Option<Proposal>) {
         let conn = db.lock();
         propose_update_op(&conn, "p1", "r1", &args)
@@ -1739,7 +1886,7 @@ mod tests {
 
         let resp = list(&db, Value::Null);
         assert!(resp.ok, "{resp:?}");
-        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        let rows: Vec<Value> = board_rows(&resp);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["code"], "MCA-100");
         assert_eq!(rows[0]["status"], "proposed");
@@ -1750,7 +1897,7 @@ mod tests {
         assert!(rows[1].get("area").is_none());
 
         let resp = list(&db, json!({ "status": ["done"] }));
-        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        let rows: Vec<Value> = board_rows(&resp);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["code"], "MCA-101");
 
@@ -1824,7 +1971,7 @@ mod tests {
         }
 
         let resp = list(&db, Value::Null);
-        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        let rows: Vec<Value> = board_rows(&resp);
         assert_eq!(rows[0]["last_event"]["kind"], "proposed");
         // No detail, no age (it happened this millisecond) — the keys are simply
         // absent rather than null.
@@ -1855,7 +2002,7 @@ mod tests {
             .unwrap();
         }
         let resp = list(&db, Value::Null);
-        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        let rows: Vec<Value> = board_rows(&resp);
         assert!(rows[3].get("last_event").is_none());
     }
 
@@ -2025,7 +2172,7 @@ mod tests {
         assert_eq!(trail[0].actor, EventActor::Pm);
         // And the listing shows it back, so the PM can see its own note landed.
         let resp = list(&db, Value::Null);
-        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        let rows: Vec<Value> = board_rows(&resp);
         assert_eq!(rows[0]["last_event"]["kind"], "note");
         assert_eq!(
             rows[0]["last_event"]["detail"],
@@ -2070,7 +2217,7 @@ mod tests {
 
         // And the listing shows the brake back, so the PM never re-holds blind.
         let resp = list(&db, Value::Null);
-        let rows: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        let rows: Vec<Value> = board_rows(&resp);
         assert_eq!(
             rows[0]["held"]["reason"],
             "the run is building the case this ticket scoped out"
@@ -2307,7 +2454,7 @@ mod tests {
         // The compact listing carries the pending ask, so the PM never
         // re-proposes blind.
         let resp = list(&db, Value::Null);
-        let listed: Vec<Value> = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
+        let listed: Vec<Value> = board_rows(&resp);
         let pp = &listed[0]["pending_proposal"];
         assert_eq!(pp["kind"], "update");
         assert_eq!(pp["note"], "scope grew");
@@ -2666,7 +2813,97 @@ mod tests {
             .unwrap();
         }
         let resp = list(&db, Value::Null);
-        assert_eq!(resp.stdout.unwrap(), "[]");
+        // Another project's rows reach neither half of the payload — not the
+        // board, and not the decision log.
+        let payload: Value = serde_json::from_str(resp.stdout.as_ref().unwrap()).unwrap();
+        assert_eq!(payload["items"], json!([]));
+        assert!(payload.get("not_doing").is_none());
+    }
+
+    /// The two halves of the listing: a rejected row leaves `items` and arrives
+    /// under `not_doing` as a bare ruling — code, title, why — and the status
+    /// filter refuses `rejected` by name rather than matching nothing.
+    #[test]
+    fn the_listing_splits_the_decision_log_from_the_board() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("keep")).ok); // MCA-100
+        assert!(propose(&db, one_item("kill")).ok); // MCA-101
+        {
+            let conn = db.lock();
+            let killed = store::list(&conn, "p1")
+                .unwrap()
+                .into_iter()
+                .find(|i| i.title == "kill")
+                .unwrap();
+            store::reject(&conn, &killed.id, "cadence over ceremony").unwrap();
+        }
+
+        let resp = list(&db, Value::Null);
+        let payload: Value = serde_json::from_str(resp.stdout.as_ref().unwrap()).unwrap();
+        let items = payload["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "the ruled-off row leaves the board half");
+        assert_eq!(items[0]["title"], "keep");
+        let log = payload["not_doing"].as_array().unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0]["code"], "MCA-101");
+        assert_eq!(log[0]["close_reason"], "cadence over ceremony");
+        assert!(
+            payload.get("not_doing_omitted").is_none(),
+            "nothing clipped"
+        );
+
+        let refused = list(&db, json!({"status": ["rejected"]}));
+        assert!(!refused.ok);
+        assert!(refused.error.unwrap().contains("not_doing"));
+    }
+
+    /// A near-duplicate title lands anyway — the ruling is the gate — but the
+    /// response says so, and a match on a *rejected* item quotes the reason, so
+    /// the PM can surface the old decision instead of re-litigating it blind.
+    #[test]
+    fn a_near_duplicate_title_warns_but_still_lands() {
+        let db = test_db("p1");
+        assert!(propose(&db, one_item("Add dark mode support")).ok); // MCA-100
+        {
+            let conn = db.lock();
+            let item = &store::list(&conn, "p1").unwrap()[0];
+            store::reject(&conn, &item.id, "theming is out of scope").unwrap();
+        }
+
+        let resp = propose(&db, one_item("Dark mode support"));
+        assert!(resp.ok, "{resp:?}");
+        let payload: Value = serde_json::from_str(resp.stdout.as_ref().unwrap()).unwrap();
+        assert!(
+            payload.get("created").is_some(),
+            "a warning is advice, not a refusal"
+        );
+        let warnings = payload["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1);
+        let w = warnings[0].as_str().unwrap();
+        assert!(w.contains("MCA-100"), "{w}");
+        assert!(w.contains("REJECTED"), "{w}");
+        assert!(w.contains("theming is out of scope"), "{w}");
+
+        // A title sharing nothing warns about nothing.
+        let quiet = propose(&db, one_item("Queue drainer"));
+        let payload: Value = serde_json::from_str(quiet.stdout.as_ref().unwrap()).unwrap();
+        assert!(payload.get("warnings").is_none());
+    }
+
+    /// The similarity heuristic, pinned: substantial containment of the
+    /// smaller title's words, at least two of them, stopwords and case aside.
+    #[test]
+    fn similar_titles_is_containment_with_a_two_word_floor() {
+        assert!(similar_titles("Add dark mode support", "Dark mode"));
+        assert!(similar_titles("The drainer of the queue", "queue drainer"));
+        // One shared word is never enough, however small the title.
+        assert!(!similar_titles("Dark mode", "Light mode"));
+        assert!(!similar_titles("drainer", "drainer"));
+        // Sharing little of the smaller set is not a match.
+        assert!(!similar_titles(
+            "Persist worktree state across restarts",
+            "Persist the user's editor theme and window state"
+        ));
     }
 
     #[tokio::test]
