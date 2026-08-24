@@ -66,6 +66,7 @@ import { AUTOPILOT_SETTING, parseAutopilotEnrollment } from "./autopilot";
 import { interruptedAgents } from "./interrupted";
 import { stampPrWrite } from "./prWriteOrder";
 import { refreshWorkspace } from "./refreshWorkspace";
+import { NEUTRAL_BUILD_RUNTIME } from "./sandbox";
 import type { AppSlice, SliceCreator } from "./types";
 
 type AppSet = Parameters<SliceCreator<AppSlice>>[0];
@@ -490,36 +491,42 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   });
 
   // Container image-build progress (first spawn under a runtime). Drives the
-  // build toast: started opens it — carrying the runtime name so the copy can
-  // say which one — lines update the tail, finished clears it, failed keeps it
-  // up (with the reason) until the user dismisses.
+  // build toast: started opens it, lines update the tail, finished clears it,
+  // failed keeps it up (with the reason) until the user dismisses. Every phase
+  // is routed by the event's runtime — Docker and Podman build on independent
+  // locks, so their lifecycles can interleave and one runtime's finished/failed
+  // must never touch the other's entry.
   await onDockerBuildProgress((e) => {
+    const key = e.runtime ?? NEUTRAL_BUILD_RUNTIME;
     if (e.phase === "started") {
-      set({
-        dockerBuild: {
-          status: "building",
-          lastLine: null,
-          error: null,
-          runtime: e.runtime ?? null,
-        },
-      });
-    } else if (e.phase === "line") {
-      set((s) =>
-        s.dockerBuild
-          ? { dockerBuild: { ...s.dockerBuild, lastLine: e.line ?? s.dockerBuild.lastLine } }
-          : {},
-      );
-    } else if (e.phase === "finished") {
-      set({ dockerBuild: null });
-    } else if (e.phase === "failed") {
-      // Keep whichever runtime `started` named: the failure event carries only
-      // the reason, and dropping the name would flip the toast's copy mid-build.
       set((s) => ({
-        dockerBuild: {
-          status: "failed",
-          lastLine: null,
-          error: e.error ?? "Image build failed",
-          runtime: s.dockerBuild?.runtime ?? null,
+        containerBuilds: {
+          ...s.containerBuilds,
+          [key]: { status: "building", lastLine: null, error: null },
+        },
+      }));
+    } else if (e.phase === "line") {
+      set((s) => {
+        const build = s.containerBuilds[key];
+        return build
+          ? {
+              containerBuilds: {
+                ...s.containerBuilds,
+                [key]: { ...build, lastLine: e.line ?? build.lastLine },
+              },
+            }
+          : {};
+      });
+    } else if (e.phase === "finished") {
+      set((s) => {
+        const { [key]: _, ...rest } = s.containerBuilds;
+        return { containerBuilds: rest };
+      });
+    } else if (e.phase === "failed") {
+      set((s) => ({
+        containerBuilds: {
+          ...s.containerBuilds,
+          [key]: { status: "failed", lastLine: null, error: e.error ?? "Image build failed" },
         },
       }));
     }

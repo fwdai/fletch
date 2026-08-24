@@ -9,30 +9,34 @@
 //! decoupled from Tauri — matching how the engines' `set_launch_settings`
 //! mirrors settings without a DB handle.
 //!
-//! One sink for both runtimes, because there is one toast: only one foreground
-//! build can be in flight at a time under either runtime (each runtime
-//! serializes its builds on its own lock, and a launch waits for its own build),
-//! and [`BuildEvent::Started`] carries the runtime's display name so the toast
-//! can say which one the user is waiting on.
+//! One sink for both runtimes — but NOT one build at a time: each runtime
+//! serializes builds on its own lock, so a Docker and a Podman first-build can
+//! overlap. Every event therefore carries `runtime`, its lifecycle key: the
+//! frontend keys build state on it, so interleaved lifecycles can't clear or
+//! overwrite each other's toast.
 
 use parking_lot::RwLock;
 
 /// One image-build lifecycle event. Serializes tagged (`{ "phase": "line",
-/// "line": "…" }`) so the frontend can pattern-match a single event stream.
+/// "runtime": "Docker", "line": "…" }`) so the frontend can pattern-match a
+/// single event stream. `runtime` is the runtime's display name ("Docker" /
+/// "Podman") on every variant — it is the key that separates two overlapping
+/// lifecycles, not decoration; the frontend still treats it as optional so an
+/// event without it renders under a neutral key.
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "phase", rename_all = "kebab-case")]
 pub enum BuildEvent {
-    /// A build just started (image missing, `build` about to run). `runtime` is
-    /// the runtime's display name ("Docker" / "Podman") so the toast can name
-    /// it; the frontend treats it as optional, so an event without it still
-    /// renders.
+    /// A build just started (image missing, `build` about to run).
     Started { runtime: &'static str },
     /// One line of `build` output.
-    Line { line: String },
+    Line { runtime: &'static str, line: String },
     /// The build finished successfully.
-    Finished,
+    Finished { runtime: &'static str },
     /// The build failed; `error` is the user-readable reason.
-    Failed { error: String },
+    Failed {
+        runtime: &'static str,
+        error: String,
+    },
 }
 
 type Sink = Box<dyn Fn(BuildEvent) + Send + Sync>;
@@ -75,35 +79,42 @@ mod tests {
 
         emit(BuildEvent::Started { runtime: "Podman" });
         emit(BuildEvent::Line {
+            runtime: "Podman",
             line: "step 1/5".into(),
         });
-        emit(BuildEvent::Finished);
+        emit(BuildEvent::Finished { runtime: "Podman" });
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 
+    /// `runtime` rides every phase, not just `started`: it is the lifecycle
+    /// key that keeps two overlapping runtimes' events from clearing or
+    /// overwriting each other's toast state. Fields are additive, so a
+    /// consumer that only reads `phase` still works.
     #[test]
-    fn build_event_serializes_tagged() {
-        let json = serde_json::to_value(BuildEvent::Line {
-            line: "pulling base image".into(),
-        })
-        .unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({ "phase": "line", "line": "pulling base image" })
-        );
-        // `started` carries the runtime name alongside the phase the frontend
-        // switches on — an additive field, so the wire contract still holds for
-        // a consumer that only reads `phase`.
+    fn build_event_serializes_tagged_with_runtime_on_every_phase() {
         assert_eq!(
             serde_json::to_value(BuildEvent::Started { runtime: "Podman" }).unwrap(),
             serde_json::json!({ "phase": "started", "runtime": "Podman" })
         );
         assert_eq!(
+            serde_json::to_value(BuildEvent::Line {
+                runtime: "Docker",
+                line: "pulling base image".into(),
+            })
+            .unwrap(),
+            serde_json::json!({ "phase": "line", "runtime": "Docker", "line": "pulling base image" })
+        );
+        assert_eq!(
+            serde_json::to_value(BuildEvent::Finished { runtime: "Docker" }).unwrap(),
+            serde_json::json!({ "phase": "finished", "runtime": "Docker" })
+        );
+        assert_eq!(
             serde_json::to_value(BuildEvent::Failed {
+                runtime: "Podman",
                 error: "boom".into()
             })
             .unwrap(),
-            serde_json::json!({ "phase": "failed", "error": "boom" })
+            serde_json::json!({ "phase": "failed", "runtime": "Podman", "error": "boom" })
         );
     }
 }

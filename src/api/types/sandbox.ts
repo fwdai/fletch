@@ -24,10 +24,11 @@ export interface ContainerAuthStatus {
 /** One image-build lifecycle event from the `docker:build-progress` stream —
  *  both container runtimes emit on it (the event name predates Podman and is
  *  kept as the wire contract). The embedded agent image is built on the first
- *  spawn under a runtime (a slow `build`); these feed the build toast. `line` is
- *  set only on `"line"`, `error` only on `"failed"`, and `runtime` (the display
- *  name, e.g. `"Podman"`) only on `"started"` — optional so an event without it
- *  still renders. */
+ *  spawn under a runtime (a slow `build`); these feed the build toast. `line`
+ *  is set only on `"line"`, `error` only on `"failed"`. `runtime` (the display
+ *  name, e.g. `"Podman"`) rides every phase: it keys the build state, so two
+ *  runtimes' overlapping lifecycles can't clear or overwrite each other —
+ *  optional so an event without it still renders, under a neutral key. */
 export interface DockerBuildEvent {
   phase: "started" | "line" | "finished" | "failed";
   line?: string;

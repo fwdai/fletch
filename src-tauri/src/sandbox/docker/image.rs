@@ -156,13 +156,17 @@ fn ensure_image_with(
     let forward = |line: &str| {
         on_progress(line);
         progress::emit(BuildEvent::Line {
+            runtime: super::RUNTIME_NAME,
             line: line.to_string(),
         });
     };
     let result = run_build(dockerfile, entrypoint, tag, false, &forward);
     match &result {
-        Ok(()) => progress::emit(BuildEvent::Finished),
+        Ok(()) => progress::emit(BuildEvent::Finished {
+            runtime: super::RUNTIME_NAME,
+        }),
         Err(e) => progress::emit(BuildEvent::Failed {
+            runtime: super::RUNTIME_NAME,
             error: e.to_string(),
         }),
     }

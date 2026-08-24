@@ -184,11 +184,22 @@
   justify-content: flex-end;
 }
 
-/* Docker image-build toast — reuses the update-toast chrome but anchors
-   bottom-left so it never overlaps a concurrent update toast (bottom-right). */
-.docker-build-toast {
-  right: auto;
+/* Container image-build toasts — reuse the update-toast chrome but anchor
+   bottom-left so they never overlap a concurrent update toast (bottom-right).
+   The stack holds one toast per runtime: Docker and Podman build on
+   independent locks, so both can be live at once and must not overlap each
+   other either. */
+.docker-build-stack {
+  position: fixed;
   left: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: var(--z-toast);
+}
+.docker-build-toast {
+  position: static;
   transform-origin: bottom left;
 }
 .docker-build-toast > svg {
