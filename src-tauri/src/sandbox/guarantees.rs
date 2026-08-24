@@ -22,6 +22,29 @@ use serde::Serialize;
 
 use super::EngineKind;
 
+/// The engine-independent half of [`Guarantee::WithheldGitConfig`]'s shortfall,
+/// shared by every container runtime: each one hands the agent a read-write
+/// checkout, so each one leans on the same host-side refusal.
+///
+/// A macro rather than a `const` because [`Coverage::Partial`] carries a
+/// `&'static str` and only `concat!` of literals can prepend a runtime-specific
+/// lead-in to it. Shared rather than duplicated per runtime because this text is
+/// what the isolation panel shows the user: two copies would drift, and the
+/// drift would be silent — a copy that no longer matches the hardening it
+/// describes still compiles and still renders.
+macro_rules! git_config_host_backstop {
+    () => {
+        "Instead host-side git refuses to run in a checkout whose config would execute a program \
+         (crate::git::hardening), which is engine-independent. It reads every scope the agent can \
+         write (local and worktree, via --show-scope), so a key smuggled into .git/config.worktree \
+         is caught too. That refusal covers every command that can trigger one: the git::cmd \
+         helper seam plus the read, pull and push/fetch paths that build a command directly. \
+         push/fetch run no filter or merge driver but do run the transport-executing keys \
+         core.sshCommand, core.gitProxy and remote.<name>.uploadpack/receivepack, which the -c \
+         overrides omit, so the refusal covers them there too"
+    };
+}
+
 /// A security property Fletch's isolation claims.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Guarantee {
@@ -78,45 +101,55 @@ impl Guarantee {
     /// memory, is what forces a new guarantee or a new engine to declare its
     /// coverage. That is this module's whole job.
     pub fn coverage(self, engine: EngineKind) -> Coverage {
-        use EngineKind::{Docker, SandboxExec};
+        use EngineKind::{Docker, Podman, SandboxExec};
         match (self, engine) {
-            // Both engines' primary job: seatbelt by SBPL deny-then-allow,
-            // Docker by mounting nothing else writable.
+            // Every engine's primary job: seatbelt by SBPL deny-then-allow, the
+            // container runtimes by mounting nothing else writable.
             (Self::ConfinedWrites, _) => Coverage::Enforced,
 
             // Policy invariant 3 (`super::policy::GIT_EXEC_CONFIG_FILES`).
             (Self::WithheldGitConfig, SandboxExec) => Coverage::Enforced,
-            (Self::WithheldGitConfig, Docker) => Coverage::Partial(
+            (Self::WithheldGitConfig, Docker) => Coverage::Partial(concat!(
                 "the checkout is bind-mounted read-write, so an agent can still write its own \
                  .git/config — nested read-only binds would stop a direct write but not a \
                  rename, because Docker mounts follow the inode where seatbelt's path rules do \
-                 not. Instead host-side git refuses to run in a checkout whose config would \
-                 execute a program (crate::git::hardening), which is engine-independent. It \
-                 reads every scope the agent can write (local and worktree, via --show-scope), \
-                 so a key smuggled into .git/config.worktree is caught too. That refusal covers \
-                 every command that can trigger one: the git::cmd helper seam plus the read, \
-                 pull and push/fetch paths that build a command directly. push/fetch run no \
-                 filter or merge driver but do run the transport-executing keys core.sshCommand, \
-                 core.gitProxy and remote.<name>.uploadpack/receivepack, which the -c overrides \
-                 omit, so the refusal covers them there too",
-            ),
+                 not. ",
+                git_config_host_backstop!(),
+            )),
+            // Same mount model as Docker (`container::run_args`): identical-path
+            // binds, the checkout read-write. Rootless is worth stating because
+            // it is the difference a Podman user expects to matter — and worth
+            // bounding, because it does not matter here.
+            (Self::WithheldGitConfig, Podman) => Coverage::Partial(concat!(
+                "the checkout is bind-mounted read-write, so an agent can still write its own \
+                 .git/config — nested read-only binds would stop a direct write but not a \
+                 rename, because a Podman bind mount follows the inode just as Docker's does, \
+                 where seatbelt's path rules do not. Podman running rootless narrows what a \
+                 container escape would own on the host, but it does not narrow this: the agent \
+                 is handed that checkout read-write by design. ",
+                git_config_host_backstop!(),
+            )),
 
-            // Seatbelt denies the app-data dir explicitly; Docker never mounts it.
+            // Seatbelt denies the app-data dir explicitly; a container runtime
+            // never mounts it.
             (Self::OpaqueAppData, _) => Coverage::Enforced,
 
-            // Agents work in a clone with its own .git; under Docker the source
-            // .git is never mounted, only its object store and only read-only.
+            // Agents work in a clone with its own .git; under a container runtime
+            // the source .git is never mounted, only its object store and only
+            // read-only.
             (Self::UntouchableSourceGit, _) => Coverage::Enforced,
 
             (Self::ConfinedReads, SandboxExec) => Coverage::Unenforced(
                 "the profile starts from (allow default) and confines writes only — the agent \
                  runs as you and can read anything you can",
             ),
-            (Self::ConfinedReads, Docker) => Coverage::Enforced,
+            // Both container runtimes mount only the paths `container::run_args`
+            // lists, so nothing else on the disk is reachable to read.
+            (Self::ConfinedReads, Docker | Podman) => Coverage::Enforced,
 
             (Self::ConfinedNetwork, _) => Coverage::Unenforced(
-                "neither engine restricts egress: seatbelt's (allow default) leaves it open and \
-                 the container launch sets no --network. Treat every agent as network-capable",
+                "no engine restricts egress: seatbelt's (allow default) leaves it open and the \
+                 container launches set no --network. Treat every agent as network-capable",
             ),
 
             // Push/PR never run in the sandbox — they are brokered host-side
