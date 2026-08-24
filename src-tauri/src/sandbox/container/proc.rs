@@ -1,13 +1,10 @@
 //! Bounded subprocess execution: run a command to completion under a hard
 //! timeout, or stream its output line by line while it runs.
 //!
-//! Every container-runtime CLI invocation goes through here, because an
-//! unbounded call cannot be allowed to wedge the thread that issued it (UI
-//! polling, the startup sweep): a stopped Docker Desktop, for one, leaves a
-//! socket that accepts connections and then hangs. Callers pass an explicit
-//! timeout and get a clear "timed out" error instead. Nothing here knows which
-//! runtime it is running — see `sandbox::docker::cli` and
-//! `sandbox::podman::cli` for the per-runtime wrappers.
+//! Every container-runtime CLI invocation goes through here — a stalled runtime
+//! socket accepts connections and then hangs, and no such call may wedge the
+//! thread that issued it. Runtime-neutral; see `sandbox::{docker,podman}::cli`
+//! for the per-runtime wrappers.
 
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
@@ -55,12 +52,10 @@ pub(crate) fn wait_with_deadline(
     }
 }
 
-/// Run any command to completion under `timeout`, capturing output. Both
-/// pipes are drained on scoped threads (so a chatty child can't deadlock on
-/// a full pipe) while this thread keeps ownership of the `Child` and waits
-/// with a deadline — on expiry [`wait_with_deadline`] kills and reaps it on
-/// any platform, the pipes hit EOF, and the readers finish: nothing outlives
-/// the error we return.
+/// Run any command to completion under `timeout`, capturing output. Both pipes
+/// are drained on scoped threads so a chatty child can't deadlock on a full
+/// pipe; on expiry the child is killed and reaped, so nothing outlives the
+/// error returned.
 pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration, what: &str) -> Result<Output> {
     fn read_all(mut reader: impl std::io::Read) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -99,8 +94,6 @@ fn timeout_error(what: &str, timeout: Duration) -> Error {
 mod tests {
     use super::*;
 
-    /// The property every runtime invocation relies on: a hung child comes
-    /// back as a bounded error, and the child is killed rather than orphaned.
     #[test]
     fn run_with_timeout_kills_hung_child() {
         let mut cmd = Command::new("/bin/sleep");
@@ -124,14 +117,11 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
     }
 
-    /// Streaming runs deliver lines to the callback and fail loudly (with the
-    /// output tail) on a non-zero exit — the contract `docker build` needs.
     #[test]
     fn streaming_forwards_lines_and_reports_failure_tail() {
         let lines = std::sync::Mutex::new(Vec::new());
         let on_line = |line: &str| lines.lock().unwrap().push(line.to_string());
 
-        // Use /bin/sh directly (not via docker) to exercise the machinery.
         let mut child = Command::new("/bin/sh")
             .args(["-c", "echo one; echo two >&2; exit 3"])
             .stdin(Stdio::null())

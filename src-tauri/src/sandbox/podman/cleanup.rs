@@ -1,26 +1,16 @@
 //! The dead-instance orphan sweep, the per-agent container removal, and the
 //! stale-image GC, for podman.
 //!
-//! The same questions [`docker::cleanup`](crate::sandbox::docker) answers,
-//! against the same labels ([`container::labels`](crate::sandbox::container::labels)):
-//! "whose owning instance is dead?" (startup), "is anything still running for
-//! *this* agent?" (archive/discard), and "which agent images has a rebuild
-//! superseded?" ([`sweep_stale_images`]). The label parsing, the selection rule
-//! and the under-reclaim bias are shared with docker
+//! Same questions and same labels as [`docker::cleanup`](crate::sandbox::docker),
+//! sharing its selection rule and under-reclaim bias
 //! ([`container::image_gc`](crate::sandbox::container::image_gc)); only the
-//! invocations differ.
+//! invocations differ. Podman has one container store *and* image store per
+//! machine endpoint (a machine's rootless and rootful connections are two), and
+//! launches pin to the connection they resolved at the time, so every sweep
+//! runs once per machine connection ([`across_machines`]).
 //!
-//! One invocation shape does differ in kind: docker has a single daemon, while
-//! podman has one container store *and one image store* per machine, and
-//! launches pin themselves to the connection they resolved at the time (see
-//! [`super::machine`]). Asking only the current default would strand containers —
-//! and superseded images — on every other machine, so all three sweeps run once
-//! per machine connection ([`across_machines`]).
-//!
-//! One difference in the image GC: podman runs the labeled arm only. Docker's
-//! second arm exists for images built before the `fletch.agent` label shipped,
-//! and Podman support lands well after it — a Podman store can hold no
-//! pre-label Fletch image, so there is nothing for a legacy allowlist to match.
+//! The image GC runs the labeled arm only: docker's legacy arm covers images
+//! built before the `fletch.agent` label, which no Podman store can hold.
 
 use std::time::Duration;
 
@@ -36,24 +26,22 @@ use crate::sandbox::container::labels::{
 
 use super::cli;
 
-/// Listing/inspect are metadata-only; generous next to their usual
-/// milliseconds, so tripping one means the machine connection is wedged.
+/// Listing/inspect are metadata-only; tripping this means the machine
+/// connection is wedged.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// `podman rm -f` also kills a still-running container's process; give the
-/// batched removal room without letting a hung machine pin the sweep thread.
+/// `podman rm -f` also kills a still-running container's process; room for the
+/// batched removal without letting a hung machine pin the sweep thread.
 const REMOVE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Remove every fletch-labeled container whose owning host instance is dead,
-/// across every machine — a launch is pinned to the connection it resolved at
-/// the time, so yesterday's containers can sit on a machine that is no longer
-/// the default. Returns the number removed. Callers gate on the probe and run
-/// this off the main thread — see [`super::sweep_orphans_at_startup`].
+/// Remove every fletch-labeled container whose owning host instance is dead, on
+/// every machine — yesterday's containers can sit on a machine that is no
+/// longer the default. Returns the number removed. Callers gate on the probe
+/// and run this off the main thread — see [`super::sweep_orphans_at_startup`].
 pub(super) fn sweep_orphans() -> Result<usize> {
     across_machines("podman orphan sweep", sweep_orphans_on)
 }
 
-/// One sweep pass against a single connection.
 fn sweep_orphans_on(connection: Option<&str>) -> Result<usize> {
     let ids = list_ids(connection, &format!("label={HOST_PID_LABEL}"))?;
     if ids.is_empty() {
@@ -64,9 +52,8 @@ fn sweep_orphans_on(connection: Option<&str>) -> Result<usize> {
     let mut inspect_args = vec!["inspect", "-f", INSPECT_FORMAT];
     inspect_args.extend(&id_refs);
     let inspected = cli::run_podman_on(connection, &inspect_args, QUERY_TIMEOUT)?;
-    // Don't require a zero exit: inspect exits non-zero if ANY id vanished
-    // between ps and inspect (e.g. a `--rm` container finishing), but still
-    // prints the rows it found — those are the ones we act on.
+    // No zero-exit requirement: inspect exits non-zero if ANY id vanished
+    // between ps and inspect, but still prints the rows it found.
     let stdout = String::from_utf8_lossy(&inspected.stdout);
     let orphans = orphaned_ids(&stdout, crate::sandbox::seatbelt::pid_alive);
     if orphans.is_empty() {
@@ -84,27 +71,17 @@ fn sweep_orphans_on(connection: Option<&str>) -> Result<usize> {
     Ok(orphans.len())
 }
 
-/// Remove every container stamped with `fletch.agent-id=<agent_id>`, running or
-/// not, on every machine. Returns the number removed.
-///
-/// The disposal counterpart to [`sweep_orphans`], and deliberately *without*
-/// its pid-liveness check: the caller has decided this specific agent is going
-/// away, so every container bearing its id is fair game — including one owned
-/// by this very live instance, which is the whole point (the supervisor may no
-/// longer hold a kill handle for it). Attribution is still exact: the label is
-/// stamped only by our own launches, and it names one agent.
-///
-/// Matching on the label rather than the container name is required, not a
-/// preference — names carry a random nonce
-/// ([`container::util::container_name`](crate::sandbox::container::util::container_name)),
-/// so only the launching process ever knew them.
+/// Remove every container labeled with this agent id, on every machine
+/// endpoint. Returns the number removed. Disposal has decided, so no
+/// pid-liveness check, and labels are the only stable handle — names carry a
+/// launch nonce
+/// ([`container::util::container_name`](crate::sandbox::container::util::container_name)).
 pub fn remove_agent_containers(agent_id: &str) -> Result<usize> {
     across_machines("podman disposal removal", |connection| {
         remove_agent_containers_on(connection, agent_id)
     })
 }
 
-/// One removal pass against a single connection.
 fn remove_agent_containers_on(connection: Option<&str>, agent_id: &str) -> Result<usize> {
     let ids = list_ids(connection, &agent_id_filter(agent_id))?;
     if ids.is_empty() {
@@ -123,13 +100,11 @@ fn remove_agent_containers_on(connection: Option<&str>, agent_id: &str) -> Resul
 }
 
 /// Run `pass` once per machine connection and total what it reclaimed, or once
-/// unpinned when there are no machine connections (native Linux, where the
-/// single local endpoint is the whole story).
+/// unpinned when there are none (native Linux).
 ///
-/// Best-effort per connection, in keeping with the under-reclaim bias: a
-/// stopped or wedged machine logs and the remaining ones still get swept —
-/// stopping at the first failure would leave reclaimable containers on
-/// machines that answer fine.
+/// Best-effort per connection: a wedged machine logs and the rest are still
+/// swept. Total failure is not laundered into `Ok(0)` — with no connection
+/// answering, the caller hears the last error.
 fn across_machines(
     what: &str,
     mut pass: impl FnMut(Option<&str>) -> Result<usize>,
@@ -139,23 +114,33 @@ fn across_machines(
         return pass(None);
     }
     let mut total = 0;
+    let mut succeeded = false;
+    let mut last_error = None;
     for connection in &connections {
         match pass(Some(connection)) {
-            Ok(n) => total += n,
-            Err(e) => tracing::warn!(
-                target: "fletch::podman",
-                connection = %connection,
-                error = %e,
-                "{what} failed on this connection",
-            ),
+            Ok(n) => {
+                succeeded = true;
+                total += n;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "fletch::podman",
+                    connection = %connection,
+                    error = %e,
+                    "{what} failed on this connection",
+                );
+                last_error = Some(e);
+            }
         }
     }
-    Ok(total)
+    match last_error {
+        Some(e) if !succeeded => Err(e),
+        _ => Ok(total),
+    }
 }
 
-/// One connection name per Podman machine, from
-/// `podman system connection list --format json`. Anything we can't run or read
-/// yields none, which the caller reads as "just use the default".
+/// One connection name per Podman machine. Anything we can't run or read yields
+/// none, which the caller reads as "just use the default".
 fn machine_connections() -> Vec<String> {
     let Ok(out) = cli::run_podman(
         &["system", "connection", "list", "--format", "json"],
@@ -169,13 +154,10 @@ fn machine_connections() -> Vec<String> {
     parse_machine_connections(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// The machine connection names in a connection listing: entries not explicitly
-/// `IsMachine: false` (older podman omits the field, and a non-machine entry is
-/// a socket or a remote host, neither of which is ours to sweep).
-///
-/// Each machine appears twice, as `<machine>` and `<machine>-root`. Both list
-/// containers of the same machine, so the pair collapses to whichever podman
-/// listed first — sweeping both would ask the same machine twice.
+/// The machine connection names in a listing: entries not explicitly
+/// `IsMachine: false` (older podman omits the field). A machine's `<machine>`
+/// and `<machine>-root` entries are both kept — disjoint stores, so collapsing
+/// the pair leaves one swept by nobody; only a shared `URI` is one endpoint.
 fn parse_machine_connections(stdout: &str) -> Vec<String> {
     let Ok(connections) = serde_json::from_str::<Vec<serde_json::Value>>(stdout) else {
         return Vec::new();
@@ -196,17 +178,23 @@ fn parse_machine_connections(stdout: &str) -> Vec<String> {
         if name.is_empty() {
             continue;
         }
-        let machine = name.strip_suffix("-root").unwrap_or(name);
-        if seen.contains(&machine) {
-            continue;
+        // No URI can't be deduped against: sweep twice rather than skip a store.
+        let uri = connection
+            .get("URI")
+            .and_then(|u| u.as_str())
+            .map(str::trim)
+            .unwrap_or_default();
+        if !uri.is_empty() {
+            if seen.contains(&uri) {
+                continue;
+            }
+            seen.push(uri);
         }
-        seen.push(machine);
         out.push(name.to_string());
     }
     out
 }
 
-/// Container ids matching one `--filter` expression, on one connection.
 fn list_ids(connection: Option<&str>, filter: &str) -> Result<Vec<String>> {
     let list = cli::run_podman_on(
         connection,
@@ -227,28 +215,19 @@ fn list_ids(connection: Option<&str>, filter: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Remove superseded Fletch agent images from every machine's store. One rule:
-/// an image carrying the `fletch.agent` label that is not one of the current
-/// expected tags is removed — old-hash tags from Dockerfile revisions and
-/// untagged leftovers from refresh rebuilds alike.
+/// Remove `fletch.agent`-labeled images that aren't a current expected tag,
+/// from every machine's store. Returns the number removed; callers treat
+/// failures as non-fatal.
 ///
-/// Fanned out like the container sweeps, and for the same reason turned up a
-/// level: image stores are per-machine too, so an unpinned pass would GC only
-/// whichever machine happens to be the default and leave every image a launch on
-/// another machine superseded sitting there forever.
-///
-/// Never touched: current tags, the user's `podman_image` override (excluded
-/// defensively even though it can't carry the label), any unlabeled image, and
-/// images in use by a container — `podman rmi` runs WITHOUT `-f`, so an in-use
-/// image fails removal, which is expected and logged at debug. Returns the number
-/// of images actually removed; callers treat all failures as non-fatal.
+/// Never touched: current tags, the user's `podman_image` override, unlabeled
+/// images, and images in use — `podman rmi` runs WITHOUT `-f`, so an in-use
+/// image fails removal, which is expected and logged at debug.
 pub(super) fn sweep_stale_images() -> Result<usize> {
     across_machines("podman image sweep", sweep_stale_images_on)
 }
 
-/// One image-GC pass against a single connection's store — what
-/// [`sweep_stale_images`] fans out, and what a background refresh rebuild calls
-/// directly for the one store it just rebuilt in.
+/// One image-GC pass against a single connection's store; a background refresh
+/// rebuild calls this directly for the one store it just rebuilt in.
 pub(super) fn sweep_stale_images_on(connection: Option<&str>) -> Result<usize> {
     let refs = image_removal_refs(
         &list_images(
@@ -279,10 +258,20 @@ pub(super) fn sweep_stale_images_on(connection: Option<&str>) -> Result<usize> {
     );
     let mut removed = 0;
     for image_ref in &refs {
-        // One rmi per image (not batched): a single in-use image must not taint
-        // the exit status the others report. No `-f` — an image backing a running
-        // container stays, by design.
-        let out = cli::run_podman_on(connection, &["rmi", image_ref], REMOVE_TIMEOUT)?;
+        // One rmi per image, not batched: a single in-use image or transport
+        // failure must not taint the others' exit status or strand them.
+        let out = match cli::run_podman_on(connection, &["rmi", image_ref], REMOVE_TIMEOUT) {
+            Ok(out) => out,
+            Err(e) => {
+                tracing::warn!(
+                    target: "fletch::podman",
+                    image = %image_ref,
+                    error = %e,
+                    "podman rmi could not run for this image; continuing the pass",
+                );
+                continue;
+            }
+        };
         if out.status.success() {
             removed += 1;
         } else {
@@ -297,7 +286,6 @@ pub(super) fn sweep_stale_images_on(connection: Option<&str>) -> Result<usize> {
     Ok(removed)
 }
 
-/// Run one `podman images` listing on one connection and parse its rows.
 fn list_images(connection: Option<&str>, args: &[&str]) -> Result<Vec<ImageRow>> {
     let out = cli::run_podman_on(connection, args, QUERY_TIMEOUT)?;
     if !out.status.success() {
@@ -312,7 +300,6 @@ fn list_images(connection: Option<&str>, args: &[&str]) -> Result<Vec<ImageRow>>
         .collect())
 }
 
-/// `podman rm -f` over a batch of ids, on one connection.
 fn remove(connection: Option<&str>, ids: &[&str]) -> Result<()> {
     let mut rm_args = vec!["rm", "-f"];
     rm_args.extend(ids);
@@ -331,17 +318,15 @@ mod tests {
     use super::*;
     use crate::sandbox::container::labels::host_pid_label;
 
-    /// The sweep set is one connection per machine: rootful pairs collapse
-    /// (both name the same container store), non-machine entries are somebody
-    /// else's containers, and an unreadable listing leaves the caller with the
-    /// default connection alone.
+    /// One connection per *endpoint*: a rootless/rootful pair is two stores,
+    /// a shared URI is one, and non-machine entries aren't ours to sweep.
     #[test]
-    fn machine_connections_are_one_per_machine() {
+    fn machine_connections_are_one_per_endpoint() {
         let listing = r#"[
-          { "Name": "podman-machine-default", "IsMachine": true, "Default": true },
-          { "Name": "podman-machine-default-root", "IsMachine": true, "Default": false },
-          { "Name": "work-vm-root", "IsMachine": true, "Default": false },
-          { "Name": "work-vm", "IsMachine": true, "Default": false },
+          { "Name": "podman-machine-default", "IsMachine": true, "Default": true, "URI": "ssh://core@127.0.0.1:52001/run/user/501/podman/podman.sock" },
+          { "Name": "podman-machine-default-root", "IsMachine": true, "Default": false, "URI": "ssh://root@127.0.0.1:52001/run/podman/podman.sock" },
+          { "Name": "work-vm-alias", "IsMachine": true, "Default": false, "URI": "ssh://core@127.0.0.1:52001/run/user/501/podman/podman.sock" },
+          { "Name": "work-vm", "IsMachine": true, "Default": false, "URI": "ssh://core@127.0.0.1:52002/run/user/501/podman/podman.sock" },
           { "Name": "build-box", "IsMachine": false, "Default": false, "URI": "ssh://core@build.example.com:22/run/podman/podman.sock" },
           { "Name": "local", "IsMachine": false, "Default": false, "URI": "unix:///run/podman/podman.sock" },
           { "Name": "  ", "IsMachine": true },
@@ -350,7 +335,12 @@ mod tests {
         ]"#;
         assert_eq!(
             parse_machine_connections(listing),
-            ["podman-machine-default", "work-vm-root", "legacy-no-flag"],
+            [
+                "podman-machine-default",
+                "podman-machine-default-root",
+                "work-vm",
+                "legacy-no-flag",
+            ],
         );
 
         assert!(parse_machine_connections("[]").is_empty());
@@ -359,8 +349,6 @@ mod tests {
         assert!(parse_machine_connections(r#"{"Name":"m"}"#).is_empty());
     }
 
-    /// Integration: a container labeled with a dead pid is swept; one labeled
-    /// with our own (live) pid survives.
     /// `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
     #[test]
     #[ignore = "requires Podman; opt in via FLETCH_PODMAN_TESTS=1"]
@@ -405,16 +393,10 @@ mod tests {
         let _ = cli::run_podman(&["rm", "-f", &live_name], Duration::from_secs(30));
     }
 
-    /// Integration: a labeled image under a Fletch repo with a non-current tag
-    /// is swept from podman's store; an unlabeled image outside Fletch's repos
-    /// survives. Also pins the one podman-side assumption the shared selection
-    /// rule rests on — that `podman images --format` prints the same three
-    /// whitespace-separated columns docker does, so [`parse_images_line`] reads
-    /// both.
-    ///
-    /// Runs against the default connection (`None`) throughout, which is where
-    /// the images it builds land; [`sweep_stale_images`]'s fan-out then covers it
-    /// as one of the connections it visits.
+    /// Also pins the assumption the shared selection rule rests on: `podman
+    /// images --format` prints the same three columns docker does, so
+    /// [`parse_images_line`] reads both. Runs against the default connection
+    /// (`None`), which is where the images it builds land.
     /// `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
     #[test]
     #[ignore = "requires Podman; opt in via FLETCH_PODMAN_TESTS=1"]
@@ -436,14 +418,13 @@ mod tests {
                 String::from_utf8_lossy(&out.stderr),
             );
         };
-        // A labeled image under Fletch's repo with a tag no provider owns —
-        // exactly what a superseded image looks like.
+        // A tag no provider owns: what a superseded image looks like.
         let stale_tag = "fletch-agent:000000000000";
         build(
             &format!("FROM busybox\nLABEL {AGENT_IMAGE_LABEL}=claude\n"),
             stale_tag,
         );
-        // An unlabeled image outside Fletch's repos: must survive.
+        // Unlabeled, outside Fletch's repos: must survive.
         let bystander = "fletch-gc-test-bystander:keep";
         build("FROM busybox\nENV FLETCH_GC_TEST=1\n", bystander);
 
@@ -459,9 +440,11 @@ mod tests {
             ],
         )
         .unwrap();
+        // The normalized repo: podman prints local builds as
+        // `localhost/fletch-agent`.
         assert!(
             rows.iter()
-                .any(|r| r.repo == "fletch-agent" && r.tag == "000000000000"),
+                .any(|r| r.compare_repo() == "fletch-agent" && r.tag == "000000000000"),
             "podman's --format output must parse into the shared row shape: {rows:?}",
         );
 

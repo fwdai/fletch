@@ -1,28 +1,18 @@
 //! Image-build progress broadcast to the UI, shared by both container runtimes.
 //!
-//! The embedded agent image is built on the first spawn under a given runtime —
-//! a potentially minutes-long `build` that blocks the spawn until it finishes.
-//! That work happens deep in the engine launch path, which has no `AppHandle`,
-//! so this module offers a process-wide sink the app installs once at startup
-//! ([`set_build_sink`]) to forward build events to the UI. Until a sink is
-//! installed (or in headless tests) emitting is a no-op, so the build path stays
-//! decoupled from Tauri — matching how the engines' `set_launch_settings`
-//! mirrors settings without a DB handle.
+//! The build runs deep in the launch path with no `AppHandle`, so the app
+//! installs a process-wide sink at startup ([`set_build_sink`]); emitting is a
+//! no-op until it does, keeping the build path free of Tauri.
 //!
-//! One sink for both runtimes — but NOT one build at a time: each runtime
-//! serializes builds on its own lock, so a Docker and a Podman first-build can
-//! overlap. Every event therefore carries `runtime`, its lifecycle key: the
-//! frontend keys build state on it, so interleaved lifecycles can't clear or
-//! overwrite each other's toast.
+//! One sink, but not one build at a time — each runtime serializes on its own
+//! lock, so two first-builds can overlap. Every event therefore carries
+//! `runtime`: it is the lifecycle key the frontend routes on.
 
 use parking_lot::RwLock;
 
-/// One image-build lifecycle event. Serializes tagged (`{ "phase": "line",
-/// "runtime": "Docker", "line": "…" }`) so the frontend can pattern-match a
-/// single event stream. `runtime` is the runtime's display name ("Docker" /
-/// "Podman") on every variant — it is the key that separates two overlapping
-/// lifecycles, not decoration; the frontend still treats it as optional so an
-/// event without it renders under a neutral key.
+/// One image-build lifecycle event, serialized tagged by `phase` so the
+/// frontend can pattern-match a single stream. `runtime` rides every variant —
+/// it separates two overlapping lifecycles.
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "phase", rename_all = "kebab-case")]
 pub enum BuildEvent {
@@ -49,8 +39,7 @@ pub fn set_build_sink(sink: impl Fn(BuildEvent) + Send + Sync + 'static) {
     *SINK.write() = Some(Box::new(sink));
 }
 
-/// Forward a build event to the installed sink, if any. A no-op when none is
-/// installed, so the build machinery never depends on the app being wired up.
+/// Forward a build event to the installed sink; a no-op when there is none.
 pub(crate) fn emit(event: BuildEvent) {
     if let Some(sink) = SINK.read().as_ref() {
         sink(event);
@@ -63,12 +52,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    // Serializes with any other test touching the process-wide sink. This is the
-    // only such test today; the guard documents the shared-global contract.
+    // The sink is a process-wide global: any further test touching it must
+    // serialize with this one.
     #[test]
     fn sink_receives_events_and_no_op_without_one() {
-        // No sink installed at first: emitting must not panic (the build path
-        // runs in headless tests with no app wired up).
         emit(BuildEvent::Started { runtime: "Docker" });
 
         let count = Arc::new(AtomicUsize::new(0));
@@ -86,10 +73,6 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 
-    /// `runtime` rides every phase, not just `started`: it is the lifecycle
-    /// key that keeps two overlapping runtimes' events from clearing or
-    /// overwriting each other's toast state. Fields are additive, so a
-    /// consumer that only reads `phase` still works.
     #[test]
     fn build_event_serializes_tagged_with_runtime_on_every_phase() {
         assert_eq!(

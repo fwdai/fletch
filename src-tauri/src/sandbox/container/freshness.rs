@@ -2,26 +2,20 @@
 //! agent image may serve before a background rebuild, and whether a
 //! host/in-image CLI version pair warrants one.
 //!
-//! Pure by construction — no runtime coupling at all. The `image inspect` that
-//! reads a build date, the `run` that probes the in-image CLI, and the rebuild
-//! itself all shell out and stay in each runtime's own `image` module; what
-//! lives here is only the decision those invocations feed.
+//! Decisions only — every invocation they feed (the `image inspect`, the version
+//! probe, the rebuild) lives in each runtime's own `image` module.
 
 use std::time::Duration;
 
 /// Dogma: **an agent image is never older than a week.** The images install
-/// "latest at build time" (npm installs, cursor's installer), so their
-/// contents freeze at build; this TTL bounds that freeze. An image past the
-/// TTL still serves the current launch — freshness is a background concern,
-/// never a launch blocker — and is rebuilt under the same tag off-thread.
-/// Deliberately not a setting.
+/// "latest at build time", so this bounds how long their contents stay frozen.
+/// A stale image still serves the current launch and is rebuilt off-thread —
+/// freshness is never a launch blocker. Deliberately not a setting.
 pub(crate) const IMAGE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// TTL verdict for an image's build timestamp against [`IMAGE_MAX_AGE`].
-/// `Unknown` (an unparseable timestamp) is deliberately its own state: the
-/// caller treats it as fresh, because rebuilding on unparseable metadata would
-/// rebuild on *every* resolution forever (the rebuilt image's metadata would
-/// presumably parse no better if the runtime's format changed under us).
+/// TTL verdict against [`IMAGE_MAX_AGE`]. `Unknown` is its own state because
+/// callers treat it as fresh: rebuilding on unparseable metadata would rebuild
+/// on every resolution forever, the replacement parsing no better.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Freshness {
     Fresh,
@@ -29,9 +23,8 @@ pub(crate) enum Freshness {
     Unknown,
 }
 
-/// Classify a raw image creation timestamp (RFC3339, e.g.
-/// `2026-07-01T12:00:00.000000000Z` — what both runtimes' `image inspect`
-/// reports). Pure: `now` is injected so tests use fixed instants.
+/// Classify a raw image creation timestamp (RFC3339, as both runtimes' `image
+/// inspect` reports it). `now` is injected so tests use fixed instants.
 pub(crate) fn classify_freshness(
     created_raw: &str,
     now: chrono::DateTime<chrono::Utc>,
@@ -39,8 +32,8 @@ pub(crate) fn classify_freshness(
     let Ok(created) = chrono::DateTime::parse_from_rfc3339(created_raw.trim()) else {
         return Freshness::Unknown;
     };
-    // A negative age (clock skew, image "from the future") compares below any
-    // positive TTL and lands on Fresh — the right bias for bad clocks.
+    // A negative age (clock skew) compares below any positive TTL and lands on
+    // Fresh — the right bias for bad clocks.
     let max_age = chrono::Duration::from_std(IMAGE_MAX_AGE).expect("TTL fits chrono::Duration");
     if now.signed_duration_since(created) > max_age {
         Freshness::Stale
@@ -49,11 +42,10 @@ pub(crate) fn classify_freshness(
     }
 }
 
-/// Pure core of the version-mismatch trigger: refresh only when both sides
-/// are known, differ (plain `!=` — deliberately no semver ordering: "newer"
-/// is not computable across five vendors' formats, and parity is the actual
-/// goal), and this pairing hasn't already been attempted (rebuilding can't
-/// fix a host that's simply pinned away from the registry's latest).
+/// Pure core of the version-mismatch trigger: refresh only when both sides are
+/// known, differ, and haven't already been attempted (rebuilding can't fix a
+/// host pinned away from the registry's latest). Plain `!=` — "newer" isn't
+/// computable across five vendors' version formats, and parity is the goal.
 pub(crate) fn version_refresh_wanted(
     host: Option<&str>,
     container: Option<&str>,
@@ -69,8 +61,6 @@ pub(crate) fn version_refresh_wanted(
 mod tests {
     use super::*;
 
-    /// The version-mismatch trigger's pure core: refresh only on a known,
-    /// unequal, not-yet-attempted pairing. Plain `!=`, no semver ordering.
     #[test]
     fn version_refresh_decision() {
         // Mismatch → refresh.
@@ -79,7 +69,7 @@ mod tests {
             Some("v2.0.0"),
             false
         ));
-        // Direction doesn't matter (no ordering): host older also fires once.
+        // No ordering, so host-older fires too.
         assert!(version_refresh_wanted(
             Some("v1.0.0"),
             Some("v2.0.0"),
@@ -91,12 +81,11 @@ mod tests {
             Some("v2.0.0"),
             false
         ));
-        // No host CLI (not installed / probe failed) → inert.
+        // Either side unknown → inert.
         assert!(!version_refresh_wanted(None, Some("v2.0.0"), false));
-        // Container version unknown (post-build probe failed) → inert.
         assert!(!version_refresh_wanted(Some("v2.0.0"), None, false));
         assert!(!version_refresh_wanted(None, None, false));
-        // Already-attempted pairing → inert (pinned host must not loop).
+        // Already attempted → inert (a pinned host must not loop).
         assert!(!version_refresh_wanted(
             Some("v2.0.1"),
             Some("v2.0.0"),
@@ -104,10 +93,6 @@ mod tests {
         ));
     }
 
-    /// The TTL decision's pure core, with fixed instants: inside the window →
-    /// fresh, past it → stale, unparseable → unknown (treated as fresh by the
-    /// caller — never rebuild-loop on bad metadata), and a future timestamp
-    /// (clock skew) → fresh.
     #[test]
     fn freshness_classification() {
         use chrono::{TimeZone, Utc};

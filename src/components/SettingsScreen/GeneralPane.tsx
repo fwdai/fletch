@@ -86,22 +86,26 @@ export function GeneralPane() {
     };
   }, [refreshDockerProbe, refreshPodmanProbe]);
 
-  // Three states for each container option: enabled when the runtime answered
-  // the probe; otherwise disabled with a hint saying how to fix it. `null`
-  // (probe still in flight) gates off too — never offer an engine we can't
-  // confirm.
+  // Each container option is enabled only when the runtime answered the probe;
+  // otherwise it's disabled with a hint saying how to fix it. A `null` probe is
+  // still in flight, so it gates the option off but says "Checking…" rather
+  // than calling an installed runtime missing.
   const dockerAvailable = dockerProbe?.status === "available";
   const dockerHint = dockerAvailable
     ? dockerProbe?.version && `v${dockerProbe.version}`
-    : dockerProbe?.status === "daemon-down"
-      ? "Start Docker Desktop"
-      : "Install Docker Desktop";
+    : !dockerProbe
+      ? "Checking…"
+      : dockerProbe.status === "daemon-down"
+        ? "Start Docker Desktop"
+        : "Install Docker Desktop";
   const podmanAvailable = podmanProbe?.status === "available";
   const podmanHint = podmanAvailable
     ? podmanProbe?.version && `v${podmanProbe.version}`
-    : podmanProbe?.status === "machine-down"
-      ? "Run podman machine start"
-      : "Install Podman";
+    : !podmanProbe
+      ? "Checking…"
+      : podmanProbe.status === "machine-down"
+        ? "Run podman machine start"
+        : "Install Podman";
 
   const FeatureRow = ({ item }: { item: FeatureItem }) => (
     <SetRow title={item.title} sub={item.sub}>

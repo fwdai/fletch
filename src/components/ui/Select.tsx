@@ -25,6 +25,15 @@ interface Props<T extends string> {
   ariaLabel?: string;
 }
 
+/** Disabled options aren't focusable, so every keyboard path walks only the
+ *  enabled ones — otherwise a list whose options are all disabled (both
+ *  container engines missing, a common first run) swallows the arrow keys. */
+function focusableItems(list: HTMLDivElement | null) {
+  return Array.from(
+    list?.querySelectorAll<HTMLButtonElement>("[role='option']:not([disabled])") ?? [],
+  );
+}
+
 /** A styled single-select dropdown — a drop-in replacement for a native
  *  `<select>` that matches the app's `.dd` popover look (built on `Scrim`).
  *  Generic over the option value type so callers keep their string unions.
@@ -44,24 +53,17 @@ export function Select<T extends string>({
   const selected = options.find((o) => o.value === value);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // On open, move focus to the selected option (or the first) so arrow keys
-  // and Enter work immediately without a Tab.
+  // On open, move focus to the selected option (or the first selectable one) so
+  // arrow keys and Enter work immediately without a Tab.
   useEffect(() => {
     if (!open) return;
-    const list = listRef.current;
-    if (!list) return;
-    const items = list.querySelectorAll<HTMLButtonElement>("[role='option']");
-    const activeIdx = Math.max(
-      0,
-      options.findIndex((o) => o.value === value),
-    );
-    items[activeIdx]?.focus();
-  }, [open, options, value]);
+    const items = focusableItems(listRef.current);
+    const active = items.find((el) => el.getAttribute("aria-selected") === "true");
+    (active ?? items[0])?.focus();
+  }, [open]);
 
   function onListKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    const items = Array.from(
-      listRef.current?.querySelectorAll<HTMLButtonElement>("[role='option']") ?? [],
-    );
+    const items = focusableItems(listRef.current);
     if (items.length === 0) return;
     const current = items.indexOf(document.activeElement as HTMLButtonElement);
     if (e.key === "ArrowDown") {

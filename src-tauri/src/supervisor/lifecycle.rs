@@ -942,16 +942,18 @@ impl Supervisor {
 
         let engine = stamped_engine(record);
         // Re-checked on every launch path (resume, view switch, binary-swap
-        // respawn), not just fresh spawns: only claude runs under docker.
+        // respawn), not just fresh spawns: not every provider is wired up to run
+        // under a container engine.
         ensure_engine_supports_provider(engine, &record.provider)?;
 
         // Dynamically fold the codegraph MCP server into the session's snapshot
-        // for this launch, when code indexing is on, the engine isn't Docker,
-        // the binary is installed, and this provider can actually receive an
-        // MCP server at all. Injected here (not persisted onto the session
-        // snapshot) so this runs identically for fresh spawns and resumes and
-        // the toggle's *current* state always wins. A user-defined "codegraph"
-        // server suppresses injection (see `codegraph`).
+        // for this launch, when code indexing is on, the engine isn't a
+        // container engine, the binary is installed, and this provider can
+        // actually receive an MCP server at all. Injected here (not persisted
+        // onto the session snapshot) so this runs identically for fresh spawns
+        // and resumes and the toggle's *current* state always wins. A
+        // user-defined "codegraph" server suppresses injection (see
+        // `codegraph`).
         let crate::codegraph::McpInjection {
             servers: mcp_servers,
             codegraph_available,

@@ -1,27 +1,22 @@
 //! Per-provider container auth: folding the resolved credential(s) into the
-//! docker CLI's process env (from which [`super::run_args::run_args`]' bare
-//! `-e NAME` flags forward them — invariant 3, values never touch argv) and the
-//! fail-fast messages when a provider has no usable credential.
+//! container CLI's process env, from which [`super::run_args::run_args`]' bare
+//! `-e NAME` flags forward them (invariant 3 — values never touch argv), plus
+//! the fail-fast messages when a provider has no usable credential.
 
 use std::path::Path;
 
 use super::auth::ContainerAuth;
 use crate::error::{Error, Result};
 
-/// Launch-blocking message when the container auth chain resolves nothing.
-/// Kept as one stable, matchable string the frontend keys its Settings
-/// call-to-action on; the wording tells the user exactly what to do.
+/// Launch-blocking message when the container auth chain resolves nothing. One
+/// stable string — the frontend keys its Settings call-to-action on it.
 pub(crate) const NO_CONTAINER_AUTH_MSG: &str = "No Anthropic credentials for containers — open Settings → General → Sandbox and connect Claude for containers (claude setup-token).";
 
-/// Fold the D1 auth-chain outcome ([`resolve`]) into the docker CLI's
-/// process env, from which [`run_args`]' bare `-e NAME` flags forward it into
-/// the container (invariant 3 — values never touch argv). An [`AuthSource`] is
-/// logged (the enum variant only, never a token value); [`ContainerAuth`]'s
-/// `Debug` redacts values so even `?source` cannot leak one. When the chain
-/// yields nothing the launch fails fast with [`NO_CONTAINER_AUTH_MSG`].
+/// Fold the claude auth-chain outcome ([`resolve`]) into the container CLI's
+/// process env. Only the [`AuthSource`] variant is logged, never a value.
+/// Nothing resolved → fail fast with [`NO_CONTAINER_AUTH_MSG`].
 ///
 /// [`resolve`]: crate::sandbox::container::auth::resolve
-/// [`run_args`]: super::run_args::run_args
 /// [`AuthSource`]: crate::sandbox::container::auth::AuthSource
 pub(crate) fn apply_container_auth(
     env: &mut Vec<(String, String)>,
@@ -40,40 +35,33 @@ pub(crate) fn apply_container_auth(
     }
 }
 
-/// Launch-blocking message when codex has no usable credential: no
-/// `auth.json` in its config dir and `OPENAI_API_KEY` unset. Mirrors
-/// [`NO_CONTAINER_AUTH_MSG`]'s fail-fast: an unauthenticated container boots
-/// straight into a login prompt it can't answer inside the sandbox.
+/// Launch-blocking message when codex has no credential: no `auth.json` in its
+/// config dir, no `OPENAI_API_KEY`. Fail fast like [`NO_CONTAINER_AUTH_MSG`] —
+/// an unauthenticated container boots into a login prompt it can't answer.
 pub(crate) const NO_CODEX_AUTH_MSG: &str =
     "No Codex credentials for containers — sign in with `codex` on the host (writes ~/.codex/auth.json) or set OPENAI_API_KEY.";
 
-/// Launch-blocking message when opencode has no usable credential: no accounts DB
-/// / auth.json on its data-dir mount and no known provider API key set. Same
-/// fail-fast rationale as [`NO_CODEX_AUTH_MSG`].
+/// Launch-blocking message when opencode has no credential: no accounts DB /
+/// auth.json on its data-dir mount and no provider API key set.
 pub(crate) const NO_OPENCODE_AUTH_MSG: &str =
     "No OpenCode credentials for containers — sign in with `opencode auth login` on the host or set a provider API key (e.g. ANTHROPIC_API_KEY or OPENAI_API_KEY).";
 
-/// Launch-blocking message when pi has no usable credential: no
-/// `~/.pi/agent/auth.json` on its mount and no known provider API key set.
+/// Launch-blocking message when pi has no credential: no
+/// `~/.pi/agent/auth.json` on its mount and no provider API key set.
 pub(crate) const NO_PI_AUTH_MSG: &str =
     "No Pi credentials for containers — sign in with `pi` on the host (writes ~/.pi/agent/auth.json) or set a provider API key (e.g. ANTHROPIC_API_KEY or OPENAI_API_KEY).";
 
-/// Launch-blocking message when cursor has no usable credential. Unlike the other
-/// providers there is no mount-based fallback: `cursor-agent login` stores its
-/// access/refresh tokens in the host OS keychain (macOS "Cursor Safe Storage"),
-/// which a Linux container can't read, and `~/.cursor` carries only identity
-/// metadata — not a bearer token. So `CURSOR_API_KEY` is the sole container
-/// credential; fail fast (before touching the filesystem) when it's unset.
+/// Launch-blocking message when cursor has no credential. There is no
+/// mount-based fallback: `cursor-agent login` stores its tokens in the host OS
+/// keychain, which a Linux container can't read, and `~/.cursor` carries only
+/// identity metadata — so `CURSOR_API_KEY` is the sole container credential.
 pub(crate) const NO_CURSOR_AUTH_MSG: &str =
     "No Cursor credentials for containers — set CURSOR_API_KEY (create one at cursor.com/dashboard). `cursor-agent login` stores its token in the host keychain, which containers can't read.";
 
 /// Provider API-key env vars the multi-provider CLIs (opencode, pi) read to
-/// authenticate. Whichever are set in the app's process env are forwarded by bare
-/// `-e NAME` (invariant 3) so the in-container CLI can use them, and a set key
-/// satisfies the auth requirement on its own. Curated to the mainstream providers
-/// both CLIs honor (verified against each CLI's binary) — not exhaustive, but
-/// enough that a user with any common key set can launch. Codex is excluded: it's
-/// single-provider (OpenAI) and resolved separately.
+/// authenticate; any one set in the app's process env satisfies auth on its own.
+/// Curated to the mainstream providers both CLIs honor, not exhaustive. Codex is
+/// excluded — it's single-provider and resolved separately.
 const MULTI_PROVIDER_API_KEY_ENV: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -85,20 +73,11 @@ const MULTI_PROVIDER_API_KEY_ENV: &[&str] = &[
     "MISTRAL_API_KEY",
 ];
 
-/// Fold codex's container auth into the docker CLI's process env, then make
-/// sure the config dir exists so the read-write bind has a host source. Codex's
-/// primary credential is the mounted `~/.codex/auth.json` (the read-write mount
-/// carries it and token refresh persists to the host); an `OPENAI_API_KEY` in
-/// the app's process env is forwarded when set (by bare `-e`, so its value never
-/// touches argv — invariant 3). Either alone suffices: a key-only user may
-/// never have run codex on the host, so the dir is created rather than
-/// required — mounting a fresh dir keeps session rollouts landing where
-/// `find_codex_rollouts` reads them. Fails the launch when neither credential
-/// is present (before touching the filesystem), so an unauthenticated
-/// container never boots into an unanswerable login prompt.
-///
-/// Unlike claude, no ANTHROPIC_*/CLAUDE_* var is injected: codex authenticates
-/// against OpenAI, and forwarding those would be dead weight at best.
+/// Fold codex's container auth into the container CLI's process env, then make
+/// sure the config dir exists so the read-write bind has a host source. Either
+/// the mounted `auth.json` or an `OPENAI_API_KEY` suffices, so a key-only user
+/// who never ran codex gets the dir created rather than required; neither
+/// present fails the launch before any filesystem work.
 pub(crate) fn prepare_codex_launch(
     env: &mut Vec<(String, String)>,
     config_dir: &Path,
@@ -123,10 +102,8 @@ pub(crate) fn prepare_codex_launch(
     Ok(())
 }
 
-/// Pure core of [`prepare_codex_launch`]: the auth env to forward given the process
-/// `OPENAI_API_KEY` (if any) and whether `auth.json` exists on the mount. A
-/// non-blank key is forwarded (trimmed); the mounted `auth.json` carries auth on
-/// its own with nothing to inject. Neither present → the launch-blocking error.
+/// Pure core of [`prepare_codex_launch`]: a non-blank key is forwarded trimmed,
+/// a mounted `auth.json` needs nothing injected, neither is the blocking error.
 pub(crate) fn codex_auth_env(
     api_key: Option<&str>,
     auth_file: bool,
@@ -142,9 +119,7 @@ pub(crate) fn codex_auth_env(
 }
 
 /// The subset of [`MULTI_PROVIDER_API_KEY_ENV`] present and non-blank via
-/// `lookup` (a var name → value resolver, `std::env::var` in production, a fixture
-/// in tests), each as a `(name, value)` to forward. Order follows the constant so
-/// forwarding is deterministic.
+/// `lookup`, in constant order so forwarding is deterministic.
 pub(crate) fn present_api_keys(lookup: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
     MULTI_PROVIDER_API_KEY_ENV
         .iter()
@@ -157,10 +132,8 @@ pub(crate) fn present_api_keys(lookup: impl Fn(&str) -> Option<String>) -> Vec<(
 }
 
 /// Shared auth rule for the multi-provider CLIs (opencode, pi): a forwarded
-/// provider key OR a credential carried on the read-write mount suffices; neither
-/// present → the caller's launch-blocking message. Returns the keys to forward
-/// (empty when the mount carries the login and no key is set), mirroring
-/// [`codex_auth_env`]'s shape.
+/// provider key OR a credential on the read-write mount suffices; neither is the
+/// caller's launch-blocking message.
 pub(crate) fn multi_provider_auth_env(
     api_keys: Vec<(String, String)>,
     credential_on_mount: bool,
@@ -173,14 +146,11 @@ pub(crate) fn multi_provider_auth_env(
     }
 }
 
-/// Fold opencode's container auth into the docker CLI's process env, then make
-/// sure the data dir exists so the read-write bind has a host source. OpenCode's
-/// login lives in its data-dir mount (the accounts DB `opencode.db`, or a legacy
-/// `auth.json`); a provider API key in the app's env is forwarded when set. Either
-/// alone suffices, so — like codex — a key-only user who never ran opencode gets
-/// the dir created rather than required. Neither present → fail the launch before
-/// touching the filesystem. Auth values ride the process env and forward by bare
-/// `-e` (invariant 3); only booleans are logged.
+/// Fold opencode's container auth into the container CLI's process env, then
+/// make sure the data dir exists so the read-write bind has a host source. Its
+/// login lives on that mount (accounts DB `opencode.db`, or a legacy
+/// `auth.json`); a provider API key does just as well, so — like codex — the dir
+/// is created rather than required. Only booleans are logged, never a value.
 pub(crate) fn prepare_opencode_launch(
     env: &mut Vec<(String, String)>,
     data_dir: &Path,
@@ -207,12 +177,10 @@ pub(crate) fn prepare_opencode_launch(
     Ok(())
 }
 
-/// Fold pi's container auth into the docker CLI's process env, then make sure
-/// `~/.pi` exists so the read-write bind has a host source. Pi's login lives in
-/// `~/.pi/agent/auth.json` on that mount; a provider API key in the app's env is
-/// forwarded when set. Either alone suffices, so a key-only user who never ran pi
-/// gets `~/.pi` created rather than required. Neither present → fail the launch
-/// before touching the filesystem. Only booleans are logged.
+/// Fold pi's container auth into the container CLI's process env, then make sure
+/// `~/.pi` exists so the read-write bind has a host source. Its login lives in
+/// `agent/auth.json` on that mount; a provider API key does just as well, so the
+/// dir is created rather than required. Only booleans are logged.
 pub(crate) fn prepare_pi_launch(
     env: &mut Vec<(String, String)>,
     data_dir: &Path,
@@ -237,17 +205,11 @@ pub(crate) fn prepare_pi_launch(
     Ok(())
 }
 
-/// Fold cursor's container auth into the docker CLI's process env, then make sure
-/// `~/.cursor` exists so the read-write bind has a host source. Cursor is a
-/// single-provider CLI, so — like codex — no cross-provider key set applies;
-/// unlike every other provider, though, its credential can't ride the mount:
-/// `cursor-agent login` writes its tokens to the host OS keychain (see
-/// [`NO_CURSOR_AUTH_MSG`]), so `CURSOR_API_KEY` (forwarded by bare `-e` — invariant
-/// 3) is the only container credential. The `~/.cursor` mount still matters: it's
-/// where cursor writes session transcripts (`agent::cursor_locate` reads them at
-/// the identical host path), so the dir is created for the bind even though it
-/// carries no auth. Fails the launch when `CURSOR_API_KEY` is unset, before
-/// touching the filesystem. Only a boolean is logged, never the key.
+/// Fold cursor's container auth into the container CLI's process env, then make
+/// sure `~/.cursor` exists so the read-write bind has a host source. Only
+/// `CURSOR_API_KEY` can authenticate (see [`NO_CURSOR_AUTH_MSG`]); the mount is
+/// still created because cursor writes session transcripts there, at the
+/// identical host path `agent::cursor_locate` reads.
 pub(crate) fn prepare_cursor_launch(
     env: &mut Vec<(String, String)>,
     config_dir: &Path,
@@ -269,11 +231,8 @@ pub(crate) fn prepare_cursor_launch(
     Ok(())
 }
 
-/// Pure core of [`prepare_cursor_launch`]: the auth env to forward given the
-/// process `CURSOR_API_KEY`. A non-blank key is forwarded (trimmed); anything
-/// else — unset or blank — is the launch-blocking error, because cursor's login
-/// token lives in the host keychain and can't reach the container by any other
-/// path (see [`NO_CURSOR_AUTH_MSG`]).
+/// Pure core of [`prepare_cursor_launch`]: a non-blank `CURSOR_API_KEY` is
+/// forwarded trimmed, unset or blank is the launch-blocking error.
 pub(crate) fn cursor_auth_env(api_key: Option<&str>) -> Result<Vec<(String, String)>> {
     match api_key.map(str::trim).filter(|k| !k.is_empty()) {
         Some(key) => Ok(vec![("CURSOR_API_KEY".to_string(), key.to_string())]),

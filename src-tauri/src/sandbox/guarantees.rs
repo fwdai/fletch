@@ -117,16 +117,18 @@ impl Guarantee {
                 git_config_host_backstop!(),
             )),
             // Same mount model as Docker (`container::run_args`): identical-path
-            // binds, the checkout read-write. Rootless is worth stating because
-            // it is the difference a Podman user expects to matter — and worth
-            // bounding, because it does not matter here.
+            // binds, the checkout read-write. Rootlessness is worth stating
+            // because it is the difference a Podman user expects to matter — and
+            // worth bounding, because it does not matter here. Hedged: a machine
+            // can be rootful, and the conclusion is the same either way.
             (Self::WithheldGitConfig, Podman) => Coverage::Partial(concat!(
                 "the checkout is bind-mounted read-write, so an agent can still write its own \
                  .git/config — nested read-only binds would stop a direct write but not a \
                  rename, because a Podman bind mount follows the inode just as Docker's does, \
-                 where seatbelt's path rules do not. Podman running rootless narrows what a \
-                 container escape would own on the host, but it does not narrow this: the agent \
-                 is handed that checkout read-write by design. ",
+                 where seatbelt's path rules do not. Where Podman runs rootless it narrows what \
+                 a container escape would own on the host, but it does not narrow this — and a \
+                 rootful machine does not change it either: the agent is handed that checkout \
+                 read-write by design. ",
                 git_config_host_backstop!(),
             )),
 
@@ -285,6 +287,32 @@ mod tests {
             Guarantee::ConfinedReads.coverage(SandboxExec),
             Coverage::Unenforced(_)
         ));
+    }
+
+    /// Golden: Docker's isolation-panel copy for this claim, byte for byte. The
+    /// engine-independent half comes from a shared macro, so a Podman-side edit
+    /// to it would silently rewrite what a Docker user reads.
+    #[test]
+    fn docker_withheld_git_config_note_is_pinned() {
+        let Coverage::Partial(note) = Guarantee::WithheldGitConfig.coverage(EngineKind::Docker)
+        else {
+            panic!("Docker's coverage for this claim is Partial");
+        };
+        assert_eq!(
+            note,
+            "the checkout is bind-mounted read-write, so an agent can still write its own \
+             .git/config — nested read-only binds would stop a direct write but not a rename, \
+             because Docker mounts follow the inode where seatbelt's path rules do not. \
+             Instead host-side git refuses to run in a checkout whose config would execute a \
+             program (crate::git::hardening), which is engine-independent. It reads every scope \
+             the agent can write (local and worktree, via --show-scope), so a key smuggled into \
+             .git/config.worktree is caught too. That refusal covers every command that can \
+             trigger one: the git::cmd helper seam plus the read, pull and push/fetch paths that \
+             build a command directly. push/fetch run no filter or merge driver but do run the \
+             transport-executing keys core.sshCommand, core.gitProxy and \
+             remote.<name>.uploadpack/receivepack, which the -c overrides omit, so the refusal \
+             covers them there too",
+        );
     }
 
     /// The report is what the UI and a reviewer read, so pin its shape: one

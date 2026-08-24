@@ -24,7 +24,8 @@ const SETUP_COMMAND = "claude setup-token";
 /** Settings › General › Sandbox: how containerized agents authenticate to
  *  Anthropic. Shows which chain step is active and opens the connect modal —
  *  the path for Keychain-only claude logins, which containers can't see.
- *  Docker-only: seatbelt agents keep the user's own login. */
+ *  Containers only (Docker and Podman share the chain): seatbelt agents keep
+ *  the user's own login. */
 export function ContainerAuth() {
   const containerAuth = useAppStore((s) => s.containerAuth);
   const refreshContainerAuth = useAppStore((s) => s.refreshContainerAuth);
@@ -43,7 +44,7 @@ export function ContainerAuth() {
     <>
       <SetRow
         title="Claude auth for containers"
-        sub="Docker agents use your macOS Keychain Claude login, falling back to an API key or setup-token if it's unavailable. Seatbelt agents keep your own login."
+        sub="Container agents (Docker and Podman) use your macOS Keychain Claude login, falling back to an API key or setup-token if it's unavailable. Seatbelt agents keep your own login."
       >
         <span className={`set-cauth-status text-sm ${connected ? "connected" : ""}`}>
           {status ? STATUS_LABELS[status] : "Checking…"}

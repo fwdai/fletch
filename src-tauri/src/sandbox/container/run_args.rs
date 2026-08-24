@@ -1,7 +1,10 @@
-//! The container `run` argv builder: the provider-agnostic `--rm --init` shape,
-//! the mounts at identical host paths (invariant 1), the per-provider config/
-//! data mounts, and the bare `-e NAME` forwards (invariant 3). Pure over its
-//! [`RunSpec`] so the argv shape is unit-testable without a daemon.
+//! The container `run` argv builder. Pure over its [`RunSpec`] so the argv
+//! shape is unit-testable without a daemon.
+//!
+//! Invariants it encodes: mounts land at identical host paths (1), borrowed
+//! history is read-only (2), credential values reach the container as bare
+//! `-e NAME` and never appear in argv (3), claude's shared config dir is
+//! read-only but for its named carve-outs (5).
 
 use std::path::{Path, PathBuf};
 
@@ -13,77 +16,48 @@ use crate::sandbox::policy::{
 use super::labels;
 
 /// The one file under a claude config dir that stays writable when the dir is
-/// bind-mounted read-only: claude's OAuth refresh rewrites the rotated token
-/// here, and the `CredentialsFile` auth chain (see [`super::auth`]) needs that
-/// write to land on the host. Mounted read-write on top of the read-only dir.
-/// The name is shared with seatbelt via [`CLAUDE_CREDENTIALS_FILE`] so
-/// the two engines can't drift.
+/// bind-mounted read-only: claude's OAuth refresh must land on the host for the
+/// `CredentialsFile` chain (see [`super::auth`]) to see the rotated token.
+/// Shared with seatbelt via [`CLAUDE_CREDENTIALS_FILE`] so the two can't drift.
 pub(crate) const CREDENTIALS_FILE: &str = CLAUDE_CREDENTIALS_FILE;
 
-/// Resource caps a container launch carries when the user has set none. Shared
-/// by every runtime: the ceiling is a property of what an agent needs to build
-/// and test, not of who runs the container.
+/// Resource caps when the user has set none — a property of what an agent needs
+/// to build and test, so every runtime shares them.
 pub(crate) const DEFAULT_MEMORY: &str = "4g";
 pub(crate) const DEFAULT_CPUS: &str = "2";
 
-/// Subdirs of a claude config dir that Claude Code creates and writes *afresh
-/// every session* — the per-session env store (`mkdir session-env/<id>` at
-/// startup) and the shell-environment snapshot the Bash tool sources. The
-/// config dir is bind-mounted read-only (invariant 5), so a bare write here
-/// fails with `EROFS` and aborts the agent before it runs. Each gets an
-/// ephemeral **tmpfs** overlay instead: claude writes its own per-session
-/// scaffolding into throwaway container-local storage, nothing reaches the
-/// shared host config, and nothing persists across runs.
-///
-/// Deliberately narrow — only claude-regenerated, non-config, non-executable
-/// state belongs here. Everything else under the config dir stays read-only so
-/// a prompt-injected agent can't plant a host-executed `hook`/`plugin`/`skill`,
-/// a `settings.json` permission grant, a `CLAUDE.md` instruction, or a
-/// `projects/<cwd>/memory` entry a later session would trust (invariant 5).
-/// `projects/` in particular is left read-only on purpose: the RO mount already
-/// lets claude *read* config and memory, and its transcript writes are
-/// best-effort (a failed write logs and continues), so it needs no overlay —
-/// while making it writable would reopen exactly the injection surface this
-/// design closes.
-///
-/// Shared with seatbelt via [`CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS`] (which
-/// grants the real dirs as writable islands) so the two engines can't drift.
+/// Subdirs Claude Code rewrites every session, which a bare write to the
+/// read-only config dir would fail with `EROFS`; each gets a throwaway tmpfs
+/// overlay instead. Deliberately narrow: everything else stays read-only so a
+/// prompt-injected agent can't plant a host-executed hook/plugin/skill, a
+/// `settings.json` grant, or a memory entry a later session would trust
+/// (invariant 5). Shared with seatbelt via [`CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS`].
 const EPHEMERAL_RUNTIME_SUBDIRS: &[&str] = CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS;
 
-/// Claude's session-transcript subdir within a config dir (`<config-dir>/
-/// projects/<slug>/<uuid>.jsonl`). Unlike [`EPHEMERAL_RUNTIME_SUBDIRS`], this
-/// one is bind-mounted to a *persistent* per-agent host dir (not tmpfs) so
-/// `--resume` survives container recreation — see [`push_claude_config_mount`].
-/// Shared with seatbelt via [`CLAUDE_PROJECTS_SUBDIR`] so the two
-/// engines can't drift.
+/// Claude's session-transcript subdir. Unlike [`EPHEMERAL_RUNTIME_SUBDIRS`] it
+/// is bound to a *persistent* per-agent host dir so `--resume` survives
+/// container recreation — see [`push_claude_config_mount`]. Shared with seatbelt
+/// via [`CLAUDE_PROJECTS_SUBDIR`].
 const PROJECTS_SUBDIR: &str = CLAUDE_PROJECTS_SUBDIR;
 
-/// The provider-specific config/data mounts and config-dir env a launch needs —
-/// one variant per supported provider. Replaces the additive per-provider field
-/// clusters `RunSpec` used to carry (claude_config_dir, codex_config_dir, …),
-/// which grew unwieldy at four providers with three-quarters of them inert on any
-/// given launch. Each variant holds exactly its own provider's data and
-/// [`run_args`] matches once on the whole thing. Claude's read-only-except-
-/// carve-outs treatment is unique; the other three are read-write binds at
-/// identical host paths, differing only in which dirs they mount and which env
-/// var (if any) they forward.
+/// The provider-specific config/data mounts and config-dir env a launch needs.
+/// Exactly one variant is populated per launch and [`run_args`] matches once on
+/// the whole thing.
 pub(crate) enum ProviderMounts<'a> {
     /// Claude: `~/.claude` (and any non-default `CLAUDE_CONFIG_DIR`) bind-mounted
-    /// **read-only** except a writable `.credentials.json` overlay and the
-    /// per-agent `projects/` transcript bind (invariant 5); see
-    /// [`push_claude_config_mount`].
+    /// **read-only** but for the carve-outs in [`push_claude_config_mount`]
+    /// (invariant 5).
     Claude {
         /// Non-default `CLAUDE_CONFIG_DIR`, mounted + forwarded alongside
         /// `~/.claude`. `None` when unset or resolving to the default.
         config_dir: Option<&'a Path>,
         /// Whether `~/.claude/.credentials.json` exists — gates its RW overlay.
         credentials_rw: bool,
-        /// Same, for the non-default `CLAUDE_CONFIG_DIR` (meaningful only when
-        /// `config_dir` is `Some`).
+        /// Same, for the non-default `CLAUDE_CONFIG_DIR`.
         config_dir_credentials_rw: bool,
-        /// Per-agent host dir (under `writable_root`) bound read-write over each
-        /// config dir's `projects/` so the session transcript survives container
-        /// recreation while the shared `~/.claude` stays read-only.
+        /// Per-agent host dir bound read-write over each config dir's
+        /// `projects/`, so transcripts survive container recreation while the
+        /// shared `~/.claude` stays read-only.
         projects_src: &'a Path,
     },
     /// Codex: `$CODEX_HOME`/`~/.codex` bind-mounted **read-write** at its host
@@ -93,12 +67,9 @@ pub(crate) enum ProviderMounts<'a> {
         /// Forward `CODEX_HOME` (a non-default `$CODEX_HOME` only).
         forward_home: bool,
     },
-    /// OpenCode: its data dir (`$XDG_DATA_HOME/opencode` else
-    /// `~/.local/share/opencode`) bind-mounted **read-write** — it carries the
-    /// accounts DB / `auth.json` and the session storage the host transcript
-    /// reader tails — plus its config dir (`$XDG_CONFIG_HOME/opencode` else
-    /// `~/.config/opencode`) when it exists (custom providers + plugin installs,
-    /// which opencode writes → also RW).
+    /// OpenCode: its data dir (accounts DB / `auth.json` / session storage the
+    /// host transcript reader tails) plus its config dir when it exists, both
+    /// bind-mounted **read-write**.
     Opencode {
         data_dir: &'a Path,
         config_dir: Option<&'a Path>,
@@ -106,19 +77,16 @@ pub(crate) enum ProviderMounts<'a> {
         forward_xdg_data_home: bool,
         forward_xdg_config_home: bool,
     },
-    /// Pi: `~/.pi` bind-mounted **read-write** — it holds `agent/auth.json`,
-    /// `agent/settings.json`, and the `agent/sessions/` transcripts the host
-    /// reader tails at the identical path.
+    /// Pi: `~/.pi` bind-mounted **read-write** — auth, settings, and the
+    /// `agent/sessions/` transcripts the host reader tails at the identical path.
     Pi { data_dir: &'a Path },
-    /// Cursor: `~/.cursor` bind-mounted **read-write** — it holds the
-    /// `projects/<slug>/agent-transcripts/` session logs the host reader tails at
-    /// the identical path. Carries no credential (cursor's login token is
+    /// Cursor: `~/.cursor` bind-mounted **read-write** for the session logs the
+    /// host reader tails. Carries no credential (the login token is
     /// keychain-bound); auth is the forwarded `CURSOR_API_KEY` only.
     Cursor { data_dir: &'a Path },
 }
 
-/// Everything [`run_args`] needs, bundled so the builder is pure and the argv
-/// shape unit-testable without a daemon.
+/// Everything [`run_args`] needs, bundled so the builder stays pure.
 pub(crate) struct RunSpec<'a> {
     pub interactive: bool,
     pub name: &'a str,
@@ -127,31 +95,28 @@ pub(crate) struct RunSpec<'a> {
     pub rpc_dir: &'a Path,
     pub home: &'a Path,
     pub cwd: &'a Path,
-    /// A workflow step agent's blackboard directory, bind-mounted read-write at
-    /// its identical host path and forwarded as `WF_BLACKBOARD`. `None` for
-    /// ordinary agents.
+    /// A workflow step agent's blackboard, bound read-write at its identical
+    /// host path and forwarded as `WF_BLACKBOARD`. `None` for ordinary agents.
     pub blackboard: Option<&'a Path>,
     /// The launching provider's config/data mounts + config-dir env forwards.
     pub mounts: ProviderMounts<'a>,
-    /// Object stores borrowed via git alternates (a `--shared` clone),
-    /// bind-mounted read-only at their identical host paths. Empty for a
-    /// worktree or an old full-copy clone.
+    /// Object stores borrowed via git alternates, bound read-only at their
+    /// identical host paths. Empty for a worktree or a full-copy clone.
     pub borrowed_object_stores: &'a [PathBuf],
     pub memory: &'a str,
     pub cpus: &'a str,
     pub image: &'a str,
     pub agent_bin: &'a str,
-    /// Auth var *names* the chain resolved ([`resolve`]), each forwarded
-    /// with a bare `-e NAME` so its value (set on the docker CLI process env)
-    /// never appears in argv. Only the resolved set is forwarded: an ambient
-    /// credential the chain didn't pick must not reach the container and
-    /// override the resolved login.
+    /// Auth var *names* the chain resolved ([`resolve`]), forwarded as bare
+    /// `-e NAME` so values never appear in argv (invariant 3). Only the resolved
+    /// set: an ambient credential the chain didn't pick must not reach the
+    /// container and override the resolved login.
     ///
     /// [`resolve`]: crate::sandbox::container::auth::resolve
     pub auth_vars: &'a [&'a str],
 }
 
-/// The `docker run` argv (everything after the docker binary), ending with
+/// The `run` argv (everything after the runtime binary), ending with
 /// `<image> <agent_bin>` so the caller can append agent CLI args — the
 /// `prefix_args` contract of [`SandboxEngine::launch_agent`].
 ///
@@ -169,35 +134,28 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push("--label".into());
     args.push(labels::agent_id_label(spec.agent_id));
     // Mounts at identical host paths (invariant 1). Exactly these — nothing
-    // else from the host enters the container. The workspace and RPC mailbox
-    // are read-write; the claude config dir(s) are read-only except their
-    // `.credentials.json` (invariant 5) — see [`push_claude_config_mount`].
+    // else from the host enters the container.
     for path in [spec.writable_root, spec.rpc_dir] {
         let path = path.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}"));
     }
-    // A workflow step agent's blackboard, bind-mounted read-write at its
-    // identical host path (invariant 1) so `$WF_BLACKBOARD` resolves the same
-    // in-container as on the host — the same shape as the RPC mailbox mount.
+    // At its identical host path so `$WF_BLACKBOARD` resolves the same
+    // in-container as on the host (invariant 1).
     if let Some(board) = spec.blackboard {
         push_rw_bind(&mut args, board);
     }
-    // Object stores borrowed by a --shared clone, mounted read-only at their
-    // identical host path so the alternates file resolves in-container with no
-    // rewriting. RO keeps invariant 2: borrowed history is readable, but the
-    // source store (and, since we mount only `objects`, never `.git/hooks` or
-    // config) can't be mutated from inside the container. The list already
-    // includes any transitively-chained stores (see `borrowed_object_stores`).
+    // Identical host path so the alternates file resolves in-container with no
+    // rewriting; read-only so borrowed history is readable but the source store
+    // can't be mutated from inside the container (invariant 2). Only `objects`,
+    // never `.git/hooks` or config.
     for store in spec.borrowed_object_stores {
         let path = store.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}:ro"));
     }
     // Provider config-dir mount(s), layered after the workspace/mailbox/object
-    // stores. Claude gets the read-only-except-carve-outs treatment; the other
-    // three get read-write binds at their identical host paths (see the
-    // `ProviderMounts` variant docs).
+    // stores.
     match &spec.mounts {
         ProviderMounts::Claude {
             config_dir,
@@ -231,9 +189,8 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     }
     args.push("-w".into());
     args.push(spec.cwd.to_string_lossy().into_owned());
-    // Bare `-e NAME` forwards from the docker CLI's own environment without
-    // the value ever appearing in argv (invariant 3 for the auth vars). Auth
-    // vars come from `spec.auth_vars` — the set the chain actually resolved.
+    // Bare `-e NAME` forwards from the runtime CLI's own environment, so no
+    // value appears in argv (invariant 3).
     let mut forwarded: Vec<&str> = vec!["HOME", "FLETCH_RPC_DIR", "TERM", "COLORTERM"];
     if spec.blackboard.is_some() {
         forwarded.push(crate::workflow::blackboard::WF_BLACKBOARD_ENV);
@@ -262,8 +219,7 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
             }
         }
         ProviderMounts::Pi { .. } => {}
-        // Cursor forwards no config-dir env; its sole auth var (CURSOR_API_KEY)
-        // rides `spec.auth_vars` like every other resolved credential.
+        // No config-dir env; CURSOR_API_KEY rides `spec.auth_vars`.
         ProviderMounts::Cursor { .. } => {}
     }
     forwarded.extend(spec.auth_vars.iter().copied());
@@ -280,14 +236,11 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args
 }
 
-/// Every *host* path [`run_args`] turns into a bind mount, in argv order.
-/// Deliberately excludes the tmpfs overlays (no source) and the `projects/`
-/// target (its source is `projects_src`, which is listed).
-///
-/// Lives next to [`run_args`] so the two can't drift: a runtime that has to
-/// vet mount sources before launching (Podman's machine shares only configured
-/// host dirs — see `podman::machine`) must see exactly what will be bound, and
-/// a mount added above without an entry here would go unvetted.
+/// Every *host* path [`run_args`] turns into a bind mount, in argv order —
+/// excluding the tmpfs overlays (no source) and the `projects/` target (its
+/// source, `projects_src`, is listed). A runtime that vets mount sources before
+/// launching (see `podman::machine`) must see exactly what will be bound, so a
+/// mount added to [`run_args`] without an entry here would go unvetted.
 pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = vec![spec.writable_root.into(), spec.rpc_dir.into()];
     if let Some(board) = spec.blackboard {
@@ -325,26 +278,19 @@ pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
     out
 }
 
-/// Bind-mount `dir` **read-write** at its identical host path (no `:ro`). The
-/// shape codex/opencode/pi share: the CLI refreshes its auth and writes session
-/// state in place, and writing at the host path is what keeps the host-side
-/// transcript reader working (invariant 1). Unlike claude's config mount there
-/// are no read-only carve-outs — the user accepted a full read-write config dir
-/// for these self-authenticating CLIs (same call as codex's `~/.codex`).
+/// Bind-mount `dir` **read-write** at its identical host path (invariant 1), so
+/// the CLI's in-place auth refresh and session writes stay visible to the
+/// host-side transcript reader.
 fn push_rw_bind(args: &mut Vec<String>, dir: &Path) {
     let path = dir.to_string_lossy();
     args.push("-v".into());
     args.push(format!("{path}:{path}"));
 }
 
-/// Create a claude config dir and its overlay mountpoints before it's handed to
-/// `-v`. The dir itself must exist or Docker would materialize it root-owned;
-/// each overlay target must exist *inside* it too, because the overlay
-/// ([`push_claude_config_mount`]) mounts onto that subpath and the RO parent
-/// bind can't grow a fresh mountpoint at run time. The overlays are the
-/// [`EPHEMERAL_RUNTIME_SUBDIRS`] tmpfs targets plus `projects/` (the read-write
-/// per-agent transcript bind). Creating empty dirs is harmless — the overlay
-/// shadows each, so nothing the agent writes there lands on this shared dir.
+/// Create a claude config dir and its overlay mountpoints before `-v` sees it:
+/// a missing source is materialized root-owned by the runtime, and each overlay
+/// target must already exist *inside* the dir because the read-only parent bind
+/// can't grow a fresh mountpoint at run time.
 pub(crate) fn prepare_config_mount_dir(dir: &Path) -> Result<()> {
     let overlays = EPHEMERAL_RUNTIME_SUBDIRS
         .iter()
@@ -361,29 +307,20 @@ pub(crate) fn prepare_config_mount_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Bind-mount a claude config dir **read-only**, then layer the writable
-/// exceptions on top. The dir is shared host state whose `settings.json` can
-/// define hooks Claude Code executes on the host, so a container agent must not
-/// be able to write it (invariant 5); these are the sole exceptions, and each is
-/// deliberately either the host credential file, throwaway container-local
-/// storage, or a per-agent host dir that never touches the shared config:
+/// Bind-mount a claude config dir **read-only**, then layer the sole writable
+/// exceptions on top (order matters — the runtime layers later `-v`s over
+/// earlier ones). The dir is shared host state whose `settings.json` can define
+/// hooks Claude Code runs on the *host*, so a container agent must not be able
+/// to write it (invariant 5). The exceptions:
 ///
-/// - `.credentials.json` (when `credentials_rw`) — remounted read-write so
-///   claude's OAuth token refresh persists to the host. Skipped when the file
-///   is absent (a bare `-v` on a missing source would have Docker create a
-///   root-owned dir there).
-/// - each [`EPHEMERAL_RUNTIME_SUBDIRS`] entry (`session-env`, `shell-snapshots`)
-///   — an ephemeral tmpfs so claude's per-session scaffolding can be written
-///   without a bare write to the RO dir failing with `EROFS`. Needs no source.
-/// - `projects/` — `projects_src` (a per-agent host dir under `writable_root`)
-///   bound read-write over it, so claude's session transcript persists across
-///   container recreation (`--resume` after an app relaunch) while the shared
-///   `~/.claude/projects` — other agents' transcripts, global memory — stays
-///   unreadable and unwritable. This is a *non-identical-path* bind: it departs
-///   from invariant 1's identical-host-path rule, which `projects/` doesn't need
-///   since claude references it only through its config dir.
-///
-/// Every overlay is pushed *after* the RO dir mount so Docker layers it on top.
+/// - `.credentials.json` (only when `credentials_rw`, since a bare `-v` on a
+///   missing source is materialized root-owned) — so OAuth refresh persists.
+/// - each [`EPHEMERAL_RUNTIME_SUBDIRS`] entry — throwaway tmpfs, no host source.
+/// - `projects/` — backed by the per-agent `projects_src` so `--resume` survives
+///   container recreation while the shared `~/.claude/projects` (other agents'
+///   transcripts, global memory) stays unreachable. The one bind that departs
+///   from invariant 1's identical-host-path rule; claude reaches it only through
+///   its config dir, so it doesn't need one.
 fn push_claude_config_mount(
     args: &mut Vec<String>,
     dir: &Path,
@@ -409,5 +346,93 @@ fn push_claude_config_mount(
     for sub in EPHEMERAL_RUNTIME_SUBDIRS {
         args.push("--tmpfs".into());
         args.push(dir.join(sub).to_string_lossy().into_owned());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Podman refuses a launch whose sources its machine doesn't share, so an
+    /// unvetted `-v` would be bound and arrive empty.
+    #[test]
+    fn every_bind_source_is_covered_by_mount_sources() {
+        let root = Path::new("/tmp/fletch-run-args/work");
+        let rpc = Path::new("/tmp/fletch-run-args/rpc");
+        let home = Path::new("/tmp/fletch-run-args/home");
+        let board = Path::new("/tmp/fletch-run-args/board");
+        let alt = Path::new("/tmp/fletch-run-args/alt");
+        let stores = vec![
+            PathBuf::from("/tmp/fletch-run-args/store-a/objects"),
+            PathBuf::from("/tmp/fletch-run-args/store-b/objects"),
+        ];
+        let projects = root.join("claude-projects");
+
+        let shapes = [
+            ProviderMounts::Claude {
+                config_dir: Some(alt),
+                credentials_rw: true,
+                config_dir_credentials_rw: true,
+                projects_src: &projects,
+            },
+            ProviderMounts::Codex {
+                config_dir: alt,
+                forward_home: true,
+            },
+            ProviderMounts::Opencode {
+                data_dir: alt,
+                config_dir: Some(home),
+                forward_xdg_data_home: true,
+                forward_xdg_config_home: true,
+            },
+            ProviderMounts::Pi { data_dir: alt },
+            ProviderMounts::Cursor { data_dir: alt },
+        ];
+
+        for mounts in shapes {
+            let spec = RunSpec {
+                interactive: true,
+                name: "fletch-agent-test",
+                agent_id: "agent-1",
+                writable_root: root,
+                rpc_dir: rpc,
+                home,
+                cwd: root,
+                blackboard: Some(board),
+                mounts,
+                borrowed_object_stores: &stores,
+                memory: DEFAULT_MEMORY,
+                cpus: DEFAULT_CPUS,
+                image: "fletch-agent:cafe00000000",
+                agent_bin: "claude",
+                auth_vars: &["ANTHROPIC_API_KEY"],
+            };
+            let sources = mount_sources(&spec);
+            let args = run_args(&spec);
+
+            let mut binds = 0;
+            for (flag, value) in args.iter().zip(args.iter().skip(1)) {
+                match flag.as_str() {
+                    "-v" => {
+                        binds += 1;
+                        // `src:dst[:ro]` — the source is the leading segment.
+                        let src = Path::new(value.split(':').next().unwrap());
+                        assert!(
+                            sources.iter().any(|s| src == s || src.starts_with(s)),
+                            "unvetted bind source {src:?} (vetted: {sources:?})",
+                        );
+                    }
+                    "--tmpfs" => assert!(
+                        !sources.iter().any(|s| s == Path::new(value)),
+                        "a tmpfs overlay has no host source: {value}",
+                    ),
+                    _ => {}
+                }
+            }
+            assert!(
+                binds >= 3,
+                "expected the workspace/rpc/config binds at least"
+            );
+        }
     }
 }

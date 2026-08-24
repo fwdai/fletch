@@ -1,4 +1,5 @@
 import { Icon } from "@/components/Icon";
+import { isContainerEngine } from "@/storage/preferences";
 import { Badge } from "./Badge";
 
 /** Why the path looks like the host: container agents bind-mount the workspace
@@ -13,12 +14,13 @@ function hint(runtime: string) {
 
 /** A subtle container chip shown next to the workspace path on containerized
  *  agents. Renders nothing for the default seatbelt engine, so it only appears
- *  when the sandbox engine is a container one. `engine` is the agent's stamped
- *  `sandbox_engine` value; both container runtimes share the chip's tone,
- *  because what it tells the user about their paths is the same either way. */
+ *  when the sandbox engine is a container one (via `isContainerEngine`, the
+ *  single definition of that). `engine` is the agent's stamped `sandbox_engine`
+ *  value; both container runtimes share the chip's tone, because what it tells
+ *  the user about their paths is the same either way. */
 export function SandboxBadge({ engine }: { engine?: string | null }) {
-  const runtime = engine === "docker" ? "Docker" : engine === "podman" ? "Podman" : null;
-  if (!runtime) return null;
+  if (!isContainerEngine(engine)) return null;
+  const runtime = engine === "podman" ? "Podman" : "Docker";
   return (
     <Badge
       variant="docker"

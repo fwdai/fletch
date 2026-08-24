@@ -1,28 +1,11 @@
 //! The Podman sandbox engine: one container per agent process, agent ≈ PID 1.
 //!
-//! Behaviourally the Docker engine with a different binary. Every invariant
-//! [`docker::engine`](crate::sandbox::docker) documents holds here unchanged and
-//! for the same reason, because the parts that carry them are the same code:
-//! the mounts, env and auth come from
-//! [`container::launch`](crate::sandbox::container::launch), the argv from
-//! [`container::run_args`](crate::sandbox::container::run_args), the labels from
-//! [`container::labels`](crate::sandbox::container::labels), the image content
-//! from [`container::images`](crate::sandbox::container::images), and the
-//! image-freshness policy from
-//! [`container::freshness`](crate::sandbox::container::freshness). What this file
-//! adds is the podman binary, the podman teardown commands, and one
-//! Podman-specific reliability gate.
-//!
-//! **The machine preflight.** Podman's macOS VM sees only the host directories
-//! the machine shares, and a bind mount from outside them silently yields an
-//! empty dir rather than an error (see [`super::machine`]). Docker Desktop has
-//! no equivalent failure — its VM shares the whole filesystem — so this check
-//! exists on this side only, and it runs before the launch rather than after so
-//! the user gets the path instead of a broken checkout.
-//!
-//! Containers run as root, like Docker's: the launch is shared, and podman's
-//! rootless mode is a narrowing the guarantee declarations already account for
-//! (see `sandbox::guarantees`).
+//! Behaviourally the Docker engine with a different binary — the shared parts
+//! live under [`container`](crate::sandbox::container). What this file adds is
+//! the podman binary, the podman teardown commands, and the machine preflight:
+//! a bind mount from outside the machine's shares silently yields an empty dir
+//! rather than an error (see [`super::machine`]), so it is checked before the
+//! launch, while the path can still be named.
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -42,15 +25,12 @@ use super::{cli, image, machine};
 
 /// Signal/removal podman calls during teardown.
 const KILL_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a TERM'd container gets to exit before escalating to KILL — same
-/// order as the session-side process-group escalation grace windows.
+/// How long a TERM'd container gets to exit before escalating to KILL.
 const TERM_GRACE: Duration = Duration::from_millis(500);
 /// Liveness lookups (`podman inspect`).
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Podman's wording for the shared reserved-exit-code messages. The machine is
-/// what reports a start failure, `podman machine` is what the user restarts, and
-/// `podman_image` is the override a 126/127 may be pointing at.
+/// Podman's wording for the shared reserved-exit-code messages.
 const EXIT_COPY: ExitCopy = ExitCopy {
     runtime: super::RUNTIME_NAME,
     error_source: "the machine",
@@ -59,18 +39,12 @@ const EXIT_COPY: ExitCopy = ExitCopy {
 };
 
 /// The `SandboxEngine` implementation for Podman. Obtain it via
-/// [`PodmanEngine::shared`]: launches embed an `Arc` of the engine in their
-/// [`KillHandle`], and sharing one instance also shares the once-per-app-run
+/// [`PodmanEngine::shared`] — one instance per app run, so launches share the
 /// image resolution cache.
 pub struct PodmanEngine {
-    /// Images resolved for this app run, keyed by `(provider, override,
-    /// connection)` so each provider's image is resolved (and built) at most
-    /// once per machine, and a mid-run settings change re-resolves. The
-    /// connection is part of the key because image stores are per-machine: a tag
-    /// present on one says nothing about another, and a launch pinned elsewhere
-    /// would run on an image that isn't there. Only successes are cached — a
-    /// failed build retries on the next spawn (the user may have started the
-    /// machine or fixed their network since).
+    /// Images resolved for this app run. The connection is part of the key
+    /// because image stores are per-machine: a tag present on one says nothing
+    /// about another. Only successes are cached, so a failed build retries.
     resolved_image: Mutex<ImageCache>,
 }
 
@@ -79,8 +53,7 @@ type ImageCache =
     std::collections::HashMap<(ContainerProvider, Option<String>, Option<String>), String>;
 
 impl PodmanEngine {
-    /// The process-wide engine instance — the same `Arc` that `engine_for`
-    /// hands to launch paths and that every launch parks in its `KillHandle`.
+    /// The process-wide engine instance.
     pub fn shared() -> Arc<PodmanEngine> {
         static ENGINE: OnceLock<Arc<PodmanEngine>> = OnceLock::new();
         ENGINE
@@ -93,15 +66,9 @@ impl PodmanEngine {
     }
 
     /// The image to launch `provider` from on `connection`, resolving (and
-    /// building, if that machine's store lacks it) at most once per app run per
-    /// (provider, override, connection) triple. Resolution also runs the
-    /// background freshness checks (TTL + host/container version parity — see
-    /// `image::resolve_image`), so their cadence is once per app run too. The
-    /// host version comes from the existing memoized probe
-    /// (`agent::cached_provider_version` — at most one `--version` subprocess per
-    /// provider per run, shared with ingest); a machine with no host CLI yields
-    /// `None` and the version trigger is simply inert, leaving the TTL as the
-    /// backstop.
+    /// building) at most once per app run per (provider, override, connection)
+    /// triple — which is also the cadence of the freshness checks
+    /// `image::resolve_image` kicks off.
     fn resolve_image_cached(
         &self,
         provider: ContainerProvider,
@@ -113,21 +80,21 @@ impl PodmanEngine {
             override_image.map(str::to_string),
             connection.map(str::to_string),
         );
-        let mut cache = self.resolved_image.lock().unwrap();
-        if let Some(tag) = cache.get(&key) {
+        // The lock is dropped before resolving: a build can take ten minutes and
+        // would otherwise block every cache-hit launch. Two cold launches racing
+        // the same key is safe — `BUILD_LOCK` makes the second a no-op.
+        if let Some(tag) = self.resolved_image.lock().unwrap().get(&key) {
             return Ok(tag.clone());
         }
-        // Skip the host probe entirely on the override path: the user's image is
-        // never inspected or refreshed, so there is nothing to compare.
+        // No host probe on the override path: the user's image is never
+        // inspected or refreshed, so there is nothing to compare.
         let host_cli_version = if non_blank(override_image).is_none() {
             crate::agent::cached_provider_version(provider.id())
         } else {
             None
         };
-        // Per-line build output goes to the log; the UI build toast is driven
-        // separately by the `container::progress` sink inside `image`. Free-form
-        // output rides in the `line` field (not the message) so the sentry
-        // scrubber drops it — see the privacy invariant in `lib.rs`.
+        // Free-form output rides in the `line` field, not the message, so the
+        // sentry scrubber drops it — see the privacy invariant in `lib.rs`.
         let on_progress = |line: &str| tracing::info!(target: "fletch::podman_build", line = %line, "podman build output");
         let tag = image::resolve_image(
             provider,
@@ -137,14 +104,13 @@ impl PodmanEngine {
             &on_progress,
         )
         .map_err(|e| Error::Other(format!("preparing the Podman sandbox image failed: {e}")))?;
-        cache.insert(key, tag.clone());
+        self.resolved_image.lock().unwrap().insert(key, tag.clone());
         Ok(tag)
     }
 }
 
 /// `run_argv` with this launch's connection pin ahead of it. `--connection` is a
-/// *global* flag, so it precedes the subcommand — appending it after `run` would
-/// make podman read it as a container argument. An unpinned target adds nothing.
+/// *global* flag: after `run` podman would read it as a container argument.
 fn pinned_argv(connection: Option<&str>, run_argv: Vec<String>) -> Vec<String> {
     let Some(connection) = connection else {
         return run_argv;
@@ -159,11 +125,8 @@ impl SandboxEngine for PodmanEngine {
         EngineKind::Podman
     }
 
-    /// Launch a container for `ctx.provider`. Identical to the Docker engine's
-    /// launch but for the binary, the resolved image, the machine preflight,
-    /// and the connection pin that ties those to the run.
-    /// `ensure_engine_supports_provider` gates this to a supported provider, so
-    /// the `from_id` failure below is defensive only.
+    /// Launch a container for `ctx.provider`. `ensure_engine_supports_provider`
+    /// gates this, so the `from_id` failure below is defensive only.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
         let provider = ContainerProvider::from_id(ctx.provider).ok_or_else(|| {
             Error::Other(format!(
@@ -173,25 +136,18 @@ impl SandboxEngine for PodmanEngine {
         })?;
         let podman = cli::podman_bin()
             .ok_or_else(|| Error::Other("podman binary not found — is Podman installed?".into()))?;
-        // Resolved before the image: everything this launch touches — the image
-        // store, the mount check, the run, the teardown — has to be the one
-        // endpoint named here, and a remote default is refused before any of it
-        // (in particular before a minutes-long build for a machine we would then
-        // refuse to launch on).
+        // Resolved first: the image store, the mount check, the run and the
+        // teardown all have to be the one endpoint named here, and a remote
+        // default is refused before a minutes-long build for it.
         let target = machine::resolve_launch_target()?;
         let connection = target.connection.clone();
         let settings = LAUNCH_SETTINGS.read().clone();
-        let image = self.resolve_image_cached(
-            provider,
-            settings.image_override.as_deref(),
-            connection.as_deref(),
-        )?;
         let name = container_name(ctx.agent_id);
         let prep = crate::sandbox::container::launch::prepare(ctx, provider)?;
 
         let prefix_args = {
             let auth_vars = prep.auth_vars();
-            let spec = RunSpec {
+            let mut spec = RunSpec {
                 interactive: ctx.interactive,
                 name: &name,
                 agent_id: ctx.agent_id,
@@ -204,14 +160,21 @@ impl SandboxEngine for PodmanEngine {
                 borrowed_object_stores: &prep.borrowed_object_stores,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
                 cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
-                image: &image,
+                // Filled in below, once the preflight has passed.
+                image: "",
                 agent_bin,
                 auth_vars: &auth_vars,
             };
-            // Before the run, not after: an unshared source mounts empty rather
-            // than failing, so the launch has to be refused while we can still
-            // name the path.
+            // Before the image, not just before the run: an unshared source
+            // mounts empty rather than failing, and the refusal shouldn't come
+            // after waiting out a build.
             machine::ensure_sources_are_shared(&mount_sources(&spec), &target)?;
+            let image = self.resolve_image_cached(
+                provider,
+                settings.image_override.as_deref(),
+                connection.as_deref(),
+            )?;
+            spec.image = &image;
             pinned_argv(connection.as_deref(), run_args(&spec))
         };
 
@@ -226,15 +189,12 @@ impl SandboxEngine for PodmanEngine {
         })
     }
 
-    /// Tear the container down: TERM, a grace window, then KILL, then a
-    /// best-effort `rm -f`. Best-effort throughout and always `Ok` — the
-    /// container is usually already gone (`--rm`, machine stopped, normal
-    /// exit), and an error here would abort the caller's local process-group
-    /// teardown of the podman CLI child.
+    /// TERM, a grace window, then KILL, then a best-effort `rm -f`. Always `Ok`:
+    /// the container is usually already gone, and an error here would abort the
+    /// caller's local process-group teardown of the podman CLI child.
     fn kill(&self, plan: &KillPlan) -> Result<()> {
-        // Every call here rides the connection the launch pinned, not the
-        // current default: the container lives on one machine, and a default
-        // that moved since would leave us signalling into the wrong one.
+        // The launch's pinned connection, not the current default — a default
+        // that moved since would signal into the wrong machine.
         let KillPlan::Container { name, connection } = plan;
         let on = connection.as_deref();
         match cli::run_podman_on(on, &["kill", "-s", "TERM", name], KILL_TIMEOUT) {
@@ -259,9 +219,8 @@ impl SandboxEngine for PodmanEngine {
     }
 }
 
-/// Whether podman says the container is currently running, asked of the
-/// connection it was launched on. Errors (container gone, machine down,
-/// timeout) read as not running.
+/// Whether the container is running on the connection it was launched on.
+/// Errors (container gone, machine down, timeout) read as not running.
 fn container_running(name: &str, connection: Option<&str>) -> bool {
     match cli::run_podman_on(
         connection,
@@ -296,9 +255,6 @@ mod tests {
     use crate::sandbox::container::run_args::prepare_config_mount_dir;
     use std::path::PathBuf;
 
-    /// Podman's exit-code wording names the machine (it has no daemon) and
-    /// points at `podman machine`, while still hedging that the code may be the
-    /// agent's own. The image clauses name `podman_image`, never docker's key.
     #[test]
     fn exit_code_wording_is_podman_shaped() {
         let daemon = describe_exit_code(125, &EXIT_COPY).unwrap();
@@ -317,9 +273,6 @@ mod tests {
         assert_eq!(describe_exit_code(1, &EXIT_COPY), None);
     }
 
-    /// The pin is a global flag: it lands before `run`, verbatim (a rootful
-    /// connection keeps its `-root`), and an unpinned launch emits no flag at
-    /// all rather than an empty one.
     #[test]
     fn the_connection_pin_precedes_the_run_subcommand() {
         let run_argv = vec![
@@ -342,10 +295,8 @@ mod tests {
         assert_eq!(pinned_argv(None, run_argv.clone()), run_argv);
     }
 
-    /// Integration: a real `podman run` through the engine's own launch plan
-    /// round-trips a marker file the host wrote into the workspace mount, which
-    /// is the whole path-identity contract in one assertion.
-    /// `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
+    /// Integration: a marker file round-trips through the workspace mount at its
+    /// identical host path. `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
     #[test]
     #[ignore = "requires Podman; opt in via FLETCH_PODMAN_TESTS=1"]
     fn podman_run_echo_round_trip() {
@@ -353,9 +304,8 @@ mod tests {
             return;
         }
         // Under `$HOME`, not `$TMPDIR`: the machine shares `$HOME` by default,
-        // and a mount from outside its shares would come up *empty* rather than
-        // failing — the exact confusion `machine::ensure_sources_are_shared`
-        // exists to head off, and it would make this test's failure unreadable.
+        // and a mount from outside its shares comes up empty rather than
+        // failing, which would make this test's failure unreadable.
         let td = tempfile::tempdir_in(dirs::home_dir().unwrap()).unwrap();
         let root = td.path().join("workspace");
         let rpc = td.path().join("rpc");
@@ -398,8 +348,8 @@ mod tests {
         let marker = root.join("marker.txt").to_string_lossy().into_owned();
         argv.push(&marker);
 
-        // Pinned like the engine pins it, so the run lands on the very machine
-        // whose shares were just validated.
+        // Pinned like the engine pins it, so the run lands on the machine whose
+        // shares were just validated.
         let out = cli::run_podman_on(
             target.connection.as_deref(),
             &argv,
@@ -418,9 +368,7 @@ mod tests {
         );
     }
 
-    /// Integration: the engine's kill escalation actually stops a live
-    /// container, and the liveness probe tracks it both ways.
-    /// `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
+    /// Integration. `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
     #[test]
     #[ignore = "requires Podman; opt in via FLETCH_PODMAN_TESTS=1"]
     fn kill_and_liveness_against_live_container() {
@@ -457,9 +405,7 @@ mod tests {
         );
     }
 
-    /// Integration: the preflight accepts a path under the machine's shares and
-    /// refuses one outside them, naming the offending path. Skipped on a host
-    /// with no machine (native Linux), where the check is inert by design.
+    /// Integration; skipped on a host with no machine, where the check is inert.
     /// `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
     #[test]
     #[ignore = "requires Podman; opt in via FLETCH_PODMAN_TESTS=1"]

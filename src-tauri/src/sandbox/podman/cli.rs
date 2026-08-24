@@ -1,20 +1,10 @@
-//! Locate the podman binary and run it with hard timeouts.
+//! Locate the podman binary and run it with hard timeouts, over the
+//! runtime-neutral machinery in
+//! [`container::proc`](crate::sandbox::container::proc).
 //!
-//! The same two rules as [`docker::cli`](crate::sandbox::docker::cli), enforced
-//! by funneling every podman invocation through this module:
-//!
-//! 1. **Resolve the binary like a GUI app.** Podman installs the CLI into
-//!    `/opt/homebrew/bin` or `/usr/local/bin`, neither of which a
-//!    Finder-launched Tauri app's PATH reliably includes —
-//!    `bin_resolve::resolve_bin` handles that (its common-dirs fallback already
-//!    covers both).
-//! 2. **Bound every call.** Podman has no daemon on macOS, but it does talk to a
-//!    `podman machine` VM over a socket, and a VM that is suspended or
-//!    mid-shutdown leaves a socket that accepts and then stalls — the same hazard
-//!    a stopped Docker Desktop poses. Callers pass an explicit timeout and get a
-//!    clear "timed out" error instead. The bounding machinery is runtime-neutral
-//!    and lives in [`container::proc`](crate::sandbox::container::proc); what's
-//!    here is the thin Podman-specific layer over it.
+//! Every podman invocation goes through here: a Finder-launched app's PATH
+//! misses homebrew, and a suspended `podman machine` leaves a socket that
+//! accepts and then stalls forever, so no call may be unbounded.
 
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
@@ -23,29 +13,24 @@ use crate::error::{Error, Result};
 use crate::sandbox::container::proc::{forward_lines, run_with_timeout, wait_with_deadline};
 
 /// Absolute path of the podman CLI, or `None` when it isn't installed.
-/// Resolved fresh on every call (the underlying login-shell env is cached, so
-/// this is just a stat walk): caching a `None` here would pin the probe to
-/// `NotInstalled` for the whole app run even after the user installs Podman,
-/// and the probe's own 5s cache already bounds the frequency.
+/// Resolved fresh per call — caching a `None` would pin the probe to
+/// `NotInstalled` for the whole run even after the user installs Podman.
 pub(super) fn podman_bin() -> Option<std::path::PathBuf> {
     let home = dirs::home_dir()?;
     crate::bin_resolve::resolve_bin("podman", &home).map(std::path::PathBuf::from)
 }
 
-/// Run `podman <args>` on whichever connection is the default. For anything
-/// belonging to one container's lifetime, use [`run_podman_on`] with that
+/// Run `podman <args>` on whichever connection is the default. Anything
+/// belonging to one container's lifetime must use [`run_podman_on`] with that
 /// container's pinned connection instead — the default can change mid-run.
 pub(super) fn run_podman(args: &[&str], timeout: Duration) -> Result<Output> {
     run_podman_on(None, args, timeout)
 }
 
 /// Run `podman [--connection <name>] <args>` capturing stdout/stderr, failing
-/// after `timeout`. Returns the raw `Output` — callers inspect the exit status
+/// after `timeout`. Returns the raw `Output`: callers inspect the exit status
 /// themselves, since several podman commands use non-zero exits as answers
 /// (e.g. `image inspect` on a missing image), not as errors.
-///
-/// The pin is a *global* flag, so it goes ahead of the subcommand; the error
-/// label still names the subcommand, which is the part a user can act on.
 pub(super) fn run_podman_on(
     connection: Option<&str>,
     args: &[&str],
@@ -54,6 +39,7 @@ pub(super) fn run_podman_on(
     let bin = podman_bin()
         .ok_or_else(|| Error::Other("podman binary not found — is Podman installed?".into()))?;
     let mut cmd = Command::new(bin);
+    // `--connection` is a global flag: it has to precede the subcommand.
     if let Some(connection) = connection {
         cmd.args(["--connection", connection]);
     }
@@ -62,12 +48,11 @@ pub(super) fn run_podman_on(
     run_with_timeout(cmd, timeout, &what)
 }
 
-/// Run `podman [--connection <name>] <args>` streaming every output line
-/// (stdout and stderr) to `on_line` as it appears — the shape `podman build`
-/// needs so a minutes-long image build reaches the log while it runs. Fails on
-/// non-zero exit with the last output lines in the message, or on `timeout`
-/// expiry. `connection` matters here too: images live per-machine, so a build
-/// has to land on the machine the run will use.
+/// Run `podman [--connection <name>] <args>` streaming every stdout/stderr line
+/// to `on_line` as it appears, so a minutes-long build reaches the log while it
+/// runs. Fails on non-zero exit with the last output lines in the message, or on
+/// `timeout` expiry. `connection` matters here too: images live per-machine, so
+/// a build has to land on the machine the run will use.
 pub(super) fn run_podman_streaming(
     connection: Option<&str>,
     args: &[&str],
@@ -90,14 +75,12 @@ pub(super) fn run_podman_streaming(
     let stdout = child.stdout.take().expect("stdout piped above");
     let stderr = child.stderr.take().expect("stderr piped above");
 
-    // Keep a bounded tail of everything seen, so a failure message carries the
-    // actual podman error (which lands near the end of the stream) without
-    // buffering an entire multi-minute build log.
+    // Bounded: podman's error lands near the end of the stream, so a tail
+    // carries it without buffering an entire multi-minute build log.
     let tail = std::sync::Mutex::new(std::collections::VecDeque::<String>::new());
 
-    // Scoped threads: the readers borrow `on_line` and `tail`, and both pipes
-    // are drained continuously so the child can never block on a full pipe
-    // while we sit in the wait loop below.
+    // Both pipes must be drained continuously, or the child blocks on a full
+    // pipe while we sit in the wait loop.
     let status = std::thread::scope(|scope| {
         scope.spawn(|| forward_lines(stdout, on_line, &tail));
         scope.spawn(|| forward_lines(stderr, on_line, &tail));

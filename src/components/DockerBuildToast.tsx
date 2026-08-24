@@ -9,10 +9,8 @@ import { Button } from "./ui/Button";
  * minutes-long) image build; this surfaces its progress so the wait is legible,
  * then clears itself when the build finishes. A failed build stays up with the
  * reason and a dismiss. Renders nothing when no build is in flight. Fed by the
- * `docker:build-progress` event (see store/eventListeners), keyed by the
- * runtime each event names — the runtimes build on independent locks, so a
- * Docker and a Podman build can be in flight (and rendered) at once. An event
- * without a runtime renders under neutral copy rather than guessing.
+ * `docker:build-progress` event (see store/eventListeners); Docker and Podman
+ * builds are independent, so both can be in flight and rendered at once.
  */
 export function DockerBuildToast() {
   const builds = useAppStore((s) => s.containerBuilds);

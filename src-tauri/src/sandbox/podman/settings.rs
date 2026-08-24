@@ -1,13 +1,11 @@
 //! Launch knobs and the version-refresh loop guard, both mirrored in-process
-//! (the spawn path and background threads have no DB handle). Seeded at startup
-//! and kept in sync by the settings set-commands — see [`set_launch_settings`]
-//! and [`init_version_refresh_guard`].
+//! (the spawn path and background threads have no DB handle).
 //!
-//! Deliberately a sibling of `docker::engine::settings` rather than a shared
-//! module: the keys are per runtime (`podman_image` next to `docker_image`) so a
-//! user running both engines can point each at its own image and limits, and
-//! the version guard must stay per runtime because the two keep separate image
-//! stores — an image present in one says nothing about the other.
+//! Per runtime rather than shared with `docker::engine::settings`: the two keep
+//! separate image stores, so an image present in one says nothing about the
+//! other. The guard is not per *connection* even though podman's stores are
+//! per machine — the map holds one pair per provider, so two machines would
+//! evict each other and ping-pong rebuilds. The TTL backstops the second one.
 
 use parking_lot::RwLock;
 
@@ -23,10 +21,8 @@ pub const CPUS_SETTING: &str = "podman_cpus";
 // The launch defaults are container policy, not podman's: they live in
 // [`crate::sandbox::container::run_args`] so both runtimes cap the same way.
 
-/// Launch knobs read from the `settings` table, mirrored in-process (the spawn
-/// path has no DB handle — same pattern as `sandbox::set_selected_engine_kind`).
-/// Seeded at startup in `lib.rs setup` and kept in sync by the settings
-/// set-commands.
+/// Launch knobs read from the `settings` table. Seeded at startup in `lib.rs
+/// setup` and kept in sync by the settings set-commands.
 #[derive(Clone, Default)]
 pub struct LaunchSettings {
     /// `podman_image` — a non-empty value is used verbatim, skipping the
@@ -51,19 +47,17 @@ pub fn set_launch_settings(settings: LaunchSettings) {
 }
 
 /// Settings key persisting the version-refresh loop guard: a JSON object of
-/// `provider id → "host_version@image_tag"`, recording the last host/image
-/// pairing a version-mismatch rebuild *succeeded* for. Not a user-facing
-/// setting — private bookkeeping that must survive restarts, for the reason
-/// [`container::version_guard`](crate::sandbox::container::version_guard)
-/// documents.
+/// `provider id → "host_version@image_tag"`, the last pairing a rebuild
+/// succeeded for. Private bookkeeping that must survive restarts, not a
+/// user-facing setting — see
+/// [`container::version_guard`](crate::sandbox::container::version_guard).
 pub const VERSION_GUARD_SETTING: &str = "podman_version_refresh_guard";
 
 /// Podman's loop-guard state, mirrored in-process like [`LAUNCH_SETTINGS`].
 static VERSION_GUARD: VersionGuard = VersionGuard::new();
 
 /// Install the loop-guard state: `attempted` as loaded from
-/// [`VERSION_GUARD_SETTING`], `persist` writing it back. The app wires this to a
-/// `database::set_setting` closure at startup.
+/// [`VERSION_GUARD_SETTING`], `persist` writing it back.
 pub fn init_version_refresh_guard(
     attempted: std::collections::HashMap<String, String>,
     persist: impl Fn(&std::collections::HashMap<String, String>) + Send + Sync + 'static,
@@ -71,24 +65,21 @@ pub fn init_version_refresh_guard(
     VERSION_GUARD.init(attempted, persist);
 }
 
-/// Whether a version-mismatch rebuild already succeeded for exactly this `pair`
+/// Whether a rebuild already succeeded for exactly this `pair`
 /// (`"host_version@image_tag"`).
 pub(super) fn version_refresh_attempted(provider_id: &str, pair: &str) -> bool {
     VERSION_GUARD.attempted(provider_id, pair)
 }
 
-/// Record (and persist, when wired) that a version-mismatch rebuild succeeded
-/// for `pair`. Called from the background rebuild thread on success only.
+/// Record (and persist, when wired) a rebuild that succeeded for `pair`.
 pub(super) fn record_version_refresh(provider_id: &str, pair: String) {
     VERSION_GUARD.record(provider_id, pair);
 }
 
-/// The current `podman_image` override, trimmed, `None` when unset/blank — read
-/// by the image GC ([`super::cleanup::sweep_stale_images`]) to defensively
-/// exclude the user's image from removal. Structurally it should never be a
-/// candidate (Fletch never builds it, so it carries no `fletch.agent` label and
-/// lives outside Fletch's repos), but a lifecycle we don't own gets a second
-/// fence.
+/// The current `podman_image` override, trimmed, `None` when unset/blank. The
+/// image GC ([`super::cleanup::sweep_stale_images`]) excludes it: it should
+/// never be a candidate anyway (unlabelled, outside Fletch's repos), but a
+/// lifecycle we don't own gets a second fence.
 pub(super) fn image_override() -> Option<String> {
     LAUNCH_SETTINGS
         .read()
@@ -103,9 +94,6 @@ pub(super) fn image_override() -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The keys mirror docker's shape one-for-one under a `podman_` prefix, so
-    /// the settings table stays readable and neither runtime can clobber the
-    /// other's knobs.
     #[test]
     fn keys_mirror_dockers_shape_under_a_podman_prefix() {
         use crate::sandbox::docker;
@@ -124,8 +112,6 @@ mod tests {
         }
     }
 
-    /// The override reader treats blank as unset — the same
-    /// blank-falls-back-to-default semantics the launch path applies.
     #[test]
     fn blank_override_reads_as_unset() {
         set_launch_settings(LaunchSettings {
@@ -144,10 +130,8 @@ mod tests {
         assert_eq!(image_override(), None);
     }
 
-    /// Podman's guard is its own static: exact-pair matching and per-provider
-    /// isolation hold here independently of docker's (the shared machinery is
-    /// covered in `docker::engine::tests`), and recording works before `init` so
-    /// a headless run still guards its own process.
+    /// Podman's guard is its own static, and works before `init` so a headless
+    /// run still guards its own process.
     #[test]
     fn version_guard_records_before_init() {
         let pair = "v1@fletch-agent:podmanonly";

@@ -37,14 +37,10 @@ export function CopyButton({
     timer.current = setTimeout(() => setCopied(false), 1500);
   };
 
+  // No explicit aria-label: IconButton falls back to `tip`, so each call site's
+  // own wording ("Copy command") becomes the accessible name.
   return (
-    <IconButton
-      size="xs"
-      tip={copied ? "Copied" : tip}
-      className={className}
-      onClick={onCopy}
-      aria-label="Copy message"
-    >
+    <IconButton size="xs" tip={copied ? "Copied" : tip} className={className} onClick={onCopy}>
       <Icon name={copied ? "check" : "copy"} size={12} />
     </IconButton>
   );
