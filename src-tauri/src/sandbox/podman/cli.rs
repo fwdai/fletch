@@ -32,24 +32,44 @@ pub(super) fn podman_bin() -> Option<std::path::PathBuf> {
     crate::bin_resolve::resolve_bin("podman", &home).map(std::path::PathBuf::from)
 }
 
-/// Run `podman <args>` capturing stdout/stderr, failing after `timeout`.
-/// Returns the raw `Output` — callers inspect the exit status themselves, since
-/// several podman commands use non-zero exits as answers (e.g. `image inspect`
-/// on a missing image), not as errors.
+/// Run `podman <args>` on whichever connection is the default. For anything
+/// belonging to one container's lifetime, use [`run_podman_on`] with that
+/// container's pinned connection instead — the default can change mid-run.
 pub(super) fn run_podman(args: &[&str], timeout: Duration) -> Result<Output> {
+    run_podman_on(None, args, timeout)
+}
+
+/// Run `podman [--connection <name>] <args>` capturing stdout/stderr, failing
+/// after `timeout`. Returns the raw `Output` — callers inspect the exit status
+/// themselves, since several podman commands use non-zero exits as answers
+/// (e.g. `image inspect` on a missing image), not as errors.
+///
+/// The pin is a *global* flag, so it goes ahead of the subcommand; the error
+/// label still names the subcommand, which is the part a user can act on.
+pub(super) fn run_podman_on(
+    connection: Option<&str>,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Output> {
     let bin = podman_bin()
         .ok_or_else(|| Error::Other("podman binary not found — is Podman installed?".into()))?;
     let mut cmd = Command::new(bin);
+    if let Some(connection) = connection {
+        cmd.args(["--connection", connection]);
+    }
     cmd.args(args);
     let what = format!("podman {}", args.first().copied().unwrap_or_default());
     run_with_timeout(cmd, timeout, &what)
 }
 
-/// Run `podman <args>` streaming every output line (stdout and stderr) to
-/// `on_line` as it appears — the shape `podman build` needs so a minutes-long
-/// image build reaches the log while it runs. Fails on non-zero exit with the
-/// last output lines in the message, or on `timeout` expiry.
+/// Run `podman [--connection <name>] <args>` streaming every output line
+/// (stdout and stderr) to `on_line` as it appears — the shape `podman build`
+/// needs so a minutes-long image build reaches the log while it runs. Fails on
+/// non-zero exit with the last output lines in the message, or on `timeout`
+/// expiry. `connection` matters here too: images live per-machine, so a build
+/// has to land on the machine the run will use.
 pub(super) fn run_podman_streaming(
+    connection: Option<&str>,
     args: &[&str],
     timeout: Duration,
     on_line: &(dyn Fn(&str) + Send + Sync),
@@ -57,7 +77,11 @@ pub(super) fn run_podman_streaming(
     let bin = podman_bin()
         .ok_or_else(|| Error::Other("podman binary not found — is Podman installed?".into()))?;
     let what = format!("podman {}", args.first().copied().unwrap_or_default());
-    let mut child = Command::new(bin)
+    let mut cmd = Command::new(bin);
+    if let Some(connection) = connection {
+        cmd.args(["--connection", connection]);
+    }
+    let mut child = cmd
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -7,6 +7,12 @@
 //! *this* agent?" (archive/discard). The label parsing and the under-reclaim
 //! bias are shared with docker; only the invocations differ.
 //!
+//! One invocation shape does differ in kind: docker has a single daemon, while
+//! podman has one container store per machine and launches pin themselves to
+//! the connection they resolved at the time (see [`super::machine`]). Asking
+//! only the current default would strand containers on every other machine, so
+//! both sweeps run once per machine connection.
+//!
 //! No image GC here — Podman ships without one for now, so a superseded agent
 //! image stays in the local store until the user reclaims it.
 
@@ -27,11 +33,18 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 /// batched removal room without letting a hung machine pin the sweep thread.
 const REMOVE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Remove every fletch-labeled container whose owning host instance is dead.
-/// Returns the number removed. Callers gate on the probe and run this off the
-/// main thread — see [`super::sweep_orphans_at_startup`].
+/// Remove every fletch-labeled container whose owning host instance is dead,
+/// across every machine — a launch is pinned to the connection it resolved at
+/// the time, so yesterday's containers can sit on a machine that is no longer
+/// the default. Returns the number removed. Callers gate on the probe and run
+/// this off the main thread — see [`super::sweep_orphans_at_startup`].
 pub(super) fn sweep_orphans() -> Result<usize> {
-    let ids = list_ids(&format!("label={HOST_PID_LABEL}"))?;
+    across_machines("podman orphan sweep", sweep_orphans_on)
+}
+
+/// One sweep pass against a single connection.
+fn sweep_orphans_on(connection: Option<&str>) -> Result<usize> {
+    let ids = list_ids(connection, &format!("label={HOST_PID_LABEL}"))?;
     if ids.is_empty() {
         return Ok(0);
     }
@@ -39,7 +52,7 @@ pub(super) fn sweep_orphans() -> Result<usize> {
     let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
     let mut inspect_args = vec!["inspect", "-f", INSPECT_FORMAT];
     inspect_args.extend(&id_refs);
-    let inspected = cli::run_podman(&inspect_args, QUERY_TIMEOUT)?;
+    let inspected = cli::run_podman_on(connection, &inspect_args, QUERY_TIMEOUT)?;
     // Don't require a zero exit: inspect exits non-zero if ANY id vanished
     // between ps and inspect (e.g. a `--rm` container finishing), but still
     // prints the rows it found — those are the ones we act on.
@@ -53,7 +66,10 @@ pub(super) fn sweep_orphans() -> Result<usize> {
         count = orphans.len(),
         "removing podman containers of dead fletch instances"
     );
-    remove(&orphans.iter().map(String::as_str).collect::<Vec<_>>())?;
+    remove(
+        connection,
+        &orphans.iter().map(String::as_str).collect::<Vec<_>>(),
+    )?;
     Ok(orphans.len())
 }
 
@@ -72,7 +88,14 @@ pub(super) fn sweep_orphans() -> Result<usize> {
 /// ([`container::util::container_name`](crate::sandbox::container::util::container_name)),
 /// so only the launching process ever knew them.
 pub fn remove_agent_containers(agent_id: &str) -> Result<usize> {
-    let ids = list_ids(&agent_id_filter(agent_id))?;
+    across_machines("podman disposal removal", |connection| {
+        remove_agent_containers_on(connection, agent_id)
+    })
+}
+
+/// One removal pass against a single connection.
+fn remove_agent_containers_on(connection: Option<&str>, agent_id: &str) -> Result<usize> {
+    let ids = list_ids(connection, &agent_id_filter(agent_id))?;
     if ids.is_empty() {
         return Ok(0);
     }
@@ -81,13 +104,104 @@ pub fn remove_agent_containers(agent_id: &str) -> Result<usize> {
         count = ids.len(),
         "removing podman containers of a disposed agent"
     );
-    remove(&ids.iter().map(String::as_str).collect::<Vec<_>>())?;
+    remove(
+        connection,
+        &ids.iter().map(String::as_str).collect::<Vec<_>>(),
+    )?;
     Ok(ids.len())
 }
 
-/// Container ids matching one `--filter` expression.
-fn list_ids(filter: &str) -> Result<Vec<String>> {
-    let list = cli::run_podman(&["ps", "-aq", "--filter", filter], QUERY_TIMEOUT)?;
+/// Run `pass` once per machine connection and total what it reclaimed, or once
+/// unpinned when there are no machine connections (native Linux, where the
+/// single local endpoint is the whole story).
+///
+/// Best-effort per connection, in keeping with the under-reclaim bias: a
+/// stopped or wedged machine logs and the remaining ones still get swept —
+/// stopping at the first failure would leave reclaimable containers on
+/// machines that answer fine.
+fn across_machines(
+    what: &str,
+    mut pass: impl FnMut(Option<&str>) -> Result<usize>,
+) -> Result<usize> {
+    let connections = machine_connections();
+    if connections.is_empty() {
+        return pass(None);
+    }
+    let mut total = 0;
+    for connection in &connections {
+        match pass(Some(connection)) {
+            Ok(n) => total += n,
+            Err(e) => tracing::warn!(
+                target: "fletch::podman",
+                connection = %connection,
+                error = %e,
+                "{what} failed on this connection",
+            ),
+        }
+    }
+    Ok(total)
+}
+
+/// One connection name per Podman machine, from
+/// `podman system connection list --format json`. Anything we can't run or read
+/// yields none, which the caller reads as "just use the default".
+fn machine_connections() -> Vec<String> {
+    let Ok(out) = cli::run_podman(
+        &["system", "connection", "list", "--format", "json"],
+        QUERY_TIMEOUT,
+    ) else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    parse_machine_connections(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The machine connection names in a connection listing: entries not explicitly
+/// `IsMachine: false` (older podman omits the field, and a non-machine entry is
+/// a socket or a remote host, neither of which is ours to sweep).
+///
+/// Each machine appears twice, as `<machine>` and `<machine>-root`. Both list
+/// containers of the same machine, so the pair collapses to whichever podman
+/// listed first — sweeping both would ask the same machine twice.
+fn parse_machine_connections(stdout: &str) -> Vec<String> {
+    let Ok(connections) = serde_json::from_str::<Vec<serde_json::Value>>(stdout) else {
+        return Vec::new();
+    };
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    for connection in &connections {
+        if connection.get("IsMachine").and_then(|m| m.as_bool()) == Some(false) {
+            continue;
+        }
+        let Some(name) = connection
+            .get("Name")
+            .and_then(|n| n.as_str())
+            .map(str::trim)
+        else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let machine = name.strip_suffix("-root").unwrap_or(name);
+        if seen.contains(&machine) {
+            continue;
+        }
+        seen.push(machine);
+        out.push(name.to_string());
+    }
+    out
+}
+
+/// Container ids matching one `--filter` expression, on one connection.
+fn list_ids(connection: Option<&str>, filter: &str) -> Result<Vec<String>> {
+    let list = cli::run_podman_on(
+        connection,
+        &["ps", "-aq", "--filter", filter],
+        QUERY_TIMEOUT,
+    )?;
     if !list.status.success() {
         return Err(Error::Other(format!(
             "podman ps failed: {}",
@@ -102,11 +216,11 @@ fn list_ids(filter: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// `podman rm -f` over a batch of ids.
-fn remove(ids: &[&str]) -> Result<()> {
+/// `podman rm -f` over a batch of ids, on one connection.
+fn remove(connection: Option<&str>, ids: &[&str]) -> Result<()> {
     let mut rm_args = vec!["rm", "-f"];
     rm_args.extend(ids);
-    let removed = cli::run_podman(&rm_args, REMOVE_TIMEOUT)?;
+    let removed = cli::run_podman_on(connection, &rm_args, REMOVE_TIMEOUT)?;
     if !removed.status.success() {
         return Err(Error::Other(format!(
             "podman rm failed: {}",
@@ -120,6 +234,34 @@ fn remove(ids: &[&str]) -> Result<()> {
 mod tests {
     use super::*;
     use crate::sandbox::container::labels::host_pid_label;
+
+    /// The sweep set is one connection per machine: rootful pairs collapse
+    /// (both name the same container store), non-machine entries are somebody
+    /// else's containers, and an unreadable listing leaves the caller with the
+    /// default connection alone.
+    #[test]
+    fn machine_connections_are_one_per_machine() {
+        let listing = r#"[
+          { "Name": "podman-machine-default", "IsMachine": true, "Default": true },
+          { "Name": "podman-machine-default-root", "IsMachine": true, "Default": false },
+          { "Name": "work-vm-root", "IsMachine": true, "Default": false },
+          { "Name": "work-vm", "IsMachine": true, "Default": false },
+          { "Name": "build-box", "IsMachine": false, "Default": false, "URI": "ssh://core@build.example.com:22/run/podman/podman.sock" },
+          { "Name": "local", "IsMachine": false, "Default": false, "URI": "unix:///run/podman/podman.sock" },
+          { "Name": "  ", "IsMachine": true },
+          { "IsMachine": true },
+          { "Name": "legacy-no-flag" }
+        ]"#;
+        assert_eq!(
+            parse_machine_connections(listing),
+            ["podman-machine-default", "work-vm-root", "legacy-no-flag"],
+        );
+
+        assert!(parse_machine_connections("[]").is_empty());
+        assert!(parse_machine_connections("").is_empty());
+        assert!(parse_machine_connections("Error: no such thing").is_empty());
+        assert!(parse_machine_connections(r#"{"Name":"m"}"#).is_empty());
+    }
 
     /// Integration: a container labeled with a dead pid is swept; one labeled
     /// with our own (live) pid survives.

@@ -36,31 +36,44 @@ const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// stores, so a docker build is no reason to hold up a podman one.
 static BUILD_LOCK: Mutex<()> = Mutex::new(());
 
-/// The image to launch `provider`'s containers from, building it if the local
-/// store doesn't have it yet.
-pub(super) fn resolve_image(provider: ContainerProvider, on_progress: Progress) -> Result<String> {
+/// The image to launch `provider`'s containers from, building it if the store
+/// behind `connection` doesn't have it yet. The connection is the launch's
+/// pinned one, not the default: each machine keeps its own image store, so an
+/// image built or found elsewhere says nothing about the one the run uses.
+pub(super) fn resolve_image(
+    provider: ContainerProvider,
+    connection: Option<&str>,
+    on_progress: Progress,
+) -> Result<String> {
     let tag = image_tag(provider);
     let spec = image_spec(provider);
-    ensure_image(&tag, spec.dockerfile, spec.entrypoint, on_progress)?;
+    ensure_image(
+        connection,
+        &tag,
+        spec.dockerfile,
+        spec.entrypoint,
+        on_progress,
+    )?;
     Ok(tag)
 }
 
-/// Make sure `tag` exists in the local store, building `dockerfile` under it if
-/// it doesn't. Returns whether the image already existed. Takes the content
-/// explicitly so the integration test can exercise the build machinery with a
-/// tiny Dockerfile instead of the full agent image.
+/// Make sure `tag` exists in `connection`'s store, building `dockerfile` under
+/// it if it doesn't. Returns whether the image already existed. Takes the
+/// content explicitly so the integration test can exercise the build machinery
+/// with a tiny Dockerfile instead of the full agent image.
 fn ensure_image(
+    connection: Option<&str>,
     tag: &str,
     dockerfile: &str,
     entrypoint: &str,
     on_progress: Progress,
 ) -> Result<bool> {
-    if image_exists(tag)? {
+    if image_exists(connection, tag)? {
         return Ok(true);
     }
     let _guard = BUILD_LOCK.lock().unwrap();
     // Re-check under the lock: a concurrent spawn may have just built it.
-    if image_exists(tag)? {
+    if image_exists(connection, tag)? {
         return Ok(true);
     }
 
@@ -75,6 +88,7 @@ fn ensure_image(
     // network for its install step.
     let ctx_path = ctx.path().to_string_lossy().into_owned();
     cli::run_podman_streaming(
+        connection,
         &["build", "--pull", "-t", tag, &ctx_path],
         BUILD_TIMEOUT,
         on_progress,
@@ -83,12 +97,12 @@ fn ensure_image(
     Ok(false)
 }
 
-/// Whether `tag` exists in the local store. A non-zero `image inspect` exit is
-/// podman's "no such image" answer (it also covers an unreachable machine — the
-/// subsequent build then fails with podman's own connectivity error, which is
-/// the right message for that state).
-fn image_exists(tag: &str) -> Result<bool> {
-    let out = cli::run_podman(&["image", "inspect", tag], INSPECT_TIMEOUT)?;
+/// Whether `tag` exists in `connection`'s store. A non-zero `image inspect`
+/// exit is podman's "no such image" answer (it also covers an unreachable
+/// machine — the subsequent build then fails with podman's own connectivity
+/// error, which is the right message for that state).
+fn image_exists(connection: Option<&str>, tag: &str) -> Result<bool> {
+    let out = cli::run_podman_on(connection, &["image", "inspect", tag], INSPECT_TIMEOUT)?;
     Ok(out.status.success())
 }
 
@@ -116,10 +130,10 @@ mod tests {
         let progress = |_: &str| {
             lines.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         };
-        let existed = ensure_image(&tag, dockerfile, ENTRYPOINT_SH, &progress).unwrap();
+        let existed = ensure_image(None, &tag, dockerfile, ENTRYPOINT_SH, &progress).unwrap();
         assert!(!existed, "first call must report a fresh build");
         assert!(
-            image_exists(&tag).unwrap(),
+            image_exists(None, &tag).unwrap(),
             "image should exist after build"
         );
         assert!(
@@ -129,7 +143,7 @@ mod tests {
 
         // Second call: image present, no build, no progress.
         lines.store(0, std::sync::atomic::Ordering::SeqCst);
-        let existed = ensure_image(&tag, dockerfile, ENTRYPOINT_SH, &progress).unwrap();
+        let existed = ensure_image(None, &tag, dockerfile, ENTRYPOINT_SH, &progress).unwrap();
         assert!(existed, "second call must report the cached image");
         assert_eq!(
             lines.load(std::sync::atomic::Ordering::SeqCst),

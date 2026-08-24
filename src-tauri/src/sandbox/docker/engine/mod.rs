@@ -234,7 +234,11 @@ impl SandboxEngine for DockerEngine {
             env: prep.env,
             kill: KillHandle::Engine {
                 engine: DockerEngine::shared(),
-                plan: KillPlan::Container { name },
+                // One daemon endpoint: nothing to pin teardown to.
+                plan: KillPlan::Container {
+                    name,
+                    connection: None,
+                },
             },
         })
     }
@@ -245,7 +249,7 @@ impl SandboxEngine for DockerEngine {
     /// exit), and an error here would abort the caller's local process-group
     /// teardown of the docker CLI child.
     fn kill(&self, plan: &KillPlan) -> Result<()> {
-        let KillPlan::Container { name } = plan;
+        let KillPlan::Container { name, .. } = plan;
         match cli::run_docker(&["kill", "-s", "TERM", name], KILL_TIMEOUT) {
             Ok(out) if out.status.success() => {
                 if !container_gone_within(name, TERM_GRACE) {

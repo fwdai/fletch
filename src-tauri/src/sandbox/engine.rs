@@ -88,7 +88,14 @@ pub struct AgentLaunchCtx<'a> {
 /// Engine-specific data describing how to tear down what was launched.
 #[derive(Clone)]
 pub enum KillPlan {
-    Container { name: String },
+    Container {
+        name: String,
+        /// The runtime endpoint that launched this container, so teardown
+        /// reaches the same machine even if the runtime's default connection
+        /// changed since (podman: the pinned `--connection`). Always `None` for
+        /// docker — one daemon endpoint, nothing to distinguish.
+        connection: Option<String>,
+    },
 }
 
 /// Teardown handle bound at launch time. Sessions call [`KillHandle::kill`]

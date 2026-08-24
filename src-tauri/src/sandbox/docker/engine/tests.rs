@@ -1302,7 +1302,10 @@ fn kill_and_liveness_against_live_container() {
     );
 
     let engine = DockerEngine::shared();
-    let plan = KillPlan::Container { name: name.clone() };
+    let plan = KillPlan::Container {
+        name: name.clone(),
+        connection: None,
+    };
     assert!(
         container_running(&name),
         "fresh container should be running"
