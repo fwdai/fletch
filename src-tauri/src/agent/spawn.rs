@@ -700,7 +700,11 @@ fn agent_bin_for(
     if engine.kind().is_container() {
         sandbox::docker::DockerProvider::from_id(provider)
             .map(|p| p.image_bin().to_string())
-            .ok_or_else(|| Error::Other(format!("{label} isn't available in Docker sandboxes yet")))
+            .ok_or_else(|| {
+                Error::Other(format!(
+                    "{label} isn't available in container sandboxes yet"
+                ))
+            })
     } else {
         resolve_agent_bin(provider, bin, label, home)
     }

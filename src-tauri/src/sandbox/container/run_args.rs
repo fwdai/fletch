@@ -353,7 +353,7 @@ pub(crate) fn prepare_config_mount_dir(dir: &Path) -> Result<()> {
     for target in std::iter::once(dir.to_path_buf()).chain(overlays.map(|s| dir.join(s))) {
         std::fs::create_dir_all(&target).map_err(|e| {
             Error::Other(format!(
-                "preparing Docker sandbox config mount {} failed: {e}",
+                "preparing container sandbox config mount {} failed: {e}",
                 target.display()
             ))
         })?;

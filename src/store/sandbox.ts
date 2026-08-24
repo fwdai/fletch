@@ -10,16 +10,23 @@ import { checkoutKey } from "./git";
 import { autopilotIsDriving, publishPreAuthorized } from "./publishApproval";
 import type { SliceCreator } from "./types";
 
-/** Live state of the embedded docker image build (first docker spawn). `null`
- *  when no build is in progress. `building` streams the latest output line;
- *  `failed` stays up (with `error`) until dismissed. Success clears to `null`. */
+/** Live state of one embedded container image build (first spawn under a
+ *  runtime). `building` streams the latest output line; `failed` stays up
+ *  (with `error`) until dismissed; success removes the entry. The runtime is
+ *  the map key in `containerBuilds`, not a field here — each runtime's build
+ *  serializes on its own lock, so Docker and Podman builds can overlap and
+ *  must not share one state slot. */
 export interface DockerBuildProgress {
   status: "building" | "failed";
-  /** Most recent `docker build` output line (building only). */
+  /** Most recent `build` output line (building only). */
   lastLine: string | null;
   /** Failure reason (failed only). */
   error: string | null;
 }
+
+/** `containerBuilds` key for events that didn't name a runtime — the toast
+ *  shows neutral copy for it instead of guessing. */
+export const NEUTRAL_BUILD_RUNTIME = "container";
 
 export interface SandboxSlice {
   /** Engine new agents are stamped with. Mirrors the backend-owned
@@ -32,8 +39,12 @@ export interface SandboxSlice {
   /** Which container auth chain step is active (Anthropic credentials for
    *  docker agents); `null` until the first refresh lands. */
   containerAuth: ContainerAuthStatus | null;
-  /** Live image-build progress for the build toast; `null` = no build. */
-  dockerBuild: DockerBuildProgress | null;
+  /** Live image-build progress for the build toast, keyed by the runtime
+   *  display name from the event stream ("Docker" / "Podman", or
+   *  [`NEUTRAL_BUILD_RUNTIME`]). Keyed because the runtimes build
+   *  independently: one runtime's `finished` must not clear the other's
+   *  still-running toast. Empty = no build in flight. */
+  containerBuilds: Record<string, DockerBuildProgress>;
   /** Advanced docker launch knobs, mirrored from the backend-owned
    *  `docker_image` / `docker_memory` / `docker_cpus` settings. Empty string =
    *  unset (the launch path uses its defaults: 4g memory, 2 cpus, embedded
@@ -41,6 +52,12 @@ export interface SandboxSlice {
   dockerImage: string;
   dockerMemory: string;
   dockerCpus: string;
+  /** The same three knobs for podman (`podman_image` / `podman_memory` /
+   *  `podman_cpus`), with the same defaults and the same blank-is-unset rule.
+   *  Separate keys so a user running both engines configures each. */
+  podmanImage: string;
+  podmanMemory: string;
+  podmanCpus: string;
   /** Whether an agent must get the user's approval before publishing. Mirrors
    *  the backend-owned `publish_confirmation` setting. Off by default: autopilot
    *  publishes unattended, and a prompt would hang it until the decision
@@ -79,12 +96,16 @@ export interface SandboxSlice {
   /** Drop the stored container token, then refresh the status (a later chain
    *  step — shell env / credentials file — may take over). */
   clearContainerAuthToken: () => Promise<void>;
-  /** Dismiss the build toast (used after a failed build). */
-  dismissDockerBuild: () => void;
+  /** Dismiss one runtime's build toast (used after a failed build). Takes the
+   *  `containerBuilds` key so dismissing one runtime's failure leaves the
+   *  other's live toast alone. */
+  dismissDockerBuild: (runtime: string) => void;
   /** Persist the advanced docker launch knobs (image / memory / cpus) via the
    *  backend, which writes the settings AND updates the spawn-path mirror.
    *  Reverts the store on failure. */
   saveDockerLaunchSettings: (image: string, memory: string, cpus: string) => Promise<void>;
+  /** The podman twin of `saveDockerLaunchSettings`. */
+  savePodmanLaunchSettings: (image: string, memory: string, cpus: string) => Promise<void>;
   /** Launch Docker Desktop (daemon-down error action); surfaces failures via
    *  `lastError`. */
   startDockerDesktop: () => Promise<void>;
@@ -114,10 +135,13 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   sandboxEngine: DEFAULT_SANDBOX_ENGINE,
   dockerProbe: null,
   podmanProbe: null,
-  dockerBuild: null,
+  containerBuilds: {},
   dockerImage: "",
   dockerMemory: "",
   dockerCpus: "",
+  podmanImage: "",
+  podmanMemory: "",
+  podmanCpus: "",
   publishConfirmation: false,
   pendingPublishApprovals: [],
 
@@ -213,7 +237,11 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     await get().refreshContainerAuth();
   },
 
-  dismissDockerBuild: () => set({ dockerBuild: null }),
+  dismissDockerBuild: (runtime) =>
+    set((s) => {
+      const { [runtime]: _, ...rest } = s.containerBuilds;
+      return { containerBuilds: rest };
+    }),
 
   saveDockerLaunchSettings: (image, memory, cpus) =>
     optimistic(
@@ -225,6 +253,18 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
         dockerCpus: get().dockerCpus,
       },
       () => api.setDockerLaunchSettings(image || null, memory || null, cpus || null),
+    ),
+
+  savePodmanLaunchSettings: (image, memory, cpus) =>
+    optimistic(
+      set,
+      { podmanImage: image, podmanMemory: memory, podmanCpus: cpus },
+      {
+        podmanImage: get().podmanImage,
+        podmanMemory: get().podmanMemory,
+        podmanCpus: get().podmanCpus,
+      },
+      () => api.setPodmanLaunchSettings(image || null, memory || null, cpus || null),
     ),
 
   startDockerDesktop: async () => {

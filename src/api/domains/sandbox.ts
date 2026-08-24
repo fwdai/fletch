@@ -49,6 +49,11 @@ export const sandboxApi = {
   // frontend `setSetting`.
   setDockerLaunchSettings: (image: string | null, memory: string | null, cpus: string | null) =>
     invoke<void>("set_docker_launch_settings", { image, memory, cpus }),
+  // The podman twin, over its own `podman_image` / `podman_memory` /
+  // `podman_cpus` settings. Same contract, separate keys: a user running both
+  // engines points each at its own image and limits.
+  setPodmanLaunchSettings: (image: string | null, memory: string | null, cpus: string | null) =>
+    invoke<void>("set_podman_launch_settings", { image, memory, cpus }),
   /** Launch Docker Desktop (the daemon-down error state's action). macOS-only;
    *  rejects elsewhere. */
   startDockerDesktop: () => invoke<void>("start_docker_desktop"),

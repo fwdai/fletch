@@ -6,9 +6,11 @@
 //! the mounts, env and auth come from
 //! [`container::launch`](crate::sandbox::container::launch), the argv from
 //! [`container::run_args`](crate::sandbox::container::run_args), the labels from
-//! [`container::labels`](crate::sandbox::container::labels), and the image
-//! content from [`container::images`](crate::sandbox::container::images). What
-//! this file adds is the podman binary, the podman teardown commands, and one
+//! [`container::labels`](crate::sandbox::container::labels), the image content
+//! from [`container::images`](crate::sandbox::container::images), and the
+//! image-freshness policy from
+//! [`container::freshness`](crate::sandbox::container::freshness). What this file
+//! adds is the podman binary, the podman teardown commands, and one
 //! Podman-specific reliability gate.
 //!
 //! **The machine preflight.** Podman's macOS VM sees only the host directories
@@ -29,12 +31,13 @@ use crate::error::{Error, Result};
 use crate::sandbox::container::run_args::{
     mount_sources, run_args, RunSpec, DEFAULT_CPUS, DEFAULT_MEMORY,
 };
-use crate::sandbox::container::util::{container_name, describe_exit_code, ExitCopy};
+use crate::sandbox::container::util::{container_name, describe_exit_code, non_blank, ExitCopy};
 use crate::sandbox::container::ContainerProvider;
 use crate::sandbox::engine::{
     AgentLaunchCtx, EngineKind, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
 
+use super::settings::{IMAGE_SETTING, LAUNCH_SETTINGS};
 use super::{cli, image, machine};
 
 /// Signal/removal podman calls during teardown.
@@ -45,14 +48,14 @@ const TERM_GRACE: Duration = Duration::from_millis(500);
 /// Liveness lookups (`podman inspect`).
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Podman's wording for the shared reserved-exit-code messages. `image_setting`
-/// is `None`: Podman honors no image override, so pointing the user at one
-/// would name a setting this engine ignores.
+/// Podman's wording for the shared reserved-exit-code messages. The machine is
+/// what reports a start failure, `podman machine` is what the user restarts, and
+/// `podman_image` is the override a 126/127 may be pointing at.
 const EXIT_COPY: ExitCopy = ExitCopy {
-    runtime: "Podman",
+    runtime: super::RUNTIME_NAME,
     error_source: "the machine",
     remedy: "Is the Podman machine running?",
-    image_setting: None,
+    image_setting: Some(IMAGE_SETTING),
 };
 
 /// The `SandboxEngine` implementation for Podman. Obtain it via
@@ -60,15 +63,20 @@ const EXIT_COPY: ExitCopy = ExitCopy {
 /// [`KillHandle`], and sharing one instance also shares the once-per-app-run
 /// image resolution cache.
 pub struct PodmanEngine {
-    /// Images resolved for this app run, keyed by provider *and* connection so
-    /// each provider's image is resolved (and built) at most once per machine.
-    /// The connection is part of the key because image stores are per-machine:
-    /// a tag present on one says nothing about another, and a launch pinned
-    /// elsewhere would run on an image that isn't there. Only successes are
-    /// cached — a failed build retries on the next spawn (the user may have
-    /// started the machine or fixed their network since).
-    resolved_image: Mutex<std::collections::HashMap<(ContainerProvider, Option<String>), String>>,
+    /// Images resolved for this app run, keyed by `(provider, override,
+    /// connection)` so each provider's image is resolved (and built) at most
+    /// once per machine, and a mid-run settings change re-resolves. The
+    /// connection is part of the key because image stores are per-machine: a tag
+    /// present on one says nothing about another, and a launch pinned elsewhere
+    /// would run on an image that isn't there. Only successes are cached — a
+    /// failed build retries on the next spawn (the user may have started the
+    /// machine or fixed their network since).
+    resolved_image: Mutex<ImageCache>,
 }
+
+/// `(provider, image override, connection)` → resolved tag.
+type ImageCache =
+    std::collections::HashMap<(ContainerProvider, Option<String>, Option<String>), String>;
 
 impl PodmanEngine {
     /// The process-wide engine instance — the same `Arc` that `engine_for`
@@ -78,29 +86,57 @@ impl PodmanEngine {
         ENGINE
             .get_or_init(|| {
                 Arc::new(PodmanEngine {
-                    resolved_image: Mutex::new(std::collections::HashMap::new()),
+                    resolved_image: Mutex::new(ImageCache::new()),
                 })
             })
             .clone()
     }
 
     /// The image to launch `provider` from on `connection`, resolving (and
-    /// building, if that machine's store lacks it) at most once per app run.
+    /// building, if that machine's store lacks it) at most once per app run per
+    /// (provider, override, connection) triple. Resolution also runs the
+    /// background freshness checks (TTL + host/container version parity — see
+    /// `image::resolve_image`), so their cadence is once per app run too. The
+    /// host version comes from the existing memoized probe
+    /// (`agent::cached_provider_version` — at most one `--version` subprocess per
+    /// provider per run, shared with ingest); a machine with no host CLI yields
+    /// `None` and the version trigger is simply inert, leaving the TTL as the
+    /// backstop.
     fn resolve_image_cached(
         &self,
         provider: ContainerProvider,
+        override_image: Option<&str>,
         connection: Option<&str>,
     ) -> Result<String> {
-        let key = (provider, connection.map(str::to_string));
+        let key = (
+            provider,
+            override_image.map(str::to_string),
+            connection.map(str::to_string),
+        );
         let mut cache = self.resolved_image.lock().unwrap();
         if let Some(tag) = cache.get(&key) {
             return Ok(tag.clone());
         }
-        // Free-form build output rides in the `line` field (not the message) so
-        // the sentry scrubber drops it — see the privacy invariant in `lib.rs`.
+        // Skip the host probe entirely on the override path: the user's image is
+        // never inspected or refreshed, so there is nothing to compare.
+        let host_cli_version = if non_blank(override_image).is_none() {
+            crate::agent::cached_provider_version(provider.id())
+        } else {
+            None
+        };
+        // Per-line build output goes to the log; the UI build toast is driven
+        // separately by the `container::progress` sink inside `image`. Free-form
+        // output rides in the `line` field (not the message) so the sentry
+        // scrubber drops it — see the privacy invariant in `lib.rs`.
         let on_progress = |line: &str| tracing::info!(target: "fletch::podman_build", line = %line, "podman build output");
-        let tag = image::resolve_image(provider, connection, &on_progress)
-            .map_err(|e| Error::Other(format!("preparing the Podman sandbox image failed: {e}")))?;
+        let tag = image::resolve_image(
+            provider,
+            connection,
+            override_image,
+            host_cli_version.as_deref(),
+            &on_progress,
+        )
+        .map_err(|e| Error::Other(format!("preparing the Podman sandbox image failed: {e}")))?;
         cache.insert(key, tag.clone());
         Ok(tag)
     }
@@ -139,10 +175,17 @@ impl SandboxEngine for PodmanEngine {
             .ok_or_else(|| Error::Other("podman binary not found — is Podman installed?".into()))?;
         // Resolved before the image: everything this launch touches — the image
         // store, the mount check, the run, the teardown — has to be the one
-        // endpoint named here, and a remote default is refused before any of it.
+        // endpoint named here, and a remote default is refused before any of it
+        // (in particular before a minutes-long build for a machine we would then
+        // refuse to launch on).
         let target = machine::resolve_launch_target()?;
         let connection = target.connection.clone();
-        let image = self.resolve_image_cached(provider, connection.as_deref())?;
+        let settings = LAUNCH_SETTINGS.read().clone();
+        let image = self.resolve_image_cached(
+            provider,
+            settings.image_override.as_deref(),
+            connection.as_deref(),
+        )?;
         let name = container_name(ctx.agent_id);
         let prep = crate::sandbox::container::launch::prepare(ctx, provider)?;
 
@@ -159,10 +202,8 @@ impl SandboxEngine for PodmanEngine {
                 blackboard: ctx.blackboard,
                 mounts: prep.mounts(),
                 borrowed_object_stores: &prep.borrowed_object_stores,
-                // No podman-side memory/cpus settings surface yet: the shared
-                // launch defaults apply.
-                memory: DEFAULT_MEMORY,
-                cpus: DEFAULT_CPUS,
+                memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
+                cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
                 image: &image,
                 agent_bin,
                 auth_vars: &auth_vars,
@@ -257,7 +298,7 @@ mod tests {
 
     /// Podman's exit-code wording names the machine (it has no daemon) and
     /// points at `podman machine`, while still hedging that the code may be the
-    /// agent's own. No `docker_image` mention — this engine honors no override.
+    /// agent's own. The image clauses name `podman_image`, never docker's key.
     #[test]
     fn exit_code_wording_is_podman_shaped() {
         let daemon = describe_exit_code(125, &EXIT_COPY).unwrap();
@@ -267,6 +308,11 @@ mod tests {
             let msg = describe_exit_code(code, &EXIT_COPY).unwrap();
             assert!(msg.contains("agent itself exited"), "must hedge: {msg}");
             assert!(!msg.contains("docker"), "{msg}");
+        }
+        // 126/127 point at this engine's own override key.
+        for code in [126, 127] {
+            let msg = describe_exit_code(code, &EXIT_COPY).unwrap();
+            assert!(msg.contains("podman_image"), "{msg}");
         }
         assert_eq!(describe_exit_code(1, &EXIT_COPY), None);
     }

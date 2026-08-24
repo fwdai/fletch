@@ -224,7 +224,7 @@ pub(crate) fn prepare(
                 .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME);
             std::fs::create_dir_all(&ps).map_err(|e| {
                 Error::Other(format!(
-                    "preparing Docker sandbox projects mount {} failed: {e}",
+                    "preparing container sandbox projects mount {} failed: {e}",
                     ps.display()
                 ))
             })?;

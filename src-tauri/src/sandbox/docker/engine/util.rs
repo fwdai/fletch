@@ -12,12 +12,6 @@ use crate::sandbox::docker::cli;
 /// Liveness lookups (`docker inspect`).
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// `Some(v)` only when `v` is present and non-blank — settings rows can hold
-/// empty strings, which must fall back to defaults.
-pub(super) fn non_blank(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|v| !v.is_empty())
-}
-
 /// Whether the daemon says the container is currently running. Errors
 /// (container gone, daemon down, timeout) read as not running.
 pub(super) fn container_running(name: &str) -> bool {
@@ -51,7 +45,7 @@ pub(super) fn container_gone_within(name: &str, budget: Duration) -> bool {
 /// what reports a start failure, Docker Desktop is what the user restarts, and
 /// `docker_image` is the override a 126/127 may be pointing at.
 const EXIT_COPY: ExitCopy = ExitCopy {
-    runtime: "Docker",
+    runtime: crate::sandbox::docker::RUNTIME_NAME,
     error_source: "the daemon",
     remedy: "Is Docker Desktop still running?",
     image_setting: Some(super::IMAGE_SETTING),

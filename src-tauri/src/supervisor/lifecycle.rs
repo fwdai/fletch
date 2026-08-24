@@ -43,7 +43,7 @@ pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
         .unwrap_or(EngineKind::SandboxExec)
 }
 
-/// Which providers run in Docker sandboxes: those with a wired-up container
+/// Which providers run in container sandboxes: those with a wired-up container
 /// image + config-mount + auth (see [`sandbox::docker::DockerProvider`]) — claude,
 /// codex, opencode, pi, and cursor so far. antigravity stays gated: its CLI has no
 /// non-interactive credential path (browser-OAuth only, tokens in the host
@@ -58,7 +58,7 @@ fn ensure_engine_supports_provider(engine: EngineKind, provider: &str) -> Result
             .map(|d| d.label())
             .unwrap_or(provider);
         return Err(Error::Other(format!(
-            "{label} isn't available in Docker sandboxes yet"
+            "{label} isn't available in container sandboxes yet"
         )));
     }
     Ok(())
@@ -1817,7 +1817,7 @@ mod tests {
             .expect_err("antigravity must refuse under docker");
         assert!(
             err.to_string()
-                .ends_with("isn't available in Docker sandboxes yet"),
+                .ends_with("isn't available in container sandboxes yet"),
             "unexpected refusal copy: {err}",
         );
         // The copy uses the human-facing product name, not the provider id.

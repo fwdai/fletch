@@ -17,10 +17,13 @@
 //!   podman call in this module goes through it, so no invocation can hang the
 //!   app on a wedged machine connection.
 //! - [`probe`] — cached availability for UI polling.
-//! - [`image`] — building and inspecting the agent images.
+//! - [`image`] — building, inspecting and refreshing the agent images.
 //! - [`machine`] — the shared-directory preflight, Podman's one behavioural
 //!   difference from Docker at launch time.
-//! - [`cleanup`] — the dead-instance orphan sweep and per-agent removal.
+//! - [`cleanup`] — the dead-instance orphan sweep, per-agent removal, and the
+//!   stale agent-image GC.
+//! - [`settings`] — the launch knobs (`podman_image` / `podman_memory` /
+//!   `podman_cpus`) and the version-refresh loop guard.
 //! - [`engine`] — `PodmanEngine`, the `SandboxEngine` implementation (one
 //!   `podman run --rm --init` container per agent process).
 
@@ -34,10 +37,20 @@ mod engine;
 mod image;
 mod machine;
 mod probe;
+mod settings;
 
 pub use cleanup::remove_agent_containers;
 pub use engine::PodmanEngine;
 pub use probe::{availability, PodmanAvailability};
+pub use settings::{
+    init_version_refresh_guard, set_launch_settings, LaunchSettings, CPUS_SETTING, IMAGE_SETTING,
+    MEMORY_SETTING, VERSION_GUARD_SETTING,
+};
+
+/// This runtime's display name in user-facing copy — the build toast's
+/// [`BuildEvent::Started`](crate::sandbox::container::progress::BuildEvent) and
+/// the reserved-exit-code messages.
+pub(super) const RUNTIME_NAME: &str = "Podman";
 
 /// Map a Podman probe result onto the shared retry schedule
 /// ([`container::sweep`](crate::sandbox::container::sweep)). A missing binary is
@@ -50,13 +63,18 @@ fn sweep_step(availability: &PodmanAvailability, elapsed: std::time::Duration) -
     crate::sandbox::container::sweep::sweep_step(usable, installed, elapsed)
 }
 
-/// Best-effort reclamation of containers left behind by dead Fletch instances,
-/// for app startup (`lib.rs`, next to the docker sweep). Runs on its own thread,
-/// so startup never waits on Podman — not even for the 2s probe timeout — and a
-/// machine without Podman skips the sweep entirely. Non-fatal by construction.
+/// Best-effort reclamation of containers left behind by dead Fletch instances —
+/// and of superseded agent images — for app startup (`lib.rs`, next to the docker
+/// sweep). Runs on its own thread, so startup never waits on Podman — not even
+/// for the 2s probe timeout — and a machine without Podman skips both sweeps
+/// entirely. The image sweep runs second: a removed orphan container can unpin
+/// the stale image it was running. Both sweeps are non-fatal by construction.
 ///
-/// No image sweep: this runtime ships no image GC yet, so there is nothing to
-/// run as a second pass.
+/// These two sweeps and the post-refresh one are the *only* thing that ever
+/// reclaims superseded agent images from podman's store, which is why the probe
+/// retries on the [`sweep_step`] schedule rather than giving up on the first
+/// answer — a user who loses the `podman machine start` race every launch would
+/// otherwise accumulate dangling images forever.
 pub fn sweep_orphans_at_startup() {
     std::thread::spawn(|| {
         let waiting_since = Instant::now();
@@ -78,6 +96,11 @@ pub fn sweep_orphans_at_startup() {
             Ok(0) => {}
             Ok(n) => tracing::info!(removed = n, "swept orphaned fletch podman containers"),
             Err(e) => tracing::warn!(error = %e, "podman orphan sweep failed"),
+        }
+        match cleanup::sweep_stale_images() {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(removed = n, "swept stale fletch agent podman images"),
+            Err(e) => tracing::warn!(error = %e, "podman image sweep failed"),
         }
     });
 }

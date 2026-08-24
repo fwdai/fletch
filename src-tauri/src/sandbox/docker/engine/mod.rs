@@ -91,9 +91,9 @@ pub use settings::{
 pub(super) use settings::{image_override, record_version_refresh, version_refresh_attempted};
 
 use crate::sandbox::container::run_args::{run_args, RunSpec, DEFAULT_CPUS, DEFAULT_MEMORY};
-use crate::sandbox::container::util::container_name;
+use crate::sandbox::container::util::{container_name, non_blank};
 use settings::LAUNCH_SETTINGS;
-use util::{container_gone_within, describe_exit_code, non_blank};
+use util::{container_gone_within, describe_exit_code};
 
 /// Signal/removal docker calls during teardown.
 const KILL_TIMEOUT: Duration = Duration::from_secs(10);

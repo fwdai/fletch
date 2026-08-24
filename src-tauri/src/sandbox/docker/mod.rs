@@ -32,7 +32,6 @@ mod cli;
 mod engine;
 mod image;
 mod probe;
-mod progress;
 pub mod setup_token;
 
 pub use cleanup::remove_agent_containers;
@@ -41,7 +40,13 @@ pub use engine::{
     IMAGE_SETTING, MEMORY_SETTING, VERSION_GUARD_SETTING,
 };
 pub use probe::{availability, DockerAvailability};
-pub use progress::set_build_sink;
+
+/// The image-build progress sink, now runtime-neutral and shared with podman
+/// (one sink, one toast — see
+/// [`container::progress`](crate::sandbox::container::progress)). Re-exported so
+/// the `sandbox::docker::set_build_sink` path `lib.rs` installs at startup keeps
+/// resolving.
+pub use crate::sandbox::container::progress::set_build_sink;
 
 /// The container auth chain, now runtime-neutral. Re-exported so the
 /// `sandbox::docker::auth::…` paths the app and its Tauri commands already use
@@ -53,6 +58,11 @@ pub use crate::sandbox::container::auth;
 /// [`ContainerProvider`](crate::sandbox::container::ContainerProvider) at its new
 /// home and re-exported here.
 pub use crate::sandbox::container::ContainerProvider as DockerProvider;
+
+/// This runtime's display name in user-facing copy — the build toast's
+/// [`BuildEvent::Started`](crate::sandbox::container::progress::BuildEvent) and
+/// the reserved-exit-code messages.
+pub(super) const RUNTIME_NAME: &str = "Docker";
 
 /// Map a Docker probe result onto the shared retry schedule
 /// ([`container::sweep`](crate::sandbox::container::sweep)). A missing binary

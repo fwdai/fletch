@@ -43,7 +43,7 @@ impl ContainerProvider {
     /// Map a provider id (as stamped on `AgentRecord.provider` / used by the
     /// frontend) to its container support, or `None` when the provider has no
     /// container support yet — the launch gate turns `None` into the
-    /// user-facing "isn't available in Docker sandboxes yet" refusal.
+    /// user-facing "isn't available in container sandboxes yet" refusal.
     pub fn from_id(provider: &str) -> Option<Self> {
         match provider {
             "claude" => Some(Self::Claude),
