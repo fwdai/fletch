@@ -16,11 +16,11 @@
 //!    and lives in [`container::proc`](crate::sandbox::container::proc); what's
 //!    here is the thin Podman-specific layer over it.
 
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
-use crate::sandbox::container::proc::run_with_timeout;
+use crate::sandbox::container::proc::{forward_lines, run_with_timeout, wait_with_deadline};
 
 /// Absolute path of the podman CLI, or `None` when it isn't installed.
 /// Resolved fresh on every call (the underlying login-shell env is cached, so
@@ -43,4 +43,50 @@ pub(super) fn run_podman(args: &[&str], timeout: Duration) -> Result<Output> {
     cmd.args(args);
     let what = format!("podman {}", args.first().copied().unwrap_or_default());
     run_with_timeout(cmd, timeout, &what)
+}
+
+/// Run `podman <args>` streaming every output line (stdout and stderr) to
+/// `on_line` as it appears — the shape `podman build` needs so a minutes-long
+/// image build reaches the log while it runs. Fails on non-zero exit with the
+/// last output lines in the message, or on `timeout` expiry.
+pub(super) fn run_podman_streaming(
+    args: &[&str],
+    timeout: Duration,
+    on_line: &(dyn Fn(&str) + Send + Sync),
+) -> Result<()> {
+    let bin = podman_bin()
+        .ok_or_else(|| Error::Other("podman binary not found — is Podman installed?".into()))?;
+    let what = format!("podman {}", args.first().copied().unwrap_or_default());
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take().expect("stdout piped above");
+    let stderr = child.stderr.take().expect("stderr piped above");
+
+    // Keep a bounded tail of everything seen, so a failure message carries the
+    // actual podman error (which lands near the end of the stream) without
+    // buffering an entire multi-minute build log.
+    let tail = std::sync::Mutex::new(std::collections::VecDeque::<String>::new());
+
+    // Scoped threads: the readers borrow `on_line` and `tail`, and both pipes
+    // are drained continuously so the child can never block on a full pipe
+    // while we sit in the wait loop below.
+    let status = std::thread::scope(|scope| {
+        scope.spawn(|| forward_lines(stdout, on_line, &tail));
+        scope.spawn(|| forward_lines(stderr, on_line, &tail));
+        wait_with_deadline(&mut child, timeout, &what)
+    })?;
+
+    if !status.success() {
+        let tail = tail.lock().unwrap();
+        return Err(Error::Other(format!(
+            "{what} failed (exit {}):\n{}",
+            status.code().unwrap_or(-1),
+            tail.iter().cloned().collect::<Vec<_>>().join("\n"),
+        )));
+    }
+    Ok(())
 }

@@ -1,4 +1,10 @@
-import { api, type ContainerAuthStatus, type DockerProbe, type PublishApproval } from "@/api";
+import {
+  api,
+  type ContainerAuthStatus,
+  type DockerProbe,
+  type PodmanProbe,
+  type PublishApproval,
+} from "@/api";
 import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preferences";
 import { checkoutKey } from "./git";
 import { autopilotIsDriving, publishPreAuthorized } from "./publishApproval";
@@ -21,6 +27,8 @@ export interface SandboxSlice {
   sandboxEngine: SandboxEngine;
   /** Latest Docker availability probe; `null` until the first probe lands. */
   dockerProbe: DockerProbe | null;
+  /** Latest Podman availability probe; `null` until the first probe lands. */
+  podmanProbe: PodmanProbe | null;
   /** Which container auth chain step is active (Anthropic credentials for
    *  docker agents); `null` until the first refresh lands. */
   containerAuth: ContainerAuthStatus | null;
@@ -59,6 +67,9 @@ export interface SandboxSlice {
   /** Re-probe Docker availability into `dockerProbe` (settings pane open).
    *  Returns the probe result so callers can poll until the daemon answers. */
   refreshDockerProbe: () => Promise<DockerProbe>;
+  /** Re-probe Podman availability into `podmanProbe`; sibling of
+   *  `refreshDockerProbe`, polled by the same settings-pane loop. */
+  refreshPodmanProbe: () => Promise<PodmanProbe>;
   /** Re-resolve the container auth chain into `containerAuth`. */
   refreshContainerAuth: () => Promise<void>;
   /** Persist a pasted `claude setup-token` for containers, then refresh the
@@ -102,6 +113,7 @@ async function optimistic(
 export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   sandboxEngine: DEFAULT_SANDBOX_ENGINE,
   dockerProbe: null,
+  podmanProbe: null,
   dockerBuild: null,
   dockerImage: "",
   dockerMemory: "",
@@ -161,6 +173,18 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
       probe = { status: "not-installed" };
     }
     set({ dockerProbe: probe });
+    return probe;
+  },
+  refreshPodmanProbe: async () => {
+    let probe: PodmanProbe;
+    try {
+      probe = await api.probePodmanEngine();
+    } catch {
+      // A failed probe means we can't confirm podman — treat as not installed
+      // so the option gates off rather than dangling enabled.
+      probe = { status: "not-installed" };
+    }
+    set({ podmanProbe: probe });
     return probe;
   },
 

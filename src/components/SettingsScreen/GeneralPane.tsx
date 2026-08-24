@@ -8,13 +8,13 @@ import { useAppStore } from "@/store";
 import { ContainerAuth } from "./ContainerAuth";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
-// Docker Desktop can start or stop while this pane stays open, so we re-probe
-// on a steady interval (plus immediately on mount and on window focus) rather
-// than once. Polling both ways keeps the engine option AND the "selected but
-// unavailable" warning tracking the live daemon: a one-shot or stop-when-
-// available probe would latch a stale state and, e.g., leave the warning
-// hidden after the daemon stops. The backend caches each probe for a few
-// seconds, so a tight interval mostly hits that cache.
+// A container runtime can start or stop while this pane stays open, so we
+// re-probe on a steady interval (plus immediately on mount and on window focus)
+// rather than once. Polling both ways keeps each engine option AND the
+// "selected but unavailable" warning tracking the live runtime: a one-shot or
+// stop-when-available probe would latch a stale state and, e.g., leave the
+// warning hidden after the daemon stops. The backend caches each probe for a
+// few seconds, so a tight interval mostly hits that cache.
 const PROBE_INTERVAL_MS = 3_000;
 
 const SIDE_PANELS: FeatureItem[] = [
@@ -63,11 +63,15 @@ export function GeneralPane() {
   const setSandboxEngine = useAppStore((s) => s.setSandboxEngine);
   const dockerProbe = useAppStore((s) => s.dockerProbe);
   const refreshDockerProbe = useAppStore((s) => s.refreshDockerProbe);
+  const podmanProbe = useAppStore((s) => s.podmanProbe);
+  const refreshPodmanProbe = useAppStore((s) => s.refreshPodmanProbe);
 
   useEffect(() => {
     let cancelled = false;
     const probe = () => {
-      if (!cancelled) void refreshDockerProbe();
+      if (cancelled) return;
+      void refreshDockerProbe();
+      void refreshPodmanProbe();
     };
     probe(); // immediately on mount
     const timer = setInterval(probe, PROBE_INTERVAL_MS);
@@ -80,17 +84,24 @@ export function GeneralPane() {
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [refreshDockerProbe]);
+  }, [refreshDockerProbe, refreshPodmanProbe]);
 
-  // Three states for the docker option: enabled when the daemon answered the
-  // probe; otherwise disabled with a hint saying how to fix it. `null` (probe
-  // still in flight) gates off too — never offer an engine we can't confirm.
+  // Three states for each container option: enabled when the runtime answered
+  // the probe; otherwise disabled with a hint saying how to fix it. `null`
+  // (probe still in flight) gates off too — never offer an engine we can't
+  // confirm.
   const dockerAvailable = dockerProbe?.status === "available";
   const dockerHint = dockerAvailable
     ? dockerProbe?.version && `v${dockerProbe.version}`
     : dockerProbe?.status === "daemon-down"
       ? "Start Docker Desktop"
       : "Install Docker Desktop";
+  const podmanAvailable = podmanProbe?.status === "available";
+  const podmanHint = podmanAvailable
+    ? podmanProbe?.version && `v${podmanProbe.version}`
+    : podmanProbe?.status === "machine-down"
+      ? "Run podman machine start"
+      : "Install Podman";
 
   const FeatureRow = ({ item }: { item: FeatureItem }) => (
     <SetRow title={item.title} sub={item.sub}>
@@ -187,7 +198,7 @@ export function GeneralPane() {
         </SetRow>
         <SetRow
           title="Engine"
-          sub="Applies to new agents; existing ones keep their engine. Docker runs agents in a Linux container, so builds and tests run on Linux."
+          sub="Applies to new agents; existing ones keep their engine. Docker and Podman both run agents in a Linux container, so builds and tests run on Linux."
         >
           <Select<SandboxEngine>
             value={sandboxEngine}
@@ -200,6 +211,12 @@ export function GeneralPane() {
                 hint: dockerHint || undefined,
                 disabled: !dockerAvailable,
               },
+              {
+                value: "podman",
+                label: "Podman",
+                hint: podmanHint || undefined,
+                disabled: !podmanAvailable,
+              },
             ]}
             onChange={(v) => void setSandboxEngine(v)}
           />
@@ -211,6 +228,17 @@ export function GeneralPane() {
             New agents won't launch until it's available.{" "}
             {dockerProbe.status === "daemon-down" ? "Start" : "Install"} Docker Desktop, or switch
             back to Seatbelt.
+          </div>
+        )}
+        {sandboxEngine === "podman" && podmanProbe && !podmanAvailable && (
+          <div className="set-sandbox-warn">
+            Podman is selected but{" "}
+            {podmanProbe.status === "machine-down"
+              ? "its machine isn't running"
+              : "isn't installed"}
+            . New agents won't launch until it's available.{" "}
+            {podmanProbe.status === "machine-down" ? "Run podman machine start" : "Install Podman"},
+            or switch back to Seatbelt.
           </div>
         )}
         <ContainerAuth />

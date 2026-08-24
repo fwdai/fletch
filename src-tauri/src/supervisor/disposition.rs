@@ -7,8 +7,8 @@ use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 use crate::git;
-use crate::sandbox::docker;
 use crate::sandbox::provision::{self, CheckoutSpec};
+use crate::sandbox::{docker, podman, EngineKind};
 use crate::workspace::{
     agent_parent_dir, repo_checkout_path, AgentRecord, AgentStatus, ArchiveMetadata,
     ArchivedRepoSnapshot, DiffStats, TrackedRepo,
@@ -423,41 +423,57 @@ async fn choose_restore_branch_name(repo_path: &Path, desired: &str) -> String {
 ///
 /// Why it exists: `Supervisor::detach_runtime` reaches the container only
 /// *indirectly*, through the in-memory `agents` entry — no entry, no
-/// `KillHandle`, no docker command at all. `docker run --rm` covers the
-/// ordinary exit and the startup pid-liveness sweep covers a crashed instance,
-/// but neither makes disposal itself self-sufficient. The label sweep does:
-/// it needs nothing but the agent id. (Container names can't serve here —
-/// they carry a launch-time nonce, see `docker::engine::util::container_name`
-/// — which is why the id label exists.)
+/// `KillHandle`, no runtime command at all. `run --rm` covers the ordinary exit
+/// and the startup pid-liveness sweep covers a crashed instance, but neither
+/// makes disposal itself self-sufficient. The label sweep does: it needs nothing
+/// but the agent id. (Container names can't serve here — they carry a
+/// launch-time nonce, see `container::util::container_name` — which is why the
+/// id label exists.)
 ///
 /// Three gates, cheapest first:
-/// 1. The stamped engine. A seatbelt agent never had a container, so it never
-///    pays for a probe. `record: None` (discard tolerates a missing row)
-///    can't prove that, so it looks — the label match is exact, so looking
-///    costs nothing but the query.
-/// 2. [`docker::availability`] — a machine with no Docker installed must
-///    never see a docker invocation, the same precedent
-///    `docker::sweep_orphans_at_startup` sets.
+/// 1. The stamped engine, which also picks the runtime: an agent is reaped by
+///    the runtime that launched it, never by whichever is selected now. A
+///    seatbelt agent never had a container, so it never pays for a probe.
+///    `record: None` (discard tolerates a missing row) can't prove either, so
+///    it falls back to Docker — the label match is exact, so looking costs
+///    nothing but the query, and a rowless podman agent's container is left to
+///    the startup sweep.
+/// 2. The runtime's own availability probe — a machine without that runtime
+///    installed must never see one of its invocations, the same precedent the
+///    startup sweeps set.
 /// 3. Off the caller's path entirely. `spawn_blocking` rather than a bare
-///    thread: `cli::run_docker` is a blocking process wait (up to the probe's
-///    2s plus the sweep's own timeouts) issued from inside the tokio runtime,
+///    thread: the CLI call is a blocking process wait (up to the probe's 2s
+///    plus the sweep's own timeouts) issued from inside the tokio runtime,
 ///    which is precisely the blocking pool's job — and unlike the startup
 ///    sweep, which runs before any runtime is a given, we always have one
-///    here. Detached on purpose: archive must not wait on a Docker
+///    here. Detached on purpose: archive must not wait on a container
 ///    round-trip to report success to the user.
 fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'static str) {
-    if record.is_some_and(|r| !stamped_engine(r).is_container()) {
+    let engine = record.map(stamped_engine);
+    if engine.is_some_and(|k| !k.is_container()) {
         return;
     }
+    let podman = engine == Some(EngineKind::Podman);
     let agent_id = agent_id.to_string();
     tokio::task::spawn_blocking(move || {
-        if !matches!(
-            docker::availability(),
-            docker::DockerAvailability::Available { .. }
-        ) {
-            return;
-        }
-        match docker::remove_agent_containers(&agent_id) {
+        let removed = if podman {
+            if !matches!(
+                podman::availability(),
+                podman::PodmanAvailability::Available { .. }
+            ) {
+                return;
+            }
+            podman::remove_agent_containers(&agent_id)
+        } else {
+            if !matches!(
+                docker::availability(),
+                docker::DockerAvailability::Available { .. }
+            ) {
+                return;
+            }
+            docker::remove_agent_containers(&agent_id)
+        };
+        match removed {
             Ok(0) => {}
             Ok(n) => {
                 tracing::info!(agent_id = %agent_id, op, removed = n, "removed agent containers")

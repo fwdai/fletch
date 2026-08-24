@@ -2,13 +2,16 @@ use super::*;
 
 use std::path::{Path, PathBuf};
 
-use super::config_dir::config_dir_is_default;
 use super::util::container_running;
 use crate::sandbox::container::auth::ContainerAuth;
+use crate::sandbox::container::config_dir::{borrowed_object_stores, config_dir_is_default};
 use crate::sandbox::container::launch_auth::{
-    codex_auth_env, cursor_auth_env, multi_provider_auth_env, NO_CODEX_AUTH_MSG,
-    NO_CONTAINER_AUTH_MSG, NO_CURSOR_AUTH_MSG, NO_OPENCODE_AUTH_MSG, NO_PI_AUTH_MSG,
+    apply_container_auth, codex_auth_env, cursor_auth_env, multi_provider_auth_env,
+    prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch, prepare_pi_launch,
+    present_api_keys, NO_CODEX_AUTH_MSG, NO_CONTAINER_AUTH_MSG, NO_CURSOR_AUTH_MSG,
+    NO_OPENCODE_AUTH_MSG, NO_PI_AUTH_MSG,
 };
+use crate::sandbox::container::run_args::{prepare_config_mount_dir, ProviderMounts};
 
 /// The version-refresh loop guard: exact-pair matching, per-provider
 /// isolation, persistence callback on record, and safe recording before
@@ -908,6 +911,26 @@ fn exit_code_mapping_is_distinct_and_scoped() {
             "code {code} must pass through"
         );
     }
+}
+
+/// Golden guard on Docker's rendered exit-code messages. They now come from a
+/// template the two container runtimes share (`container::util::ExitCopy`), so
+/// pin the bytes: a well-meant edit to the shared wording must not silently
+/// change what a Docker user reads.
+#[test]
+fn exit_code_messages_are_unchanged() {
+    assert_eq!(
+        describe_exit_code(125).unwrap(),
+        "Exit 125: Docker could not start the sandbox container — the daemon reported an error (or the agent itself exited 125). Is Docker Desktop still running?",
+    );
+    assert_eq!(
+        describe_exit_code(126).unwrap(),
+        "Exit 126: the agent binary in the sandbox image is present but not runnable (or the agent itself exited 126). If you set a custom docker_image, check its agent CLI.",
+    );
+    assert_eq!(
+        describe_exit_code(127).unwrap(),
+        "Exit 127: no agent binary on the sandbox image's PATH (or the agent itself exited 127). A custom docker_image must include the launching agent's CLI.",
+    );
 }
 
 #[test]

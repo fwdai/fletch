@@ -14,7 +14,8 @@
 //! can be garbage-collected.
 //!
 //! Content only: nothing here talks to a container runtime. Building, inspecting,
-//! the freshness TTL, and the GC all live in `sandbox::docker::image`.
+//! the freshness TTL, and the GC live in each runtime's own image module
+//! (`sandbox::docker::image`, `sandbox::podman::image`).
 
 use super::ContainerProvider;
 
@@ -243,6 +244,29 @@ pub(crate) fn image_tag(provider: ContainerProvider) -> String {
 /// images built before [`AGENT_IMAGE_LABEL`] existed.
 pub(crate) fn image_repo(provider: ContainerProvider) -> &'static str {
     image_spec(provider).repo
+}
+
+/// Write a build context holding exactly the two embedded files, so nothing
+/// from the host repo can leak into the image. Callers own the throwaway `dir`.
+///
+/// `COPY` preserves the context file's mode. The embedded Dockerfiles'
+/// `RUN chmod +x` is what actually guarantees an executable entrypoint on every
+/// host; setting the mode here too just keeps the copied layer's metadata sane
+/// where the host supports it.
+pub(crate) fn write_build_context(
+    dir: &std::path::Path,
+    dockerfile: &str,
+    entrypoint: &str,
+) -> std::io::Result<()> {
+    std::fs::write(dir.join("Dockerfile"), dockerfile)?;
+    let entrypoint_path = dir.join("entrypoint.sh");
+    std::fs::write(&entrypoint_path, entrypoint)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&entrypoint_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
 }
 
 /// `<repo>:<sha256(dockerfile + entrypoint)[..12]>` — 12 hex chars, the same

@@ -13,6 +13,7 @@ import {
 } from "@/data/providerDetail";
 import { DEFAULT_PROVIDER_ID, isDockerSupported, providerLabel } from "@/data/providers";
 import type { LocalCommandAction } from "@/data/slashCommands";
+import { isContainerEngine, sandboxEngineLabel } from "@/storage/preferences";
 import type { UsageSnapshot } from "@/store";
 import { useAppStore } from "@/store";
 import { ComposerFrame } from "./ComposerFrame";
@@ -227,14 +228,14 @@ export function Composer({
     return modelLevels.length > 0 ? modelLevels : (providerLevels ?? []);
   }, [modelReasoningLevels, providerLevels]);
 
-  // A new-agent draft can still hold a docker-unsupported provider chosen
-  // before the sandbox engine was switched to Docker. Block the send here —
-  // otherwise the stale selection reaches spawnAgent and fails in the backend.
-  // `provider` mirrors a custom agent's base, so this covers custom agents too.
-  // Existing sessions already spawned with their engine and keep a locked
-  // picker, so they're exempt.
+  // A new-agent draft can still hold a container-unsupported provider chosen
+  // before the sandbox engine was switched to Docker or Podman. Block the send
+  // here — otherwise the stale selection reaches spawnAgent and fails in the
+  // backend. `provider` mirrors a custom agent's base, so this covers custom
+  // agents too. Existing sessions already spawned with their engine and keep a
+  // locked picker, so they're exempt.
   const dockerBlocked =
-    !existingSession && sandboxEngine === "docker" && !isDockerSupported(provider);
+    !existingSession && isContainerEngine(sandboxEngine) && !isDockerSupported(provider);
 
   const [thinkingValue, setThinkingValue] = useState<string | undefined>(() =>
     resolveThinking(
@@ -407,7 +408,7 @@ export function Composer({
             className={dockerBlocked ? "tip" : undefined}
             data-tip={
               dockerBlocked
-                ? `${providerLabel(provider)} isn't available in Docker sandboxes yet — switch to Claude to send`
+                ? `${providerLabel(provider)} isn't available in ${sandboxEngineLabel(sandboxEngine)} sandboxes yet — switch to Claude to send`
                 : undefined
             }
           >

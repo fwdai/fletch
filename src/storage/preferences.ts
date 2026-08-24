@@ -209,7 +209,7 @@ export function parseRoadmapBoardWidth(raw: string | undefined): number | null {
 /** Isolation engine new agents are stamped with. Mirrors the backend's
  *  `EngineKind::as_setting` spellings (`sandbox/engine.rs`), so both sides
  *  agree on the wire strings. */
-export type SandboxEngine = "sandbox-exec" | "docker";
+export type SandboxEngine = "sandbox-exec" | "docker" | "podman";
 
 export const DEFAULT_SANDBOX_ENGINE: SandboxEngine = "sandbox-exec";
 
@@ -218,7 +218,27 @@ export const DEFAULT_SANDBOX_ENGINE: SandboxEngine = "sandbox-exec";
  *  `setSetting`, same posture as `telemetry_enabled`). Unknown/missing values
  *  fall back to the seatbelt default, matching the backend's parser. */
 export function parseSandboxEngine(raw: string | undefined): SandboxEngine {
-  return raw === "docker" ? "docker" : DEFAULT_SANDBOX_ENGINE;
+  return raw === "docker" || raw === "podman" ? raw : DEFAULT_SANDBOX_ENGINE;
+}
+
+/** Whether an engine runs the agent inside a container — mirrors the backend's
+ *  `EngineKind::is_container`. Every surface that gates on "containerized"
+ *  (provider support, the workspace badge) asks this instead of comparing
+ *  against `"docker"`, so a third container runtime lands in one place. */
+export function isContainerEngine(engine: SandboxEngine): boolean {
+  return engine === "docker" || engine === "podman";
+}
+
+/** The engine's name in prose ("Docker isn't available…"). */
+export function sandboxEngineLabel(engine: SandboxEngine): string {
+  switch (engine) {
+    case "docker":
+      return "Docker";
+    case "podman":
+      return "Podman";
+    default:
+      return "Seatbelt";
+  }
 }
 
 // ---- Provider binary path overrides ------------------------------------------

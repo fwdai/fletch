@@ -29,7 +29,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::error::Result;
-use crate::sandbox::container::images::{image_spec, BASE_IMAGE};
+use crate::sandbox::container::images::{image_spec, write_build_context, BASE_IMAGE};
 
 use super::cli;
 use super::progress::{self, BuildEvent};
@@ -170,7 +170,7 @@ fn ensure_image_with(
     Ok(false)
 }
 
-/// Write the two-file build context and run `docker build -t tag`, streaming
+/// Write the build context and run `docker build -t tag`, streaming
 /// output to `on_line`. Shared by the foreground first-build
 /// ([`ensure_image_with`], `no_cache: false`) and the background refresh
 /// rebuild ([`rebuild_image`], `no_cache: true`); callers hold [`BUILD_LOCK`]
@@ -182,21 +182,8 @@ fn run_build(
     no_cache: bool,
     on_line: Progress,
 ) -> Result<()> {
-    // Build from a throwaway context dir holding exactly the two files —
-    // nothing from the host repo can leak into the image.
     let ctx = tempfile::tempdir()?;
-    std::fs::write(ctx.path().join("Dockerfile"), dockerfile)?;
-    let entrypoint_path = ctx.path().join("entrypoint.sh");
-    std::fs::write(&entrypoint_path, entrypoint)?;
-    // COPY preserves the context file's mode. The embedded Dockerfile's
-    // `RUN chmod +x` is what actually guarantees an executable entrypoint on
-    // every host; setting the mode here too just keeps the copied layer's
-    // metadata sane where the host supports it.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&entrypoint_path, std::fs::Permissions::from_mode(0o755))?;
-    }
+    write_build_context(ctx.path(), dockerfile, entrypoint)?;
 
     // Every build passes `--pull`, which can move [`BASE_IMAGE`] onto a newer
     // digest and orphan the image we were previously building on. Snapshot the

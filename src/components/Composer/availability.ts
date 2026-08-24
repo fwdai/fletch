@@ -1,4 +1,5 @@
 import { isDockerSupported, providerLabel } from "@/data/providers";
+import { isContainerEngine, sandboxEngineLabel } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 
 export interface Availability {
@@ -14,9 +15,11 @@ export interface Availability {
  *
  *  Two gates, both mirroring the backend so the picker and the spawn path can't
  *  disagree: the provider CLI must actually be installed (`providerPaths`, from
- *  the startup probe), and under the Docker engine it must be one of the
- *  container-ready providers (`isDockerSupported`, mirroring
- *  `ensure_engine_supports_provider`).
+ *  the startup probe), and under a container engine (Docker or Podman) it must
+ *  be one of the container-ready providers (`isDockerSupported`, mirroring
+ *  `ensure_engine_supports_provider` — which gates on `is_container()`, not on
+ *  one runtime, since container support is a property of the image set both
+ *  runtimes build).
  *
  *  Shared by every surface that offers an agent — the composer's picker and the
  *  Roadmap's new-chat screen — because a rule that decides what the user is
@@ -29,16 +32,18 @@ export function useAgentAvailability(): (providerId: string) => Availability {
   const providerPaths = useAppStore((s) => s.providerPaths);
   const providersProbed = useAppStore((s) => s.providersProbed);
   // New agents get the currently selected sandbox engine, so a provider without
-  // container support is unspawnable while Docker is on.
-  const dockerOnly = useAppStore((s) => s.sandboxEngine) === "docker";
+  // container support is unspawnable while a container engine is on.
+  const engine = useAppStore((s) => s.sandboxEngine);
+  const containerOnly = isContainerEngine(engine);
 
   return (providerId: string) => {
-    // dockerBlocked is checked first: a non-container provider under Docker is
-    // blocked regardless of install state, and that's the more useful reason.
-    if (dockerOnly && !isDockerSupported(providerId)) {
+    // The container gate is checked first: a non-container provider is blocked
+    // regardless of install state, and that's the more useful reason.
+    if (containerOnly && !isDockerSupported(providerId)) {
+      const label = sandboxEngineLabel(engine);
       return {
-        reason: `${providerLabel(providerId)} isn't available in Docker sandboxes yet`,
-        note: "Not in Docker yet",
+        reason: `${providerLabel(providerId)} isn't available in ${label} sandboxes yet`,
+        note: `Not in ${label} yet`,
       };
     }
     // Fail open on the install gate: only enforce it once a probe has actually

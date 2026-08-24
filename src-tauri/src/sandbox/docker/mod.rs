@@ -25,6 +25,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::sandbox::container::sweep::{SweepStep, SWEEP_RETRY_INTERVAL};
+
 mod cleanup;
 mod cli;
 mod engine;
@@ -52,54 +54,13 @@ pub use crate::sandbox::container::auth;
 /// home and re-exported here.
 pub use crate::sandbox::container::ContainerProvider as DockerProvider;
 
-/// How long the startup sweep waits between probes while the daemon is still
-/// coming up. Comfortably above [`probe`]'s 5s cache TTL, so every poll is one
-/// genuine daemon round-trip rather than a re-read of the same cached answer,
-/// and short enough that the sweeps start within half a minute of Docker
-/// Desktop finishing its boot.
-const SWEEP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
-
-/// How long the startup sweep keeps waiting for a down daemon before giving
-/// up. Ten minutes covers a cold login — Docker Desktop's own 20-60s plus a
-/// slow disk, a VPN prompt, or a user who starts it by hand a few minutes in —
-/// while staying strictly bounded: a machine where Docker simply never runs
-/// must not keep a thread ticking for the life of the app. The budget gates
-/// when we stop *scheduling* waits, so the final probe can land up to one
-/// [`SWEEP_RETRY_INTERVAL`] past it. Giving up is cheap: the next app start
-/// sweeps again, so the cost of a miss is one run's worth of unreclaimed
-/// images, not a permanent leak.
-const SWEEP_RETRY_BUDGET: Duration = Duration::from_secs(10 * 60);
-
-/// What the startup sweep thread does after one probe — see [`sweep_step`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SweepStep {
-    /// Docker answered: run both sweeps, once, and finish.
-    Sweep,
-    /// The daemon is down but may still be booting: wait and probe again.
-    Retry,
-    /// Nothing to wait for, or the budget is spent: the thread exits having
-    /// swept nothing.
-    Stop,
-}
-
-/// The retry schedule as a pure decision: given the latest probe result and
-/// how long the sweep thread has been waiting, keep waiting, sweep, or stop.
-/// Split out of [`sweep_orphans_at_startup`] so the schedule is unit-testable
-/// without a daemon and without sleeping.
-///
-/// [`DockerAvailability::NotInstalled`] stops immediately rather than
-/// retrying: Docker being *installed* mid-run is rare, the next app start
-/// covers it, and each retry would re-pay `cli::docker_bin`'s
-/// binary-resolution stat walk for a state that essentially never flips.
-/// [`DockerAvailability::DaemonDown`], by contrast, is the state we expect to
-/// flip — that's the whole point of the retry.
+/// Map a Docker probe result onto the shared retry schedule
+/// ([`container::sweep`](crate::sandbox::container::sweep)). A missing binary
+/// is settled for the run; a down daemon is the state we expect to flip.
 fn sweep_step(availability: &DockerAvailability, elapsed: Duration) -> SweepStep {
-    match availability {
-        DockerAvailability::Available { .. } => SweepStep::Sweep,
-        DockerAvailability::NotInstalled => SweepStep::Stop,
-        DockerAvailability::DaemonDown if elapsed < SWEEP_RETRY_BUDGET => SweepStep::Retry,
-        DockerAvailability::DaemonDown => SweepStep::Stop,
-    }
+    let usable = matches!(availability, DockerAvailability::Available { .. });
+    let installed = !matches!(availability, DockerAvailability::NotInstalled);
+    crate::sandbox::container::sweep::sweep_step(usable, installed, elapsed)
 }
 
 /// Best-effort reclamation of containers left behind by dead Fletch
@@ -162,6 +123,7 @@ pub(crate) fn docker_tests_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::container::sweep::SWEEP_RETRY_BUDGET;
 
     /// The startup sweep's retry schedule: an available daemon sweeps at any
     /// point in the window, a missing binary never retries, and a down daemon
