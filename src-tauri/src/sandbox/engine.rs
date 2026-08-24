@@ -7,6 +7,7 @@ use crate::error::Result;
 pub enum EngineKind {
     SandboxExec,
     Docker,
+    Podman,
 }
 
 impl EngineKind {
@@ -14,7 +15,7 @@ impl EngineKind {
     /// notably [`super::guarantees`], which must state each engine's coverage of
     /// each guarantee, so an engine added here without a coverage declaration
     /// fails to compile.
-    pub const ALL: &'static [Self] = &[Self::SandboxExec, Self::Docker];
+    pub const ALL: &'static [Self] = &[Self::SandboxExec, Self::Docker, Self::Podman];
 
     /// The `sandbox_engine` settings-value spelling for this kind. Shared with
     /// the frontend's `SandboxEngine` type, so both sides agree on the wire
@@ -23,6 +24,7 @@ impl EngineKind {
         match self {
             Self::SandboxExec => "sandbox-exec",
             Self::Docker => "docker",
+            Self::Podman => "podman",
         }
     }
 
@@ -33,7 +35,7 @@ impl EngineKind {
     /// default.
     pub fn is_container(self) -> bool {
         match self {
-            Self::Docker => true,
+            Self::Docker | Self::Podman => true,
             Self::SandboxExec => false,
         }
     }
@@ -44,6 +46,7 @@ impl EngineKind {
         match value {
             "sandbox-exec" => Some(Self::SandboxExec),
             "docker" => Some(Self::Docker),
+            "podman" => Some(Self::Podman),
             _ => None,
         }
     }
@@ -178,14 +181,15 @@ mod tests {
     }
 
     #[test]
-    fn only_docker_is_a_container_engine() {
+    fn only_the_container_runtimes_are_container_engines() {
         assert!(EngineKind::Docker.is_container());
+        assert!(EngineKind::Podman.is_container());
         assert!(!EngineKind::SandboxExec.is_container());
     }
 
     #[test]
     fn engine_kind_rejects_unknown_setting_values() {
-        assert_eq!(EngineKind::from_setting("podman"), None);
+        assert_eq!(EngineKind::from_setting("containerd"), None);
         assert_eq!(EngineKind::from_setting(""), None);
     }
 }

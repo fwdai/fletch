@@ -686,8 +686,9 @@ fn answer_publish_approval(id: String, approved: bool) {
 }
 
 /// Change the sandbox engine stamped onto *new* agents. Docker is validated
-/// against a live daemon probe before being accepted, so a success here means
-/// the choice is actionable. Persists to `settings` and updates the in-memory
+/// against a live daemon probe before being accepted and Podman is refused
+/// outright, so a success here means the choice is actionable. Persists to
+/// `settings` and updates the in-memory
 /// mirror — like `set_agent_bin_override` keeps the DB and process state in
 /// sync. Existing agents are unaffected: each keeps the engine stamped on its
 /// record at creation.
@@ -698,6 +699,13 @@ async fn set_sandbox_engine(
 ) -> Result<(), String> {
     let kind = sandbox::EngineKind::from_setting(&engine)
         .ok_or_else(|| format!("unknown sandbox engine: {engine}"))?;
+    // Podman parses and probes but cannot launch (`sandbox::engine_for`), so it
+    // must not be *persistable*: a stored `podman` value would be stamped onto
+    // every new agent and fail each spawn. Rejected here rather than hidden in
+    // the UI alone — the setting is reachable over IPC.
+    if kind == sandbox::EngineKind::Podman {
+        return Err("the Podman engine can't run agents yet — it isn't selectable.".into());
+    }
     if kind == sandbox::EngineKind::Docker {
         // `spawn_blocking`: the probe can block up to its 2s timeout.
         let probe = tauri::async_runtime::spawn_blocking(sandbox::docker_availability)
@@ -727,6 +735,20 @@ async fn set_sandbox_engine(
 #[tauri::command]
 async fn probe_docker_engine() -> Result<sandbox::DockerAvailability, String> {
     tauri::async_runtime::spawn_blocking(sandbox::docker_availability)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Probe the local Podman installation. Async + `spawn_blocking` because the
+/// probe can block up to its 2s timeout.
+///
+/// Exposed before the engine can launch anything: the probe is what tells us
+/// whether a machine is even a candidate, and it is read-only. Selecting Podman
+/// is still refused by `set_sandbox_engine`, so a healthy answer here does not
+/// make the engine usable.
+#[tauri::command]
+async fn probe_podman_engine() -> Result<sandbox::PodmanAvailability, String> {
+    tauri::async_runtime::spawn_blocking(sandbox::podman_availability)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1635,6 +1657,7 @@ pub fn run() {
             set_publish_confirmation,
             answer_publish_approval,
             probe_docker_engine,
+            probe_podman_engine,
             get_container_auth_status,
             set_container_auth_token,
             clear_container_auth_token,
