@@ -10,20 +10,21 @@
 //! [`sweep_orphans_at_startup`], which waits one out), an absent binary is
 //! treated as settled for the run.
 //!
-//! Layout:
-//! - [`cli`] — docker binary resolution + bounded-invocation helpers. Every
+//! Layout — the Docker *runtime*, on top of the runtime-neutral policy in
+//! [`crate::sandbox::container`]:
+//! - [`cli`] — docker binary resolution + bounded-invocation wrappers. Every
 //!   docker call in this module goes through it, so no invocation can hang
 //!   the app on a wedged daemon.
 //! - [`probe`] — cached daemon availability for UI polling.
-//! - [`image`] — the embedded agent Dockerfile and content-addressed builds.
-//! - [`cleanup`] — container labels, the dead-instance orphan sweep, and the
-//!   stale agent-image GC.
+//! - [`image`] — building, inspecting and reclaiming the agent images whose
+//!   content lives in [`container::images`](crate::sandbox::container::images).
+//! - [`cleanup`] — the dead-instance orphan sweep and the stale agent-image GC,
+//!   keyed on [`container::labels`](crate::sandbox::container::labels).
 //! - [`engine`] — `DockerEngine`, the `SandboxEngine` implementation
 //!   (one `docker run --rm --init` container per agent process).
 
 use std::time::{Duration, Instant};
 
-pub mod auth;
 mod cleanup;
 mod cli;
 mod engine;
@@ -40,90 +41,16 @@ pub use engine::{
 pub use probe::{availability, DockerAvailability};
 pub use progress::set_build_sink;
 
-/// A provider Fletch can run inside a Docker sandbox. This is the single
-/// capability gate the rest of the app consults instead of string-matching
-/// `provider == "claude"`: [`supervisor::lifecycle::ensure_engine_supports_provider`]
-/// refuses anything [`from_id`](DockerProvider::from_id) doesn't recognize, and
-/// the launch path ([`engine`]) branches on the variant for the provider-specific
-/// image ([`image`]), config-dir mount, and auth. Everything else about a
-/// container (workspace / RPC / object-store mounts, naming, teardown) is
-/// provider-agnostic.
-///
-/// Seatbelt runs six providers; Docker is being brought up one at a time as each
-/// gets its image + config-mount + auth wired here — claude, codex, opencode, pi,
-/// and cursor so far. antigravity remains gated: its CLI (`agy`) has no
-/// non-interactive credential path — auth is browser OAuth with its tokens in the
-/// host keychain and no API-key env fallback (maintainer-confirmed), so a fresh
-/// container cannot authenticate. See `ensure_engine_supports_provider`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DockerProvider {
-    Claude,
-    Codex,
-    Opencode,
-    Pi,
-    Cursor,
-}
+/// The container auth chain, now runtime-neutral. Re-exported so the
+/// `sandbox::docker::auth::…` paths the app and its Tauri commands already use
+/// keep resolving.
+pub use crate::sandbox::container::auth;
 
-impl DockerProvider {
-    /// Every docker-supported provider. The image GC derives "the current
-    /// expected images" from this list, so a variant missing here would make
-    /// the GC treat that provider's live image as stale — when adding a
-    /// variant, extend this list (the exhaustive `match` in `image::image_spec`
-    /// will already force you into that file).
-    pub const ALL: [Self; 5] = [
-        Self::Claude,
-        Self::Codex,
-        Self::Opencode,
-        Self::Pi,
-        Self::Cursor,
-    ];
-
-    /// Map a provider id (as stamped on `AgentRecord.provider` / used by the
-    /// frontend) to its Docker support, or `None` when the provider has no
-    /// container support yet — the launch gate turns `None` into the
-    /// user-facing "isn't available in Docker sandboxes yet" refusal.
-    pub fn from_id(provider: &str) -> Option<Self> {
-        match provider {
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            "opencode" => Some(Self::Opencode),
-            "pi" => Some(Self::Pi),
-            "cursor" => Some(Self::Cursor),
-            _ => None,
-        }
-    }
-
-    /// The provider id string — [`from_id`](Self::from_id)'s inverse
-    /// (round-trip enforced by a test in [`image`]). Used where a variant must
-    /// key string-indexed state shared with the rest of the app, e.g. the host
-    /// version probe (`agent::cached_provider_version`) and the persisted
-    /// version-refresh loop guard (see `engine`).
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Opencode => "opencode",
-            Self::Pi => "pi",
-            Self::Cursor => "cursor",
-        }
-    }
-
-    /// The command name on the image's PATH — what this provider's npm package
-    /// installs as its executable. Handed to `launch_agent` as the in-image
-    /// `agent_bin` (a host-resolved absolute path would be meaningless inside
-    /// the container). Matches the provider's `bin` field for both supported
-    /// providers today, but named explicitly so it stays an image fact, not a
-    /// coincidence.
-    pub fn image_bin(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Opencode => "opencode",
-            Self::Pi => "pi",
-            Self::Cursor => "cursor-agent",
-        }
-    }
-}
+/// The set of providers a container can run, under the name the rest of the app
+/// knows it by. Docker was the first container runtime, so the type is spelled
+/// [`ContainerProvider`](crate::sandbox::container::ContainerProvider) at its new
+/// home and re-exported here.
+pub use crate::sandbox::container::ContainerProvider as DockerProvider;
 
 /// How long the startup sweep waits between probes while the daemon is still
 /// coming up. Comfortably above [`probe`]'s 5s cache TTL, so every poll is one

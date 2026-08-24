@@ -1,4 +1,4 @@
-//! The `docker run` argv builder: the provider-agnostic `--rm --init` shape,
+//! The container `run` argv builder: the provider-agnostic `--rm --init` shape,
 //! the mounts at identical host paths (invariant 1), the per-provider config/
 //! data mounts, and the bare `-e NAME` forwards (invariant 3). Pure over its
 //! [`RunSpec`] so the argv shape is unit-testable without a daemon.
@@ -6,10 +6,11 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::sandbox::docker::cleanup;
 use crate::sandbox::policy::{
     CLAUDE_CREDENTIALS_FILE, CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS, CLAUDE_PROJECTS_SUBDIR,
 };
+
+use super::labels;
 
 /// The one file under a claude config dir that stays writable when the dir is
 /// bind-mounted read-only: claude's OAuth refresh rewrites the rotated token
@@ -17,7 +18,7 @@ use crate::sandbox::policy::{
 /// write to land on the host. Mounted read-write on top of the read-only dir.
 /// The name is shared with seatbelt via [`CLAUDE_CREDENTIALS_FILE`] so
 /// the two engines can't drift.
-pub(super) const CREDENTIALS_FILE: &str = CLAUDE_CREDENTIALS_FILE;
+pub(crate) const CREDENTIALS_FILE: &str = CLAUDE_CREDENTIALS_FILE;
 
 /// Subdirs of a claude config dir that Claude Code creates and writes *afresh
 /// every session* — the per-session env store (`mkdir session-env/<id>` at
@@ -60,7 +61,7 @@ const PROJECTS_SUBDIR: &str = CLAUDE_PROJECTS_SUBDIR;
 /// carve-outs treatment is unique; the other three are read-write binds at
 /// identical host paths, differing only in which dirs they mount and which env
 /// var (if any) they forward.
-pub(super) enum ProviderMounts<'a> {
+pub(crate) enum ProviderMounts<'a> {
     /// Claude: `~/.claude` (and any non-default `CLAUDE_CONFIG_DIR`) bind-mounted
     /// **read-only** except a writable `.credentials.json` overlay and the
     /// per-agent `projects/` transcript bind (invariant 5); see
@@ -112,7 +113,7 @@ pub(super) enum ProviderMounts<'a> {
 
 /// Everything [`run_args`] needs, bundled so the builder is pure and the argv
 /// shape unit-testable without a daemon.
-pub(super) struct RunSpec<'a> {
+pub(crate) struct RunSpec<'a> {
     pub interactive: bool,
     pub name: &'a str,
     pub agent_id: &'a str,
@@ -140,7 +141,7 @@ pub(super) struct RunSpec<'a> {
     /// credential the chain didn't pick must not reach the container and
     /// override the resolved login.
     ///
-    /// [`resolve`]: crate::sandbox::docker::auth::resolve
+    /// [`resolve`]: crate::sandbox::container::auth::resolve
     pub auth_vars: &'a [&'a str],
 }
 
@@ -149,7 +150,7 @@ pub(super) struct RunSpec<'a> {
 /// `prefix_args` contract of [`SandboxEngine::launch_agent`].
 ///
 /// [`SandboxEngine::launch_agent`]: crate::sandbox::engine::SandboxEngine::launch_agent
-pub(super) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
+pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     let mut args: Vec<String> = vec!["run".into(), "--rm".into(), "--init".into()];
     if spec.interactive {
         args.push("-t".into());
@@ -158,9 +159,9 @@ pub(super) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push("--name".into());
     args.push(spec.name.into());
     args.push("--label".into());
-    args.push(cleanup::host_pid_label());
+    args.push(labels::host_pid_label());
     args.push("--label".into());
-    args.push(cleanup::agent_id_label(spec.agent_id));
+    args.push(labels::agent_id_label(spec.agent_id));
     // Mounts at identical host paths (invariant 1). Exactly these — nothing
     // else from the host enters the container. The workspace and RPC mailbox
     // are read-write; the claude config dir(s) are read-only except their
@@ -293,7 +294,7 @@ fn push_rw_bind(args: &mut Vec<String>, dir: &Path) {
 /// [`EPHEMERAL_RUNTIME_SUBDIRS`] tmpfs targets plus `projects/` (the read-write
 /// per-agent transcript bind). Creating empty dirs is harmless — the overlay
 /// shadows each, so nothing the agent writes there lands on this shared dir.
-pub(super) fn prepare_config_mount_dir(dir: &Path) -> Result<()> {
+pub(crate) fn prepare_config_mount_dir(dir: &Path) -> Result<()> {
     let overlays = EPHEMERAL_RUNTIME_SUBDIRS
         .iter()
         .copied()

@@ -2,13 +2,13 @@ use super::*;
 
 use std::path::{Path, PathBuf};
 
-use super::super::auth::ContainerAuth;
-use super::auth::{
+use super::config_dir::config_dir_is_default;
+use super::util::container_running;
+use crate::sandbox::container::auth::ContainerAuth;
+use crate::sandbox::container::launch_auth::{
     codex_auth_env, cursor_auth_env, multi_provider_auth_env, NO_CODEX_AUTH_MSG,
     NO_CONTAINER_AUTH_MSG, NO_CURSOR_AUTH_MSG, NO_OPENCODE_AUTH_MSG, NO_PI_AUTH_MSG,
 };
-use super::config_dir::config_dir_is_default;
-use super::util::container_running;
 
 /// The version-refresh loop guard: exact-pair matching, per-provider
 /// isolation, persistence callback on record, and safe recording before

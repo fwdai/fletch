@@ -55,10 +55,13 @@
 //!
 //! Layout: this module folder splits the engine into
 //! - [`settings`] — launch knobs and the version-refresh guard
-//! - [`auth`] — per-provider container auth
 //! - [`config_dir`] — non-default config-dir detection and borrowed object stores
-//! - [`run_args`] — the `docker run` argv builder
 //! - [`util`] — naming, liveness, exit codes
+//!
+//! Per-provider container auth
+//! ([`container::launch_auth`](crate::sandbox::container::launch_auth)) and the
+//! `run` argv builder ([`container::run_args`](crate::sandbox::container::run_args))
+//! are runtime-neutral and live outside this folder.
 //!
 //! The `DockerEngine` struct and its `SandboxEngine` impl stay here.
 
@@ -74,9 +77,7 @@ use crate::sandbox::policy::{codex_home_dir, opencode_config_dir, opencode_data_
 
 use super::{cli, image, DockerProvider};
 
-mod auth;
 mod config_dir;
-mod run_args;
 mod settings;
 #[cfg(test)]
 mod tests;
@@ -91,15 +92,17 @@ pub use settings::{
 // Consumed by sibling docker submodules (`image`, `cleanup`) at `engine::X`.
 pub(super) use settings::{image_override, record_version_refresh, version_refresh_attempted};
 
-use auth::{
+use crate::sandbox::container::launch_auth::{
     apply_container_auth, prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch,
     prepare_pi_launch, present_api_keys,
+};
+use crate::sandbox::container::run_args::{
+    prepare_config_mount_dir, run_args, ProviderMounts, RunSpec, CREDENTIALS_FILE,
 };
 use config_dir::{
     borrowed_object_stores, codex_home_is_nondefault, nondefault_claude_config_dir,
     xdg_base_is_nondefault,
 };
-use run_args::{prepare_config_mount_dir, run_args, ProviderMounts, RunSpec, CREDENTIALS_FILE};
 use settings::{DEFAULT_CPUS, DEFAULT_MEMORY, LAUNCH_SETTINGS};
 use util::{container_gone_within, container_name, describe_exit_code, non_blank};
 
@@ -334,7 +337,7 @@ impl SandboxEngine for DockerEngine {
                 projects_src = Some(ps);
 
                 auth_start = env.len();
-                apply_container_auth(&mut env, crate::sandbox::docker::auth::resolve())?;
+                apply_container_auth(&mut env, crate::sandbox::container::auth::resolve())?;
             }
             DockerProvider::Codex => {
                 // Codex's config dir is bind-mounted read-write: auth.json token

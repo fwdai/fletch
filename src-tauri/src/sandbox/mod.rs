@@ -1,3 +1,4 @@
+pub(crate) mod container;
 pub mod docker;
 mod engine;
 pub mod guarantees;
