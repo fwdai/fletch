@@ -1,14 +1,21 @@
 import type { SandboxEngine } from "@/storage/preferences";
 import { invoke } from "../invoke";
-import type { ContainerAuthStatus, DockerProbe, IsolationReport } from "../types/sandbox";
+import type {
+  ContainerAuthStatus,
+  DockerProbe,
+  IsolationReport,
+  PodmanProbe,
+} from "../types/sandbox";
 
 export const sandboxApi = {
   // Sandbox engine selection. The setting is backend-owned (snake_case
-  // `sandbox_engine`, written by `set_sandbox_engine` — which validates docker
-  // against a live daemon probe and refuses when it's unreachable).
+  // `sandbox_engine`, written by `set_sandbox_engine` — which validates each
+  // container engine against a live probe and refuses when its runtime is
+  // unreachable).
   getSandboxEngine: () => invoke<SandboxEngine>("get_sandbox_engine"),
   setSandboxEngine: (engine: SandboxEngine) => invoke<void>("set_sandbox_engine", { engine }),
   probeDockerEngine: () => invoke<DockerProbe>("probe_docker_engine"),
+  probePodmanEngine: () => invoke<PodmanProbe>("probe_podman_engine"),
   // What each engine actually guarantees, for the picker (`sandbox::guarantees`).
   describeSandboxIsolation: () => invoke<IsolationReport[]>("describe_sandbox_isolation"),
   // Whether an agent must get the user's approval before publishing. Backend-owned

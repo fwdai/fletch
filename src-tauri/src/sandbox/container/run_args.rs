@@ -20,6 +20,12 @@ use super::labels;
 /// the two engines can't drift.
 pub(crate) const CREDENTIALS_FILE: &str = CLAUDE_CREDENTIALS_FILE;
 
+/// Resource caps a container launch carries when the user has set none. Shared
+/// by every runtime: the ceiling is a property of what an agent needs to build
+/// and test, not of who runs the container.
+pub(crate) const DEFAULT_MEMORY: &str = "4g";
+pub(crate) const DEFAULT_CPUS: &str = "2";
+
 /// Subdirs of a claude config dir that Claude Code creates and writes *afresh
 /// every session* — the per-session env store (`mkdir session-env/<id>` at
 /// startup) and the shell-environment snapshot the Bash tool sources. The
@@ -272,6 +278,51 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push(spec.image.into());
     args.push(spec.agent_bin.into());
     args
+}
+
+/// Every *host* path [`run_args`] turns into a bind mount, in argv order.
+/// Deliberately excludes the tmpfs overlays (no source) and the `projects/`
+/// target (its source is `projects_src`, which is listed).
+///
+/// Lives next to [`run_args`] so the two can't drift: a runtime that has to
+/// vet mount sources before launching (Podman's machine shares only configured
+/// host dirs — see `podman::machine`) must see exactly what will be bound, and
+/// a mount added above without an entry here would go unvetted.
+pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = vec![spec.writable_root.into(), spec.rpc_dir.into()];
+    if let Some(board) = spec.blackboard {
+        out.push(board.into());
+    }
+    out.extend(spec.borrowed_object_stores.iter().cloned());
+    match &spec.mounts {
+        // The `.credentials.json` overlays are subpaths of the config dirs
+        // listed here, so a containment check over these covers them too.
+        ProviderMounts::Claude {
+            config_dir,
+            projects_src,
+            ..
+        } => {
+            out.push(spec.home.join(".claude"));
+            if let Some(dir) = config_dir {
+                out.push((*dir).into());
+            }
+            out.push((*projects_src).into());
+        }
+        ProviderMounts::Codex { config_dir, .. } => out.push((*config_dir).into()),
+        ProviderMounts::Opencode {
+            data_dir,
+            config_dir,
+            ..
+        } => {
+            out.push((*data_dir).into());
+            if let Some(dir) = config_dir {
+                out.push((*dir).into());
+            }
+        }
+        ProviderMounts::Pi { data_dir } => out.push((*data_dir).into()),
+        ProviderMounts::Cursor { data_dir } => out.push((*data_dir).into()),
+    }
+    out
 }
 
 /// Bind-mount `dir` **read-write** at its identical host path (no `:ro`). The

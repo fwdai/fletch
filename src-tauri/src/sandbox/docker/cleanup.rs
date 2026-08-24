@@ -32,16 +32,8 @@ use super::{cli, engine, image, DockerProvider};
 /// the `cleanup::host_pid_label` / `cleanup::HOST_PID_LABEL` paths this module's
 /// callers already use keep resolving from their runtime-neutral home.
 pub(super) use crate::sandbox::container::labels::{
-    agent_id_label, host_pid_label, HOST_PID_LABEL,
+    agent_id_filter, host_pid_label, orphaned_ids, HOST_PID_LABEL, INSPECT_FORMAT,
 };
-
-/// The `--filter` argument selecting one agent's containers. Built from
-/// [`agent_id_label`] so the query can never drift from what `docker run`
-/// stamped. Split out as a pure function so its argv shape is unit-testable
-/// without a daemon.
-fn agent_id_filter(agent_id: &str) -> String {
-    format!("label={}", agent_id_label(agent_id))
-}
 
 /// Listing/inspect are metadata-only; generous next to their usual
 /// milliseconds, so tripping one means the daemon is wedged.
@@ -50,12 +42,6 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 /// `docker rm -f` also kills a still-running container's process; give the
 /// batched removal room without letting a hung daemon pin the sweep thread.
 const REMOVE_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// `docker inspect` line format pairing each container id with its owning
-/// pid. `index` (rather than a direct field access) yields an empty string
-/// when the label is somehow absent, which parses to "no pid" and is skipped
-/// — under-reclaiming, never removing something we can't attribute.
-const INSPECT_FORMAT: &str = r#"{{.Id}} {{index .Config.Labels "fletch.host-pid"}}"#;
 
 /// Remove every fletch-labeled container whose owning host instance is dead.
 /// Returns the number removed. Callers gate on the probe and run this off
@@ -107,29 +93,6 @@ pub fn sweep_orphans() -> Result<usize> {
         )));
     }
     Ok(orphans.len())
-}
-
-/// Parse [`INSPECT_FORMAT`] output and keep the ids whose owning pid is
-/// provably dead. A missing or unparsable pid means we can't attribute the
-/// container, so it is left alone (same under-reclaim bias as
-/// `cleanup_nested_state_roots_in`). Pure — the liveness probe is injected
-/// for unit tests.
-fn orphaned_ids(inspect_stdout: &str, alive: impl Fn(i32) -> bool) -> Vec<String> {
-    inspect_stdout
-        .lines()
-        .filter_map(parse_inspect_line)
-        .filter(|(_, pid)| pid.is_some_and(|p| !alive(p)))
-        .map(|(id, _)| id)
-        .collect()
-}
-
-/// One [`INSPECT_FORMAT`] line → `(container_id, owning_pid)`. The pid is
-/// `None` when the label was empty or not a number.
-fn parse_inspect_line(line: &str) -> Option<(String, Option<i32>)> {
-    let mut parts = line.split_whitespace();
-    let id = parts.next()?;
-    let pid = parts.next().and_then(|p| p.parse::<i32>().ok());
-    Some((id.to_string(), pid))
 }
 
 /// Remove every container stamped with `fletch.agent-id=<agent_id>`, running
@@ -484,6 +447,7 @@ const RETIRED_REPOS: &[&str] = &[];
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::container::labels::{agent_id_label, parse_inspect_line};
 
     #[test]
     fn label_argv_shapes() {

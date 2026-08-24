@@ -12,8 +12,8 @@ pub const MEMORY_SETTING: &str = "docker_memory";
 /// Settings key for the container CPU limit (`docker run --cpus`).
 pub const CPUS_SETTING: &str = "docker_cpus";
 
-pub(super) const DEFAULT_MEMORY: &str = "4g";
-pub(super) const DEFAULT_CPUS: &str = "2";
+// The launch defaults are container policy, not docker's: they live in
+// [`crate::sandbox::container::run_args`] so both runtimes cap the same way.
 
 /// Launch knobs read from the `settings` table, mirrored in-process (the spawn
 /// path has no DB handle — same pattern as `sandbox::set_selected_engine_kind`).
@@ -24,9 +24,11 @@ pub struct LaunchSettings {
     /// `docker_image` — a non-empty value is used verbatim, skipping the
     /// embedded image build entirely.
     pub image_override: Option<String>,
-    /// `docker_memory` — `--memory` value; `None`/blank means [`DEFAULT_MEMORY`].
+    /// `docker_memory` — `--memory` value; `None`/blank means the container
+    /// layer's `DEFAULT_MEMORY`.
     pub memory: Option<String>,
-    /// `docker_cpus` — `--cpus` value; `None`/blank means [`DEFAULT_CPUS`].
+    /// `docker_cpus` — `--cpus` value; `None`/blank means the container layer's
+    /// `DEFAULT_CPUS`.
     pub cpus: Option<String>,
 }
 

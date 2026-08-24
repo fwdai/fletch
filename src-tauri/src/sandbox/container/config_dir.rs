@@ -1,6 +1,9 @@
 //! Non-default config-dir detection (does the container need a `-e CLAUDE_CONFIG_DIR`
 //! / `-e CODEX_HOME` / `-e XDG_*`?) and the borrowed git object stores a
 //! `--shared` clone reaches through alternates.
+//!
+//! Runtime-neutral: every answer here is a question about the *host* env and
+//! filesystem, so both container runtimes read the same one.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +17,7 @@ use crate::sandbox::policy::resolve_existing_prefix;
 /// forwarding a blank value the resolver ignored would desync the two.
 ///
 /// [`codex_home_dir`]: crate::sandbox::policy::codex_home_dir
-pub(super) fn codex_home_is_nondefault(home: &Path) -> bool {
+pub(crate) fn codex_home_is_nondefault(home: &Path) -> bool {
     match std::env::var_os("CODEX_HOME") {
         Some(v) if !v.is_empty() => {
             resolve_existing_prefix(&PathBuf::from(v))
@@ -27,17 +30,17 @@ pub(super) fn codex_home_is_nondefault(home: &Path) -> bool {
 // Codex's `$CODEX_HOME` resolution (`codex_home_dir`) and opencode's data/
 // config dir resolution (`opencode_data_dir`, `opencode_config_dir`, their
 // shared `xdg_base`) now live in [`crate::sandbox::policy`] — they're class-1
-// host-persistence dirs both engines share (Docker mounts them; seatbelt
+// host-persistence dirs every engine shares (containers mount them; seatbelt
 // grants them), so the policy module is their single source of truth.
-// Imported at the top of the engine module.
+// Imported by [`super::launch`], which assembles the mounts.
 
 /// Whether `$var` points to an XDG base other than the default `home/<default_rel>`
 /// the container already resolves via `HOME`. Only a non-default base is forwarded,
 /// mirroring [`codex_home_is_nondefault`]; both sides canonicalize via
 /// [`resolve_existing_prefix`] so a symlink can't read as non-default. This stays
-/// docker-local: it's launch-time env-forwarding logic (does the container need a
-/// `-e XDG_*`?), not a write-policy question.
-pub(super) fn xdg_base_is_nondefault(var: &str, home: &Path, default_rel: &str) -> bool {
+/// out of [`crate::sandbox::policy`]: it's launch-time env-forwarding logic (does
+/// the container need a `-e XDG_*`?), not a write-policy question.
+pub(crate) fn xdg_base_is_nondefault(var: &str, home: &Path, default_rel: &str) -> bool {
     match std::env::var_os(var) {
         Some(v) if !v.is_empty() => {
             resolve_existing_prefix(&PathBuf::from(v))
@@ -61,7 +64,7 @@ pub(super) fn xdg_base_is_nondefault(var: &str, home: &Path, default_rel: &str) 
 /// symlink source, so a config dir pointing at the resolved target is still
 /// covered by that mount. The *original* path is returned for a genuinely
 /// non-default dir, so the mount/forward stay at the host path (invariant 1).
-pub(super) fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
+pub(crate) fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
     let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from)?;
     (!config_dir_is_default(&dir, home)).then_some(dir)
 }
@@ -69,7 +72,7 @@ pub(super) fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
 /// Whether `dir` resolves to the default `~/.claude`. Both sides go through
 /// [`resolve_existing_prefix`] — see [`nondefault_claude_config_dir`] for why.
 /// Pure over its inputs so the comparison rule is directly testable.
-pub(super) fn config_dir_is_default(dir: &Path, home: &Path) -> bool {
+pub(crate) fn config_dir_is_default(dir: &Path, home: &Path) -> bool {
     resolve_existing_prefix(dir) == resolve_existing_prefix(&home.join(".claude"))
 }
 
@@ -103,7 +106,7 @@ pub(super) fn config_dir_is_default(dir: &Path, home: &Path) -> bool {
 /// be mounted too or in-container git can't normalize the alternate. Results
 /// are deduped (repos may share a base) and cycle-guarded. A missing store is
 /// dropped, not mounted — see below.
-pub(super) fn borrowed_object_stores(source_repos: &[PathBuf]) -> Vec<PathBuf> {
+pub(crate) fn borrowed_object_stores(source_repos: &[PathBuf]) -> Vec<PathBuf> {
     /// The alternates listed in `<objects_dir>/info/alternates`, if any. Only
     /// ever called on stores reached from a trusted source repo, so the file it
     /// reads is always under user-owned (non-agent-writable) state.

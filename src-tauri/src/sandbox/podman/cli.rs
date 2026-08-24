@@ -16,11 +16,11 @@
 //!    and lives in [`container::proc`](crate::sandbox::container::proc); what's
 //!    here is the thin Podman-specific layer over it.
 
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
-use crate::sandbox::container::proc::run_with_timeout;
+use crate::sandbox::container::proc::{forward_lines, run_with_timeout, wait_with_deadline};
 
 /// Absolute path of the podman CLI, or `None` when it isn't installed.
 /// Resolved fresh on every call (the underlying login-shell env is cached, so
@@ -32,15 +32,85 @@ pub(super) fn podman_bin() -> Option<std::path::PathBuf> {
     crate::bin_resolve::resolve_bin("podman", &home).map(std::path::PathBuf::from)
 }
 
-/// Run `podman <args>` capturing stdout/stderr, failing after `timeout`.
-/// Returns the raw `Output` — callers inspect the exit status themselves, since
-/// several podman commands use non-zero exits as answers (e.g. `image inspect`
-/// on a missing image), not as errors.
+/// Run `podman <args>` on whichever connection is the default. For anything
+/// belonging to one container's lifetime, use [`run_podman_on`] with that
+/// container's pinned connection instead — the default can change mid-run.
 pub(super) fn run_podman(args: &[&str], timeout: Duration) -> Result<Output> {
+    run_podman_on(None, args, timeout)
+}
+
+/// Run `podman [--connection <name>] <args>` capturing stdout/stderr, failing
+/// after `timeout`. Returns the raw `Output` — callers inspect the exit status
+/// themselves, since several podman commands use non-zero exits as answers
+/// (e.g. `image inspect` on a missing image), not as errors.
+///
+/// The pin is a *global* flag, so it goes ahead of the subcommand; the error
+/// label still names the subcommand, which is the part a user can act on.
+pub(super) fn run_podman_on(
+    connection: Option<&str>,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Output> {
     let bin = podman_bin()
         .ok_or_else(|| Error::Other("podman binary not found — is Podman installed?".into()))?;
     let mut cmd = Command::new(bin);
+    if let Some(connection) = connection {
+        cmd.args(["--connection", connection]);
+    }
     cmd.args(args);
     let what = format!("podman {}", args.first().copied().unwrap_or_default());
     run_with_timeout(cmd, timeout, &what)
+}
+
+/// Run `podman [--connection <name>] <args>` streaming every output line
+/// (stdout and stderr) to `on_line` as it appears — the shape `podman build`
+/// needs so a minutes-long image build reaches the log while it runs. Fails on
+/// non-zero exit with the last output lines in the message, or on `timeout`
+/// expiry. `connection` matters here too: images live per-machine, so a build
+/// has to land on the machine the run will use.
+pub(super) fn run_podman_streaming(
+    connection: Option<&str>,
+    args: &[&str],
+    timeout: Duration,
+    on_line: &(dyn Fn(&str) + Send + Sync),
+) -> Result<()> {
+    let bin = podman_bin()
+        .ok_or_else(|| Error::Other("podman binary not found — is Podman installed?".into()))?;
+    let what = format!("podman {}", args.first().copied().unwrap_or_default());
+    let mut cmd = Command::new(bin);
+    if let Some(connection) = connection {
+        cmd.args(["--connection", connection]);
+    }
+    let mut child = cmd
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take().expect("stdout piped above");
+    let stderr = child.stderr.take().expect("stderr piped above");
+
+    // Keep a bounded tail of everything seen, so a failure message carries the
+    // actual podman error (which lands near the end of the stream) without
+    // buffering an entire multi-minute build log.
+    let tail = std::sync::Mutex::new(std::collections::VecDeque::<String>::new());
+
+    // Scoped threads: the readers borrow `on_line` and `tail`, and both pipes
+    // are drained continuously so the child can never block on a full pipe
+    // while we sit in the wait loop below.
+    let status = std::thread::scope(|scope| {
+        scope.spawn(|| forward_lines(stdout, on_line, &tail));
+        scope.spawn(|| forward_lines(stderr, on_line, &tail));
+        wait_with_deadline(&mut child, timeout, &what)
+    })?;
+
+    if !status.success() {
+        let tail = tail.lock().unwrap();
+        return Err(Error::Other(format!(
+            "{what} failed (exit {}):\n{}",
+            status.code().unwrap_or(-1),
+            tail.iter().cloned().collect::<Vec<_>>().join("\n"),
+        )));
+    }
+    Ok(())
 }

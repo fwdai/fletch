@@ -6,7 +6,8 @@
 //! polling, the startup sweep): a stopped Docker Desktop, for one, leaves a
 //! socket that accepts connections and then hangs. Callers pass an explicit
 //! timeout and get a clear "timed out" error instead. Nothing here knows which
-//! runtime it is running — see `sandbox::docker::cli` for the Docker wrappers.
+//! runtime it is running — see `sandbox::docker::cli` and
+//! `sandbox::podman::cli` for the per-runtime wrappers.
 
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
@@ -87,7 +88,9 @@ pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration, what: &str) 
 
 fn timeout_error(what: &str, timeout: Duration) -> Error {
     Error::Other(format!(
-        "{what} timed out after {:.0?} — is the Docker daemon responding?",
+        // `what` already names the runtime and subcommand ("docker build",
+        // "podman info"), so the hint stays runtime-neutral.
+        "{what} timed out after {:.0?} — is the container runtime responding?",
         timeout,
     ))
 }

@@ -68,20 +68,23 @@ pub fn engine_for(kind: EngineKind) -> Result<Arc<dyn SandboxEngine>> {
                 )))
             }
         },
-        // Podman has no launch path yet: the kind, the probe and the coverage
-        // declarations ship ahead of `SandboxEngine`, so there is nothing here to
-        // return. Refused unconditionally — *not* probe-gated like Docker above —
-        // because "the probe says Podman is healthy" must not become "so launch
-        // it somehow": the only two outcomes available would be launching
-        // unsandboxed or falling back to seatbelt, and both are the isolation
-        // downgrade this function exists to prevent. Unconditional refusal here
-        // is what makes shipping a selectable kind safe before it can run
-        // anything; the next change adds the engine and replaces this arm.
-        EngineKind::Podman => Err(Error::SandboxUnavailable(
-            "The Podman engine cannot launch agents yet — this build ships the engine's \
-             availability probe only. Switch the sandbox engine to launch."
-                .into(),
-        )),
+        EngineKind::Podman => match podman::availability() {
+            PodmanAvailability::Available { .. } => Ok(podman::PodmanEngine::shared()),
+            status => {
+                tracing::warn!(
+                    ?status,
+                    "podman engine selected but unavailable; refusing to launch outside the container boundary"
+                );
+                let remedy = match status {
+                    PodmanAvailability::MachineDown => "run `podman machine start`",
+                    _ => "install Podman",
+                };
+                Err(Error::SandboxUnavailable(format!(
+                    "Podman sandbox is selected but unavailable ({status:?}); \
+                     {remedy} or switch the sandbox engine before launching."
+                )))
+            }
+        },
     }
 }
 
