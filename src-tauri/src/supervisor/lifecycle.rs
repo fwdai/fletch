@@ -53,8 +53,7 @@ pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
 /// unsupported provider. Consults the capability lookup rather than string-
 /// matching a single provider id.
 fn ensure_engine_supports_provider(engine: EngineKind, provider: &str) -> Result<()> {
-    if engine == EngineKind::Docker && sandbox::docker::DockerProvider::from_id(provider).is_none()
-    {
+    if engine.is_container() && sandbox::docker::DockerProvider::from_id(provider).is_none() {
         let label = per_turn_descriptor(provider)
             .map(|d| d.label())
             .unwrap_or(provider);
@@ -604,7 +603,7 @@ impl Supervisor {
         // uses the normal (`--shared`) clone path. A later restore relaunches
         // the container and re-provisions via `--shared` + mount.
         let record = self.workspace.agent(agent_id)?;
-        let self_contained = stamped_engine(&record) == EngineKind::Docker;
+        let self_contained = stamped_engine(&record).is_container();
         self.attach_repo_checkout(&app, agent_id, repo_path, self_contained)
             .await
     }

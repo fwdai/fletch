@@ -148,7 +148,7 @@ fn wants_codegraph(
     existing_names: &[&str],
 ) -> bool {
     enabled
-        && engine != EngineKind::Docker
+        && !engine.is_container()
         && can_receive_mcp
         && !existing_names
             .iter()
