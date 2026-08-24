@@ -76,8 +76,8 @@ export function Workspace() {
   );
 }
 
-/** The one recovery for a stopped Podman machine — there is no auto-start
- *  command for it, so the banner offers the command to copy instead. */
+/** Fletch can't start a stopped Podman machine itself, so the banner offers
+ *  this to copy instead of a button. */
 const PODMAN_START_COMMAND = "podman machine start";
 
 /** Classify a container agent's crash reason so the banner can offer the right
@@ -91,9 +91,8 @@ const PODMAN_START_COMMAND = "podman machine start";
  *   - "image":       a bad image (missing/broken `claude`, exit 126/127) →
  *     point at the sandbox settings to fix `docker_image`.
  *   - "auth":        no Anthropic credentials in the container → connect Claude.
- *  Order matters: both engine-down arms are checked before "image", because a
- *  machine that's down also fails while *preparing* the image — pointing at the
- *  image settings there would be the wrong remedy. Returns null for
+ *  Order matters: both engine-down arms are checked before "image", since a
+ *  down engine also fails while *preparing* the image. Returns null for
  *  non-container crashes (the plain banner). */
 function dockerCrashKind(
   msg: string | null | undefined,

@@ -42,10 +42,8 @@ export function ExperimentalPane() {
   );
 }
 
-/** The two container runtimes that carry launch knobs, and the copy that differs
- *  between them: the group heading and the `run` command the limits are passed
- *  to. Everything else about the three fields is identical, which is why one
- *  component serves both. */
+/** The two container runtimes that carry launch knobs, and the only copy that
+ *  differs between them: the group heading and the `run` command name. */
 const RUNTIMES = {
   docker: { label: "Docker", bin: "docker" },
   podman: { label: "Podman", bin: "podman" },

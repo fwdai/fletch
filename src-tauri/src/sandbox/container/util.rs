@@ -1,15 +1,12 @@
-//! Container naming and the runtime-reserved exit-code messages: the pieces of
-//! the launch/teardown path that carry no runtime coupling at all.
-//!
-//! Liveness lookups stay per-runtime — they shell out — and live next to their
-//! runtime's CLI wrapper (`docker::engine::util`, `podman::engine::util`).
+//! Container naming and the runtime-reserved exit-code messages — the pieces of
+//! the launch/teardown path with no runtime coupling. Liveness lookups shell
+//! out, so they stay next to their runtime's CLI wrapper.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// `fletch-<agent_id>-<8-char nonce>`. The nonce keeps respawns (view switch,
-/// binary swap) from colliding with a predecessor container of the same agent
-/// that `--rm` hasn't finished reaping yet; hashing in the pid keeps two
-/// side-by-side Fletch instances apart even for a same-named agent.
+/// `fletch-<agent_id>-<8-char nonce>`. The nonce keeps a respawn from colliding
+/// with a predecessor `--rm` hasn't reaped yet; the pid in it keeps two
+/// side-by-side Fletch instances apart for a same-named agent.
 pub(crate) fn container_name(agent_id: &str) -> String {
     // Container names must match [a-zA-Z0-9][a-zA-Z0-9_.-]* under both docker
     // and podman; the `fletch-` prefix fixes the first char, sanitize the rest.
@@ -26,8 +23,8 @@ pub(crate) fn container_name(agent_id: &str) -> String {
     format!("fletch-{sanitized}-{}", nonce())
 }
 
-/// 8 hex chars from (pid, monotonic counter): unique within a host across
-/// concurrently running instances for the lifetime of any one container.
+/// 8 hex chars from (pid, monotonic counter): unique across side-by-side Fletch
+/// instances for the lifetime of any one container.
 fn nonce() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     use std::hash::{Hash, Hasher};
@@ -44,7 +41,7 @@ pub(crate) fn non_blank(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|v| !v.is_empty())
 }
 
-/// The runtime-specific wording [`describe_exit_code`] renders around. One
+/// The runtime-specific wording [`describe_exit_code`] renders around — one
 /// value per runtime, declared next to that runtime's engine.
 pub(crate) struct ExitCopy {
     /// Display name of the runtime whose CLI reserved the code.
@@ -53,22 +50,16 @@ pub(crate) struct ExitCopy {
     pub error_source: &'static str,
     /// One check the user can act on when the runtime couldn't start.
     pub remedy: &'static str,
-    /// Settings key naming a user-supplied image, for runtimes that honor one.
-    /// `None` drops the custom-image clause: a runtime with no override must
-    /// not point the user at a setting it ignores.
+    /// Settings key naming a user-supplied image. `None` drops the
+    /// custom-image clause rather than name a setting the runtime ignores.
     pub image_setting: Option<&'static str>,
 }
 
 /// User-readable meanings for a container CLI's reserved exit codes; other
 /// codes are the contained agent's own and pass through unmapped. `run` relays
-/// the agent's own exit status, so an agent that starts fine and later exits
-/// 125/126/127 is indistinguishable from a launcher/image failure — the
-/// messages name the likely runtime-layer cause but flag the agent-exit
-/// possibility so they don't mislead when the container did launch.
-///
-/// Provider-neutral: the teardown plan carries only the container name, and the
-/// sandbox image varies per provider, so these speak of "the agent binary"
-/// rather than naming `claude`.
+/// the agent's exit status, so a contained agent exiting 125/126/127 is
+/// indistinguishable from a launcher failure — hence the hedge in every
+/// message. Wording is provider-neutral; the image varies per provider.
 pub(crate) fn describe_exit_code(code: i32, copy: &ExitCopy) -> Option<String> {
     let ExitCopy {
         runtime,
@@ -105,8 +96,6 @@ pub(crate) fn describe_exit_code(code: i32, copy: &ExitCopy) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A runtime with no image override must not mention one, and every message
-    /// must still hedge about the agent's own exit status.
     #[test]
     fn exit_copy_without_an_image_setting_omits_the_override_clause() {
         let copy = ExitCopy {

@@ -190,7 +190,7 @@ impl Supervisor {
             };
 
             // Warm the codegraph index for the restored checkout too (best-effort;
-            // no-op when indexing is off or under Docker).
+            // no-op when indexing is off or under a container engine).
             provision_codegraph_index(
                 record.project_id.clone(),
                 snap.repo_path.clone(),
@@ -436,9 +436,7 @@ async fn choose_restore_branch_name(repo_path: &Path, desired: &str) -> String {
 ///    seatbelt agent never had a container, so it never pays for a probe.
 ///    `record: None` (discard tolerates a missing row) can't prove which
 ///    runtime launched it, so it asks both — the label match is exact, so
-///    looking costs nothing but the queries, and nothing else would reclaim
-///    the container this app run: the startup sweep keys on a *dead* owner
-///    pid, and a rowless agent's owner is this still-running process.
+///    looking costs nothing but the queries.
 /// 2. The runtime's own availability probe — a machine without that runtime
 ///    installed must never see one of its invocations, the same precedent the
 ///    startup sweeps set.
@@ -465,8 +463,7 @@ fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'sta
                 tracing::warn!(agent_id = %agent_id, op, runtime, error = %e, "agent container removal failed")
             }
         };
-        // A stamped engine narrows this to one runtime; a missing record asks
-        // both, each behind its own availability gate.
+        // A stamped engine narrows to one runtime; a rowless agent asks both.
         if engine != Some(EngineKind::Podman)
             && matches!(
                 docker::availability(),

@@ -491,8 +491,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   });
 
   // Container image-build progress (first spawn under a runtime). Drives the
-  // build toast; `applyBuildEvent` owns the per-runtime routing (see
-  // store/sandbox), so it stays testable outside a live event stream.
+  // build toast; `applyBuildEvent` (store/sandbox) owns the per-runtime routing.
   await onDockerBuildProgress((e) => {
     set((s) => ({ containerBuilds: applyBuildEvent(s.containerBuilds, e) }));
   });

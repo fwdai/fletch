@@ -1,40 +1,34 @@
 //! The version-refresh loop guard: one per container runtime, sharing this
 //! implementation.
 //!
-//! The guard caps the version-parity rebuild trigger at one attempt per
-//! `host_version@image_tag` pairing *ever*, not one per app run. In the guarded
-//! case — a host CLI pinned away from the registry's latest, so the mismatch
-//! survives even a successful rebuild — an in-memory-only guard would decay into
-//! one full `--no-cache` rebuild on every app run.
+//! It caps the version-parity rebuild trigger at one attempt per
+//! `host_version@image_tag` pairing *ever* — a host CLI pinned away from the
+//! registry's latest keeps mismatching after a successful rebuild, so an
+//! in-memory-only guard would mean a `--no-cache` rebuild every app run.
 //!
-//! Each runtime owns a `static VersionGuard` and its own settings key (docker's
-//! `docker_version_refresh_guard`, podman's `podman_version_refresh_guard`), so
-//! the two runtimes' image stores never talk each other out of a rebuild: an
-//! image present in one store says nothing about the other's.
+//! Each runtime owns its own `static` and settings key: an image present in one
+//! store says nothing about the other's.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-/// Writes the guard map back to its settings row (installed by
-/// [`VersionGuard::init`]). An `Arc` so [`VersionGuard::record`] can clone it out
-/// and call it with the lock released.
+/// Writes the guard map back to its settings row. An `Arc` so
+/// [`VersionGuard::record`] can clone it out and call it with the lock released.
 type Persist = Arc<dyn Fn(&HashMap<String, String>) + Send + Sync>;
 
 /// provider id → `"host_version@image_tag"` last successfully rebuilt for, plus
-/// the write-back. One pair per provider suffices — any change to either side
-/// legitimately warrants one fresh attempt.
+/// the write-back. One pair per provider: a change to either side warrants one
+/// fresh attempt.
 struct State {
     attempted: HashMap<String, String>,
     persist: Option<Persist>,
 }
 
 /// A runtime's loop guard, mirrored in-process because the image code that
-/// consults it runs on spawn paths and background threads with no DB handle.
-/// Seeded and wired to a persister at startup by [`init`](Self::init); until
-/// then (tests, headless) it's empty and unpersisted, and recording still guards
-/// the current process run.
+/// consults it runs on threads with no DB handle. Before
+/// [`init`](Self::init) it is empty and unpersisted, but still guards this run.
 pub(crate) struct VersionGuard(RwLock<Option<State>>);
 
 impl VersionGuard {
@@ -55,9 +49,9 @@ impl VersionGuard {
         });
     }
 
-    /// Whether a version-mismatch rebuild already succeeded for exactly this
-    /// `pair` (`"host_version@image_tag"`). If so the trigger is inert: the
-    /// mismatch survived a rebuild, so it isn't rebuildable-away (pinned host).
+    /// Whether a rebuild already succeeded for exactly this `pair`. If so the
+    /// trigger is inert — the mismatch survived a rebuild, so it isn't
+    /// rebuildable away.
     pub(crate) fn attempted(&self, provider_id: &str, pair: &str) -> bool {
         self.0
             .read()
@@ -65,10 +59,8 @@ impl VersionGuard {
             .is_some_and(|g| g.attempted.get(provider_id).map(String::as_str) == Some(pair))
     }
 
-    /// Record (and persist, when wired) that a version-mismatch rebuild
-    /// succeeded for `pair`. Called from the background rebuild thread on
-    /// success only — failures must retry on a later run, exactly like TTL
-    /// rebuild failures.
+    /// Record (and persist, when wired) that a rebuild succeeded for `pair`.
+    /// Success only — a failure must retry on a later run.
     pub(crate) fn record(&self, provider_id: &str, pair: String) {
         // The persister writes the DB; calling it under the lock would order
         // guard-before-db and invite a deadlock. Snapshot, unlock, then persist.

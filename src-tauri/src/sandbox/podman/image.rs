@@ -1,41 +1,16 @@
 //! Building, inspecting and refreshing the embedded agent images with podman.
-//! Their *content* — the Dockerfiles, entrypoints, and content-addressed tags —
-//! is runtime-neutral and lives in
-//! [`container::images`](crate::sandbox::container::images), so a Podman agent
-//! runs the byte-identical image a Docker agent does (different local store,
-//! same recipe, same tag). Everything here shells out to podman.
+//! The image content itself is runtime-neutral —
+//! [`container::images`](crate::sandbox::container::images).
 //!
 //! Every invocation carries the launch's pinned connection (see
-//! [`super::machine`]). That is not a detail: podman keeps one image store per
-//! machine, so an image built or found on one connection says nothing about the
-//! one the run will use — an unpinned inspect could report "present" for a store
-//! the container never touches, and an unpinned build would land the image on the
-//! wrong machine.
+//! [`super::machine`]): podman keeps one image store per machine, so an image
+//! built or found on one connection says nothing about the one the run uses.
 //!
-//! Content addressing alone would freeze the *packages inside* an image
-//! forever: every image installs "latest at build time" (npm installs, cursor's
-//! installer), so a stable Dockerfile means a user's containerized CLI never
-//! updates while the host CLI does. The shared TTL
-//! ([`IMAGE_MAX_AGE`](crate::sandbox::container::freshness::IMAGE_MAX_AGE))
-//! fixes that: at resolution, an existing image older than the TTL is served for
-//! the current launch and rebuilt under the same tag in the background
-//! (stale-while-revalidate — see [`refresh_in_background_if_needed`]). A
-//! host/container CLI version mismatch triggers the same background rebuild even
-//! inside the TTL window — a user who just updated their host CLI expects
-//! container parity — while the TTL remains the backstop for Podman-only users
-//! with no host CLI to compare against.
-//!
-//! Users can bypass all of this with the `podman_image` settings key (see
-//! [`resolve_image`]): a user-supplied image is used verbatim — never built,
-//! never inspected — and must have the launching provider's CLI on PATH and git
-//! installed.
-//!
-//! What Podman's freshness path does *not* mirror is docker's
-//! `reap_superseded_base`: reclaiming a base image a `--pull` displaced needs a
-//! before/after id snapshot around every build plus a retry queue, and podman's
-//! rootless store makes a stranded base cheaper to leave than to chase. The
-//! label-driven GC in [`super::cleanup`] covers everything Fletch's own builds
-//! tag.
+//! Images install "latest at build time", so a content-addressed tag alone would
+//! freeze their contents forever. The shared TTL
+//! ([`IMAGE_MAX_AGE`](crate::sandbox::container::freshness::IMAGE_MAX_AGE)) and a
+//! host/container CLI version mismatch each trigger a background rebuild under
+//! the same tag, the current launch still using the existing image.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -51,40 +26,30 @@ use super::cli;
 /// Progress sink for image builds: called once per podman output line.
 pub type Progress<'a> = &'a (dyn Fn(&str) + Send + Sync);
 
-/// Builds are slow (base image pull + apt + npm) but bounded: past this we
-/// assume a wedged machine connection or dead network and fail the spawn with a
-/// clear error rather than letting it hang indefinitely.
+/// Builds are slow (base image pull + apt + npm); past this, assume a wedged
+/// connection or dead network and fail the spawn rather than hang.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Quick metadata lookups (`podman image inspect`).
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// One-shot in-container version probes are a container start + a node CLI's
-/// `--version` — seconds normally, and this bound only reaps a wedged machine.
+/// In-container `--version` probes: seconds normally; this only reaps a wedged
+/// machine.
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Serializes every image build process-wide — foreground first-builds and
-/// background refresh rebuilds alike. Concurrent spawns during a cold start
-/// would otherwise race podman into building the same image N times, and a
-/// refresh rebuild must never interleave with a foreground build of the same
-/// tag. Separate from docker's lock by design: the two runtimes keep separate
-/// image stores, so a docker build is no reason to hold up a podman one.
+/// Serializes every image build process-wide, foreground and background alike,
+/// so concurrent spawns can't race podman into building the same tag N times.
+/// Separate from docker's lock: the two runtimes keep separate image stores.
 static BUILD_LOCK: Mutex<()> = Mutex::new(());
 
-/// The image to launch `provider`'s containers from on `connection`, honoring
-/// the `podman_image` settings key: a non-empty override is returned verbatim
-/// (no build, no inspect, no TTL, no version check — the user owns that image's
-/// lifecycle); otherwise the embedded image is built if the store behind
-/// `connection` doesn't have it, refreshed in the background if stale or
-/// version-divergent from the host CLI, and its tag returned.
+/// The image to launch `provider`'s containers from on `connection`. A non-empty
+/// `override_image` (the `podman_image` settings key) is returned verbatim — no
+/// build, no inspect, no freshness check — since the user owns that image's
+/// lifecycle. Otherwise the embedded image is built if `connection`'s store
+/// lacks it, refreshed in the background if stale, and its tag returned.
 ///
-/// `connection` is the launch's pinned one, not the default: each machine keeps
-/// its own image store, so an image built or found elsewhere says nothing about
-/// the one the run uses.
-///
-/// Callers read the settings key and probe the host CLI (`host_cli_version` —
-/// see `agent::cached_provider_version`) and pass both in, so this module stays
-/// DB-free and host-probe-free.
+/// The override and `host_cli_version` are passed in rather than read here, so
+/// this module stays DB-free and host-probe-free.
 pub(super) fn resolve_image(
     provider: ContainerProvider,
     connection: Option<&str>,
@@ -110,17 +75,13 @@ pub(super) fn resolve_image(
         on_progress,
     )?;
     if already_existed {
-        // A just-built image is fresh by construction (it installed today's
-        // latest — if the host still differs, a rebuild can't fix that); a
-        // pre-existing one may have passed the TTL or drifted from the host CLI.
-        // Stale-while-revalidate: this launch still uses the existing tag, the
-        // refresh (if any) happens off-thread.
+        // A just-built image is fresh by construction; only a pre-existing one
+        // can have passed the TTL or drifted from the host CLI.
         refresh_in_background_if_needed(provider, connection, &tag, host_cli_version);
     } else {
-        // Post-build version probe, off-thread: warms the image-version cache
-        // for the mismatch trigger without delaying (or ever failing) the launch
-        // that just waited out the build. The spawned thread owns its connection
-        // — it outlives the borrow this call was given.
+        // Warms the image-version cache for the mismatch trigger without
+        // delaying the launch that just waited out the build. The thread owns
+        // its connection — it outlives the borrow this call was given.
         let tag = tag.clone();
         let connection = connection.map(str::to_string);
         std::thread::spawn(move || {
@@ -131,9 +92,8 @@ pub(super) fn resolve_image(
 }
 
 /// Make sure `tag` exists in `connection`'s store, building `dockerfile` under
-/// it if it doesn't. Returns whether the image already existed. Takes the
-/// content explicitly so the integration test can exercise the build machinery
-/// with a tiny Dockerfile instead of the full agent image.
+/// it if it doesn't; returns whether it already existed. The content is a
+/// parameter so the integration test can build a tiny Dockerfile instead.
 fn ensure_image(
     connection: Option<&str>,
     tag: &str,
@@ -151,12 +111,8 @@ fn ensure_image(
     }
 
     tracing::info!(tag, "building agent podman image");
-    // Broadcast the build lifecycle to the UI. `Started`/`Finished`/`Failed`
-    // fire only here, where a foreground build actually runs (a cached image
-    // returns above without emitting), so the toast appears only for builds the
-    // user is actually waiting on. Each output line is forwarded alongside the
-    // caller's own sink so the tracing forwarder / test counter keep working
-    // unchanged.
+    // The UI build lifecycle is emitted only here, past the cached-image
+    // returns, so the toast appears only for builds the user waits on.
     progress::emit(BuildEvent::Started {
         runtime: super::RUNTIME_NAME,
     });
@@ -183,10 +139,8 @@ fn ensure_image(
 }
 
 /// Write the build context and run `podman build -t tag` on `connection`,
-/// streaming output to `on_line`. Shared by the foreground first-build
-/// ([`ensure_image`], `no_cache: false`) and the background refresh rebuild
-/// ([`rebuild_image`], `no_cache: true`); callers hold [`BUILD_LOCK`] and own
-/// their event/progress policy.
+/// streaming output to `on_line`. Callers hold [`BUILD_LOCK`] and own their
+/// event/progress policy.
 fn run_build(
     connection: Option<&str>,
     dockerfile: &str,
@@ -195,8 +149,7 @@ fn run_build(
     no_cache: bool,
     on_line: Progress,
 ) -> Result<()> {
-    // A throwaway context dir, so nothing from the host repo can leak into the
-    // image.
+    // A throwaway context dir, so nothing from the host repo leaks in.
     let ctx = tempfile::tempdir()?;
     write_build_context(ctx.path(), dockerfile, entrypoint)?;
     let args = build_args(tag, ctx.path(), no_cache);
@@ -204,21 +157,15 @@ fn run_build(
     cli::run_podman_streaming(connection, &args, BUILD_TIMEOUT, on_line)
 }
 
-/// `podman build` argv for `tag` from context `ctx`. `--pull` on every build,
-/// first build and refresh rebuild alike: the images exist to capture "latest at
-/// build time", and a months-old locally cached base would silently defeat that.
-/// It adds no new failure mode — every agent build already needs the network for
-/// its install step.
-///
-/// `--no-cache` on refresh rebuilds only: `--pull` alone re-fetches the base, but
-/// the install `RUN` layer is keyed on its instruction text and would be served
+/// `podman build` argv for `tag` from context `ctx`. `--pull` on every build: a
+/// months-old cached base would defeat the "latest at build time" the images
+/// exist to capture. `--no-cache` on refresh rebuilds only, because the install
+/// `RUN` layer is keyed on its instruction text and would otherwise be served
 /// from cache whenever the base digest hasn't moved — a rebuild that changes
-/// nothing, silently defeating both the TTL and the version-mismatch trigger.
-/// First builds keep the cache: a brand-new image has nothing stale to bust, and
-/// cross-provider base-layer sharing on cold starts is worth keeping.
+/// nothing; first builds keep the cache for cross-provider base-layer sharing.
 ///
-/// The connection pin is *not* here: it's a global flag that has to precede the
-/// subcommand, so [`cli::run_podman_streaming`] prepends it.
+/// The connection pin is a global flag, so [`cli::run_podman_streaming`]
+/// prepends it rather than it appearing here.
 fn build_args(tag: &str, ctx: &std::path::Path, no_cache: bool) -> Vec<String> {
     let mut args: Vec<String> = vec!["build".into(), "--pull".into()];
     if no_cache {
@@ -233,17 +180,15 @@ fn build_args(tag: &str, ctx: &std::path::Path, no_cache: bool) -> Vec<String> {
 enum RefreshReason {
     /// The image's build date passed the shared TTL.
     Ttl,
-    /// The host CLI's probed version differs from the container image's;
-    /// `guard_pair` is the `host@tag` pair recorded (persistently, on rebuild
-    /// success) so the same combination is never retried.
+    /// `guard_pair` is the `host@tag` pair recorded on rebuild success, so the
+    /// same combination is never retried.
     VersionMismatch { guard_pair: String },
 }
 
-/// Kick the whole freshness decision onto a background thread and return: the
-/// decision itself costs an `image inspect` and, past it, a full container start
-/// for the in-image `--version` probe, neither of which a launch may wait on.
-///
-/// The thread owns its data — it outlives the borrows this call was given.
+/// Kick the whole freshness decision onto a background thread: deciding costs an
+/// `image inspect` and possibly a container start for the `--version` probe,
+/// neither of which a launch may wait on. The thread owns its data — it outlives
+/// the borrows this call was given.
 fn refresh_in_background_if_needed(
     provider: ContainerProvider,
     connection: Option<&str>,
@@ -259,23 +204,10 @@ fn refresh_in_background_if_needed(
 }
 
 /// Decide whether the image in `connection`'s store needs a rebuild — TTL first,
-/// then host/container version parity — and run it if so. Already off the launch
-/// path (see [`refresh_in_background_if_needed`]). Freshness is never a launch
-/// concern: inspect failures, unparseable timestamps, missing versions, and
-/// rebuild failures all leave the existing image serving launches. Logged, never
-/// propagated. The rebuild is silent for the UI (log lines only): the build toast
-/// presents a blocking first-run build, which is the wrong message for a refresh
-/// the user never waits on.
-///
-/// Everything below — inspect, probe, rebuild, post-rebuild sweep — rides the
-/// connection that triggered it, so a refresh replaces the image in the store the
-/// launch actually read from.
-///
-/// Cadence for both triggers is once per app run: resolution is cached per
-/// (provider, override, connection) (`PodmanEngine::resolve_image_cached`), which
-/// still holds now that the cache lock is released across the resolve — two
-/// simultaneously *cold* launches of the same key could each land here, and the
-/// second's rebuild is serialized behind the first on [`BUILD_LOCK`].
+/// then host/container version parity — and run it if so. Every failure mode
+/// leaves the existing image serving launches; logged, never propagated. Silent
+/// for the UI: the build toast means a blocking first-run build, not a refresh
+/// nobody waits on.
 fn refresh_if_needed(
     provider: ContainerProvider,
     connection: Option<String>,
@@ -287,8 +219,8 @@ fn refresh_if_needed(
     // One inspect serves both triggers: build date for the TTL, image id to key
     // the container-version cache.
     let Some((image_id, created_raw)) = inspect_id_and_created(connection, tag) else {
-        // The image resolved a moment ago; a metadata miss now is not worth
-        // failing a launch or rebuilding over. Next app run re-checks.
+        // The image resolved a moment ago; a metadata miss now isn't worth
+        // rebuilding over. Next app run re-checks.
         return;
     };
 
@@ -304,8 +236,8 @@ fn refresh_if_needed(
             return;
         }
         Freshness::Unknown => {
-            // Once per app run in practice: resolution is cached per run
-            // (`PodmanEngine::resolve_image_cached`), so this can't spam.
+            // Can't spam: resolution is cached per app run
+            // (`PodmanEngine::resolve_image_cached`).
             tracing::warn!(
                 target: "fletch::podman",
                 tag,
@@ -317,8 +249,8 @@ fn refresh_if_needed(
     }
 
     // TTL-fresh: check version parity. Ordered so the podman-run probe only
-    // happens when there's a host version to compare and the pair hasn't already
-    // been tried (the pure decision below re-validates everything).
+    // happens when there's a host version to compare and the pair hasn't
+    // already been tried.
     let Some(host) = host_cli_version else { return };
     let guard_pair = format!("{host}@{tag}");
     if super::settings::version_refresh_attempted(provider.id(), &guard_pair) {
@@ -344,13 +276,9 @@ fn refresh_if_needed(
 }
 
 /// The stale-while-revalidate rebuild shared by both refresh triggers: rebuild
-/// the same tag, then (on success) record the version trigger's loop guard,
-/// re-probe the fresh image's CLI version, and sweep the just-untagged
-/// predecessor. On failure, warn and keep serving the old image.
-///
-/// Runs on [`refresh_in_background_if_needed`]'s thread, never a launch's, and
-/// every call it makes rides the launch's `connection` rather than whatever the
-/// default has become in the meantime.
+/// the same tag, then on success record the loop guard, re-probe the CLI
+/// version, and sweep the untagged predecessor. On failure, warn and keep
+/// serving the old image.
 fn run_refresh_rebuild(
     provider: ContainerProvider,
     connection: Option<&str>,
@@ -361,15 +289,14 @@ fn run_refresh_rebuild(
         Ok(()) => {
             tracing::info!(target: "fletch::podman", tag, "agent image refreshed");
             if let RefreshReason::VersionMismatch { guard_pair } = reason {
-                // Recorded on success only: a transient build failure should
-                // retry next run, but a *successful* rebuild that still
-                // mismatches (host pinned away from latest) must never loop.
+                // On success only: a transient build failure should retry next
+                // run, but a successful rebuild that still mismatches (host
+                // pinned away from latest) must never loop.
                 super::settings::record_version_refresh(provider.id(), guard_pair);
             }
             cache_image_version_post_build(provider, connection, tag);
-            // Podman retagged in place; the predecessor is now untagged. Reap
-            // it (and anything else stale) right away — in this store only,
-            // since this is the only one the rebuild touched.
+            // Podman retagged in place, so the predecessor is now untagged.
+            // This store only — the rebuild touched no other.
             match super::cleanup::sweep_stale_images_on(connection) {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(
@@ -394,17 +321,13 @@ fn run_refresh_rebuild(
 }
 
 /// Rebuild `provider`'s image under the same `tag` in `connection`'s store,
-/// unconditionally (no exists-check — the point is to replace an image that
-/// exists). Serialized on [`BUILD_LOCK`] with foreground builds; `--pull
-/// --no-cache` (see [`build_args`]) so neither a stale base nor a cached install
-/// layer can defeat the refresh. On success podman retags in place and the old
-/// image becomes untagged; on failure the old tag is untouched and keeps serving
-/// launches.
+/// unconditionally — the point is to replace an image that exists. On failure
+/// the old tag is untouched and keeps serving launches.
 fn rebuild_image(provider: ContainerProvider, connection: Option<&str>, tag: &str) -> Result<()> {
     let spec = image_spec(provider);
     let _guard = BUILD_LOCK.lock().unwrap();
-    // Build output is free-form (`line` in a field, not the message) so the
-    // sentry scrubber drops it — see the privacy invariant in `lib.rs`.
+    // Free-form output rides in the `line` field, not the message, so the sentry
+    // scrubber drops it — see the privacy invariant in `lib.rs`.
     let on_line = |line: &str| tracing::info!(target: "fletch::podman_build", line = %line, "podman build output");
     run_build(
         connection,
@@ -418,12 +341,9 @@ fn rebuild_image(provider: ContainerProvider, connection: Option<&str>, tag: &st
 
 /// The provider CLI's version inside image `tag`, memoized by `image_id` for
 /// this app run. The id is a content digest, so the memo is correct across
-/// connections: the same id names the same bytes on every machine. In-memory by
-/// choice: persistence would buy one skipped `podman run` per provider per app
-/// run — not worth a storage surface, and a restart-time re-probe also self-heals
-/// if a probe ever cached garbage. A failed probe caches nothing and returns
-/// `None` — the version trigger stays inert for that image (the TTL still covers
-/// it) and the next app run retries.
+/// connections: the same id names the same bytes on every machine. A failed
+/// probe caches nothing and returns `None`, leaving the version trigger inert
+/// for that image until the next app run.
 fn image_cli_version(
     provider: ContainerProvider,
     connection: Option<&str>,
@@ -444,14 +364,11 @@ fn image_cli_version(
     Some(version)
 }
 
-/// Run `podman run --rm <tag> <bin> --version` on `connection` — no mounts, no
-/// agent scaffolding; the image's entrypoint just `exec`s the argv — and extract
-/// the version with the same parser the host probe uses (`agent::parse_semver`),
-/// so the two sides compare like-for-like. The `fletch.host-pid` label is stamped
-/// on so that if the CLI probe is killed at timeout while podman keeps the
-/// container alive, the next startup's orphan sweep can still attribute and reap
-/// it — and because that sweep runs per connection, the pin is what puts the
-/// container where the sweep will look.
+/// Run `podman run --rm <tag> <bin> --version` on `connection`, parsed with the
+/// same `agent::parse_semver` the host probe uses so the two sides compare
+/// like-for-like. The `fletch.host-pid` label is what lets the next startup's
+/// orphan sweep reap this container if the CLI is killed at timeout while podman
+/// keeps it alive.
 fn probe_image_cli_version(
     provider: ContainerProvider,
     connection: Option<&str>,
@@ -483,11 +400,9 @@ fn probe_image_cli_version(
     crate::agent::parse_semver(&text)
 }
 
-/// After a successful build (foreground and background): probe the fresh image's
-/// CLI version and warm the [`image_cli_version`] cache so the mismatch trigger
-/// has a container side to compare. Best-effort — a failed probe logs at debug
-/// and the trigger stays inert for this image; it never fails or delays the build
-/// that preceded it.
+/// Warm the [`image_cli_version`] cache after a build, so the mismatch trigger
+/// has a container side to compare. Best-effort: a failed probe leaves the
+/// trigger inert for this image.
 fn cache_image_version_post_build(
     provider: ContainerProvider,
     connection: Option<&str>,
@@ -514,11 +429,9 @@ fn cache_image_version_post_build(
 /// `(image id, creation timestamp)` for `tag` in `connection`'s store, or `None`
 /// when podman can't answer or its output doesn't parse.
 ///
-/// Read from `podman image inspect`'s plain JSON rather than a `--format` Go
-/// template: podman models `Created` as a `time.Time`, which a template renders
-/// through its `String()` method (`2026-07-01 12:00:00 +0000 UTC`) while the JSON
-/// encoding is RFC3339 — the shape [`classify_freshness`] parses and docker's
-/// template happens to already produce.
+/// Plain JSON rather than a `--format` Go template: a template renders `Created`
+/// through `time.Time`'s `String()` (`2026-07-01 12:00:00 +0000 UTC`), while the
+/// JSON encoding is the RFC3339 shape [`classify_freshness`] parses.
 fn inspect_id_and_created(connection: Option<&str>, tag: &str) -> Option<(String, String)> {
     let out = cli::run_podman_on(connection, &["image", "inspect", tag], INSPECT_TIMEOUT).ok()?;
     if !out.status.success() {
@@ -527,11 +440,8 @@ fn inspect_id_and_created(connection: Option<&str>, tag: &str) -> Option<(String
     parse_inspect_json(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// Pull `Id` and `Created` out of an `image inspect` JSON array (one entry per
-/// inspected image; we always inspect exactly one). Split out of
-/// [`inspect_id_and_created`] so the parsing is unit-testable without a machine.
-/// Missing or non-string fields read as "can't answer" — the caller's
-/// under-reclaim bias then leaves the image alone.
+/// Pull `Id` and `Created` out of an `image inspect` JSON array. Missing or
+/// non-string fields read as "can't answer", which leaves the image alone.
 fn parse_inspect_json(stdout: &str) -> Option<(String, String)> {
     let parsed: serde_json::Value = serde_json::from_str(stdout).ok()?;
     let entry = parsed.get(0)?;
@@ -541,9 +451,8 @@ fn parse_inspect_json(stdout: &str) -> Option<(String, String)> {
 }
 
 /// Whether `tag` exists in `connection`'s store. A non-zero `image inspect` exit
-/// is podman's "no such image" answer (it also covers an unreachable machine —
-/// the subsequent build then fails with podman's own connectivity error, which is
-/// the right message for that state).
+/// is podman's "no such image" answer; it also covers an unreachable machine,
+/// where the subsequent build fails with podman's own connectivity error.
 fn image_exists(connection: Option<&str>, tag: &str) -> Result<bool> {
     let out = cli::run_podman_on(connection, &["image", "inspect", tag], INSPECT_TIMEOUT)?;
     Ok(out.status.success())
@@ -556,9 +465,8 @@ mod tests {
 
     #[test]
     fn build_argv_shape() {
-        // `--pull` on every build, `--no-cache` on refresh rebuilds only: see
-        // the `build_args` doc — neither a stale cached base nor a cached
-        // install layer may defeat the freshness the rebuilds exist for.
+        // `--pull` always, `--no-cache` on refresh rebuilds only — see the
+        // `build_args` doc.
         assert_eq!(
             build_args(
                 "fletch-agent:abc123def456",
@@ -590,9 +498,6 @@ mod tests {
         );
     }
 
-    /// The inspect parse, on podman's real output shape: an RFC3339 `Created`
-    /// (which the shared TTL classifier accepts) and the short-form `Id`.
-    /// Anything malformed reads as "can't answer".
     #[test]
     fn inspect_json_parsing() {
         let stdout = r#"[
@@ -609,7 +514,6 @@ mod tests {
                 "2026-07-01T12:00:00.123456789Z".to_string()
             )),
         );
-        // The timestamp it yields must be the shape the shared classifier reads.
         let (_, created) = parse_inspect_json(stdout).unwrap();
         assert_ne!(
             classify_freshness(&created, chrono::Utc::now()),
@@ -617,8 +521,6 @@ mod tests {
             "podman's JSON timestamp must parse as RFC3339",
         );
 
-        // Empty array (image vanished between calls), missing fields, blank
-        // values, and non-JSON all read as "no answer".
         assert_eq!(parse_inspect_json("[]"), None);
         assert_eq!(parse_inspect_json(r#"[{"Id": "sha256:a"}]"#), None);
         assert_eq!(
@@ -629,16 +531,14 @@ mod tests {
         assert_eq!(parse_inspect_json(""), None);
     }
 
-    /// The override path must not touch podman at all — it has to work (and
-    /// return instantly) on machines where podman isn't even installed, and it
-    /// takes the connection like every other path without ever using it.
+    /// The override path must not touch podman at all: it has to work on hosts
+    /// where podman isn't installed.
     #[test]
     fn override_image_skips_build_entirely() {
         let called = std::sync::atomic::AtomicBool::new(false);
         let progress = |_: &str| called.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        // A host version is passed to prove the override path ignores it too:
-        // the user's image is never inspected, so there's nothing to compare.
+        // The bogus connection and host version prove both are ignored here.
         let image = resolve_image(
             ContainerProvider::Claude,
             Some("no-such-connection"),
@@ -657,9 +557,7 @@ mod tests {
         );
     }
 
-    /// Integration: builds a tiny image (busybox base) through the real
-    /// machinery, then verifies the second call is a cached no-op.
-    /// `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
+    /// Integration. `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
     #[test]
     #[ignore = "requires Podman; opt in via FLETCH_PODMAN_TESTS=1"]
     fn builds_tiny_image_and_reuses_it() {
@@ -687,7 +585,6 @@ mod tests {
             "build should have streamed progress lines",
         );
 
-        // Second call: image present, no build, no progress.
         lines.store(0, std::sync::atomic::Ordering::SeqCst);
         let existed = ensure_image(None, &tag, dockerfile, ENTRYPOINT_SH, &progress).unwrap();
         assert!(existed, "second call must report the cached image");
@@ -697,8 +594,6 @@ mod tests {
             "an existing image must not rebuild",
         );
 
-        // The freshness path's inspect must resolve against a real image: an id
-        // and an RFC3339 build date the shared classifier calls fresh.
         let (id, created) = inspect_id_and_created(None, &tag).expect("inspect must answer");
         assert!(!id.is_empty());
         assert_eq!(
@@ -710,10 +605,7 @@ mod tests {
         let _ = cli::run_podman(&["rmi", "-f", &tag], Duration::from_secs(30));
     }
 
-    /// Integration: the in-container version probe runs `<image_bin> --version`
-    /// through the image's argv path and extracts the version with the host
-    /// probe's parser — a fake `claude` script in a busybox image must come back
-    /// as `v9.9.9`, and the result must be memoized by image id.
+    /// Integration: a fake `claude` script in a busybox image.
     /// `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
     #[test]
     #[ignore = "requires Podman; opt in via FLETCH_PODMAN_TESTS=1"]
@@ -731,9 +623,8 @@ mod tests {
             Some("v9.9.9"),
             "container probe must parse the CLI's --version output",
         );
-        // The cached path returns the same answer without another podman run
-        // (indirectly observable: it works even against a bogus tag once the id
-        // is cached).
+        // The cache is observable through the bogus tag below: it answers
+        // without a podman run.
         assert_eq!(
             image_cli_version(ContainerProvider::Claude, None, &tag, "test-id-123").as_deref(),
             Some("v9.9.9"),

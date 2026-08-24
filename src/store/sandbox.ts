@@ -14,9 +14,8 @@ import type { SliceCreator } from "./types";
 /** Live state of one embedded container image build (first spawn under a
  *  runtime). `building` streams the latest output line; `failed` stays up
  *  (with `error`) until dismissed; success removes the entry. The runtime is
- *  the map key in `containerBuilds`, not a field here — each runtime's build
- *  serializes on its own lock, so Docker and Podman builds can overlap and
- *  must not share one state slot. */
+ *  the `containerBuilds` key rather than a field here — Docker and Podman
+ *  builds run on independent locks and can overlap. */
 export interface DockerBuildProgress {
   status: "building" | "failed";
   /** Most recent `build` output line (building only). */
@@ -30,13 +29,8 @@ export interface DockerBuildProgress {
 export const NEUTRAL_BUILD_RUNTIME = "container";
 
 /** Fold one `docker:build-progress` event into the keyed build state that
- *  drives the toast. Pure so the routing is testable without a live event
- *  stream — it is the whole reason two runtimes' overlapping builds don't clear
- *  each other, and every phase touches only its own runtime's key.
- *
- *  `line` materializes a missing entry rather than dropping the event: a window
- *  reload mid-build loses the `started` we already handled, and without this
- *  the toast would stay hidden for the rest of that (minutes-long) build. */
+ *  drives the toast. Every phase touches only its own runtime's key, so
+ *  overlapping builds don't clear each other. */
 export function applyBuildEvent(
   builds: Record<string, DockerBuildProgress>,
   e: DockerBuildEvent,
@@ -47,6 +41,8 @@ export function applyBuildEvent(
       // Overwrites, so a retry clears the previous attempt's displayed error.
       return { ...builds, [key]: { status: "building", lastLine: null, error: null } };
     case "line": {
+      // Materializes a missing entry: a reload mid-build loses the `started`,
+      // and the toast would stay hidden for the rest of a minutes-long build.
       const build: DockerBuildProgress = builds[key] ?? {
         status: "building",
         lastLine: null,
@@ -82,9 +78,8 @@ export interface SandboxSlice {
   containerAuth: ContainerAuthStatus | null;
   /** Live image-build progress for the build toast, keyed by the runtime
    *  display name from the event stream ("Docker" / "Podman", or
-   *  [`NEUTRAL_BUILD_RUNTIME`]). Keyed because the runtimes build
-   *  independently: one runtime's `finished` must not clear the other's
-   *  still-running toast. Empty = no build in flight. */
+   *  [`NEUTRAL_BUILD_RUNTIME`]) so one runtime's `finished` can't clear the
+   *  other's still-running toast. Empty = no build in flight. */
   containerBuilds: Record<string, DockerBuildProgress>;
   /** Advanced docker launch knobs, mirrored from the backend-owned
    *  `docker_image` / `docker_memory` / `docker_cpus` settings. Empty string =
@@ -93,9 +88,8 @@ export interface SandboxSlice {
   dockerImage: string;
   dockerMemory: string;
   dockerCpus: string;
-  /** The same three knobs for podman (`podman_image` / `podman_memory` /
-   *  `podman_cpus`), with the same defaults and the same blank-is-unset rule.
-   *  Separate keys so a user running both engines configures each. */
+  /** The same three knobs for podman, under separate settings keys so a user
+   *  running both engines configures each. */
   podmanImage: string;
   podmanMemory: string;
   podmanCpus: string;
@@ -125,8 +119,7 @@ export interface SandboxSlice {
   /** Re-probe Docker availability into `dockerProbe` (settings pane open).
    *  Returns the probe result so callers can poll until the daemon answers. */
   refreshDockerProbe: () => Promise<DockerProbe>;
-  /** Re-probe Podman availability into `podmanProbe`; sibling of
-   *  `refreshDockerProbe`, polled by the same settings-pane loop. */
+  /** Re-probe Podman availability into `podmanProbe`. */
   refreshPodmanProbe: () => Promise<PodmanProbe>;
   /** Re-resolve the container auth chain into `containerAuth`. */
   refreshContainerAuth: () => Promise<void>;
@@ -137,9 +130,7 @@ export interface SandboxSlice {
   /** Drop the stored container token, then refresh the status (a later chain
    *  step — shell env / credentials file — may take over). */
   clearContainerAuthToken: () => Promise<void>;
-  /** Dismiss one runtime's build toast (used after a failed build). Takes the
-   *  `containerBuilds` key so dismissing one runtime's failure leaves the
-   *  other's live toast alone. */
+  /** Dismiss one runtime's build toast (used after a failed build). */
   dismissDockerBuild: (runtime: string) => void;
   /** Persist the advanced docker launch knobs (image / memory / cpus) via the
    *  backend, which writes the settings AND updates the spawn-path mirror.

@@ -86,11 +86,10 @@ export function GeneralPane() {
     };
   }, [refreshDockerProbe, refreshPodmanProbe]);
 
-  // Four states for each container option: enabled when the runtime answered
-  // the probe; otherwise disabled with a hint saying how to fix it. A `null`
-  // probe is still in flight (up to a couple of seconds) — it gates the option
-  // off, but says "Checking…" rather than accusing an installed runtime of
-  // being missing until the answer lands.
+  // Each container option is enabled only when the runtime answered the probe;
+  // otherwise it's disabled with a hint saying how to fix it. A `null` probe is
+  // still in flight, so it gates the option off but says "Checking…" rather
+  // than calling an installed runtime missing.
   const dockerAvailable = dockerProbe?.status === "available";
   const dockerHint = dockerAvailable
     ? dockerProbe?.version && `v${dockerProbe.version}`

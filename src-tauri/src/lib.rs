@@ -629,7 +629,8 @@ fn track_event(event: String, props: Option<serde_json::Value>) {
     telemetry::track(&event, props.unwrap_or_else(|| json!({})));
 }
 
-/// The persisted sandbox engine selection (`"sandbox-exec"` | `"docker"`).
+/// The persisted sandbox engine selection (`"sandbox-exec"` | `"docker"` |
+/// `"podman"`).
 /// Reads the in-memory mirror seeded at startup and kept in sync by
 /// `set_sandbox_engine`, so no DB handle is needed.
 #[tauri::command]
@@ -685,13 +686,14 @@ fn answer_publish_approval(id: String, approved: bool) {
     rpc::approval::answer(&id, approved);
 }
 
-/// Change the sandbox engine stamped onto *new* agents. Docker is validated
-/// against a live daemon probe before being accepted and Podman is refused
-/// outright, so a success here means the choice is actionable. Persists to
-/// `settings` and updates the in-memory
-/// mirror — like `set_agent_bin_override` keeps the DB and process state in
-/// sync. Existing agents are unaffected: each keeps the engine stamped on its
-/// record at creation.
+/// Change the sandbox engine stamped onto *new* agents. Container engines are
+/// validated live before being accepted — Docker against a daemon probe, Podman
+/// against `sandbox::podman::availability` plus
+/// `sandbox::podman::launch_blocker` — so a success here means the choice is
+/// actionable. Persists to `settings` and updates the in-memory mirror — like
+/// `set_agent_bin_override` keeps the DB and process state in sync. Existing
+/// agents are unaffected: each keeps the engine stamped on its record at
+/// creation.
 #[tauri::command]
 async fn set_sandbox_engine(
     engine: String,
@@ -700,13 +702,12 @@ async fn set_sandbox_engine(
     let kind = sandbox::EngineKind::from_setting(&engine)
         .ok_or_else(|| format!("unknown sandbox engine: {engine}"))?;
     if kind == sandbox::EngineKind::Podman {
-        // Same gate Docker gets below: a stored engine value is stamped onto
-        // every new agent, so persisting one whose runtime can't launch would
-        // fail each spawn. Checked here rather than in the UI alone — the
-        // setting is reachable over IPC.
-        // The launch blocker rides the same `spawn_blocking`: `podman info`
-        // answers over a remote default connection that every launch then
-        // refuses, so "available" alone is not "launchable".
+        // Same gate Docker gets below — a stored engine is stamped onto every
+        // new agent, so one whose runtime can't launch fails every spawn — and
+        // here rather than in the UI alone because the setting is reachable over
+        // IPC. "Available" isn't "launchable": `podman info` can answer over a
+        // remote default connection that every launch then refuses, hence the
+        // blocker check on the same `spawn_blocking`.
         let (probe, blocker) = tauri::async_runtime::spawn_blocking(|| {
             let probe = sandbox::podman_availability();
             let blocker = matches!(probe, sandbox::PodmanAvailability::Available { .. })
@@ -1003,9 +1004,8 @@ async fn set_podman_launch_settings(
     cpus: Option<String>,
     state: tauri::State<'_, DbState>,
 ) -> Result<(), String> {
-    // Blank → None: a cleared field must not be stored as a launch override
-    // (an empty `--memory`/`--cpus` value or `podman_image` would break `podman
-    // run`), and the mirror treats blank as "use default" anyway.
+    // Blank → None, as in the docker twin above: a cleared field must not be
+    // stored as a launch override.
     let norm = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let image = norm(image);
     let memory = norm(memory);
@@ -1510,11 +1510,11 @@ pub fn run() {
             // Forward container image-build progress to the UI — either
             // runtime's, through one sink. The build runs deep in the spawn path
             // (no AppHandle there), so it emits through a process-wide sink
-            // installed here — mirroring the git-dist emitter above. Rare (first
-            // spawn per image per runtime), so a single toast fed by these events
-            // suffices; `started` carries the runtime name so the toast can say
-            // which one is building. The `docker:build-progress` event name is
-            // the established wire contract and stays as-is.
+            // installed here — mirroring the git-dist emitter above. Every phase
+            // carries its `runtime` and the frontend routes on it: with two
+            // runtimes sharing this stream it's the lifecycle key, not
+            // decoration. The `docker:build-progress` event name is the
+            // established wire contract and stays as-is.
             {
                 use tauri::Emitter;
                 let handle = app.handle().clone();
@@ -1664,10 +1664,9 @@ pub fn run() {
             // untouched.
             crate::sandbox::cleanup_nested_rpc_roots();
             crate::sandbox::cleanup_nested_checkouts_roots();
-            // Same reclamation for containers left by dead instances, one
-            // sweep per container runtime — each probe-gated and on its own
-            // thread, so startup never waits on either, and a machine with
-            // neither runtime installed pays for no invocation at all.
+            // Same reclamation for containers left by dead instances, one sweep
+            // per container runtime — each probe-gated and on its own thread, so
+            // startup never waits on either.
             crate::sandbox::docker::sweep_orphans_at_startup();
             crate::sandbox::podman::sweep_orphans_at_startup();
 
