@@ -9,7 +9,6 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::sandbox::docker;
 use crate::sandbox::provision::{self, CheckoutSpec};
-use crate::sandbox::EngineKind;
 use crate::workspace::{
     agent_parent_dir, repo_checkout_path, AgentRecord, AgentStatus, ArchiveMetadata,
     ArchivedRepoSnapshot, DiffStats, TrackedRepo,
@@ -447,7 +446,7 @@ async fn choose_restore_branch_name(repo_path: &Path, desired: &str) -> String {
 ///    here. Detached on purpose: archive must not wait on a Docker
 ///    round-trip to report success to the user.
 fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'static str) {
-    if record.map(stamped_engine) == Some(EngineKind::SandboxExec) {
+    if record.is_some_and(|r| !stamped_engine(r).is_container()) {
         return;
     }
     let agent_id = agent_id.to_string();

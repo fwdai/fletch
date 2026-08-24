@@ -680,16 +680,16 @@ fn push_typed(out: &mut String, s: &str) {
 }
 
 /// The agent binary handed to `launch_agent`, decided by the *resolved*
-/// engine's kind: under docker it's the provider's in-image command name
-/// (`claude` / `codex` — the image carries its own install; a resolved host path
-/// would be meaningless, or missing, inside the container), under seatbelt the
-/// host-resolved absolute path as always. Keyed off the resolved engine rather
+/// engine's kind: under a container engine it's the provider's in-image command
+/// name (`claude` / `codex` — the image carries its own install; a resolved host
+/// path would be meaningless, or missing, inside the container), under seatbelt
+/// the host-resolved absolute path as always. Keyed off the resolved engine rather
 /// than the stamped setting; a docker-stamped agent whose daemon is down never
 /// reaches here — `sandbox::engine_for` fails the spawn instead of degrading to
 /// seatbelt — so the resolved engine always matches the launch boundary.
 ///
 /// Docker reaches here only for a provider `DockerProvider::from_id` accepts
-/// (the `supervisor::lifecycle` gate ran first), so the `None` arm is defensive.
+/// (the `supervisor::lifecycle` gate ran first), so the `None` case is defensive.
 fn agent_bin_for(
     provider: &str,
     bin: &str,
@@ -697,12 +697,11 @@ fn agent_bin_for(
     engine: &dyn SandboxEngine,
     home: &Path,
 ) -> Result<String> {
-    match engine.kind() {
-        EngineKind::Docker => sandbox::docker::DockerProvider::from_id(provider)
+    if engine.kind().is_container() {
+        sandbox::docker::DockerProvider::from_id(provider)
             .map(|p| p.image_bin().to_string())
-            .ok_or_else(|| {
-                Error::Other(format!("{label} isn't available in Docker sandboxes yet"))
-            }),
-        EngineKind::SandboxExec => resolve_agent_bin(provider, bin, label, home),
+            .ok_or_else(|| Error::Other(format!("{label} isn't available in Docker sandboxes yet")))
+    } else {
+        resolve_agent_bin(provider, bin, label, home)
     }
 }

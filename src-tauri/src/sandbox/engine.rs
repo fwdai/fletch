@@ -26,6 +26,18 @@ impl EngineKind {
         }
     }
 
+    /// Whether this engine runs the agent inside a container. Call sites outside
+    /// the sandbox module ask this instead of matching `Docker` directly, so a
+    /// second container engine updates one place. Matched exhaustively: a new
+    /// variant forces the decision here rather than silently landing on a
+    /// default.
+    pub fn is_container(self) -> bool {
+        match self {
+            Self::Docker => true,
+            Self::SandboxExec => false,
+        }
+    }
+
     /// Parse a `sandbox_engine` settings value. `None` for unknown values so
     /// callers pick their own fallback (spawn paths default to seatbelt).
     pub fn from_setting(value: &str) -> Option<Self> {
@@ -163,6 +175,12 @@ mod tests {
         for &kind in EngineKind::ALL {
             assert_eq!(EngineKind::from_setting(kind.as_setting()), Some(kind));
         }
+    }
+
+    #[test]
+    fn only_docker_is_a_container_engine() {
+        assert!(EngineKind::Docker.is_container());
+        assert!(!EngineKind::SandboxExec.is_container());
     }
 
     #[test]
