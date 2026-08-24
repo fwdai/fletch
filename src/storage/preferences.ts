@@ -224,8 +224,10 @@ export function parseSandboxEngine(raw: string | undefined): SandboxEngine {
 /** Whether an engine runs the agent inside a container — mirrors the backend's
  *  `EngineKind::is_container`. Every surface that gates on "containerized"
  *  (provider support, the workspace badge) asks this instead of comparing
- *  against `"docker"`, so a third container runtime lands in one place. */
-export function isContainerEngine(engine: SandboxEngine): boolean {
+ *  against `"docker"`, so a third container runtime lands in one place. Takes a
+ *  loose string because the badge reads an agent's stamped `sandbox_engine`
+ *  straight off the record, where it is unparsed and may be absent. */
+export function isContainerEngine(engine: string | null | undefined): boolean {
   return engine === "docker" || engine === "podman";
 }
 

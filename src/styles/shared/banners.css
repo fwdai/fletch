@@ -68,6 +68,13 @@
   max-height: 4.5em;
   overflow: auto;
 }
+/* Prose recovery guidance under the raw crash reason (e.g. the terminal command
+   to bring a stopped Podman machine back), so it reads as instruction rather
+   than as more of the mono error text above it. */
+.crash-hint {
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+}
 .crash-banner .btn-t {
   flex-shrink: 0;
 }

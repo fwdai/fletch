@@ -1,6 +1,7 @@
 import {
   api,
   type ContainerAuthStatus,
+  type DockerBuildEvent,
   type DockerProbe,
   type PodmanProbe,
   type PublishApproval,
@@ -27,6 +28,46 @@ export interface DockerBuildProgress {
 /** `containerBuilds` key for events that didn't name a runtime — the toast
  *  shows neutral copy for it instead of guessing. */
 export const NEUTRAL_BUILD_RUNTIME = "container";
+
+/** Fold one `docker:build-progress` event into the keyed build state that
+ *  drives the toast. Pure so the routing is testable without a live event
+ *  stream — it is the whole reason two runtimes' overlapping builds don't clear
+ *  each other, and every phase touches only its own runtime's key.
+ *
+ *  `line` materializes a missing entry rather than dropping the event: a window
+ *  reload mid-build loses the `started` we already handled, and without this
+ *  the toast would stay hidden for the rest of that (minutes-long) build. */
+export function applyBuildEvent(
+  builds: Record<string, DockerBuildProgress>,
+  e: DockerBuildEvent,
+): Record<string, DockerBuildProgress> {
+  const key = e.runtime ?? NEUTRAL_BUILD_RUNTIME;
+  switch (e.phase) {
+    case "started":
+      // Overwrites, so a retry clears the previous attempt's displayed error.
+      return { ...builds, [key]: { status: "building", lastLine: null, error: null } };
+    case "line": {
+      const build: DockerBuildProgress = builds[key] ?? {
+        status: "building",
+        lastLine: null,
+        error: null,
+      };
+      return { ...builds, [key]: { ...build, lastLine: e.line ?? build.lastLine } };
+    }
+    case "finished": {
+      if (!(key in builds)) return builds;
+      const { [key]: _done, ...rest } = builds;
+      return rest;
+    }
+    case "failed":
+      return {
+        ...builds,
+        [key]: { status: "failed", lastLine: null, error: e.error ?? "Image build failed" },
+      };
+    default:
+      return builds;
+  }
+}
 
 export interface SandboxSlice {
   /** Engine new agents are stamped with. Mirrors the backend-owned
