@@ -434,10 +434,11 @@ async fn choose_restore_branch_name(repo_path: &Path, desired: &str) -> String {
 /// 1. The stamped engine, which also picks the runtime: an agent is reaped by
 ///    the runtime that launched it, never by whichever is selected now. A
 ///    seatbelt agent never had a container, so it never pays for a probe.
-///    `record: None` (discard tolerates a missing row) can't prove either, so
-///    it falls back to Docker — the label match is exact, so looking costs
-///    nothing but the query, and a rowless podman agent's container is left to
-///    the startup sweep.
+///    `record: None` (discard tolerates a missing row) can't prove which
+///    runtime launched it, so it asks both — the label match is exact, so
+///    looking costs nothing but the queries, and nothing else would reclaim
+///    the container this app run: the startup sweep keys on a *dead* owner
+///    pid, and a rowless agent's owner is this still-running process.
 /// 2. The runtime's own availability probe — a machine without that runtime
 ///    installed must never see one of its invocations, the same precedent the
 ///    startup sweeps set.
@@ -453,34 +454,34 @@ fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'sta
     if engine.is_some_and(|k| !k.is_container()) {
         return;
     }
-    let podman = engine == Some(EngineKind::Podman);
     let agent_id = agent_id.to_string();
     tokio::task::spawn_blocking(move || {
-        let removed = if podman {
-            if !matches!(
-                podman::availability(),
-                podman::PodmanAvailability::Available { .. }
-            ) {
-                return;
-            }
-            podman::remove_agent_containers(&agent_id)
-        } else {
-            if !matches!(
-                docker::availability(),
-                docker::DockerAvailability::Available { .. }
-            ) {
-                return;
-            }
-            docker::remove_agent_containers(&agent_id)
-        };
-        match removed {
+        let report = |runtime: &'static str, removed: crate::error::Result<usize>| match removed {
             Ok(0) => {}
             Ok(n) => {
-                tracing::info!(agent_id = %agent_id, op, removed = n, "removed agent containers")
+                tracing::info!(agent_id = %agent_id, op, runtime, removed = n, "removed agent containers")
             }
             Err(e) => {
-                tracing::warn!(agent_id = %agent_id, op, error = %e, "agent container removal failed")
+                tracing::warn!(agent_id = %agent_id, op, runtime, error = %e, "agent container removal failed")
             }
+        };
+        // A stamped engine narrows this to one runtime; a missing record asks
+        // both, each behind its own availability gate.
+        if engine != Some(EngineKind::Podman)
+            && matches!(
+                docker::availability(),
+                docker::DockerAvailability::Available { .. }
+            )
+        {
+            report("docker", docker::remove_agent_containers(&agent_id));
+        }
+        if engine.map_or(true, |k| k == EngineKind::Podman)
+            && matches!(
+                podman::availability(),
+                podman::PodmanAvailability::Available { .. }
+            )
+        {
+            report("podman", podman::remove_agent_containers(&agent_id));
         }
     });
 }
