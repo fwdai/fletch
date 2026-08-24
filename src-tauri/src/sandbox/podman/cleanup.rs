@@ -11,11 +11,12 @@
 //! invocations differ.
 //!
 //! One invocation shape does differ in kind: docker has a single daemon, while
-//! podman has one container store *and one image store* per machine, and
+//! podman has one container store *and one image store* per machine *endpoint*
+//! — a machine's rootless and rootful connections are two of them — and
 //! launches pin themselves to the connection they resolved at the time (see
-//! [`super::machine`]). Asking only the current default would strand containers —
-//! and superseded images — on every other machine, so all three sweeps run once
-//! per machine connection ([`across_machines`]).
+//! [`super::machine`]). Asking only the current default would strand containers
+//! — and superseded images — on every other endpoint, so all three sweeps run
+//! once per machine connection ([`across_machines`]).
 //!
 //! One difference in the image GC: podman runs the labeled arm only. Docker's
 //! second arm exists for images built before the `fletch.agent` label shipped,
@@ -173,9 +174,10 @@ fn machine_connections() -> Vec<String> {
 /// `IsMachine: false` (older podman omits the field, and a non-machine entry is
 /// a socket or a remote host, neither of which is ours to sweep).
 ///
-/// Each machine appears twice, as `<machine>` and `<machine>-root`. Both list
-/// containers of the same machine, so the pair collapses to whichever podman
-/// listed first — sweeping both would ask the same machine twice.
+/// A machine's `<machine>` and `<machine>-root` entries are both kept: they
+/// reach two podman services with disjoint container stores, so collapsing the
+/// pair leaves one store swept by nobody. Only entries sharing a `URI` are the
+/// same endpoint, and those dedupe to the first.
 fn parse_machine_connections(stdout: &str) -> Vec<String> {
     let Ok(connections) = serde_json::from_str::<Vec<serde_json::Value>>(stdout) else {
         return Vec::new();
@@ -196,11 +198,19 @@ fn parse_machine_connections(stdout: &str) -> Vec<String> {
         if name.is_empty() {
             continue;
         }
-        let machine = name.strip_suffix("-root").unwrap_or(name);
-        if seen.contains(&machine) {
-            continue;
+        // No URI names no endpoint, so it can't be deduped against — keep it and
+        // risk sweeping twice rather than skipping a store.
+        let uri = connection
+            .get("URI")
+            .and_then(|u| u.as_str())
+            .map(str::trim)
+            .unwrap_or_default();
+        if !uri.is_empty() {
+            if seen.contains(&uri) {
+                continue;
+            }
+            seen.push(uri);
         }
-        seen.push(machine);
         out.push(name.to_string());
     }
     out
@@ -331,17 +341,17 @@ mod tests {
     use super::*;
     use crate::sandbox::container::labels::host_pid_label;
 
-    /// The sweep set is one connection per machine: rootful pairs collapse
-    /// (both name the same container store), non-machine entries are somebody
-    /// else's containers, and an unreadable listing leaves the caller with the
-    /// default connection alone.
+    /// The sweep set is one connection per *endpoint*: a rootless/rootful pair
+    /// has two stores and must yield both entries, entries sharing a URI are one
+    /// endpoint and dedupe, non-machine entries are somebody else's containers,
+    /// and an unreadable listing leaves the caller with the default alone.
     #[test]
-    fn machine_connections_are_one_per_machine() {
+    fn machine_connections_are_one_per_endpoint() {
         let listing = r#"[
-          { "Name": "podman-machine-default", "IsMachine": true, "Default": true },
-          { "Name": "podman-machine-default-root", "IsMachine": true, "Default": false },
-          { "Name": "work-vm-root", "IsMachine": true, "Default": false },
-          { "Name": "work-vm", "IsMachine": true, "Default": false },
+          { "Name": "podman-machine-default", "IsMachine": true, "Default": true, "URI": "ssh://core@127.0.0.1:52001/run/user/501/podman/podman.sock" },
+          { "Name": "podman-machine-default-root", "IsMachine": true, "Default": false, "URI": "ssh://root@127.0.0.1:52001/run/podman/podman.sock" },
+          { "Name": "work-vm-alias", "IsMachine": true, "Default": false, "URI": "ssh://core@127.0.0.1:52001/run/user/501/podman/podman.sock" },
+          { "Name": "work-vm", "IsMachine": true, "Default": false, "URI": "ssh://core@127.0.0.1:52002/run/user/501/podman/podman.sock" },
           { "Name": "build-box", "IsMachine": false, "Default": false, "URI": "ssh://core@build.example.com:22/run/podman/podman.sock" },
           { "Name": "local", "IsMachine": false, "Default": false, "URI": "unix:///run/podman/podman.sock" },
           { "Name": "  ", "IsMachine": true },
@@ -350,7 +360,12 @@ mod tests {
         ]"#;
         assert_eq!(
             parse_machine_connections(listing),
-            ["podman-machine-default", "work-vm-root", "legacy-no-flag"],
+            [
+                "podman-machine-default",
+                "podman-machine-default-root",
+                "work-vm",
+                "legacy-no-flag",
+            ],
         );
 
         assert!(parse_machine_connections("[]").is_empty());
