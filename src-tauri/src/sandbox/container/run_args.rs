@@ -411,3 +411,93 @@ fn push_claude_config_mount(
         args.push(dir.join(sub).to_string_lossy().into_owned());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every host path `run_args` binds must be vetted by [`mount_sources`] —
+    /// Podman refuses a launch whose sources aren't shared by its machine, and a
+    /// `-v` with no entry here would be bound unvetted and arrive empty.
+    /// Asserted per provider shape, since each contributes its own mounts.
+    #[test]
+    fn every_bind_source_is_covered_by_mount_sources() {
+        let root = Path::new("/tmp/fletch-run-args/work");
+        let rpc = Path::new("/tmp/fletch-run-args/rpc");
+        let home = Path::new("/tmp/fletch-run-args/home");
+        let board = Path::new("/tmp/fletch-run-args/board");
+        let alt = Path::new("/tmp/fletch-run-args/alt");
+        let stores = vec![
+            PathBuf::from("/tmp/fletch-run-args/store-a/objects"),
+            PathBuf::from("/tmp/fletch-run-args/store-b/objects"),
+        ];
+        let projects = root.join("claude-projects");
+
+        let shapes = [
+            ProviderMounts::Claude {
+                config_dir: Some(alt),
+                credentials_rw: true,
+                config_dir_credentials_rw: true,
+                projects_src: &projects,
+            },
+            ProviderMounts::Codex {
+                config_dir: alt,
+                forward_home: true,
+            },
+            ProviderMounts::Opencode {
+                data_dir: alt,
+                config_dir: Some(home),
+                forward_xdg_data_home: true,
+                forward_xdg_config_home: true,
+            },
+            ProviderMounts::Pi { data_dir: alt },
+            ProviderMounts::Cursor { data_dir: alt },
+        ];
+
+        for mounts in shapes {
+            let spec = RunSpec {
+                interactive: true,
+                name: "fletch-agent-test",
+                agent_id: "agent-1",
+                writable_root: root,
+                rpc_dir: rpc,
+                home,
+                cwd: root,
+                blackboard: Some(board),
+                mounts,
+                borrowed_object_stores: &stores,
+                memory: DEFAULT_MEMORY,
+                cpus: DEFAULT_CPUS,
+                image: "fletch-agent:cafe00000000",
+                agent_bin: "claude",
+                auth_vars: &["ANTHROPIC_API_KEY"],
+            };
+            let sources = mount_sources(&spec);
+            let args = run_args(&spec);
+
+            let mut binds = 0;
+            for (flag, value) in args.iter().zip(args.iter().skip(1)) {
+                match flag.as_str() {
+                    "-v" => {
+                        binds += 1;
+                        // `src:dst[:ro]` — the source is the leading segment.
+                        let src = Path::new(value.split(':').next().unwrap());
+                        assert!(
+                            sources.iter().any(|s| src == s || src.starts_with(s)),
+                            "unvetted bind source {src:?} (vetted: {sources:?})",
+                        );
+                    }
+                    "--tmpfs" => assert!(
+                        !sources.iter().any(|s| s == Path::new(value)),
+                        "a tmpfs overlay has no host source: {value}",
+                    ),
+                    _ => {}
+                }
+            }
+            assert!(
+                binds >= 3,
+                "expected the workspace/rpc/config binds at least"
+            );
+        }
+    }
+}

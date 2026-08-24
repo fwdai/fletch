@@ -143,8 +143,12 @@ impl DockerEngine {
         override_image: Option<&str>,
     ) -> Result<String> {
         let key = (provider, override_image.map(str::to_string));
-        let mut cache = self.resolved_image.lock().unwrap();
-        if let Some(tag) = cache.get(&key) {
+        // The lock is dropped before resolving: a build can take ten minutes,
+        // and holding it would serialize every other provider's cache-hit launch
+        // behind it. Two cold launches may then resolve the same key at once,
+        // which is safe — `BUILD_LOCK` plus the re-check under it make the
+        // second resolver a cheap no-op.
+        if let Some(tag) = self.resolved_image.lock().unwrap().get(&key) {
             return Ok(tag.clone());
         }
         // Skip the host probe entirely on the override path: the user's image
@@ -170,7 +174,7 @@ impl DockerEngine {
             &on_progress,
         )
         .map_err(|e| Error::Other(format!("preparing the Docker sandbox image failed: {e}")))?;
-        cache.insert(key, tag.clone());
+        self.resolved_image.lock().unwrap().insert(key, tag.clone());
         Ok(tag)
     }
 }

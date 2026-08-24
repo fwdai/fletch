@@ -13,12 +13,14 @@
 //! image present in one store says nothing about the other's.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 
 /// Writes the guard map back to its settings row (installed by
-/// [`VersionGuard::init`]).
-type Persist = Box<dyn Fn(&HashMap<String, String>) + Send + Sync>;
+/// [`VersionGuard::init`]). An `Arc` so [`VersionGuard::record`] can clone it out
+/// and call it with the lock released.
+type Persist = Arc<dyn Fn(&HashMap<String, String>) + Send + Sync>;
 
 /// provider id → `"host_version@image_tag"` last successfully rebuilt for, plus
 /// the write-back. One pair per provider suffices — any change to either side
@@ -49,7 +51,7 @@ impl VersionGuard {
     ) {
         *self.0.write() = Some(State {
             attempted,
-            persist: Some(Box::new(persist)),
+            persist: Some(Arc::new(persist)),
         });
     }
 
@@ -68,14 +70,19 @@ impl VersionGuard {
     /// success only — failures must retry on a later run, exactly like TTL
     /// rebuild failures.
     pub(crate) fn record(&self, provider_id: &str, pair: String) {
-        let mut guard = self.0.write();
-        let state = guard.get_or_insert_with(|| State {
-            attempted: HashMap::new(),
-            persist: None,
-        });
-        state.attempted.insert(provider_id.to_string(), pair);
-        if let Some(persist) = &state.persist {
-            persist(&state.attempted);
+        // The persister writes the DB; calling it under the lock would order
+        // guard-before-db and invite a deadlock. Snapshot, unlock, then persist.
+        let (snapshot, persist) = {
+            let mut guard = self.0.write();
+            let state = guard.get_or_insert_with(|| State {
+                attempted: HashMap::new(),
+                persist: None,
+            });
+            state.attempted.insert(provider_id.to_string(), pair);
+            (state.attempted.clone(), state.persist.clone())
+        };
+        if let Some(persist) = persist {
+            persist(&snapshot);
         }
     }
 }

@@ -130,7 +130,8 @@ fn remove_agent_containers_on(connection: Option<&str>, agent_id: &str) -> Resul
 /// Best-effort per connection, in keeping with the under-reclaim bias: a
 /// stopped or wedged machine logs and the remaining ones still get swept —
 /// stopping at the first failure would leave reclaimable containers on
-/// machines that answer fine.
+/// machines that answer fine. Total failure is not laundered into `Ok(0)`
+/// though: if no connection answered, the caller hears the last error.
 fn across_machines(
     what: &str,
     mut pass: impl FnMut(Option<&str>) -> Result<usize>,
@@ -140,18 +141,29 @@ fn across_machines(
         return pass(None);
     }
     let mut total = 0;
+    let mut succeeded = false;
+    let mut last_error = None;
     for connection in &connections {
         match pass(Some(connection)) {
-            Ok(n) => total += n,
-            Err(e) => tracing::warn!(
-                target: "fletch::podman",
-                connection = %connection,
-                error = %e,
-                "{what} failed on this connection",
-            ),
+            Ok(n) => {
+                succeeded = true;
+                total += n;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "fletch::podman",
+                    connection = %connection,
+                    error = %e,
+                    "{what} failed on this connection",
+                );
+                last_error = Some(e);
+            }
         }
     }
-    Ok(total)
+    match last_error {
+        Some(e) if !succeeded => Err(e),
+        _ => Ok(total),
+    }
 }
 
 /// One connection name per Podman machine, from
@@ -291,8 +303,20 @@ pub(super) fn sweep_stale_images_on(connection: Option<&str>) -> Result<usize> {
     for image_ref in &refs {
         // One rmi per image (not batched): a single in-use image must not taint
         // the exit status the others report. No `-f` — an image backing a running
-        // container stays, by design.
-        let out = cli::run_podman_on(connection, &["rmi", image_ref], REMOVE_TIMEOUT)?;
+        // container stays, by design. A transport failure is per-image too: it
+        // must not strand the candidates behind it.
+        let out = match cli::run_podman_on(connection, &["rmi", image_ref], REMOVE_TIMEOUT) {
+            Ok(out) => out,
+            Err(e) => {
+                tracing::warn!(
+                    target: "fletch::podman",
+                    image = %image_ref,
+                    error = %e,
+                    "podman rmi could not run for this image; continuing the pass",
+                );
+                continue;
+            }
+        };
         if out.status.success() {
             removed += 1;
         } else {
@@ -474,9 +498,11 @@ mod tests {
             ],
         )
         .unwrap();
+        // The normalized repo, not the verbatim one: podman prints locally
+        // built images as `localhost/fletch-agent`.
         assert!(
             rows.iter()
-                .any(|r| r.repo == "fletch-agent" && r.tag == "000000000000"),
+                .any(|r| r.compare_repo() == "fletch-agent" && r.tag == "000000000000"),
             "podman's --format output must parse into the shared row shape: {rows:?}",
         );
 

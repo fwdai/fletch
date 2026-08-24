@@ -8,6 +8,12 @@
 //! user running both engines can point each at its own image and limits, and
 //! the version guard must stay per runtime because the two keep separate image
 //! stores — an image present in one says nothing about the other.
+//!
+//! The guard is per runtime but *not* per connection, though podman's image
+//! stores are per machine. Naively appending the connection to the pair string
+//! would ping-pong rebuilds between two machines — the map holds one pair per
+//! provider, so each machine's record would evict the other's. Left as is; the
+//! TTL backstops the second machine.
 
 use parking_lot::RwLock;
 

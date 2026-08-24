@@ -348,11 +348,27 @@ enum RefreshReason {
     VersionMismatch { guard_pair: String },
 }
 
-/// Decide whether an existing image needs a background rebuild — TTL first,
-/// then host/container version parity — and kick it if so. Returns
-/// immediately either way. Freshness is never a launch concern: inspect
-/// failures, unparseable timestamps, missing versions, and rebuild failures
-/// all leave the existing image serving launches. Logged, never propagated.
+/// Kick the whole freshness decision onto a background thread and return: the
+/// decision itself costs an `image inspect` and, past it, a full container start
+/// for the in-image `--version` probe, neither of which a launch may wait on.
+///
+/// The thread owns its data — it outlives the borrows this call was given.
+fn refresh_in_background_if_needed(
+    provider: DockerProvider,
+    tag: &str,
+    host_cli_version: Option<&str>,
+) {
+    let tag = tag.to_string();
+    let host_cli_version = host_cli_version.map(str::to_string);
+    std::thread::spawn(move || refresh_if_needed(provider, tag, host_cli_version.as_deref()));
+}
+
+/// Decide whether an existing image needs a rebuild — TTL first, then
+/// host/container version parity — and run it if so. Already off the launch path
+/// (see [`refresh_in_background_if_needed`]). Freshness is never a launch
+/// concern: inspect failures, unparseable timestamps, missing versions, and
+/// rebuild failures all leave the existing image serving launches. Logged,
+/// never propagated.
 /// The rebuild is silent for the UI (log lines only): the build toast
 /// presents a blocking first-run build ("this can take a few minutes"),
 /// which is the wrong message for a refresh the user never waits on, and its
@@ -362,13 +378,14 @@ enum RefreshReason {
 /// just updated their host CLI expects container parity. It compares with
 /// plain inequality (no semver ordering) and is inert whenever a side is
 /// missing: no host CLI installed, or the container probe failed (the TTL
-/// still covers those). Cadence for both triggers is once per app run
-/// (`DockerEngine::resolve_image_cached` caches resolution).
-fn refresh_in_background_if_needed(
-    provider: DockerProvider,
-    tag: &str,
-    host_cli_version: Option<&str>,
-) {
+/// still covers those). Cadence for both triggers is once per app run:
+/// resolution is cached per (provider, override) (`DockerEngine::
+/// resolve_image_cached`), which still holds now that the cache lock is released
+/// across the resolve — two simultaneously *cold* launches of the same key could
+/// each land here, and the second's rebuild is serialized behind the first on
+/// [`BUILD_LOCK`].
+fn refresh_if_needed(provider: DockerProvider, tag: String, host_cli_version: Option<&str>) {
+    let tag = tag.as_str();
     // One inspect serves both triggers: build date for the TTL, image id to
     // key the container-version cache.
     let (image_id, created_raw) = match cli::run_docker(
@@ -398,7 +415,7 @@ fn refresh_in_background_if_needed(
                 created = %created_raw,
                 "agent image is older than IMAGE_MAX_AGE; rebuilding in the background",
             );
-            spawn_refresh_rebuild(provider, tag.to_string(), RefreshReason::Ttl);
+            run_refresh_rebuild(provider, tag, RefreshReason::Ttl);
             return;
         }
         Freshness::Unknown => {
@@ -433,19 +450,17 @@ fn refresh_in_background_if_needed(
         container = %container.as_deref().unwrap_or_default(),
         "host CLI version differs from container image; rebuilding in the background",
     );
-    spawn_refresh_rebuild(
-        provider,
-        tag.to_string(),
-        RefreshReason::VersionMismatch { guard_pair },
-    );
+    run_refresh_rebuild(provider, tag, RefreshReason::VersionMismatch { guard_pair });
 }
 
-/// Kick the background stale-while-revalidate rebuild shared by both refresh
-/// triggers: rebuild the same tag, then (on success) record the version
-/// trigger's loop guard, re-probe the fresh image's CLI version, and reap the
-/// just-untagged predecessor. On failure, warn and keep serving the old image.
-fn spawn_refresh_rebuild(provider: DockerProvider, tag: String, reason: RefreshReason) {
-    std::thread::spawn(move || match rebuild_image(provider, &tag) {
+/// The stale-while-revalidate rebuild shared by both refresh triggers: rebuild
+/// the same tag, then (on success) record the version trigger's loop guard,
+/// re-probe the fresh image's CLI version, and reap the just-untagged
+/// predecessor. On failure, warn and keep serving the old image.
+///
+/// Runs on [`refresh_in_background_if_needed`]'s thread, never a launch's.
+fn run_refresh_rebuild(provider: DockerProvider, tag: &str, reason: RefreshReason) {
+    match rebuild_image(provider, tag) {
         Ok(()) => {
             tracing::info!(target: "fletch::docker", tag, "agent image refreshed");
             if let RefreshReason::VersionMismatch { guard_pair } = reason {
@@ -454,7 +469,7 @@ fn spawn_refresh_rebuild(provider: DockerProvider, tag: String, reason: RefreshR
                 // mismatches (host pinned away from latest) must never loop.
                 super::engine::record_version_refresh(provider.id(), guard_pair);
             }
-            cache_image_version_post_build(provider, &tag);
+            cache_image_version_post_build(provider, tag);
             // Docker retagged atomically; the predecessor is now untagged.
             // Reap it (and anything else stale) right away.
             match super::cleanup::sweep_stale_images() {
@@ -477,7 +492,7 @@ fn spawn_refresh_rebuild(provider: DockerProvider, tag: String, reason: RefreshR
             error = %e,
             "background image refresh failed; keeping the existing image",
         ),
-    });
+    }
 }
 
 /// Rebuild `provider`'s image under the same `tag`, unconditionally (no

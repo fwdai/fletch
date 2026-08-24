@@ -222,8 +222,20 @@ pub fn sweep_stale_images() -> Result<usize> {
     for image_ref in &refs {
         // One rmi per image (not batched): a single in-use image must not
         // taint the exit status the others report. No `-f` — an image backing
-        // a running container stays, by design.
-        let out = cli::run_docker(&["rmi", image_ref], REMOVE_TIMEOUT)?;
+        // a running container stays, by design. A transport failure is per-image
+        // too: it must not strand the candidates behind it.
+        let out = match cli::run_docker(&["rmi", image_ref], REMOVE_TIMEOUT) {
+            Ok(out) => out,
+            Err(e) => {
+                tracing::warn!(
+                    target: "fletch::docker",
+                    image = %image_ref,
+                    error = %e,
+                    "docker rmi could not run for this image; continuing the pass",
+                );
+                continue;
+            }
+        };
         if out.status.success() {
             removed += 1;
         } else {
@@ -335,6 +347,29 @@ mod tests {
             assert!(owned.contains(repo), "unknown legacy repo: {repo}");
             assert!(is_content_addressed_tag(tag), "malformed legacy tag: {tag}");
         }
+    }
+
+    /// The legacy arm at its real call site: the shipped [`LEGACY_TAGS`] and the
+    /// sets `sweep_stale_images` builds must actually select a pre-label image.
+    /// Nothing else exercises this arm — podman passes an empty list.
+    #[test]
+    fn the_shipped_legacy_list_selects_a_pre_label_image() {
+        let (repo, tag) = LEGACY_TAGS[0].split_once(':').unwrap();
+        let legacy = vec![ImageRow {
+            id: "aaa".into(),
+            repo: repo.into(),
+            tag: tag.into(),
+        }];
+        let refs = image_removal_refs(
+            &[],
+            &legacy,
+            &current_tags(),
+            &known_repos(),
+            RETIRED_REPOS,
+            LEGACY_TAGS,
+            None,
+        );
+        assert_eq!(refs, vec![LEGACY_TAGS[0].to_string()]);
     }
 
     /// Integration: a labeled image under a Fletch repo with a non-current tag

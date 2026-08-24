@@ -105,6 +105,20 @@ pub fn sweep_orphans_at_startup() {
     });
 }
 
+/// Why a launch would be refused right now even though [`availability`] answers
+/// `Available`, or `None` when nothing stands in the way. `podman info` succeeds
+/// over a *remote* default connection, but every launch then refuses it (mounts
+/// of host paths cannot exist there) — so engine selection has to ask this too,
+/// or the user picks an engine that fails on every spawn.
+///
+/// The message is [`machine::resolve_launch_target`]'s own refusal, verbatim, so
+/// the selection error and the launch error can't drift.
+pub fn launch_blocker() -> Option<String> {
+    machine::resolve_launch_target()
+        .err()
+        .map(|e| e.to_string())
+}
+
 /// Gate for the `#[ignore]`d integration tests: they touch a real Podman
 /// machine, so they run only when explicitly opted in via
 /// `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`.

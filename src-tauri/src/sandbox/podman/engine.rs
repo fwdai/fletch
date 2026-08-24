@@ -113,8 +113,12 @@ impl PodmanEngine {
             override_image.map(str::to_string),
             connection.map(str::to_string),
         );
-        let mut cache = self.resolved_image.lock().unwrap();
-        if let Some(tag) = cache.get(&key) {
+        // The lock is dropped before resolving: a build can take ten minutes,
+        // and holding it would serialize every other provider's cache-hit launch
+        // behind it. Two cold launches may then resolve the same key at once,
+        // which is safe — `BUILD_LOCK` plus the re-check under it make the
+        // second resolver a cheap no-op.
+        if let Some(tag) = self.resolved_image.lock().unwrap().get(&key) {
             return Ok(tag.clone());
         }
         // Skip the host probe entirely on the override path: the user's image is
@@ -137,7 +141,7 @@ impl PodmanEngine {
             &on_progress,
         )
         .map_err(|e| Error::Other(format!("preparing the Podman sandbox image failed: {e}")))?;
-        cache.insert(key, tag.clone());
+        self.resolved_image.lock().unwrap().insert(key, tag.clone());
         Ok(tag)
     }
 }
@@ -181,17 +185,12 @@ impl SandboxEngine for PodmanEngine {
         let target = machine::resolve_launch_target()?;
         let connection = target.connection.clone();
         let settings = LAUNCH_SETTINGS.read().clone();
-        let image = self.resolve_image_cached(
-            provider,
-            settings.image_override.as_deref(),
-            connection.as_deref(),
-        )?;
         let name = container_name(ctx.agent_id);
         let prep = crate::sandbox::container::launch::prepare(ctx, provider)?;
 
         let prefix_args = {
             let auth_vars = prep.auth_vars();
-            let spec = RunSpec {
+            let mut spec = RunSpec {
                 interactive: ctx.interactive,
                 name: &name,
                 agent_id: ctx.agent_id,
@@ -204,14 +203,22 @@ impl SandboxEngine for PodmanEngine {
                 borrowed_object_stores: &prep.borrowed_object_stores,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
                 cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
-                image: &image,
+                // Filled in below, once the preflight has passed; the mount
+                // sources don't depend on it.
+                image: "",
                 agent_bin,
                 auth_vars: &auth_vars,
             };
-            // Before the run, not after: an unshared source mounts empty rather
-            // than failing, so the launch has to be refused while we can still
-            // name the path.
+            // Before the run *and before the image*: an unshared source mounts
+            // empty rather than failing, so the launch has to be refused while we
+            // can still name the path — and without first waiting out a build.
             machine::ensure_sources_are_shared(&mount_sources(&spec), &target)?;
+            let image = self.resolve_image_cached(
+                provider,
+                settings.image_override.as_deref(),
+                connection.as_deref(),
+            )?;
+            spec.image = &image;
             pinned_argv(connection.as_deref(), run_args(&spec))
         };
 

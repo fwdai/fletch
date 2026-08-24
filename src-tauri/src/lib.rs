@@ -704,11 +704,24 @@ async fn set_sandbox_engine(
         // every new agent, so persisting one whose runtime can't launch would
         // fail each spawn. Checked here rather than in the UI alone — the
         // setting is reachable over IPC.
-        let probe = tauri::async_runtime::spawn_blocking(sandbox::podman_availability)
-            .await
-            .map_err(|e| e.to_string())?;
+        // The launch blocker rides the same `spawn_blocking`: `podman info`
+        // answers over a remote default connection that every launch then
+        // refuses, so "available" alone is not "launchable".
+        let (probe, blocker) = tauri::async_runtime::spawn_blocking(|| {
+            let probe = sandbox::podman_availability();
+            let blocker = matches!(probe, sandbox::PodmanAvailability::Available { .. })
+                .then(sandbox::podman_launch_blocker)
+                .flatten();
+            (probe, blocker)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         match probe {
-            sandbox::PodmanAvailability::Available { .. } => {}
+            sandbox::PodmanAvailability::Available { .. } => {
+                if let Some(blocker) = blocker {
+                    return Err(blocker);
+                }
+            }
             sandbox::PodmanAvailability::NotInstalled => {
                 return Err("Podman is not installed — install Podman first.".into())
             }

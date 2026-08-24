@@ -38,9 +38,23 @@ impl ImageRow {
         self.repo == "<none>" || self.tag == "<none>"
     }
 
-    /// The `repo:tag` name of a tagged row.
+    /// The `repo:tag` name of a tagged row, spelled exactly as the listing
+    /// printed it — this is what `rmi` has to resolve.
     fn named(&self) -> String {
         format!("{}:{}", self.repo, self.tag)
+    }
+
+    /// The repo without podman's implicit `localhost/` prefix for locally built
+    /// images. Identity under docker, which never prints one.
+    pub(crate) fn compare_repo(&self) -> &str {
+        self.repo.strip_prefix("localhost/").unwrap_or(&self.repo)
+    }
+
+    /// [`Self::named`] under [`Self::compare_repo`] — the spelling every
+    /// namespace/tag comparison uses, so `localhost/fletch-agent` is recognized
+    /// as ours while removal still names it verbatim.
+    fn compare_name(&self) -> String {
+        format!("{}:{}", self.compare_repo(), self.tag)
     }
 
     /// What to hand `rmi`: the name for tagged rows (untag just ours), the id
@@ -125,14 +139,22 @@ pub(crate) fn image_removal_refs(
     // its bare-repo spelling (both runtimes read `foo` as `foo:latest`), or the
     // image id (all listings print the same short id).
     let protected = |row: &ImageRow| {
-        if !row.untagged() && current_tags.contains(&row.named()) {
+        if !row.untagged() && current_tags.contains(&row.compare_name()) {
             return true;
         }
         let Some(ov) = override_image else {
             return false;
         };
-        ov == row.id
-            || (!row.untagged() && (ov == row.named() || (row.tag == "latest" && ov == row.repo)))
+        // An override may be spelled as an id (`sha256:`-prefixed on docker) or
+        // as a `repo@sha256:…` digest ref; normalize each before its comparison.
+        let ov_id = ov.strip_prefix("sha256:").unwrap_or(ov);
+        let ov_name = ov.split_once("@sha256:").map_or(ov, |(repo, _)| repo);
+        id_matches(ov_id, &row.id)
+            || (!row.untagged()
+                && (ov_name == row.named()
+                    || ov_name == row.compare_name()
+                    || (row.tag == "latest"
+                        && (ov_name == row.repo || ov_name == row.compare_repo()))))
     };
 
     // A repo Fletch owns now or used to own. Retired repos count because the
@@ -141,7 +163,8 @@ pub(crate) fn image_removal_refs(
     // the legacy arm skips them (they're labeled) and this arm skipped them
     // (their repo was no longer known), so nothing could ever reclaim them.
     let in_our_namespace = |row: &ImageRow| {
-        known_repos.contains(row.repo.as_str()) || retired_repos.contains(&row.repo.as_str())
+        let repo = row.compare_repo();
+        known_repos.contains(repo) || retired_repos.contains(&repo)
     };
 
     let mut seen = HashSet::new();
@@ -170,7 +193,7 @@ pub(crate) fn image_removal_refs(
         // the only safe removal signal is a tag we know Fletch shipped. A
         // user's own image in our namespace — even under a hex/git-SHA-shaped
         // tag like `fletch-agent:deadbeefcafe` — never matches.
-        if row.untagged() || !legacy_tags.contains(&row.named().as_str()) {
+        if row.untagged() || !legacy_tags.contains(&row.compare_name().as_str()) {
             continue;
         }
         if protected(row) {
@@ -179,6 +202,18 @@ pub(crate) fn image_removal_refs(
         push(row);
     }
     refs
+}
+
+/// Prefix-tolerant image-id equality: `{{.ID}}` prints a 12-char truncation
+/// while a user pastes the full 64-char id, so either side may be the prefix.
+/// The shorter side must be at least 12 chars, or a stray short string would
+/// match half the store.
+fn id_matches(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let (short, long) = if a.len() < b.len() { (a, b) } else { (b, a) };
+    short.len() >= 12 && long.starts_with(short)
 }
 
 /// Whether a tag has the shape Fletch's content addressing writes — exactly
@@ -406,6 +441,76 @@ mod tests {
             None,
         );
         assert_eq!(refs.len(), 2);
+    }
+
+    /// Podman prints locally built images as `localhost/<repo>`, so every
+    /// namespace and tag comparison has to see through that prefix while the
+    /// removal ref keeps it (that is the name `podman rmi` resolves).
+    #[test]
+    fn image_gc_sees_through_podmans_localhost_prefix() {
+        let current_tags: HashSet<String> = ["fletch-agent:cafe00000000".to_string()].into();
+        let known_repos: HashSet<&'static str> = ["fletch-agent"].into();
+
+        let labeled = vec![
+            // Superseded, under podman's spelling: selected, named verbatim.
+            row("aaa", "localhost/fletch-agent", "0dab1e000000"),
+            // The current tag under the same spelling: protected.
+            row("bbb", "localhost/fletch-agent", "cafe00000000"),
+            // A user's own `localhost/` image outside our repos: untouched.
+            row("ccc", "localhost/my-image", "0dab1e000000"),
+        ];
+
+        let refs = image_removal_refs(&labeled, &[], &current_tags, &known_repos, &[], &[], None);
+        assert_eq!(
+            refs,
+            vec!["localhost/fletch-agent:0dab1e000000".to_string()],
+        );
+    }
+
+    /// An override the user pasted as a full id, a `sha256:`-prefixed id, or a
+    /// `repo@sha256:…` digest ref must still protect its image.
+    #[test]
+    fn image_gc_override_id_and_digest_spellings() {
+        let current_tags = HashSet::new();
+        let known_repos: HashSet<&'static str> = ["fletch-agent"].into();
+        let full_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let labeled = vec![
+            row("0123456789ab", "fletch-agent", "aaaaaaaaaaaa"),
+            row("bbbbbbbbbbbb", "fletch-agent", "bbbbbbbbbbbb"),
+        ];
+        let kept_bbb = vec!["fletch-agent:bbbbbbbbbbbb".to_string()];
+
+        for ov in [full_id.to_string(), format!("sha256:{full_id}")] {
+            let refs = image_removal_refs(
+                &labeled,
+                &[],
+                &current_tags,
+                &known_repos,
+                &[],
+                &[],
+                Some(&ov),
+            );
+            assert_eq!(refs, kept_bbb, "id override spelling {ov} must protect");
+        }
+
+        // A digest ref: the `@sha256:…` half is stripped before the name match.
+        let refs = image_removal_refs(
+            &labeled,
+            &[],
+            &current_tags,
+            &known_repos,
+            &[],
+            &[],
+            Some("fletch-agent:aaaaaaaaaaaa@sha256:0123456789abcdef"),
+        );
+        assert_eq!(refs, kept_bbb);
+
+        // A short string is never an id prefix — 12 chars is the floor.
+        assert!(id_matches("0123456789ab", full_id));
+        assert!(id_matches(full_id, "0123456789ab"));
+        assert!(!id_matches("0123456789a", full_id));
+        assert!(id_matches("bbb", "bbb"), "exact equality still holds");
+        assert!(!id_matches("bbb", "bbbbbbbbbbbb"));
     }
 
     /// Retiring a provider must not strand its images. A labeled row under a

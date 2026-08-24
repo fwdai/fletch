@@ -239,27 +239,51 @@ enum RefreshReason {
     VersionMismatch { guard_pair: String },
 }
 
-/// Decide whether the image in `connection`'s store needs a background rebuild —
-/// TTL first, then host/container version parity — and kick it if so. Returns
-/// immediately either way. Freshness is never a launch concern: inspect
-/// failures, unparseable timestamps, missing versions, and rebuild failures all
-/// leave the existing image serving launches. Logged, never propagated. The
-/// rebuild is silent for the UI (log lines only): the build toast presents a
-/// blocking first-run build, which is the wrong message for a refresh the user
-/// never waits on.
+/// Kick the whole freshness decision onto a background thread and return: the
+/// decision itself costs an `image inspect` and, past it, a full container start
+/// for the in-image `--version` probe, neither of which a launch may wait on.
 ///
-/// Everything below — inspect, probe, rebuild, post-rebuild sweep — rides the
-/// connection that triggered it, so a refresh replaces the image in the store the
-/// launch actually read from.
-///
-/// Cadence for both triggers is once per app run
-/// (`PodmanEngine::resolve_image_cached` caches resolution).
+/// The thread owns its data — it outlives the borrows this call was given.
 fn refresh_in_background_if_needed(
     provider: ContainerProvider,
     connection: Option<&str>,
     tag: &str,
     host_cli_version: Option<&str>,
 ) {
+    let connection = connection.map(str::to_string);
+    let tag = tag.to_string();
+    let host_cli_version = host_cli_version.map(str::to_string);
+    std::thread::spawn(move || {
+        refresh_if_needed(provider, connection, tag, host_cli_version.as_deref())
+    });
+}
+
+/// Decide whether the image in `connection`'s store needs a rebuild — TTL first,
+/// then host/container version parity — and run it if so. Already off the launch
+/// path (see [`refresh_in_background_if_needed`]). Freshness is never a launch
+/// concern: inspect failures, unparseable timestamps, missing versions, and
+/// rebuild failures all leave the existing image serving launches. Logged, never
+/// propagated. The rebuild is silent for the UI (log lines only): the build toast
+/// presents a blocking first-run build, which is the wrong message for a refresh
+/// the user never waits on.
+///
+/// Everything below — inspect, probe, rebuild, post-rebuild sweep — rides the
+/// connection that triggered it, so a refresh replaces the image in the store the
+/// launch actually read from.
+///
+/// Cadence for both triggers is once per app run: resolution is cached per
+/// (provider, override, connection) (`PodmanEngine::resolve_image_cached`), which
+/// still holds now that the cache lock is released across the resolve — two
+/// simultaneously *cold* launches of the same key could each land here, and the
+/// second's rebuild is serialized behind the first on [`BUILD_LOCK`].
+fn refresh_if_needed(
+    provider: ContainerProvider,
+    connection: Option<String>,
+    tag: String,
+    host_cli_version: Option<&str>,
+) {
+    let connection = connection.as_deref();
+    let tag = tag.as_str();
     // One inspect serves both triggers: build date for the TTL, image id to key
     // the container-version cache.
     let Some((image_id, created_raw)) = inspect_id_and_created(connection, tag) else {
@@ -276,12 +300,7 @@ fn refresh_in_background_if_needed(
                 created = %created_raw,
                 "agent image is older than IMAGE_MAX_AGE; rebuilding in the background",
             );
-            spawn_refresh_rebuild(
-                provider,
-                connection.map(str::to_string),
-                tag.to_string(),
-                RefreshReason::Ttl,
-            );
+            run_refresh_rebuild(provider, connection, tag, RefreshReason::Ttl);
             return;
         }
         Freshness::Unknown => {
@@ -316,65 +335,62 @@ fn refresh_in_background_if_needed(
         container = %container.as_deref().unwrap_or_default(),
         "host CLI version differs from container image; rebuilding in the background",
     );
-    spawn_refresh_rebuild(
+    run_refresh_rebuild(
         provider,
-        connection.map(str::to_string),
-        tag.to_string(),
+        connection,
+        tag,
         RefreshReason::VersionMismatch { guard_pair },
     );
 }
 
-/// Kick the background stale-while-revalidate rebuild shared by both refresh
-/// triggers: rebuild the same tag, then (on success) record the version
-/// trigger's loop guard, re-probe the fresh image's CLI version, and sweep the
-/// just-untagged predecessor. On failure, warn and keep serving the old image.
+/// The stale-while-revalidate rebuild shared by both refresh triggers: rebuild
+/// the same tag, then (on success) record the version trigger's loop guard,
+/// re-probe the fresh image's CLI version, and sweep the just-untagged
+/// predecessor. On failure, warn and keep serving the old image.
 ///
-/// The thread owns its `connection` — it outlives the launch that spawned it, and
-/// every call it makes must still reach that launch's store rather than whatever
-/// the default has become in the meantime.
-fn spawn_refresh_rebuild(
+/// Runs on [`refresh_in_background_if_needed`]'s thread, never a launch's, and
+/// every call it makes rides the launch's `connection` rather than whatever the
+/// default has become in the meantime.
+fn run_refresh_rebuild(
     provider: ContainerProvider,
-    connection: Option<String>,
-    tag: String,
+    connection: Option<&str>,
+    tag: &str,
     reason: RefreshReason,
 ) {
-    std::thread::spawn(move || {
-        let on = connection.as_deref();
-        match rebuild_image(provider, on, &tag) {
-            Ok(()) => {
-                tracing::info!(target: "fletch::podman", tag, "agent image refreshed");
-                if let RefreshReason::VersionMismatch { guard_pair } = reason {
-                    // Recorded on success only: a transient build failure should
-                    // retry next run, but a *successful* rebuild that still
-                    // mismatches (host pinned away from latest) must never loop.
-                    super::settings::record_version_refresh(provider.id(), guard_pair);
-                }
-                cache_image_version_post_build(provider, on, &tag);
-                // Podman retagged in place; the predecessor is now untagged. Reap
-                // it (and anything else stale) right away — in this store only,
-                // since this is the only one the rebuild touched.
-                match super::cleanup::sweep_stale_images_on(on) {
-                    Ok(0) => {}
-                    Ok(n) => tracing::info!(
-                        target: "fletch::podman",
-                        removed = n,
-                        "swept superseded agent images after refresh",
-                    ),
-                    Err(e) => tracing::debug!(
-                        target: "fletch::podman",
-                        error = %e,
-                        "post-refresh image sweep failed",
-                    ),
-                }
+    match rebuild_image(provider, connection, tag) {
+        Ok(()) => {
+            tracing::info!(target: "fletch::podman", tag, "agent image refreshed");
+            if let RefreshReason::VersionMismatch { guard_pair } = reason {
+                // Recorded on success only: a transient build failure should
+                // retry next run, but a *successful* rebuild that still
+                // mismatches (host pinned away from latest) must never loop.
+                super::settings::record_version_refresh(provider.id(), guard_pair);
             }
-            Err(e) => tracing::warn!(
-                target: "fletch::podman",
-                tag,
-                error = %e,
-                "background image refresh failed; keeping the existing image",
-            ),
+            cache_image_version_post_build(provider, connection, tag);
+            // Podman retagged in place; the predecessor is now untagged. Reap
+            // it (and anything else stale) right away — in this store only,
+            // since this is the only one the rebuild touched.
+            match super::cleanup::sweep_stale_images_on(connection) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(
+                    target: "fletch::podman",
+                    removed = n,
+                    "swept superseded agent images after refresh",
+                ),
+                Err(e) => tracing::debug!(
+                    target: "fletch::podman",
+                    error = %e,
+                    "post-refresh image sweep failed",
+                ),
+            }
         }
-    });
+        Err(e) => tracing::warn!(
+            target: "fletch::podman",
+            tag,
+            error = %e,
+            "background image refresh failed; keeping the existing image",
+        ),
+    }
 }
 
 /// Rebuild `provider`'s image under the same `tag` in `connection`'s store,
