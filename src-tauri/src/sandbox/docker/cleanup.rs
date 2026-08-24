@@ -26,35 +26,12 @@ use crate::error::{Error, Result};
 
 use super::{cli, engine, image, DockerProvider};
 
-/// Label carrying the owning Fletch instance's pid.
-pub const HOST_PID_LABEL: &str = "fletch.host-pid";
-
-/// Label carrying the agent id a container runs. The startup orphan sweep
-/// keys on [`HOST_PID_LABEL`] alone (it asks "whose instance is dead?", not
-/// "which agent?"); this label is the handle for the other question —
-/// [`remove_agent_containers`] uses it to tear down one named agent's
-/// containers on archive/discard. It is also the only stable handle there is:
-/// container *names* carry a random nonce (`engine::util::container_name`),
-/// so nothing outside the launching process can reconstruct them.
-pub const AGENT_ID_LABEL: &str = "fletch.agent-id";
-
-/// `fletch.host-pid=<our pid>` — the `--label` value stamped on `docker run`.
-pub fn host_pid_label() -> String {
-    format!("{HOST_PID_LABEL}={}", std::process::id())
-}
-
-/// `fletch.agent-id=<agent_id>` — sibling of [`host_pid_label`].
-pub fn agent_id_label(agent_id: &str) -> String {
-    format!("{AGENT_ID_LABEL}={agent_id}")
-}
-
-/// The `--filter` argument selecting one agent's containers. Built from
-/// [`agent_id_label`] so the query can never drift from what `docker run`
-/// stamped. Split out as a pure function so its argv shape is unit-testable
-/// without a daemon.
-fn agent_id_filter(agent_id: &str) -> String {
-    format!("label={}", agent_id_label(agent_id))
-}
+// Re-export the shared label helpers so docker callers keep working at
+// `cleanup::host_pid_label` / `cleanup::agent_id_label`.
+pub use crate::sandbox::container::labels::{
+    agent_id_label, host_pid_label, AGENT_ID_LABEL, HOST_PID_LABEL,
+};
+use crate::sandbox::container::labels::agent_id_filter;
 
 /// Listing/inspect are metadata-only; generous next to their usual
 /// milliseconds, so tripping one means the daemon is wedged.

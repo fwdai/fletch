@@ -56,8 +56,9 @@
 //! Layout: this module folder splits the engine into
 //! - [`settings`] — launch knobs and the version-refresh guard
 //! - [`auth`] — per-provider container auth
-//! - [`config_dir`] — non-default config-dir detection and borrowed object stores
-//! - [`run_args`] — the `docker run` argv builder
+//! - [`run_args`] — re-exports the shared container launch-spec
+//!   ([`crate::sandbox::container`]): mounts, config-dir detection, borrowed
+//!   object stores
 //! - [`util`] — naming, liveness, exit codes
 //!
 //! The `DockerEngine` struct and its `SandboxEngine` impl stay here.
@@ -75,7 +76,6 @@ use crate::sandbox::policy::{codex_home_dir, opencode_config_dir, opencode_data_
 use super::{cli, image, DockerProvider};
 
 mod auth;
-mod config_dir;
 mod run_args;
 mod settings;
 #[cfg(test)]
@@ -95,11 +95,11 @@ use auth::{
     apply_container_auth, prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch,
     prepare_pi_launch, present_api_keys,
 };
-use config_dir::{
+use run_args::{
     borrowed_object_stores, codex_home_is_nondefault, nondefault_claude_config_dir,
-    xdg_base_is_nondefault,
+    prepare_config_mount_dir, run_args, xdg_base_is_nondefault, ProviderMounts, RunSpec,
+    CREDENTIALS_FILE,
 };
-use run_args::{prepare_config_mount_dir, run_args, ProviderMounts, RunSpec, CREDENTIALS_FILE};
 use settings::{DEFAULT_CPUS, DEFAULT_MEMORY, LAUNCH_SETTINGS};
 use util::{container_gone_within, container_name, describe_exit_code, non_blank};
 
