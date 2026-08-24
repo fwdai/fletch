@@ -21,7 +21,7 @@
 //!    a usable token counts (see [`usable_oauth_token`]); no Keychain / no login
 //!    (Linux, CI) falls through. See [`keychain_token`].
 //! 2. A `claude setup-token` value captured into the app's secret store
-//!    ([`TOKEN_SETTING`], auto-populated by [`super::setup_token`]) →
+//!    ([`TOKEN_SETTING`], auto-populated by [`crate::sandbox::docker::setup_token`]) →
 //!    `CLAUDE_CODE_OAUTH_TOKEN`. The fallback for hosts without a readable
 //!    Keychain login.
 //! 3. The app's process env or the login-shell probe exports a credential —

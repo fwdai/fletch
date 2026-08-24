@@ -1,7 +1,9 @@
-//! Container labels, the dead-instance orphan sweep, and the stale-image GC.
+//! The dead-instance orphan sweep and the stale-image GC.
 //!
 //! Every container Fletch launches carries `fletch.host-pid=<pid>` (which app
-//! instance owns it) and `fletch.agent-id=<id>` (which agent it runs). If the
+//! instance owns it) and `fletch.agent-id=<id>` (which agent it runs) — the
+//! labels themselves are runtime-neutral and live in
+//! [`container::labels`](crate::sandbox::container::labels). If the
 //! app dies without cleanup — crash, force-quit, SIGKILL — its containers keep
 //! running; the next startup sweeps them by the same pid-liveness rule the
 //! nested-root sweeps use (`sandbox/seatbelt.rs`): remove only containers
@@ -26,27 +28,12 @@ use crate::error::{Error, Result};
 
 use super::{cli, engine, image, DockerProvider};
 
-/// Label carrying the owning Fletch instance's pid.
-pub const HOST_PID_LABEL: &str = "fletch.host-pid";
-
-/// Label carrying the agent id a container runs. The startup orphan sweep
-/// keys on [`HOST_PID_LABEL`] alone (it asks "whose instance is dead?", not
-/// "which agent?"); this label is the handle for the other question —
-/// [`remove_agent_containers`] uses it to tear down one named agent's
-/// containers on archive/discard. It is also the only stable handle there is:
-/// container *names* carry a random nonce (`engine::util::container_name`),
-/// so nothing outside the launching process can reconstruct them.
-pub const AGENT_ID_LABEL: &str = "fletch.agent-id";
-
-/// `fletch.host-pid=<our pid>` — the `--label` value stamped on `docker run`.
-pub fn host_pid_label() -> String {
-    format!("{HOST_PID_LABEL}={}", std::process::id())
-}
-
-/// `fletch.agent-id=<agent_id>` — sibling of [`host_pid_label`].
-pub fn agent_id_label(agent_id: &str) -> String {
-    format!("{AGENT_ID_LABEL}={agent_id}")
-}
+/// The labels `docker run` stamps and every sweep here queries. Re-exported so
+/// the `cleanup::host_pid_label` / `cleanup::HOST_PID_LABEL` paths this module's
+/// callers already use keep resolving from their runtime-neutral home.
+pub(super) use crate::sandbox::container::labels::{
+    agent_id_label, host_pid_label, HOST_PID_LABEL,
+};
 
 /// The `--filter` argument selecting one agent's containers. Built from
 /// [`agent_id_label`] so the query can never drift from what `docker run`
