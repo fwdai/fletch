@@ -155,12 +155,15 @@ export const hydrateSettings = async (set: AppSet) => {
       // the decision timeout. Backend-owned (`set_publish_confirmation`), so only
       // an explicit "true" enables — matching `rpc::approval::parse_enabled`.
       publishConfirmation: s.publish_confirmation === "true",
-      // Advanced docker launch knobs — backend-owned (snake_case, written by
-      // `set_docker_launch_settings`), so read them here and never setSetting.
-      // Blank = unset (launch defaults apply).
+      // Advanced per-runtime launch knobs — backend-owned (snake_case, written
+      // by `set_docker_launch_settings` / `set_podman_launch_settings`), so read
+      // them here and never setSetting. Blank = unset (launch defaults apply).
       dockerImage: s.docker_image || "",
       dockerMemory: s.docker_memory || "",
       dockerCpus: s.docker_cpus || "",
+      podmanImage: s.podman_image || "",
+      podmanMemory: s.podman_memory || "",
+      podmanCpus: s.podman_cpus || "",
       // Auto-open the welcome tour for new users (no completion flag yet).
       onboardingOpen: s.onboardingComplete !== "true",
       // Panel layout — restore the user's last splitter widths and collapse state.
@@ -486,12 +489,20 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
     set((s) => ({ runPorts: { ...s.runPorts, [e.agent_id]: String(e.port) } }));
   });
 
-  // Docker image-build progress (first docker spawn). Drives the build toast:
-  // started opens it, lines update the tail, finished clears it, failed keeps
-  // it up (with the reason) until the user dismisses.
+  // Container image-build progress (first spawn under a runtime). Drives the
+  // build toast: started opens it — carrying the runtime name so the copy can
+  // say which one — lines update the tail, finished clears it, failed keeps it
+  // up (with the reason) until the user dismisses.
   await onDockerBuildProgress((e) => {
     if (e.phase === "started") {
-      set({ dockerBuild: { status: "building", lastLine: null, error: null } });
+      set({
+        dockerBuild: {
+          status: "building",
+          lastLine: null,
+          error: null,
+          runtime: e.runtime ?? null,
+        },
+      });
     } else if (e.phase === "line") {
       set((s) =>
         s.dockerBuild
@@ -501,9 +512,16 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
     } else if (e.phase === "finished") {
       set({ dockerBuild: null });
     } else if (e.phase === "failed") {
-      set({
-        dockerBuild: { status: "failed", lastLine: null, error: e.error ?? "Image build failed" },
-      });
+      // Keep whichever runtime `started` named: the failure event carries only
+      // the reason, and dropping the name would flip the toast's copy mid-build.
+      set((s) => ({
+        dockerBuild: {
+          status: "failed",
+          lastLine: null,
+          error: e.error ?? "Image build failed",
+          runtime: s.dockerBuild?.runtime ?? null,
+        },
+      }));
     }
   });
 };

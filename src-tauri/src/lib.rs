@@ -978,6 +978,48 @@ async fn set_docker_launch_settings(
     Ok(())
 }
 
+/// Persist the podman launch knobs (`podman_image` override + `podman_memory` /
+/// `podman_cpus` limits) and update the in-process mirror the spawn path reads.
+/// The docker command's twin in every respect but the keys and the mirror it
+/// writes — the two runtimes keep separate knobs so a user running both can
+/// point each at its own image and limits.
+#[tauri::command]
+async fn set_podman_launch_settings(
+    image: Option<String>,
+    memory: Option<String>,
+    cpus: Option<String>,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    // Blank → None: a cleared field must not be stored as a launch override
+    // (an empty `--memory`/`--cpus` value or `podman_image` would break `podman
+    // run`), and the mirror treats blank as "use default" anyway.
+    let norm = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let image = norm(image);
+    let memory = norm(memory);
+    let cpus = norm(cpus);
+    {
+        let conn = state.lock();
+        // All three must land together, for the reason the docker twin above
+        // spells out: a partial write is a config the UI never shows.
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        for (key, value) in [
+            (sandbox::podman::IMAGE_SETTING, &image),
+            (sandbox::podman::MEMORY_SETTING, &memory),
+            (sandbox::podman::CPUS_SETTING, &cpus),
+        ] {
+            database::set_setting(&tx, key, value.as_deref().unwrap_or(""))
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    sandbox::podman::set_launch_settings(sandbox::podman::LaunchSettings {
+        image_override: image,
+        memory,
+        cpus,
+    });
+    Ok(())
+}
+
 /// Startup seed retry pacing for an unavailable secret store: start at 30s
 /// (the realistic case — a login-item launch racing the keychain unlock —
 /// resolves quickly) and back off to a slow probe that never gives up. An
@@ -1363,10 +1405,10 @@ pub fn run() {
                 }
             }
 
-            // Seed the docker launch knobs (image override + resource limits)
-            // the same way — mirrored in-process for the spawn path. Slice C2
-            // adds the settings UI whose set-commands keep this in sync
-            // mid-run; until then changes apply on next launch.
+            // Seed the per-runtime launch knobs (image override + resource
+            // limits) the same way — mirrored in-process for the spawn path,
+            // which has no DB handle. Kept in sync mid-run by
+            // `set_docker_launch_settings` / `set_podman_launch_settings`.
             {
                 let conn = db.lock();
                 sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
@@ -1374,30 +1416,45 @@ pub fn run() {
                     memory: database::get_setting(&conn, sandbox::docker::MEMORY_SETTING),
                     cpus: database::get_setting(&conn, sandbox::docker::CPUS_SETTING),
                 });
+                sandbox::podman::set_launch_settings(sandbox::podman::LaunchSettings {
+                    image_override: database::get_setting(&conn, sandbox::podman::IMAGE_SETTING),
+                    memory: database::get_setting(&conn, sandbox::podman::MEMORY_SETTING),
+                    cpus: database::get_setting(&conn, sandbox::podman::CPUS_SETTING),
+                });
             }
 
-            // Seed the docker version-refresh loop guard (mirror of the
-            // `docker_version_refresh_guard` setting — private bookkeeping,
-            // not user-facing) and wire its write-back, so a host CLI pinned
-            // away from the registry's latest triggers at most one
-            // version-parity rebuild ever, not one per app run. Same mirror
-            // idiom as the launch knobs above; the guard is consulted and
-            // recorded on spawn/background threads that have no DB handle.
+            // Seed each runtime's version-refresh loop guard (mirrors of the
+            // `docker_version_refresh_guard` / `podman_version_refresh_guard`
+            // settings — private bookkeeping, not user-facing) and wire their
+            // write-backs, so a host CLI pinned away from the registry's latest
+            // triggers at most one version-parity rebuild ever, not one per app
+            // run. Same mirror idiom as the launch knobs above; the guards are
+            // consulted and recorded on spawn/background threads that have no DB
+            // handle. Per runtime because the image stores are separate: a
+            // rebuild that settled docker's mismatch proves nothing about
+            // podman's store.
             {
-                let seeded: std::collections::HashMap<String, String> =
-                    database::get_setting(&db.lock(), sandbox::docker::VERSION_GUARD_SETTING)
+                let seed = |key: &'static str| -> std::collections::HashMap<String, String> {
+                    database::get_setting(&db.lock(), key)
                         .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_default();
-                let guard_db = db.clone();
-                sandbox::docker::init_version_refresh_guard(seeded, move |attempted| {
-                    if let Ok(json) = serde_json::to_string(attempted) {
-                        let _ = database::set_setting(
-                            &guard_db.lock(),
-                            sandbox::docker::VERSION_GUARD_SETTING,
-                            &json,
-                        );
+                        .unwrap_or_default()
+                };
+                let persister = |key: &'static str| {
+                    let guard_db = db.clone();
+                    move |attempted: &std::collections::HashMap<String, String>| {
+                        if let Ok(json) = serde_json::to_string(attempted) {
+                            let _ = database::set_setting(&guard_db.lock(), key, &json);
+                        }
                     }
-                });
+                };
+                sandbox::docker::init_version_refresh_guard(
+                    seed(sandbox::docker::VERSION_GUARD_SETTING),
+                    persister(sandbox::docker::VERSION_GUARD_SETTING),
+                );
+                sandbox::podman::init_version_refresh_guard(
+                    seed(sandbox::podman::VERSION_GUARD_SETTING),
+                    persister(sandbox::podman::VERSION_GUARD_SETTING),
+                );
             }
 
             // Seed the in-process container auth token (mirror of the stored
@@ -1437,11 +1494,14 @@ pub fn run() {
                 }));
             }
 
-            // Forward docker image-build progress to the UI. The
-            // build runs deep in the spawn path (no AppHandle there), so it
-            // emits through a process-wide sink installed here — mirroring the
-            // git-dist emitter above. Rare (first docker spawn per image), so a
-            // single toast fed by these events suffices.
+            // Forward container image-build progress to the UI — either
+            // runtime's, through one sink. The build runs deep in the spawn path
+            // (no AppHandle there), so it emits through a process-wide sink
+            // installed here — mirroring the git-dist emitter above. Rare (first
+            // spawn per image per runtime), so a single toast fed by these events
+            // suffices; `started` carries the runtime name so the toast can say
+            // which one is building. The `docker:build-progress` event name is
+            // the established wire contract and stays as-is.
             {
                 use tauri::Emitter;
                 let handle = app.handle().clone();
@@ -1676,6 +1736,7 @@ pub fn run() {
             submit_claude_setup_code,
             cancel_claude_container_auth,
             set_docker_launch_settings,
+            set_podman_launch_settings,
             workflow::wf_list_runs,
             workflow::wf_get_run,
             workflow::wf_events,

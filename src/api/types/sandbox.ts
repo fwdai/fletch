@@ -21,14 +21,18 @@ export interface ContainerAuthStatus {
   status: "keychain" | "stored-token" | "shell-env" | "credentials-file" | "none";
 }
 
-/** One image-build lifecycle event from the `docker:build-progress` stream.
- *  The embedded agent image is built on the first docker spawn (a slow
- *  `docker build`); these feed the build toast. `line` is set only on `"line"`,
- *  `error` only on `"failed"`. */
+/** One image-build lifecycle event from the `docker:build-progress` stream —
+ *  both container runtimes emit on it (the event name predates Podman and is
+ *  kept as the wire contract). The embedded agent image is built on the first
+ *  spawn under a runtime (a slow `build`); these feed the build toast. `line` is
+ *  set only on `"line"`, `error` only on `"failed"`, and `runtime` (the display
+ *  name, e.g. `"Podman"`) only on `"started"` — optional so an event without it
+ *  still renders. */
 export interface DockerBuildEvent {
   phase: "started" | "line" | "finished" | "failed";
   line?: string;
   error?: string;
+  runtime?: string;
 }
 
 /** One isolation claim and how completely the selected engine delivers it.

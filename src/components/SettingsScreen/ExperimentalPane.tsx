@@ -36,61 +36,78 @@ export function ExperimentalPane() {
         ))}
       </SetGroup>
 
-      <DockerAdvanced />
+      <ContainerLaunchKnobs runtime="docker" />
+      <ContainerLaunchKnobs runtime="podman" last />
     </div>
   );
 }
 
-/** The three Docker launch knobs, in display order. Each maps to a
- *  backend-owned `docker_*` setting; `key` also indexes the draft/store state. */
-const DOCKER_FIELDS = [
+/** The two container runtimes that carry launch knobs, and the copy that differs
+ *  between them: the group heading and the `run` command the limits are passed
+ *  to. Everything else about the three fields is identical, which is why one
+ *  component serves both. */
+const RUNTIMES = {
+  docker: { label: "Docker", bin: "docker" },
+  podman: { label: "Podman", bin: "podman" },
+} as const;
+
+type Runtime = keyof typeof RUNTIMES;
+
+/** The three launch knobs, in display order. Each maps to a backend-owned
+ *  `<runtime>_*` setting; `key` also indexes the draft/store state. */
+const LAUNCH_FIELDS = [
   {
     key: "image",
     title: "Container image",
-    sub: "Override the built-in agent image. It must have Claude Code (`claude`) and git on PATH. Blank uses Fletch's image.",
+    sub: (_: Runtime) =>
+      "Override the built-in agent image. It must have Claude Code (`claude`) and git on PATH. Blank uses Fletch's image.",
     placeholder: "fletch-agent (built-in)",
   },
   {
     key: "memory",
     title: "Memory limit",
-    sub: "Passed to `docker run --memory`. Blank uses the default (4g).",
+    sub: (r: Runtime) =>
+      `Passed to \`${RUNTIMES[r].bin} run --memory\`. Blank uses the default (4g).`,
     placeholder: "4g",
   },
   {
     key: "cpus",
     title: "CPU limit",
-    sub: "Passed to `docker run --cpus`. Blank uses the default (2).",
+    sub: (r: Runtime) => `Passed to \`${RUNTIMES[r].bin} run --cpus\`. Blank uses the default (2).`,
     placeholder: "2",
   },
 ] as const;
 
-/** Advanced Docker-sandbox launch knobs. These persist to the backend-owned
- *  `docker_image` / `docker_memory` / `docker_cpus` settings AND update the
- *  in-process spawn-path mirror, so a change applies to the next docker spawn
- *  without a restart. Only relevant when the Docker engine is selected
+/** Advanced container-sandbox launch knobs for one runtime. These persist to the
+ *  backend-owned `<runtime>_image` / `_memory` / `_cpus` settings AND update the
+ *  in-process spawn-path mirror, so a change applies to the next spawn under
+ *  that runtime without a restart. Only relevant when that engine is selected
  *  (Settings › General › Sandbox); harmless otherwise. */
-function DockerAdvanced() {
-  const dockerImage = useAppStore((s) => s.dockerImage);
-  const dockerMemory = useAppStore((s) => s.dockerMemory);
-  const dockerCpus = useAppStore((s) => s.dockerCpus);
-  const save = useAppStore((s) => s.saveDockerLaunchSettings);
+function ContainerLaunchKnobs({ runtime, last }: { runtime: Runtime; last?: boolean }) {
+  // One selector per value: a selector returning a fresh object would hand
+  // `useSyncExternalStore` a new snapshot on every render.
+  const image = useAppStore((s) => (runtime === "docker" ? s.dockerImage : s.podmanImage));
+  const memory = useAppStore((s) => (runtime === "docker" ? s.dockerMemory : s.podmanMemory));
+  const cpus = useAppStore((s) => (runtime === "docker" ? s.dockerCpus : s.podmanCpus));
+  const save = useAppStore((s) =>
+    runtime === "docker" ? s.saveDockerLaunchSettings : s.savePodmanLaunchSettings,
+  );
 
-  const stored = { image: dockerImage, memory: dockerMemory, cpus: dockerCpus };
   // Local edit state, committed on blur/Enter so we don't persist per keystroke.
-  const [draft, setDraft] = useState(stored);
+  const [draft, setDraft] = useState({ image, memory, cpus });
 
   // Reflect external changes (e.g. a revert on a failed save) back into the
   // fields so they never drift from the store's source of truth. The three
   // values only ever move together (via `save`), so one effect covers them.
   useEffect(() => {
-    setDraft({ image: dockerImage, memory: dockerMemory, cpus: dockerCpus });
-  }, [dockerImage, dockerMemory, dockerCpus]);
+    setDraft({ image, memory, cpus });
+  }, [image, memory, cpus]);
 
   const commit = () => {
     const i = draft.image.trim();
     const m = draft.memory.trim();
     const c = draft.cpus.trim();
-    if (i === dockerImage && m === dockerMemory && c === dockerCpus) return;
+    if (i === image && m === memory && c === cpus) return;
     void save(i, m, c);
   };
 
@@ -99,9 +116,9 @@ function DockerAdvanced() {
   };
 
   return (
-    <SetGroup label="Docker sandbox" last>
-      {DOCKER_FIELDS.map((f) => (
-        <SetRow key={f.key} title={f.title} sub={f.sub}>
+    <SetGroup label={`${RUNTIMES[runtime].label} sandbox`} last={last}>
+      {LAUNCH_FIELDS.map((f) => (
+        <SetRow key={f.key} title={f.title} sub={f.sub(runtime)}>
           <TextInput
             mono
             value={draft[f.key]}

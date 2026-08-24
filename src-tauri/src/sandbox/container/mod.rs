@@ -20,6 +20,14 @@
 //! - [`sweep`] — the startup orphan sweep's probe-retry schedule.
 //! - [`images`] — the embedded Dockerfiles/entrypoints and their
 //!   content-addressed tags. Content only: nothing here builds or inspects.
+//! - [`freshness`] — the image TTL and the host/in-image version-parity
+//!   decision: when a built image has gone stale enough to rebuild.
+//! - [`version_guard`] — the per-runtime loop guard that caps version-parity
+//!   rebuild attempts at one per `host@tag` pairing.
+//! - [`image_gc`] — which superseded agent images to reclaim: the listing
+//!   format, its row parsing, and the selection rule.
+//! - [`progress`] — the process-wide image-build progress sink the UI toast
+//!   listens on.
 //! - [`auth`] — the Anthropic credential chain for containerized agents.
 //! - [`launch_auth`] — per-provider launch preparation: folding resolved
 //!   credentials into the CLI process env and failing fast without one.
@@ -29,14 +37,18 @@
 
 pub mod auth;
 pub(crate) mod config_dir;
+pub(crate) mod freshness;
+pub(crate) mod image_gc;
 pub(crate) mod images;
 pub(crate) mod labels;
 pub(crate) mod launch;
 pub(crate) mod launch_auth;
 pub(crate) mod proc;
+pub mod progress;
 pub(crate) mod provider;
 pub(crate) mod run_args;
 pub(crate) mod sweep;
 pub(crate) mod util;
+pub(crate) mod version_guard;
 
 pub use provider::ContainerProvider;

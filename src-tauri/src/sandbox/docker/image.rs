@@ -7,7 +7,9 @@
 //! Content addressing alone would freeze the *packages inside* an image
 //! forever, though: every image installs "latest at build time" (npm installs,
 //! cursor's installer), so a stable Dockerfile means a user's containerized CLI
-//! never updates while the host CLI does. [`IMAGE_MAX_AGE`] fixes that with a
+//! never updates while the host CLI does.
+//! [`IMAGE_MAX_AGE`](crate::sandbox::container::freshness::IMAGE_MAX_AGE) fixes
+//! that with a
 //! TTL: at resolution, an existing image older than the TTL is served for the
 //! current launch and rebuilt under the same tag in the background
 //! (stale-while-revalidate — see [`refresh_in_background_if_needed`]). A
@@ -29,28 +31,23 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::error::Result;
+use crate::sandbox::container::freshness::{classify_freshness, version_refresh_wanted, Freshness};
 use crate::sandbox::container::images::{image_spec, write_build_context, BASE_IMAGE};
+use crate::sandbox::container::progress::{self, BuildEvent};
 
 use super::cli;
-use super::progress::{self, BuildEvent};
 use super::DockerProvider;
 
 /// The image content this module builds from, re-exported so the
-/// `image::image_tag` / `image::image_repo` / `image::AGENT_IMAGE_LABEL` paths
-/// [`super::cleanup`]'s GC uses keep resolving.
-pub(super) use crate::sandbox::container::images::{image_repo, image_tag, AGENT_IMAGE_LABEL};
+/// `image::image_tag` / `image::AGENT_IMAGE_LABEL` paths [`super::cleanup`]'s GC
+/// uses keep resolving. (The expected-tag and known-repo sets it derives from
+/// them now live in
+/// [`container::image_gc`](crate::sandbox::container::image_gc).)
+pub(super) use crate::sandbox::container::images::{image_tag, AGENT_IMAGE_LABEL};
 
 /// Progress sink for image builds: called once per docker output line. Callers
 /// pass a tracing forwarder to log build output, or `&|_| {}` to ignore it.
 pub type Progress<'a> = &'a (dyn Fn(&str) + Send + Sync);
-
-/// Dogma: **an agent image is never older than a week.** The images install
-/// "latest at build time" (npm installs, cursor's installer), so their
-/// contents freeze at build; this TTL bounds that freeze. An image past the
-/// TTL still serves the current launch — freshness is a background concern,
-/// never a launch blocker — and is rebuilt under the same tag off-thread
-/// (see [`refresh_in_background_if_stale`]). Deliberately not a setting.
-pub const IMAGE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Builds are slow (base image pull + apt + npm) but bounded: past this we
 /// assume a wedged daemon or dead network and fail the spawn with a clear
@@ -68,7 +65,9 @@ const REMOVE_TIMEOUT: Duration = Duration::from_secs(60);
 /// key: a non-empty override is returned verbatim (no build, no inspect, no
 /// TTL, no version check — the user owns that image's lifecycle); otherwise
 /// the embedded image is built if missing, refreshed in the background if
-/// older than [`IMAGE_MAX_AGE`] or version-divergent from the host CLI, and
+/// older than
+/// [`IMAGE_MAX_AGE`](crate::sandbox::container::freshness::IMAGE_MAX_AGE) or
+/// version-divergent from the host CLI, and
 /// its tag returned. Callers read the settings key and probe the host CLI
 /// (`host_cli_version` — see `agent::cached_provider_version`) and pass both
 /// in — this module stays DB-free and host-probe-free.
@@ -151,7 +150,9 @@ fn ensure_image_with(
     // the user is actually waiting on. Each output line is forwarded alongside
     // the caller's own sink so the tracing forwarder / test counter keep
     // working unchanged.
-    progress::emit(BuildEvent::Started);
+    progress::emit(BuildEvent::Started {
+        runtime: super::RUNTIME_NAME,
+    });
     let forward = |line: &str| {
         on_progress(line);
         progress::emit(BuildEvent::Line {
@@ -330,39 +331,11 @@ fn build_args(tag: &str, ctx: &Path, no_cache: bool) -> Vec<String> {
     args
 }
 
-/// TTL verdict for an image's `.Created` timestamp against [`IMAGE_MAX_AGE`].
-/// Pure — `now` is injected so tests use fixed instants. `Unknown` (an
-/// unparseable timestamp) is deliberately its own state: the caller treats it
-/// as fresh, because rebuilding on unparseable metadata would rebuild on
-/// *every* resolution forever (the rebuilt image's metadata would presumably
-/// parse no better if the daemon's format changed under us).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Freshness {
-    Fresh,
-    Stale,
-    Unknown,
-}
-
-/// Classify a raw `docker image inspect --format {{.Created}}` value (RFC3339,
-/// e.g. `2026-07-01T12:00:00.000000000Z`).
-fn classify_freshness(created_raw: &str, now: chrono::DateTime<chrono::Utc>) -> Freshness {
-    let Ok(created) = chrono::DateTime::parse_from_rfc3339(created_raw.trim()) else {
-        return Freshness::Unknown;
-    };
-    // A negative age (clock skew, image "from the future") compares below any
-    // positive TTL and lands on Fresh — the right bias for bad clocks.
-    let max_age = chrono::Duration::from_std(IMAGE_MAX_AGE).expect("TTL fits chrono::Duration");
-    if now.signed_duration_since(created) > max_age {
-        Freshness::Stale
-    } else {
-        Freshness::Fresh
-    }
-}
-
 /// Why a background refresh rebuild was kicked — log attribution, plus the
 /// version trigger's loop-guard bookkeeping on success.
 enum RefreshReason {
-    /// The image's build date passed [`IMAGE_MAX_AGE`].
+    /// The image's build date passed the shared TTL
+    /// ([`IMAGE_MAX_AGE`](crate::sandbox::container::freshness::IMAGE_MAX_AGE)).
     Ttl,
     /// The host CLI's probed version differs from the container image's;
     /// `guard_pair` is the `host@tag` pair recorded (persistently, on rebuild
@@ -461,22 +434,6 @@ fn refresh_in_background_if_needed(
         tag.to_string(),
         RefreshReason::VersionMismatch { guard_pair },
     );
-}
-
-/// Pure core of the version-mismatch trigger: refresh only when both sides
-/// are known, differ (plain `!=` — deliberately no semver ordering: "newer"
-/// is not computable across five vendors' formats, and parity is the actual
-/// goal), and this pairing hasn't already been attempted (rebuilding can't
-/// fix a host that's simply pinned away from the registry's latest).
-fn version_refresh_wanted(
-    host: Option<&str>,
-    container: Option<&str>,
-    already_attempted: bool,
-) -> bool {
-    match (host, container) {
-        (Some(h), Some(c)) => !already_attempted && h != c,
-        _ => false,
-    }
 }
 
 /// Kick the background stale-while-revalidate rebuild shared by both refresh
@@ -707,88 +664,6 @@ mod tests {
                 "fletch-agent:abc123def456",
                 "/tmp/ctx"
             ],
-        );
-    }
-
-    /// The version-mismatch trigger's pure core: refresh only on a known,
-    /// unequal, not-yet-attempted pairing. Plain `!=`, no semver ordering.
-    #[test]
-    fn version_refresh_decision() {
-        // Mismatch → refresh.
-        assert!(version_refresh_wanted(
-            Some("v2.0.1"),
-            Some("v2.0.0"),
-            false
-        ));
-        // Direction doesn't matter (no ordering): host older also fires once.
-        assert!(version_refresh_wanted(
-            Some("v1.0.0"),
-            Some("v2.0.0"),
-            false
-        ));
-        // Match → fresh.
-        assert!(!version_refresh_wanted(
-            Some("v2.0.0"),
-            Some("v2.0.0"),
-            false
-        ));
-        // No host CLI (not installed / probe failed) → inert.
-        assert!(!version_refresh_wanted(None, Some("v2.0.0"), false));
-        // Container version unknown (post-build probe failed) → inert.
-        assert!(!version_refresh_wanted(Some("v2.0.0"), None, false));
-        assert!(!version_refresh_wanted(None, None, false));
-        // Already-attempted pairing → inert (pinned host must not loop).
-        assert!(!version_refresh_wanted(
-            Some("v2.0.1"),
-            Some("v2.0.0"),
-            true
-        ));
-    }
-
-    /// The TTL decision's pure core, with fixed instants: inside the window →
-    /// fresh, past it → stale, unparseable → unknown (treated as fresh by the
-    /// caller — never rebuild-loop on bad metadata), and a future timestamp
-    /// (clock skew) → fresh.
-    #[test]
-    fn freshness_classification() {
-        use chrono::{TimeZone, Utc};
-        let now = Utc.with_ymd_and_hms(2026, 7, 8, 12, 0, 0).unwrap();
-
-        // Docker's actual format: RFC3339 with nanoseconds and Z.
-        assert_eq!(
-            classify_freshness("2026-07-07T12:00:00.123456789Z", now),
-            Freshness::Fresh,
-            "one day old is fresh",
-        );
-        assert_eq!(
-            classify_freshness("2026-07-01T12:00:00Z", now),
-            Freshness::Fresh,
-            "exactly the TTL boundary is still fresh (strictly-older rebuilds)",
-        );
-        assert_eq!(
-            classify_freshness("2026-07-01T11:59:59Z", now),
-            Freshness::Stale,
-            "past the TTL is stale",
-        );
-        assert_eq!(
-            classify_freshness("2026-01-01T00:00:00Z", now),
-            Freshness::Stale,
-            "months old is stale",
-        );
-        assert_eq!(
-            classify_freshness("2026-08-01T00:00:00Z", now),
-            Freshness::Fresh,
-            "a future build date (clock skew) is fresh, not stale",
-        );
-        assert_eq!(
-            classify_freshness("not-a-timestamp", now),
-            Freshness::Unknown,
-        );
-        assert_eq!(classify_freshness("", now), Freshness::Unknown);
-        // Whitespace from the CLI pipe is tolerated.
-        assert_eq!(
-            classify_freshness("  2026-07-07T12:00:00Z\n", now),
-            Freshness::Fresh,
         );
     }
 

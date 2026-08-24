@@ -5,6 +5,8 @@
 
 use parking_lot::RwLock;
 
+use crate::sandbox::container::version_guard::VersionGuard;
+
 /// Settings key overriding the container image (see [`super::image::resolve_image`]).
 pub const IMAGE_SETTING: &str = "docker_image";
 /// Settings key for the container memory limit (`docker run --memory`).
@@ -53,62 +55,37 @@ pub fn set_launch_settings(settings: LaunchSettings) {
 /// attempt.
 pub const VERSION_GUARD_SETTING: &str = "docker_version_refresh_guard";
 
-/// Writes the guard map back to its settings row (installed by
-/// [`init_version_refresh_guard`]).
-type VersionGuardPersist = Box<dyn Fn(&std::collections::HashMap<String, String>) + Send + Sync>;
-
-/// The version-refresh loop guard, mirrored in-process like
-/// [`LAUNCH_SETTINGS`] (the image code that consults it runs on spawn paths
-/// and background threads with no DB handle). Seeded and wired to a persister
-/// at startup by [`init_version_refresh_guard`]; until then (tests, headless)
-/// it's empty and unpersisted, and recording still guards the current
-/// process run.
-struct VersionGuard {
-    /// provider id → `"host_version@image_tag"` last successfully rebuilt for.
-    attempted: std::collections::HashMap<String, String>,
-    /// Writes the whole map back to the settings row.
-    persist: Option<VersionGuardPersist>,
-}
-
-static VERSION_GUARD: RwLock<Option<VersionGuard>> = RwLock::new(None);
+/// Docker's loop-guard state, mirrored in-process like [`LAUNCH_SETTINGS`] (the
+/// image code that consults it runs on spawn paths and background threads with
+/// no DB handle). The machinery is shared with podman — see
+/// [`container::version_guard`](crate::sandbox::container::version_guard) —
+/// while the static and its settings key stay per runtime: an image present in
+/// docker's store says nothing about podman's.
+static VERSION_GUARD: VersionGuard = VersionGuard::new();
 
 /// Install the loop-guard state: `attempted` as loaded from
 /// [`VERSION_GUARD_SETTING`], `persist` writing it back. The app wires this
 /// to a `database::set_setting` closure at startup — the same mirror idiom as
-/// [`set_launch_settings`] and `progress::set_build_sink`.
+/// [`set_launch_settings`] and `container::progress::set_build_sink`.
 pub fn init_version_refresh_guard(
     attempted: std::collections::HashMap<String, String>,
     persist: impl Fn(&std::collections::HashMap<String, String>) + Send + Sync + 'static,
 ) {
-    *VERSION_GUARD.write() = Some(VersionGuard {
-        attempted,
-        persist: Some(Box::new(persist)),
-    });
+    VERSION_GUARD.init(attempted, persist);
 }
 
 /// Whether a version-mismatch rebuild already succeeded for exactly this
 /// `pair` (`"host_version@image_tag"`). If so the trigger is inert: the
 /// mismatch survived a rebuild, so it isn't rebuildable-away (pinned host).
 pub(crate) fn version_refresh_attempted(provider_id: &str, pair: &str) -> bool {
-    VERSION_GUARD
-        .read()
-        .as_ref()
-        .is_some_and(|g| g.attempted.get(provider_id).map(String::as_str) == Some(pair))
+    VERSION_GUARD.attempted(provider_id, pair)
 }
 
 /// Record (and persist, when wired) that a version-mismatch rebuild succeeded
 /// for `pair`. Called from the background rebuild thread on success only —
 /// failures must retry on a later run, exactly like TTL rebuild failures.
 pub(crate) fn record_version_refresh(provider_id: &str, pair: String) {
-    let mut guard = VERSION_GUARD.write();
-    let state = guard.get_or_insert_with(|| VersionGuard {
-        attempted: std::collections::HashMap::new(),
-        persist: None,
-    });
-    state.attempted.insert(provider_id.to_string(), pair);
-    if let Some(persist) = &state.persist {
-        persist(&state.attempted);
-    }
+    VERSION_GUARD.record(provider_id, pair);
 }
 
 /// The current `docker_image` override, trimmed, `None` when unset/blank —

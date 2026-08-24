@@ -10,15 +10,20 @@ import { checkoutKey } from "./git";
 import { autopilotIsDriving, publishPreAuthorized } from "./publishApproval";
 import type { SliceCreator } from "./types";
 
-/** Live state of the embedded docker image build (first docker spawn). `null`
- *  when no build is in progress. `building` streams the latest output line;
- *  `failed` stays up (with `error`) until dismissed. Success clears to `null`. */
+/** Live state of the embedded container image build (first spawn under a
+ *  runtime). `null` when no build is in progress. `building` streams the latest
+ *  output line; `failed` stays up (with `error`) until dismissed. Success clears
+ *  to `null`. */
 export interface DockerBuildProgress {
   status: "building" | "failed";
-  /** Most recent `docker build` output line (building only). */
+  /** Most recent `build` output line (building only). */
   lastLine: string | null;
   /** Failure reason (failed only). */
   error: string | null;
+  /** Display name of the runtime doing the building ("Docker" / "Podman"), from
+   *  the `started` event. `null` when the event didn't name one — the toast then
+   *  falls back to neutral copy rather than guessing a runtime. */
+  runtime: string | null;
 }
 
 export interface SandboxSlice {
@@ -41,6 +46,12 @@ export interface SandboxSlice {
   dockerImage: string;
   dockerMemory: string;
   dockerCpus: string;
+  /** The same three knobs for podman (`podman_image` / `podman_memory` /
+   *  `podman_cpus`), with the same defaults and the same blank-is-unset rule.
+   *  Separate keys so a user running both engines configures each. */
+  podmanImage: string;
+  podmanMemory: string;
+  podmanCpus: string;
   /** Whether an agent must get the user's approval before publishing. Mirrors
    *  the backend-owned `publish_confirmation` setting. Off by default: autopilot
    *  publishes unattended, and a prompt would hang it until the decision
@@ -85,6 +96,8 @@ export interface SandboxSlice {
    *  backend, which writes the settings AND updates the spawn-path mirror.
    *  Reverts the store on failure. */
   saveDockerLaunchSettings: (image: string, memory: string, cpus: string) => Promise<void>;
+  /** The podman twin of `saveDockerLaunchSettings`. */
+  savePodmanLaunchSettings: (image: string, memory: string, cpus: string) => Promise<void>;
   /** Launch Docker Desktop (daemon-down error action); surfaces failures via
    *  `lastError`. */
   startDockerDesktop: () => Promise<void>;
@@ -118,6 +131,9 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   dockerImage: "",
   dockerMemory: "",
   dockerCpus: "",
+  podmanImage: "",
+  podmanMemory: "",
+  podmanCpus: "",
   publishConfirmation: false,
   pendingPublishApprovals: [],
 
@@ -225,6 +241,18 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
         dockerCpus: get().dockerCpus,
       },
       () => api.setDockerLaunchSettings(image || null, memory || null, cpus || null),
+    ),
+
+  savePodmanLaunchSettings: (image, memory, cpus) =>
+    optimistic(
+      set,
+      { podmanImage: image, podmanMemory: memory, podmanCpus: cpus },
+      {
+        podmanImage: get().podmanImage,
+        podmanMemory: get().podmanMemory,
+        podmanCpus: get().podmanCpus,
+      },
+      () => api.setPodmanLaunchSettings(image || null, memory || null, cpus || null),
     ),
 
   startDockerDesktop: async () => {

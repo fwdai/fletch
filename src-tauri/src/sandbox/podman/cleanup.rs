@@ -1,24 +1,35 @@
-//! The dead-instance orphan sweep and the per-agent container removal, for
-//! podman.
+//! The dead-instance orphan sweep, the per-agent container removal, and the
+//! stale-image GC, for podman.
 //!
-//! The same two questions [`docker::cleanup`](crate::sandbox::docker) answers,
+//! The same questions [`docker::cleanup`](crate::sandbox::docker) answers,
 //! against the same labels ([`container::labels`](crate::sandbox::container::labels)):
-//! "whose owning instance is dead?" (startup) and "is anything still running for
-//! *this* agent?" (archive/discard). The label parsing and the under-reclaim
-//! bias are shared with docker; only the invocations differ.
+//! "whose owning instance is dead?" (startup), "is anything still running for
+//! *this* agent?" (archive/discard), and "which agent images has a rebuild
+//! superseded?" ([`sweep_stale_images`]). The label parsing, the selection rule
+//! and the under-reclaim bias are shared with docker
+//! ([`container::image_gc`](crate::sandbox::container::image_gc)); only the
+//! invocations differ.
 //!
 //! One invocation shape does differ in kind: docker has a single daemon, while
-//! podman has one container store per machine and launches pin themselves to
-//! the connection they resolved at the time (see [`super::machine`]). Asking
-//! only the current default would strand containers on every other machine, so
-//! both sweeps run once per machine connection.
+//! podman has one container store *and one image store* per machine, and
+//! launches pin themselves to the connection they resolved at the time (see
+//! [`super::machine`]). Asking only the current default would strand containers —
+//! and superseded images — on every other machine, so all three sweeps run once
+//! per machine connection ([`across_machines`]).
 //!
-//! No image GC here — Podman ships without one for now, so a superseded agent
-//! image stays in the local store until the user reclaims it.
+//! One difference in the image GC: podman runs the labeled arm only. Docker's
+//! second arm exists for images built before the `fletch.agent` label shipped,
+//! and Podman support lands well after it — a Podman store can hold no
+//! pre-label Fletch image, so there is nothing for a legacy allowlist to match.
 
 use std::time::Duration;
 
 use crate::error::{Error, Result};
+use crate::sandbox::container::image_gc::{
+    current_tags, image_removal_refs, known_repos, parse_images_line, ImageRow, IMAGES_FORMAT,
+    RETIRED_REPOS,
+};
+use crate::sandbox::container::images::AGENT_IMAGE_LABEL;
 use crate::sandbox::container::labels::{
     agent_id_filter, orphaned_ids, HOST_PID_LABEL, INSPECT_FORMAT,
 };
@@ -74,7 +85,7 @@ fn sweep_orphans_on(connection: Option<&str>) -> Result<usize> {
 }
 
 /// Remove every container stamped with `fletch.agent-id=<agent_id>`, running or
-/// not. Returns the number removed.
+/// not, on every machine. Returns the number removed.
 ///
 /// The disposal counterpart to [`sweep_orphans`], and deliberately *without*
 /// its pid-liveness check: the caller has decided this specific agent is going
@@ -216,6 +227,91 @@ fn list_ids(connection: Option<&str>, filter: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Remove superseded Fletch agent images from every machine's store. One rule:
+/// an image carrying the `fletch.agent` label that is not one of the current
+/// expected tags is removed — old-hash tags from Dockerfile revisions and
+/// untagged leftovers from refresh rebuilds alike.
+///
+/// Fanned out like the container sweeps, and for the same reason turned up a
+/// level: image stores are per-machine too, so an unpinned pass would GC only
+/// whichever machine happens to be the default and leave every image a launch on
+/// another machine superseded sitting there forever.
+///
+/// Never touched: current tags, the user's `podman_image` override (excluded
+/// defensively even though it can't carry the label), any unlabeled image, and
+/// images in use by a container — `podman rmi` runs WITHOUT `-f`, so an in-use
+/// image fails removal, which is expected and logged at debug. Returns the number
+/// of images actually removed; callers treat all failures as non-fatal.
+pub(super) fn sweep_stale_images() -> Result<usize> {
+    across_machines("podman image sweep", sweep_stale_images_on)
+}
+
+/// One image-GC pass against a single connection's store — what
+/// [`sweep_stale_images`] fans out, and what a background refresh rebuild calls
+/// directly for the one store it just rebuilt in.
+pub(super) fn sweep_stale_images_on(connection: Option<&str>) -> Result<usize> {
+    let refs = image_removal_refs(
+        &list_images(
+            connection,
+            &[
+                "images",
+                "--filter",
+                &format!("label={AGENT_IMAGE_LABEL}"),
+                "--format",
+                IMAGES_FORMAT,
+            ],
+        )?,
+        // No legacy arm: see the module doc — a Podman store predates nothing.
+        &[],
+        &current_tags(),
+        &known_repos(),
+        RETIRED_REPOS,
+        &[],
+        super::settings::image_override().as_deref(),
+    );
+    if refs.is_empty() {
+        return Ok(0);
+    }
+
+    tracing::info!(
+        count = refs.len(),
+        "removing superseded fletch agent images from the podman store"
+    );
+    let mut removed = 0;
+    for image_ref in &refs {
+        // One rmi per image (not batched): a single in-use image must not taint
+        // the exit status the others report. No `-f` — an image backing a running
+        // container stays, by design.
+        let out = cli::run_podman_on(connection, &["rmi", image_ref], REMOVE_TIMEOUT)?;
+        if out.status.success() {
+            removed += 1;
+        } else {
+            tracing::debug!(
+                target: "fletch::podman",
+                image = %image_ref,
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "stale image not removed (expected when a container still uses it)",
+            );
+        }
+    }
+    Ok(removed)
+}
+
+/// Run one `podman images` listing on one connection and parse its rows.
+fn list_images(connection: Option<&str>, args: &[&str]) -> Result<Vec<ImageRow>> {
+    let out = cli::run_podman_on(connection, args, QUERY_TIMEOUT)?;
+    if !out.status.success() {
+        return Err(Error::Other(format!(
+            "podman images failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim(),
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(parse_images_line)
+        .collect())
+}
+
 /// `podman rm -f` over a batch of ids, on one connection.
 fn remove(connection: Option<&str>, ids: &[&str]) -> Result<()> {
     let mut rm_args = vec!["rm", "-f"];
@@ -307,5 +403,80 @@ mod tests {
         assert!(exists(&live_name), "live-instance container must survive");
 
         let _ = cli::run_podman(&["rm", "-f", &live_name], Duration::from_secs(30));
+    }
+
+    /// Integration: a labeled image under a Fletch repo with a non-current tag
+    /// is swept from podman's store; an unlabeled image outside Fletch's repos
+    /// survives. Also pins the one podman-side assumption the shared selection
+    /// rule rests on — that `podman images --format` prints the same three
+    /// whitespace-separated columns docker does, so [`parse_images_line`] reads
+    /// both.
+    ///
+    /// Runs against the default connection (`None`) throughout, which is where
+    /// the images it builds land; [`sweep_stale_images`]'s fan-out then covers it
+    /// as one of the connections it visits.
+    /// `FLETCH_PODMAN_TESTS=1 cargo test -- --ignored`
+    #[test]
+    #[ignore = "requires Podman; opt in via FLETCH_PODMAN_TESTS=1"]
+    fn sweeps_stale_labeled_images_only() {
+        if !crate::sandbox::podman::podman_tests_enabled() {
+            return;
+        }
+        let build = |dockerfile: &str, tag: &str| {
+            let ctx = tempfile::tempdir().unwrap();
+            std::fs::write(ctx.path().join("Dockerfile"), dockerfile).unwrap();
+            let out = cli::run_podman(
+                &["build", "-t", tag, &ctx.path().to_string_lossy()],
+                Duration::from_secs(120),
+            )
+            .unwrap();
+            assert!(
+                out.status.success(),
+                "podman build failed: {}",
+                String::from_utf8_lossy(&out.stderr),
+            );
+        };
+        // A labeled image under Fletch's repo with a tag no provider owns —
+        // exactly what a superseded image looks like.
+        let stale_tag = "fletch-agent:000000000000";
+        build(
+            &format!("FROM busybox\nLABEL {AGENT_IMAGE_LABEL}=claude\n"),
+            stale_tag,
+        );
+        // An unlabeled image outside Fletch's repos: must survive.
+        let bystander = "fletch-gc-test-bystander:keep";
+        build("FROM busybox\nENV FLETCH_GC_TEST=1\n", bystander);
+
+        // The listing must parse before the sweep's verdict means anything.
+        let rows = list_images(
+            None,
+            &[
+                "images",
+                "--filter",
+                &format!("label={AGENT_IMAGE_LABEL}"),
+                "--format",
+                IMAGES_FORMAT,
+            ],
+        )
+        .unwrap();
+        assert!(
+            rows.iter()
+                .any(|r| r.repo == "fletch-agent" && r.tag == "000000000000"),
+            "podman's --format output must parse into the shared row shape: {rows:?}",
+        );
+
+        let removed = sweep_stale_images_on(None).unwrap();
+        assert!(removed >= 1, "the stale labeled image should be swept");
+
+        let exists = |tag: &str| {
+            cli::run_podman(&["image", "inspect", tag], Duration::from_secs(10))
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(!exists(stale_tag), "stale labeled image must be gone");
+        assert!(exists(bystander), "unlabeled non-fletch image must survive");
+
+        let _ = cli::run_podman(&["rmi", "-f", bystander], Duration::from_secs(30));
     }
 }

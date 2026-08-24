@@ -3,11 +3,14 @@ import { Icon } from "./Icon";
 import { Button } from "./ui/Button";
 
 /**
- * Bottom-left toast for the embedded docker agent image build. The first docker
- * spawn triggers a (potentially minutes-long) `docker build`; this surfaces its
- * progress so the wait is legible, then clears itself when the build finishes.
- * A failed build stays up with the reason and a dismiss. Renders nothing when no
- * build is in flight. Fed by the `docker:build-progress` event (see store/app).
+ * Bottom-left toast for the embedded agent image build, under either container
+ * runtime. The first spawn under a runtime triggers a (potentially
+ * minutes-long) image build; this surfaces its progress so the wait is legible,
+ * then clears itself when the build finishes. A failed build stays up with the
+ * reason and a dismiss. Renders nothing when no build is in flight. Fed by the
+ * `docker:build-progress` event (see store/eventListeners), whose `started`
+ * payload names the runtime — absent, the copy stays runtime-neutral rather
+ * than guessing.
  */
 export function DockerBuildToast() {
   const build = useAppStore((s) => s.dockerBuild);
@@ -16,15 +19,14 @@ export function DockerBuildToast() {
   if (!build) return null;
 
   const failed = build.status === "failed";
+  const what = build.runtime ? `${build.runtime} sandbox image` : "container sandbox image";
 
   return (
     <div className="update-toast docker-build-toast" role={failed ? "alert" : "status"}>
       <Icon name={failed ? "close" : "cube"} />
       <div className="update-toast-body">
         <div className="update-toast-text">
-          <strong>
-            {failed ? "Sandbox image build failed" : "Building Docker sandbox image…"}
-          </strong>
+          <strong>{failed ? "Sandbox image build failed" : `Building ${what}…`}</strong>
           <span>
             {failed
               ? (build.error ?? "The build did not complete.")

@@ -38,6 +38,12 @@ fn nonce() -> String {
     hex[..8].to_string()
 }
 
+/// `Some(v)` only when `v` is present and non-blank — settings rows can hold
+/// empty strings, which must fall back to the launch defaults.
+pub(crate) fn non_blank(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
 /// The runtime-specific wording [`describe_exit_code`] renders around. One
 /// value per runtime, declared next to that runtime's engine.
 pub(crate) struct ExitCopy {

@@ -1,14 +1,19 @@
-//! Image-build progress broadcast to the UI.
+//! Image-build progress broadcast to the UI, shared by both container runtimes.
 //!
-//! The embedded agent image is built on the first docker spawn (see
-//! [`super::image::ensure_image`]) — a potentially minutes-long `docker build`
-//! that blocks the spawn until it finishes. That work happens deep in the
-//! engine launch path, which has no `AppHandle`, so this module offers a
-//! process-wide sink the app installs once at startup ([`set_build_sink`]) to
-//! forward build events to the UI. Until a sink is installed (or in headless
-//! tests) emitting is a no-op, so the build path stays decoupled from Tauri —
-//! matching how `engine::set_launch_settings` mirrors settings without a DB
-//! handle.
+//! The embedded agent image is built on the first spawn under a given runtime —
+//! a potentially minutes-long `build` that blocks the spawn until it finishes.
+//! That work happens deep in the engine launch path, which has no `AppHandle`,
+//! so this module offers a process-wide sink the app installs once at startup
+//! ([`set_build_sink`]) to forward build events to the UI. Until a sink is
+//! installed (or in headless tests) emitting is a no-op, so the build path stays
+//! decoupled from Tauri — matching how the engines' `set_launch_settings`
+//! mirrors settings without a DB handle.
+//!
+//! One sink for both runtimes, because there is one toast: only one foreground
+//! build can be in flight at a time under either runtime (each runtime
+//! serializes its builds on its own lock, and a launch waits for its own build),
+//! and [`BuildEvent::Started`] carries the runtime's display name so the toast
+//! can say which one the user is waiting on.
 
 use parking_lot::RwLock;
 
@@ -17,9 +22,12 @@ use parking_lot::RwLock;
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "phase", rename_all = "kebab-case")]
 pub enum BuildEvent {
-    /// A build just started (image missing, `docker build` about to run).
-    Started,
-    /// One line of `docker build` output.
+    /// A build just started (image missing, `build` about to run). `runtime` is
+    /// the runtime's display name ("Docker" / "Podman") so the toast can name
+    /// it; the frontend treats it as optional, so an event without it still
+    /// renders.
+    Started { runtime: &'static str },
+    /// One line of `build` output.
     Line { line: String },
     /// The build finished successfully.
     Finished,
@@ -57,7 +65,7 @@ mod tests {
     fn sink_receives_events_and_no_op_without_one() {
         // No sink installed at first: emitting must not panic (the build path
         // runs in headless tests with no app wired up).
-        emit(BuildEvent::Started);
+        emit(BuildEvent::Started { runtime: "Docker" });
 
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
@@ -65,7 +73,7 @@ mod tests {
             seen.fetch_add(1, Ordering::SeqCst);
         });
 
-        emit(BuildEvent::Started);
+        emit(BuildEvent::Started { runtime: "Podman" });
         emit(BuildEvent::Line {
             line: "step 1/5".into(),
         });
@@ -83,9 +91,12 @@ mod tests {
             json,
             serde_json::json!({ "phase": "line", "line": "pulling base image" })
         );
+        // `started` carries the runtime name alongside the phase the frontend
+        // switches on — an additive field, so the wire contract still holds for
+        // a consumer that only reads `phase`.
         assert_eq!(
-            serde_json::to_value(BuildEvent::Started).unwrap(),
-            serde_json::json!({ "phase": "started" })
+            serde_json::to_value(BuildEvent::Started { runtime: "Podman" }).unwrap(),
+            serde_json::json!({ "phase": "started", "runtime": "Podman" })
         );
         assert_eq!(
             serde_json::to_value(BuildEvent::Failed {
