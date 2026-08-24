@@ -10,9 +10,14 @@
 //! anything but a mount problem.
 //!
 //! So the launch is refused up front, naming the path and the shared dirs. The
-//! check is skipped whenever it can't be answered (no machine at all — a native
-//! Linux host runs containers directly — or an inspect we couldn't parse):
-//! guessing "unshared" there would refuse launches that work fine.
+//! dirs come from the machine behind podman's *default connection* — the one
+//! `podman run` will use — never from any other machine, whose mounts say
+//! nothing about where this run's binds resolve. A default connection that
+//! targets a remote host is refused outright (the identical-path binds cannot
+//! exist there); the check is skipped only when it genuinely can't be answered
+//! (no machine at all — a native Linux host or a local socket runs containers
+//! directly — or a connection list / inspect we couldn't read): guessing
+//! "unshared" there would refuse launches that work fine.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -28,11 +33,22 @@ use super::cli;
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Refuse the launch when any of `sources` lies outside the machine's shared
-/// directories. `sources` is every host path the run will bind-mount — see
+/// directories — or when podman's default connection targets a remote host,
+/// where the identical-path mounts cannot exist at all. `sources` is every
+/// host path the run will bind-mount — see
 /// [`run_args::mount_sources`](crate::sandbox::container::run_args::mount_sources).
 pub(super) fn ensure_sources_are_shared(sources: &[PathBuf]) -> Result<()> {
-    let Some(shared) = shared_dirs() else {
-        return Ok(());
+    let shared = match preflight() {
+        Preflight::Skip => return Ok(()),
+        Preflight::Remote { connection } => {
+            return Err(Error::SandboxUnavailable(format!(
+                "podman's default connection `{connection}` targets a remote host, so the \
+                 agent's mounts (workspace, RPC mailbox, credentials) would not exist inside \
+                 its containers. Make a local Podman machine the default \
+                 (`podman system connection default <machine>`) before launching.",
+            )));
+        }
+        Preflight::Dirs(dirs) => dirs,
     };
     let roots: Vec<PathBuf> = shared.iter().map(|p| resolve_existing_prefix(p)).collect();
     let Some(outside) = sources
@@ -62,83 +78,137 @@ fn is_under_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
-/// The machine's shared host directories, read once per app run: the mounts
-/// don't change without a `podman machine set` + restart, and the check runs on
-/// every launch. `None` means "unanswerable" — no machine (native Linux), an
-/// inspect that failed, or one reporting no mounts at all.
-fn shared_dirs() -> Option<&'static Vec<PathBuf>> {
-    static DIRS: OnceLock<Option<Vec<PathBuf>>> = OnceLock::new();
-    DIRS.get_or_init(|| {
-        // Inspect the machine the launch will actually go through — the one
-        // behind podman's default connection — never a union across machines:
-        // a path shared only by *another* machine would pass the check and
-        // then mount empty in the container this launch starts. When the
-        // connection can't name a machine, the bare inspect (podman's default
-        // machine) is the best remaining answer.
-        let inspect_args: Vec<String> = match connection_machine() {
-            Some(name) => vec!["machine".into(), "inspect".into(), name],
-            None => vec!["machine".into(), "inspect".into()],
+/// What the preflight resolved, read once per app run: the mounts don't
+/// change without a `podman machine set` + restart, and the check runs on
+/// every launch.
+enum Preflight {
+    /// The connection's machine answered with its shared host dirs — check
+    /// every mount source against them.
+    Dirs(Vec<PathBuf>),
+    /// Unanswerable (no machine — native Linux or a local socket — an inspect
+    /// or connection list we couldn't read, or no mounts reported): guessing
+    /// "unshared" would refuse launches that work, so the check is skipped.
+    Skip,
+    /// The default connection targets a remote host. Not a mounts question:
+    /// the identical-path binds cannot exist there at all, so the launch is
+    /// refused — and never validated against some *local* machine's mounts,
+    /// which say nothing about where this run's binds resolve.
+    Remote { connection: String },
+}
+
+fn preflight() -> &'static Preflight {
+    static P: OnceLock<Preflight> = OnceLock::new();
+    P.get_or_init(|| {
+        // Resolve the machine the launch will actually go through — the one
+        // behind podman's default connection (Fletch never passes
+        // `--connection`) — never a union across machines and never a "some
+        // other machine" fallback: mounts of a machine this launch does not
+        // use can pass a path that then arrives empty in the one it does.
+        let machine = match connection_target() {
+            ConnectionTarget::Machine(name) => name,
+            ConnectionTarget::Remote { connection } => {
+                return Preflight::Remote { connection };
+            }
+            ConnectionTarget::LocalSocket | ConnectionTarget::Unknown => {
+                tracing::debug!(
+                    target: "fletch::podman",
+                    "podman default connection names no machine; skipping the shared-path preflight",
+                );
+                return Preflight::Skip;
+            }
         };
-        let args: Vec<&str> = inspect_args.iter().map(String::as_str).collect();
-        let out = cli::run_podman(&args, INSPECT_TIMEOUT).ok()?;
-        if !out.status.success() {
-            // The usual case on Linux: `podman machine` reports no such
-            // machine, because containers run on the host kernel directly and
-            // every host path is reachable.
-            tracing::debug!(
-                target: "fletch::podman",
-                "podman machine inspect reported no machine; skipping the shared-path preflight",
-            );
-            return None;
-        }
+        let inspect = cli::run_podman(&["machine", "inspect", &machine], INSPECT_TIMEOUT);
+        let out = match inspect {
+            Ok(out) if out.status.success() => out,
+            // A stale connection naming a deleted machine, or a wedged CLI:
+            // unanswerable, and `podman run` will fail on its own terms.
+            _ => {
+                tracing::debug!(
+                    target: "fletch::podman",
+                    machine = %machine,
+                    "podman machine inspect failed; skipping the shared-path preflight",
+                );
+                return Preflight::Skip;
+            }
+        };
         let dirs = parse_shared_dirs(&String::from_utf8_lossy(&out.stdout));
         if dirs.is_empty() {
             tracing::debug!(
                 target: "fletch::podman",
+                machine = %machine,
                 "podman machine inspect reported no mounts; skipping the shared-path preflight",
             );
-            return None;
+            return Preflight::Skip;
         }
-        tracing::info!(target: "fletch::podman", ?dirs, "podman machine shared directories");
-        Some(dirs)
+        tracing::info!(target: "fletch::podman", machine = %machine, ?dirs, "podman machine shared directories");
+        Preflight::Dirs(dirs)
     })
-    .as_ref()
 }
 
-/// The machine name behind podman's default connection — the connection every
-/// launch in this app uses (Fletch never passes `--connection`). `None` when
-/// the lookup fails or the default connection isn't a machine at all, and the
-/// caller falls back to inspecting podman's default machine.
-fn connection_machine() -> Option<String> {
-    let out = cli::run_podman(
+/// Where podman's default connection points.
+#[derive(Debug, PartialEq, Eq)]
+enum ConnectionTarget {
+    /// A machine, by name — the authoritative source for shared dirs.
+    Machine(String),
+    /// A local unix socket (rootful Linux, say): no VM in the path, every
+    /// host path is reachable, nothing to check.
+    LocalSocket,
+    /// A remote host: bind sources don't exist there, refuse the launch.
+    Remote { connection: String },
+    /// No default entry, or a list we couldn't run or read.
+    Unknown,
+}
+
+fn connection_target() -> ConnectionTarget {
+    let Ok(out) = cli::run_podman(
         &["system", "connection", "list", "--format", "json"],
         INSPECT_TIMEOUT,
-    )
-    .ok()?;
+    ) else {
+        return ConnectionTarget::Unknown;
+    };
     if !out.status.success() {
-        return None;
+        return ConnectionTarget::Unknown;
     }
-    default_connection_machine(&String::from_utf8_lossy(&out.stdout))
+    classify_default_connection(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// The machine name named by the default entry of `podman system connection
-/// list --format json`. Machine connections come in `<machine>` / `<machine>-root`
-/// pairs, so a trailing `-root` is stripped; an entry that says it is not a
-/// machine (`IsMachine: false` — a remote host) yields `None`, because machine
-/// mounts say nothing about where a remote connection's binds resolve.
-fn default_connection_machine(stdout: &str) -> Option<String> {
-    let connections = serde_json::from_str::<Vec<serde_json::Value>>(stdout).ok()?;
-    let default = connections
+/// Classify the default entry of `podman system connection list --format json`.
+/// Machine connections come in `<machine>` / `<machine>-root` pairs, so a
+/// trailing `-root` is stripped. `IsMachine: false` splits on the URI: a
+/// `unix://` socket is this host (no VM, nothing to check), anything else —
+/// `ssh://`, `tcp://`, or a URI we can't read — is treated as remote and
+/// refused rather than guessed at. Older podman omits `IsMachine`; the name is
+/// taken as a machine name, and the inspect that follows settles whether it
+/// really is one.
+fn classify_default_connection(stdout: &str) -> ConnectionTarget {
+    let Ok(connections) = serde_json::from_str::<Vec<serde_json::Value>>(stdout) else {
+        return ConnectionTarget::Unknown;
+    };
+    let Some(default) = connections
         .iter()
-        .find(|c| c.get("Default").and_then(|d| d.as_bool()) == Some(true))?;
-    if default.get("IsMachine").and_then(|m| m.as_bool()) == Some(false) {
-        return None;
-    }
-    let name = default.get("Name")?.as_str()?.trim();
+        .find(|c| c.get("Default").and_then(|d| d.as_bool()) == Some(true))
+    else {
+        return ConnectionTarget::Unknown;
+    };
+    let name = default
+        .get("Name")
+        .and_then(|n| n.as_str())
+        .map(str::trim)
+        .unwrap_or_default();
     if name.is_empty() {
-        return None;
+        return ConnectionTarget::Unknown;
     }
-    Some(name.strip_suffix("-root").unwrap_or(name).to_string())
+    if default.get("IsMachine").and_then(|m| m.as_bool()) == Some(false) {
+        let uri = default.get("URI").and_then(|u| u.as_str()).unwrap_or("");
+        return if uri.starts_with("unix://") {
+            ConnectionTarget::LocalSocket
+        } else {
+            ConnectionTarget::Remote {
+                connection: name.to_string(),
+            }
+        };
+    }
+    ConnectionTarget::Machine(name.strip_suffix("-root").unwrap_or(name).to_string())
 }
 
 /// Host-side sources from `podman machine inspect` output: a JSON array whose
@@ -232,39 +302,67 @@ mod tests {
         );
     }
 
-    /// The default connection names the machine a launch goes through; `-root`
-    /// pairs collapse to the machine name, a non-machine default (remote host)
-    /// yields nothing, and so does an unreadable or default-less list.
+    /// The default connection decides which machine (if any) the preflight may
+    /// consult: `-root` pairs collapse to the machine name, a local unix socket
+    /// means no VM at all, and a remote default must classify as `Remote` —
+    /// never fall back to some local machine whose mounts say nothing about
+    /// where this run's binds resolve.
     #[test]
-    fn default_connection_selects_the_machine() {
+    fn default_connection_classifies_machine_socket_and_remote() {
         let rootful = r#"[
           { "Name": "podman-machine-default", "IsMachine": true, "Default": false },
           { "Name": "work-vm-root", "IsMachine": true, "Default": true },
           { "Name": "work-vm", "IsMachine": true, "Default": false }
         ]"#;
         assert_eq!(
-            default_connection_machine(rootful),
-            Some("work-vm".to_string())
+            classify_default_connection(rootful),
+            ConnectionTarget::Machine("work-vm".to_string())
         );
 
-        let remote = r#"[
-          { "Name": "build-box", "IsMachine": false, "Default": true },
+        let remote_ssh = r#"[
+          { "Name": "build-box", "IsMachine": false, "Default": true, "URI": "ssh://core@build.example.com:22/run/podman/podman.sock" },
           { "Name": "podman-machine-default", "IsMachine": true, "Default": false }
         ]"#;
-        assert_eq!(default_connection_machine(remote), None);
-
-        // Older podman omits IsMachine; the name is still the machine.
-        let legacy = r#"[ { "Name": "podman-machine-default", "Default": true } ]"#;
         assert_eq!(
-            default_connection_machine(legacy),
-            Some("podman-machine-default".to_string())
+            classify_default_connection(remote_ssh),
+            ConnectionTarget::Remote {
+                connection: "build-box".to_string()
+            }
         );
 
-        assert_eq!(default_connection_machine("[]"), None);
-        assert_eq!(default_connection_machine("Error: unknown"), None);
+        // Explicitly not a machine with no readable URI: refused, not guessed.
+        let remote_no_uri = r#"[ { "Name": "mystery", "IsMachine": false, "Default": true } ]"#;
         assert_eq!(
-            default_connection_machine(r#"[{ "Name": "m", "Default": false }]"#),
-            None
+            classify_default_connection(remote_no_uri),
+            ConnectionTarget::Remote {
+                connection: "mystery".to_string()
+            }
+        );
+
+        let local_socket = r#"[
+          { "Name": "local-root", "IsMachine": false, "Default": true, "URI": "unix:///run/podman/podman.sock" }
+        ]"#;
+        assert_eq!(
+            classify_default_connection(local_socket),
+            ConnectionTarget::LocalSocket
+        );
+
+        // Older podman omits IsMachine; the name is taken as a machine name
+        // and the inspect that follows settles it.
+        let legacy = r#"[ { "Name": "podman-machine-default", "Default": true } ]"#;
+        assert_eq!(
+            classify_default_connection(legacy),
+            ConnectionTarget::Machine("podman-machine-default".to_string())
+        );
+
+        assert_eq!(classify_default_connection("[]"), ConnectionTarget::Unknown);
+        assert_eq!(
+            classify_default_connection("Error: unknown"),
+            ConnectionTarget::Unknown
+        );
+        assert_eq!(
+            classify_default_connection(r#"[{ "Name": "m", "Default": false }]"#),
+            ConnectionTarget::Unknown
         );
     }
 
