@@ -105,6 +105,39 @@ pub struct TrackedRepo {
     /// back to the folder basename in the UI and in agent-facing notes.
     #[serde(default)]
     pub label: Option<String>,
+    /// A pre-provisioned working tree this entry *adopted* instead of the
+    /// agent-owned `~/.fletch/workspaces/<agent-id>/<subdir>/` — today only the
+    /// workflow kernel's shared run workspace (`~/.fletch/runs/<id>/repo`),
+    /// which every step of the run works in.
+    ///
+    /// Adoption inverts ownership: the agent is a tenant of a directory whose
+    /// lifetime belongs to something else. Nothing on the agent's disposal path
+    /// (archive, discard, project delete) may remove it — see
+    /// `disposition::teardown_agent_checkouts` — and nothing provisions it: the
+    /// tree already exists at spawn, with its own HEAD.
+    ///
+    /// `None` for every ordinary checkout, which the agent owns outright.
+    #[serde(default)]
+    pub adopted_checkout: Option<PathBuf>,
+}
+
+impl TrackedRepo {
+    /// Absolute path to this checkout's working tree — the single answer every
+    /// consumer (the CLI's cwd, git facts, the shell, the file tree, teardown)
+    /// must resolve through, so an adopted tree can't be reached by one caller
+    /// and missed by the next.
+    pub fn checkout_path(&self, agent_id: &str) -> Result<PathBuf> {
+        match &self.adopted_checkout {
+            Some(path) => Ok(path.clone()),
+            None => repo_checkout_path(agent_id, &self.subdir),
+        }
+    }
+
+    /// Whether this checkout is owned by something other than the agent, and so
+    /// survives the agent's disposal.
+    pub fn is_adopted(&self) -> bool {
+        self.adopted_checkout.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

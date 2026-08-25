@@ -1315,6 +1315,9 @@ pub(crate) fn build_spawn_req(
         fork_base: Some(fork_base.to_string()),
         run_repo: Some(run_repo.to_path_buf()),
         owner_run_id: run_id.to_string(),
+        // The clone-per-step engine never shares a workspace; only the kernel
+        // runner sets this.
+        existing_workspace: None,
     }
 }
 

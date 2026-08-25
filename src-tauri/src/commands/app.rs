@@ -7,7 +7,7 @@ use tauri::State;
 use crate::error::{Error, Result};
 use crate::git;
 use crate::supervisor::Supervisor;
-use crate::workspace::{repo_checkout_path, AgentRecord, DiffStats, Workspace};
+use crate::workspace::{AgentRecord, DiffStats, Workspace};
 
 use super::files::{agent_repo_checkout, diff_base, primary_repo_checkout};
 
@@ -108,7 +108,7 @@ pub async fn get_agent_diff_stats(
     let mut stats = DiffStats::default();
 
     for repo in &record.repos {
-        let checkout = repo_checkout_path(&agent_id, &repo.subdir)?;
+        let checkout = repo.checkout_path(&agent_id)?;
         let base = diff_base(repo);
         let base_ref = base.as_deref().unwrap_or("HEAD");
         let diff = match git::checkout_diff_shortstat(&checkout, base_ref).await {

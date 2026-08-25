@@ -222,6 +222,7 @@ impl SandboxEngine for DockerEngine {
                 home: ctx.home,
                 cwd: ctx.cwd,
                 blackboard: ctx.blackboard,
+                adopted_workspace: ctx.adopted_workspace(),
                 mounts: prep.mounts(),
                 borrowed_object_stores: &prep.borrowed_object_stores,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),

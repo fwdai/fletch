@@ -1,0 +1,17 @@
+-- A working tree the agent adopted rather than provisioned.
+--
+-- Every checkout so far has been agent-owned: the spawn cloned it at
+-- `~/.fletch/workspaces/<workspace-id>/<subdir>/` and archive/discard removed
+-- it. The workflow kernel introduces the other ownership direction — all
+-- sequential steps of a run share ONE pre-provisioned working tree (the run
+-- repo at `~/.fletch/runs/<run-id>/repo`), so a step agent is a tenant of a
+-- directory the *run* owns: it is never cloned per step, and it must outlive
+-- every agent that works in it.
+--
+-- Holding the path here rather than re-deriving it makes that one fact
+-- authoritative for every consumer (the CLI's working dir, git facts, the
+-- shell, the file tree, teardown), so no reader can resolve the agent-owned
+-- layout for a tree that isn't there. NULL — the only value an existing row can
+-- have, and the default for every ordinary spawn — means the agent owns its
+-- checkout at the derived path.
+ALTER TABLE worktrees ADD COLUMN adopted_checkout TEXT;

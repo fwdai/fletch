@@ -195,7 +195,7 @@ impl WorkspaceManager {
     fn query_tracked_repos(conn: &Connection, agent_id: &str) -> Vec<TrackedRepo> {
         let mut stmt = match conn.prepare(
             "SELECT r.path, w.subdir, w.branch, w.parent_branch, w.base_sha, w.pr_number,
-                    w.pr_url, w.pr_title, w.pr_state, r.label
+                    w.pr_url, w.pr_title, w.pr_state, r.label, w.adopted_checkout
              FROM worktrees w
              JOIN repos r ON r.id = w.repo_id
              WHERE w.workspace_id = ?1
@@ -216,6 +216,7 @@ impl WorkspaceManager {
             let pr_title: Option<String> = row.get(7)?;
             let pr_state: Option<String> = row.get(8)?;
             let label: Option<String> = row.get(9)?;
+            let adopted: Option<String> = row.get(10)?;
             Ok(TrackedRepo {
                 repo_path: PathBuf::from(path),
                 subdir,
@@ -227,6 +228,7 @@ impl WorkspaceManager {
                 pr_title,
                 pr_state,
                 label,
+                adopted_checkout: adopted.map(PathBuf::from),
             })
         })
         .ok()
@@ -369,8 +371,8 @@ impl WorkspaceManager {
 
         let wt_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO worktrees (id, workspace_id, repo_id, subdir, branch, parent_branch, base_sha, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO worktrees (id, workspace_id, repo_id, subdir, branch, parent_branch, base_sha, adopted_checkout, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 wt_id,
                 agent_id,
@@ -379,6 +381,9 @@ impl WorkspaceManager {
                 repo.branch,
                 repo.parent_branch,
                 repo.base_sha,
+                repo.adopted_checkout
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
                 now_millis(),
             ],
         )?;

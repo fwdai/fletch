@@ -85,6 +85,25 @@ pub struct AgentLaunchCtx<'a> {
     pub blackboard: Option<&'a Path>,
 }
 
+impl<'a> AgentLaunchCtx<'a> {
+    /// The working tree this launch must be able to write *outside* the writable
+    /// root — an adopted checkout, i.e. the workflow kernel's shared run
+    /// workspace (`~/.fletch/runs/<run-id>/repo`), which every step of a run
+    /// works in instead of cloning one under its own root.
+    ///
+    /// Derived from `cwd` rather than declared by the caller: an agent always
+    /// runs in its own checkout, so a `cwd` outside `writable_root` IS an
+    /// adopted tree — and a launch path that forgot to declare it would hand the
+    /// agent a working directory it cannot write (seatbelt) or that the runtime
+    /// invents empty (containers). Both engines grant it the same way they grant
+    /// [`blackboard`](Self::blackboard): seatbelt as a writable subpath (with
+    /// its own invariant-3 deny), a container runtime as a read-write bind at
+    /// the identical host path.
+    pub fn adopted_workspace(&self) -> Option<&'a Path> {
+        (!self.cwd.starts_with(self.writable_root)).then_some(self.cwd)
+    }
+}
+
 /// Engine-specific data describing how to tear down what was launched.
 #[derive(Clone)]
 pub enum KillPlan {
@@ -178,7 +197,38 @@ pub trait SandboxEngine: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::EngineKind;
+    use super::{AgentLaunchCtx, EngineKind};
+    use std::path::{Path, PathBuf};
+
+    fn ctx<'a>(writable_root: &'a Path, cwd: &'a Path) -> AgentLaunchCtx<'a> {
+        AgentLaunchCtx {
+            agent_id: "yosemite",
+            provider: "claude",
+            writable_root,
+            source_repos: &[],
+            rpc_dir: Path::new("/rpc/yosemite"),
+            cwd,
+            home: Path::new("/home/u"),
+            interactive: true,
+            blackboard: None,
+        }
+    }
+
+    /// An ordinary agent's cwd is one of its own checkouts under the writable
+    /// root, so it needs no grant of its own; a kernel step's cwd is the run's
+    /// shared tree, which does.
+    #[test]
+    fn adopted_workspace_is_the_cwd_only_when_it_escapes_the_writable_root() {
+        let root = PathBuf::from("/w/yosemite");
+        assert_eq!(ctx(&root, &root.join("repo")).adopted_workspace(), None);
+        assert_eq!(ctx(&root, &root).adopted_workspace(), None);
+
+        let run_tree = PathBuf::from("/runs/run-7/repo");
+        assert_eq!(
+            ctx(&root, &run_tree).adopted_workspace(),
+            Some(run_tree.as_path())
+        );
+    }
 
     #[test]
     fn engine_kind_setting_round_trips() {

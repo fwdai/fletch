@@ -106,7 +106,71 @@ fn mk_repo(path: &str) -> TrackedRepo {
         pr_title: None,
         pr_state: None,
         label: None,
+        adopted_checkout: None,
     }
+}
+
+/// An adopted checkout is the authoritative path for that repo entry, while an
+/// ordinary entry still derives one from the agent id + subdir. Every consumer
+/// resolves through this, so the two must not be confusable.
+#[test]
+fn checkout_path_prefers_an_adopted_tree_over_the_derived_layout() {
+    let derived = mk_repo("/r").checkout_path("yosemite").unwrap();
+    assert_eq!(derived, repo_checkout_path("yosemite", "repo").unwrap());
+
+    let run_tree = PathBuf::from("/runs/run-7/repo");
+    let adopted = TrackedRepo {
+        adopted_checkout: Some(run_tree.clone()),
+        ..mk_repo("/r")
+    };
+    assert_eq!(adopted.checkout_path("yosemite").unwrap(), run_tree);
+    assert!(adopted.is_adopted());
+    assert!(!mk_repo("/r").is_adopted());
+}
+
+/// The adopted path has to survive the DB, not just the spawn call: every later
+/// launch, gate and teardown reads the record back rather than the spawn request.
+#[test]
+fn adopted_checkout_round_trips_and_is_cleared_by_restore() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+    let run_tree = PathBuf::from("/runs/run-7/repo");
+
+    let mut record = new_agent_record(
+        "yosemite".into(),
+        "a".into(),
+        "claude".into(),
+        TrackedRepo {
+            adopted_checkout: Some(run_tree.clone()),
+            ..mk_repo("/r")
+        },
+        "task".into(),
+        AgentView::Custom,
+    );
+    wm.add_agent(&mut record).unwrap();
+
+    let loaded = wm.agent("yosemite").unwrap();
+    assert_eq!(loaded.repos[0].adopted_checkout, Some(run_tree));
+    assert_eq!(
+        loaded.repos[0].checkout_path("yosemite").unwrap(),
+        PathBuf::from("/runs/run-7/repo")
+    );
+
+    // Restore provisions an agent-owned clone at the derived path, so the row
+    // must stop naming the run's tree.
+    wm.archive_agent(
+        "yosemite",
+        ArchiveMetadata {
+            archived_at: chrono::Utc::now().to_rfc3339(),
+            repos: Vec::new(),
+            diff_stats: DiffStats::default(),
+        },
+    )
+    .unwrap();
+    wm.restore_agent("yosemite", vec![mk_repo("/r")]).unwrap();
+    let restored = wm.agent("yosemite").unwrap();
+    assert_eq!(restored.repos[0].adopted_checkout, None);
 }
 
 /// Helper: ensure the repo path exists in the repos table so add_agent can find it.
@@ -1643,6 +1707,7 @@ fn archive_then_restore_roundtrip() {
         pr_title: None,
         pr_state: None,
         label: None,
+        adopted_checkout: None,
     }];
     wm.restore_agent(&id, restored).unwrap();
     let a = wm.agent(&id).unwrap();
@@ -1712,6 +1777,7 @@ fn make_workspace_with_session(db: &Arc<Mutex<Connection>>) -> (String, Workspac
             pr_title: None,
             pr_state: None,
             label: None,
+            adopted_checkout: None,
         },
         "task".into(),
         AgentView::Custom,

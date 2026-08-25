@@ -145,10 +145,7 @@ impl Supervisor {
         let fork_base = primary.parent_branch.clone();
         let carry_from = match code {
             ForkCode::Clean => None,
-            ForkCode::Carry => Some(crate::workspace::repo_checkout_path(
-                parent_id,
-                &primary.subdir,
-            )?),
+            ForkCode::Carry => Some(primary.checkout_path(parent_id)?),
         };
 
         let req = SpawnRequest {
@@ -166,6 +163,7 @@ impl Supervisor {
             fork_base,
             run_repo: None,
             owner_run_id: None,
+            existing_workspace: None,
             carry_from,
             // A fork is a fresh line of work; it doesn't inherit the parent's
             // originating issue (only one workspace should close it).

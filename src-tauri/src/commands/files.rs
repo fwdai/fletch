@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::git_state::{self, FileStatus, StatusKind};
 use crate::supervisor::Supervisor;
-use crate::workspace::{repo_checkout_path, TrackedRepo};
+use crate::workspace::TrackedRepo;
 
 /// The ref a checkout's *committed* changes are diffed against: the immutable
 /// fork-point SHA captured at spawn when known, else the parent branch name
@@ -231,7 +231,7 @@ pub(super) fn primary_repo_checkout(
     agent_id: &str,
 ) -> Result<(TrackedRepo, PathBuf)> {
     let repo = primary_repo(supervisor, agent_id)?;
-    let checkout = repo_checkout_path(agent_id, &repo.subdir)?;
+    let checkout = repo.checkout_path(agent_id)?;
     Ok((repo, checkout))
 }
 
@@ -252,7 +252,7 @@ pub(super) fn agent_repo_checkout(
         .into_iter()
         .find(|r| r.subdir == s)
         .ok_or_else(|| Error::Other(format!("agent has no tracked repo {s:?}")))?;
-    let checkout = repo_checkout_path(agent_id, &repo.subdir)?;
+    let checkout = repo.checkout_path(agent_id)?;
     Ok((repo, checkout))
 }
 
@@ -274,7 +274,7 @@ pub(super) fn agent_repo_checkout_opt(
     let Some(repo) = repo else {
         return Ok(None);
     };
-    let checkout = repo_checkout_path(agent_id, &repo.subdir)?;
+    let checkout = repo.checkout_path(agent_id)?;
     Ok(Some((repo, checkout)))
 }
 
@@ -332,7 +332,7 @@ fn checkout_scope_for_path(
         return Ok((checkout, parent, path.to_string()));
     }
     let (repo, rel) = split_repo_path(&record.repos, path)?;
-    let checkout = repo_checkout_path(agent_id, &repo.subdir)?;
+    let checkout = repo.checkout_path(agent_id)?;
     let parent = diff_base(repo).unwrap_or_else(|| "main".to_string());
     Ok((checkout, parent, rel))
 }
@@ -411,7 +411,7 @@ pub async fn list_checkout_tree(
     for repo in &record.repos {
         // One broken checkout shouldn't blank the whole tree — skip it and
         // keep listing the others.
-        let Ok(checkout) = repo_checkout_path(&agent_id, &repo.subdir) else {
+        let Ok(checkout) = repo.checkout_path(&agent_id) else {
             continue;
         };
         let parent = diff_base(repo).unwrap_or_else(|| "main".to_string());
@@ -698,6 +698,7 @@ mod split_repo_path_tests {
             pr_title: None,
             pr_state: None,
             label: None,
+            adopted_checkout: None,
         }
     }
 

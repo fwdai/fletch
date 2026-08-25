@@ -150,6 +150,17 @@ pub(crate) fn prepare(
             board.to_string_lossy().into_owned(),
         ));
     }
+    // The adopted tree is this launch's `cwd`: bound missing, the runtime would
+    // invent an empty root-owned dir and the agent would start in a workspace
+    // with none of the run's work in it. Fail with the path instead.
+    if let Some(tree) = ctx.adopted_workspace() {
+        if !tree.is_dir() {
+            return Err(Error::Other(format!(
+                "adopted workspace missing at launch: {}",
+                tree.display()
+            )));
+        }
+    }
 
     // Owned per-provider mount inputs, borrowed into a `ProviderMounts` by
     // `ContainerLaunch::mounts`. Only the matched arm fills any of these in.

@@ -2,7 +2,7 @@
 //! respawns, and the shared output/exit/watchdog handlers.
 
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -159,6 +159,20 @@ pub(super) async fn provision_codegraph_index(
     });
 }
 
+/// Undo what a failed spawn created: the checkout it provisioned, then the
+/// agent's dir. `checkout` is `None` when the spawn *adopted* its working tree
+/// — that directory belongs to the run, not the agent, so a step whose process
+/// never came up must not take the run's work down with it. The agent dir is
+/// always removed: it holds only Fletch-generated per-agent artifacts, and an
+/// adopted tree is never inside it (adoption records the real path rather than
+/// linking to it, so no recursive delete can reach through).
+async fn discard_failed_spawn(checkout: Option<&Path>, parent_dir: &Path) {
+    if let Some(checkout) = checkout {
+        let _ = provision::teardown(checkout).await;
+    }
+    let _ = tokio::fs::remove_dir_all(parent_dir).await;
+}
+
 /// Resolved, per-spawn inputs for `spawn_agent_process` — everything that
 /// isn't already carried on the `AgentRecord` (paths, session id, and this
 /// spawn's generation number).
@@ -243,6 +257,12 @@ pub struct SpawnRequest {
     /// normal sidebar and cleaned up by `wf_delete_run`. `None` for a normal
     /// user spawn.
     pub owner_run_id: Option<String>,
+    /// A pre-provisioned checkout this agent adopts as its primary workspace
+    /// instead of cloning one — the workflow kernel's shared run workspace.
+    /// When set, provisioning is skipped (`fork_base`/`run_repo` are ignored)
+    /// and teardown must never remove the directory: the run owns it, not the
+    /// agent. `None` for every non-kernel spawn.
+    pub existing_workspace: Option<PathBuf>,
     /// Fork "carry code": another workspace's primary checkout whose current
     /// working tree (incl. uncommitted work) is overlaid onto this fresh
     /// checkout after provisioning, so the fork starts from that workspace's
@@ -281,6 +301,7 @@ impl Supervisor {
             fork_base,
             run_repo,
             owner_run_id,
+            existing_workspace,
             carry_from,
             issue_ref,
             purpose,
@@ -340,6 +361,25 @@ impl Supervisor {
             Some(base) if !base.trim().is_empty() => base.trim().to_string(),
             _ => git::default_branch(&repo_path).await,
         };
+        // Adopting a pre-provisioned tree must be decided before anything else:
+        // it is the one mode in which no clone happens, so the base the caller
+        // asked for is only ever the *recorded* parent branch, never a fork
+        // point. The directory must already be a working tree — the run
+        // provisions it before the first step (see `SpawnRequest`), and
+        // discovering otherwise later means a spawn that failed after the record
+        // was written.
+        let adopted = match existing_workspace {
+            Some(path) => {
+                if !path.join(".git").exists() {
+                    return Err(Error::InvalidPath(format!(
+                        "adopted workspace is not a git repository: {}",
+                        path.display()
+                    )));
+                }
+                Some(path)
+            }
+            None => None,
+        };
         let subdir = allocate_repo_subdir(&repo_path, &[]);
         // Cloned for the background fork task — `parent_branch`/`subdir` are
         // moved into `primary` below.
@@ -362,6 +402,9 @@ impl Supervisor {
             pr_title: None,
             pr_state: None,
             label: None,
+            // Set only by the kernel's adopting spawn; every other spawn owns
+            // the checkout the fork task provisions below.
+            adopted_checkout: adopted.clone(),
         };
 
         let mut record = new_agent_record(
@@ -414,7 +457,9 @@ impl Supervisor {
         }
         let agent_id = record.id.clone();
         let parent_dir = agent_parent_dir(&agent_id)?;
-        let primary_checkout = repo_checkout_path(&agent_id, &subdir)?;
+        // Resolved through the record's own repo entry so the adopted tree and
+        // the derived layout can't disagree here and in `start_process`.
+        let primary_checkout = record.repos[0].checkout_path(&agent_id)?;
         crate::telemetry::track(
             "agent_spawned",
             serde_json::json!({
@@ -432,6 +477,7 @@ impl Supervisor {
         let project_id_for_task = record.project_id.clone();
         let provider_for_task = record.provider.clone();
         let mcp_servers_for_task = record.mcp_servers.clone();
+        let adopted_for_task = adopted.is_some();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
@@ -451,8 +497,15 @@ impl Supervisor {
             // source's HEAD branch as a local branch, so checking out any
             // *other* branch by name trips git's remote-DWIM (an implicit `-b`),
             // which is fatal combined with `--detach`.
+            //
+            // An adopted tree skips every rung of this: it already exists at the
+            // commit the run put it on, so there is no fork to make, no base to
+            // fetch, and no freshness to degrade — `fork_base`/`run_repo` are
+            // inputs to provisioning only, and provisioning is what adoption
+            // replaces.
             let mut base_freshness = None;
             let provision_result = match &run_repo_for_task {
+                _ if adopted_for_task => Ok(()),
                 // Workflow step (§12.1): fork from `fork_base` in the run repo.
                 // `base_ref` is used as-is and never fetched from `origin` —
                 // it's a run-internal commit-ish, not a branch: step 1's
@@ -497,9 +550,15 @@ impl Supervisor {
                 sup.stale_base.lock().insert(id_for_task.clone());
             }
 
+            // What a failed spawn below is allowed to remove — never an adopted
+            // tree (see `discard_failed_spawn`).
+            let owned_checkout = (!adopted_for_task).then(|| primary_checkout.clone());
+
             // Record the fork point so diffs measure against the exact starting
             // commit rather than a branch name that can drift. Non-fatal: a
-            // missing base_sha just falls back to the parent branch name.
+            // missing base_sha just falls back to the parent branch name. Read
+            // from the checkout either way, so an adopted tree's base is the
+            // commit the run left it on rather than a fork that never happened.
             let base_sha = git::rev_parse(&primary_checkout, "HEAD").await.ok();
             if let Some(sha) = &base_sha {
                 let _ = sup
@@ -538,8 +597,7 @@ impl Supervisor {
                     )),
                 };
                 if let Err(e) = carried {
-                    let _ = provision::teardown(&primary_checkout).await;
-                    let _ = tokio::fs::remove_dir_all(&parent_dir).await;
+                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
                     fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
                     return;
                 }
@@ -550,8 +608,9 @@ impl Supervisor {
             // (untouched repos are just clean clones). Runs before
             // start_process so the Docker engine's mounts and the git RPC
             // dispatcher see the full repo set. Workflow step agents stay
-            // single-repo — a run targets one repo (see `wf_launch`).
-            if run_repo_for_task.is_none() {
+            // single-repo — a run targets one repo (see `wf_launch`), which
+            // covers both the forking and the adopting shape of a step spawn.
+            if run_repo_for_task.is_none() && !adopted_for_task {
                 for source in sup.workspace.project_repo_paths(&project_id_for_task) {
                     if source == repo_path {
                         continue;
@@ -560,8 +619,7 @@ impl Supervisor {
                         .attach_repo_checkout(&app_for_task, &id_for_task, source.clone(), false)
                         .await
                     {
-                        let _ = provision::teardown(&primary_checkout).await;
-                        let _ = tokio::fs::remove_dir_all(&parent_dir).await;
+                        discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
                         fail_spawn(
                             &sup,
                             &app_for_task,
@@ -576,8 +634,7 @@ impl Supervisor {
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
-                let _ = provision::teardown(&primary_checkout).await;
-                let _ = tokio::fs::remove_dir_all(&parent_dir).await;
+                discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
                 fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
             }
         });
@@ -682,6 +739,7 @@ impl Supervisor {
             pr_title: None,
             pr_state: None,
             label: None,
+            adopted_checkout: None,
         };
         self.workspace.append_tracked_repo(agent_id, repo.clone())?;
         emit_repo_added(app, agent_id, repo.clone());
@@ -711,7 +769,7 @@ impl Supervisor {
             .repos
             .first()
             .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?;
-        let cwd = repo_checkout_path(agent_id, &primary.subdir)?;
+        let cwd = primary.checkout_path(agent_id)?;
         // Sandbox writable root — the agent's parent dir. Every agent (claude
         // and per-turn alike) now runs under sandbox-exec rooted here.
         let sandbox_root = agent_parent_dir(agent_id)?;
@@ -742,7 +800,7 @@ impl Supervisor {
         // agents (and old prompts) behave exactly as before.
         let mut repo_targets = Vec::new();
         for r in &record.repos {
-            let checkout = repo_checkout_path(agent_id, &r.subdir)?;
+            let checkout = r.checkout_path(agent_id)?;
             let base = r
                 .parent_branch
                 .clone()
