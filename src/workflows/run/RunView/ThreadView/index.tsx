@@ -60,10 +60,11 @@ export function ThreadView({
 
   // Whether the live agent's chat is putting anything on screen this moment. It
   // decides whether the thread owes the user a phase row: a streaming turn
-  // already speaks for itself.
-  const streaming = useAppStore((s) =>
-    live ? (s.managedBusy[live.id] ?? false) || (s.managedLogs[live.id]?.length ?? 0) > 0 : false,
-  );
+  // already speaks for itself. This must be a *now* signal — `managedBusy`
+  // flips at turn start/end. Anything cumulative (e.g. a nonempty log) reads as
+  // "has ever streamed" and would suppress the working row for every quiet
+  // interval after the step's first output.
+  const streaming = useAppStore((s) => (live ? (s.managedBusy[live.id] ?? false) : false));
 
   const phase = useMemo(
     () => derivePhase({ run, events, steps, attempts, streaming }),
