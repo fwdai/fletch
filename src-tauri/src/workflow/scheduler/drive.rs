@@ -80,7 +80,16 @@ pub(crate) fn spawn_drive_task(
     };
     let id = run_id.clone();
     let join = tauri::async_runtime::spawn(async move {
-        drive_run(&ctx, &id).await;
+        // The one routing site (see `docs/workflow-kernel-layers.md`): a flat
+        // sequence of steps with only commit/verdict gates runs on the
+        // sequential kernel; every richer spec stays on this engine. The
+        // decision comes from the run's frozen spec, so a re-drive of the same
+        // run always lands in the same runner.
+        if crate::workflow::runner::routes_to_kernel(&ctx.db, &id) {
+            crate::workflow::runner::run_kernel(&ctx, &id).await;
+        } else {
+            drive_run(&ctx, &id).await;
+        }
     });
     // Panic containment (§6.1): a panicked/aborted drive task marks its run
     // failed so it is never left `running` with no live driver.
@@ -487,7 +496,9 @@ pub(crate) async fn pause_question(
     );
 }
 
-async fn finalize_run(
+/// Push the run's final ref and (optionally) open its PR. `pub(crate)` because
+/// the kernel runner finalizes the same way from the same run repo.
+pub(crate) async fn finalize_run(
     ctx: &RunCtx,
     run_id: &str,
     run: &RunEssentials,
