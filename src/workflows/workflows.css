@@ -2199,3 +2199,181 @@ button.wf-run-rm:hover {
   line-height: 1.4;
   color: var(--fg-2);
 }
+
+/* ── thread view: the run as one continuous conversation ───────────────────
+   Reuses the chat's own layout (.chat / .chat-scroll / .chat-inner) so rows,
+   composer and spacing are identical to a normal agent chat. Only the seams
+   between agents and the named gaps between turns are new — both deliberately
+   quiet, so the conversation stays the loudest thing on screen. */
+.wf-thread {
+  min-width: 0;
+}
+.wf-thread-seg {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Hand-off marker — a centered caption on a hairline: who is speaking from
+   here, and where that step sits in the sequence. */
+.wf-handoff {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 10px;
+}
+.wf-thread-seg:first-child .wf-handoff {
+  margin-top: 2px;
+}
+.wf-handoff-line {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in oklch, var(--bd-soft) 70%, transparent);
+}
+.wf-handoff-body {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  max-width: 100%;
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+.wf-handoff-name {
+  font-weight: 600;
+  color: var(--fg-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-handoff-sep {
+  opacity: 0.5;
+}
+.wf-handoff-step {
+  font-family: var(--font-mono);
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-handoff-idx,
+.wf-handoff-retry,
+.wf-handoff-dur,
+.wf-handoff-state {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--bd-soft);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.wf-handoff-dur {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  border-color: transparent;
+  color: var(--fg-3);
+}
+.wf-handoff-retry {
+  border-color: transparent;
+  background: var(--bg-3);
+  color: var(--fg-2);
+}
+/* A segment with no agent record to render — still named, never blank. */
+.wf-thread-gap {
+  padding: 6px 0 10px;
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+
+/* Phase row — the named gap. Pulse + label + live clock, on the thread's own
+   left edge so it reads as part of the conversation rather than a banner. */
+.wf-phase {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  margin: 10px 0 4px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--fg-2);
+}
+.wf-phase-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-phase-sep {
+  flex-shrink: 0;
+  opacity: 0.4;
+}
+.wf-phase .turn-clock {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+/* The run's last word. Tinted by outcome via --term-tone (set inline from the
+   same tone table the status pill and timeline use). */
+.wf-phase.term {
+  align-items: flex-start;
+  gap: 9px;
+  margin: 16px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklch, var(--term-tone) 32%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--term-tone) 7%, transparent);
+}
+.wf-phase-mark {
+  display: inline-flex;
+  margin-top: 1px;
+  color: var(--term-tone);
+}
+.wf-phase-term-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.wf-phase-term-title {
+  font-weight: 600;
+  color: var(--fg-1);
+}
+.wf-phase-term-detail {
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+.wf-phase-term-detail.mono {
+  font-family: var(--font-mono);
+}
+.wf-phase-pr {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+/* Composer slot when the thread has nobody to talk to, and when it has an
+   answer to collect instead. Both sit in the composer's own padding. */
+.wf-thread-hint {
+  padding: 10px 12px;
+  border: 1px dashed var(--bd-soft);
+  border-radius: var(--r-md);
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+  text-align: center;
+}
+.wf-thread-answer {
+  padding: 10px 12px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+.wf-thread-answer .wf-answer {
+  margin-top: 0;
+}

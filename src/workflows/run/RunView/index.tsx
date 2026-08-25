@@ -22,11 +22,12 @@ import { resolveAlias } from "../../shared";
 import type { Spec } from "../../spec";
 import { runChip } from "../status";
 import { BudgetMeter, hasBudgets } from "./BudgetMeter";
-import { flattenSteps, type StepDesc } from "./flatten";
+import { flattenSteps, isSequentialSpec, type StepDesc } from "./flatten";
 import { PausedBanner } from "./PausedBanner";
 import { selectPendingQuestion } from "./pendingQuestion";
 import { RoadmapChip } from "./RoadmapChip";
 import { AttemptStrip, latestAttempt, Stepper, stepAttempts } from "./Stepper";
+import { type FocusRequest, ThreadView } from "./ThreadView";
 import { useRunDetail } from "./useRunDetail";
 
 export function RunView({ id }: { id: string }) {
@@ -43,11 +44,17 @@ export function RunView({ id }: { id: string }) {
   // A step the user focused before it has any attempt — shows the "hasn't
   // started" state; cleared the moment the step spawns its first attempt.
   const [pickedStepId, setPickedStepId] = useState<string | null>(null);
+  // An explicit "show me this step" — the thread scrolls to its segment. Carries
+  // a nonce so re-picking the same step scrolls again.
+  const [focus, setFocus] = useState<FocusRequest | null>(null);
 
   const run = detail?.run ?? null;
   const spec = (run?.spec ?? null) as Spec | null;
   const attempts = detail?.attempts ?? [];
   const steps = useMemo(() => flattenSteps(spec), [spec]);
+  // A flat sequence of steps reads as one conversation; anything else keeps the
+  // per-step chat (see ThreadView).
+  const sequential = useMemo(() => isSequentialSpec(spec), [spec]);
 
   // The most recent `run_paused` event — the source of both the paused-reason
   // detail and the exec whose question the human must answer.
@@ -122,6 +129,7 @@ export function RunView({ id }: { id: string }) {
       });
       setPickedAttemptId(latest.id);
       setPickedStepId(null);
+      setFocus((prev) => ({ stepId: latest.step_id, nonce: (prev?.nonce ?? 0) + 1 }));
     }
     clearFocusedStepAgent();
   }, [focusedStepAgentId, attempts, loading, clearFocusedStepAgent]);
@@ -183,6 +191,7 @@ export function RunView({ id }: { id: string }) {
   const selectedStepRows = selected ? stepAttempts(attempts, selected.step_id) : [];
 
   const onSelectStep = (step: StepDesc) => {
+    setFocus((prev) => ({ stepId: step.id, nonce: (prev?.nonce ?? 0) + 1 }));
     const latest = latestAttempt(stepAttempts(attempts, step.id));
     if (latest) {
       setPickedAttemptId(latest.id);
@@ -258,35 +267,53 @@ export function RunView({ id }: { id: string }) {
         question={pendingQuestion}
         evidence={gateEvidence}
         evidencePending={loading}
+        // In thread mode the answer belongs at the bottom, where the user is
+        // already typing — the banner keeps the cause and its other actions.
+        hideAnswer={sequential}
       />
 
-      {/* Attempt history for the focused step — only when there is history. */}
-      {selected && selectedStepRows.length > 1 && (
-        <AttemptStrip
-          stepId={selected.step_id}
-          rows={selectedStepRows}
-          selectedId={selected.id}
-          onSelect={(a) => {
-            setPickedAttemptId(a.id);
-            setPickedStepId(null);
-          }}
+      {sequential ? (
+        <ThreadView
+          run={run}
+          steps={steps}
+          attempts={attempts}
+          agents={agents}
+          events={events}
+          resolve={resolve}
+          question={pendingQuestion}
+          focus={focus}
         />
-      )}
+      ) : (
+        <>
+          {/* Attempt history for the focused step — only when there is history. */}
+          {selected && selectedStepRows.length > 1 && (
+            <AttemptStrip
+              stepId={selected.step_id}
+              rows={selectedStepRows}
+              selectedId={selected.id}
+              onSelect={(a) => {
+                setPickedAttemptId(a.id);
+                setPickedStepId(null);
+              }}
+            />
+          )}
 
-      <div className="wf-run-chat">
-        {selAgent ? (
-          <ChatView agent={selAgent} key={selAgent.id} />
-        ) : (
-          <div className="empty-msg" style={{ margin: "auto", maxWidth: 320 }}>
-            <div className="et">{selected ? "Chat unavailable" : "Step hasn't started"}</div>
-            <div>
-              {selected
-                ? "This attempt's agent is no longer loaded."
-                : "This step begins once the previous one hands off."}
-            </div>
+          <div className="wf-run-chat">
+            {selAgent ? (
+              <ChatView agent={selAgent} key={selAgent.id} />
+            ) : (
+              <div className="empty-msg" style={{ margin: "auto", maxWidth: 320 }}>
+                <div className="et">{selected ? "Chat unavailable" : "Step hasn't started"}</div>
+                <div>
+                  {selected
+                    ? "This attempt's agent is no longer loaded."
+                    : "This step begins once the previous one hands off."}
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }

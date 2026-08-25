@@ -50,3 +50,20 @@ export function flattenSteps(spec: Spec | null): StepDesc[] {
   walk(spec.workflow, out);
   return out;
 }
+
+/** Whether the run reads as one continuous conversation: a non-empty flat
+ *  sequence of top-level steps, each gated on something a step decides by
+ *  itself. Mirrors the kernel runner's `kernel_eligible` (runner/mod.rs) — the
+ *  shapes it accepts are exactly the ones that hand one step off to the next in
+ *  a single workspace. Anything else (parallel, loop, orchestrate, or a gate
+ *  that suspends the run) keeps the per-step chat.
+ *
+ *  A step with no `gate` defaults to `verdict`, matching serde on the Rust side. */
+export function isSequentialSpec(spec: Spec | null): boolean {
+  if (!spec?.workflow || spec.workflow.length === 0) return false;
+  return spec.workflow.every((block) => {
+    if (!("step" in block)) return false;
+    const gate = block.step.gate?.type ?? "verdict";
+    return gate === "commit" || gate === "verdict";
+  });
+}
