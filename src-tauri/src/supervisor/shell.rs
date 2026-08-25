@@ -5,7 +5,6 @@ use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 use crate::pty_session::{PtySession, PtySpawn};
-use crate::workspace::repo_checkout_path;
 
 use super::events::emit_shell_output;
 use super::Supervisor;
@@ -24,7 +23,7 @@ impl Supervisor {
             .repos
             .first()
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
-        let checkout = repo_checkout_path(agent_id, &repo.subdir)?;
+        let checkout = repo.checkout_path(agent_id)?;
 
         let shell_str = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         let shell_path = std::path::PathBuf::from(&shell_str);

@@ -57,6 +57,7 @@ impl SandboxEngine for SandboxExecEngine {
             ctx.home,
             claude_config_dir.as_deref(),
             ctx.blackboard,
+            ctx.adopted_workspace(),
         )?;
         // A workflow step agent's blackboard is granted writable in the profile
         // above; also point the agent at it via `WF_BLACKBOARD` (the same host
@@ -511,12 +512,17 @@ pub(crate) fn pid_alive(_pid: i32) -> bool {
 /// `claude_config_dir` is the value of `CLAUDE_CONFIG_DIR` the agent runs with
 /// (`None` = default `~/.claude`); when set elsewhere the agent writes its
 /// config/transcripts/auth there, so it must be writable too.
+/// `adopted_workspace` is a working tree the agent adopted instead of one under
+/// `writable_root` (the workflow kernel's shared run workspace) — its own
+/// writable subpath, and its own invariant-3 deny, since the agent's checkout
+/// isn't under the root this profile is otherwise built around.
 pub fn build_profile(
     writable_root: &Path,
     rpc_dir: &Path,
     home: &Path,
     claude_config_dir: Option<&Path>,
     blackboard: Option<&Path>,
+    adopted_workspace: Option<&Path>,
 ) -> Result<String> {
     let writable_root = canonical(writable_root)?;
     let rpc_root = canonical(rpc_dir)?;
@@ -535,6 +541,18 @@ pub fn build_profile(
             let board = canonical(board)?;
             format!("\n  (subpath {})", sbpl_string(&board.to_string_lossy()))
         }
+        None => String::new(),
+    };
+
+    // An adopted working tree is the agent's *checkout*, living outside the
+    // writable root because the run owns it — so without this grant the agent
+    // couldn't write the files it was spawned to change.
+    let adopted = match adopted_workspace {
+        Some(dir) => Some(canonical(dir)?),
+        None => None,
+    };
+    let adopted_grant = match &adopted {
+        Some(dir) => format!("\n  (subpath {})", sbpl_string(&dir.to_string_lossy())),
         None => String::new(),
     };
 
@@ -616,7 +634,15 @@ pub fn build_profile(
     // husky project legitimately writes `core.hooksPath`. Run is already
     // documented as the weaker boundary (see `RUN_TOOLCHAIN_DIRS`), so the
     // asymmetry follows the existing split rather than inventing one.
-    let deny_git_config = deny_git_exec_config(&writable_root.to_string_lossy());
+    // Emitted per writable checkout root: an adopted tree is a repo the app runs
+    // git on exactly like a provisioned one, so invariant 3 has to cover it too
+    // — its grant above would otherwise leave `.git/config` (hooks, filters,
+    // merge drivers) agent-writable.
+    let deny_git_config = std::iter::once(writable_root.to_string_lossy())
+        .chain(adopted.iter().map(|dir| dir.to_string_lossy()))
+        .map(|root| deny_git_exec_config(&root))
+        .collect::<Vec<_>>()
+        .join("\n\n");
 
     // Invariant 2 for the non-claude provider config roots (agent profile only,
     // like `deny_git_config`): deny their command-defining config back out of the
@@ -640,7 +666,7 @@ pub fn build_profile(
 (deny file-write*)
 (allow file-write*
   (subpath {writable_root_s})
-  (subpath {rpc_root_s}){blackboard_grant}
+  (subpath {rpc_root_s}){blackboard_grant}{adopted_grant}
   (subpath "/private/tmp")
   (subpath "/private/var/folders")
   (subpath "/private/var/tmp")
@@ -809,7 +835,7 @@ mod tests {
         std::fs::create_dir_all(&rpc).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         let canonical_root = std::fs::canonicalize(&root).unwrap();
         let canonical_rpc = std::fs::canonicalize(&rpc).unwrap();
 
@@ -838,7 +864,7 @@ mod tests {
         for d in [&root, &rpc, &home] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         let canonical_root = std::fs::canonicalize(&root).unwrap();
         let escaped = sbpl_regex_escape(&canonical_root.to_string_lossy());
 
@@ -891,7 +917,7 @@ mod tests {
         for d in [&rpc, &home, &repo.join(".git/hooks")] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
 
         // `sh -c 'printf x > <path>'` under the profile: exit 0 means the write
         // landed, non-zero means the sandbox refused it.
@@ -943,7 +969,7 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         let home = std::fs::canonicalize(&home).unwrap();
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
 
         let denied = policy::provider_exec_config_denials(&home);
         assert!(!denied.files.is_empty() && !denied.dirs.is_empty());
@@ -986,7 +1012,7 @@ mod tests {
         let cache_root = policy::toolchain_cache_root(&canonical_home);
         let expected = format!("\"{}\"", cache_root.display());
 
-        let agent = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let agent = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         assert!(
             agent.contains(&expected),
             "agent profile is missing the toolchain cache root"
@@ -1007,7 +1033,7 @@ mod tests {
         // It grants the narrow replacements instead, and every provider dot-dir
         // and cache dir stays exactly as before.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let h = canonical_home.display();
 
@@ -1128,7 +1154,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::os::unix::fs::symlink(&target, home.join(".claude")).unwrap();
 
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         assert!(
             !profile.contains(".local/bin"),
@@ -1151,7 +1177,7 @@ mod tests {
         let cfg = home.join(".local/bin/claude-cfg");
         std::fs::create_dir_all(&cfg).unwrap();
 
-        let profile = build_profile(&root, &rpc, &home, Some(cfg.as_path()), None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, Some(cfg.as_path()), None, None).unwrap();
         assert!(
             !profile.contains(".local/bin"),
             "bin-resident CLAUDE_CONFIG_DIR must not appear on the allow-list"
@@ -1167,14 +1193,14 @@ mod tests {
         let canonical_board = std::fs::canonicalize(&board).unwrap();
 
         // Absent by default: an ordinary (non-workflow) agent gets no grant.
-        let plain = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let plain = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         assert!(
             !plain.contains(&canonical_board.to_string_lossy().to_string()),
             "no blackboard grant without a blackboard"
         );
 
         // Granted: the *exact* blackboard dir is a writable subpath.
-        let granted = build_profile(&root, &rpc, &home, None, Some(board.as_path())).unwrap();
+        let granted = build_profile(&root, &rpc, &home, None, Some(board.as_path()), None).unwrap();
         assert!(
             granted.contains(&format!("(subpath \"{}\")", canonical_board.display())),
             "granted profile must allow writing inside the blackboard"
@@ -1186,6 +1212,44 @@ mod tests {
         assert!(
             !granted.contains(&format!("(subpath \"{}\")", parent.display())),
             "the blackboard's parent must not be granted"
+        );
+    }
+
+    /// A kernel step's checkout is the run's shared tree, outside the writable
+    /// root — so the profile has to grant it (or the agent can't edit the code
+    /// it was spawned for) *and* carry invariant 3 into it (or `.git/config`
+    /// becomes host code execution the next time Fletch runs git there).
+    #[test]
+    fn agent_profile_grants_an_adopted_tree_and_keeps_invariant_3_over_it() {
+        let (td, root, rpc, home) = sandbox_dirs();
+        let tree = td.path().join("runs/run-1/repo");
+        std::fs::create_dir_all(&tree).unwrap();
+        let canonical_tree = std::fs::canonicalize(&tree).unwrap();
+
+        let plain = build_profile(&root, &rpc, &home, None, None, None).unwrap();
+        assert!(
+            !plain.contains(&canonical_tree.to_string_lossy().to_string()),
+            "no adoption grant for an agent that owns its checkout"
+        );
+
+        let granted = build_profile(&root, &rpc, &home, None, None, Some(tree.as_path())).unwrap();
+        assert!(
+            granted.contains(&format!("(subpath \"{}\")", canonical_tree.display())),
+            "the adopted tree must be writable: it is the agent's checkout"
+        );
+        // Its parent (the run dir, holding the blackboard and export area) is
+        // not swept in by the grant.
+        let parent = canonical_tree.parent().unwrap();
+        assert!(
+            !granted.contains(&format!("(subpath \"{}\")", parent.display())),
+            "the run dir itself must not be granted"
+        );
+        // Invariant 3 follows the grant: one deny block per writable checkout
+        // root, so `.git/config` is unwritable in the adopted tree too.
+        let escaped = sbpl_regex_escape(&canonical_tree.to_string_lossy());
+        assert!(
+            granted.contains(&format!("^{escaped}(/.*)?/\\.git/")),
+            "invariant 3 must cover the adopted tree: {granted}"
         );
     }
 
@@ -1210,7 +1274,7 @@ mod tests {
         let cfg = home.join(".claude-eve");
         std::fs::create_dir_all(&cfg).unwrap();
 
-        let profile = build_profile(&root, &rpc, &home, Some(cfg.as_path()), None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, Some(cfg.as_path()), None, None).unwrap();
         // The emitted paths must be canonical (symlink-resolved) so they match
         // what the sandbox resolves at write time — e.g. on macOS the tempdir
         // lives under /var → /private/var.
@@ -1275,8 +1339,15 @@ mod tests {
         let (_td, root, rpc, home) = sandbox_dirs();
         let default_claude = std::fs::canonicalize(&home).unwrap().join(".claude");
 
-        let profile =
-            build_profile(&root, &rpc, &home, Some(default_claude.as_path()), None).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            Some(default_claude.as_path()),
+            None,
+            None,
+        )
+        .unwrap();
         for island in policy::claude_write_island_dirs(&default_claude) {
             let needle = format!("(subpath \"{}\")", island.display());
             assert_eq!(
@@ -1303,7 +1374,7 @@ mod tests {
         // credential file. `settings.json` (host hooks), `plugins/`, `CLAUDE.md`,
         // etc. must be covered by no grant.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let claude = canonical_home.join(".claude");
         let h = canonical_home.display();
@@ -1369,7 +1440,7 @@ mod tests {
         // reads (exfiltration) and writes (forging state). The deny only bites if
         // it comes AFTER the write allow-list, since SBPL is last-match-wins.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
 
         let deny = format!(
@@ -1394,7 +1465,7 @@ mod tests {
         // Agents never legitimately touch any Fletch data dir — no `dev`
         // exception (that carve-out is Run-profile-only).
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let dev = format!(
             "{}/Library/Application Support/{}/dev",
@@ -1414,7 +1485,7 @@ mod tests {
     #[test]
     fn agent_profile_denies_appsupport_auto_exec_but_keeps_the_grant() {
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let app_support = format!("{}/Library/Application Support", canonical_home.display());
 
@@ -1526,7 +1597,7 @@ mod tests {
         for d in [&root, &rpc, &home] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let profile = build_profile(&root, &rpc, &home, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let app_support = canonical_home.join("Library/Application Support");
 

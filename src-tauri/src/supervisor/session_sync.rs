@@ -6,9 +6,7 @@ use tauri::AppHandle;
 
 use crate::agent::per_turn_descriptor;
 use crate::github::{MergeableState, PrState, PrStatus};
-use crate::workspace::{
-    repo_checkout_path, AgentRecord, AgentStatus, AgentView, TrackedRepo, WorkspaceManager,
-};
+use crate::workspace::{AgentRecord, AgentStatus, AgentView, TrackedRepo, WorkspaceManager};
 
 use super::events::{
     emit_pr_state, emit_session_records_appended, emit_session_sync_health, emit_verification,
@@ -157,7 +155,7 @@ impl Supervisor {
         let Some(primary) = record.repos.first() else {
             return;
         };
-        let Ok(checkout) = repo_checkout_path(&agent_id, &primary.subdir) else {
+        let Ok(checkout) = primary.checkout_path(&agent_id) else {
             return;
         };
         // Debounce: skip if a verification for this agent is already running.
@@ -346,7 +344,7 @@ pub(crate) async fn resolve_pr_state(
     };
     // No branch yet → nothing pushed, so no PR to find or bind.
     repo.branch.as_ref()?;
-    let checkout = repo_checkout_path(agent_id, &repo.subdir).ok()?;
+    let checkout = repo.checkout_path(agent_id).ok()?;
 
     if let Some(number) = repo.pr_number {
         // Merged is the one terminal state — it can't be undone, so it's
@@ -516,7 +514,7 @@ pub(crate) async fn resolve_all_pr_status(
             // Resolve the slug now (local git); the network cost is deferred to the
             // one batched query below. A broken checkout / non-GitHub origin can't
             // be fetched — hold the snapshot instead.
-            let slug = match repo_checkout_path(&agent.id, &repo.subdir) {
+            let slug = match repo.checkout_path(&agent.id) {
                 Ok(checkout) => crate::github::resolve_slug(&checkout, Some(&repo.repo_path)).await,
                 Err(_) => None,
             };
@@ -991,7 +989,7 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
     let Some(repo) = record.repos.first() else {
         return Some(pending());
     };
-    let Ok(cwd) = repo_checkout_path(agent_id, &repo.subdir) else {
+    let Ok(cwd) = repo.checkout_path(agent_id) else {
         return Some(pending());
     };
 
@@ -1447,6 +1445,7 @@ mod tests {
             pr_title: Some("feat: x".into()),
             pr_state: Some("merged".into()),
             label: None,
+            adopted_checkout: None,
         }
     }
 

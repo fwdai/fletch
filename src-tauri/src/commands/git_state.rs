@@ -11,7 +11,6 @@ use crate::git;
 use crate::git_state::{self, GitState, ShortStats};
 use crate::github as gh;
 use crate::supervisor::Supervisor;
-use crate::workspace::repo_checkout_path;
 
 use super::files::agent_repo_checkout_opt;
 
@@ -75,7 +74,7 @@ pub async fn get_all_shortstats(
         // sum across all of its repos (matching the archive metadata, which
         // also aggregates). Single-repo agents behave exactly as before.
         for repo in &agent.repos {
-            let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
+            let Ok(checkout) = repo.checkout_path(&agent.id) else {
                 continue;
             };
             let agent_id = agent.id.clone();
@@ -129,7 +128,7 @@ pub async fn get_all_git_meta(
             continue;
         }
         for (i, repo) in agent.repos.iter().enumerate() {
-            let Ok(checkout) = repo_checkout_path(&agent.id, &repo.subdir) else {
+            let Ok(checkout) = repo.checkout_path(&agent.id) else {
                 continue;
             };
             let key = crate::supervisor::pr_map_key(&agent.id, &repo.subdir, i == 0);

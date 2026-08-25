@@ -219,6 +219,10 @@ impl Supervisor {
                 pr_title: None,
                 pr_state: None,
                 label: None,
+                // Restore rebuilt an agent-owned clone at the derived path, so
+                // the row's adoption (if it had one) is cleared by
+                // `restore_agent` rather than carried forward.
+                adopted_checkout: None,
             });
         }
 
@@ -331,7 +335,7 @@ async fn capture_repo_snapshots(
     let mut total_dels: u32 = 0;
 
     for repo in repos {
-        let checkout = repo_checkout_path(agent_id, &repo.subdir).ok();
+        let checkout = repo.checkout_path(agent_id).ok();
         let branch_tip_sha = match &checkout {
             Some(wt) => git::rev_parse(wt, "HEAD").await.ok(),
             None => None,
@@ -487,9 +491,19 @@ fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'sta
 /// agent's parent dir. Failures are logged (tagged with `op` for context) but
 /// never abort the sweep — the caller's intent is to get rid of the agent.
 /// Shared by archive and discard.
+///
+/// An *adopted* checkout is skipped: the agent was a tenant of a working tree
+/// something else owns (the workflow kernel's shared run workspace, which the
+/// run's own delete reclaims — see `workflow::scheduler`), so disposing of the
+/// agent must leave the directory exactly where it is. Every step of a run
+/// passes through here as it is archived, so the run's work would not survive
+/// its first completed step otherwise.
 async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &str) {
     for repo in repos {
-        let checkout = match repo_checkout_path(agent_id, &repo.subdir) {
+        if repo.is_adopted() {
+            continue;
+        }
+        let checkout = match repo.checkout_path(agent_id) {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(error = %e, subdir = %repo.subdir, op, "checkout path resolution failed");
@@ -583,6 +597,40 @@ mod tests {
             out.status.success(),
             "git {args:?}: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Every step of a workflow run is archived as it finishes, and each one
+    /// runs in the *same* adopted tree — so a teardown that removed it would
+    /// destroy the run's work at the first step boundary. The agent's own dirs
+    /// still go; the directory the run owns stays.
+    #[tokio::test]
+    async fn teardown_spares_an_adopted_checkout() {
+        let td = tempfile::tempdir().unwrap();
+        let adopted = td.path().join("run-repo");
+        std::fs::create_dir_all(adopted.join(".git")).unwrap();
+        std::fs::write(adopted.join("step.txt"), "work so far").unwrap();
+
+        let repo = TrackedRepo {
+            repo_path: td.path().join("source"),
+            subdir: "repo".into(),
+            branch: None,
+            parent_branch: None,
+            base_sha: None,
+            pr_number: None,
+            pr_url: None,
+            pr_title: None,
+            pr_state: None,
+            label: None,
+            adopted_checkout: Some(adopted.clone()),
+        };
+        // An id no agent ever had: the agent-owned paths this resolves resolve
+        // to nothing, which is the point — only the adopted tree exists.
+        teardown_agent_checkouts("adoption-teardown-test", &[repo], "test").await;
+
+        assert!(
+            adopted.join("step.txt").is_file(),
+            "the run's working tree must outlive the step agent"
         );
     }
 

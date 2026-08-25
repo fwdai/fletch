@@ -914,6 +914,7 @@ mod tests {
                 fork_base: Some("base-sha".into()),
                 run_repo: None,
                 owner_run_id: "run-1".into(),
+                existing_workspace: None,
             },
             pre_spawned: None,
             blackboard,

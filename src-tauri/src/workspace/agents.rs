@@ -500,11 +500,16 @@ impl WorkspaceManager {
         )?;
 
         // Update checkout records with new branch info and clear snapshot fields.
+        // `adopted_checkout` is dropped with them: restore always provisions an
+        // agent-owned clone at the derived path (see `restore_agent` in
+        // `supervisor::disposition`), so a row still naming the adopted tree
+        // would point every reader away from the checkout that was just built.
         for repo in &repos {
             conn.execute(
                 "UPDATE worktrees SET branch = ?1, parent_branch = ?2,
                         branch_tip_sha = NULL, parent_branch_sha = NULL,
-                        diff_additions = 0, diff_deletions = 0
+                        diff_additions = 0, diff_deletions = 0,
+                        adopted_checkout = NULL
                  WHERE workspace_id = ?3 AND subdir = ?4",
                 rusqlite::params![repo.branch, repo.parent_branch, id, repo.subdir],
             )?;

@@ -7,7 +7,6 @@ use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 use crate::run_session::{self, shell_args, user_shell, RunPhase, RunSession, RunStateSnapshot};
-use crate::workspace::repo_checkout_path;
 
 use super::events::{emit_run_output, emit_run_port, emit_run_state};
 use super::Supervisor;
@@ -33,7 +32,7 @@ impl Supervisor {
             .repos
             .first()
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
-        let cwd = repo_checkout_path(agent_id, &primary.subdir)?;
+        let cwd = primary.checkout_path(agent_id)?;
 
         let (setup_cmd, run_cmd, intended_port) =
             self.read_run_config(agent_id, &record.project_id, &cwd);
@@ -208,7 +207,7 @@ impl Supervisor {
             .repos
             .first()
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
-        let checkout = repo_checkout_path(agent_id, &primary.subdir)?;
+        let checkout = primary.checkout_path(agent_id)?;
         Ok(crate::run_detect::detect_all(&checkout))
     }
 

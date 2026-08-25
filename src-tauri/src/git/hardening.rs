@@ -134,7 +134,10 @@ const EXEC_CONFIG: &[(&str, &str)] = &[
 /// Refuse to run host-side git in `dir` when the checkout's own config would make
 /// git execute a program.
 ///
-/// Scoped to **agent checkouts**. A user's own repository legitimately carries
+/// Scoped to **agent-writable trees**: agent checkouts, and run directories
+/// (`~/.fletch/runs/…`) — a kernel step agent writes its adopted run workspace
+/// as freely as a normal agent writes its checkout, so both roots are poisoned
+/// ground for host-side git. A user's own repository legitimately carries
 /// these keys — husky sets `core.hooksPath`, git-lfs sets `filter.lfs.*` — and
 /// refusing there would break the app for them. Their repo is also not
 /// agent-writable, so there is nothing to defend against. Only the **local and
@@ -149,10 +152,13 @@ const EXEC_CONFIG: &[(&str, &str)] = &[
 /// which also surfaces the attack instead of quietly repairing it. The agent's own
 /// sandboxed git keeps working; what stops is Fletch acting on the checkout.
 pub(crate) async fn refuse_steerable_config(dir: &Path) -> Result<()> {
-    let Ok(root) = crate::workspace::checkouts_root() else {
-        return Ok(());
-    };
-    refuse_steerable_config_under(dir, &root).await
+    if let Ok(root) = crate::workspace::checkouts_root() {
+        refuse_steerable_config_under(dir, &root).await?;
+    }
+    if let Ok(root) = crate::workflow::blackboard::runs_root() {
+        refuse_steerable_config_under(dir, &root).await?;
+    }
+    Ok(())
 }
 
 /// Whether git may be run in `dir` — [`refuse_steerable_config`] for callers whose

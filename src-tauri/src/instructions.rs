@@ -535,6 +535,7 @@ mod tests {
                 pr_title: None,
                 pr_state: None,
                 label: label.map(str::to_string),
+                adopted_checkout: None,
             }
         }
 

@@ -98,6 +98,12 @@ pub(crate) struct RunSpec<'a> {
     /// A workflow step agent's blackboard, bound read-write at its identical
     /// host path and forwarded as `WF_BLACKBOARD`. `None` for ordinary agents.
     pub blackboard: Option<&'a Path>,
+    /// A working tree adopted from outside the writable root (the kernel's
+    /// shared run workspace), bound read-write at its identical host path.
+    /// It is also `cwd`, so without the bind the container would start in a
+    /// directory the runtime had to invent. `None` for ordinary agents, whose
+    /// `cwd` is a checkout inside `writable_root`.
+    pub adopted_workspace: Option<&'a Path>,
     /// The launching provider's config/data mounts + config-dir env forwards.
     pub mounts: ProviderMounts<'a>,
     /// Object stores borrowed via git alternates, bound read-only at their
@@ -144,6 +150,11 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     // in-container as on the host (invariant 1).
     if let Some(board) = spec.blackboard {
         push_rw_bind(&mut args, board);
+    }
+    // Same identical-path rule (invariant 1): the agent's own checkout, which
+    // for an adopting launch lives outside the writable root.
+    if let Some(tree) = spec.adopted_workspace {
+        push_rw_bind(&mut args, tree);
     }
     // Identical host path so the alternates file resolves in-container with no
     // rewriting; read-only so borrowed history is readable but the source store
@@ -245,6 +256,9 @@ pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = vec![spec.writable_root.into(), spec.rpc_dir.into()];
     if let Some(board) = spec.blackboard {
         out.push(board.into());
+    }
+    if let Some(tree) = spec.adopted_workspace {
+        out.push(tree.into());
     }
     out.extend(spec.borrowed_object_stores.iter().cloned());
     match &spec.mounts {
@@ -361,6 +375,7 @@ mod tests {
         let rpc = Path::new("/tmp/fletch-run-args/rpc");
         let home = Path::new("/tmp/fletch-run-args/home");
         let board = Path::new("/tmp/fletch-run-args/board");
+        let tree = Path::new("/tmp/fletch-run-args/run/repo");
         let alt = Path::new("/tmp/fletch-run-args/alt");
         let stores = vec![
             PathBuf::from("/tmp/fletch-run-args/store-a/objects"),
@@ -397,8 +412,9 @@ mod tests {
                 writable_root: root,
                 rpc_dir: rpc,
                 home,
-                cwd: root,
+                cwd: tree,
                 blackboard: Some(board),
+                adopted_workspace: Some(tree),
                 mounts,
                 borrowed_object_stores: &stores,
                 memory: DEFAULT_MEMORY,
@@ -434,5 +450,46 @@ mod tests {
                 "expected the workspace/rpc/config binds at least"
             );
         }
+    }
+
+    /// A kernel step's working tree lives outside the writable root, so without
+    /// its own bind the container would start in a directory the runtime
+    /// invented — the agent would see an empty workspace and none of the run's
+    /// work. Read-write, at the identical host path (invariant 1).
+    #[test]
+    fn an_adopted_workspace_is_bound_read_write_at_its_host_path() {
+        let root = Path::new("/tmp/fletch-adopt/work");
+        let tree = Path::new("/tmp/fletch-adopt/run/repo");
+        let projects = root.join("claude-projects");
+        let spec = RunSpec {
+            interactive: false,
+            name: "fletch-agent-test",
+            agent_id: "agent-1",
+            writable_root: root,
+            rpc_dir: Path::new("/tmp/fletch-adopt/rpc"),
+            home: Path::new("/tmp/fletch-adopt/home"),
+            cwd: tree,
+            blackboard: None,
+            adopted_workspace: Some(tree),
+            mounts: ProviderMounts::Claude {
+                config_dir: None,
+                credentials_rw: false,
+                config_dir_credentials_rw: false,
+                projects_src: &projects,
+            },
+            borrowed_object_stores: &[],
+            memory: DEFAULT_MEMORY,
+            cpus: DEFAULT_CPUS,
+            image: "fletch-agent:cafe00000000",
+            agent_bin: "claude",
+            auth_vars: &[],
+        };
+        let args = run_args(&spec);
+        let bind = format!("{0}:{0}", tree.to_string_lossy());
+        assert!(args.contains(&bind), "expected {bind} in {args:?}");
+        // The workdir is that same path, so the bind is what makes it exist.
+        let w = args.iter().position(|a| a == "-w").expect("-w");
+        assert_eq!(args[w + 1], tree.to_string_lossy());
+        assert!(mount_sources(&spec).contains(&tree.to_path_buf()));
     }
 }

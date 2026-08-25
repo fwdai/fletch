@@ -54,6 +54,12 @@ pub struct SpawnReq {
     /// `wf_delete_run`. The blackboard write-grant is derived from it at spawn,
     /// keeping the run directory the single source of truth.
     pub owner_run_id: String,
+    /// A pre-provisioned checkout the agent adopts as its primary workspace
+    /// instead of cloning one — the workflow kernel's shared run workspace,
+    /// where every sequential step works in the same tree. When set, `fork_base`
+    /// / `run_repo` provisioning is skipped entirely, and teardown (archive /
+    /// delete) must never remove the directory: the run owns it, not the agent.
+    pub existing_workspace: Option<PathBuf>,
 }
 
 /// A freshly spawned step agent.
@@ -131,6 +137,7 @@ impl AgentDriver for SupervisorDriver {
                 fork_base,
                 run_repo,
                 owner_run_id,
+                existing_workspace,
             } = req;
 
             let record = self
@@ -155,6 +162,7 @@ impl AgentDriver for SupervisorDriver {
                         fork_base,
                         run_repo,
                         owner_run_id: Some(owner_run_id),
+                        existing_workspace,
                         carry_from: None,
                         // Workflow-step spawns aren't issue-intake spawns.
                         issue_ref: None,
@@ -168,7 +176,7 @@ impl AgentDriver for SupervisorDriver {
             // The primary checkout path — provisioned by the spawn's background
             // task; the caller waits for `Idle` before reading it.
             let worktree = match record.repos.first() {
-                Some(primary) => crate::workspace::repo_checkout_path(&record.id, &primary.subdir)?,
+                Some(primary) => primary.checkout_path(&record.id)?,
                 None => {
                     return Err(crate::error::Error::Other(
                         "spawned step agent has no tracked repo".into(),
@@ -533,6 +541,7 @@ mod tests {
                 fork_base: None,
                 run_repo: None,
                 owner_run_id: "run-1".into(),
+                existing_workspace: None,
             })
             .await
             .unwrap();
@@ -561,6 +570,7 @@ mod tests {
                 fork_base: None,
                 run_repo: None,
                 owner_run_id: "run-1".into(),
+                existing_workspace: None,
             })
             .await;
         assert!(err.is_err());

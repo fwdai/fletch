@@ -9,7 +9,7 @@
 //! bodies the agent wrote itself. Everything here is best-effort: a body edit
 //! is decoration, so failures are logged, never surfaced.
 
-use crate::workspace::{repo_checkout_path, WorkspaceManager};
+use crate::workspace::WorkspaceManager;
 
 /// Sentinels marking the generated trailer inside a PR body. Content between
 /// them is owned by Fletch and replaced wholesale on every sync.
@@ -73,7 +73,7 @@ pub(crate) async fn sync_pr_set_links(workspace: &WorkspaceManager, agent_id: &s
         let Some(number) = repo.pr_number else {
             continue;
         };
-        let Ok(checkout) = repo_checkout_path(agent_id, &repo.subdir) else {
+        let Ok(checkout) = repo.checkout_path(agent_id) else {
             continue;
         };
         let Some((owner, name)) =
