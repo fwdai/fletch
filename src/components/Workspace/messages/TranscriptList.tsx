@@ -1,14 +1,11 @@
-// The scrolling transcript itself: rows, turn footers, bottom-pinning, and the
-// turn navigator. Shared by the custom view's ChatView (which stacks a composer
-// under it) and the native view's rail (which sits beside the terminal).
-import { Fragment, type MutableRefObject, useEffect, useRef } from "react";
+// The scrolling transcript itself: bottom-pinning and the turn navigator around
+// one agent's rows (TranscriptRows). Shared by the custom view's ChatView (which
+// stacks a composer under it) and the native view's rail (which sits beside the
+// terminal).
+import { type MutableRefObject, useEffect, useRef } from "react";
 import type { AgentRecord } from "@/api";
-import { Loader } from "@/components/ui/Loader";
-import { providerLabel } from "@/data/providers";
 import { ChatNav } from "../ChatNav";
-import { TurnFooter } from "../RunTimer";
-import { MessageItem } from "./MessageItem";
-import { rowKey } from "./pair";
+import { TranscriptRows } from "./TranscriptRows";
 import type { Transcript } from "./useTranscript";
 
 interface Props {
@@ -38,7 +35,7 @@ export function TranscriptList({
   pinRef,
   hideNav,
 }: Props) {
-  const { items, turns, turnIds, turnFooters, openTurnStart, transcriptLoading, log } = transcript;
+  const { turns, transcriptLoading, log } = transcript;
 
   const ownRef = useRef<HTMLDivElement | null>(null);
   const ref = scrollRef ?? ownRef;
@@ -78,40 +75,12 @@ export function TranscriptList({
     <div className="chat-scroll-wrap">
       <div className="chat-scroll" ref={ref} onScroll={handleScroll}>
         <div className="chat-inner fade-in" key={agent.id}>
-          {transcriptLoading && items.length === 0 ? (
-            <div className="writing flex-center">
-              <Loader variant="accent" />
-              <span>Loading transcript…</span>
-            </div>
-          ) : items.length === 0 && transcript.hasPriorConversation && !liveBusy ? (
-            <div className="empty-msg" style={{ margin: "40px auto", maxWidth: 360 }}>
-              <div className="et">No transcript available</div>
-              <div>
-                {providerLabel(agent.provider)}'s session file is not on disk for this agent.
-              </div>
-            </div>
-          ) : (
-            items.map((item, i) => {
-              const footer = turnFooters[i];
-              return (
-                <Fragment key={rowKey(item, i)}>
-                  <MessageItem
-                    item={item}
-                    provider={agent.provider}
-                    agentId={agent.id}
-                    busy={liveBusy && i >= openTurnStart}
-                    turnId={turnIds[i]}
-                  />
-                  {footer != null && <TurnFooter {...footer} agentId={agent.id} />}
-                </Fragment>
-              );
-            })
-          )}
-          {pending && (
-            <div className="chat-pending" aria-hidden="true">
-              <Loader variant="muted" size="md" />
-            </div>
-          )}
+          <TranscriptRows
+            agent={agent}
+            transcript={transcript}
+            liveBusy={liveBusy}
+            pending={pending}
+          />
         </div>
       </div>
       {!hideNav && <ChatNav scrollRef={ref} turns={turns} />}

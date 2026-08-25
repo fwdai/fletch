@@ -22,11 +22,15 @@ export function PausedBanner({
   question,
   evidence,
   evidencePending,
+  hideAnswer,
 }: {
   run: WfRun;
   detail?: string;
   /** The pending human `ask` message when `paused_reason === "question"`. */
   question?: WfMessage;
+  /** Drop the inline answer form — the caller renders it somewhere the user is
+   *  already typing (the thread's composer). The banner still names the cause. */
+  hideAnswer?: boolean;
   /** The review evidence for a `paused(approval)` run (its `gate_evidence`
    *  event), or `null` when none has arrived. */
   evidence?: GateEvidence | null;
@@ -75,7 +79,9 @@ export function PausedBanner({
       <div className="wf-banner-text">
         <div className="wf-banner-title">{spec.title}</div>
         <div className="wf-banner-body">{spec.body}</div>
-        {isQuestion && <AnswerForm run={run} question={question} onError={setLastError} />}
+        {isQuestion && !hideAnswer && (
+          <AnswerForm run={run} question={question} onError={setLastError} />
+        )}
         {isBudget && <ResumeBudgetForm run={run} onError={setLastError} />}
       </div>
       <div className="wf-banner-actions">
