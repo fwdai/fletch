@@ -18,6 +18,7 @@ pub mod gates;
 pub mod gitops;
 pub mod journal;
 pub mod prompts;
+pub mod runner;
 pub mod scheduler;
 pub mod spec;
 pub mod tests_gate;
