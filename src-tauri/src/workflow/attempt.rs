@@ -169,16 +169,10 @@ impl AttemptJournal {
         );
     }
 
-    /// Link the live agent to its attempt row and mark the row `running`. This is
-    /// what lets the monitor mount the step's chat (it resolves the agent through
-    /// `wf_step_exec.agent_id`) while the turn is still in flight.
+    /// Link the live agent to its attempt row and mark the row `running` — see
+    /// `scheduler::stamp_spawned` for why.
     fn stamp_spawned(&self, exec_id: &str, agent_id: &str) {
-        let conn = self.db.lock();
-        let _ = conn.execute(
-            "UPDATE wf_step_exec SET agent_id = ?1, status = 'running', started_at = ?2
-             WHERE id = ?3",
-            rusqlite::params![agent_id, super::now_ms(), exec_id],
-        );
+        super::scheduler::stamp_spawned(&self.db.lock(), exec_id, agent_id);
     }
 }
 

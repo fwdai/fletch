@@ -232,7 +232,9 @@ function StepCard({
           </div>
         )}
       </div>
-      <div className="wf-nc-foot">Click to open this step's chat</div>
+      {/* Neutral across both run modes: a click opens the step's chat in the
+          per-step view, and scrolls to its segment in the thread view. */}
+      <div className="wf-nc-foot">Click to view this step</div>
     </div>
   );
 }

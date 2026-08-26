@@ -159,6 +159,17 @@ pub(crate) fn create_step_exec(
     );
 }
 
+/// Link the live agent to its exec row and mark the row `running`. This is what
+/// lets the monitor mount the step's chat (it resolves the agent through
+/// `wf_step_exec.agent_id`) while the turn is still in flight.
+pub(crate) fn stamp_spawned(conn: &Connection, exec_id: &str, agent_id: &str) {
+    let _ = conn.execute(
+        "UPDATE wf_step_exec SET agent_id = ?1, status = 'running', started_at = ?2
+         WHERE id = ?3",
+        rusqlite::params![agent_id, crate::workflow::now_ms(), exec_id],
+    );
+}
+
 pub(crate) fn finish_step_exec(conn: &Connection, id: &str, status: &str, head_end: Option<&str>) {
     let _ = conn.execute(
         "UPDATE wf_step_exec SET status = ?1, head_end = ?2, ended_at = ?3 WHERE id = ?4",

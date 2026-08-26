@@ -31,13 +31,15 @@ use crate::error::{Error, Result};
 use crate::supervisor::StatusEvent;
 use crate::workspace::AgentStatus;
 
-use super::blackboard::{self, VerdictError, VerdictResult};
+use super::blackboard::{self, VerdictError};
 use super::driver::{AgentDriver, SpawnReq};
+use super::gates::{self, GateInputs, GateOutcome};
 use super::gitops;
 use super::prompts::{self, Position, StepPromptCtx};
 use super::scheduler::{
     abandon_exec, build_spawn_req, cancel_run, create_step_exec, fail_run, finalize_run,
-    finish_step_exec, gate_mode, journal_event, load_run, resolve_agent, set_status, RunCtx,
+    finish_step_exec, gate_mode, journal_event, load_run, resolve_agent, set_status, stamp_spawned,
+    RunCtx,
 };
 use super::spec::{Block, Gate, Spec, Step};
 use super::types::event_type;
@@ -481,38 +483,40 @@ async fn await_turn_end(
     }
 }
 
-/// The gate verdict as `Ok(())` (advance) or `Err(reason)` (fail the run). Pure:
-/// a `commit` gate is decided by the turn having ended, a `verdict` gate by the
-/// file the step wrote.
+/// The gate verdict as `Ok(())` (advance) or `Err(reason)` (fail the run).
+/// The kernel does the I/O (reading the verdict file) and `gates::evaluate`
+/// decides — one source for verdict semantics and reason wording across both
+/// engines. `commit` is the kernel's own semantics: the boundary commit records
+/// whatever the turn produced, including nothing, so the turn ending satisfies
+/// it — unlike the old engine's HEAD-moved predicate.
 fn evaluate_gate(
     gate: &Gate,
     blackboard: &std::path::Path,
     step_id: &str,
 ) -> std::result::Result<(), String> {
     match gate {
-        // The boundary commit records whatever the turn produced, including
-        // nothing; the kernel does not second-guess an agent that says it's done.
         Gate::Commit => Ok(()),
         Gate::Verdict => {
             let dir = blackboard::step_dir(blackboard, step_id)
                 .map_err(|e| format!("blackboard error: {e}"))?;
-            match blackboard::read_verdict(&dir) {
-                Ok(v) if v.result == VerdictResult::Done => Ok(()),
-                Ok(v) => Err(format!(
-                    "verdict.json result is \"{}\"{}",
-                    match v.result {
-                        VerdictResult::Done => "done",
-                        VerdictResult::Revise => "revise",
-                        VerdictResult::Blocked => "blocked",
-                    },
-                    if v.summary.trim().is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {}", v.summary.trim())
-                    }
-                )),
-                Err(VerdictError::Missing) => Err("no verdict.json was written".into()),
-                Err(VerdictError::Malformed(e)) => Err(e),
+            let (verdict, error) = match blackboard::read_verdict(&dir) {
+                Ok(v) => (Some(v), None),
+                Err(VerdictError::Missing) => (None, None),
+                Err(VerdictError::Malformed(e)) => (None, Some(e)),
+            };
+            let result = gates::evaluate(
+                gate,
+                &GateInputs {
+                    verdict: verdict.as_ref(),
+                    verdict_error: error.as_deref(),
+                    ..Default::default()
+                },
+            );
+            match result.outcome {
+                GateOutcome::Done => Ok(()),
+                // A verdict gate never awaits approval; anything unmet fails the
+                // run (the kernel has no retry to spend the reason on yet).
+                _ => Err(result.reason),
             }
         }
         // `kernel_eligible` rejects every other gate before a run starts.
@@ -613,16 +617,6 @@ async fn refuse_resume(ctx: &RunCtx, run_id: &str) {
     }
     let conn = ctx.db.lock();
     fail_run(&conn, ctx.app.as_ref(), run_id, NO_RESUME);
-}
-
-/// Link the live agent to its exec row and mark the row `running` — what lets the
-/// monitor resolve and mount the step's chat mid-turn.
-fn stamp_spawned(conn: &Connection, exec_id: &str, agent_id: &str) {
-    let _ = conn.execute(
-        "UPDATE wf_step_exec SET agent_id = ?1, status = 'running', started_at = ?2
-         WHERE id = ?3",
-        rusqlite::params![agent_id, super::now_ms(), exec_id],
-    );
 }
 
 /// The agent stamped on an exec row, for the paths that lost the handle to the

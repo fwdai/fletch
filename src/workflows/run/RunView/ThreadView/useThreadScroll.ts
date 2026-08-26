@@ -16,8 +16,6 @@ const BOTTOM_SLOP = 40;
 export interface ThreadScroll {
   scrollRef: MutableRefObject<HTMLDivElement | null>;
   innerRef: MutableRefObject<HTMLDivElement | null>;
-  /** True while the thread follows new content; false once the user scrolls up. */
-  pinned: MutableRefObject<boolean>;
   onScroll: () => void;
   /** Re-pin and jump to the bottom (used when the user sends a message). */
   toBottom: () => void;
@@ -58,5 +56,5 @@ export function useThreadScroll(runId: string): ThreadScroll {
     if (el) el.scrollTop = el.scrollHeight;
   };
 
-  return { scrollRef, innerRef, pinned, onScroll, toBottom };
+  return { scrollRef, innerRef, onScroll, toBottom };
 }

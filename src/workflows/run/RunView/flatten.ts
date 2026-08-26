@@ -6,7 +6,7 @@
 
 import type { Block, Spec, Step } from "../../spec";
 
-export type ContainerKind = "parallel" | "loop" | "orchestrate";
+type ContainerKind = "parallel" | "loop" | "orchestrate";
 
 export interface StepDesc {
   id: string;

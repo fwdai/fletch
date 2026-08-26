@@ -521,7 +521,7 @@ async fn a_missing_verdict_fails_the_run() {
 
     let (status, error) = run_status(&fx.db, "run-v3");
     assert_eq!(status, "failed");
-    assert!(error.unwrap().contains("no verdict.json"));
+    assert!(error.unwrap().contains("verdict.json not written"));
 }
 
 // ─────────────────────────── errors, timeout, cancel ─────────────────────────
