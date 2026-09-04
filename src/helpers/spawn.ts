@@ -17,10 +17,25 @@ import type { AppState } from "../store";
  *  backend then fell back to whatever branch the source repo happened to have
  *  checked out. Every spawn path must pass a base.
  *
+ *  `preferred` is the branch this project's picker last settled on (see the
+ *  drafts slice's sticky base). It wins over the repo default, but only after
+ *  it's confirmed to still exist — a remembered branch that has since been
+ *  deleted or renamed must not become a fork base, and the repo default is the
+ *  right thing to land on when it's gone. A failure to list branches is treated
+ *  the same way: fall back rather than fork from something unverified.
+ *
  *  The backend already degrades to "main" internally, so the catch here only
  *  covers the IPC call itself failing; a base must always come back, because
  *  spawning without one is the bug we're closing. */
-export async function resolveBaseBranch(repoPath: string): Promise<string> {
+export async function resolveBaseBranch(repoPath: string, preferred?: string): Promise<string> {
+  if (preferred) {
+    try {
+      const branches = await api.listRepoBranches(repoPath);
+      if (branches.includes(preferred)) return preferred;
+    } catch {
+      // fall through to the repo default
+    }
+  }
   try {
     return await api.repoDefaultBranch(repoPath);
   } catch {

@@ -142,6 +142,27 @@ export function parseNewDraftSelection(raw: string | undefined): NewDraftSelecti
   }
 }
 
+/** The base branch the new-agent screen's picker last selected, per project
+ *  (keyed by the project's primary repo path — the same value the draft's
+ *  `repoPath` carries). Stored as one JSON object; a corrupt or missing blob
+ *  reads as "nothing remembered", which falls back to each repo's default
+ *  branch. A remembered branch is re-validated against the repo's live branch
+ *  list on use, so one deleted since it was picked never becomes a fork base. */
+export function parseDraftBaseBranches(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const saved = JSON.parse(raw) as unknown;
+    if (!saved || typeof saved !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [repoPath, branch] of Object.entries(saved as Record<string, unknown>)) {
+      if (typeof branch === "string" && branch.trim()) out[repoPath] = branch;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 // ---- Mission Control dismissals ----------------------------------------------
 
 /** Mission Control's "dismissed" marks: a review-queue item id → the signature

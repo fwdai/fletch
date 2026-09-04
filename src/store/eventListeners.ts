@@ -48,6 +48,7 @@ import { getOrCreateAccount, toProfile } from "@/storage/accounts";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
+  parseDraftBaseBranches,
   parseFeatures,
   parseNewDraftSelection,
   parsePaneWidth,
@@ -133,6 +134,7 @@ export const hydrateSettings = async (set: AppSet) => {
       newDraftModel,
       newDraftCustomAgentId,
       lastRepoPath: s.lastRepoPath || undefined,
+      draftBaseByRepo: parseDraftBaseBranches(s.draftBaseBranches),
       // Opt-out: only an explicit "false" hides the native view's rail.
       transcriptRailOpen: s.transcriptRailOpen !== "false",
       gitCommitAction: isCommitAction(s.gitCommitAction) ? s.gitCommitAction : "agent-commit-pr",
