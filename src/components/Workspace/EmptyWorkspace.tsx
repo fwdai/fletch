@@ -28,6 +28,10 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const setLastRepoPath = useAppStore((s) => s.setLastRepoPath);
   const rememberDraftBase = useAppStore((s) => s.rememberDraftBase);
   const resolveDraftBase = useAppStore((s) => s.resolveDraftBase);
+  // The project the user picked most recently, so an in-flight base resolve for
+  // a project they've since switched away from can be discarded rather than
+  // applied out of order (see the ProjectPicker's onChange).
+  const pickedRepoPath = useRef<string | null>(null);
   const projectRefs = useAppStore((s) => s.workspace?.projects ?? []);
   // One picker entry per project: a multi-repo project shows once, valued at
   // its primary (first) repo, which is where the agent spawns.
@@ -249,8 +253,15 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   // Resolved before the switch is applied, so the draft is never
                   // momentarily pointing at a base from the previous repo — a
                   // spawn in that window would fork from a branch this repo may
-                  // not even have. It's a local ref read, not a network call.
+                  // not even have. These are local ref reads, not network calls,
+                  // but they're still subprocesses: switching again while one is
+                  // in flight leaves two resolves racing, and the *earlier* one
+                  // finishing last would strand the draft — and the spawn that
+                  // follows — on the project the user just navigated away from.
+                  // Only the newest selection may commit.
+                  pickedRepoPath.current = repoPath;
                   const base = await resolveDraftBase(repoPath);
+                  if (pickedRepoPath.current !== repoPath) return;
                   updateDraft(draft.id, { repoPath, base, issueRef: undefined });
                   setLastRepoPath(repoPath);
                 }}
