@@ -141,6 +141,25 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                             "open_pr: failed to persist PR number"
                         );
                     }
+                    // The base the PR was actually opened against, which
+                    // `args.base` may have redirected away from the spawn-time
+                    // default. Rewriting the record keeps every base-keyed
+                    // reader (ahead/behind, "rebase onto", the `update-branch`
+                    // fetch) pointed at the branch this PR is stacked on — most
+                    // importantly `update-branch`, which would otherwise merge
+                    // the wrong branch into the PR. A no-op write when the base
+                    // wasn't redirected, so no need to compare first.
+                    if let Some(base) = payload.get("base").and_then(|v| v.as_str()) {
+                        if let Err(e) = sup.workspace.set_repo_parent_branch(agent_id, subdir, base)
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                agent_id = %agent_id,
+                                base = %base,
+                                "open_pr: failed to persist PR base"
+                            );
+                        }
+                    }
                 }
             }
             sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());

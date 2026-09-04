@@ -416,6 +416,19 @@ impl GitDispatcher {
         let body_owned = crate::github::with_closes_trailer(body_arg, closes);
         let body = body_owned.as_str();
         let requested = arg_branch(args);
+        // The branch this PR targets. Defaults to the base the checkout was
+        // spawned against; `args.base` overrides it, because the user can tell
+        // the agent mid-session to build on a feature branch and the spawn-time
+        // record has no way to know that. Resolved *before* the head branch is
+        // materialized so a malformed base fails without leaving a stray branch
+        // behind. The effective base is reported back on `EVENT_PR_OPENED`, which
+        // rewrites the checkout's recorded base — otherwise ahead/behind, "rebase
+        // onto", and the `update-branch` fetch would keep measuring against a
+        // base this PR isn't stacked on.
+        let base = arg_branch_named(args, "base").unwrap_or_else(|| t.base_branch.clone());
+        if let Some(resp) = refuse_option_like(id, "open_pr", "base", &base) {
+            return (resp, Vec::new());
+        }
 
         let current = match crate::git::current_branch(&t.cwd).await {
             Ok(b) => b,
@@ -451,9 +464,14 @@ impl GitDispatcher {
             }
         };
 
-        if let Some(resp) = refuse_option_like_branch(id, "open_pr", &branch) {
+        if let Some(resp) = refuse_option_like(id, "open_pr", "branch", &branch) {
             return (resp, effects);
         }
+        // Deliberately the *recorded* base, never `base`: this gate fences the
+        // head branch off the branch the work is reviewed against, and reading it
+        // from the request would let an agent name a decoy base and thereby
+        // publish over the real one (`PROTECTED_TRUNKS` covers only main/master,
+        // so a repo reviewed against `release/2.0` would open up).
         if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
             return (Response::err(id, why), effects);
         }
@@ -461,7 +479,9 @@ impl GitDispatcher {
             .refuse_unless_publish_approved(
                 "open_pr",
                 t.subdir.as_deref(),
-                &format!("open a pull request from {branch} into {}", t.base_branch),
+                // The *effective* base, so the confirmation names the PR the user
+                // is actually approving rather than the spawn-time default.
+                &format!("open a pull request from {branch} into {base}"),
             )
             .await
         {
@@ -473,12 +493,12 @@ impl GitDispatcher {
                 effects,
             );
         }
-        match crate::github::pr_create(&t.cwd, title, body, &t.base_branch).await {
+        match crate::github::pr_create(&t.cwd, title, body, &base).await {
             Ok(pr) => {
                 crate::telemetry::track("pr_opened", json!({ "source": "agent_rpc" }));
                 effects.push(RpcEvent::named(
                     EVENT_PR_OPENED,
-                    with_repo(json!({ "number": pr.number }), &t.subdir),
+                    with_repo(json!({ "number": pr.number, "base": base }), &t.subdir),
                 ));
                 (Response::ok(id, 0, pr.url, String::new()), effects)
             }
@@ -523,7 +543,7 @@ impl GitDispatcher {
             },
         };
 
-        if let Some(resp) = refuse_option_like_branch(id, "git_push", &branch) {
+        if let Some(resp) = refuse_option_like(id, "git_push", "branch", &branch) {
             return (resp, effects);
         }
         if let Some(why) = self
@@ -585,11 +605,8 @@ impl GitDispatcher {
             Some(r) => r,
             None => t.base_branch,
         };
-        if branch.starts_with('-') {
-            return Response::err(
-                id,
-                format!("git_fetch: refusing option-like ref {branch:?}"),
-            );
+        if let Some(resp) = refuse_option_like(id, "git_fetch", "ref", &branch) {
+            return resp;
         }
         let auth = crate::github::git_auth_env();
         let resp = run_git_command(id, &cwd, &["fetch", "origin", &branch], &auth).await;
@@ -626,17 +643,19 @@ fn arg_branch(args: &Value) -> Option<String> {
     arg_branch_named(args, "branch")
 }
 
-/// Refuse a branch name git could reinterpret as an option (leading `-`). The
-/// resolved branch comes from the agent-writable `.git/HEAD`; the `git::push`
-/// primitive already neutralises injection by pushing a fully-qualified refspec,
-/// but the same string also flows into `pr_create` (the PR head) and event
-/// payloads — so reject it up front here (parity with `git_fetch`) so an agent
-/// that planted an option-named HEAD fails loudly instead of silently creating a
-/// junk remote branch or PR.
-fn refuse_option_like_branch(id: &str, op: &str, branch: &str) -> Option<Response> {
-    branch
+/// Refuse a ref name git could reinterpret as an option (leading `-`), naming
+/// which one (`branch`, `base`, `ref`) in the error. Every ref an op resolves
+/// goes through this: a branch comes from the agent-writable `.git/HEAD`, and a
+/// base or fetch ref comes straight from the request. The `git::push` primitive
+/// already neutralises injection by pushing a fully-qualified refspec, but the
+/// same strings also flow into `pr_create` (the PR head and base), the fetch
+/// argv, and event payloads — so reject them up front so an agent that planted
+/// an option-named HEAD or passed an option-named base fails loudly instead of
+/// silently creating a junk remote branch or PR.
+fn refuse_option_like(id: &str, op: &str, kind: &str, value: &str) -> Option<Response> {
+    value
         .starts_with('-')
-        .then(|| Response::err(id, format!("{op}: refusing option-like branch {branch:?}")))
+        .then(|| Response::err(id, format!("{op}: refusing option-like {kind} {value:?}")))
 }
 
 /// Read a boolean flag arg by key, defaulting to `false` when absent or not a
@@ -878,6 +897,72 @@ mod tests {
             resp.error
         );
         assert!(fx.is_empty(), "a refused push must emit nothing: {fx:?}");
+    }
+
+    /// An option-named base is refused before the head branch is materialized,
+    /// so a malformed `args.base` can't leave a stray branch behind in the
+    /// checkout (the head-branch guard, by contrast, necessarily runs after
+    /// HEAD is resolved).
+    #[tokio::test]
+    async fn open_pr_refuses_option_like_base() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, fx) = disp
+            .dispatch_inner(
+                "b1",
+                "open_pr",
+                &json!({"title": "t", "base": "--upload-pack=evil"}),
+            )
+            .await;
+        assert!(!resp.ok, "an option-named base must be refused: {resp:?}");
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("option-like base"),
+            "error must name the refused base, got: {:?}",
+            resp.error
+        );
+        assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
+    }
+
+    /// SECURITY: `args.base` redirects the PR target only. The gate that keeps an
+    /// agent from publishing over the branch its work is reviewed against still
+    /// reads the *recorded* base, so naming a decoy base can't unlock a push to
+    /// the real one. `release/2.0` rather than `main` because the trunk list would
+    /// catch `main` regardless — this is the case only the recorded base covers.
+    #[tokio::test]
+    async fn open_pr_base_override_does_not_unlock_the_recorded_base() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "release/2.0"]);
+
+        let disp = GitDispatcher::new(
+            repo.clone(),
+            "release/2.0".to_string(),
+            AgentCaps::interactive(),
+        );
+        let (resp, fx) = disp
+            .dispatch_inner("b2", "open_pr", &json!({"title": "t", "base": "feat/x"}))
+            .await;
+        assert!(
+            !resp.ok,
+            "publishing the review base must stay refused whatever base the PR names: {resp:?}"
+        );
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("reviewed against"),
+            "error must be the review-base refusal, got: {:?}",
+            resp.error
+        );
+        assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
     }
 
     #[tokio::test]
