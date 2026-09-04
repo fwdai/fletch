@@ -1016,6 +1016,56 @@ mod tests {
         );
     }
 
+    /// `ls-remote`'s ref argument is a pattern, so a glob base matches a real
+    /// branch and exits 0 — but GitHub rejects it as a literal base, which would
+    /// reopen exactly the pushed-branch-without-a-PR hole the probe closes. The
+    /// probe compares the returned ref verbatim, so a glob reads as absent.
+    #[tokio::test]
+    async fn open_pr_refuses_a_glob_base_that_matches_a_real_branch() {
+        let td = tempfile::tempdir().unwrap();
+        let origin = td.path().join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+        run_git(&repo, &["push", "-q", "origin", "main"]);
+        // A branch the glob genuinely matches, so the probe's `ls-remote` exits 0.
+        run_git(&repo, &["push", "-q", "origin", "main:refs/heads/feat/x"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, fx) = disp
+            .dispatch_inner(
+                "b5",
+                "open_pr",
+                &json!({"title": "t", "branch": "fix/glob-base", "base": "feat/*"}),
+            )
+            .await;
+        assert!(
+            !resp.ok,
+            "a glob base must be refused even though ls-remote matches it: {resp:?}"
+        );
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("does not exist on origin"),
+            "error must name the missing base, got: {:?}",
+            resp.error
+        );
+        assert!(fx.is_empty(), "nothing may be created: {fx:?}");
+    }
+
     /// The probe distinguishes "absent" from "couldn't ask". With no origin at
     /// all, `ls-remote` fails to *ask* — that must not read as absence, or every
     /// PR in a local-only repo would be refused on base grounds instead of

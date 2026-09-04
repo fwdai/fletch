@@ -184,11 +184,14 @@ pub async fn remote_base_sha(source_repo: &Path, base: &str) -> Option<String> {
     (!sha.is_empty()).then_some(sha)
 }
 
-/// Whether `branch` exists on `origin` *right now*, asked over the wire with the
-/// app's token. `Some(false)` only when git says definitively "no such ref";
-/// `None` when the question couldn't be answered at all (no remote, transport
-/// failure, timeout), so a caller can tell "absent" from "don't know" and a
-/// flaky network never becomes a false refusal.
+/// Whether a branch named exactly `branch` exists on `origin` *right now*, asked
+/// over the wire with the app's token. `Some(false)` when no such branch is
+/// there; `None` when the question couldn't be answered at all (no remote,
+/// transport failure, timeout), so a caller can tell "absent" from "don't know"
+/// and a flaky network never becomes a false refusal.
+///
+/// Exact, not pattern: a glob (`feat/*`) is reported absent even though git
+/// happily matches it, because the caller is validating a literal branch name.
 ///
 /// Deliberately not [`remote_base_sha`]: that reads the clone's own
 /// `refs/remotes/origin/<base>`, which reports any branch created since the last
@@ -215,7 +218,19 @@ pub async fn remote_branch_exists(checkout: &Path, branch: &str) -> Option<bool>
     }
     let out = output_timed(&mut cmd, "git ls-remote").await.ok()?;
     match (out.status.success(), out.status.code()) {
-        (true, _) => Some(true),
+        // Exit status alone is not the answer: `ls-remote`'s ref argument is a
+        // *pattern*, so `refs/heads/feat/*` matches `refs/heads/feat/x` and exits
+        // 0 while naming something GitHub will reject as a literal base. Require
+        // the ref back verbatim, so only an exact branch counts as present and a
+        // glob resolves to "absent" like any other name that isn't a branch.
+        (true, _) => {
+            let want = format!("refs/heads/{branch}");
+            Some(
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .any(|line| line.split('\t').nth(1).map(str::trim) == Some(want.as_str())),
+            )
+        }
         // `--exit-code` reserves 2 for "matched nothing". Every other non-zero
         // code is a failure to ask (128 for a missing remote or a rejected
         // credential), which must not read as absence.
