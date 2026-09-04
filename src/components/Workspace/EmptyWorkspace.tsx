@@ -6,7 +6,6 @@ import { type ProjectOption, ProjectPicker } from "@/components/Composer/Project
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
 import { IconButton } from "@/components/ui/IconButton";
-import { resolveBaseBranch } from "@/helpers";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
@@ -27,6 +26,8 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const updateDraft = useAppStore((s) => s.updateDraft);
   const setNewDraftSelection = useAppStore((s) => s.setNewDraftSelection);
   const setLastRepoPath = useAppStore((s) => s.setLastRepoPath);
+  const rememberDraftBase = useAppStore((s) => s.rememberDraftBase);
+  const resolveDraftBase = useAppStore((s) => s.resolveDraftBase);
   const projectRefs = useAppStore((s) => s.workspace?.projects ?? []);
   // One picker entry per project: a multi-repo project shows once, valued at
   // its primary (first) repo, which is where the agent spawns.
@@ -236,8 +237,9 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 value={draft.repoPath}
                 projects={projectOptions}
                 onChange={async (repoPath) => {
-                  // Switching projects: the previously chosen base branch may not
-                  // exist in the new repo, so reset to the new repo's *default*
+                  // Switching projects: the previously chosen base branch belongs
+                  // to the old repo and may not exist here, so re-resolve against
+                  // the new one — its own remembered pick, else its *default*
                   // (not a hardcoded "main") — and drop any issue tag, which
                   // belongs to the previous project's tracker (its key would
                   // close the wrong issue, or a dead one, from the new repo's
@@ -248,7 +250,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   // momentarily pointing at a base from the previous repo — a
                   // spawn in that window would fork from a branch this repo may
                   // not even have. It's a local ref read, not a network call.
-                  const base = await resolveBaseBranch(repoPath);
+                  const base = await resolveDraftBase(repoPath);
                   updateDraft(draft.id, { repoPath, base, issueRef: undefined });
                   setLastRepoPath(repoPath);
                 }}
@@ -256,7 +258,14 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
               <BranchPicker
                 repoPath={draft.repoPath}
                 value={draft.base}
-                onChange={(branch) => updateDraft(draft.id, { base: branch })}
+                onChange={(branch) => {
+                  updateDraft(draft.id, { base: branch });
+                  // Sticky per project: the next new agent here starts on this
+                  // branch. Remembered on pick rather than on spawn, matching
+                  // the provider/model selection above — a draft the user
+                  // abandons still says what they meant to fork from.
+                  rememberDraftBase(draft.repoPath, branch);
+                }}
               />
               <span className="pill is-action" onClick={() => rerollDraftName(draft.id)}>
                 <Icon name="refresh" />

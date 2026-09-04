@@ -56,6 +56,12 @@ export interface DraftsSlice {
   /** The project a new agent was last started in (persisted). Seeds ⌘N's
    *  default project; validated against the live repo list on use. */
   lastRepoPath?: string;
+  /** Sticky base branch per project, keyed by its primary repo path
+   *  (persisted). A project whose agents always fork from `develop` shouldn't
+   *  make the user re-pick it on every new agent. Seeds the new-agent screen's
+   *  branch picker; validated against the repo's live branches on use, so a
+   *  branch deleted since it was picked falls back to the repo default. */
+  draftBaseByRepo: Record<string, string>;
 
   // drafts
   /** Open a new draft on `repoPath`. `seedPrompt` prefills its composer (read
@@ -78,6 +84,14 @@ export interface DraftsSlice {
   startWorkFromIssue: (repoPath: string, issue: import("@/api").TrackerIssue) => Promise<void>;
   /** Remember the last project an agent was started in and persist it. */
   setLastRepoPath: (repoPath: string) => void;
+  /** Remember the base branch picked for a project and persist it, so the next
+   *  new agent there starts on the same branch. */
+  rememberDraftBase: (repoPath: string, branch: string) => void;
+  /** The base branch a new draft on `repoPath` should start on: the project's
+   *  remembered pick when it still exists, else the repo's default branch.
+   *  The single home for that policy — every path that opens or re-targets a
+   *  draft goes through it, so none of them can quietly skip the sticky pick. */
+  resolveDraftBase: (repoPath: string) => Promise<string>;
   updateDraft: (id: string, patch: Partial<DraftAgent>) => void;
   removeDraft: (id: string) => void;
   selectDraft: (id: string | null) => void;
@@ -97,6 +111,7 @@ export interface DraftsSlice {
 
 const NEW_DRAFT_SELECTION_SETTING = "newDraftSelection";
 const LAST_REPO_PATH_SETTING = "lastRepoPath";
+const DRAFT_BASE_BRANCHES_SETTING = "draftBaseBranches";
 
 function normalizeDraftSelection(
   provider: string,
@@ -125,12 +140,23 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   newDraftModel: undefined,
   newDraftCustomAgentId: undefined,
   lastRepoPath: undefined,
+  draftBaseByRepo: {},
 
   setLastRepoPath: (repoPath) => {
     if (get().lastRepoPath === repoPath) return;
     set({ lastRepoPath: repoPath });
     void setSetting(LAST_REPO_PATH_SETTING, repoPath);
   },
+
+  rememberDraftBase: (repoPath, branch) => {
+    if (!repoPath || !branch) return;
+    if (get().draftBaseByRepo[repoPath] === branch) return;
+    const next = { ...get().draftBaseByRepo, [repoPath]: branch };
+    set({ draftBaseByRepo: next });
+    void setSetting(DRAFT_BASE_BRANCHES_SETTING, next);
+  },
+
+  resolveDraftBase: (repoPath) => resolveBaseBranch(repoPath, get().draftBaseByRepo[repoPath]),
 
   // ── drafts ─────────────────────────────────────────────────────────────────
   createDraft: async (repoPath, seedPrompt, roadmapItemId) => {
@@ -159,7 +185,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       provider: selection.provider,
       model: selection.model,
       customAgentId,
-      base: await resolveBaseBranch(repoPath),
+      base: await get().resolveDraftBase(repoPath),
       roadmapItemId,
     };
     // Seed before the draft is visible, so the composer reads it on mount
@@ -188,7 +214,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       provider: selection.provider,
       model: selection.model,
       customAgentId,
-      base: await resolveBaseBranch(repoPath),
+      base: await get().resolveDraftBase(repoPath),
       issueRef: issue.key,
     };
     // Seed the composer for this draft (read as its initial text on mount) with
