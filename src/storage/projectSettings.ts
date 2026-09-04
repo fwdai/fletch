@@ -29,6 +29,27 @@ export async function deleteProjectSetting(projectId: string, key: string): Prom
   await dbDelete("project_settings", { project_id: projectId, key });
 }
 
+/** Per-project switch for autopilot (set in Project Settings). Autopilot is ON
+ *  by default for every project, so the row exists only when it has been turned
+ *  off: `"0"` = off, absent = on. Turning it back on deletes the row. */
+export const AUTOPILOT_ENABLED_KEY = "autopilot.enabled";
+
+/** Whether a stored `autopilot.enabled` value means off. Anything other than an
+ *  explicit off reads as on — a loop that is on by default must not switch off
+ *  on a typo. */
+export function autopilotDisabledValue(value: string | undefined): boolean {
+  return value === "0" || value === "false";
+}
+
+/** Ids of every project whose autopilot has been switched off, in one query
+ *  over the settings table (there is one row per project, keyed by project id). */
+export async function loadAutopilotDisabledProjects(): Promise<string[]> {
+  const rows = await dbSelect<ProjectSettingRow>("project_settings", {
+    where: { key: AUTOPILOT_ENABLED_KEY },
+  });
+  return rows.filter((r) => autopilotDisabledValue(r.value)).map((r) => r.project_id);
+}
+
 /** Per-project keys for the Linear integration (set in Project Settings).
  *  The id scopes which team's issues feed the inbox + composer picker; the
  *  name is display-only so the picker renders without a network round-trip. */

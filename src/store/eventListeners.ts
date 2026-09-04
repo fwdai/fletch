@@ -59,6 +59,7 @@ import {
   parseSandboxEngine,
   type ThemeMode,
 } from "@/storage/preferences";
+import { loadAutopilotDisabledProjects } from "@/storage/projectSettings";
 import { getAllSettings } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { notify } from "@/util/notify";
@@ -183,14 +184,22 @@ export const hydrateSettings = async (set: AppSet) => {
       // Admin unlocks the Developer settings section in production. Opt-in:
       // only an explicit "true" in the `admin` settings row grants it.
       admin: s.admin === "true",
-      // Autopilot enrollment (checkout key → paused). Only the user's intent is
-      // persisted; cycles and budgets always start fresh — an in-flight cycle's
-      // agent turn doesn't survive a restart either, so resuming one would mean
-      // judging a turn that never finished.
+      // Autopilot's per-checkout intent (checkout key → paused). Only the user's
+      // intent is persisted; cycles and budgets always start fresh — an in-flight
+      // cycle's agent turn doesn't survive a restart either, so resuming one
+      // would mean judging a turn that never finished.
       autopilot: parseAutopilotEnrollment(s[AUTOPILOT_SETTING]),
     });
   } catch {
     // First launch or DB not ready — defaults are fine.
+  }
+  // Autopilot is on per project by default; only the projects that switched it
+  // off are stored (in `project_settings`, not the global table above). Loaded
+  // separately so a failure here can't undo the settings already applied.
+  try {
+    set({ autopilotDisabledProjects: await loadAutopilotDisabledProjects() });
+  } catch {
+    // Same as above — default (all on) stands.
   }
 };
 

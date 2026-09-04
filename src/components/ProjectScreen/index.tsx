@@ -5,6 +5,7 @@ import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
 import { basename } from "@/util/format";
 import { Activity } from "./Activity";
+import { AutopilotSection } from "./AutopilotSection";
 import { DeleteSection } from "./DeleteSection";
 import { EnvVarsSection } from "./EnvVarsSection";
 import { GeneralSection } from "./GeneralSection";
@@ -110,6 +111,7 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
                 <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
                 <LinearSection projectId={loaded.projectId} />
                 <RoadmapSection projectId={loaded.projectId} />
+                <AutopilotSection projectId={loaded.projectId} />
                 <VerifySection projectId={loaded.projectId} />
                 <DeleteSection projectId={loaded.projectId} projectName={name} />
               </>

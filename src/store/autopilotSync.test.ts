@@ -25,6 +25,11 @@ import { newEnrollment } from "@/autopilot";
 const { runVerification } = vi.hoisted(() => ({ runVerification: vi.fn() }));
 vi.mock("@/api", () => ({ api: { runVerification } }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
+vi.mock("@/storage/projectSettings", () => ({
+  AUTOPILOT_ENABLED_KEY: "autopilot.enabled",
+  setProjectSetting: vi.fn(() => Promise.resolve()),
+  deleteProjectSetting: vi.fn(() => Promise.resolve()),
+}));
 
 // The pass reads `useAppStore.getState()` on every key, so the mock has to
 // forward to whatever store the current test built.
@@ -37,7 +42,7 @@ vi.mock("@/store", () => ({
 
 import { createAutopilotSlice } from "./autopilot";
 import { createAutopilotLogSlice } from "./autopilotLog";
-import { autopilotPass } from "./autopilotSync";
+import { autopilotKeys, autopilotPass } from "./autopilotSync";
 import { checkoutKey, createGitSlice } from "./git";
 import type { AppState } from "./types";
 
@@ -94,14 +99,21 @@ const cycle = (over: Partial<Cycle> = {}): Cycle => ({
 const TRIGGER = '[app-action] fix-checks failing="test"';
 
 interface Fixture {
-  /** Enrolled checkouts, by `checkoutKey`. Their readiness is seeded to the one
+  /** Tracked checkouts, by `checkoutKey`. Their readiness is seeded to the one
    *  world autopilot acts on: an open PR whose required check is failing. */
   autopilot: Record<string, AutopilotState>;
-  /** Live agents and their status. A key absent here is an agent that's gone. */
+  /** Live agents and their status. A key absent here is an agent that's gone.
+   *  Every fixture agent belongs to project `p1` unless `projectOf` says so. */
   agents: Record<string, AgentStatus>;
+  projectOf?: Record<string, string>;
+  /** Projects whose autopilot switch is off. */
+  disabled?: string[];
+  /** Checkouts (by key) to seed readiness for beyond the tracked ones — used
+   *  when the pass is expected to enroll a checkout it hasn't seen. */
+  readiness?: string[];
 }
 
-function makeStore({ autopilot, agents }: Fixture) {
+function makeStore({ autopilot, agents, projectOf = {}, disabled = [], readiness = [] }: Fixture) {
   const sendUserMessage = vi.fn();
   const store = create<AppState>()(
     (...a) =>
@@ -113,14 +125,21 @@ function makeStore({ autopilot, agents }: Fixture) {
         ...createAutopilotLogSlice(...a),
       }) as AppState,
   );
-  const per = <T>(value: T) => Object.fromEntries(Object.keys(autopilot).map((k) => [k, value]));
+  const seeded = [...new Set([...Object.keys(autopilot), ...readiness])];
+  const per = <T>(value: T) => Object.fromEntries(seeded.map((k) => [k, value]));
   store.setState({
     sendUserMessage,
     workspace: {
-      agents: Object.entries(agents).map(([id, status]) => ({ id, status })),
+      agents: Object.entries(agents).map(([id, status]) => ({
+        id,
+        status,
+        project_id: projectOf[id] ?? "p1",
+        repos: [{ repo_path: `/r/${id}`, subdir: "" }],
+      })),
       // biome-ignore lint/suspicious/noExplicitAny: minimal workspace fixture
     } as any,
     autopilot,
+    autopilotDisabledProjects: disabled,
     gitStates: per(git()),
     prStates: per(pr()),
     prChecks: per(checks()),
@@ -321,6 +340,87 @@ describe("autopilotPass drops an enrollment whose agent is gone", () => {
     await autopilotPass([key.primary, key.web], new Set());
 
     expect(store.getState().autopilot).toEqual({});
+    expect(sendUserMessage).not.toHaveBeenCalled();
+  });
+});
+
+// ── on by default, per project ───────────────────────────────────────────────
+// Nobody clicks "enroll" any more: the driver enrolls every live checkout of a
+// project that hasn't switched autopilot off, and the switch is the only opt-out.
+
+describe("autopilotKeys derives the sweep from live agents", () => {
+  const agent = (id: string, project_id: string, subdirs: string[] = [""]) =>
+    ({
+      id,
+      project_id,
+      repos: subdirs.map((subdir) => ({ repo_path: `/r/${id}/${subdir}`, subdir })),
+    }) as unknown as import("@/api").AgentRecord;
+
+  it("includes every checkout of every agent in an enabled project, keyed like the Git panel", () => {
+    // The primary repo is the plain agent id (index 0, whatever its subdir says);
+    // secondaries carry `::subdir` — the same keys every git/PR map uses.
+    const keys = autopilotKeys([agent("a1", "p1", ["", "web"]), agent("a2", "p2")], {}, []);
+    expect(keys).toEqual(["a1", "a1::web", "a2"]);
+  });
+
+  it("leaves out the agents of a project that switched autopilot off", () => {
+    const keys = autopilotKeys([agent("a1", "p1"), agent("a2", "p2")], {}, ["p2"]);
+    expect(keys).toEqual(["a1"]);
+  });
+
+  it("still visits a tracked checkout that is no longer live, so the pass can drop it", () => {
+    // Whether the agent is gone or its project was just switched off, the entry
+    // needs one more visit to be cleaned up rather than lingering forever.
+    const keys = autopilotKeys([agent("a1", "p1")], { gone: state(), a2: state() }, ["p2"]);
+    expect(keys).toEqual(["a1", "a2", "gone"]);
+  });
+});
+
+describe("autopilotPass enrolls on the first tick and honours the project switch", () => {
+  it("enrolls an unseen checkout of an enabled project and acts on it in the same pass", async () => {
+    // The whole point of on-by-default: a PR with failing checks gets a fix
+    // dispatched without anyone having clicked anything.
+    const { store, sendUserMessage } = makeStore({
+      autopilot: {},
+      agents: { a1: "idle" },
+      readiness: [key.primary],
+    });
+
+    await autopilotPass([key.primary], new Set());
+
+    expect(store.getState().autopilot[key.primary]).toMatchObject({ enrolled: true });
+    expect(store.getState().autopilot[key.primary].cycle?.rung).toBe("fix-checks");
+    expect(sendUserMessage).toHaveBeenCalledExactlyOnceWith("a1", TRIGGER);
+  });
+
+  it("does nothing for a checkout whose project has autopilot off, and forgets its state", async () => {
+    // Switching a project off mid-cycle: the agent's turn (if any) runs on, but
+    // autopilot stops judging it and drops the entry, so the chip stops claiming
+    // it is working. Coming back on starts fresh on the next tick.
+    const { store, sendUserMessage } = makeStore({
+      autopilot: { [key.primary]: state({ cycle: cycle() }) },
+      agents: { a1: "idle" },
+      disabled: ["p1"],
+    });
+
+    await autopilotPass([key.primary], new Set());
+
+    expect(store.getState().autopilot[key.primary]).toBeUndefined();
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(runVerification).not.toHaveBeenCalled();
+  });
+
+  it("a paused checkout stays paused across ticks — the first tick never un-pauses it", async () => {
+    // Paused is the one per-checkout intent that persists; enrolling on tick
+    // must not overwrite it with a fresh (un-paused) enrollment.
+    const { store, sendUserMessage } = makeStore({
+      autopilot: { [key.primary]: state({ paused: true }) },
+      agents: { a1: "idle" },
+    });
+
+    await autopilotPass([key.primary], new Set());
+
+    expect(store.getState().autopilot[key.primary].paused).toBe(true);
     expect(sendUserMessage).not.toHaveBeenCalled();
   });
 });

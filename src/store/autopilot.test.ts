@@ -5,9 +5,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 
-// `vi.mock` is hoisted above the module body, so the spy has to be too.
-const { setSetting } = vi.hoisted(() => ({ setSetting: vi.fn() }));
+// `vi.mock` is hoisted above the module body, so the spies have to be too.
+const { setSetting, setProjectSetting, deleteProjectSetting } = vi.hoisted(() => ({
+  setSetting: vi.fn(),
+  setProjectSetting: vi.fn(() => Promise.resolve()),
+  deleteProjectSetting: vi.fn(() => Promise.resolve()),
+}));
 vi.mock("@/storage/settings", () => ({ setSetting }));
+vi.mock("@/storage/projectSettings", () => ({
+  AUTOPILOT_ENABLED_KEY: "autopilot.enabled",
+  setProjectSetting,
+  deleteProjectSetting,
+}));
 
 import { AUTOPILOT_SETTING, createAutopilotSlice, parseAutopilotEnrollment } from "./autopilot";
 import type { AppState } from "./types";
@@ -18,8 +27,34 @@ const report = (outcome: "passed" | "failed") => ({
   checks: [{ name: "test", command: "t", outcome, duration_ms: 1, tail: [] }],
 });
 
+describe("project switch", () => {
+  it("has every project on by default — the disabled list starts empty", () => {
+    expect(makeStore().getState().autopilotDisabledProjects).toEqual([]);
+  });
+
+  it("turning a project off writes the one row that exists; turning it on deletes it", () => {
+    // On is the default, so "on" is the ABSENCE of a row — a project never
+    // touched and a project switched back on look identical in the table.
+    const store = makeStore();
+    store.getState().setProjectAutopilot("p1", false);
+    expect(store.getState().autopilotDisabledProjects).toEqual(["p1"]);
+    expect(setProjectSetting).toHaveBeenLastCalledWith("p1", "autopilot.enabled", "0");
+
+    store.getState().setProjectAutopilot("p1", true);
+    expect(store.getState().autopilotDisabledProjects).toEqual([]);
+    expect(deleteProjectSetting).toHaveBeenLastCalledWith("p1", "autopilot.enabled");
+  });
+
+  it("switching a project off twice records it once", () => {
+    const store = makeStore();
+    store.getState().setProjectAutopilot("p1", false);
+    store.getState().setProjectAutopilot("p1", false);
+    expect(store.getState().autopilotDisabledProjects).toEqual(["p1"]);
+  });
+});
+
 describe("enrollment", () => {
-  it("starts absent — nothing is enrolled by default", () => {
+  it("starts absent — the driver enrolls live checkouts on its first tick", () => {
     expect(makeStore().getState().autopilot).toEqual({});
   });
 
@@ -42,10 +77,23 @@ describe("enrollment", () => {
     store.getState().openAutopilotCycle("a1", "fix-checks", "sig");
     store.getState().pauseAutopilot("a1");
 
-    // The last write is what a reload would read: enrolled + paused, no cycle.
+    // The last write is what a reload would read: paused, no cycle.
     const [key, value] = setSetting.mock.calls.at(-1) ?? [];
     expect(key).toBe(AUTOPILOT_SETTING);
     expect(value).toEqual({ a1: { paused: true } });
+  });
+
+  it("does not persist a checkout that is merely enrolled", () => {
+    // Enrollment is the default and re-derived from live agents every tick, so a
+    // row per checkout would only grow; the paused flag is the one intent worth
+    // keeping. Resuming therefore removes the entry again.
+    const store = makeStore();
+    store.getState().enrollAutopilot("a1");
+    expect(setSetting.mock.calls.at(-1)?.[1]).toEqual({});
+
+    store.getState().pauseAutopilot("a1");
+    store.getState().resumeAutopilot("a1");
+    expect(setSetting.mock.calls.at(-1)?.[1]).toEqual({});
   });
 
   it("pausing drops the in-flight cycle but keeps enrollment", () => {
@@ -101,14 +149,16 @@ describe("enrollment", () => {
     expect(store.getState().autopilot.a1.barren).toEqual([]);
   });
 
-  it("unenrolling forgets the checkout entirely", () => {
+  it("unenrolling forgets the checkout entirely, including its paused flag", () => {
     const store = makeStore();
     store.getState().enrollAutopilot("a1");
     store.getState().enrollAutopilot("a1::web");
+    store.getState().pauseAutopilot("a1");
+    store.getState().pauseAutopilot("a1::web");
     store.getState().unenrollAutopilot("a1");
 
     expect(Object.keys(store.getState().autopilot)).toEqual(["a1::web"]);
-    expect(setSetting.mock.calls.at(-1)?.[1]).toEqual({ "a1::web": { paused: false } });
+    expect(setSetting.mock.calls.at(-1)?.[1]).toEqual({ "a1::web": { paused: true } });
   });
 
   it("ignores transitions for a checkout that was never enrolled", () => {
@@ -215,9 +265,9 @@ describe("parseAutopilotEnrollment", () => {
     });
   });
 
-  it("fails closed on junk or absence — nothing enrolled", () => {
-    // The wrong way to fail is "enroll everything"; a loop that spends agent
-    // turns must default to off.
+  it("yields nothing on junk or absence — the driver re-enrolls live checkouts itself", () => {
+    // A corrupt row must not be able to pause (or un-pause) anything the user
+    // didn't; the only thing lost is the paused set, which the user can redo.
     expect(parseAutopilotEnrollment(undefined)).toEqual({});
     expect(parseAutopilotEnrollment("")).toEqual({});
     expect(parseAutopilotEnrollment("{oops")).toEqual({});

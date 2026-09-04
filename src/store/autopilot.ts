@@ -2,20 +2,30 @@
 // (pure); this slice is the state it reads and the transitions the driver
 // (`autopilotSync`) applies to it.
 //
-// Enrollment is persisted, deliberately: a loop the user switched on should
-// survive a reload rather than quietly stopping. Cycles are NOT persisted —
-// an in-flight cycle's agent turn doesn't survive a restart either, so resuming
-// one would be judging a turn that never finished. A restart drops back to
-// "enrolled, no cycle", and the next tick re-derives from the live world.
+// Autopilot is ON by default, per project: the switch lives in `project_settings`
+// (`AUTOPILOT_ENABLED_KEY`) and is mirrored here as the list of projects that
+// turned it off. The driver enrolls every live checkout of an enabled project on
+// its own; the per-checkout entry below is runtime bookkeeping, not consent.
+//
+// The one per-checkout intent that persists is `paused`: a PR the user parked
+// should stay parked across a reload rather than quietly resuming. Cycles are NOT
+// persisted — an in-flight cycle's agent turn doesn't survive a restart either,
+// so resuming one would be judging a turn that never finished. A restart drops
+// back to "enrolled, no cycle", and the next tick re-derives from the live world.
 
 import type { VerificationReport } from "@/api";
 import type { AutopilotState, Cycle, CyclePhase, StuckReason } from "@/autopilot";
 import { newEnrollment } from "@/autopilot";
 import type { DelegationKind } from "@/delegation";
+import {
+  AUTOPILOT_ENABLED_KEY,
+  deleteProjectSetting,
+  setProjectSetting,
+} from "@/storage/projectSettings";
 import { setSetting } from "@/storage/settings";
 import type { SliceCreator } from "./types";
 
-/** Settings key holding the persisted enrollment set. */
+/** Settings key holding the persisted per-checkout intent (paused checkouts). */
 export const AUTOPILOT_SETTING = "autopilotEnrollment";
 
 /** The persisted shape: only the user's intent, never in-flight machinery. */
@@ -24,9 +34,13 @@ interface PersistedEnrollment {
 }
 
 export interface AutopilotSlice {
-  /** Per-checkout autopilot state, keyed by `checkoutKey`. Absent = never
-   *  enrolled, which is the default for every checkout. */
+  /** Per-checkout autopilot state, keyed by `checkoutKey`. Absent = the driver
+   *  hasn't ticked this checkout yet (or its project has autopilot off). */
   autopilot: Record<string, AutopilotState>;
+  /** Projects whose autopilot switch is off (`project_id`s). Every other project
+   *  is on — that is the default. Hydrated from `project_settings` at launch and
+   *  kept in sync by `setProjectAutopilot`. */
+  autopilotDisabledProjects: string[];
   /** Local verification autopilot ran to judge the CURRENT cycle, keyed by
    *  `checkoutKey`.
    *
@@ -37,9 +51,14 @@ export interface AutopilotSlice {
    *  be judged by a report produced for it. */
   autopilotVerdicts: Record<string, VerificationReport>;
 
-  /** Turn autopilot on for a checkout. */
+  /** Flip a project's autopilot switch and persist it to `project_settings`. */
+  setProjectAutopilot: (projectId: string, enabled: boolean) => void;
+
+  /** Start tracking a checkout (the driver does this for every live checkout of
+   *  an enabled project; the chip does it when the user acts before the first
+   *  tick). */
   enrollAutopilot: (key: string) => void;
-  /** Turn it off entirely and forget the checkout's history. */
+  /** Forget a checkout's state and history — used when its agent is gone. */
   unenrollAutopilot: (key: string) => void;
   /** Hold without losing enrollment; resuming is one click. */
   pauseAutopilot: (key: string) => void;
@@ -78,11 +97,12 @@ export interface AutopilotSlice {
   recordAutopilotVerdict: (key: string, report: VerificationReport) => void;
 }
 
-/** Parse the persisted enrollment set at launch (mirrors `parseReviewDismissed`
- *  in eventListeners). Rebuilds from a fresh enrollment so a hand-edited or
- *  corrupt row can never inject a cycle, a spent budget, or a `stuck` the user
- *  never saw — and an unparseable value yields nothing enrolled, which is the
- *  right way for a loop that spends agent turns to fail. */
+/** Parse the persisted per-checkout intent at launch (mirrors
+ *  `parseReviewDismissed` in eventListeners). Rebuilds from a fresh enrollment so
+ *  a hand-edited or corrupt row can never inject a cycle, a spent budget, or a
+ *  `stuck` the user never saw. An unparseable value yields nothing, which is
+ *  safe: the driver re-enrolls live checkouts on its first tick, and the only
+ *  thing lost is a paused flag. */
 export function parseAutopilotEnrollment(raw: string | undefined): Record<string, AutopilotState> {
   if (!raw) return {};
   try {
@@ -97,11 +117,13 @@ export function parseAutopilotEnrollment(raw: string | undefined): Record<string
   }
 }
 
-/** Persist just the enrollment intent for every enrolled checkout. */
+/** Persist just the user's intent: which checkouts are paused. Enrollment itself
+ *  is not worth a row — the driver re-derives it from live agents on every tick,
+ *  and writing every checkout ever seen would grow the row without bound. */
 function persist(map: Record<string, AutopilotState>) {
   const out: Record<string, PersistedEnrollment> = {};
   for (const [key, s] of Object.entries(map)) {
-    if (s.enrolled) out[key] = { paused: s.paused };
+    if (s.enrolled && s.paused) out[key] = { paused: true };
   }
   void setSetting(AUTOPILOT_SETTING, out);
 }
@@ -132,6 +154,19 @@ const clearVerdict = (verdicts: Record<string, VerificationReport>, key: string)
 export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set) => ({
   autopilot: {},
   autopilotVerdicts: {},
+  autopilotDisabledProjects: [],
+
+  setProjectAutopilot: (projectId, enabled) => {
+    set((s) => {
+      const rest = s.autopilotDisabledProjects.filter((id) => id !== projectId);
+      return { autopilotDisabledProjects: enabled ? rest : [...rest, projectId] };
+    });
+    // On is the default, so "on" means no row at all.
+    const write = enabled
+      ? deleteProjectSetting(projectId, AUTOPILOT_ENABLED_KEY)
+      : setProjectSetting(projectId, AUTOPILOT_ENABLED_KEY, "0");
+    write.catch((e) => console.error("save autopilot.enabled failed", e));
+  },
 
   enrollAutopilot: (key) => {
     set((s) => {

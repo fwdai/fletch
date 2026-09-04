@@ -135,9 +135,11 @@ export type StuckReason =
   /** No evidence arrived within `EVIDENCE_TIMEOUT_MS`. */
   | "no-evidence";
 
-/** Per-checkout autopilot state, keyed by `checkoutKey`. Absent = never enrolled. */
+/** Per-checkout autopilot state, keyed by `checkoutKey`. Absent = the driver has
+ *  not ticked this checkout yet (or its project has autopilot switched off). */
 export interface AutopilotState {
-  /** The user turned it on for this checkout. Off by default, everywhere. */
+  /** Autopilot is tracking this checkout. On by default: the driver enrolls
+   *  every live checkout of a project whose switch is on. */
   enrolled: boolean;
   /** Paused by the user; enrollment is kept so resuming is one click. */
   paused: boolean;
