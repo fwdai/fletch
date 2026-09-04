@@ -36,11 +36,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Plain apt, deliberately not `cache-apt-pkgs-action`. That action cached a
+      # *failed* install: when Ubuntu's mirror served 404s for the versions its
+      # index advertised, the action installed 0 of 4 packages, exited green, and
+      # cached the empty result — after which every run on every branch restored a
+      # 6 KB "cache", skipped installation, and failed later inside `glib-sys`.
+      # Bumping the cache key only bought one run, because the key includes the
+      # resolved package versions and those rotate.
+      #
+      # `update` immediately before `install` keeps the index and the pool in
+      # step, and the retry rides out the mirror lag that caused the 404s. There
+      # is no cache to poison, and a failed install fails the step.
       - name: Install system dependencies
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-          version: 1.0
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends \
+                 libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed (likely mirror lag); retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt failed three times; the GTK build dependencies are not installed"
+          exit 1
+
+      # Backstop, kept because it is what turned the silent-empty-install into a
+      # legible failure in the first place: without it a missing GTK stack
+      # surfaces two steps later as a pkg-config error from inside `glib-sys`.
+      - name: Verify system dependencies
+        run: pkg-config --exists --print-errors glib-2.0 gobject-2.0 gtk+-3.0 webkit2gtk-4.1
 
       - name: Setup Rust
         # Toolchain version + components come from /rust-toolchain.toml (the

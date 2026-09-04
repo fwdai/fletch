@@ -416,6 +416,44 @@ impl GitDispatcher {
         let body_owned = crate::github::with_closes_trailer(body_arg, closes);
         let body = body_owned.as_str();
         let requested = arg_branch(args);
+        // The branch this PR targets. Defaults to the base the checkout was
+        // spawned against; `args.base` overrides it, because the user can tell
+        // the agent mid-session to build on a feature branch and the spawn-time
+        // record has no way to know that. Resolved *before* the head branch is
+        // materialized so a malformed base fails without leaving a stray branch
+        // behind. The effective base is reported back on `EVENT_PR_OPENED`, which
+        // rewrites the checkout's recorded base — otherwise ahead/behind, "rebase
+        // onto", and the `update-branch` fetch would keep measuring against a
+        // base this PR isn't stacked on.
+        let requested_base = arg_branch_named(args, "base");
+        let base = requested_base
+            .clone()
+            .unwrap_or_else(|| t.base_branch.clone());
+        if let Some(resp) = refuse_option_like(id, "open_pr", "base", &base) {
+            return (resp, Vec::new());
+        }
+        // A base the *request* supplied is confirmed to exist on origin before
+        // anything is created or pushed. Otherwise a typo (`mainn`) costs a
+        // materialized branch and a push, and only then fails in `pr_create` —
+        // leaving a pushed branch with no PR. Only the requested base is checked:
+        // the recorded one was resolved at spawn, and putting a network round
+        // trip (and a new way to fail) in front of every default PR is not this
+        // op's business. `None` from the probe means "couldn't ask", which must
+        // not block — only a definitive "no such ref" refuses.
+        if requested_base.is_some()
+            && crate::git::remote_branch_exists(&t.cwd, &base).await == Some(false)
+        {
+            return (
+                Response::err(
+                    id,
+                    format!(
+                        "open_pr: base branch {base:?} does not exist on origin — \
+                         pass an existing branch as `args.base`"
+                    ),
+                ),
+                Vec::new(),
+            );
+        }
 
         let current = match crate::git::current_branch(&t.cwd).await {
             Ok(b) => b,
@@ -451,9 +489,14 @@ impl GitDispatcher {
             }
         };
 
-        if let Some(resp) = refuse_option_like_branch(id, "open_pr", &branch) {
+        if let Some(resp) = refuse_option_like(id, "open_pr", "branch", &branch) {
             return (resp, effects);
         }
+        // Deliberately the *recorded* base, never `base`: this gate fences the
+        // head branch off the branch the work is reviewed against, and reading it
+        // from the request would let an agent name a decoy base and thereby
+        // publish over the real one (`PROTECTED_TRUNKS` covers only main/master,
+        // so a repo reviewed against `release/2.0` would open up).
         if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
             return (Response::err(id, why), effects);
         }
@@ -461,7 +504,9 @@ impl GitDispatcher {
             .refuse_unless_publish_approved(
                 "open_pr",
                 t.subdir.as_deref(),
-                &format!("open a pull request from {branch} into {}", t.base_branch),
+                // The *effective* base, so the confirmation names the PR the user
+                // is actually approving rather than the spawn-time default.
+                &format!("open a pull request from {branch} into {base}"),
             )
             .await
         {
@@ -473,12 +518,12 @@ impl GitDispatcher {
                 effects,
             );
         }
-        match crate::github::pr_create(&t.cwd, title, body, &t.base_branch).await {
+        match crate::github::pr_create(&t.cwd, title, body, &base).await {
             Ok(pr) => {
                 crate::telemetry::track("pr_opened", json!({ "source": "agent_rpc" }));
                 effects.push(RpcEvent::named(
                     EVENT_PR_OPENED,
-                    with_repo(json!({ "number": pr.number }), &t.subdir),
+                    with_repo(json!({ "number": pr.number, "base": base }), &t.subdir),
                 ));
                 (Response::ok(id, 0, pr.url, String::new()), effects)
             }
@@ -523,7 +568,7 @@ impl GitDispatcher {
             },
         };
 
-        if let Some(resp) = refuse_option_like_branch(id, "git_push", &branch) {
+        if let Some(resp) = refuse_option_like(id, "git_push", "branch", &branch) {
             return (resp, effects);
         }
         if let Some(why) = self
@@ -585,11 +630,8 @@ impl GitDispatcher {
             Some(r) => r,
             None => t.base_branch,
         };
-        if branch.starts_with('-') {
-            return Response::err(
-                id,
-                format!("git_fetch: refusing option-like ref {branch:?}"),
-            );
+        if let Some(resp) = refuse_option_like(id, "git_fetch", "ref", &branch) {
+            return resp;
         }
         let auth = crate::github::git_auth_env();
         let resp = run_git_command(id, &cwd, &["fetch", "origin", &branch], &auth).await;
@@ -626,17 +668,19 @@ fn arg_branch(args: &Value) -> Option<String> {
     arg_branch_named(args, "branch")
 }
 
-/// Refuse a branch name git could reinterpret as an option (leading `-`). The
-/// resolved branch comes from the agent-writable `.git/HEAD`; the `git::push`
-/// primitive already neutralises injection by pushing a fully-qualified refspec,
-/// but the same string also flows into `pr_create` (the PR head) and event
-/// payloads — so reject it up front here (parity with `git_fetch`) so an agent
-/// that planted an option-named HEAD fails loudly instead of silently creating a
-/// junk remote branch or PR.
-fn refuse_option_like_branch(id: &str, op: &str, branch: &str) -> Option<Response> {
-    branch
+/// Refuse a ref name git could reinterpret as an option (leading `-`), naming
+/// which one (`branch`, `base`, `ref`) in the error. Every ref an op resolves
+/// goes through this: a branch comes from the agent-writable `.git/HEAD`, and a
+/// base or fetch ref comes straight from the request. The `git::push` primitive
+/// already neutralises injection by pushing a fully-qualified refspec, but the
+/// same strings also flow into `pr_create` (the PR head and base), the fetch
+/// argv, and event payloads — so reject them up front so an agent that planted
+/// an option-named HEAD or passed an option-named base fails loudly instead of
+/// silently creating a junk remote branch or PR.
+fn refuse_option_like(id: &str, op: &str, kind: &str, value: &str) -> Option<Response> {
+    value
         .starts_with('-')
-        .then(|| Response::err(id, format!("{op}: refusing option-like branch {branch:?}")))
+        .then(|| Response::err(id, format!("{op}: refusing option-like {kind} {value:?}")))
 }
 
 /// Read a boolean flag arg by key, defaulting to `false` when absent or not a
@@ -878,6 +922,213 @@ mod tests {
             resp.error
         );
         assert!(fx.is_empty(), "a refused push must emit nothing: {fx:?}");
+    }
+
+    /// An option-named base is refused before the head branch is materialized,
+    /// so a malformed `args.base` can't leave a stray branch behind in the
+    /// checkout (the head-branch guard, by contrast, necessarily runs after
+    /// HEAD is resolved).
+    #[tokio::test]
+    async fn open_pr_refuses_option_like_base() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, fx) = disp
+            .dispatch_inner(
+                "b1",
+                "open_pr",
+                &json!({"title": "t", "base": "--upload-pack=evil"}),
+            )
+            .await;
+        assert!(!resp.ok, "an option-named base must be refused: {resp:?}");
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("option-like base"),
+            "error must name the refused base, got: {:?}",
+            resp.error
+        );
+        assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
+    }
+
+    /// A requested base that origin doesn't have is refused before the head
+    /// branch is materialized or pushed, so a typo can't leave a pushed branch
+    /// with no PR behind it. Uses a local bare repo as `origin`, so the probe is
+    /// a real `ls-remote` over the local transport with no network.
+    #[tokio::test]
+    async fn open_pr_refuses_a_base_missing_from_origin() {
+        let td = tempfile::tempdir().unwrap();
+        let origin = td.path().join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+        run_git(&repo, &["push", "-q", "origin", "main"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, fx) = disp
+            .dispatch_inner(
+                "b3",
+                "open_pr",
+                &json!({"title": "t", "branch": "fix/typo-base", "base": "mainn"}),
+            )
+            .await;
+        assert!(
+            !resp.ok,
+            "a base origin does not have must be refused: {resp:?}"
+        );
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("does not exist on origin"),
+            "error must name the missing base, got: {:?}",
+            resp.error
+        );
+        assert!(
+            fx.is_empty(),
+            "nothing may be created before the base is known good: {fx:?}"
+        );
+        // And the refusal is a pre-flight, not a side effect: no branch was cut.
+        let branches = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["branch", "--list", "fix/typo-base"])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "the head branch must not be materialized for a bad base"
+        );
+    }
+
+    /// `ls-remote`'s ref argument is a pattern, so a glob base matches a real
+    /// branch and exits 0 — but GitHub rejects it as a literal base, which would
+    /// reopen exactly the pushed-branch-without-a-PR hole the probe closes. The
+    /// probe compares the returned ref verbatim, so a glob reads as absent.
+    #[tokio::test]
+    async fn open_pr_refuses_a_glob_base_that_matches_a_real_branch() {
+        let td = tempfile::tempdir().unwrap();
+        let origin = td.path().join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+        run_git(&repo, &["push", "-q", "origin", "main"]);
+        // A branch the glob genuinely matches, so the probe's `ls-remote` exits 0.
+        run_git(&repo, &["push", "-q", "origin", "main:refs/heads/feat/x"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, fx) = disp
+            .dispatch_inner(
+                "b5",
+                "open_pr",
+                &json!({"title": "t", "branch": "fix/glob-base", "base": "feat/*"}),
+            )
+            .await;
+        assert!(
+            !resp.ok,
+            "a glob base must be refused even though ls-remote matches it: {resp:?}"
+        );
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("does not exist on origin"),
+            "error must name the missing base, got: {:?}",
+            resp.error
+        );
+        assert!(fx.is_empty(), "nothing may be created: {fx:?}");
+    }
+
+    /// The probe distinguishes "absent" from "couldn't ask". With no origin at
+    /// all, `ls-remote` fails to *ask* — that must not read as absence, or every
+    /// PR in a local-only repo would be refused on base grounds instead of
+    /// failing honestly at the push.
+    #[tokio::test]
+    async fn open_pr_does_not_refuse_a_base_it_could_not_verify() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+        run_git(&repo, &["checkout", "-q", "-b", "fix/unverifiable"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, _fx) = disp
+            .dispatch_inner("b4", "open_pr", &json!({"title": "t", "base": "feat/x"}))
+            .await;
+        assert!(!resp.ok);
+        let err = resp.error.as_deref().unwrap_or_default();
+        assert!(
+            !err.contains("does not exist on origin"),
+            "an unanswerable probe must not be reported as a missing base: {err}"
+        );
+        assert!(err.contains("push failed"), "got: {err}");
+    }
+
+    /// SECURITY: `args.base` redirects the PR target only. The gate that keeps an
+    /// agent from publishing over the branch its work is reviewed against still
+    /// reads the *recorded* base, so naming a decoy base can't unlock a push to
+    /// the real one. `release/2.0` rather than `main` because the trunk list would
+    /// catch `main` regardless — this is the case only the recorded base covers.
+    #[tokio::test]
+    async fn open_pr_base_override_does_not_unlock_the_recorded_base() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "release/2.0"]);
+
+        let disp = GitDispatcher::new(
+            repo.clone(),
+            "release/2.0".to_string(),
+            AgentCaps::interactive(),
+        );
+        let (resp, fx) = disp
+            .dispatch_inner("b2", "open_pr", &json!({"title": "t", "base": "feat/x"}))
+            .await;
+        assert!(
+            !resp.ok,
+            "publishing the review base must stay refused whatever base the PR names: {resp:?}"
+        );
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("reviewed against"),
+            "error must be the review-base refusal, got: {:?}",
+            resp.error
+        );
+        assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
     }
 
     #[tokio::test]

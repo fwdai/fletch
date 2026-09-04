@@ -1271,6 +1271,38 @@ fn pr_number_persists_and_resets_on_name_reuse() {
     assert_eq!(wm.agent(&reused_id).unwrap().repos[0].pr_number, None);
 }
 
+/// Opening a PR against a base other than the spawn-time one rewrites the
+/// recorded base, so every base-keyed reader (ahead/behind, "rebase onto", the
+/// `update-branch` fetch) follows the PR that actually exists. The fork point
+/// (`base_sha`) is deliberately untouched — it records where the checkout was
+/// cut, which is still true whatever the PR targets.
+#[test]
+fn recorded_base_follows_a_redirected_pr_base() {
+    let db = test_db();
+    let wm = WorkspaceManager::new(db.clone());
+    seed_repo(&db, "/r");
+
+    let mut rec = new_agent_record(
+        "denali".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "task".into(),
+        AgentView::Custom,
+    );
+    let id = rec.id.clone();
+    wm.add_agent(&mut rec).unwrap();
+    let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+    wm.set_repo_base_sha(&id, &subdir, "cafebabe").unwrap();
+
+    wm.set_repo_parent_branch(&id, &subdir, "feat/stacked")
+        .unwrap();
+
+    let repo = wm.agent(&id).unwrap().repos.remove(0);
+    assert_eq!(repo.parent_branch.as_deref(), Some("feat/stacked"));
+    assert_eq!(repo.base_sha.as_deref(), Some("cafebabe"));
+}
+
 /// A checkout accumulates every PR it has held, not just the current binding:
 /// a workspace that keeps working after a merge opens follow-ups, and the
 /// merged PR's identity is cleared off the `worktrees` row when the next one

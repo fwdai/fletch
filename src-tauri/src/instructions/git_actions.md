@@ -15,10 +15,12 @@ param means your starting (primary) checkout, as always.
 **Local git is yours to run directly.** Your workspace is a real checkout with a writable `.git`, so run plain git for local work: `git status`, `git add`, `git commit`, `git merge`, and conflict resolution all work in-place. What Fletch runs *for* you are the actions that need your GitHub credentials — and those stay on the host, never in your sandbox. So for anything that talks to the remote, use the file-RPC ops:
 
 - **`git_push`** — push the current branch to `origin`. Pass `args.force=true` to push a rewritten history (e.g. after a rebase); it uses `--force-with-lease`, which rewrites the remote branch but refuses if the remote has moved in a way you haven't seen.
-- **`open_pr`** — push and open a pull request.
+- **`open_pr`** — push and open a pull request. It targets the base branch this workspace was created against; pass `args.base="<branch>"` to target a different one (see below).
 - **`git_fetch`** — refresh a base branch from `origin` (for `update-branch`).
 
 Your workspace starts with no branch (detached HEAD) — that's expected. The branch is created the first time you push, and **you choose its name**: pass `args.branch` to `git_push` (or `open_pr`) with a short, conventional, descriptive name for the work — `fix/…`, `feat/…`, or `chore/…` (no `fletch/` prefix), e.g. `fix/login-crash`. Run `git status` if unsure whether you're already on a branch; once you are, omit `args.branch` and later pushes update that same branch.
+
+**Choosing the PR base.** The `base` a trigger carries is the branch this workspace was created against — the default, not a constraint. If you built your work on a different branch (the user asked you to stack on a feature branch, you branched off it, or you can see from `git log` that that's where your commits sit), pass that branch as `args.base` to `open_pr` so the PR targets it. Do that whenever the honest base differs from the trigger's `base`: a PR opened into the wrong branch shows every commit of the intervening work as if it were yours. The base you open against replaces the workspace's recorded base, so the app's behind-count and its `update-branch` action follow your PR from then on.
 
 ### commit
 
@@ -30,11 +32,11 @@ Commit with plain git as in `commit`, then push by calling the `git_push` op —
 
 ### commit-pr — params: `base`
 
-Commit with plain git as in `commit`, then write a concise PR title and description covering ALL changes versus the `base` branch, and open the PR by calling the `open_pr` op with that title and body — plus `args.branch` (your chosen conventional name) if you don't have a branch yet.
+Commit with plain git as in `commit`, then write a concise PR title and description covering ALL changes versus the `base` branch, and open the PR by calling the `open_pr` op with that title and body — plus `args.branch` (your chosen conventional name) if you don't have a branch yet, and `args.base` if your work is stacked on a branch other than the trigger's `base`.
 
 ### open-pr — params: `base`
 
-Everything is already committed. Review the work versus `base` (`git log <base>..HEAD`, `git diff <base>...HEAD`), write a concise, descriptive PR title and body, and open the PR by calling the `open_pr` op with them — plus `args.branch` (your chosen conventional name) if you don't have a branch yet.
+Everything is already committed. Review the work versus `base` (`git log <base>..HEAD`, `git diff <base>...HEAD`), write a concise, descriptive PR title and body, and open the PR by calling the `open_pr` op with them — plus `args.branch` (your chosen conventional name) if you don't have a branch yet, and `args.base` if your work is stacked on a branch other than the trigger's `base`. If that review shows commits you didn't write, `base` is the wrong target — find the branch your work actually sits on and pass it as `args.base`.
 
 ### push
 

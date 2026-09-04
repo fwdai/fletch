@@ -193,6 +193,26 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Record the base branch a tracked repo's work is reviewed against,
+    /// identified by subdir. Seeded at spawn from the project's default and
+    /// rewritten when `open_pr` targets a different base (`args.base`) — the user
+    /// can point the agent at a feature branch mid-session, and everything keyed
+    /// on the base (ahead/behind, "rebase onto", the `update-branch` fetch) has to
+    /// follow the PR that actually exists rather than the spawn-time guess.
+    /// Overwrites unconditionally; re-recording the same base is a no-op write.
+    ///
+    /// Deliberately leaves `base_sha` alone: that is the immutable fork point the
+    /// checkout was cut from, which the diff base reads in preference to this
+    /// name, and it stays true whatever the PR targets.
+    pub fn set_repo_parent_branch(&self, agent_id: &str, subdir: &str, base: &str) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "UPDATE worktrees SET parent_branch = ?1 WHERE workspace_id = ?2 AND subdir = ?3",
+            rusqlite::params![base, agent_id, subdir],
+        )?;
+        Ok(())
+    }
+
     /// Record the fork-point SHA for a tracked repo, identified by subdir.
     /// Written once the spawn task has created the checkout and resolved its
     /// HEAD. Overwrites unconditionally — the fork point is fixed for the
