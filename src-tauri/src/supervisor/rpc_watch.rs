@@ -149,6 +149,18 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                     // importantly `update-branch`, which would otherwise merge
                     // the wrong branch into the PR. A no-op write when the base
                     // wasn't redirected, so no need to compare first.
+                    //
+                    // The record only. The live `GitDispatcher` stamps its base
+                    // at construction and is not rebuilt until the next
+                    // resume/turn, so a *second* bare `open_pr` in this same
+                    // session still defaults to the spawn base — same bounded
+                    // staleness the dispatcher already documents for
+                    // `own_branch` (see `supervisor::lifecycle`). The app path
+                    // self-corrects, because the panel reads its trigger's
+                    // `base` param from this row; a bare op call does not.
+                    // Making the base live would mean interior mutability on a
+                    // struct deliberately stamped once at spawn, which is a
+                    // bigger change than it buys.
                     if let Some(base) = payload.get("base").and_then(|v| v.as_str()) {
                         if let Err(e) = sup.workspace.set_repo_parent_branch(agent_id, subdir, base)
                         {

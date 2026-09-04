@@ -425,9 +425,34 @@ impl GitDispatcher {
         // rewrites the checkout's recorded base — otherwise ahead/behind, "rebase
         // onto", and the `update-branch` fetch would keep measuring against a
         // base this PR isn't stacked on.
-        let base = arg_branch_named(args, "base").unwrap_or_else(|| t.base_branch.clone());
+        let requested_base = arg_branch_named(args, "base");
+        let base = requested_base
+            .clone()
+            .unwrap_or_else(|| t.base_branch.clone());
         if let Some(resp) = refuse_option_like(id, "open_pr", "base", &base) {
             return (resp, Vec::new());
+        }
+        // A base the *request* supplied is confirmed to exist on origin before
+        // anything is created or pushed. Otherwise a typo (`mainn`) costs a
+        // materialized branch and a push, and only then fails in `pr_create` —
+        // leaving a pushed branch with no PR. Only the requested base is checked:
+        // the recorded one was resolved at spawn, and putting a network round
+        // trip (and a new way to fail) in front of every default PR is not this
+        // op's business. `None` from the probe means "couldn't ask", which must
+        // not block — only a definitive "no such ref" refuses.
+        if requested_base.is_some()
+            && crate::git::remote_branch_exists(&t.cwd, &base).await == Some(false)
+        {
+            return (
+                Response::err(
+                    id,
+                    format!(
+                        "open_pr: base branch {base:?} does not exist on origin — \
+                         pass an existing branch as `args.base`"
+                    ),
+                ),
+                Vec::new(),
+            );
         }
 
         let current = match crate::git::current_branch(&t.cwd).await {
@@ -928,6 +953,97 @@ mod tests {
             resp.error
         );
         assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
+    }
+
+    /// A requested base that origin doesn't have is refused before the head
+    /// branch is materialized or pushed, so a typo can't leave a pushed branch
+    /// with no PR behind it. Uses a local bare repo as `origin`, so the probe is
+    /// a real `ls-remote` over the local transport with no network.
+    #[tokio::test]
+    async fn open_pr_refuses_a_base_missing_from_origin() {
+        let td = tempfile::tempdir().unwrap();
+        let origin = td.path().join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+        run_git(&repo, &["push", "-q", "origin", "main"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, fx) = disp
+            .dispatch_inner(
+                "b3",
+                "open_pr",
+                &json!({"title": "t", "branch": "fix/typo-base", "base": "mainn"}),
+            )
+            .await;
+        assert!(
+            !resp.ok,
+            "a base origin does not have must be refused: {resp:?}"
+        );
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("does not exist on origin"),
+            "error must name the missing base, got: {:?}",
+            resp.error
+        );
+        assert!(
+            fx.is_empty(),
+            "nothing may be created before the base is known good: {fx:?}"
+        );
+        // And the refusal is a pre-flight, not a side effect: no branch was cut.
+        let branches = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["branch", "--list", "fix/typo-base"])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "the head branch must not be materialized for a bad base"
+        );
+    }
+
+    /// The probe distinguishes "absent" from "couldn't ask". With no origin at
+    /// all, `ls-remote` fails to *ask* — that must not read as absence, or every
+    /// PR in a local-only repo would be refused on base grounds instead of
+    /// failing honestly at the push.
+    #[tokio::test]
+    async fn open_pr_does_not_refuse_a_base_it_could_not_verify() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "t@example.com"]);
+        run_git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), b"x").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "init"]);
+        run_git(&repo, &["checkout", "-q", "-b", "fix/unverifiable"]);
+
+        let disp = dispatcher(&repo);
+        let (resp, _fx) = disp
+            .dispatch_inner("b4", "open_pr", &json!({"title": "t", "base": "feat/x"}))
+            .await;
+        assert!(!resp.ok);
+        let err = resp.error.as_deref().unwrap_or_default();
+        assert!(
+            !err.contains("does not exist on origin"),
+            "an unanswerable probe must not be reported as a missing base: {err}"
+        );
+        assert!(err.contains("push failed"), "got: {err}");
     }
 
     /// SECURITY: `args.base` redirects the PR target only. The gate that keeps an
