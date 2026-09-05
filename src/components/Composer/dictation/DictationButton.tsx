@@ -16,8 +16,8 @@ interface Props {
   /** null while the platform probe is in flight. */
   availability: DictationAvailability | null;
   listening: boolean;
-  /** The previous session is still tearing down. A start now would be a backend
-   *  no-op, so the control is held for the (sub-second) flush. */
+  /** The previous session is still tearing down. The backend starts nothing in
+   *  that window, so the control is held for the (sub-second) flush. */
   stopping: boolean;
   /** Reason the last start failed, or null. */
   error: string | null;

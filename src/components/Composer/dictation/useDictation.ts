@@ -26,10 +26,9 @@ export function useDictation(input: ComposerInput) {
   const [availability, setAvailability] = useState<DictationAvailability | null>(null);
   const [listening, setListening] = useState(false);
   // The backend keeps the recognizer claimed after a stop until its final
-  // result lands (or the flush deadline passes), and answers a start in that
-  // window with a successful no-op. Holding the control until the session
-  // actually ends is what keeps a quick second click from lighting the mic with
-  // nothing behind it.
+  // result lands (or the flush deadline passes), and starts nothing in that
+  // window. Holding the control until the session actually ends is what keeps a
+  // quick second click from lighting the mic with nothing behind it.
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,10 +53,19 @@ export function useDictation(input: ComposerInput) {
   // session instead of closing it.
   const startingRef = useRef(false);
   // Set when a pending start is no longer wanted — the composer unmounted, or
-  // the message went out from under it. `dictationStop` can't cancel a session
-  // that hasn't come up yet, so the start closes it on arrival instead.
+  // the message went out from under it. Every path that sets it also sends the
+  // backend a stop, so this only decides what the start's continuation does
+  // with whatever it gets back: never adopt it.
   const abortStartRef = useRef(false);
   const stoppingRef = useRef(false);
+  // Set while this hook owns the one app-wide session, from the moment it asks
+  // for a start until that session ends. `dictation:state` is a global event,
+  // so without this a straggler from the session a previously mounted composer
+  // left flushing would reset the one this hook just started.
+  const ownsRef = useRef(false);
+  // False once unmounted, so a probe (or a start) that settles late doesn't set
+  // state on a gone component.
+  const mountedRef = useRef(true);
   const inputRef = useRef(input);
   inputRef.current = input;
 
@@ -71,20 +79,26 @@ export function useDictation(input: ComposerInput) {
     setStopping(next);
   }
 
-  // Probe once per mount: cheap, and the answer can change between mounts (the
-  // user grants permission in System Settings while the app runs).
-  useEffect(() => {
-    let cancelled = false;
+  function probe() {
     api
       .dictationAvailability()
       .then((a) => {
-        if (!cancelled) setAvailability(a);
+        if (mountedRef.current) setAvailability(a);
       })
       .catch(() => {
-        if (!cancelled) setAvailability(UNAVAILABLE);
+        if (mountedRef.current) setAvailability(UNAVAILABLE);
       });
+  }
+
+  // Probe on mount, and again after every start attempt settles (see `toggle`):
+  // the first-run prompt and a trip to System Settings both move the answer, and
+  // a stale one leaves the wrong icon and tooltip until the composer remounts.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: probe on mount only; it reads nothing from render scope
+  useEffect(() => {
+    mountedRef.current = true;
+    probe();
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
     };
   }, []);
 
@@ -122,6 +136,9 @@ export function useDictation(input: ComposerInput) {
       offTranscript = unTranscript;
 
       const unState = await onDictationState((e) => {
+        // Someone else's session (see `ownsRef`) — the event is app-wide, but
+        // the state it reports isn't ours to act on.
+        if (!ownsRef.current) return;
         if (e.state === "listening") {
           setListeningState(true);
           return;
@@ -129,6 +146,7 @@ export function useDictation(input: ComposerInput) {
         // `stopped` and `error` both end the session; only `error` has a reason
         // worth showing (the backend's message doubles as the fix instruction).
         // Either one means teardown is done, so the mic is startable again.
+        ownsRef.current = false;
         setListeningState(false);
         setStoppingState(false);
         acceptingRef.current = false;
@@ -148,10 +166,10 @@ export function useDictation(input: ComposerInput) {
       acceptingRef.current = false;
       // Unmounting mid-session (a view switch) must not leave the mic open —
       // nothing is left to receive its transcript. A start still sitting on the
-      // permission prompt has no session to stop yet, so it is marked unwanted
-      // and shuts itself down the moment it comes up.
+      // permission prompt is stopped too: the backend cancels it before the mic
+      // ever opens, or stops the session if it came up first (see `stop`).
       if (startingRef.current) abortStartRef.current = true;
-      if (listeningRef.current) {
+      if (startingRef.current || listeningRef.current) {
         listeningRef.current = false;
         void api.dictationStop().catch(() => {});
       }
@@ -178,23 +196,30 @@ export function useDictation(input: ComposerInput) {
     }
   }, [input.text]);
 
-  /** End the session, whatever stage it's at. A no-op when the mic is idle, so
-   *  callers that just want it quiet (send) don't have to check first.
+  /** End the session, whatever stage it's at — including a start still waiting
+   *  on the OS permission prompt, which the backend cancels before the mic
+   *  opens. A no-op when the mic is idle, so callers that just want it quiet
+   *  (send) don't have to check first.
    *
    *  Optimistic about `listening`: the mic shouldn't stay lit while the final
    *  result is flushed — `dictation:state` `stopped` confirms the end. */
   function stop() {
+    if (!listeningRef.current && !startingRef.current) return;
     if (startingRef.current) {
-      // Still on the permission prompt, so there's no session to stop and no
-      // transcript worth keeping once it does come up.
+      // The start hasn't resolved yet, so send the stop anyway: the backend
+      // honours one issued while a permission prompt is up and the mic never
+      // opens. Both ends run on its main thread, so the request lands either
+      // before the session is built (cancelled, the start resolves `false`) or
+      // after (a real stop, terminal event to follow) — never in between. The
+      // flag tells the start's continuation not to adopt what it opened.
       abortStartRef.current = true;
       acceptingRef.current = false;
     }
-    if (!listeningRef.current) return;
     setListeningState(false);
     setStoppingState(true);
     void api.dictationStop().catch(() => {
       // A failed stop emits no `stopped`, so nothing else would release the mic.
+      ownsRef.current = false;
       setStoppingState(false);
     });
   }
@@ -205,38 +230,53 @@ export function useDictation(input: ComposerInput) {
       return;
     }
     // A start still on the permission prompt, or a session still tearing down.
-    // The backend answers a start in either window with a successful no-op,
-    // which would light the button with nothing recording behind it. (The
-    // control is disabled while stopping; this also catches a raced click.)
+    // The backend starts nothing in either window, and a second attempt would
+    // take over the refs the one in flight still needs. (The control is disabled
+    // while stopping; this also catches a raced click.)
     if (startingRef.current || stoppingRef.current) return;
     baseRef.current = input.text;
     lastWrittenRef.current = input.text;
     acceptingRef.current = true;
     startingRef.current = true;
     abortStartRef.current = false;
+    ownsRef.current = true;
     try {
       // Resolves once audio is flowing; on first use this is where the OS
       // permission prompts appear, so it can sit pending for a while.
-      await api.dictationStart();
+      const started = await api.dictationStart();
+      if (!started) {
+        // Nothing came up — a stop of ours landed while the prompts were up, or
+        // the backend was already busy. No terminal event is coming, so this is
+        // the only place the control can be released.
+        ownsRef.current = false;
+        acceptingRef.current = false;
+        setListeningState(false);
+        setStoppingState(false);
+        return;
+      }
       if (abortStartRef.current) {
-        // Nobody is left to dictate into — close the session that just opened
-        // rather than leaving the mic live behind an idle button. Held until
-        // the backend confirms, like any other stop: its teardown would
-        // otherwise land on a session started in the meantime.
-        setStoppingState(true);
-        void api.dictationStop().catch(() => setStoppingState(false));
+        // A stop was requested while this start was in flight, and it reached
+        // the backend after the session came up — so it stopped that session for
+        // real and the terminal event is on its way. Don't adopt what we're
+        // about to be told is over; just leave the control held until it lands.
+        setListeningState(false);
         return;
       }
       setError(null);
       setListeningState(true);
     } catch (e) {
-      // The start's owner is gone; there's nothing to report the failure to.
-      if (abortStartRef.current) return;
-      setListeningState(false);
+      // Nothing was started, so no event will release the control from here.
+      ownsRef.current = false;
       acceptingRef.current = false;
-      setError(String(e));
+      setListeningState(false);
+      setStoppingState(false);
+      // The start's owner is gone; there's nothing to report the failure to.
+      if (!abortStartRef.current) setError(String(e));
     } finally {
       startingRef.current = false;
+      // The attempt may have settled a permission (the first-run prompt), which
+      // decides the icon and its tooltip.
+      probe();
     }
   }
 
