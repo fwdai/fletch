@@ -19,6 +19,9 @@ interface Props {
   tipDown?: boolean;
   disabled?: boolean;
   "aria-label"?: string;
+  /** On/off state for a button that toggles in place (the composer's mic), so
+   *  it is announced as pressed rather than as a plain action. */
+  "aria-pressed"?: boolean;
   className?: string;
   style?: CSSProperties;
   type?: "button" | "submit";
@@ -63,6 +66,7 @@ export function IconButton({
       data-tip={tip}
       data-tip-down={tipDown ? "" : undefined}
       aria-label={rest["aria-label"] ?? tip}
+      aria-pressed={rest["aria-pressed"]}
     >
       {children}
     </button>

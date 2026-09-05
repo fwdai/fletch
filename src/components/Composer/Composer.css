@@ -183,6 +183,31 @@
   color: var(--accent);
   background: color-mix(in oklch, var(--accent), transparent 90%);
 }
+/* Dictation running. Tinted like the pressed state above, plus a slow breathe
+   on the glyph — an open mic has to be unmistakable from across the room, but
+   this sits next to a text box, so nothing louder than opacity. */
+.composer-foot .composer-action.is-listening {
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent), transparent 88%);
+}
+.composer-foot .composer-action.is-listening svg {
+  animation: micBreathe 1.6s var(--ease) infinite;
+}
+@keyframes micBreathe {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The tint alone still reads as on. */
+  .composer-foot .composer-action.is-listening svg {
+    animation: none;
+  }
+}
 /* Hairline between the insert actions and the usage/send group. */
 .composer-foot-sep {
   width: 1px;

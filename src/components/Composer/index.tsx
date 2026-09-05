@@ -17,6 +17,7 @@ import { isContainerEngine, sandboxEngineLabel } from "@/storage/preferences";
 import type { UsageSnapshot } from "@/store";
 import { useAppStore } from "@/store";
 import { ComposerFrame } from "./ComposerFrame";
+import { DictationButton, useDictation } from "./dictation";
 import { IssuePicker } from "./IssuePicker";
 import { ModelPicker } from "./ModelPicker";
 import { UsageMeter } from "./UsageMeter";
@@ -296,6 +297,9 @@ export function Composer({
     onEnter: () => submitRef.current(),
   });
 
+  // Voice dictation writes into the same textarea, so it hangs off the input.
+  const dictation = useDictation(input);
+
   const hasContent = input.text.trim().length > 0 || input.attachments.length > 0;
   // Busy + empty → Stop; busy + typed (or idle) → Send. So a mid-turn
   // follow-up sends with Enter, and an empty composer still stops the turn.
@@ -312,6 +316,8 @@ export function Composer({
     }
     const trimmed = input.text.trim();
     if ((!trimmed && input.attachments.length === 0) || disabled || dockerBlocked) return;
+    // The message is leaving; the mic has nothing left to dictate into.
+    if (dictation.listening) dictation.stop();
     onSend({
       text: trimmed,
       provider,
@@ -378,6 +384,12 @@ export function Composer({
           <span style={{ flex: 1 }} />
           {/* Insert actions live on the right, beside send: what runs (agent/
            *  model/effort) reads left, what goes into this message reads right. */}
+          <DictationButton
+            availability={dictation.availability}
+            listening={dictation.listening}
+            error={dictation.error}
+            onToggle={dictation.toggle}
+          />
           <IconButton className="composer-action" tip="Attach files" onClick={input.browse}>
             <Icon name="attach" size={15} />
           </IconButton>
