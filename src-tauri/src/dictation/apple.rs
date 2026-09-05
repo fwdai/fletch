@@ -276,14 +276,15 @@ pub fn availability() -> Availability {
     }
 }
 
-/// `Ok(true)` once a session is live and `listening` has been emitted;
-/// `Ok(false)` when nothing was started, so no terminal event will follow.
-pub async fn start(app: AppHandle) -> Result<bool> {
+/// `Ok(Some(id))` once a session is live and `listening` has been emitted —
+/// the id every event of that session carries; `Ok(None)` when nothing was
+/// started, so no terminal event will follow.
+pub async fn start(app: AppHandle) -> Result<Option<u64>> {
     // Claiming ACTIVE up front is what makes a second start a no-op, and it
     // has to happen before the permission prompts, which can sit on screen
     // for a long time.
     if ACTIVE.swap(true, Ordering::SeqCst) {
-        return Ok(false);
+        return Ok(None);
     }
     // The claim is released by exactly one owner: `start` while `begin` still
     // hasn't run, then `begin` itself on failure, then `teardown` once the
@@ -309,29 +310,32 @@ pub async fn start(app: AppHandle) -> Result<bool> {
     }
 }
 
-fn begin(app: AppHandle) -> Result<bool> {
+fn begin(app: AppHandle) -> Result<Option<u64>> {
     // The user asked to stop while the permission prompts were up. Honour it
     // instead of opening the mic behind their back. No state event: the
-    // session never came up, so there is nothing to close out — the `false`
+    // session never came up, so there is nothing to close out — the `None`
     // is what tells the caller not to wait for one.
     if STOP_PENDING.replace(false) {
         ACTIVE.store(false, Ordering::SeqCst);
-        return Ok(false);
+        return Ok(None);
     }
-    if let Err(e) = build_session(app) {
-        // `build_session` unwinds whatever it installed, so releasing the
-        // claim here is what lets the user retry. No state event — the
-        // command's `Err` is the frontend's signal.
-        ACTIVE.store(false, Ordering::SeqCst);
-        return Err(e);
+    match build_session(app) {
+        Ok(generation) => Ok(Some(generation)),
+        Err(e) => {
+            // `build_session` unwinds whatever it installed, so releasing the
+            // claim here is what lets the user retry. No state event — the
+            // command's `Err` is the frontend's signal.
+            ACTIVE.store(false, Ordering::SeqCst);
+            Err(e)
+        }
     }
-    Ok(true)
 }
 
-/// Build and start the session. Main thread; permissions are already granted,
-/// which matters because reading `inputNode`'s format before that yields a
-/// zero-rate format and installing a tap with it throws in ObjC.
-fn build_session(app: AppHandle) -> Result<()> {
+/// Build and start the session, returning its generation — the id the frontend
+/// keys events on. Main thread; permissions are already granted, which matters
+/// because reading `inputNode`'s format before that yields a zero-rate format
+/// and installing a tap with it throws in ObjC.
+fn build_session(app: AppHandle) -> Result<u64> {
     let recognizer = unsafe { SFSpeechRecognizer::init(SFSpeechRecognizer::alloc()) }
         .ok_or_else(|| Error::Other("Dictation doesn't support this Mac's language.".into()))?;
     if !unsafe { recognizer.isAvailable() } {
@@ -410,8 +414,8 @@ fn build_session(app: AppHandle) -> Result<()> {
         stopping: false,
     }));
     // Audio is flowing. Only now can the frontend show a live mic.
-    emit_state(&app, State::Listening, None);
-    Ok(())
+    emit_state(&app, generation, State::Listening, None);
+    Ok(generation)
 }
 
 /// The recognizer's result handler. Runs on the recognizer's queue — the main
@@ -431,11 +435,11 @@ fn result_handler(
                 if !is_live(generation) {
                     return;
                 }
-                emit_transcript(&app, text, is_final);
+                emit_transcript(&app, generation, text, is_final);
                 if is_final {
                     if let Some(session) = claim(generation) {
                         teardown(session);
-                        emit_state(&app, State::Stopped, None);
+                        emit_state(&app, generation, State::Stopped, None);
                     }
                 }
                 return;
@@ -450,10 +454,10 @@ fn result_handler(
                 if stopping {
                     // The expected end of a user-requested stop, not a failure.
                     tracing::debug!(error = %message, "dictation stream ended");
-                    emit_state(&app, State::Stopped, None);
+                    emit_state(&app, generation, State::Stopped, None);
                 } else {
                     tracing::warn!(error = %message, "dictation failed");
-                    emit_state(&app, State::Error, Some(message));
+                    emit_state(&app, generation, State::Error, Some(message));
                 }
             }
         },
@@ -515,7 +519,7 @@ pub async fn stop(app: AppHandle) -> Result<()> {
                     "dictation: no final result before the flush deadline; forcing stop"
                 );
                 teardown(session);
-                emit_state(&emit_to, State::Stopped, None);
+                emit_state(&emit_to, generation, State::Stopped, None);
             }
         })
         .await;

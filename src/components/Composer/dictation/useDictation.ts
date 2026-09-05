@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type DictationAvailability, onDictationState, onDictationTranscript } from "@/api";
+import {
+  api,
+  type DictationAvailability,
+  type DictationSessionId,
+  onDictationState,
+  onDictationTranscript,
+} from "@/api";
 import { type ComposerInput, grow } from "../useComposerInput";
 import { spliceTranscript } from "./spliceTranscript";
 
@@ -58,11 +64,19 @@ export function useDictation(input: ComposerInput) {
   // with whatever it gets back: never adopt it.
   const abortStartRef = useRef(false);
   const stoppingRef = useRef(false);
-  // Set while this hook owns the one app-wide session, from the moment it asks
-  // for a start until that session ends. `dictation:state` is a global event,
-  // so without this a straggler from the session a previously mounted composer
-  // left flushing would reset the one this hook just started.
-  const ownsRef = useRef(false);
+  // The id of the session this hook owns, or null. Both dictation events are
+  // app-wide and a session outlives the composer that started it (a stop is
+  // followed by a flush), so a composer that starts the next one would otherwise
+  // take the old session's final transcript into its box and let the old
+  // `stopped` reset it. Every event is matched against this before it counts.
+  // Set from the `listening` event while a start is in flight (so an early
+  // event of our own is recognised), then authoritatively from what
+  // `dictationStart` resolves with.
+  const sessionRef = useRef<DictationSessionId | null>(null);
+  // The last session of ours that ended. A terminal event can beat the start's
+  // own reply (an instant recognizer failure); the reply must not re-adopt a
+  // session the event already closed out.
+  const endedRef = useRef<DictationSessionId | null>(null);
   // False once unmounted, so a probe (or a start) that settles late doesn't set
   // state on a gone component.
   const mountedRef = useRef(true);
@@ -113,6 +127,10 @@ export function useDictation(input: ComposerInput) {
 
     (async () => {
       const unTranscript = await onDictationTranscript((e) => {
+        // A previous session's flush, or one we've since disowned — not ours to
+        // write. A partial of our own arriving before the id is known is safe
+        // to drop: the next one carries the whole transcript again.
+        if (e.session !== sessionRef.current) return;
         if (!acceptingRef.current) return;
         if (e.is_final) acceptingRef.current = false;
         const ip = inputRef.current;
@@ -136,17 +154,24 @@ export function useDictation(input: ComposerInput) {
       offTranscript = unTranscript;
 
       const unState = await onDictationState((e) => {
-        // Someone else's session (see `ownsRef`) — the event is app-wide, but
-        // the state it reports isn't ours to act on.
-        if (!ownsRef.current) return;
         if (e.state === "listening") {
-          setListeningState(true);
+          // Only one session can come up at a time, so the `listening` that
+          // lands while our start is in flight is ours: adopt its id here, so
+          // a terminal event that beats the start's own reply is still matched.
+          if (startingRef.current && sessionRef.current === null) {
+            sessionRef.current = e.session;
+          }
+          if (e.session === sessionRef.current) setListeningState(true);
           return;
         }
+        // Someone else's session (see `sessionRef`) — the event is app-wide,
+        // but the state it reports isn't ours to act on.
+        if (e.session !== sessionRef.current) return;
         // `stopped` and `error` both end the session; only `error` has a reason
         // worth showing (the backend's message doubles as the fix instruction).
         // Either one means teardown is done, so the mic is startable again.
-        ownsRef.current = false;
+        endedRef.current = e.session;
+        sessionRef.current = null;
         setListeningState(false);
         setStoppingState(false);
         acceptingRef.current = false;
@@ -219,7 +244,7 @@ export function useDictation(input: ComposerInput) {
     setStoppingState(true);
     void api.dictationStop().catch(() => {
       // A failed stop emits no `stopped`, so nothing else would release the mic.
-      ownsRef.current = false;
+      sessionRef.current = null;
       setStoppingState(false);
     });
   }
@@ -239,21 +264,28 @@ export function useDictation(input: ComposerInput) {
     acceptingRef.current = true;
     startingRef.current = true;
     abortStartRef.current = false;
-    ownsRef.current = true;
+    sessionRef.current = null;
     try {
       // Resolves once audio is flowing; on first use this is where the OS
       // permission prompts appear, so it can sit pending for a while.
-      const started = await api.dictationStart();
-      if (!started) {
+      const id = await api.dictationStart();
+      if (id === null) {
         // Nothing came up — a stop of ours landed while the prompts were up, or
         // the backend was already busy. No terminal event is coming, so this is
         // the only place the control can be released.
-        ownsRef.current = false;
         acceptingRef.current = false;
         setListeningState(false);
         setStoppingState(false);
         return;
       }
+      if (endedRef.current === id) {
+        // Came up and ended before this reply arrived; the terminal event has
+        // already released the control, and adopting the id now would hold it
+        // for an event that isn't coming.
+        return;
+      }
+      // Authoritative, whatever the `listening` handler adopted meanwhile.
+      sessionRef.current = id;
       if (abortStartRef.current) {
         // A stop was requested while this start was in flight, and it reached
         // the backend after the session came up — so it stopped that session for
@@ -266,7 +298,7 @@ export function useDictation(input: ComposerInput) {
       setListeningState(true);
     } catch (e) {
       // Nothing was started, so no event will release the control from here.
-      ownsRef.current = false;
+      sessionRef.current = null;
       acceptingRef.current = false;
       setListeningState(false);
       setStoppingState(false);
