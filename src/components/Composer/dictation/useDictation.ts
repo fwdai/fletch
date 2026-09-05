@@ -204,9 +204,11 @@ export function useDictation(input: ComposerInput) {
       stop();
       return;
     }
-    // The button is held while the previous session tears down; this catches a
-    // click that raced the disable.
-    if (stoppingRef.current) return;
+    // A start still on the permission prompt, or a session still tearing down.
+    // The backend answers a start in either window with a successful no-op,
+    // which would light the button with nothing recording behind it. (The
+    // control is disabled while stopping; this also catches a raced click.)
+    if (startingRef.current || stoppingRef.current) return;
     baseRef.current = input.text;
     lastWrittenRef.current = input.text;
     acceptingRef.current = true;
@@ -218,8 +220,11 @@ export function useDictation(input: ComposerInput) {
       await api.dictationStart();
       if (abortStartRef.current) {
         // Nobody is left to dictate into — close the session that just opened
-        // rather than leaving the mic live behind an idle button.
-        void api.dictationStop().catch(() => {});
+        // rather than leaving the mic live behind an idle button. Held until
+        // the backend confirms, like any other stop: its teardown would
+        // otherwise land on a session started in the meantime.
+        setStoppingState(true);
+        void api.dictationStop().catch(() => setStoppingState(false));
         return;
       }
       setError(null);
