@@ -2,23 +2,31 @@
 // transitions the driver applies. The pure policy is tested in autopilot.test.ts
 // at the root; this covers the state it reads.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 
 // `vi.mock` is hoisted above the module body, so the spies have to be too.
-const { setSetting, setProjectSetting, deleteProjectSetting } = vi.hoisted(() => ({
-  setSetting: vi.fn(),
-  setProjectSetting: vi.fn(() => Promise.resolve()),
-  deleteProjectSetting: vi.fn(() => Promise.resolve()),
-}));
+const { setSetting, setProjectSetting, deleteProjectSetting, loadAutopilotDisabledProjects } =
+  vi.hoisted(() => ({
+    setSetting: vi.fn(),
+    setProjectSetting: vi.fn(() => Promise.resolve()),
+    deleteProjectSetting: vi.fn(() => Promise.resolve()),
+    loadAutopilotDisabledProjects: vi.fn(() => Promise.resolve([] as string[])),
+  }));
 vi.mock("@/storage/settings", () => ({ setSetting }));
 vi.mock("@/storage/projectSettings", () => ({
   AUTOPILOT_ENABLED_KEY: "autopilot.enabled",
   setProjectSetting,
   deleteProjectSetting,
+  loadAutopilotDisabledProjects,
 }));
 
-import { AUTOPILOT_SETTING, createAutopilotSlice, parseAutopilotEnrollment } from "./autopilot";
+import {
+  AUTOPILOT_SETTING,
+  autopilotProjectOn,
+  createAutopilotSlice,
+  parseAutopilotEnrollment,
+} from "./autopilot";
 import type { AppState } from "./types";
 
 const makeStore = () =>
@@ -27,11 +35,106 @@ const report = (outcome: "passed" | "failed") => ({
   checks: [{ name: "test", command: "t", outcome, duration_ms: 1, tail: [] }],
 });
 
-describe("project switch", () => {
+/** A write the test releases by hand, to order completions deliberately. */
+const deferred = () => {
+  let resolve!: () => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+};
+
+// Every test that writes uses its own project id: the per-project write queue
+// and sequence live at module scope, like the writes they order, so a queued
+// write from one test must not be able to trail into the next one's expectations.
+let n = 0;
+const fresh = () => `p${++n}`;
+
+beforeEach(() => {
+  setProjectSetting.mockReset().mockImplementation(() => Promise.resolve());
+  deleteProjectSetting.mockReset().mockImplementation(() => Promise.resolve());
+  loadAutopilotDisabledProjects.mockReset().mockImplementation(() => Promise.resolve([]));
+  vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+describe("autopilotProjectOn", () => {
+  it("is on for every project not listed, and off for a listed one", () => {
+    expect(autopilotProjectOn([], "p1")).toBe(true);
+    expect(autopilotProjectOn(["p1"], "p1")).toBe(false);
+    expect(autopilotProjectOn(["p1"], "p2")).toBe(true);
+  });
+
+  it("is off for EVERY project while the opt-outs are unknown", () => {
+    // The one predicate the driver, the chip and the toggle all share, so
+    // "unknown" fails closed everywhere at once rather than in three places.
+    expect(autopilotProjectOn(null, "p1")).toBe(false);
+  });
+});
+
+describe("project switch: loading", () => {
   it("starts with the opt-outs unknown (null), not with everything on", () => {
     // Until hydration fills the list, the driver must run nothing: on-by-default
     // without knowing who opted out would act on exactly the wrong projects.
     expect(makeStore().getState().autopilotDisabledProjects).toBeNull();
+  });
+
+  it("loads the list, and a failed load leaves it unknown rather than empty", async () => {
+    const store = makeStore();
+    loadAutopilotDisabledProjects.mockRejectedValueOnce(new Error("db not ready"));
+    await store.getState().loadAutopilotProjects();
+    expect(store.getState().autopilotDisabledProjects).toBeNull();
+
+    // The same action is the retry: the settings section calls it again.
+    loadAutopilotDisabledProjects.mockResolvedValueOnce(["p9"]);
+    await store.getState().loadAutopilotProjects();
+    expect(store.getState().autopilotDisabledProjects).toEqual(["p9"]);
+  });
+
+  it("refuses to flip a switch while the opt-outs are unknown", () => {
+    // Applying a click on top of null would invent an empty list and switch
+    // every project on — the exact failure null exists to prevent. The store
+    // enforces it, so no caller (not just the disabled toggle) can do it.
+    const store = makeStore();
+    store.getState().setProjectAutopilot(fresh(), true);
+    expect(store.getState().autopilotDisabledProjects).toBeNull();
+    expect(deleteProjectSetting).not.toHaveBeenCalled();
+    expect(setProjectSetting).not.toHaveBeenCalled();
+  });
+});
+
+describe("project switch: writing", () => {
+  const loaded = () => {
+    const store = makeStore();
+    store.setState({ autopilotDisabledProjects: [] });
+    return store;
+  };
+
+  it("turning a project off writes the one row that exists; turning it on deletes it", async () => {
+    // On is the default, so "on" is the ABSENCE of a row — a project never
+    // touched and a project switched back on look identical in the table.
+    const store = loaded();
+    const p = fresh();
+    store.getState().setProjectAutopilot(p, false);
+    expect(store.getState().autopilotDisabledProjects).toEqual([p]);
+    await vi.waitFor(() =>
+      expect(setProjectSetting).toHaveBeenLastCalledWith(p, "autopilot.enabled", "0"),
+    );
+
+    store.getState().setProjectAutopilot(p, true);
+    expect(store.getState().autopilotDisabledProjects).toEqual([]);
+    await vi.waitFor(() =>
+      expect(deleteProjectSetting).toHaveBeenLastCalledWith(p, "autopilot.enabled"),
+    );
+  });
+
+  it("switching a project off twice records it once", () => {
+    const store = loaded();
+    const p = fresh();
+    store.getState().setProjectAutopilot(p, false);
+    store.getState().setProjectAutopilot(p, false);
+    expect(store.getState().autopilotDisabledProjects).toEqual([p]);
   });
 
   it("reverts the switch when the durable write fails", async () => {
@@ -39,32 +142,75 @@ describe("project switch", () => {
     // says "on" would quietly resume autopilot on the next launch. Better to
     // snap the toggle back so the user sees the change didn't take.
     setProjectSetting.mockRejectedValueOnce(new Error("db locked"));
-    const store = makeStore();
-    store.setState({ autopilotDisabledProjects: [] });
+    const store = loaded();
+    const p = fresh();
 
-    store.getState().setProjectAutopilot("p1", false);
-    expect(store.getState().autopilotDisabledProjects).toEqual(["p1"]);
+    store.getState().setProjectAutopilot(p, false);
+    expect(store.getState().autopilotDisabledProjects).toEqual([p]);
     await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([]));
   });
 
-  it("turning a project off writes the one row that exists; turning it on deletes it", () => {
-    // On is the default, so "on" is the ABSENCE of a row — a project never
-    // touched and a project switched back on look identical in the table.
-    const store = makeStore();
-    store.getState().setProjectAutopilot("p1", false);
-    expect(store.getState().autopilotDisabledProjects).toEqual(["p1"]);
-    expect(setProjectSetting).toHaveBeenLastCalledWith("p1", "autopilot.enabled", "0");
+  it("runs one project's writes in click order, even when the first is slow", async () => {
+    // off (slow) then on (fast): without ordering the delete lands first and the
+    // slow upsert then persists "off" — the opposite of the last click.
+    const slow = deferred();
+    setProjectSetting.mockReturnValueOnce(slow.promise);
+    const store = loaded();
+    const p = fresh();
 
-    store.getState().setProjectAutopilot("p1", true);
+    store.getState().setProjectAutopilot(p, false);
+    store.getState().setProjectAutopilot(p, true);
+    await vi.waitFor(() => expect(setProjectSetting).toHaveBeenCalledTimes(1));
+    expect(deleteProjectSetting).not.toHaveBeenCalled();
+
+    slow.resolve();
+    await vi.waitFor(() => expect(deleteProjectSetting).toHaveBeenCalledTimes(1));
     expect(store.getState().autopilotDisabledProjects).toEqual([]);
-    expect(deleteProjectSetting).toHaveBeenLastCalledWith("p1", "autopilot.enabled");
   });
 
-  it("switching a project off twice records it once", () => {
-    const store = makeStore();
-    store.getState().setProjectAutopilot("p1", false);
-    store.getState().setProjectAutopilot("p1", false);
-    expect(store.getState().autopilotDisabledProjects).toEqual(["p1"]);
+  it("a stale failure does not roll back a later choice", async () => {
+    // off fails slowly while on has already been requested: the user's latest
+    // choice is "on", and the earlier failure must not be allowed to touch it.
+    // Only the latest request for a project may roll back.
+    const slow = deferred();
+    setProjectSetting.mockReturnValueOnce(slow.promise);
+    const store = loaded();
+    const p = fresh();
+
+    store.getState().setProjectAutopilot(p, false); // slow, will fail
+    store.getState().setProjectAutopilot(p, true); // queued behind it
+    expect(store.getState().autopilotDisabledProjects).toEqual([]);
+
+    slow.reject(new Error("db locked"));
+    await vi.waitFor(() => expect(deleteProjectSetting).toHaveBeenCalledTimes(1));
+    expect(store.getState().autopilotDisabledProjects).toEqual([]);
+  });
+
+  it("a failure of the LATEST request does roll back, even behind an earlier success", async () => {
+    // Mirror image: the earlier write succeeds, the latest one fails, so the
+    // store must return to what the earlier write persisted.
+    deleteProjectSetting.mockRejectedValueOnce(new Error("db locked"));
+    const store = loaded();
+    const p = fresh();
+
+    store.getState().setProjectAutopilot(p, false); // succeeds
+    store.getState().setProjectAutopilot(p, true); // fails
+    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([p]));
+  });
+
+  it("keeps different projects' writes independent", async () => {
+    // Serialization is per project: a slow write for one must not hold up
+    // another's.
+    const slow = deferred();
+    setProjectSetting.mockReturnValueOnce(slow.promise);
+    const store = loaded();
+    const a = fresh();
+    const b = fresh();
+
+    store.getState().setProjectAutopilot(a, false); // slow
+    store.getState().setProjectAutopilot(b, false);
+    await vi.waitFor(() => expect(setProjectSetting).toHaveBeenCalledTimes(2));
+    slow.resolve();
   });
 });
 

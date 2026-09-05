@@ -29,6 +29,7 @@ vi.mock("@/storage/projectSettings", () => ({
   AUTOPILOT_ENABLED_KEY: "autopilot.enabled",
   setProjectSetting: vi.fn(() => Promise.resolve()),
   deleteProjectSetting: vi.fn(() => Promise.resolve()),
+  loadAutopilotDisabledProjects: vi.fn(() => Promise.resolve([])),
 }));
 
 // The pass reads `useAppStore.getState()` on every key, so the mock has to

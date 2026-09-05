@@ -20,9 +20,11 @@ import type { DelegationKind } from "@/delegation";
 import {
   AUTOPILOT_ENABLED_KEY,
   deleteProjectSetting,
+  loadAutopilotDisabledProjects,
   setProjectSetting,
 } from "@/storage/projectSettings";
 import { setSetting } from "@/storage/settings";
+import { createKeyedQueue } from "@/util/keyedQueue";
 import type { SliceCreator } from "./types";
 
 /** Settings key holding the persisted per-checkout intent (paused checkouts). */
@@ -32,6 +34,26 @@ export const AUTOPILOT_SETTING = "autopilotEnrollment";
 interface PersistedEnrollment {
   paused: boolean;
 }
+
+/** The one answer to "is autopilot on for this project?", shared by the driver,
+ *  the Git panel chip and the settings toggle so they can never disagree.
+ *
+ *  `disabled === null` means the opt-outs are unknown (not loaded, or the load
+ *  failed) and the answer is NO for every project: a loop that is on by default
+ *  must fail closed when it cannot tell who opted out. */
+export function autopilotProjectOn(disabled: readonly string[] | null, projectId: string): boolean {
+  return disabled !== null && !disabled.includes(projectId);
+}
+
+/** Project-switch writes, serialized per project. Two quick clicks on one toggle
+ *  are two writes to the same row; without ordering, the slower first write can
+ *  land after the faster second and persist the opposite of the last click. */
+const switchWrites = createKeyedQueue();
+
+/** The newest switch request per project. A failed write may only roll the
+ *  store back if it is still the latest request for its project — a stale
+ *  rollback would otherwise replace a later choice that succeeded. */
+const switchSeq = new Map<string, number>();
 
 export interface AutopilotSlice {
   /** Per-checkout autopilot state, keyed by `checkoutKey`. Absent = the driver
@@ -56,7 +78,15 @@ export interface AutopilotSlice {
    *  be judged by a report produced for it. */
   autopilotVerdicts: Record<string, VerificationReport>;
 
-  /** Flip a project's autopilot switch and persist it to `project_settings`. */
+  /** Load (or reload) the opt-out list from `project_settings`. Called at
+   *  launch by `hydrateSettings`, and again by the settings section's retry when
+   *  the launch load failed. Leaves the list untouched on failure, so a failed
+   *  reload can never turn "unknown" into "everything on". */
+  loadAutopilotProjects: () => Promise<void>;
+  /** Flip a project's autopilot switch and persist it to `project_settings`.
+   *  Optimistic, serialized per project, and rolled back if the write fails
+   *  while it is still the latest request. A no-op while the opt-outs are
+   *  unknown: there is nothing sound to flip from. */
   setProjectAutopilot: (projectId: string, enabled: boolean) => void;
 
   /** Start tracking a checkout (the driver does this for every live checkout of
@@ -156,29 +186,54 @@ const clearVerdict = (verdicts: Record<string, VerificationReport>, key: string)
   return rest;
 };
 
-export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set) => ({
+export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => ({
   autopilot: {},
   autopilotVerdicts: {},
   autopilotDisabledProjects: null,
 
+  loadAutopilotProjects: async () => {
+    try {
+      set({ autopilotDisabledProjects: await loadAutopilotDisabledProjects() });
+    } catch (e) {
+      // Stay (or become) unknown rather than defaulting to "all on" — see
+      // `autopilotProjectOn`. Loud, since it silences a whole feature.
+      console.error("load autopilot opt-outs failed — autopilot stays off until it loads", e);
+    }
+  },
+
   setProjectAutopilot: (projectId, enabled) => {
+    // Unknown opt-outs: refuse. Applying a click on top of null would invent an
+    // empty list and switch every project on — the exact failure the null exists
+    // to prevent. The section disables its toggle for the same reason; this is
+    // the store making sure no other caller can do it either.
+    if (get().autopilotDisabledProjects === null) return;
+
     const apply = (on: boolean) =>
       set((s) => {
-        const rest = (s.autopilotDisabledProjects ?? []).filter((id) => id !== projectId);
+        // Guarded above, but a reload could race in between; never fabricate.
+        if (s.autopilotDisabledProjects === null) return s;
+        const rest = s.autopilotDisabledProjects.filter((id) => id !== projectId);
         return { autopilotDisabledProjects: on ? rest : [...rest, projectId] };
       });
+    const seq = (switchSeq.get(projectId) ?? 0) + 1;
+    switchSeq.set(projectId, seq);
+
     // Optimistic, so the toggle answers immediately — but the durable row is the
-    // truth. If the write fails, revert, or the session would run with a switch
-    // the next launch has never heard of (an "off" that comes back on).
+    // truth. Writes for one project run in click order (`switchWrites`), so the
+    // last click is what the row ends up saying; and a failure rolls back only
+    // if no later click has superseded it.
     apply(enabled);
-    // On is the default, so "on" means no row at all.
-    const write = enabled
-      ? deleteProjectSetting(projectId, AUTOPILOT_ENABLED_KEY)
-      : setProjectSetting(projectId, AUTOPILOT_ENABLED_KEY, "0");
-    write.catch((e) => {
-      console.error("save autopilot.enabled failed", e);
-      apply(!enabled);
-    });
+    switchWrites
+      .run(projectId, () =>
+        // On is the default, so "on" means no row at all.
+        enabled
+          ? deleteProjectSetting(projectId, AUTOPILOT_ENABLED_KEY)
+          : setProjectSetting(projectId, AUTOPILOT_ENABLED_KEY, "0"),
+      )
+      .catch((e) => {
+        console.error("save autopilot.enabled failed", e);
+        if (switchSeq.get(projectId) === seq) apply(!enabled);
+      });
   },
 
   enrollAutopilot: (key) => {

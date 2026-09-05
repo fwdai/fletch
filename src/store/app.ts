@@ -49,7 +49,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     if (get().initialized) return;
     set({ initialized: true });
 
-    await hydrateSettings(set);
+    await hydrateSettings(set, get);
     await hydrateAccount(set);
 
     // Probe installed provider CLIs for real versions + paths (async,

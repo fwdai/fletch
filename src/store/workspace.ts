@@ -25,6 +25,7 @@ import {
 } from "@/helpers";
 import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
+import { createKeyedQueue } from "@/util/keyedQueue";
 import { forkContextDigest } from "./forkDigest";
 import { interruptedAgents } from "./interrupted";
 import { refreshWorkspace } from "./refreshWorkspace";
@@ -36,18 +37,7 @@ import type { AppState, SliceCreator } from "./types";
 // change was persisted — the turn would then read stale config from the record.
 // `sendUserMessage` awaits the agent's pending config op before dispatching, and
 // chaining also applies rapid config changes in call order.
-const configOps = new Map<string, Promise<void>>();
-
-function queueConfigOp(id: string, op: () => Promise<void>): Promise<void> {
-  const next = (configOps.get(id) ?? Promise.resolve()).catch(() => {}).then(op);
-  configOps.set(id, next);
-  void next
-    .catch(() => {})
-    .finally(() => {
-      if (configOps.get(id) === next) configOps.delete(id);
-    });
-  return next;
-}
+const configOps = createKeyedQueue();
 
 /** A degraded transcript-ingest state stored per agent (the `healthy` status is
  *  never stored — it deletes the key). `provider`/`version` are for the banner
@@ -459,14 +449,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  setAgentEffort: (id, effort) => queueConfigOp(id, () => api.setAgentEffort(id, effort)),
-  setAgentModel: (id, model) => queueConfigOp(id, () => api.setAgentModel(id, model)),
+  setAgentEffort: (id, effort) => configOps.run(id, () => api.setAgentEffort(id, effort)),
+  setAgentModel: (id, model) => configOps.run(id, () => api.setAgentModel(id, model)),
 
   sendUserMessage: async (id, text, attachments = []) => {
     // Wait for any in-flight effort/model change for this agent to land before
     // dispatching, so the turn reads the intended config from the record (the
-    // backend resolves per-turn config at dispatch). See `queueConfigOp`.
-    await configOps.get(id)?.catch(() => {});
+    // backend resolves per-turn config at dispatch). See `configOps`.
+    await configOps.pending(id)?.catch(() => {});
     // Guard: some Claude built-in control commands (e.g. /usage, /agents,
     // /login) only work in its interactive TUI and don't resolve over this
     // view's stream-json transport. Dispatched as a plain message they'd

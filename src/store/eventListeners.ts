@@ -59,7 +59,6 @@ import {
   parseSandboxEngine,
   type ThemeMode,
 } from "@/storage/preferences";
-import { loadAutopilotDisabledProjects } from "@/storage/projectSettings";
 import { getAllSettings } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { notify } from "@/util/notify";
@@ -112,7 +111,7 @@ const patchAgent = (get: AppGet, set: AppSet, agentId: string, patch: AgentPatch
 
 // Load persisted settings from the DB and hydrate the matching UI state.
 // First launch / DB-not-ready is non-fatal — defaults stand in.
-export const hydrateSettings = async (set: AppSet) => {
+export const hydrateSettings = async (set: AppSet, get: AppGet) => {
   try {
     const s = await getAllSettings();
     const {
@@ -193,17 +192,10 @@ export const hydrateSettings = async (set: AppSet) => {
   } catch {
     // First launch or DB not ready — defaults are fine.
   }
-  // Autopilot is on per project by default; only the projects that switched it
-  // off are stored (in `project_settings`, not the global table above). Loaded
-  // separately so a failure here can't undo the settings already applied.
-  try {
-    set({ autopilotDisabledProjects: await loadAutopilotDisabledProjects() });
-  } catch (e) {
-    // Fail CLOSED, unlike the defaults above: the list stays null and the
-    // driver runs nothing, because "everything on" is the one wrong answer when
-    // we can't tell who opted out. Loud, since it silences a whole feature.
-    console.error("load autopilot opt-outs failed — autopilot stays off this session", e);
-  }
+  // Autopilot's per-project opt-outs live in `project_settings`, not the global
+  // table above, and the slice owns their loading (it fails closed and is
+  // re-runnable from the settings section) — so just kick it off here.
+  await get().loadAutopilotProjects();
 };
 
 // Load (or lazily create) the single local account profile. Non-fatal — the

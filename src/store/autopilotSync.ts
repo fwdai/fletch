@@ -20,6 +20,7 @@ import { type AutopilotEffect, type AutopilotState, autopilotStep } from "@/auto
 import { appActionMessage } from "@/delegation";
 import { useAppStore } from "@/store";
 import { usePoll } from "@/util/hooks";
+import { autopilotProjectOn } from "./autopilot";
 import type { AutopilotLogEntry } from "./autopilotLog";
 import { checkoutKey, splitCheckoutKey } from "./git";
 
@@ -40,7 +41,7 @@ const AUTOPILOT_TICK_MS = 10_000;
  *
  *  `disabledProjects === null` means the opt-outs haven't loaded (or failed to):
  *  nothing is swept, because "on by default" without knowing who opted out would
- *  act on exactly the projects that said no. */
+ *  act on exactly the projects that said no (see `autopilotProjectOn`). */
 export function autopilotKeys(
   agents: readonly AgentRecord[],
   tracked: Record<string, AutopilotState>,
@@ -49,7 +50,7 @@ export function autopilotKeys(
   if (disabledProjects === null) return [];
   const keys = new Set(Object.keys(tracked));
   for (const agent of agents) {
-    if (disabledProjects.includes(agent.project_id)) continue;
+    if (!autopilotProjectOn(disabledProjects, agent.project_id)) continue;
     for (const [i, repo] of (agent.repos ?? []).entries()) {
       keys.add(checkoutKey(agent.id, i === 0 ? undefined : repo.subdir));
     }
@@ -105,9 +106,7 @@ export async function autopilotPass(keys: string[], verifying: Set<string>) {
     // The checkout's agent is gone (archived/discarded), or its project switched
     // autopilot off — drop the entry rather than ticking forever against nothing.
     // A project that comes back on starts its checkouts fresh on the next tick.
-    // (A null list — opt-outs not loaded — never reaches here: `autopilotKeys`
-    // hands the pass no keys at all; treating it as "off" is the same answer.)
-    if (!agent || (s.autopilotDisabledProjects ?? [agent.project_id]).includes(agent.project_id)) {
+    if (!agent || !autopilotProjectOn(s.autopilotDisabledProjects, agent.project_id)) {
       if (s.autopilot[key]) s.unenrollAutopilot(key);
       continue;
     }
