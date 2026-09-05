@@ -65,6 +65,14 @@ const switchSeq = new Map<string, number>();
  *  behind a switch that says otherwise. */
 const durableOff = new Set<string>();
 
+/** Generation of the opt-out state. Bumped by every load START and every
+ *  switch click; a load applies its snapshot only if the generation is still
+ *  the one it began in. That drops a load that a later load (Retry during a slow
+ *  startup load) or a click (an opt-out persisted while a load was in flight)
+ *  has overtaken — either would otherwise replace the newer truth with an older
+ *  snapshot, in both the store and `durableOff`. */
+let optOutsGen = 0;
+
 export interface AutopilotSlice {
   /** Per-checkout autopilot state, keyed by `checkoutKey`. Absent = the driver
    *  hasn't ticked this checkout yet (or its project has autopilot off). */
@@ -202,8 +210,12 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
   autopilotDisabledProjects: null,
 
   loadAutopilotProjects: async () => {
+    const gen = ++optOutsGen;
     try {
       const disabled = await loadAutopilotDisabledProjects();
+      // Overtaken while in flight — this snapshot is already stale. Whatever
+      // overtook it (a newer load, a click) owns the state now.
+      if (gen !== optOutsGen) return;
       // A load is the truth as of now: it resets what we believe the table holds.
       durableOff.clear();
       for (const id of disabled) durableOff.add(id);
@@ -221,6 +233,9 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
     // to prevent. The section disables its toggle for the same reason; this is
     // the store making sure no other caller can do it either.
     if (get().autopilotDisabledProjects === null) return;
+    // A click is newer than any load still in flight; that load must not land
+    // on top of it (see `optOutsGen`).
+    optOutsGen++;
 
     const apply = (on: boolean) =>
       set((s) => {

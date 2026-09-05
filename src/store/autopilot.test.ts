@@ -35,11 +35,11 @@ const report = (outcome: "passed" | "failed") => ({
   checks: [{ name: "test", command: "t", outcome, duration_ms: 1, tail: [] }],
 });
 
-/** A write the test releases by hand, to order completions deliberately. */
-const deferred = () => {
-  let resolve!: () => void;
+/** An async op the test releases by hand, to order completions deliberately. */
+const deferred = <T = void>() => {
+  let resolve!: (v: T) => void;
   let reject!: (e: unknown) => void;
-  const promise = new Promise<void>((res, rej) => {
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
     reject = rej;
   });
@@ -90,6 +90,50 @@ describe("project switch: loading", () => {
     loadAutopilotDisabledProjects.mockResolvedValueOnce(["p9"]);
     await store.getState().loadAutopilotProjects();
     expect(store.getState().autopilotDisabledProjects).toEqual(["p9"]);
+  });
+
+  it("ignores a load that a later load overtook", async () => {
+    // Startup load is slow; the user hits Retry, which finishes first. The
+    // startup load then completes with an older snapshot and must not replace
+    // the fresher one — or a project the retry saw as off would flip back on.
+    const store = makeStore();
+    const slow = deferred<string[]>();
+    loadAutopilotDisabledProjects.mockReturnValueOnce(slow.promise);
+    const first = store.getState().loadAutopilotProjects();
+
+    loadAutopilotDisabledProjects.mockResolvedValueOnce(["p-off"]);
+    await store.getState().loadAutopilotProjects();
+    expect(store.getState().autopilotDisabledProjects).toEqual(["p-off"]);
+
+    slow.resolve([]);
+    await first;
+    expect(store.getState().autopilotDisabledProjects).toEqual(["p-off"]);
+  });
+
+  it("ignores a load that a click overtook, in the store AND in the known row values", async () => {
+    // Loaded, then a load is in flight (Retry) when the user opts a project out
+    // and the write succeeds. The load's snapshot predates that opt-out: landing
+    // it would show the project on, run autopilot on it, and make a later failed
+    // write roll back to "on" — the wrong row value.
+    const store = makeStore();
+    const p = fresh();
+    loadAutopilotDisabledProjects.mockResolvedValueOnce([]);
+    await store.getState().loadAutopilotProjects();
+
+    const slow = deferred<string[]>();
+    loadAutopilotDisabledProjects.mockReturnValueOnce(slow.promise);
+    const stale = store.getState().loadAutopilotProjects();
+
+    store.getState().setProjectAutopilot(p, false);
+    await vi.waitFor(() => expect(setProjectSetting).toHaveBeenCalledTimes(1));
+    slow.resolve([]); // snapshot from before the opt-out
+    await stale;
+    expect(store.getState().autopilotDisabledProjects).toEqual([p]);
+
+    // The known row value survived too: a failed "on" now reverts to off.
+    deleteProjectSetting.mockRejectedValueOnce(new Error("db locked"));
+    store.getState().setProjectAutopilot(p, true);
+    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([p]));
   });
 
   it("refuses to flip a switch while the opt-outs are unknown", () => {
