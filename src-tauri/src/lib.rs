@@ -7,6 +7,7 @@ mod child_io;
 mod codegraph;
 mod commands;
 mod database;
+mod dictation;
 mod editors;
 mod error;
 mod exec_session;
@@ -1907,6 +1908,9 @@ pub fn run() {
             commands::detect_editors,
             commands::open_in_editor,
             commands::submit_feedback,
+            dictation::dictation_availability,
+            dictation::dictation_start,
+            dictation::dictation_stop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building fletch")

@@ -80,6 +80,46 @@ tauri-plugin-window-state = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
 
+# Voice dictation (dictation/apple.rs): Apple's Speech framework driven by an
+# AVAudioEngine mic tap. objc2 + objc2-foundation + block2 are already in the
+# tree (tauri's own macOS backend); the framework crates are added here.
+# `default-features = false` throughout because these crates' defaults compile
+# *every* class in the framework — we name only the handful of classes and the
+# `block2` bridge (completion/result handlers) that the recognizer path needs.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString"] }
+block2 = "0.6"
+objc2-speech = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-avf-audio",
+    "SFSpeechRecognizer",
+    "SFSpeechRecognitionRequest",
+    "SFSpeechRecognitionResult",
+    "SFSpeechRecognitionTask",
+    "SFTranscription",
+] }
+objc2-avf-audio = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "AVAudioEngine",
+    "AVAudioNode",
+    "AVAudioIONode",
+    "AVAudioBuffer",
+    "AVAudioFormat",
+    "AVAudioTime",
+    "AVAudioTypes",
+] }
+# Microphone (as opposed to speech) authorization only: TCC's mic status lives
+# on AVCaptureDevice, which is in AVFoundation proper rather than AVFAudio.
+objc2-av-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "AVCaptureDevice",
+    "AVMediaFormat",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 # `test-util` unlocks the paused-time test clock (`#[tokio::test(start_paused)]`)
