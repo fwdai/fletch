@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the bundle's generated Info.plist by the Tauri CLI, which picks
+  this file up by name from the config directory (no tauri.conf.json entry).
+  tauri-codegen additionally embeds it into the dev binary via embed_plist, so
+  the dictation permission prompts also appear under `tauri dev`.
+
+  These two usage strings are load-bearing, not cosmetic: SFSpeechRecognizer's
+  requestAuthorization: crashes the process outright if
+  NSSpeechRecognitionUsageDescription is missing.
+-->
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Fletch uses the microphone to dictate prompts.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Fletch uses speech recognition to turn your dictated prompts into text.</string>
+  </dict>
+</plist>

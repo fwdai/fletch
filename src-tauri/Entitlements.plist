@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Referenced from tauri.conf.json (`bundle.macOS.entitlements`) — unlike
+  Info.plist, entitlements are never discovered by filename.
+
+  The release build is signed with the hardened runtime, which denies
+  microphone access to the process regardless of the user's TCC answer unless
+  this entitlement is present. Without it the notarized app records silence
+  and dictation produces an empty transcript, while dev builds work fine.
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+  </dict>
+</plist>
