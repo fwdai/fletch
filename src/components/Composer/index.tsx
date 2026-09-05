@@ -316,8 +316,10 @@ export function Composer({
     }
     const trimmed = input.text.trim();
     if ((!trimmed && input.attachments.length === 0) || disabled || dockerBlocked) return;
-    // The message is leaving; the mic has nothing left to dictate into.
-    if (dictation.listening) dictation.stop();
+    // The message is leaving; the mic has nothing left to dictate into. This
+    // also cancels a start still waiting on the OS permission prompt, so its
+    // transcript can't land in the box we're about to clear.
+    dictation.stop();
     onSend({
       text: trimmed,
       provider,
@@ -387,6 +389,7 @@ export function Composer({
           <DictationButton
             availability={dictation.availability}
             listening={dictation.listening}
+            stopping={dictation.stopping}
             error={dictation.error}
             onToggle={dictation.toggle}
           />

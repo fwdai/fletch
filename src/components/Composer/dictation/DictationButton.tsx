@@ -16,6 +16,9 @@ interface Props {
   /** null while the platform probe is in flight. */
   availability: DictationAvailability | null;
   listening: boolean;
+  /** The previous session is still tearing down. A start now would be a backend
+   *  no-op, so the control is held for the (sub-second) flush. */
+  stopping: boolean;
   /** Reason the last start failed, or null. */
   error: string | null;
   onToggle: () => void;
@@ -23,7 +26,7 @@ interface Props {
 
 /** The composer's mic. Sits with the insert actions because dictation puts text
  *  into *this* message, like attaching a file does. */
-export function DictationButton({ availability, listening, error, onToggle }: Props) {
+export function DictationButton({ availability, listening, stopping, error, onToggle }: Props) {
   // Nothing at all until we know there's a native recognizer: a mic that can
   // only ever error is worse than no mic (Linux/Windows have none).
   if (!availability?.supported) return null;
@@ -47,6 +50,7 @@ export function DictationButton({ availability, listening, error, onToggle }: Pr
       tip={tip()}
       aria-label={label}
       aria-pressed={listening}
+      disabled={stopping}
       onClick={onToggle}
     >
       <Icon name={blocked ? "micOff" : "mic"} size={15} />

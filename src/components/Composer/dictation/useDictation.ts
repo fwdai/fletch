@@ -25,6 +25,12 @@ const UNAVAILABLE: DictationAvailability = {
 export function useDictation(input: ComposerInput) {
   const [availability, setAvailability] = useState<DictationAvailability | null>(null);
   const [listening, setListening] = useState(false);
+  // The backend keeps the recognizer claimed after a stop until its final
+  // result lands (or the flush deadline passes), and answers a start in that
+  // window with a successful no-op. Holding the control until the session
+  // actually ends is what keeps a quick second click from lighting the mic with
+  // nothing behind it.
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // The text present when this session started; the transcript is spliced onto
@@ -47,12 +53,22 @@ export function useDictation(input: ComposerInput) {
   // getting ahead of the mic, not the box changing hands, so it re-bases the
   // session instead of closing it.
   const startingRef = useRef(false);
+  // Set when a pending start is no longer wanted — the composer unmounted, or
+  // the message went out from under it. `dictationStop` can't cancel a session
+  // that hasn't come up yet, so the start closes it on arrival instead.
+  const abortStartRef = useRef(false);
+  const stoppingRef = useRef(false);
   const inputRef = useRef(input);
   inputRef.current = input;
 
   function setListeningState(next: boolean) {
     listeningRef.current = next;
     setListening(next);
+  }
+
+  function setStoppingState(next: boolean) {
+    stoppingRef.current = next;
+    setStopping(next);
   }
 
   // Probe once per mount: cheap, and the answer can change between mounts (the
@@ -112,7 +128,9 @@ export function useDictation(input: ComposerInput) {
         }
         // `stopped` and `error` both end the session; only `error` has a reason
         // worth showing (the backend's message doubles as the fix instruction).
+        // Either one means teardown is done, so the mic is startable again.
         setListeningState(false);
+        setStoppingState(false);
         acceptingRef.current = false;
         if (e.state === "error") setError(e.error ?? "Dictation failed");
       });
@@ -129,7 +147,10 @@ export function useDictation(input: ComposerInput) {
       offState?.();
       acceptingRef.current = false;
       // Unmounting mid-session (a view switch) must not leave the mic open —
-      // nothing is left to receive its transcript.
+      // nothing is left to receive its transcript. A start still sitting on the
+      // permission prompt has no session to stop yet, so it is marked unwanted
+      // and shuts itself down the moment it comes up.
+      if (startingRef.current) abortStartRef.current = true;
       if (listeningRef.current) {
         listeningRef.current = false;
         void api.dictationStop().catch(() => {});
@@ -157,11 +178,25 @@ export function useDictation(input: ComposerInput) {
     }
   }, [input.text]);
 
-  /** Stop the recognizer. Optimistic: the mic shouldn't stay lit while the
-   *  final result is flushed — `dictation:state` `stopped` confirms it. */
+  /** End the session, whatever stage it's at. A no-op when the mic is idle, so
+   *  callers that just want it quiet (send) don't have to check first.
+   *
+   *  Optimistic about `listening`: the mic shouldn't stay lit while the final
+   *  result is flushed — `dictation:state` `stopped` confirms the end. */
   function stop() {
+    if (startingRef.current) {
+      // Still on the permission prompt, so there's no session to stop and no
+      // transcript worth keeping once it does come up.
+      abortStartRef.current = true;
+      acceptingRef.current = false;
+    }
+    if (!listeningRef.current) return;
     setListeningState(false);
-    void api.dictationStop().catch(() => {});
+    setStoppingState(true);
+    void api.dictationStop().catch(() => {
+      // A failed stop emits no `stopped`, so nothing else would release the mic.
+      setStoppingState(false);
+    });
   }
 
   async function toggle() {
@@ -169,17 +204,29 @@ export function useDictation(input: ComposerInput) {
       stop();
       return;
     }
+    // The button is held while the previous session tears down; this catches a
+    // click that raced the disable.
+    if (stoppingRef.current) return;
     baseRef.current = input.text;
     lastWrittenRef.current = input.text;
     acceptingRef.current = true;
     startingRef.current = true;
+    abortStartRef.current = false;
     try {
       // Resolves once audio is flowing; on first use this is where the OS
       // permission prompts appear, so it can sit pending for a while.
       await api.dictationStart();
+      if (abortStartRef.current) {
+        // Nobody is left to dictate into — close the session that just opened
+        // rather than leaving the mic live behind an idle button.
+        void api.dictationStop().catch(() => {});
+        return;
+      }
       setError(null);
       setListeningState(true);
     } catch (e) {
+      // The start's owner is gone; there's nothing to report the failure to.
+      if (abortStartRef.current) return;
       setListeningState(false);
       acceptingRef.current = false;
       setError(String(e));
@@ -188,5 +235,5 @@ export function useDictation(input: ComposerInput) {
     }
   }
 
-  return { availability, listening, error, toggle, stop };
+  return { availability, listening, stopping, error, toggle, stop };
 }
