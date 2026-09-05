@@ -2,20 +2,32 @@
 // (pure); this slice is the state it reads and the transitions the driver
 // (`autopilotSync`) applies to it.
 //
-// Enrollment is persisted, deliberately: a loop the user switched on should
-// survive a reload rather than quietly stopping. Cycles are NOT persisted —
-// an in-flight cycle's agent turn doesn't survive a restart either, so resuming
-// one would be judging a turn that never finished. A restart drops back to
-// "enrolled, no cycle", and the next tick re-derives from the live world.
+// Autopilot is ON by default, per project: the switch lives in `project_settings`
+// (`AUTOPILOT_ENABLED_KEY`) and is mirrored here as the list of projects that
+// turned it off. The driver enrolls every live checkout of an enabled project on
+// its own; the per-checkout entry below is runtime bookkeeping, not consent.
+//
+// The one per-checkout intent that persists is `paused`: a PR the user parked
+// should stay parked across a reload rather than quietly resuming. Cycles are NOT
+// persisted — an in-flight cycle's agent turn doesn't survive a restart either,
+// so resuming one would be judging a turn that never finished. A restart drops
+// back to "enrolled, no cycle", and the next tick re-derives from the live world.
 
 import type { VerificationReport } from "@/api";
 import type { AutopilotState, Cycle, CyclePhase, StuckReason } from "@/autopilot";
 import { newEnrollment } from "@/autopilot";
 import type { DelegationKind } from "@/delegation";
+import {
+  AUTOPILOT_ENABLED_KEY,
+  deleteProjectSetting,
+  loadAutopilotDisabledProjects,
+  setProjectSetting,
+} from "@/storage/projectSettings";
 import { setSetting } from "@/storage/settings";
+import { createKeyedQueue } from "@/util/keyedQueue";
 import type { SliceCreator } from "./types";
 
-/** Settings key holding the persisted enrollment set. */
+/** Settings key holding the persisted per-checkout intent (paused checkouts). */
 export const AUTOPILOT_SETTING = "autopilotEnrollment";
 
 /** The persisted shape: only the user's intent, never in-flight machinery. */
@@ -23,10 +35,57 @@ interface PersistedEnrollment {
   paused: boolean;
 }
 
+/** The one answer to "is autopilot on for this project?", shared by the driver,
+ *  the Git panel chip and the settings toggle so they can never disagree.
+ *
+ *  `disabled === null` means the opt-outs are unknown (not loaded, or the load
+ *  failed) and the answer is NO for every project: a loop that is on by default
+ *  must fail closed when it cannot tell who opted out. */
+export function autopilotProjectOn(disabled: readonly string[] | null, projectId: string): boolean {
+  return disabled !== null && !disabled.includes(projectId);
+}
+
+/** Project-switch writes, serialized per project. Two quick clicks on one toggle
+ *  are two writes to the same row; without ordering, the slower first write can
+ *  land after the faster second and persist the opposite of the last click. */
+const switchWrites = createKeyedQueue();
+
+/** The newest switch request per project. A failed write may only roll the
+ *  store back if it is still the latest request for its project — a stale
+ *  rollback would otherwise replace a later choice that succeeded. */
+const switchSeq = new Map<string, number>();
+
+/** Projects whose row is KNOWN to say off — what the table holds as last
+ *  confirmed, seeded by a load and advanced only by a write that succeeded.
+ *
+ *  This, not the inverse of the failed click, is what a rollback restores. The
+ *  inverse would assume the click before it persisted; if two clicks in a row
+ *  fail (off, then on), the inverse of "on" would show off while the row still
+ *  holds the default — and autopilot would come back on at the next launch
+ *  behind a switch that says otherwise. */
+const durableOff = new Set<string>();
+
+/** Generation of the opt-out state. Bumped by every load START and every
+ *  switch click; a load applies its snapshot only if the generation is still
+ *  the one it began in. That drops a load that a later load (Retry during a slow
+ *  startup load) or a click (an opt-out persisted while a load was in flight)
+ *  has overtaken — either would otherwise replace the newer truth with an older
+ *  snapshot, in both the store and `durableOff`. */
+let optOutsGen = 0;
+
 export interface AutopilotSlice {
-  /** Per-checkout autopilot state, keyed by `checkoutKey`. Absent = never
-   *  enrolled, which is the default for every checkout. */
+  /** Per-checkout autopilot state, keyed by `checkoutKey`. Absent = the driver
+   *  hasn't ticked this checkout yet (or its project has autopilot off). */
   autopilot: Record<string, AutopilotState>;
+  /** Projects whose autopilot switch is off (`project_id`s). Every other project
+   *  is on — that is the default. Hydrated from `project_settings` at launch and
+   *  kept in sync by `setProjectAutopilot`.
+   *
+   *  `null` until that load succeeds. The driver treats null as "run nothing":
+   *  a loop that is on by default must fail CLOSED when it cannot tell which
+   *  projects opted out, or a startup hiccup would spend agent turns on exactly
+   *  the projects the user switched off. */
+  autopilotDisabledProjects: string[] | null;
   /** Local verification autopilot ran to judge the CURRENT cycle, keyed by
    *  `checkoutKey`.
    *
@@ -37,9 +96,22 @@ export interface AutopilotSlice {
    *  be judged by a report produced for it. */
   autopilotVerdicts: Record<string, VerificationReport>;
 
-  /** Turn autopilot on for a checkout. */
+  /** Load (or reload) the opt-out list from `project_settings`. Called at
+   *  launch by `hydrateSettings`, and again by the settings section's retry when
+   *  the launch load failed. Leaves the list untouched on failure, so a failed
+   *  reload can never turn "unknown" into "everything on". */
+  loadAutopilotProjects: () => Promise<void>;
+  /** Flip a project's autopilot switch and persist it to `project_settings`.
+   *  Optimistic, serialized per project, and rolled back if the write fails
+   *  while it is still the latest request. A no-op while the opt-outs are
+   *  unknown: there is nothing sound to flip from. */
+  setProjectAutopilot: (projectId: string, enabled: boolean) => void;
+
+  /** Start tracking a checkout (the driver does this for every live checkout of
+   *  an enabled project; the chip does it when the user acts before the first
+   *  tick). */
   enrollAutopilot: (key: string) => void;
-  /** Turn it off entirely and forget the checkout's history. */
+  /** Forget a checkout's state and history — used when its agent is gone. */
   unenrollAutopilot: (key: string) => void;
   /** Hold without losing enrollment; resuming is one click. */
   pauseAutopilot: (key: string) => void;
@@ -78,11 +150,12 @@ export interface AutopilotSlice {
   recordAutopilotVerdict: (key: string, report: VerificationReport) => void;
 }
 
-/** Parse the persisted enrollment set at launch (mirrors `parseReviewDismissed`
- *  in eventListeners). Rebuilds from a fresh enrollment so a hand-edited or
- *  corrupt row can never inject a cycle, a spent budget, or a `stuck` the user
- *  never saw — and an unparseable value yields nothing enrolled, which is the
- *  right way for a loop that spends agent turns to fail. */
+/** Parse the persisted per-checkout intent at launch (mirrors
+ *  `parseReviewDismissed` in eventListeners). Rebuilds from a fresh enrollment so
+ *  a hand-edited or corrupt row can never inject a cycle, a spent budget, or a
+ *  `stuck` the user never saw. An unparseable value yields nothing, which is
+ *  safe: the driver re-enrolls live checkouts on its first tick, and the only
+ *  thing lost is a paused flag. */
 export function parseAutopilotEnrollment(raw: string | undefined): Record<string, AutopilotState> {
   if (!raw) return {};
   try {
@@ -97,11 +170,13 @@ export function parseAutopilotEnrollment(raw: string | undefined): Record<string
   }
 }
 
-/** Persist just the enrollment intent for every enrolled checkout. */
+/** Persist just the user's intent: which checkouts are paused. Enrollment itself
+ *  is not worth a row — the driver re-derives it from live agents on every tick,
+ *  and writing every checkout ever seen would grow the row without bound. */
 function persist(map: Record<string, AutopilotState>) {
   const out: Record<string, PersistedEnrollment> = {};
   for (const [key, s] of Object.entries(map)) {
-    if (s.enrolled) out[key] = { paused: s.paused };
+    if (s.enrolled && s.paused) out[key] = { paused: true };
   }
   void setSetting(AUTOPILOT_SETTING, out);
 }
@@ -129,9 +204,73 @@ const clearVerdict = (verdicts: Record<string, VerificationReport>, key: string)
   return rest;
 };
 
-export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set) => ({
+export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => ({
   autopilot: {},
   autopilotVerdicts: {},
+  autopilotDisabledProjects: null,
+
+  loadAutopilotProjects: async () => {
+    const gen = ++optOutsGen;
+    try {
+      const disabled = await loadAutopilotDisabledProjects();
+      // Overtaken while in flight — this snapshot is already stale. Whatever
+      // overtook it (a newer load, a click) owns the state now.
+      if (gen !== optOutsGen) return;
+      // A load is the truth as of now: it resets what we believe the table holds.
+      durableOff.clear();
+      for (const id of disabled) durableOff.add(id);
+      set({ autopilotDisabledProjects: disabled });
+    } catch (e) {
+      // Stay (or become) unknown rather than defaulting to "all on" — see
+      // `autopilotProjectOn`. Loud, since it silences a whole feature.
+      console.error("load autopilot opt-outs failed — autopilot stays off until it loads", e);
+    }
+  },
+
+  setProjectAutopilot: (projectId, enabled) => {
+    // Unknown opt-outs: refuse. Applying a click on top of null would invent an
+    // empty list and switch every project on — the exact failure the null exists
+    // to prevent. The section disables its toggle for the same reason; this is
+    // the store making sure no other caller can do it either.
+    if (get().autopilotDisabledProjects === null) return;
+    // A click is newer than any load still in flight; that load must not land
+    // on top of it (see `optOutsGen`).
+    optOutsGen++;
+
+    const apply = (on: boolean) =>
+      set((s) => {
+        // Guarded above, but a reload could race in between; never fabricate.
+        if (s.autopilotDisabledProjects === null) return s;
+        const rest = s.autopilotDisabledProjects.filter((id) => id !== projectId);
+        return { autopilotDisabledProjects: on ? rest : [...rest, projectId] };
+      });
+    const seq = (switchSeq.get(projectId) ?? 0) + 1;
+    switchSeq.set(projectId, seq);
+
+    // Optimistic, so the toggle answers immediately — but the durable row is the
+    // truth. Writes for one project run in click order (`switchWrites`), so the
+    // last click is what the row ends up saying. A success advances what we know
+    // the row holds; a failure rolls the store back to exactly that — and only
+    // if no later click has superseded it.
+    apply(enabled);
+    switchWrites
+      .run(projectId, () =>
+        // On is the default, so "on" means no row at all.
+        enabled
+          ? deleteProjectSetting(projectId, AUTOPILOT_ENABLED_KEY)
+          : setProjectSetting(projectId, AUTOPILOT_ENABLED_KEY, "0"),
+      )
+      .then(
+        () => {
+          if (enabled) durableOff.delete(projectId);
+          else durableOff.add(projectId);
+        },
+        (e) => {
+          console.error("save autopilot.enabled failed", e);
+          if (switchSeq.get(projectId) === seq) apply(!durableOff.has(projectId));
+        },
+      );
+  },
 
   enrollAutopilot: (key) => {
     set((s) => {

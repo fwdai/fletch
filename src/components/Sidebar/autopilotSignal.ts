@@ -22,8 +22,9 @@ import {
  *  shown": `stuck` outranks everything because it's the only mode waiting on a
  *  person — a working sibling will resolve itself, an abandoned one won't.
  *  `working` next: it explains motion the user didn't start. `paused` and `idle`
- *  are states the user chose or expects, and `off` is the default everywhere, so
- *  they rank low and (see the sidebar row) render nothing at all. */
+ *  are states the user chose or expects (on is the default, so `idle` is the
+ *  norm), and `off` means the project switched it off — so they rank low and
+ *  (see the sidebar row) render nothing at all. */
 const ATTENTION: Record<ChipMode, number> = {
   off: 0,
   idle: 1,

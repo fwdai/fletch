@@ -1,12 +1,15 @@
 import type { AutopilotState, StuckReason } from "@/autopilot";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
+import { autopilotProjectOn } from "@/store/autopilot";
 import { checkoutKey } from "@/store/git";
 
 // ── Autopilot control + status, per checkout ──────────────────────────────────
 // An unattended loop that spends agent turns has to be visible and stoppable
-// from the surface it acts on, so this is both the switch and the readout. Off is
-// the default everywhere; nothing here starts on its own.
+// from the surface it acts on, so this is both the readout and the pause switch.
+// Autopilot is on by default, per project: turning it OFF is a project-settings
+// decision, so the chip only pauses and resumes this one checkout, and when the
+// project has it off the chip says so and leads to the switch.
 
 /** What the chip says, derived from the stored state. Kept separate from the
  *  component so the phrasing is testable and the render stays dumb. */
@@ -39,7 +42,7 @@ export function stuckLabel(reason: StuckReason): string {
 }
 
 const LABEL: Record<ChipMode, string> = {
-  off: "Autopilot",
+  off: "Autopilot off",
   idle: "Autopilot on",
   working: "Autopilot working…",
   paused: "Autopilot paused",
@@ -49,30 +52,46 @@ const LABEL: Record<ChipMode, string> = {
 export function AutopilotChip({ agentId, subdir }: { agentId: string; subdir?: string }) {
   const key = checkoutKey(agentId, subdir);
   const state = useAppStore((s) => s.autopilot[key]);
+  const agent = useAppStore((s) => s.workspace?.agents.find((a) => a.id === agentId));
+  // Off when the project switched it off — or when the opt-outs never loaded,
+  // in which case the driver is not running and the chip must not claim it is.
+  // Same predicate the driver uses, so the two can't disagree.
+  const projectOff = useAppStore(
+    (s) => agent == null || !autopilotProjectOn(s.autopilotDisabledProjects, agent.project_id),
+  );
   const enroll = useAppStore((s) => s.enrollAutopilot);
-  const unenroll = useAppStore((s) => s.unenrollAutopilot);
   const pause = useAppStore((s) => s.pauseAutopilot);
   const resume = useAppStore((s) => s.resumeAutopilot);
+  const openProjectScreen = useAppStore((s) => s.openProjectScreen);
 
-  const mode = chipMode(state);
+  // The driver enrolls a checkout on its first tick, so an absent entry for an
+  // enabled project is just "not ticked yet" — read it as on, which it is.
+  const mode: ChipMode = projectOff ? "off" : state ? chipMode(state) : "idle";
   const attempt = state?.cycle?.attempt;
 
-  // Primary click: the least surprising thing for the current mode. Enrolling is
-  // the only action that starts work, and it takes an explicit click every time.
+  // Primary click: the least surprising thing for the current mode. Off is a
+  // project decision, so that click goes to where the switch lives.
   const onClick = () => {
-    if (mode === "off") return enroll(key);
+    if (mode === "off") {
+      const repoPath = agent?.repos[0]?.repo_path;
+      if (repoPath) openProjectScreen(repoPath, "settings");
+      return;
+    }
     if (mode === "stuck" || mode === "paused") return resume(key);
-    return pause(key);
+    // Pausing before the first tick: create the entry so the pause has somewhere
+    // to land (the store ignores transitions on an absent checkout).
+    if (!state) enroll(key);
+    pause(key);
   };
 
   const title =
     mode === "stuck" && state?.stuck
       ? `${stuckLabel(state.stuck.reason)}. Click to let it try again.`
       : mode === "off"
-        ? "Let Fletch fix failing checks on this PR without being asked"
+        ? "Autopilot is off for this project. Click to open project settings."
         : mode === "paused"
           ? "Click to resume"
-          : "Click to pause";
+          : "Fletch fixes failing checks, conflicts and review comments on this PR without being asked. Click to pause.";
 
   return (
     <div className="git-autopilot flex-center">
@@ -85,18 +104,6 @@ export function AutopilotChip({ agentId, subdir }: { agentId: string; subdir?: s
           <span className="ap-attempt">#{attempt}</span>
         )}
       </button>
-      {/* Turning it off entirely is deliberately separate from pausing, so
-       *  "stop for now" can't be mistaken for "forget this checkout". */}
-      {mode !== "off" && (
-        <button
-          type="button"
-          className="ap-off text-xs"
-          onClick={() => unenroll(key)}
-          title="Turn autopilot off for this checkout"
-        >
-          Off
-        </button>
-      )}
     </div>
   );
 }

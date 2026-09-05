@@ -111,7 +111,7 @@ const patchAgent = (get: AppGet, set: AppSet, agentId: string, patch: AgentPatch
 
 // Load persisted settings from the DB and hydrate the matching UI state.
 // First launch / DB-not-ready is non-fatal — defaults stand in.
-export const hydrateSettings = async (set: AppSet) => {
+export const hydrateSettings = async (set: AppSet, get: AppGet) => {
   try {
     const s = await getAllSettings();
     const {
@@ -183,15 +183,19 @@ export const hydrateSettings = async (set: AppSet) => {
       // Admin unlocks the Developer settings section in production. Opt-in:
       // only an explicit "true" in the `admin` settings row grants it.
       admin: s.admin === "true",
-      // Autopilot enrollment (checkout key → paused). Only the user's intent is
-      // persisted; cycles and budgets always start fresh — an in-flight cycle's
-      // agent turn doesn't survive a restart either, so resuming one would mean
-      // judging a turn that never finished.
+      // Autopilot's per-checkout intent (checkout key → paused). Only the user's
+      // intent is persisted; cycles and budgets always start fresh — an in-flight
+      // cycle's agent turn doesn't survive a restart either, so resuming one
+      // would mean judging a turn that never finished.
       autopilot: parseAutopilotEnrollment(s[AUTOPILOT_SETTING]),
     });
   } catch {
     // First launch or DB not ready — defaults are fine.
   }
+  // Autopilot's per-project opt-outs live in `project_settings`, not the global
+  // table above, and the slice owns their loading (it fails closed and is
+  // re-runnable from the settings section) — so just kick it off here.
+  await get().loadAutopilotProjects();
 };
 
 // Load (or lazily create) the single local account profile. Non-fatal — the

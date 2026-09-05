@@ -66,6 +66,10 @@
 .sp-toggle[data-on="1"] {
   background: var(--accent);
 }
+.sp-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .sp-toggle i {
   position: absolute;
   top: 2px;

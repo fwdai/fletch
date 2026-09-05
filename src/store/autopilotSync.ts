@@ -1,4 +1,5 @@
-// The autopilot driver: one tick, every enrolled checkout.
+// The autopilot driver: one tick, every live checkout of every project that has
+// autopilot on (the default — see `autopilotDisabledProjects`).
 //
 // Mounted once at the app root, like `useGitSync` and `useDelegationSync`. The
 // decision for each checkout is pure (`autopilotStep`); this hook is the applier
@@ -14,13 +15,14 @@
 
 import { useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { api } from "@/api";
-import { type AutopilotEffect, autopilotStep } from "@/autopilot";
+import { type AgentRecord, api } from "@/api";
+import { type AutopilotEffect, type AutopilotState, autopilotStep } from "@/autopilot";
 import { appActionMessage } from "@/delegation";
 import { useAppStore } from "@/store";
 import { usePoll } from "@/util/hooks";
+import { autopilotProjectOn } from "./autopilot";
 import type { AutopilotLogEntry } from "./autopilotLog";
-import { splitCheckoutKey } from "./git";
+import { checkoutKey, splitCheckoutKey } from "./git";
 
 /** How often to evaluate enrolled checkouts. Slower than the git poll on
  *  purpose: every action this can take costs an agent turn, so there is nothing
@@ -28,16 +30,39 @@ import { splitCheckoutKey } from "./git";
  *  double-dispatch structurally unlikely. */
 const AUTOPILOT_TICK_MS = 10_000;
 
+/** The checkouts one pass should look at: every checkout of every live agent
+ *  whose project has autopilot on, plus anything still tracked in `autopilot` —
+ *  so an entry whose agent is gone, or whose project was just switched off, gets
+ *  visited once more and dropped rather than lingering.
+ *
+ *  The primary repo (index 0) keeps the plain agent id, exactly as the Git panel
+ *  keys it (`checkoutScopes` in GitPanel/index.tsx); secondaries get `::subdir`.
+ *  Sorted so the tick keeps a stable identity across unrelated store writes.
+ *
+ *  `disabledProjects === null` means the opt-outs haven't loaded (or failed to):
+ *  nothing is swept, because "on by default" without knowing who opted out would
+ *  act on exactly the projects that said no (see `autopilotProjectOn`). */
+export function autopilotKeys(
+  agents: readonly AgentRecord[],
+  tracked: Record<string, AutopilotState>,
+  disabledProjects: readonly string[] | null,
+): string[] {
+  if (disabledProjects === null) return [];
+  const keys = new Set(Object.keys(tracked));
+  for (const agent of agents) {
+    if (!autopilotProjectOn(disabledProjects, agent.project_id)) continue;
+    for (const [i, repo] of (agent.repos ?? []).entries()) {
+      keys.add(checkoutKey(agent.id, i === 0 ? undefined : repo.subdir));
+    }
+  }
+  return [...keys].sort();
+}
+
 /** Mount once, at the app root. */
 export function useAutopilotSync() {
-  // Only enrolled checkouts are ever considered. Sorted + shallow-compared so the
-  // tick keeps a stable identity across unrelated store writes.
   const keys = useAppStore(
     useShallow((s) =>
-      Object.entries(s.autopilot)
-        .filter(([, a]) => a.enrolled)
-        .map(([key]) => key)
-        .sort(),
+      autopilotKeys(s.workspace?.agents ?? [], s.autopilot, s.autopilotDisabledProjects),
     ),
   );
 
@@ -50,7 +75,7 @@ export function useAutopilotSync() {
   usePoll(tick, AUTOPILOT_TICK_MS, [tick]);
 }
 
-/** One sweep over every enrolled checkout, applying what the policy decided.
+/** One sweep over the given checkouts, applying what the policy decided.
  *
  *  Exported so the WIRING is testable without a rendered hook: the decision is
  *  pure and covered by `autopilot.test.ts`, but the store transitions, the
@@ -78,12 +103,17 @@ export async function autopilotPass(keys: string[], verifying: Set<string>) {
     const s = useAppStore.getState();
     const { agentId, subdir } = splitCheckoutKey(key);
     const agent = s.workspace?.agents.find((a) => a.id === agentId);
-    // The checkout's agent is gone (archived/discarded) — drop the enrollment
-    // rather than ticking forever against nothing.
-    if (!agent) {
-      s.unenrollAutopilot(key);
+    // The checkout's agent is gone (archived/discarded), or its project switched
+    // autopilot off — drop the entry rather than ticking forever against nothing.
+    // A project that comes back on starts its checkouts fresh on the next tick.
+    if (!agent || !autopilotProjectOn(s.autopilotDisabledProjects, agent.project_id)) {
+      if (s.autopilot[key]) s.unenrollAutopilot(key);
       continue;
     }
+    // Autopilot is on by default: a checkout the driver hasn't seen yet is
+    // enrolled here, on its first tick, rather than by a click.
+    if (!s.autopilot[key]) s.enrollAutopilot(key);
+    const state = useAppStore.getState().autopilot[key];
     const git = s.gitStates[key] ?? null;
     const readiness = {
       git,
@@ -93,7 +123,7 @@ export async function autopilotPass(keys: string[], verifying: Set<string>) {
     };
     const now = Date.now();
     const effect = autopilotStep({
-      state: s.autopilot[key],
+      state,
       readiness,
       ladder: { base: git?.parent_branch || "main", commitMode: "commit-pr" },
       agentBusy:
