@@ -42,6 +42,11 @@ export function useDictation(input: ComposerInput) {
   // final result (punctuation and last revisions), which we do want. Closed by
   // that result, and by the box changing hands after the session ended.
   const acceptingRef = useRef(false);
+  // True between `dictation_start` being called and resolving — the window the
+  // OS permission prompts occupy on first use. An edit made then is the user
+  // getting ahead of the mic, not the box changing hands, so it re-bases the
+  // session instead of closing it.
+  const startingRef = useRef(false);
   const inputRef = useRef(input);
   inputRef.current = input;
 
@@ -140,7 +145,7 @@ export function useDictation(input: ComposerInput) {
     // dismisses it.
     setError(null);
     if (input.text === lastWrittenRef.current) return;
-    if (listeningRef.current) {
+    if (listeningRef.current || startingRef.current) {
       // Editing mid-session re-bases it: the next partial carries the whole
       // transcript again, and must replace the dictated tail, not their edit.
       baseRef.current = input.text;
@@ -167,6 +172,7 @@ export function useDictation(input: ComposerInput) {
     baseRef.current = input.text;
     lastWrittenRef.current = input.text;
     acceptingRef.current = true;
+    startingRef.current = true;
     try {
       // Resolves once audio is flowing; on first use this is where the OS
       // permission prompts appear, so it can sit pending for a while.
@@ -177,6 +183,8 @@ export function useDictation(input: ComposerInput) {
       setListeningState(false);
       acceptingRef.current = false;
       setError(String(e));
+    } finally {
+      startingRef.current = false;
     }
   }
 

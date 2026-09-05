@@ -24,6 +24,11 @@ describe("spliceTranscript", () => {
     expect(spliceTranscript(base, "hello world").text).toBe("draft hello world");
   });
 
+  it("leaves the base untouched while nothing has been heard", () => {
+    expect(spliceTranscript("draft", "").text).toBe("draft");
+    expect(spliceTranscript("", "")).toEqual({ text: "", caret: 0 });
+  });
+
   it("lands the caret at the end of the spliced text", () => {
     const { text, caret } = spliceTranscript("draft ", "hello world");
     expect(caret).toBe(text.length);

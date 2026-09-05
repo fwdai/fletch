@@ -16,7 +16,9 @@ export function spliceTranscript(base: string, transcript: string): SplicedTrans
   let text: string;
   // A word boundary is only ours to add when the user didn't leave one: keeping
   // their trailing space or newline intact matters for a dictated list item.
-  if (!base) text = transcript;
+  // Nothing heard yet (or ever) leaves the base untouched — no dangling space.
+  if (!transcript) text = base;
+  else if (!base) text = transcript;
   else if (/\s$/.test(base)) text = base + transcript;
   else text = `${base} ${transcript}`;
   return { text, caret: text.length };
