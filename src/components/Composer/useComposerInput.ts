@@ -39,6 +39,13 @@ export interface ComposerInputConfig {
   onEnter: () => void;
 }
 
+/** Resize a textarea to fit its content, capped at `MAX_HEIGHT`. Exported for
+ *  the dictation hook, which writes text the user didn't type. */
+export function grow(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT)}px`;
+}
+
 /** The reusable composer input core: the textarea's text/caret/attachment
  *  state, the shared `/`·`@`·`#` autocomplete, drag-drop + browse attach,
  *  draft persistence, and seed injection. Both the agent [`Composer`] and the
@@ -58,11 +65,6 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   const [caret, setCaret] = useState(0);
   const [attachments, setAttachments] = useState<string[]>([]);
   const ta = useRef<HTMLTextAreaElement>(null);
-
-  function grow(el: HTMLTextAreaElement) {
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT)}px`;
-  }
 
   function placeCaret(pos: number) {
     requestAnimationFrame(() => {
@@ -130,7 +132,6 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   // On mount (including the remount a view switch causes) a restored multi-line
   // draft renders at single-row height until grow() runs on an edit; resize once
   // so it fits its content.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount
   useEffect(() => {
     if (ta.current) grow(ta.current);
   }, []);
