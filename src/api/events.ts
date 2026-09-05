@@ -12,6 +12,7 @@ import type {
   AgentViewEvent,
   ShellOutputEvent,
 } from "./types/agent";
+import type { DictationStateEvent, DictationTranscriptEvent } from "./types/dictation";
 import type { PrStateChangedEvent } from "./types/pr";
 import type { AgentInstallEvent } from "./types/providers";
 import type {
@@ -171,6 +172,19 @@ export function onAgentOutput(cb: (e: AgentOutputEvent) => void): Promise<Unlist
 
 export function onShellOutput(cb: (e: ShellOutputEvent) => void): Promise<UnlistenFn> {
   return listen<ShellOutputEvent>("shell:output", (event) => cb(event.payload));
+}
+
+/** The running transcript of the active dictation session (see
+ *  `DictationTranscriptEvent` — whole text, not a delta). */
+export function onDictationTranscript(
+  cb: (e: DictationTranscriptEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<DictationTranscriptEvent>("dictation:transcript", (event) => cb(event.payload));
+}
+
+/** Dictation session lifecycle: listening → stopped, or error with a reason. */
+export function onDictationState(cb: (e: DictationStateEvent) => void): Promise<UnlistenFn> {
+  return listen<DictationStateEvent>("dictation:state", (event) => cb(event.payload));
 }
 
 export function onAgentEvent(cb: (e: AgentManagedEvent) => void): Promise<UnlistenFn> {
