@@ -58,12 +58,14 @@ thread_local! {
     /// The one live session, main-thread only. See the module's threading note.
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
 
-    /// A `dictation_stop` that found no session to stop. `start` sits on the
-    /// permission prompts with `ACTIVE` claimed but `SESSION` still empty, so
-    /// without this a stop issued in that window would be swallowed and the
-    /// mic would open anyway once the user granted access. `start` clears the
-    /// flag before prompting and consumes it after; both ends run on the main
-    /// thread, which is what orders a stop against a concurrent start.
+    /// A `dictation_stop` that arrived while a start was in flight — `ACTIVE`
+    /// claimed but `SESSION` still empty, which is exactly the span of the
+    /// permission prompts. Without this the stop would be swallowed and the
+    /// mic would open anyway once the user granted access. Set only in that
+    /// window (an idle stop leaves nothing behind), consumed by `begin`, and
+    /// cleared on the one path that abandons a claim without reaching `begin`.
+    /// Both ends run on the main thread, which is what orders a stop against a
+    /// concurrent start.
     static STOP_PENDING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -274,18 +276,14 @@ pub fn availability() -> Availability {
     }
 }
 
-pub async fn start(app: AppHandle) -> Result<()> {
+/// `Ok(true)` once a session is live and `listening` has been emitted;
+/// `Ok(false)` when nothing was started, so no terminal event will follow.
+pub async fn start(app: AppHandle) -> Result<bool> {
     // Claiming ACTIVE up front is what makes a second start a no-op, and it
     // has to happen before the permission prompts, which can sit on screen
     // for a long time.
     if ACTIVE.swap(true, Ordering::SeqCst) {
-        return Ok(());
-    }
-    // Discard a stop that predates this start; only one that lands while the
-    // prompts are up should cancel us.
-    if let Err(e) = on_main(&app, || STOP_PENDING.set(false)).await {
-        ACTIVE.store(false, Ordering::SeqCst);
-        return Err(e);
+        return Ok(false);
     }
     // The claim is released by exactly one owner: `start` while `begin` still
     // hasn't run, then `begin` itself on failure, then `teardown` once the
@@ -294,6 +292,10 @@ pub async fn start(app: AppHandle) -> Result<()> {
     // live recognizer behind a cleared flag.
     if let Err(e) = ensure_authorized().await {
         ACTIVE.store(false, Ordering::SeqCst);
+        // The only path that drops the claim without `begin` consuming a stop
+        // that landed during the prompts — clear it, or it would cancel an
+        // unrelated later start.
+        let _ = on_main(&app, || STOP_PENDING.set(false)).await;
         return Err(e);
     }
     let handle = app.clone();
@@ -307,22 +309,23 @@ pub async fn start(app: AppHandle) -> Result<()> {
     }
 }
 
-fn begin(app: AppHandle) -> Result<()> {
+fn begin(app: AppHandle) -> Result<bool> {
     // The user asked to stop while the permission prompts were up. Honour it
     // instead of opening the mic behind their back. No state event: the
-    // session never came up, so there is nothing to close out.
+    // session never came up, so there is nothing to close out — the `false`
+    // is what tells the caller not to wait for one.
     if STOP_PENDING.replace(false) {
         ACTIVE.store(false, Ordering::SeqCst);
-        return Ok(());
+        return Ok(false);
     }
-    let started = build_session(app);
-    if started.is_err() {
+    if let Err(e) = build_session(app) {
         // `build_session` unwinds whatever it installed, so releasing the
         // claim here is what lets the user retry. No state event — the
         // command's `Err` is the frontend's signal.
         ACTIVE.store(false, Ordering::SeqCst);
+        return Err(e);
     }
-    started
+    Ok(true)
 }
 
 /// Build and start the session. Main thread; permissions are already granted,
@@ -474,10 +477,13 @@ pub async fn stop(app: AppHandle) -> Result<()> {
             ))
         });
         let Some((generation, engine, input, request)) = live else {
-            // Either genuinely idle, or a `start` is still sitting on the
-            // permission prompts. Leave the request for `begin` to consume; a
-            // stale flag from the idle case is cleared by the next `start`.
-            STOP_PENDING.set(true);
+            // No session — but a claimed `ACTIVE` with an empty `SESSION` means
+            // a `start` is still sitting on the permission prompts, so leave
+            // the request for `begin` to consume. Genuinely idle, record
+            // nothing: a flag left behind here would cancel a later start.
+            if ACTIVE.load(Ordering::SeqCst) {
+                STOP_PENDING.set(true);
+            }
             return None;
         };
         unsafe {

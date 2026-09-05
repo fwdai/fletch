@@ -5,14 +5,16 @@ export const dictationApi = {
   /** Whether native dictation exists on this platform and what the user has
    *  authorized so far. Cheap; safe to call on every composer mount. */
   dictationAvailability: () => invoke<DictationAvailability>("dictation_availability"),
-  /** Start listening. Requests mic + speech permission on first use. Resolves
-   *  once audio is flowing; transcripts then arrive via `onDictationTranscript`.
-   *  Rejects with a message if permission is denied or the recognizer can't
-   *  start. Only one session runs at a time — a second start while listening
-   *  is a no-op, and a `dictationStop` issued while a permission prompt is
-   *  still up cancels the pending session, so this resolves with no
-   *  `listening` state ever arriving. */
-  dictationStart: () => invoke<void>("dictation_start"),
+  /** Start listening. Requests mic + speech permission on first use. Rejects
+   *  with a message if permission is denied or the recognizer can't start.
+   *
+   *  Resolves `true` once audio is flowing: `dictation:state` `listening` has
+   *  been emitted, transcripts follow via `onDictationTranscript`, and a
+   *  terminal state is guaranteed. Resolves `false` when nothing was started
+   *  and no event will arrive — either a session was already active (only one
+   *  runs at a time) or a `dictationStop` issued while a permission prompt was
+   *  up cancelled this one. Callers must not wait for an event on `false`. */
+  dictationStart: () => invoke<boolean>("dictation_start"),
   /** Stop listening and let the recognizer flush its final result: normally
    *  one last `dictation:transcript` with `is_final: true`, then
    *  `dictation:state` `stopped`. The final transcript is best-effort — a

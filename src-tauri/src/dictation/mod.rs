@@ -137,10 +137,16 @@ pub async fn dictation_availability() -> Availability {
 
 /// Start listening. Requests microphone and speech permission on first use
 /// (so the first call can block on two TCC prompts), and resolves once audio
-/// is actually flowing — by which point `dictation:state` `listening` has
-/// been emitted. A second call while a session is live is a no-op.
+/// is actually flowing.
+///
+/// `true` means a session is now live and `dictation:state` `listening` has
+/// been emitted, so a terminal state will follow. `false` means nothing was
+/// started and no event will arrive: either a session was already active (a
+/// second start is a no-op) or a `dictation_stop` issued while the prompts
+/// were up cancelled this one. The caller needs the distinction because a
+/// `false` leaves nothing to wait for.
 #[tauri::command]
-pub async fn dictation_start(app: AppHandle) -> Result<()> {
+pub async fn dictation_start(app: AppHandle) -> Result<bool> {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         apple::start(app).await
