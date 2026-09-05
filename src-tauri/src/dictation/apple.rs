@@ -21,7 +21,7 @@
 //! Note that `#[tauri::command]` futures must be `Send`, which is the second
 //! reason for this shape: no ObjC handle is ever live across an `.await`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -57,6 +57,14 @@ const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 thread_local! {
     /// The one live session, main-thread only. See the module's threading note.
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+
+    /// A `dictation_stop` that found no session to stop. `start` sits on the
+    /// permission prompts with `ACTIVE` claimed but `SESSION` still empty, so
+    /// without this a stop issued in that window would be swallowed and the
+    /// mic would open anyway once the user granted access. `start` clears the
+    /// flag before prompting and consumes it after; both ends run on the main
+    /// thread, which is what orders a stop against a concurrent start.
+    static STOP_PENDING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Set for the whole span of a session, from the first moment of `start`
@@ -273,6 +281,12 @@ pub async fn start(app: AppHandle) -> Result<()> {
     if ACTIVE.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
+    // Discard a stop that predates this start; only one that lands while the
+    // prompts are up should cancel us.
+    if let Err(e) = on_main(&app, || STOP_PENDING.set(false)).await {
+        ACTIVE.store(false, Ordering::SeqCst);
+        return Err(e);
+    }
     // The claim is released by exactly one owner: `start` while `begin` still
     // hasn't run, then `begin` itself on failure, then `teardown` once the
     // session is up. Handing it over rather than clearing it from here means
@@ -294,6 +308,13 @@ pub async fn start(app: AppHandle) -> Result<()> {
 }
 
 fn begin(app: AppHandle) -> Result<()> {
+    // The user asked to stop while the permission prompts were up. Honour it
+    // instead of opening the mic behind their back. No state event: the
+    // session never came up, so there is nothing to close out.
+    if STOP_PENDING.replace(false) {
+        ACTIVE.store(false, Ordering::SeqCst);
+        return Ok(());
+    }
     let started = build_session(app);
     if started.is_err() {
         // `build_session` unwinds whatever it installed, so releasing the
@@ -452,7 +473,13 @@ pub async fn stop(app: AppHandle) -> Result<()> {
                 session.request.clone(),
             ))
         });
-        let (generation, engine, input, request) = live?;
+        let Some((generation, engine, input, request)) = live else {
+            // Either genuinely idle, or a `start` is still sitting on the
+            // permission prompts. Leave the request for `begin` to consume; a
+            // stale flag from the idle case is cleared by the next `start`.
+            STOP_PENDING.set(true);
+            return None;
+        };
         unsafe {
             engine.stop();
             input.removeTapOnBus(BUS);

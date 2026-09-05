@@ -64,7 +64,8 @@ pub struct Availability {
 // `-D warnings`, where an unused payload type is a hard error.
 
 /// A revision of the session's transcript. `text` is the entire utterance so
-/// far, not an increment. Exactly one event per session has `is_final`.
+/// far, not an increment. At most one event per session has `is_final`: a
+/// recognizer that never flushes gets torn down on the deadline instead.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[derive(Clone, Serialize)]
 struct TranscriptPayload {
@@ -155,7 +156,10 @@ pub async fn dictation_start(app: AppHandle) -> Result<()> {
 
 /// Stop listening. Returns as soon as the microphone is released; the final
 /// transcript and the terminal `dictation:state` follow asynchronously once
-/// the recognizer has flushed. A no-op when idle.
+/// the recognizer has flushed, and a recognizer that doesn't flush in time
+/// yields the terminal state alone. A no-op when idle, except that a stop
+/// issued while `dictation_start` waits on a permission prompt cancels that
+/// pending session.
 #[tauri::command]
 pub async fn dictation_stop(app: AppHandle) -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
