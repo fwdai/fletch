@@ -20,12 +20,20 @@ export interface DictationAvailability {
   on_device: boolean;
 }
 
+/** Identifies one dictation session: the value `dictationStart` resolved with,
+ *  stamped on every event of that session. Events are app-wide and a session
+ *  outlives the composer that started it (a stop is followed by a flush), so a
+ *  consumer must drop events whose `session` isn't the one it owns — otherwise
+ *  the previous session's final transcript lands in the next composer's box. */
+export type DictationSessionId = number;
+
 /** Payload of the `dictation:transcript` event. `text` is the whole running
- *  transcript for the current session (Apple revises earlier words as it hears
- *  more), not a delta — the UI replaces the in-progress segment with it.
- *  `is_final` marks the last result of a session, after which no more
- *  transcript events arrive until the next `dictation_start`. */
+ *  transcript for that session (Apple revises earlier words as it hears more),
+ *  not a delta — the UI replaces the in-progress segment with it. `is_final`
+ *  marks the last result of a session, after which no more transcript events
+ *  arrive for it. */
 export interface DictationTranscriptEvent {
+  session: DictationSessionId;
   text: string;
   is_final: boolean;
 }
@@ -39,6 +47,7 @@ export type DictationState = "listening" | "stopped" | "error";
  *  `dictationStart` and emit no event, so the rejected promise — not this
  *  state — is what tells the UI a start didn't take. */
 export interface DictationStateEvent {
+  session: DictationSessionId;
   state: DictationState;
   error: string | null;
 }

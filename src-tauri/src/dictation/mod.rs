@@ -66,9 +66,15 @@ pub struct Availability {
 /// A revision of the session's transcript. `text` is the entire utterance so
 /// far, not an increment. At most one event per session has `is_final`: a
 /// recognizer that never flushes gets torn down on the deadline instead.
+///
+/// `session` is the id `dictation_start` returned for this session. Events are
+/// app-wide, and a session outlives the composer that started it (a stop is
+/// followed by a flush), so a composer that starts the next one needs the id to
+/// tell the old session's stragglers from its own.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[derive(Clone, Serialize)]
 struct TranscriptPayload {
+    session: u64,
     text: String,
     is_final: bool,
 }
@@ -88,6 +94,8 @@ enum State {
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[derive(Clone, Serialize)]
 struct StatePayload {
+    /// Same id as on [`TranscriptPayload`].
+    session: u64,
     state: State,
     /// Set only for `Error` — the recognizer's own message, shown as-is.
     error: Option<String>,
@@ -103,17 +111,29 @@ fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn emit_transcript(app: &AppHandle, text: String, is_final: bool) {
+fn emit_transcript(app: &AppHandle, session: u64, text: String, is_final: bool) {
     emit(
         app,
         "dictation:transcript",
-        TranscriptPayload { text, is_final },
+        TranscriptPayload {
+            session,
+            text,
+            is_final,
+        },
     );
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn emit_state(app: &AppHandle, state: State, error: Option<String>) {
-    emit(app, "dictation:state", StatePayload { state, error });
+fn emit_state(app: &AppHandle, session: u64, state: State, error: Option<String>) {
+    emit(
+        app,
+        "dictation:state",
+        StatePayload {
+            session,
+            state,
+            error,
+        },
+    );
 }
 
 /// Whether dictation works here, and what permissions stand in the way. Cheap
@@ -137,10 +157,18 @@ pub async fn dictation_availability() -> Availability {
 
 /// Start listening. Requests microphone and speech permission on first use
 /// (so the first call can block on two TCC prompts), and resolves once audio
-/// is actually flowing — by which point `dictation:state` `listening` has
-/// been emitted. A second call while a session is live is a no-op.
+/// is actually flowing.
+///
+/// `Some(id)` means a session is now live and `dictation:state` `listening` has
+/// been emitted, so a terminal state will follow; every event of that session
+/// carries the same `id`, which is how a caller tells its own session from a
+/// previous one still flushing. `None` means nothing was started and no event
+/// will arrive: either a session was already active (a second start is a
+/// no-op) or a `dictation_stop` issued while the prompts were up cancelled
+/// this one. The caller needs the distinction because `None` leaves nothing
+/// to wait for.
 #[tauri::command]
-pub async fn dictation_start(app: AppHandle) -> Result<()> {
+pub async fn dictation_start(app: AppHandle) -> Result<Option<u64>> {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         apple::start(app).await
