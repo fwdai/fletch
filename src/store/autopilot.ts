@@ -55,6 +55,16 @@ const switchWrites = createKeyedQueue();
  *  rollback would otherwise replace a later choice that succeeded. */
 const switchSeq = new Map<string, number>();
 
+/** Projects whose row is KNOWN to say off — what the table holds as last
+ *  confirmed, seeded by a load and advanced only by a write that succeeded.
+ *
+ *  This, not the inverse of the failed click, is what a rollback restores. The
+ *  inverse would assume the click before it persisted; if two clicks in a row
+ *  fail (off, then on), the inverse of "on" would show off while the row still
+ *  holds the default — and autopilot would come back on at the next launch
+ *  behind a switch that says otherwise. */
+const durableOff = new Set<string>();
+
 export interface AutopilotSlice {
   /** Per-checkout autopilot state, keyed by `checkoutKey`. Absent = the driver
    *  hasn't ticked this checkout yet (or its project has autopilot off). */
@@ -193,7 +203,11 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
 
   loadAutopilotProjects: async () => {
     try {
-      set({ autopilotDisabledProjects: await loadAutopilotDisabledProjects() });
+      const disabled = await loadAutopilotDisabledProjects();
+      // A load is the truth as of now: it resets what we believe the table holds.
+      durableOff.clear();
+      for (const id of disabled) durableOff.add(id);
+      set({ autopilotDisabledProjects: disabled });
     } catch (e) {
       // Stay (or become) unknown rather than defaulting to "all on" — see
       // `autopilotProjectOn`. Loud, since it silences a whole feature.
@@ -220,7 +234,8 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
 
     // Optimistic, so the toggle answers immediately — but the durable row is the
     // truth. Writes for one project run in click order (`switchWrites`), so the
-    // last click is what the row ends up saying; and a failure rolls back only
+    // last click is what the row ends up saying. A success advances what we know
+    // the row holds; a failure rolls the store back to exactly that — and only
     // if no later click has superseded it.
     apply(enabled);
     switchWrites
@@ -230,10 +245,16 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
           ? deleteProjectSetting(projectId, AUTOPILOT_ENABLED_KEY)
           : setProjectSetting(projectId, AUTOPILOT_ENABLED_KEY, "0"),
       )
-      .catch((e) => {
-        console.error("save autopilot.enabled failed", e);
-        if (switchSeq.get(projectId) === seq) apply(!enabled);
-      });
+      .then(
+        () => {
+          if (enabled) durableOff.delete(projectId);
+          else durableOff.add(projectId);
+        },
+        (e) => {
+          console.error("save autopilot.enabled failed", e);
+          if (switchSeq.get(projectId) === seq) apply(!durableOff.has(projectId));
+        },
+      );
   },
 
   enrollAutopilot: (key) => {

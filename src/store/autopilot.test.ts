@@ -198,6 +198,48 @@ describe("project switch: writing", () => {
     await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([p]));
   });
 
+  it("rolls back to what the row is KNOWN to hold, not to the click before", async () => {
+    // off fails, then on fails. The inverse of the latest click would be "off",
+    // but neither write changed the row — it still holds the default (on). A
+    // store showing off here would have autopilot resume at the next launch
+    // behind a switch that says otherwise.
+    setProjectSetting.mockRejectedValueOnce(new Error("db locked"));
+    deleteProjectSetting.mockRejectedValueOnce(new Error("db locked"));
+    const store = loaded();
+    const p = fresh();
+
+    store.getState().setProjectAutopilot(p, false); // fails
+    store.getState().setProjectAutopilot(p, true); // fails
+    await vi.waitFor(() => expect(deleteProjectSetting).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([]));
+    // And the mirror: on fails, then off fails, from a row that holds off.
+    const q = fresh();
+    store.setState({ autopilotDisabledProjects: [q] });
+    loadAutopilotDisabledProjects.mockResolvedValueOnce([q]);
+    await store.getState().loadAutopilotProjects();
+    deleteProjectSetting.mockRejectedValueOnce(new Error("db locked"));
+    setProjectSetting.mockRejectedValueOnce(new Error("db locked"));
+
+    store.getState().setProjectAutopilot(q, true); // fails
+    store.getState().setProjectAutopilot(q, false); // fails
+    await vi.waitFor(() => expect(setProjectSetting).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([q]));
+  });
+
+  it("a load seeds what the row holds, so the first failed write reverts to it", async () => {
+    // The loaded list is the truth as of launch: a project the table says is off
+    // must revert to off when its very first write of the session fails.
+    const store = makeStore();
+    const p = fresh();
+    loadAutopilotDisabledProjects.mockResolvedValueOnce([p]);
+    await store.getState().loadAutopilotProjects();
+    deleteProjectSetting.mockRejectedValueOnce(new Error("db locked"));
+
+    store.getState().setProjectAutopilot(p, true);
+    expect(store.getState().autopilotDisabledProjects).toEqual([]);
+    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([p]));
+  });
+
   it("keeps different projects' writes independent", async () => {
     // Serialization is per project: a slow write for one must not hold up
     // another's.
