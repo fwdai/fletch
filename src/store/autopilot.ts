@@ -39,8 +39,13 @@ export interface AutopilotSlice {
   autopilot: Record<string, AutopilotState>;
   /** Projects whose autopilot switch is off (`project_id`s). Every other project
    *  is on — that is the default. Hydrated from `project_settings` at launch and
-   *  kept in sync by `setProjectAutopilot`. */
-  autopilotDisabledProjects: string[];
+   *  kept in sync by `setProjectAutopilot`.
+   *
+   *  `null` until that load succeeds. The driver treats null as "run nothing":
+   *  a loop that is on by default must fail CLOSED when it cannot tell which
+   *  projects opted out, or a startup hiccup would spend agent turns on exactly
+   *  the projects the user switched off. */
+  autopilotDisabledProjects: string[] | null;
   /** Local verification autopilot ran to judge the CURRENT cycle, keyed by
    *  `checkoutKey`.
    *
@@ -154,18 +159,26 @@ const clearVerdict = (verdicts: Record<string, VerificationReport>, key: string)
 export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set) => ({
   autopilot: {},
   autopilotVerdicts: {},
-  autopilotDisabledProjects: [],
+  autopilotDisabledProjects: null,
 
   setProjectAutopilot: (projectId, enabled) => {
-    set((s) => {
-      const rest = s.autopilotDisabledProjects.filter((id) => id !== projectId);
-      return { autopilotDisabledProjects: enabled ? rest : [...rest, projectId] };
-    });
+    const apply = (on: boolean) =>
+      set((s) => {
+        const rest = (s.autopilotDisabledProjects ?? []).filter((id) => id !== projectId);
+        return { autopilotDisabledProjects: on ? rest : [...rest, projectId] };
+      });
+    // Optimistic, so the toggle answers immediately — but the durable row is the
+    // truth. If the write fails, revert, or the session would run with a switch
+    // the next launch has never heard of (an "off" that comes back on).
+    apply(enabled);
     // On is the default, so "on" means no row at all.
     const write = enabled
       ? deleteProjectSetting(projectId, AUTOPILOT_ENABLED_KEY)
       : setProjectSetting(projectId, AUTOPILOT_ENABLED_KEY, "0");
-    write.catch((e) => console.error("save autopilot.enabled failed", e));
+    write.catch((e) => {
+      console.error("save autopilot.enabled failed", e);
+      apply(!enabled);
+    });
   },
 
   enrollAutopilot: (key) => {

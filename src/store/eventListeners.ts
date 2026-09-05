@@ -198,8 +198,11 @@ export const hydrateSettings = async (set: AppSet) => {
   // separately so a failure here can't undo the settings already applied.
   try {
     set({ autopilotDisabledProjects: await loadAutopilotDisabledProjects() });
-  } catch {
-    // Same as above — default (all on) stands.
+  } catch (e) {
+    // Fail CLOSED, unlike the defaults above: the list stays null and the
+    // driver runs nothing, because "everything on" is the one wrong answer when
+    // we can't tell who opted out. Loud, since it silences a whole feature.
+    console.error("load autopilot opt-outs failed — autopilot stays off this session", e);
   }
 };
 

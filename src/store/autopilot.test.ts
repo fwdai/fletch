@@ -28,8 +28,23 @@ const report = (outcome: "passed" | "failed") => ({
 });
 
 describe("project switch", () => {
-  it("has every project on by default — the disabled list starts empty", () => {
-    expect(makeStore().getState().autopilotDisabledProjects).toEqual([]);
+  it("starts with the opt-outs unknown (null), not with everything on", () => {
+    // Until hydration fills the list, the driver must run nothing: on-by-default
+    // without knowing who opted out would act on exactly the wrong projects.
+    expect(makeStore().getState().autopilotDisabledProjects).toBeNull();
+  });
+
+  it("reverts the switch when the durable write fails", async () => {
+    // The row is the truth: a session that shows "off" while the table still
+    // says "on" would quietly resume autopilot on the next launch. Better to
+    // snap the toggle back so the user sees the change didn't take.
+    setProjectSetting.mockRejectedValueOnce(new Error("db locked"));
+    const store = makeStore();
+    store.setState({ autopilotDisabledProjects: [] });
+
+    store.getState().setProjectAutopilot("p1", false);
+    expect(store.getState().autopilotDisabledProjects).toEqual(["p1"]);
+    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([]));
   });
 
   it("turning a project off writes the one row that exists; turning it on deletes it", () => {

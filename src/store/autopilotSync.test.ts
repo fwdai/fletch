@@ -363,6 +363,12 @@ describe("autopilotKeys derives the sweep from live agents", () => {
     expect(keys).toEqual(["a1", "a1::web", "a2"]);
   });
 
+  it("sweeps NOTHING while the opt-outs are unknown — fail closed, not open", () => {
+    // Hydration failed or hasn't finished: even a checkout already tracked from
+    // a paused flag is left alone, because we can't tell whose project said no.
+    expect(autopilotKeys([agent("a1", "p1")], { a1: state() }, null)).toEqual([]);
+  });
+
   it("leaves out the agents of a project that switched autopilot off", () => {
     const keys = autopilotKeys([agent("a1", "p1"), agent("a2", "p2")], {}, ["p2"]);
     expect(keys).toEqual(["a1"]);

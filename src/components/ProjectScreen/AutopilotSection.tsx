@@ -7,7 +7,11 @@ import { useAppStore } from "@/store";
  *  `project_settings` (`AUTOPILOT_ENABLED_KEY`) so the driver reacts on its next
  *  tick, with no reload. */
 export function AutopilotSection({ projectId }: { projectId: string }) {
-  const on = useAppStore((s) => !s.autopilotDisabledProjects.includes(projectId));
+  // A null list means the opt-outs never loaded and the driver is off; showing
+  // the toggle as on would misreport that.
+  const on = useAppStore(
+    (s) => s.autopilotDisabledProjects !== null && !s.autopilotDisabledProjects.includes(projectId),
+  );
   const setProjectAutopilot = useAppStore((s) => s.setProjectAutopilot);
 
   return (

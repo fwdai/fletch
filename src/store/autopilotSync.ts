@@ -36,12 +36,17 @@ const AUTOPILOT_TICK_MS = 10_000;
  *
  *  The primary repo (index 0) keeps the plain agent id, exactly as the Git panel
  *  keys it (`checkoutScopes` in GitPanel/index.tsx); secondaries get `::subdir`.
- *  Sorted so the tick keeps a stable identity across unrelated store writes. */
+ *  Sorted so the tick keeps a stable identity across unrelated store writes.
+ *
+ *  `disabledProjects === null` means the opt-outs haven't loaded (or failed to):
+ *  nothing is swept, because "on by default" without knowing who opted out would
+ *  act on exactly the projects that said no. */
 export function autopilotKeys(
   agents: readonly AgentRecord[],
   tracked: Record<string, AutopilotState>,
-  disabledProjects: readonly string[],
+  disabledProjects: readonly string[] | null,
 ): string[] {
+  if (disabledProjects === null) return [];
   const keys = new Set(Object.keys(tracked));
   for (const agent of agents) {
     if (disabledProjects.includes(agent.project_id)) continue;
@@ -100,7 +105,9 @@ export async function autopilotPass(keys: string[], verifying: Set<string>) {
     // The checkout's agent is gone (archived/discarded), or its project switched
     // autopilot off — drop the entry rather than ticking forever against nothing.
     // A project that comes back on starts its checkouts fresh on the next tick.
-    if (!agent || s.autopilotDisabledProjects.includes(agent.project_id)) {
+    // (A null list — opt-outs not loaded — never reaches here: `autopilotKeys`
+    // hands the pass no keys at all; treating it as "off" is the same answer.)
+    if (!agent || (s.autopilotDisabledProjects ?? [agent.project_id]).includes(agent.project_id)) {
       if (s.autopilot[key]) s.unenrollAutopilot(key);
       continue;
     }

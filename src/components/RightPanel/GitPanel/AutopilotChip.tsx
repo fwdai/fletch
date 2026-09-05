@@ -52,8 +52,12 @@ export function AutopilotChip({ agentId, subdir }: { agentId: string; subdir?: s
   const key = checkoutKey(agentId, subdir);
   const state = useAppStore((s) => s.autopilot[key]);
   const agent = useAppStore((s) => s.workspace?.agents.find((a) => a.id === agentId));
+  // Off when the project switched it off — or when the opt-outs never loaded,
+  // in which case the driver is not running and the chip must not claim it is.
   const projectOff = useAppStore(
-    (s) => agent != null && s.autopilotDisabledProjects.includes(agent.project_id),
+    (s) =>
+      s.autopilotDisabledProjects === null ||
+      (agent != null && s.autopilotDisabledProjects.includes(agent.project_id)),
   );
   const enroll = useAppStore((s) => s.enrollAutopilot);
   const pause = useAppStore((s) => s.pauseAutopilot);
