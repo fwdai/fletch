@@ -33,8 +33,11 @@ export interface DictationTranscriptEvent {
 export type DictationState = "listening" | "stopped" | "error";
 
 /** Payload of the `dictation:state` event. `error` is a human-readable reason,
- *  set only when `state` is `error` (e.g. permission denied, recognizer
- *  unavailable, audio engine failed to start). */
+ *  set only when `state` is `error`, which only happens when a session that
+ *  was already listening fails. Failures to get started at all (permission
+ *  denied, no recognizer for the locale, the mic wouldn't open) reject
+ *  `dictationStart` and emit no event, so the rejected promise — not this
+ *  state — is what tells the UI a start didn't take. */
 export interface DictationStateEvent {
   state: DictationState;
   error: string | null;
