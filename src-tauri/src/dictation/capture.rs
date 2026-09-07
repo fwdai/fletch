@@ -67,9 +67,13 @@ pub(super) fn sink(format: &AVAudioFormat) -> Result<(Arc<Pcm>, Tap)> {
     let pcm = Arc::new(Pcm {
         rate,
         limit,
-        // Pre-sized to a long dictation so the render thread appends into spare
-        // capacity instead of reallocating mid-buffer.
-        samples: Mutex::new(Vec::with_capacity((rate * 60.0) as usize)),
+        // Sized to the cap up front: `append_mono` refuses to grow past `limit`,
+        // so the render thread only ever writes into reserved capacity and a
+        // reallocation — a copy of minutes of audio on the real-time thread —
+        // can't happen. Reserving is cheap: the OS commits pages as they're
+        // written, so an idle reservation of this size costs address space, not
+        // memory.
+        samples: Mutex::new(Vec::with_capacity(limit)),
     });
 
     let tap_pcm = pcm.clone();
