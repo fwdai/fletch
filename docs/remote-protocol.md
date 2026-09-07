@@ -225,8 +225,12 @@ stop reconnecting until it is paired or the host is enabled again.
 `RemoteDevice = { deviceId, name, platform, createdAt, lastSeenAt, connected }`,
 where `connected` is derived from the live connections, not from `lastSeenAt`.
 `error` is a standing problem with the remote surface itself — currently only
-"`devices.json` is not writable", which also blocks pairing — and the Settings
-pane shows it inline.
+"`devices.json` could not be read or written", which also blocks pairing — and
+the Settings pane shows it inline. A failed write is sticky: the in-memory list
+stays authoritative (a revoked device is revoked, its sockets are closed), the
+error stays in `error`, and every `remote_status` retries the write until it
+lands, so the stale file cannot quietly bring a revoked device back at the next
+launch once the disk recovers.
 
 ## Out of scope for v1 (tracked, not built)
 

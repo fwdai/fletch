@@ -6,6 +6,7 @@
 //! `devices.json` can't be replayed as a credential.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -123,11 +124,17 @@ pub struct DeviceRecord {
 pub struct DeviceStore {
     path: PathBuf,
     devices: Mutex<Vec<DeviceRecord>>,
-    /// Why the store could not be opened, if it could not. Surfaced as
-    /// `RemoteStatus.error`; pairing refuses while it is set, because a
-    /// credential that cannot be persisted would silently stop working at the
-    /// next launch.
-    storage_error: Option<String>,
+    /// Why the store is not usable, if it is not: it could not be opened, or
+    /// the last write failed. Surfaced as `RemoteStatus.error` and cleared by
+    /// the next write that succeeds. Pairing refuses while it is set, because
+    /// a credential that cannot be persisted would silently stop working at
+    /// the next launch. Lock order: `devices` first, then this.
+    storage_error: Mutex<Option<String>>,
+    /// Memory is ahead of disk: a write failed after the list changed. `flush`
+    /// retries the write while this is set, so a transient failure (disk full,
+    /// a permissions slip) heals on its own instead of resurrecting a revoked
+    /// credential at the next launch.
+    unsaved: AtomicBool,
 }
 
 impl DeviceStore {
@@ -167,12 +174,24 @@ impl DeviceStore {
         Self {
             path,
             devices: Mutex::new(devices),
-            storage_error,
+            storage_error: Mutex::new(storage_error),
+            unsaved: AtomicBool::new(false),
         }
     }
 
-    pub fn storage_error(&self) -> Option<&str> {
-        self.storage_error.as_deref()
+    pub fn storage_error(&self) -> Option<String> {
+        self.storage_error.lock().clone()
+    }
+
+    /// Retry a write that failed earlier, if there is one outstanding. Called
+    /// from `RemoteState::status`, which Settings polls, so the retry runs a
+    /// few times a minute while the pane is open and on every host command.
+    pub fn flush(&self) {
+        if !self.unsaved.load(Ordering::Acquire) {
+            return;
+        }
+        let devices = self.devices.lock();
+        let _ = self.save(&devices);
     }
 
     pub fn list(&self) -> Vec<DeviceRecord> {
@@ -247,8 +266,32 @@ impl DeviceStore {
     fn mutate<R>(&self, f: impl FnOnce(&mut Vec<DeviceRecord>) -> R) -> Result<R> {
         let mut devices = self.devices.lock();
         let out = f(&mut devices);
-        self.persist(&devices)?;
+        self.save(&devices)?;
         Ok(out)
+    }
+
+    /// `persist` plus the bookkeeping that makes a failure visible and
+    /// retryable: a failed write sets `storage_error` and `unsaved`, a
+    /// successful one clears both. Caller holds the `devices` lock.
+    fn save(&self, devices: &[DeviceRecord]) -> Result<()> {
+        match self.persist(devices) {
+            Ok(()) => {
+                self.unsaved.store(false, Ordering::Release);
+                *self.storage_error.lock() = None;
+                Ok(())
+            }
+            Err(e) => {
+                let error = format!(
+                    "Paired devices could not be saved to {}: {e}. Revocations and new \
+                     pairings will not survive a relaunch until this is fixed.",
+                    self.path.display()
+                );
+                tracing::error!(%error, "remote: device store write failed");
+                self.unsaved.store(true, Ordering::Release);
+                *self.storage_error.lock() = Some(error);
+                Err(e)
+            }
+        }
     }
 
     /// Write the registry atomically (tmp + rename) at 0600 — it holds token

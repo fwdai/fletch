@@ -218,6 +218,9 @@ impl RemoteState {
     }
 
     pub fn status(&self) -> RemoteStatus {
+        // Settings polls this, so it doubles as the retry point for a device
+        // store write that failed earlier (see `DeviceStore::flush`).
+        self.devices.flush();
         let inner = self.inner.lock();
         let connected = self.sessions.connected_devices();
         RemoteStatus {
@@ -238,7 +241,7 @@ impl RemoteState {
                     last_seen_at: d.last_seen_at,
                 })
                 .collect(),
-            error: self.devices.storage_error().map(str::to_string),
+            error: self.devices.storage_error(),
         }
     }
 
@@ -278,8 +281,9 @@ impl RemoteState {
     /// The hang-up does not depend on the disk write. The in-memory credential
     /// is gone the moment `revoke` returns, whether or not `devices.json` could
     /// be rewritten, so the live socket is closed either way and only then is
-    /// a persistence error reported — it means the revoke may not survive a
-    /// relaunch, not that it did not happen.
+    /// a persistence error reported. That error is also kept on the store
+    /// (`RemoteStatus.error`) and the write is retried from `status` until it
+    /// lands, so the on-disk record does not quietly outlive the revoke.
     pub fn revoke_device(&self, device_id: &str) -> Result<bool> {
         let persisted = self.devices.revoke(device_id);
         self.sessions.close_device(device_id, CLOSE_REVOKED);

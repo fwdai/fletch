@@ -505,6 +505,9 @@ async fn revoking_a_device_closes_its_live_connection_4003() {
 /// The hang-up must not hinge on the disk write: with `devices.json`
 /// unwritable, revoke reports the persistence error, but the credential is
 /// gone from memory and the socket that was using it is closed all the same.
+/// The failure then stays visible in `status().error` and the write is retried
+/// from `status` until it lands, so the stale on-disk record cannot bring the
+/// device back at the next launch once the disk recovers.
 #[cfg(unix)]
 #[tokio::test]
 async fn revoking_closes_the_live_connection_even_when_persisting_fails() {
@@ -521,12 +524,29 @@ async fn revoking_closes_the_live_connection_even_when_persisting_fails() {
     let writable = std::fs::metadata(dir).unwrap().permissions();
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500)).unwrap();
     let outcome = host.state.revoke_device(&record.device_id);
-    std::fs::set_permissions(dir, writable).unwrap();
 
     assert!(outcome.is_err(), "the persistence failure is reported");
     assert_eq!(close_code(&mut ws).await, 4003);
     assert!(host.state.devices().verify(&token).is_none());
-    assert!(host.state.status().devices.is_empty());
+    let status = host.state.status();
+    assert!(status.devices.is_empty());
+    assert!(
+        status
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("could not be saved")),
+        "the failed write stays visible, not just the Err of the one call"
+    );
+    // While the disk is unwritable the old record is still there, which is
+    // exactly what a relaunch would reload.
+    assert!(DeviceStore::load(dir).verify(&token).is_some());
+
+    // Disk recovers: the next status poll retries the write, clears the error,
+    // and the record is gone from disk too.
+    std::fs::set_permissions(dir, writable).unwrap();
+    let status = host.state.status();
+    assert_eq!(status.error, None);
+    assert!(DeviceStore::load(dir).verify(&token).is_none());
 }
 
 #[tokio::test]
