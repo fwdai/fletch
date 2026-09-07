@@ -16,15 +16,6 @@ export function DictationSection() {
   const { status, progress, select, download, remove } = useDictationModel();
 
   const size = status ? formatBytes(status.model.size) : null;
-  // Hidden while there is nothing to act on, and shown as soon as there is:
-  // weights on disk outlive the opt-in, so turning the engine off must not
-  // strand half a gigabyte with no way to reclaim it.
-  const chooser =
-    status &&
-    (enabled ||
-      status.downloading ||
-      progress?.state === "error" ||
-      status.models.some((m) => m.installed));
 
   return (
     <SetGroup label="Dictation">
@@ -36,8 +27,11 @@ export function DictationSection() {
       >
         <SetToggle on={enabled} onClick={() => setEnabled(!enabled)} />
       </SetRow>
-      {chooser &&
-        status.models.map((model) => (
+      {/* Always offered, engine on or off: the choice has to be makeable
+          before the opt-in, or enabling would fetch the platform default out
+          from under someone who wanted the other model — and weights on disk
+          outlive the opt-in, so the Remove action has to stay reachable too. */}
+      {status?.models.map((model) => (
           <ModelRow
             key={model.id}
             model={model}

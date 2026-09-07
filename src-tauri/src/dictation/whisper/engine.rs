@@ -48,6 +48,13 @@ static CONTEXT: Mutex<Option<Loaded>> = Mutex::new(None);
 /// up timers.
 static UNLOAD_ARMED: AtomicBool = AtomicBool::new(false);
 
+/// One transcription at a time. Inference already saturates the GPU or a
+/// core, so two wouldn't finish sooner — and serialising them is what makes a
+/// model switch clean: the previous decode has dropped its handle on the old
+/// context before [`context`] clears the slot and loads the new one, so the two
+/// models are never resident together. Taken before [`CONTEXT`], never after.
+static DECODING: Mutex<()> = Mutex::new(());
+
 struct Loaded {
     ctx: Arc<WhisperContext>,
     /// The weights this context came from. The user can change the model in
@@ -76,6 +83,7 @@ pub async fn transcribe(model: &'static WhisperModel, samples: Vec<f32>) -> Resu
     // Inference pins a core for seconds; it has no business on the async
     // runtime's worker threads.
     tokio::task::spawn_blocking(move || {
+        let _one_at_a_time = DECODING.lock();
         let ctx = context(model)?;
         decode(&ctx, &samples)
     })
@@ -110,7 +118,8 @@ fn context(model: &WhisperModel) -> Result<Arc<WhisperContext>> {
         return Ok(loaded.ctx.clone());
     }
     // Drop a context for the previous choice before loading the new one, so a
-    // switch doesn't briefly hold both models resident.
+    // switch doesn't hold both models resident. This is the last handle: any
+    // decode that held another finished before we took `DECODING`.
     *slot = None;
     let ctx = Arc::new(load(&path)?);
     *slot = Some(Loaded {
