@@ -1,7 +1,7 @@
 //! The Whisper model catalog. Weights are pinned here, not fetched from a
 //! listing: each entry names the exact file, its SHA-256, and its size, so a
-//! download is verified before it is ever loaded and a swap is a one-line
-//! change to [`DEFAULT_MODEL_ID`] (plus a new entry) when a better model ships.
+//! download is verified before it is ever loaded and adding a candidate is one
+//! entry here plus nothing else — Settings offers whatever [`MODELS`] holds.
 //!
 //! Files come from the ggml conversions at
 //! <https://huggingface.co/ggerganov/whisper.cpp>. To add one, take `oid
@@ -29,6 +29,12 @@ pub struct WhisperModel {
 /// What a fresh opt-in downloads. Swap by pointing at another catalog entry.
 pub const DEFAULT_MODEL_ID: &str = "large-v3-turbo-q5_0";
 
+/// The default on Intel, where there is no Metal-class GPU to hide the large
+/// model's decode behind and a dictated sentence would take longer than saying
+/// it again. Overridable — the choice is the user's — but not as a first
+/// impression of the feature.
+pub const SMALL_MODEL_ID: &str = "small.en-q8_0";
+
 pub const MODELS: &[WhisperModel] = &[
     WhisperModel {
         id: "large-v3-turbo-q5_0",
@@ -51,8 +57,21 @@ pub const MODELS: &[WhisperModel] = &[
     },
 ];
 
-pub fn default_model() -> &'static WhisperModel {
-    find(DEFAULT_MODEL_ID).expect("DEFAULT_MODEL_ID names a catalog entry")
+/// What this machine gets before the user has picked anything.
+pub fn platform_default() -> &'static WhisperModel {
+    default_for_arch(std::env::consts::ARCH)
+}
+
+/// The arch rule, taking the arch as a value so it can be tested off an Intel
+/// Mac. Rosetta reports `x86_64` too, which is the right answer: a translated
+/// build has no Metal backend either.
+fn default_for_arch(arch: &str) -> &'static WhisperModel {
+    let id = if arch == "x86_64" {
+        SMALL_MODEL_ID
+    } else {
+        DEFAULT_MODEL_ID
+    };
+    find(id).expect("the default ids name catalog entries")
 }
 
 pub fn find(id: &str) -> Option<&'static WhisperModel> {
@@ -79,8 +98,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_in_catalog() {
-        assert_eq!(default_model().id, DEFAULT_MODEL_ID);
+    fn intel_defaults_to_the_small_model_and_apple_silicon_to_the_large_one() {
+        assert_eq!(default_for_arch("x86_64").id, SMALL_MODEL_ID);
+        assert_eq!(default_for_arch("aarch64").id, DEFAULT_MODEL_ID);
+        // Anything else is treated as capable rather than special-cased.
+        assert_eq!(default_for_arch("riscv64").id, DEFAULT_MODEL_ID);
     }
 
     #[test]

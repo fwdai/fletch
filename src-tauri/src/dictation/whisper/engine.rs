@@ -13,7 +13,7 @@
 //! dictated one sentence this morning shouldn't still be paying half a gigabyte
 //! of resident memory for it at lunchtime.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -50,6 +50,11 @@ static UNLOAD_ARMED: AtomicBool = AtomicBool::new(false);
 
 struct Loaded {
     ctx: Arc<WhisperContext>,
+    /// The weights this context came from. The user can change the model in
+    /// Settings between one session and the next, and a `WhisperContext` says
+    /// nothing about which file it holds — so the cache is keyed on the path
+    /// rather than assumed to be the current choice.
+    path: PathBuf,
     /// When the model was last handed to a transcription — the unload sleeper
     /// compares this against [`IDLE_UNLOAD`] rather than trusting its own
     /// deadline, so a session that started while it slept keeps the model.
@@ -86,24 +91,28 @@ fn rms(samples: &[f32]) -> f32 {
     (sum / samples.len() as f64).sqrt() as f32
 }
 
-/// The cached model, loading it on first use. Also stamps the load as used,
-/// which is what keeps [`arm_unload`]'s sleeper from taking it out from under a
-/// session that has only just started.
+/// The cached model for the current selection, loading it on first use. Also
+/// stamps the load as used, which is what keeps [`arm_unload`]'s sleeper from
+/// taking it out from under a session that has only just started.
 fn context() -> Result<Arc<WhisperContext>> {
-    let mut slot = CONTEXT.lock();
-    if let Some(loaded) = slot.as_mut() {
-        loaded.used = Instant::now();
-        return Ok(loaded.ctx.clone());
-    }
-    let path = models::installed_path(models::default_model()).ok_or_else(|| {
+    let path = models::installed_path(super::selected_now()).ok_or_else(|| {
         Error::Other(
             "The local dictation model isn't installed. Download it in Settings > Dictation."
                 .into(),
         )
     })?;
+    let mut slot = CONTEXT.lock();
+    if let Some(loaded) = slot.as_mut().filter(|l| l.path == path) {
+        loaded.used = Instant::now();
+        return Ok(loaded.ctx.clone());
+    }
+    // Drop a context for the previous choice before loading the new one, so a
+    // switch doesn't briefly hold both models resident.
+    *slot = None;
     let ctx = Arc::new(load(&path)?);
     *slot = Some(Loaded {
         ctx: ctx.clone(),
+        path,
         used: Instant::now(),
     });
     // Armed under the same lock the sleeper unloads under, so "a model is
