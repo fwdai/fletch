@@ -150,9 +150,13 @@ async fn run(app: &AppHandle, model: &'static WhisperModel) -> Result<()> {
 }
 
 /// A temp file untouched for this long is a dead download. A live one is
-/// written every network chunk, so even a slow link moves it far more often;
-/// only a process killed mid-stream leaves one that goes quiet.
+/// written every network chunk, and a request that receives nothing for
+/// [`download::READ_TIMEOUT`] fails and removes its own file — so a file this
+/// idle has no request behind it, only a process that died mid-stream.
 const STALE_TMP_AFTER: Duration = Duration::from_secs(10 * 60);
+// The sweep is only safe while the read timeout fires well before it: a
+// stalled-but-live request must be gone before its file looks stale.
+const _: () = assert!(STALE_TMP_AFTER.as_secs() >= 5 * download::READ_TIMEOUT.as_secs());
 
 /// Drop temp files from a run that died. The download path removes its own on
 /// failure, but a process killed mid-stream leaves a partial half-gigabyte
@@ -161,8 +165,8 @@ const STALE_TMP_AFTER: Duration = Duration::from_secs(10 * 60);
 /// Staleness is judged by age, not by pid: `IN_FLIGHT` only coordinates one
 /// process, and a second app instance sharing this directory has its own
 /// in-flight file here that must not be unlinked from under it (its rename
-/// would fail after the whole download). Anything modified recently is
-/// presumed live, whoever owns it.
+/// would fail after the whole download). Anything modified within the window
+/// is presumed live, whoever owns it.
 async fn clear_stale_tmp(root: &Path) {
     let Ok(mut dir) = tokio::fs::read_dir(root).await else {
         return;

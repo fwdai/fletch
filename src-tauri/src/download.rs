@@ -9,6 +9,8 @@
 //! final location appearing complete or absent, never half-written.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use crate::error::{Error, Result};
 
@@ -16,6 +18,23 @@ use crate::error::{Error, Result};
 /// same artifact don't stream over each other.
 const TMP_PREFIX: &str = "download-";
 const TMP_SUFFIX: &str = ".tmp";
+
+/// How long a download may go without receiving a byte before it fails. This
+/// is what makes a temp file's age meaningful: a live download touches its
+/// file at least this often, and one that stalls longer is torn down (and its
+/// temp file removed) rather than left hanging on a connection the network
+/// forgot. Sweeps that reclaim leftovers key their threshold off this.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .read_timeout(READ_TIMEOUT)
+            .build()
+            .expect("static reqwest client")
+    })
+}
 
 /// Where [`download_verified`] streams to for `dest_dir`. Exposed so a caller
 /// sweeping leftovers can tell its own in-flight file from a stale one.
@@ -65,7 +84,9 @@ async fn stream_verified(
     use sha2::Digest;
     use tokio::io::AsyncWriteExt;
 
-    let mut resp = reqwest::get(url)
+    let mut resp = client()
+        .get(url)
+        .send()
         .await
         .map_err(|e| Error::Other(format!("download {url}: {e}")))?
         .error_for_status()
