@@ -42,7 +42,65 @@ fn main() {
         println!("cargo::rerun-if-env-changed={key}");
     }
 
+    link_clang_runtime();
+
     tauri_build::build()
+}
+
+/// whisper.cpp's Metal backend guards its residency-set path on
+/// `@available(macOS 15.0, ...)` (`ggml/src/ggml-metal/ggml-metal-device.m`),
+/// which clang lowers to a call to `___isPlatformVersionAtLeast`. That helper
+/// lives in clang's own runtime library, `libclang_rt.osx.a`, and rustc drives
+/// the final link with `-nodefaultlibs` — so nothing puts it on the link line
+/// and the `fletch` binary fails to link with three undefined symbols.
+///
+/// It only bites when the SDK is >= 15.0 (which turns the path on) *and* the
+/// deployment target is below it (which makes the check a runtime one rather
+/// than a folded constant) — i.e. every release build, since
+/// `minimumSystemVersion` is 13.0. Only the arm64 slice is affected; the guard
+/// is `!TARGET_CPU_X86_64`, so x86_64 compiles the path out. Linux CI never sees
+/// it either: `whisper-rs` is macOS-only (see Cargo.toml).
+///
+/// The archive is linked without a `static=` kind on purpose, so the linker
+/// pulls in only the availability object rather than bundling all of
+/// compiler-rt into the rlib and colliding with Rust's own
+/// `compiler_builtins`.
+fn link_clang_runtime() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+
+    // Ask the same compiler that will drive the link (see the `cc` invocation in
+    // the failing linker output) where its runtime lives, rather than guessing a
+    // versioned path under Xcode.
+    println!("cargo::rerun-if-env-changed=CC");
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+
+    let dir = match std::process::Command::new(&cc)
+        .arg("-print-runtime-dir")
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        _ => {
+            println!("cargo::warning=`{cc} -print-runtime-dir` failed; not linking clang_rt.osx");
+            return;
+        }
+    };
+
+    // clang prints the path it *would* use, whether or not it exists, so check
+    // for the archive itself. Warn rather than panic: a toolchain without it can
+    // still build everything that doesn't need the availability helper.
+    if dir.is_empty()
+        || !std::path::Path::new(&dir)
+            .join("libclang_rt.osx.a")
+            .exists()
+    {
+        println!("cargo::warning=libclang_rt.osx.a not found in `{dir}`; not linking clang_rt.osx");
+        return;
+    }
+
+    println!("cargo::rustc-link-search=native={dir}");
+    println!("cargo::rustc-link-lib=clang_rt.osx");
 }
 
 /// Minimal `.env` parser: `KEY=VALUE` lines, optional `export ` prefix and
