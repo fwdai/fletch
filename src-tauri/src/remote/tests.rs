@@ -290,7 +290,7 @@ impl Dispatch for HangingDispatch {
 }
 
 struct Host {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     state: Arc<RemoteState>,
     port: u16,
 }
@@ -303,11 +303,7 @@ fn boot_with(dispatch: Arc<dyn Dispatch>) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let state = RemoteState::new(dir.path(), dispatch);
     let port = state.start(0).unwrap();
-    Host {
-        _dir: dir,
-        state,
-        port,
-    }
+    Host { dir, state, port }
 }
 
 async fn connect_path(port: u16, path: &str) -> std::io::Result<WebSocketStream<TcpStream>> {
@@ -503,6 +499,33 @@ async fn revoking_a_device_closes_its_live_connection_4003() {
     // an already-authenticated connection is not re-checked per request.
     host.state.revoke_device(&record.device_id).unwrap();
     assert_eq!(close_code(&mut ws).await, 4003);
+    assert!(host.state.status().devices.is_empty());
+}
+
+/// The hang-up must not hinge on the disk write: with `devices.json`
+/// unwritable, revoke reports the persistence error, but the credential is
+/// gone from memory and the socket that was using it is closed all the same.
+#[cfg(unix)]
+#[tokio::test]
+async fn revoking_closes_the_live_connection_even_when_persisting_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let host = boot();
+    let (record, token) = host.state.devices().register("phone", "ios").unwrap();
+    let mut ws = connect(host.port).await;
+    request(&mut ws, "1", "hello", json!({ "deviceToken": token })).await;
+    assert_eq!(next_json(&mut ws).await["ok"], true);
+
+    // Read-only store directory: the tmp file for the rewrite cannot be created.
+    let dir = host.dir.path();
+    let writable = std::fs::metadata(dir).unwrap().permissions();
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let outcome = host.state.revoke_device(&record.device_id);
+    std::fs::set_permissions(dir, writable).unwrap();
+
+    assert!(outcome.is_err(), "the persistence failure is reported");
+    assert_eq!(close_code(&mut ws).await, 4003);
+    assert!(host.state.devices().verify(&token).is_none());
     assert!(host.state.status().devices.is_empty());
 }
 

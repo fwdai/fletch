@@ -274,10 +274,16 @@ impl RemoteState {
     /// authenticating right now either fails `verify`, or registers itself and
     /// then finds itself gone from the store (see `server::read_loop`) — there
     /// is no interleaving that leaves an authorized socket behind.
+    ///
+    /// The hang-up does not depend on the disk write. The in-memory credential
+    /// is gone the moment `revoke` returns, whether or not `devices.json` could
+    /// be rewritten, so the live socket is closed either way and only then is
+    /// a persistence error reported — it means the revoke may not survive a
+    /// relaunch, not that it did not happen.
     pub fn revoke_device(&self, device_id: &str) -> Result<bool> {
-        let removed = self.devices.revoke(device_id)?;
+        let persisted = self.devices.revoke(device_id);
         self.sessions.close_device(device_id, CLOSE_REVOKED);
-        Ok(removed)
+        persisted
     }
 
     /// Private to this module tree: only `server` registers sessions, and only

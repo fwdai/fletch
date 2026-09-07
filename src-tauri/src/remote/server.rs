@@ -153,6 +153,10 @@ async fn drain(mut ws: Ws) {
 
 /// Reject anything but `/ws` at the handshake, so a stray browser hitting the
 /// port gets a 404 instead of an open socket.
+///
+/// The signature is tungstenite's `Callback` contract, so the large `Err`
+/// (`http::Response`) cannot be boxed away.
+#[allow(clippy::result_large_err)]
 fn check_path(req: &Request, response: Response) -> std::result::Result<Response, ErrorResponse> {
     if req.uri().path() == WS_PATH {
         return Ok(response);
