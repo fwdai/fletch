@@ -115,7 +115,9 @@ pub async fn ensure_installed() -> Result<PathBuf> {
     tracing::info!(version = CODEGRAPH_VERSION, "installing codegraph bundle");
     let dest = version_dir(&install_dir);
     tokio::time::timeout(INSTALL_TIMEOUT, async {
-        let tarball = download_verified(&url, sha, &install_dir).await?;
+        // No progress consumer: this install is silent (see the module docs).
+        let tarball =
+            crate::download::download_verified(&url, sha, &install_dir, |_, _| {}).await?;
         // Blocking CPU/fs work off the async runtime.
         let dest = dest.clone();
         tokio::task::spawn_blocking(move || extract_bundle(&tarball, &dest))
@@ -135,58 +137,6 @@ pub async fn ensure_installed() -> Result<PathBuf> {
     prune_old_versions(&install_dir, &dest).await;
     tracing::info!(path = %bin.display(), "codegraph installed");
     Ok(bin)
-}
-
-/// Stream the release tarball to a temp file inside `install_dir`, hashing as
-/// it downloads; error (and remove the temp file) unless the digest matches
-/// the pinned SHA-256. Returns the temp path.
-async fn download_verified(url: &str, expected_sha: &str, install_dir: &Path) -> Result<PathBuf> {
-    use sha2::Digest;
-    use tokio::io::AsyncWriteExt;
-
-    let mut resp = reqwest::get(url)
-        .await
-        .map_err(|e| Error::Other(format!("download codegraph bundle: {e}")))?
-        .error_for_status()
-        .map_err(|e| Error::Other(format!("download codegraph bundle: {e}")))?;
-
-    let tmp_path = install_dir.join(format!("download-{}.tmp", std::process::id()));
-    let mut file = tokio::fs::File::create(&tmp_path)
-        .await
-        .map_err(|e| Error::Other(format!("create {}: {e}", tmp_path.display())))?;
-
-    let mut hasher = sha2::Sha256::new();
-    let result: Result<()> = async {
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| Error::Other(format!("download codegraph bundle: {e}")))?
-        {
-            hasher.update(&chunk);
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| Error::Other(format!("write {}: {e}", tmp_path.display())))?;
-        }
-        file.flush()
-            .await
-            .map_err(|e| Error::Other(format!("flush {}: {e}", tmp_path.display())))?;
-        Ok(())
-    }
-    .await;
-    drop(file);
-    if let Err(e) = result {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(e);
-    }
-
-    let digest = format!("{:x}", hasher.finalize());
-    if !digest.eq_ignore_ascii_case(expected_sha) {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(Error::Other(format!(
-            "codegraph bundle checksum mismatch (got {digest}, expected {expected_sha})"
-        )));
-    }
-    Ok(tmp_path)
 }
 
 /// Unpack `tarball` and move the bundle into `dest`. Extraction goes to a

@@ -377,7 +377,9 @@ pub async fn ensure_installed(on_progress: impl Fn(u64, Option<u64>)) -> Result<
 
     let url = format!("{DIST_URL_BASE}{asset}");
     tracing::info!(%url, "downloading portable git");
-    let tarball = download_verified(&url, sha, on_progress).await?;
+    let tarball = crate::download::download_verified(&url, sha, &root, on_progress)
+        .await
+        .map_err(|e| format!("portable git: {e}"))?;
 
     let dest = root.join(DIST_TAG);
     tokio::task::spawn_blocking(move || extract_dist(&tarball, &dest))
@@ -399,73 +401,6 @@ fn activate_portable() {
     if let Some(bin) = installed_portable_git() {
         *active().write().unwrap() = Some(Arc::new(bin));
     }
-}
-
-/// Stream the artifact to a temp file, hashing as it downloads; error unless
-/// the digest matches the pinned SHA-256. Returns the temp path.
-async fn download_verified(
-    url: &str,
-    expected_sha: &str,
-    on_progress: impl Fn(u64, Option<u64>),
-) -> Result<PathBuf, String> {
-    use sha2::Digest;
-    use tokio::io::AsyncWriteExt;
-
-    let resp = reqwest::get(url)
-        .await
-        .map_err(|e| format!("download: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("download: {e}"))?;
-    let total = resp.content_length();
-
-    let root = INSTALL_ROOT.get().expect("checked by caller").clone();
-    let tmp_path = root.join(format!("download-{}.tmp", std::process::id()));
-    let mut file = tokio::fs::File::create(&tmp_path)
-        .await
-        .map_err(|e| format!("create {}: {e}", tmp_path.display()))?;
-
-    let mut hasher = sha2::Sha256::new();
-    let mut received: u64 = 0;
-    let mut last_reported: u64 = 0;
-    let mut resp = resp;
-    loop {
-        let chunk = match resp.chunk().await {
-            Ok(Some(c)) => c,
-            Ok(None) => break,
-            Err(e) => {
-                let _ = tokio::fs::remove_file(&tmp_path).await;
-                return Err(format!("download: {e}"));
-            }
-        };
-        hasher.update(&chunk);
-        if let Err(e) = file.write_all(&chunk).await {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(format!("write {}: {e}", tmp_path.display()));
-        }
-        received += chunk.len() as u64;
-        // Report at ~5% steps (or every 8 MiB when the size is unknown) so the
-        // UI gets a live number without an event per network chunk.
-        let step = total.map(|t| t / 20).unwrap_or(8 * 1024 * 1024).max(1);
-        if received - last_reported >= step {
-            last_reported = received;
-            on_progress(received, total);
-        }
-    }
-    if let Err(e) = file.flush().await {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(format!("flush {}: {e}", tmp_path.display()));
-    }
-    drop(file);
-    on_progress(received, total);
-
-    let digest = format!("{:x}", hasher.finalize());
-    if !digest.eq_ignore_ascii_case(expected_sha) {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(format!(
-            "portable git checksum mismatch (got {digest}, expected {expected_sha})"
-        ));
-    }
-    Ok(tmp_path)
 }
 
 /// Unpack `tarball` and move the dist into `dest`. Extraction goes to a

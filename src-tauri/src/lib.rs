@@ -8,6 +8,7 @@ mod codegraph;
 mod commands;
 mod database;
 mod dictation;
+mod download;
 mod editors;
 mod error;
 mod exec_session;
