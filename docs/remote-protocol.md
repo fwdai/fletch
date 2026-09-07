@@ -112,8 +112,13 @@ repo); anyone can run their own and point both apps at it.
   3. relay → host `{ "type": "ready" }`, or close `4003` on a bad proof, a
      malformed or non-text proof frame, or no proof within the 10 s.
   The relay stores nothing: the host ID *is* the public key it verifies
-  against. A second host link for the same ID replaces the first, which is
-  closed with `4409`; devices attached to it are closed with `4404`. A known-
+  against. A second host link for the same ID replaces the first — closed with
+  `4409`, its devices closed with `4404` — but only once the newcomer's proof
+  has verified. An unauthenticated link is a claim, not a host: it changes
+  nothing for the current host and its devices, and it alone is closed if it
+  fails or times out. The host ID is public, so anything less would let anyone
+  who knows it knock the real host offline. The deadline is enforced when the
+  proof arrives as well as by the alarm. A known-
   answer vector for the proof lives in `relay/test-vector.json`; both the
   relay's and the host's implementations are tested against it.
 - **Device link.** No relay-level authentication: the Noise handshake is the

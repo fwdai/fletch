@@ -156,17 +156,65 @@ describe("host link authentication", () => {
     expect((await link.closed()).code).toBe(4003);
   });
 
-  it("replaces an earlier host link with 4409 and its devices with 4404", async () => {
+  it("refuses a valid proof that arrives after the deadline, alarm or no alarm", async () => {
+    const host = await newHost();
+    const link = await upgrade(`/v1/host/${host.hostId}`);
+    const challenge = await link.nextJson();
+    const stub = env.HOSTS.get(env.HOSTS.idFromName(host.hostId));
+    // The alarm has not fired (nobody ran it); the deadline alone must refuse.
+    await runInDurableObject(stub, (_instance, state) => {
+      for (const ws of state.getWebSockets("host")) {
+        ws.serializeAttachment({
+          ...(ws.deserializeAttachment() as Record<string, unknown>),
+          deadline: 1,
+        });
+      }
+    });
+    link.ws.send(JSON.stringify({ type: "proof", proof: await answerChallenge(host, challenge) }));
+    expect((await link.closed()).code).toBe(4003);
+  });
+
+  it("replaces an earlier host link with 4409 and its devices with 4404, once the newcomer has proved itself", async () => {
     const host = await newHost();
     const first = await attachHost(host);
     const device = await attachDevice(host);
     expect(decode(await first.nextBinary())?.type).toBe(FRAME_OPEN);
 
+    // The replacement has to authenticate from scratch, and until it does the
+    // first link and its device are untouched.
     const second = await upgrade(`/v1/host/${host.hostId}`);
+    const challenge = await second.nextJson();
+    expect(challenge.type).toBe("challenge");
+    device.ws.send(new Uint8Array([7, 7, 7]));
+    expect(decode(await first.nextBinary())?.type).toBe(FRAME_DATA);
+
+    second.ws.send(
+      JSON.stringify({ type: "proof", proof: await answerChallenge(host, challenge) }),
+    );
+    expect(await second.nextJson()).toEqual({ type: "ready" });
     expect((await first.closed()).code).toBe(4409);
     expect((await device.closed()).code).toBe(4404);
-    // The replacement still has to authenticate from scratch.
-    expect((await second.nextJson()).type).toBe("challenge");
+  });
+
+  it("lets an unauthenticated claim on the host ID disturb nothing", async () => {
+    const host = await newHost();
+    const real = await attachHost(host);
+    const device = await attachDevice(host);
+    expect(decode(await real.nextBinary())?.type).toBe(FRAME_OPEN);
+
+    // Anyone can learn the host ID; opening the host route with it, and even
+    // sending garbage, must not evict the real host or its devices.
+    const impostor = await upgrade(`/v1/host/${host.hostId}`);
+    expect((await impostor.nextJson()).type).toBe("challenge");
+    impostor.ws.send(
+      JSON.stringify({ type: "proof", proof: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }),
+    );
+    expect((await impostor.closed()).code).toBe(4003);
+
+    device.ws.send(new Uint8Array([1, 2, 3]));
+    const frame = decode(await real.nextBinary());
+    expect(frame?.type).toBe(FRAME_DATA);
+    expect(Array.from(frame?.payload ?? [])).toEqual([1, 2, 3]);
   });
 });
 

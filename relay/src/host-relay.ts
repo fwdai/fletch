@@ -110,10 +110,10 @@ export class HostRelay {
   private async attachHost(hostId: string): Promise<Response> {
     if (!decodeHostKey(hostId)) return new Response("not found", { status: 404 });
 
-    // "A second host link for the same ID replaces the first, which is closed
-    // with 4409; devices attached to it are closed with 4404."
-    this.evictHostLinks(CLOSE_REPLACED, "replaced by a newer host link");
-
+    // Nothing happens to the current host here. A new link is only a claim
+    // until its proof verifies (`promoteHost`); the host ID is public, so an
+    // unauthenticated claim must not be able to evict the real host or drop
+    // its devices. Several pending claims may coexist; each times out alone.
     const pair = new WebSocketPair();
     const server = pair[1];
     const keypair = await generateKeypair();
@@ -142,6 +142,9 @@ export class HostRelay {
     state: HostState,
     message: string | ArrayBuffer,
   ): Promise<void> {
+    // The deadline is enforced where the proof arrives, not only by the alarm:
+    // an alarm can run late, and a late alarm must not extend the window.
+    if (Date.now() > state.deadline) return this.failHostAuth(ws, state);
     if (typeof message !== "string") return this.failHostAuth(ws, state);
     let parsed: unknown;
     try {
@@ -157,6 +160,15 @@ export class HostRelay {
     const want = await expectedProof(state.keypair, hostKey, nonce);
     if (!want || !equalBytes(want, offered)) return this.failHostAuth(ws, state);
 
+    this.promoteHost(ws, state);
+  }
+
+  /** The one transition to "the host": only a verified proof gets here, and
+   *  only here does the previous host lose its link and its devices. "A second
+   *  host link for the same ID replaces the first, which is closed with 4409;
+   *  devices attached to it are closed with 4404." */
+  private promoteHost(ws: WebSocket, state: HostState): void {
+    this.evictReadyHosts(ws, CLOSE_REPLACED, "replaced by a newer host link");
     state.stage = "ready";
     writeState(ws, state);
     trySend(ws, JSON.stringify({ type: "ready" }));
@@ -177,15 +189,21 @@ export class HostRelay {
     return null;
   }
 
-  private evictHostLinks(code: number, reason: string): void {
+  /** Close every *authenticated* host link other than `keep`, and the devices
+   *  that were attached to it. Pending (unproven) links are left alone: they
+   *  prove themselves or time out. */
+  private evictReadyHosts(keep: WebSocket, code: number, reason: string): void {
+    let evicted = false;
     for (const ws of this.ctx.getWebSockets(TAG_HOST)) {
+      if (ws === keep) continue;
       const state = readState(ws);
-      if (state?.role !== "host" || state.stage === "gone") continue;
+      if (state?.role !== "host" || state.stage !== "ready") continue;
       state.stage = "gone";
       writeState(ws, state);
       closeSocket(ws, code, reason);
+      evicted = true;
     }
-    this.closeAllDevices();
+    if (evicted) this.closeAllDevices();
   }
 
   private closeAllDevices(): void {
