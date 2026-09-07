@@ -12,7 +12,11 @@ import type {
   AgentViewEvent,
   ShellOutputEvent,
 } from "./types/agent";
-import type { DictationStateEvent, DictationTranscriptEvent } from "./types/dictation";
+import type {
+  DictationModelProgressEvent,
+  DictationStateEvent,
+  DictationTranscriptEvent,
+} from "./types/dictation";
 import type { PrStateChangedEvent } from "./types/pr";
 import type { AgentInstallEvent } from "./types/providers";
 import type {
@@ -188,6 +192,18 @@ export function onDictationTranscript(
  *  unmounted mid-session leaves its terminal event to land on the next one). */
 export function onDictationState(cb: (e: DictationStateEvent) => void): Promise<UnlistenFn> {
   return listen<DictationStateEvent>("dictation:state", (event) => cb(event.payload));
+}
+
+/** Progress of the local engine's model download, ending in `installed` or
+ *  `error`. The download outlives the Settings screen that started it, so a
+ *  subscriber that mounts late reads `dictationModelStatus` for where it
+ *  stands and then follows along here. */
+export function onDictationModelProgress(
+  cb: (e: DictationModelProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<DictationModelProgressEvent>("dictation:model_progress", (event) =>
+    cb(event.payload),
+  );
 }
 
 export function onAgentEvent(cb: (e: AgentManagedEvent) => void): Promise<UnlistenFn> {

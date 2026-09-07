@@ -150,6 +150,10 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       // the `set_code_indexing_enabled` Rust command): read `s.code_indexing_enabled`,
       // never setSetting it. Only an explicit "false" disables.
       codeIndexingEnabled: s.code_indexing_enabled !== "false",
+      // The local dictation engine is opt-in and backend-owned (written by
+      // `set_dictation_engine`): only an explicit "whisper" selects it, which
+      // matches Rust's `whisper::parse_enabled`.
+      dictationEngineEnabled: s.dictation_engine === "whisper",
       // Backend-owned like telemetry_enabled (snake_case, written by the
       // `set_sandbox_engine` Rust command) — read it, never setSetting it.
       sandboxEngine: parseSandboxEngine(s.sandbox_engine),

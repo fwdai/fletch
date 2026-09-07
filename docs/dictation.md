@@ -61,6 +61,59 @@ The failure mode when this doesn't reach `codesign` is quiet: dev builds work,
 the notarized app lights the mic and transcribes silence. If dictation returns
 an empty transcript only in a released build, check the entitlement first.
 
+## Local Whisper engine (opt-in)
+
+Settings › General › Dictation offers a second engine: whisper.cpp running
+locally, for people who want transcription that never depends on Apple's
+locale support or its servers. Apple's recognizer stays the default — the
+local engine costs a one-time model download, so it can only be a choice the
+user makes.
+
+The opt-in is the `dictation_engine` settings row (`whisper` or `apple`),
+written by the backend `set_dictation_engine` command. Enabling it starts the
+download in a background task and returns immediately; progress arrives as
+`dictation:model_progress` events, and `dictation_model_status` is what a
+freshly opened Settings screen reads instead. Weights only reach their final
+path after their SHA-256 matched, so "the file is there, at the pinned size"
+is the same statement as "it was verified" — that is what
+`models::installed_path` checks.
+
+### Where the weights live
+
+`<app data>/whisper-models/`, seeded by `whisper::init` from `setup` — so
+`~/Library/Application Support/com.fletch.desktop/whisper-models` in a bundle,
+and `…/com.fletch.desktop/dev/whisper-models` in a debug build (`tauri dev`
+gets its own data dir, weights included, so a dev run downloads its own copy).
+Nothing else is written there, so deleting the directory is a clean uninstall
+(as is Remove in Settings). A download in flight is a `download-<pid>.tmp`
+alongside; a run killed mid-download leaves one behind and the next attempt
+sweeps it.
+
+| Layer | File |
+| --- | --- |
+| Settings section | `src/components/SettingsScreen/DictationSection/` |
+| IPC | `dictation_model_status` / `set_dictation_engine` / `dictation_model_download` / `dictation_model_remove` |
+| Event | `src/api/events.ts` — `dictation:model_progress` |
+| Catalog | `src-tauri/src/dictation/whisper/models.rs` |
+| Download | `src-tauri/src/dictation/whisper/install.rs`, on the shared `download::download_verified` |
+
+### Swapping the default model
+
+`src-tauri/src/dictation/whisper/models.rs` pins every candidate: file name,
+URL, SHA-256, and exact byte size. Nothing is discovered at runtime — the
+digest is the supply-chain boundary, and the size is both the progress total
+and the cheap installed check. To change what a fresh opt-in downloads:
+
+1. Open `https://huggingface.co/ggerganov/whisper.cpp/raw/main/<file>` — the
+   LFS pointer, not the file itself. Copy `oid sha256` and `size` verbatim.
+2. Add a `WhisperModel` entry to `MODELS` with those values, a `label`, and a
+   one-line `note` (both are display copy in Settings).
+3. Point `DEFAULT_MODEL_ID` at the new `id`.
+
+Users who already downloaded the old model keep it on disk; the new default is
+a fresh download. `size` is also where the "Downloads a 574 MB model once."
+copy comes from, so the UI can't drift from the pinned file.
+
 ## On-device vs Apple's servers
 
 The request sets `requiresOnDeviceRecognition` to whatever the recognizer

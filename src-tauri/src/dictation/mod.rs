@@ -17,15 +17,17 @@
 //! a platform check of its own.
 
 use serde::Serialize;
-use tauri::AppHandle;
-// Only the (Apple-gated) emitters below need the trait in scope.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-use tauri::Emitter;
+use tauri::{AppHandle, Emitter};
 
+use crate::database;
 use crate::error::Result;
+use crate::DbState;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
+// Compiles everywhere (the catalog and download are plain Rust); the engine
+// itself is gated inside. `pub` so `lib.rs` can seed the models root.
+pub mod whisper;
 
 /// A TCC (privacy) permission state, for either the microphone or speech
 /// recognition. Mirrors both `SFSpeechRecognizerAuthorizationStatus` and
@@ -103,7 +105,6 @@ struct StatePayload {
 
 /// Emit one event, logging (not propagating) failure — same posture as
 /// `supervisor::events`: no event is delivery-guaranteed.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
     if let Err(e) = app.emit(event, payload) {
         tracing::warn!(error = %e, event, "emit failed");
@@ -134,6 +135,110 @@ fn emit_state(app: &AppHandle, session: u64, state: State, error: Option<String>
             error,
         },
     );
+}
+
+/// The local engine's opt-in state, plus the one model it would use. Separate
+/// from [`Availability`], which describes the platform recognizer: this is the
+/// Settings section's contract, and both sides can be true at once (the engine
+/// is chosen, the weights are still downloading).
+#[derive(Clone, Serialize)]
+pub struct ModelStatus {
+    /// The `dictation_engine` setting selects the local engine.
+    enabled: bool,
+    /// The weights are on disk and verified, so the engine can load them.
+    installed: bool,
+    /// A download is running in this process; progress arrives as
+    /// `dictation:model_progress`.
+    downloading: bool,
+    model: ModelInfo,
+}
+
+/// The catalog entry Settings describes. `size` is the exact byte count, so
+/// every size string in the UI is derived rather than pinned in two places.
+#[derive(Clone, Serialize)]
+pub struct ModelInfo {
+    id: &'static str,
+    label: &'static str,
+    note: &'static str,
+    size: u64,
+}
+
+fn model_status(enabled: bool, install: whisper::install::Status) -> ModelStatus {
+    let model = whisper::models::default_model();
+    ModelStatus {
+        enabled,
+        installed: install.installed,
+        downloading: install.downloading,
+        model: ModelInfo {
+            id: model.id,
+            label: model.label,
+            note: model.note,
+            size: model.size,
+        },
+    }
+}
+
+fn engine_enabled(state: &tauri::State<'_, DbState>) -> bool {
+    let conn = state.lock();
+    whisper::parse_enabled(database::get_setting(&conn, whisper::ENGINE_SETTING).as_deref())
+}
+
+/// Where the local engine stands: the opt-in, the weights, and what a download
+/// would fetch. Cheap — a metadata stat, no hashing — so the Settings pane
+/// calls it on mount and after every action.
+#[tauri::command]
+pub fn dictation_model_status(state: tauri::State<'_, DbState>) -> ModelStatus {
+    model_status(engine_enabled(&state), whisper::install::status())
+}
+
+/// Choose the dictation engine. Persists `dictation_engine` (backend-owned
+/// snake_case key, so the renderer reads it as `s.dictation_engine`) and, when
+/// enabling without the weights on disk, kicks the download off in the
+/// background — the toggle can't await half a gigabyte. Same persist-then-act
+/// shape as `set_code_indexing_enabled`.
+///
+/// Turning it off leaves the weights alone; removing them is a separate,
+/// explicit action.
+#[tauri::command]
+pub fn set_dictation_engine(
+    enabled: bool,
+    app: AppHandle,
+    state: tauri::State<'_, DbState>,
+) -> Result<()> {
+    {
+        let conn = state.lock();
+        database::set_setting(
+            &conn,
+            whisper::ENGINE_SETTING,
+            if enabled {
+                whisper::ENGINE_WHISPER
+            } else {
+                whisper::ENGINE_APPLE
+            },
+        )?;
+    }
+    if enabled {
+        whisper::install::download(app);
+    }
+    Ok(())
+}
+
+/// Retry a failed or never-started model download. Returns immediately with
+/// the state the call left things in; a download already running (or an
+/// already-installed model) makes it a no-op.
+#[tauri::command]
+pub fn dictation_model_download(app: AppHandle, state: tauri::State<'_, DbState>) -> ModelStatus {
+    let install = whisper::install::download(app);
+    model_status(engine_enabled(&state), install)
+}
+
+/// Delete the downloaded weights. The caller is expected to turn the engine off
+/// first — an enabled engine with no model would fall back to the platform
+/// recognizer, but silently.
+#[tauri::command]
+pub fn dictation_model_remove(state: tauri::State<'_, DbState>) -> ModelStatus {
+    let install = whisper::install::remove();
+    model_status(engine_enabled(&state), install)
 }
 
 /// Whether dictation works here, and what permissions stand in the way. Cheap

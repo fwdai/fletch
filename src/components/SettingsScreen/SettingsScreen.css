@@ -756,6 +756,55 @@
   background: var(--bg-2);
 }
 
+/* ── DICTATION ───────────────────────────────────────────────────────── */
+/* The local-engine model row: a status line with the one action that applies,
+   plus the download bar. Sits under its toggle row like `.set-sandbox-warn`. */
+.set-dict {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+.set-dict-head {
+  gap: 10px;
+}
+.set-dict-status {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+.set-dict-status.err {
+  color: var(--danger);
+}
+.set-dict-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bd);
+  overflow: hidden;
+}
+.set-dict-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.3s var(--ease);
+}
+/* No Content-Length (or no event yet), so there's no percentage to show. */
+.set-dict-bar.indet i {
+  width: 40%;
+  animation: set-dict-indet 1.2s var(--ease) infinite;
+}
+@keyframes set-dict-indet {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
 /* ── quick-popover "All settings" footer button ──────────────────────── */
 .sp-allbtn {
   gap: 9px;

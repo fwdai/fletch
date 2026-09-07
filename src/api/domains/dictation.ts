@@ -1,5 +1,9 @@
 import { invoke } from "../invoke";
-import type { DictationAvailability, DictationSessionId } from "../types/dictation";
+import type {
+  DictationAvailability,
+  DictationModelStatus,
+  DictationSessionId,
+} from "../types/dictation";
 
 export const dictationApi = {
   /** Whether native dictation exists on this platform and what the user has
@@ -24,4 +28,19 @@ export const dictationApi = {
    *  and only `stopped` arrives — so treat `stopped` as the point to commit
    *  whatever text was last received. No-op when not listening. */
   dictationStop: () => invoke<void>("dictation_stop"),
+
+  /** The local (Whisper) engine's opt-in plus the state of its weights. Cheap
+   *  — a metadata stat — so the Settings pane calls it on mount. */
+  dictationModelStatus: () => invoke<DictationModelStatus>("dictation_model_status"),
+  /** Pick the dictation engine. Persists `dictation_engine` and, when enabling
+   *  without the weights on disk, starts the download in the background —
+   *  resolves immediately either way, with progress arriving via
+   *  `onDictationModelProgress`. Backend-owned, like `setCodeIndexingEnabled`. */
+  setDictationEngine: (enabled: boolean) => invoke<void>("set_dictation_engine", { enabled }),
+  /** Retry a failed (or never-started) model download. Resolves at once with
+   *  the state the call left things in; a no-op while one is already running. */
+  dictationModelDownload: () => invoke<DictationModelStatus>("dictation_model_download"),
+  /** Delete the downloaded weights. Turn the engine off first — an enabled
+   *  engine with no model silently falls back to the platform recognizer. */
+  dictationModelRemove: () => invoke<DictationModelStatus>("dictation_model_remove"),
 };
