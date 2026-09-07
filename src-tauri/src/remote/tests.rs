@@ -727,6 +727,32 @@ async fn bad_pairing_token_closes_4003() {
     assert!(host.state.status().devices.is_empty());
 }
 
+/// Registered before the handshake has to mean reachable during it: turning
+/// remote access off while a socket is still handshaking closes it with 4004
+/// right away, not after the handshake finishes (or its 10 s timeout fires),
+/// when a `pair` or `hello` that was already buffered could otherwise have
+/// been authenticated first.
+#[tokio::test]
+async fn disabling_during_the_handshake_closes_4004_at_once() {
+    let host = boot();
+    let phone = device();
+    let mut ws = connect_plain(host.port).await;
+    let mut handshake = secure::initiator(&phone.private).unwrap();
+    let mut buf = [0u8; 65535];
+    let n = handshake.write_message(&[], &mut buf).unwrap();
+    ws.send(Message::Binary(Bytes::copy_from_slice(&buf[..n])))
+        .await
+        .unwrap();
+    // Message 2 arrives: the host is now parked waiting for message 3.
+    let _second = next_binary(&mut ws).await;
+
+    host.state.stop();
+    let code = tokio::time::timeout(Duration::from_secs(2), close_code(&mut ws))
+        .await
+        .expect("closed at once, not after the handshake timeout");
+    assert_eq!(code, 4004);
+}
+
 #[tokio::test]
 async fn disabling_remote_access_closes_live_connections_4004() {
     let host = boot();

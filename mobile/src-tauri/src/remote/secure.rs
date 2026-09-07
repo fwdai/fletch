@@ -39,21 +39,38 @@ pub struct DeviceKey {
 
 impl DeviceKey {
     /// Read `<dir>/device_key`, or generate and persist one on first use.
+    ///
+    /// Same rule as the host's key file (protocol doc, "Secure channel"): only
+    /// a *missing* file means a new identity. A file of the wrong length, or
+    /// one that cannot be read, is an error the user sees — regenerating would
+    /// silently invalidate every pairing this phone has, and a transient read
+    /// failure must not cost the identity. The write is atomic (temp file,
+    /// 0600, rename), so a crash mid-write leaves no partial key behind to be
+    /// mistaken for corruption on the next launch.
     pub fn load_or_create(dir: &Path) -> Result<Self, String> {
         let path: PathBuf = dir.join(KEY_FILE);
         let private = match std::fs::read(&path) {
             Ok(bytes) if bytes.len() == KEY_LEN => bytes,
-            // A file of the wrong length is not a key; replacing it costs a
-            // re-pair, which is the only recovery anyway.
-            Ok(_) | Err(_) => {
+            Ok(_) => {
+                return Err(format!(
+                    "the device key at {} is not a {KEY_LEN}-byte key; delete it to start over \
+                     (every host will need pairing again)",
+                    path.display()
+                ))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let keys = Builder::new(PATTERN.parse().map_err(|e| format!("{e}"))?)
                     .generate_keypair()
                     .map_err(|e| format!("cannot generate a device key: {e}"))?;
                 std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-                std::fs::write(&path, &keys.private)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                restrict(&path);
+                write_atomically(&path, &keys.private)?;
                 keys.private
+            }
+            Err(e) => {
+                return Err(format!(
+                    "the device key at {} could not be read: {e}",
+                    path.display()
+                ))
             }
         };
         let public = public_of(&private)?;
@@ -63,6 +80,15 @@ impl DeviceKey {
     pub fn public_base64(&self) -> String {
         b64(&self.public)
     }
+}
+
+/// Temp file, owner-only, then rename over the target: the key is never
+/// half-written and never briefly world-readable.
+fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    restrict(&tmp);
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(unix)]
@@ -283,6 +309,27 @@ mod tests {
         // base64url of 32 bytes, unpadded.
         assert_eq!(first.len(), 43);
         assert!(!first.contains('=') && !first.contains('+') && !first.contains('/'));
+    }
+
+    #[test]
+    fn a_corrupt_key_file_is_an_error_not_a_new_identity() {
+        let dir = std::env::temp_dir().join(format!("fletch-corrupt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(KEY_FILE), b"not a key").unwrap();
+
+        // No `Debug` on a private key, so no `unwrap_err`.
+        let err = match DeviceKey::load_or_create(&dir) {
+            Ok(_) => panic!("a corrupt key file must not load"),
+            Err(e) => e,
+        };
+        assert!(err.contains("not a 32-byte key"), "{err}");
+        assert_eq!(
+            std::fs::read(dir.join(KEY_FILE)).unwrap(),
+            b"not a key",
+            "left in place for the user to delete deliberately"
+        );
+        assert!(!dir.join("device_key.tmp").exists());
     }
 
     #[test]

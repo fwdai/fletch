@@ -50,9 +50,13 @@ ciphertext.
   use and keeps the 32-byte private key at `<app_data_dir>/remote/host_key`
   (mode 0600). The phone generates a device keypair on first use and keeps it
   in its own app data dir. Private keys never leave the device that made them.
-  There are no tokens. A `host_key` file of the wrong length is an error that
-  `remote_status.error` reports, not a silent regeneration: regenerating would
+  There are no tokens. Both key files follow one rule: only a *missing* file
+  means a new identity. A file of the wrong length, or one that cannot be read,
+  is an error the user sees (`remote_status.error` on the host, the connection
+  error on the phone), never a silent regeneration, because regenerating would
   invalidate every pairing. Deleting the file is the deliberate way to do that.
+  Writes are atomic (temp file, 0600, rename), so a crash mid-write cannot
+  leave a partial key to be mistaken for corruption.
 - The **host ID** is the host's public key, base64url without padding
   (43 characters). It is what the pairing link carries and what the relay will
   route on.

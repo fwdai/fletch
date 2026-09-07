@@ -148,21 +148,19 @@ pub(super) async fn serve<S: WsTransport>(
     mut ws: S,
     peer: SocketAddr,
 ) -> Option<S> {
-    let (close_tx, close_rx) = mpsc::channel::<CloseRequest>(1);
+    let (close_tx, mut close_rx) = mpsc::channel::<CloseRequest>(1);
     // Registered before the first frame — before the Noise handshake, even — so
     // turning remote access off closes a socket that is still handshaking
     // rather than leaving it free to pair against a stopped listener. The guard
     // deregisters the session when it drops, which is every way out of here.
     let session = state.sessions().register(close_tx.clone());
 
-    let secured = match open_channel(&state, &mut ws, peer).await {
-        Some(secured) => secured,
-        None => {
+    let secured = match open_channel(&state, &mut ws, &mut close_rx, peer).await {
+        Ok(secured) => secured,
+        Err(refusal) => {
             // The channel never came up, so there is nothing to encrypt with
             // and the close frame is the last plaintext this socket sees.
-            let _ = ws
-                .send(close_frame(CLOSE_BAD_FIRST_FRAME, "handshake failed"))
-                .await;
+            let _ = ws.send(refusal).await;
             let _ = ws.close().await;
             return Some(ws);
         }
@@ -201,30 +199,54 @@ struct Secured {
     remote_static: [u8; 32],
 }
 
-/// Run the responder's half of the Noise handshake. `None` means close 4001.
+/// Run the responder's half of the Noise handshake. `Err` carries the close
+/// frame to send in the clear: 4001 for a handshake that failed or timed out,
+/// or whatever the host asked for if it hung up mid-handshake.
+///
+/// A close request preempts the handshake, exactly as it preempts everything
+/// after it (see the `biased` select in `read_loop`): the session is registered
+/// before the handshake starts so that disabling remote access reaches a socket
+/// that is still handshaking, and that only holds if the handshake actually
+/// listens for the request. Without this, the request would sit queued until
+/// the handshake finished and could lose the race to a `pair` or `hello` that
+/// was already buffered — authenticating a device after the user turned the
+/// surface off.
 async fn open_channel<S: WsTransport>(
     state: &Arc<RemoteState>,
     ws: &mut S,
+    close_rx: &mut mpsc::Receiver<CloseRequest>,
     peer: SocketAddr,
-) -> Option<Secured> {
+) -> std::result::Result<Secured, Message> {
+    let refused = || close_frame(CLOSE_BAD_FIRST_FRAME, "handshake failed");
     let Some(host) = state.host_key() else {
         // No host identity to answer with: the remote dir is unusable, which is
         // already standing in `RemoteStatus::error`.
         tracing::warn!(%peer, "remote: no host key, refusing the connection");
-        return None;
+        return Err(refused());
     };
-    match tokio::time::timeout(HANDSHAKE_TIMEOUT, secure::respond(ws, host)).await {
-        Ok(Ok((channel, remote_static))) => Some(Secured {
-            channel: Arc::new(Mutex::new(channel)),
-            remote_static,
-        }),
-        Ok(Err(e)) => {
-            tracing::debug!(error = %e, %peer, "remote: noise handshake failed");
-            None
+    tokio::select! {
+        biased;
+        request = close_rx.recv() => {
+            tracing::debug!(%peer, "remote: hung up during the handshake");
+            // Backpressure (`None`) cannot happen before the outbox exists, so
+            // a request without a reason can only be the channel closing under
+            // us; treat it like disable, which is the only pre-auth hang-up.
+            let reason = request.flatten().unwrap_or(super::session::CLOSE_DISABLED);
+            Err(close_frame(CloseCode::Library(reason.code), reason.reason))
         }
-        Err(_) => {
-            tracing::debug!(%peer, "remote: noise handshake timed out");
-            None
+        outcome = tokio::time::timeout(HANDSHAKE_TIMEOUT, secure::respond(ws, host)) => match outcome {
+            Ok(Ok((channel, remote_static))) => Ok(Secured {
+                channel: Arc::new(Mutex::new(channel)),
+                remote_static,
+            }),
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, %peer, "remote: noise handshake failed");
+                Err(refused())
+            }
+            Err(_) => {
+                tracing::debug!(%peer, "remote: noise handshake timed out");
+                Err(refused())
+            }
         }
     }
 }
@@ -364,6 +386,12 @@ async fn read_loop<S: WsTransport>(
 
     loop {
         tokio::select! {
+            // A pending close wins over anything else that is ready. Otherwise
+            // a `pair` or `hello` that was already buffered when the host hung
+            // up could be authenticated first, and a revoked or disabled device
+            // would get one more authenticated round trip. `biased` makes the
+            // arms below a priority order, not a lottery.
+            biased;
             request = close_rx.recv() => {
                 // The host is hanging up: remote access was disabled, this
                 // device was revoked, or the outbound queue backed up (which
