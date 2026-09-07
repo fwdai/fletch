@@ -197,6 +197,46 @@ silence at the head or tail of a real utterance.
 Empty text emits **no** `dictation:transcript` — only the terminal `stopped` —
 so a mistimed press leaves the composer exactly as it was.
 
+### Hands-free: auto-stop
+
+On the local engine a session ends itself once the user has spoken and then
+gone quiet, so dictating is one click rather than two. Apple's recognizer is
+untouched — it streams results and manages its own end-of-utterance, and there
+is no PCM buffer on that path to measure.
+
+The detector is a handful of atomics on the capture buffer, updated by the tap
+on the render thread. Each buffer's RMS is computed in the same pass that
+averages the channels (the samples are already in registers), and counts as
+speech when it clears `max(3 × noise floor, MIN_RMS)`. The noise floor is the
+running *minimum* of buffer RMS, clamped to `NOISE_FLOOR_MIN`: a laptop's
+built-in mic and a hot USB interface differ by more than an order of magnitude
+in what "a quiet room" measures, so a fixed threshold would either stop
+mid-sentence on one or never trigger on the other. The absolute bound is
+`engine::MIN_RMS`, the same threshold the [silence gate](#the-silence-gate)
+uses — audio too quiet to transcribe isn't worth holding a session open for.
+
+One tokio task per whisper session polls those atomics every
+`SILENCE_POLL` (100 ms) and stops on whichever comes first:
+
+| Constant | Value | Ends the session when |
+| --- | --- | --- |
+| `SILENCE_STOP` | 2 s | Something was said, and nothing has been since |
+| `NO_SPEECH_TIMEOUT` | 10 s | Nothing was ever said — clicked the mic, walked away |
+
+The second case stops with no transcript at all: the clip has no speech in it,
+so the gate answers empty and only `stopped` is emitted. The stop itself goes
+through the same path a second click takes (`stop_session`), so
+`transcribing` → transcript → `stopped` arrive in the usual order and the
+frontend needs nothing new.
+
+The monitor is scoped to its session's generation at both ends. It exits as
+soon as its buffer is marked closed — `Sink::cancel`, which every teardown runs
+— and the stop it issues names its own generation, so a monitor that wakes up
+after the user already stopped can't cut the *next* session short.
+
+There is no Settings toggle yet. The three constants are the whole policy, so
+an opt-out would gate the monitor rather than change them.
+
 ### `transcribing`, and the model's lifetime
 
 Apple's recognizer streams revisions while the user speaks; whisper.cpp has
