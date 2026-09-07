@@ -5,7 +5,9 @@ import { Select } from "@/components/ui/Select";
 import { ACCENTS, mcpCapableLabels } from "@/data/providers";
 import type { SandboxEngine, ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { IS_MAC } from "@/util/platform";
 import { ContainerAuth } from "./ContainerAuth";
+import { DictationSection } from "./DictationSection";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 // A container runtime can start or stop while this pane stays open, so we
@@ -189,6 +191,10 @@ export function GeneralPane() {
           />
         </SetRow>
       </SetGroup>
+
+      {/* The engine this replaces is Apple's, so there is nothing to choose
+          from anywhere else. */}
+      {IS_MAC && <DictationSection />}
 
       <SetGroup label="Sandbox">
         <SetRow

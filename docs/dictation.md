@@ -71,6 +71,17 @@ The failure mode when this doesn't reach `codesign` is quiet: dev builds work,
 the notarized app lights the mic and transcribes silence. If dictation returns
 an empty transcript only in a released build, check the entitlement first.
 
+## On-device vs Apple's servers
+
+The request sets `requiresOnDeviceRecognition` to whatever the recognizer
+reports as `supportsOnDeviceRecognition()`. Where that is true (a supported
+locale on Apple Silicon, with the assets downloaded) **no audio leaves the
+machine**. Where it is false, recognition is server-backed and Apple caps a
+session at roughly a minute, after which the recognizer ends it itself — the
+composer sees the ordinary final transcript and `stopped`, so a long dictation
+simply stops rather than breaking. `dictation_availability` reports which mode
+this machine is in as `on_device`.
+
 ## Local Whisper engine (opt-in)
 
 Settings › General › Dictation offers a second engine: whisper.cpp running
@@ -124,18 +135,7 @@ Users who already downloaded the old model keep it on disk; the new default is
 a fresh download. `size` is also where the "Downloads a 574 MB model once."
 copy comes from, so the UI can't drift from the pinned file.
 
-## On-device vs Apple's servers
-
-The request sets `requiresOnDeviceRecognition` to whatever the recognizer
-reports as `supportsOnDeviceRecognition()`. Where that is true (a supported
-locale on Apple Silicon, with the assets downloaded) **no audio leaves the
-machine**. Where it is false, recognition is server-backed and Apple caps a
-session at roughly a minute, after which the recognizer ends it itself — the
-composer sees the ordinary final transcript and `stopped`, so a long dictation
-simply stops rather than breaking. `dictation_availability` reports which mode
-this machine is in as `on_device`.
-
-## The local engine
+### How a session runs on it
 
 Opting in to whisper.cpp in Settings replaces the recognizer, not the mic:
 `apple.rs` still opens the `AVAudioEngine` and installs the tap, and the
