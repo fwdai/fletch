@@ -45,7 +45,8 @@ export function App() {
   const nav = useStore((s) => s.nav);
   const sheet = useStore((s) => s.sheet);
   const closeSheet = useStore((s) => s.closeSheet);
-  const deviceToken = useStore((s) => s.deviceToken);
+  // Paired means "we hold the host's key": there is no other credential.
+  const hostKey = useStore((s) => s.hostKey);
 
   useEffect(() => {
     void init();
@@ -61,7 +62,7 @@ export function App() {
 
   return (
     <div className={`m-app theme-${resolved}`}>
-      {!ready ? null : deviceToken ? (
+      {!ready ? null : hostKey ? (
         <>
           <div className={`stack${dimmed ? " dimmed" : ""}`}>
             {nav.map((item) => {

@@ -15,7 +15,7 @@ import {
   mockEnabled,
 } from "../remote";
 import { registerRemoteEvents } from "./events";
-import { clearCredentials, loadSettings, saveSettings } from "./persist";
+import { clearHost, loadSettings, saveSettings } from "./persist";
 import { applyUserTurns, reduceRecords } from "./transcript";
 
 export const client = createClient();
@@ -43,7 +43,9 @@ export interface MobileState {
   connection: ConnectionState;
   connectionError: string | null;
   hostInfo: HostInfo | null;
-  deviceToken: string | null;
+  /** The paired host's public key — pinned on first contact, and what makes
+   *  the app paired at all. */
+  hostKey: string | null;
 
   workspace: Workspace | null;
   logs: Record<string, ChatItem[]>;
@@ -158,7 +160,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   connection: "disconnected",
   connectionError: null,
   hostInfo: null,
-  deviceToken: null,
+  hostKey: null,
 
   workspace: null,
   logs: {},
@@ -199,19 +201,21 @@ export const useStore = create<MobileState>()((set, get) => ({
     const saved = await loadSettings();
     set({ ready: true, theme: saved.theme ?? "dark" });
     if (mockEnabled()) {
-      // The mock host has no pairing step worth clicking through every reload.
-      set({ deviceToken: "mock" });
-      await get().connect({ host: "mock", port: DEFAULT_PORT, deviceToken: "mock" }).catch(ignore);
+      // The mock host has no pairing step worth clicking through every reload;
+      // its fixed key is pinned by `connect` like any other.
+      await get().connect({ host: "mock", port: DEFAULT_PORT }).catch(ignore);
       return;
     }
-    if (saved.host && saved.deviceToken) {
-      set({ deviceToken: saved.deviceToken });
+    // A saved host key is the whole credential: `hello` authenticates with the
+    // device key the Rust layer holds.
+    if (saved.host && saved.hostKey) {
+      set({ hostKey: saved.hostKey });
       await get()
         .connect({
           host: saved.host,
           port: saved.port ?? DEFAULT_PORT,
           name: saved.hostName,
-          deviceToken: saved.deviceToken,
+          hostKey: saved.hostKey,
         })
         .catch(ignore);
     }
@@ -219,16 +223,16 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async connect(target) {
     // The client owns the target from here: it strips the spent pairing token
-    // and keeps the minted device token for its own reconnects.
+    // and pins the host key the handshake authenticated.
     set({ connectionError: null });
     try {
       const snapshot = await client.connect(target);
-      // After a `pair` handshake the client holds the freshly minted token.
-      const deviceToken = client.deviceToken ?? target.deviceToken ?? get().deviceToken;
+      // Either the key the target carried, or the one just pinned.
+      const hostKey = client.hostKey ?? target.hostKey ?? get().hostKey;
       set({
         hostInfo: snapshot.host,
         workspace: snapshot.workspace,
-        deviceToken,
+        hostKey,
         nav: [{ key: Date.now(), screen: "home", props: {}, phase: "idle" }],
       });
       // Mock mode must not leave a "mock" host behind for the next real run.
@@ -237,7 +241,7 @@ export const useStore = create<MobileState>()((set, get) => ({
           host: target.host,
           port: target.port,
           hostName: snapshot.host.name,
-          ...(deviceToken ? { deviceToken } : {}),
+          ...(hostKey ? { hostKey } : {}),
         });
       }
       if (!snapshot.workspace) await get().refreshWorkspace();
@@ -259,9 +263,9 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async unpair() {
     client.disconnect();
-    await clearCredentials();
+    await clearHost();
     set({
-      deviceToken: null,
+      hostKey: null,
       workspace: null,
       hostInfo: null,
       logs: {},

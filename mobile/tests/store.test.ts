@@ -3,6 +3,7 @@
 // vite.config.ts puts this file in mock mode (see `mockEnabled`).
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { PENDING_REQUEST_ID, PENDING_TOOL_USE_ID } from "../src/remote/mock/fixtures";
 import { agentOf, api, useStore } from "../src/store";
 
@@ -14,6 +15,10 @@ beforeAll(async () => {
 });
 
 describe("connection and snapshot", () => {
+  it("pins the host key the transport reports — which is what paired means", () => {
+    expect(state().hostKey).toBe(MOCK_HOST_KEY);
+  });
+
   it("hello carries the host identity and the workspace", () => {
     expect(state().hostInfo?.name).toBe("Alex's MacBook Pro");
     expect(state().workspace?.projects.map((p) => p.name)).toEqual(["fletch", "atlas"]);

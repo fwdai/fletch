@@ -21,6 +21,10 @@ export interface RemoteStatus {
   enabled: boolean;
   listening: boolean;
   port: number;
+  /** This host's Noise static public key, base64url without padding (43
+   *  chars) — the identity the pairing link carries and the phone pins. Empty
+   *  only when the key could not be created, which `error` then explains. */
+  hostId: string;
   /** Every IPv4 a phone could dial, best candidate (LAN) first. */
   addresses: string[];
   devices: RemoteDevice[];
@@ -33,7 +37,8 @@ export interface RemoteStatus {
 /** A minted pairing code: 8 characters from `A-Z2-9`, single use, five minutes. */
 export interface PairingInvite {
   token: string;
-  /** `fletch://pair?host=…&port=…&token=…&name=…` — what the QR encodes. */
+  /** `fletch://pair?host=…&addr=…&token=…&name=…` — what the QR encodes.
+   *  `host` is the host ID (the public key), `addr` the `ip:port` to dial. */
   url: string;
   /** RFC3339. */
   expiresAt: string;

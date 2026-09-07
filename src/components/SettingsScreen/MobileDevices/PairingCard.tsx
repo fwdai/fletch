@@ -23,16 +23,22 @@ function useCountdown(iso: string): number {
   return left;
 }
 
-/** The live pairing code: readable text for manual entry (v1 phones have no
+/** The live pairing code: readable text for manual entry (v2 phones have no
  *  scanner) plus the same `fletch://pair` deep link as a QR for the ones that
  *  do. Single use and five minutes, so the countdown is part of the affordance
- *  rather than decoration. */
+ *  rather than decoration.
+ *
+ *  The host ID under it is this Mac's public key. The QR carries it, so a
+ *  scanned pairing authenticates the host outright; a hand-typed one pins
+ *  whatever key it meets, and this is the string to check it against. */
 export function PairingCard({
   invite,
+  hostId,
   onRegenerate,
   onDismiss,
 }: {
   invite: PairingInvite;
+  hostId?: string;
   onRegenerate: () => void;
   onDismiss: () => void;
 }) {
@@ -63,6 +69,7 @@ export function PairingCard({
             Done
           </Button>
         </div>
+        {hostId && <div className="set-pair-host mono text-xs">host {hostId}</div>}
       </div>
       {!expired && (
         <div className="set-pair-qr">

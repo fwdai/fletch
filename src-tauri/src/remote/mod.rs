@@ -6,14 +6,16 @@
 //! the same supervisor/service functions the commands call and the phone can
 //! reuse the desktop's TypeScript DTOs unchanged.
 //!
-//! Layout: `auth` owns the two credentials, `server` the WebSocket listener,
+//! Layout: `secure` owns the Noise channel and the host identity, `auth` the
+//! pairing codes and the device registry, `server` the WebSocket listener,
 //! `session` the live-connection registry, `dispatch` the op allowlist,
-//! `events` the Tauri event taps. This module owns the state those five share
+//! `events` the Tauri event taps. This module owns the state those six share
 //! and the listener's lifecycle.
 
 mod auth;
 mod dispatch;
 mod events;
+mod secure;
 mod server;
 mod session;
 #[cfg(test)]
@@ -22,6 +24,7 @@ mod tests;
 pub use auth::{DeviceStore, PairingTokens};
 pub use dispatch::{Dispatch, DispatchResult, SupervisorDispatch};
 pub use events::install_taps;
+pub use secure::HostKey;
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -91,6 +94,10 @@ pub struct RemoteStatus {
     pub enabled: bool,
     pub listening: bool,
     pub port: u16,
+    /// This host's public key, base64url without padding — the identity the
+    /// pairing link carries and the phone pins. Empty only when the key could
+    /// not be created, which `error` explains.
+    pub host_id: String,
     /// Every address a phone could reach this host on, best candidate first.
     pub addresses: Vec<String>,
     pub devices: Vec<RemoteDevice>,
@@ -130,6 +137,12 @@ struct ServerHandle {
 pub struct RemoteState {
     dispatch: Arc<dyn Dispatch>,
     devices: Arc<DeviceStore>,
+    /// This host's static Noise identity, loaded (or created) once. `None` only
+    /// when the remote dir is unusable — the same condition the device store
+    /// reports — in which case `host_error` explains it and no connection can
+    /// be served, because there is no identity to handshake with.
+    host: Option<HostKey>,
+    host_error: Option<String>,
     pairing: PairingTokens,
     events: broadcast::Sender<Arc<str>>,
     /// Every live connection, so `RemoteDevice::connected` is a fact about
@@ -139,18 +152,29 @@ pub struct RemoteState {
 }
 
 impl RemoteState {
-    /// Build the state, loading `devices.json` from `<dir>` (which is
-    /// `<app_data_dir>/remote`). Does not start the listener.
+    /// Build the state, loading `devices.json` and `host_key` from `<dir>`
+    /// (which is `<app_data_dir>/remote`), creating the host key on first use.
+    /// Does not start the listener.
     ///
     /// Infallible on purpose: this is Tauri managed state, and a state that is
     /// not managed turns `remote_status` — which Settings calls on open — into
-    /// a panic. An unusable device store instead reports itself through
-    /// `RemoteStatus::error` and refuses to pair.
+    /// a panic. An unusable remote dir instead reports itself through
+    /// `RemoteStatus::error` and refuses to pair; a host key that cannot be
+    /// written gets the same treatment, since it is the same failure.
     pub fn new(dir: &std::path::Path, dispatch: Arc<dyn Dispatch>) -> Arc<Self> {
         let (events, _) = broadcast::channel(EVENT_BUFFER);
+        let (host, host_error) = match HostKey::load(dir) {
+            Ok(host) => (Some(host), None),
+            Err(e) => {
+                tracing::error!(error = %e, "remote: host key unavailable");
+                (None, Some(e.to_string()))
+            }
+        };
         Arc::new(Self {
             dispatch,
             devices: Arc::new(DeviceStore::load(dir)),
+            host,
+            host_error,
             pairing: PairingTokens::new(),
             events,
             sessions: Arc::new(Sessions::new()),
@@ -164,6 +188,17 @@ impl RemoteState {
 
     pub fn devices(&self) -> &Arc<DeviceStore> {
         &self.devices
+    }
+
+    /// The host ID: this host's public key, base64url without padding. Empty
+    /// when the key could not be created, which `status().error` explains.
+    pub fn host_id(&self) -> String {
+        self.host.as_ref().map(HostKey::host_id).unwrap_or_default()
+    }
+
+    /// The identity `server` handshakes with. `None` closes the connection.
+    fn host_key(&self) -> Option<&HostKey> {
+        self.host.as_ref()
     }
 
     pub fn pairing(&self) -> &PairingTokens {
@@ -227,6 +262,7 @@ impl RemoteState {
             enabled: inner.enabled,
             listening: inner.server.is_some(),
             port: inner.server.as_ref().map_or(inner.port, |h| h.port),
+            host_id: self.host_id(),
             addresses: candidate_addresses(),
             devices: self
                 .devices
@@ -241,7 +277,13 @@ impl RemoteState {
                     last_seen_at: d.last_seen_at,
                 })
                 .collect(),
-            error: self.devices.storage_error(),
+            // Both are "the remote dir is unusable", and either one blocks
+            // pairing. The device store's is reported first because it is the
+            // retryable one.
+            error: self
+                .devices
+                .storage_error()
+                .or_else(|| self.host_error.clone()),
         }
     }
 
@@ -257,8 +299,15 @@ impl RemoteState {
             .into_iter()
             .next()
             .unwrap_or_else(|| "127.0.0.1".to_string());
+        // `host` is the identity (the public key) and `addr` merely the best
+        // way to reach it right now — which is what lets the relay add other
+        // ways later without changing who the phone thinks it is talking to.
+        // The colon in `addr` is left literal, as the doc writes it; the values
+        // around it are an IPv4 literal, a port, an 8-character code and a
+        // machine name.
         let url = format!(
-            "fletch://pair?host={}&port={}&token={}&name={}",
+            "fletch://pair?host={}&addr={}:{}&token={}&name={}",
+            urlencode(&self.host_id()),
             urlencode(&addr),
             port,
             urlencode(&minted.token),
@@ -273,12 +322,12 @@ impl RemoteState {
 
     /// Revoke a device and hang up on it.
     ///
-    /// Credential first, socket second: in that order a connection that is
-    /// authenticating right now either fails `verify`, or registers itself and
-    /// then finds itself gone from the store (see `server::read_loop`) — there
-    /// is no interleaving that leaves an authorized socket behind.
+    /// Record first, socket second: in that order a connection that is
+    /// authenticating right now either fails `find_by_key`, or registers itself
+    /// and then finds itself gone from the store (see `server::read_loop`) —
+    /// there is no interleaving that leaves an authorized socket behind.
     ///
-    /// The hang-up does not depend on the disk write. The in-memory credential
+    /// The hang-up does not depend on the disk write. The in-memory record
     /// is gone the moment `revoke` returns, whether or not `devices.json` could
     /// be rewritten, so the live socket is closed either way and only then is
     /// a persistence error reported. That error is also kept on the store

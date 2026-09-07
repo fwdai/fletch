@@ -1,35 +1,38 @@
 import { useState } from "react";
 import { Icon } from "../../components/Icon";
-import { DEFAULT_PORT, parsePairUrl } from "../../remote";
+import { parseAddress, parsePairUrl } from "../../remote";
 import { useStore } from "../../store";
 import { Wordmark } from "../Home/Wordmark";
 
-/** Manual pairing: host, port and the one-time token from the desktop's
- *  Settings → Mobile devices. A pasted `fletch://pair?…` URL fills all three
- *  (QR scanning is out of scope for v1). */
+/** Manual pairing: the host's address and the one-time code from the desktop's
+ *  Settings → Mobile devices. A pasted `fletch://pair?…` link fills both and
+ *  brings the host's public key with it, which is what authenticates the Mac;
+ *  hand-typed entry has no key and pins the one it meets on first contact
+ *  (docs/remote-protocol.md, "Secure channel"). */
 export function PairScreen() {
   const connect = useStore((s) => s.connect);
   const connection = useStore((s) => s.connection);
   const error = useStore((s) => s.connectionError);
-  const [host, setHost] = useState("");
-  const [port, setPort] = useState(String(DEFAULT_PORT));
+  const [address, setAddress] = useState("");
   const [token, setToken] = useState("");
+  const [hostKey, setHostKey] = useState<string | undefined>(undefined);
   const busy = connection === "connecting" || connection === "pairing";
+  const parsed = parseAddress(address);
 
   /** Anything pasted into a field may be the whole deep link. */
   const absorb = (value: string, fallback: (v: string) => void) => {
-    const parsed = parsePairUrl(value);
-    if (!parsed) return fallback(value);
-    setHost(parsed.host);
-    setPort(String(parsed.port));
-    if (parsed.pairingToken) setToken(parsed.pairingToken);
+    const link = /^fletch:/i.test(value.trim()) ? parsePairUrl(value) : null;
+    if (!link) return fallback(value);
+    setAddress(`${link.host}:${link.port}`);
+    setHostKey(link.hostKey);
+    if (link.pairingToken) setToken(link.pairingToken);
   };
 
   const submit = () => {
-    if (!host.trim() || !token.trim()) return;
+    if (!parsed || !token.trim()) return;
     void connect({
-      host: host.trim(),
-      port: Number(port) || DEFAULT_PORT,
+      ...parsed,
+      hostKey,
       pairingToken: token.trim().toUpperCase(),
     }).catch(() => {});
   };
@@ -45,24 +48,16 @@ export function PairScreen() {
         </p>
       </div>
       <div className="field">
-        <label htmlFor="pair-host">Host</label>
-        <div className="grid">
-          <input
-            id="pair-host"
-            value={host}
-            placeholder="192.168.1.24"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-            onChange={(e) => absorb(e.target.value, setHost)}
-          />
-          <input
-            value={port}
-            inputMode="numeric"
-            aria-label="Port"
-            onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
-          />
-        </div>
+        <label htmlFor="pair-host">Address</label>
+        <input
+          id="pair-host"
+          value={address}
+          placeholder="192.168.1.24:47285"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          onChange={(e) => absorb(e.target.value, setAddress)}
+        />
       </div>
       <div className="field">
         <label htmlFor="pair-token">Pairing code</label>
@@ -80,7 +75,7 @@ export function PairScreen() {
       <button
         type="button"
         className="btn primary block"
-        disabled={busy || !host.trim() || !token.trim()}
+        disabled={busy || !parsed || !token.trim()}
         onClick={submit}
       >
         <Icon name="laptop" size={17} />
@@ -88,7 +83,7 @@ export function PairScreen() {
       </button>
       <div className="hint">
         The code is valid for five minutes and can be used once. Everything stays on your network —
-        there is no relay in this version.
+        there is no relay in this version — and the link is end-to-end encrypted.
       </div>
     </div>
   );
