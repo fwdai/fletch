@@ -54,7 +54,10 @@ use tauri::Manager;
 use crate::supervisor::Supervisor;
 use crate::workspace::WorkspaceManager;
 
-type DbState = Arc<Mutex<Connection>>;
+/// The managed DB handle every command that reads or writes settings asks for.
+/// `pub(crate)` because those commands don't all live here (see
+/// `dictation::dictation_model_status`).
+pub(crate) type DbState = Arc<Mutex<Connection>>;
 
 /// The app's bundle identifier. Must match `identifier` in `tauri.conf.json`;
 /// macOS derives the app's on-disk folder names from it.
@@ -1915,6 +1918,10 @@ pub fn run() {
             dictation::dictation_availability,
             dictation::dictation_start,
             dictation::dictation_stop,
+            dictation::dictation_model_status,
+            dictation::set_dictation_engine,
+            dictation::dictation_model_download,
+            dictation::dictation_model_remove,
         ])
         .build(tauri::generate_context!())
         .expect("error while building fletch")

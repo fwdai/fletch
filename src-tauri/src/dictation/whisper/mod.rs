@@ -1,5 +1,6 @@
-//! Local dictation on whisper.cpp: the model catalog and its on-disk install
-//! (`models`), and the transcriber that runs it (`engine`).
+//! Local dictation on whisper.cpp: the model catalog (`models`), getting its
+//! weights onto disk (`install`), and the transcriber that runs them
+//! (`engine`).
 //!
 //! The platform recognizer (`super::apple`) stays the default. The user opts
 //! into this engine from Settings, which downloads the pinned model into
@@ -7,19 +8,18 @@
 //! setting is on AND the model is installed, so a half-finished download can
 //! never leave the mic button dead.
 
-// Scaffolding commit: the catalog lands before its download command and the
-// engine, so nothing reads it yet. Drop this once the commands consume it.
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+pub mod install;
 pub mod models;
 
 /// `settings` key for the engine choice. Only [`ENGINE_WHISPER`] selects the
-/// local engine; unset or anything else means the platform recognizer.
+/// local engine; anything else means the platform recognizer — written as
+/// [`ENGINE_APPLE`] rather than cleared, so an opt-out is a recorded choice.
 pub const ENGINE_SETTING: &str = "dictation_engine";
 pub const ENGINE_WHISPER: &str = "whisper";
+pub const ENGINE_APPLE: &str = "apple";
 
 /// Interpret the raw setting value. Opt-in: only an explicit `"whisper"` is on.
 pub fn parse_enabled(raw: Option<&str>) -> bool {
