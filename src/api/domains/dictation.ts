@@ -32,18 +32,28 @@ export const dictationApi = {
    *  one final transcript, then `stopped`. No-op when not listening. */
   dictationStop: () => invoke<void>("dictation_stop"),
 
-  /** The local (Whisper) engine's opt-in plus the state of its weights. Cheap
-   *  — a metadata stat — so the Settings pane calls it on mount. */
+  /** The local (Whisper) engine's opt-in, its model choice and the state of
+   *  every candidate's weights. Cheap — a metadata stat per entry — so the
+   *  Settings pane calls it on mount. */
   dictationModelStatus: () => invoke<DictationModelStatus>("dictation_model_status"),
   /** Pick the dictation engine. Persists `dictation_engine` and, when enabling
    *  without the weights on disk, starts the download in the background —
    *  resolves immediately either way, with progress arriving via
    *  `onDictationModelProgress`. Backend-owned, like `setCodeIndexingEnabled`. */
   setDictationEngine: (enabled: boolean) => invoke<void>("set_dictation_engine", { enabled }),
-  /** Retry a failed (or never-started) model download. Resolves at once with
-   *  the state the call left things in; a no-op while one is already running. */
+  /** Pick which catalog model the local engine uses. Persists
+   *  `dictation_model` and, when the engine is on and the choice isn't
+   *  downloaded, starts fetching it in the background. Rejects an id the
+   *  catalog doesn't have. The previous model is left on disk. */
+  setDictationModel: (id: string) => invoke<DictationModelStatus>("set_dictation_model", { id }),
+  /** Retry a failed (or never-started) download of the selected model.
+   *  Resolves at once with the state the call left things in; a no-op while any
+   *  download is already running. */
   dictationModelDownload: () => invoke<DictationModelStatus>("dictation_model_download"),
-  /** Delete the downloaded weights. Turn the engine off first — an enabled
-   *  engine with no model silently falls back to the platform recognizer. */
-  dictationModelRemove: () => invoke<DictationModelStatus>("dictation_model_remove"),
+  /** Delete a model's downloaded weights — the selected one unless `id` names
+   *  another. Turn the engine off first when removing the selected model: an
+   *  enabled engine with no model silently falls back to the platform
+   *  recognizer. */
+  dictationModelRemove: (id?: string) =>
+    invoke<DictationModelStatus>("dictation_model_remove", { id }),
 };

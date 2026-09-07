@@ -757,8 +757,36 @@
 }
 
 /* ── DICTATION ───────────────────────────────────────────────────────── */
-/* The local-engine model row: a status line with the one action that applies,
-   plus the download bar. Sits under its toggle row like `.set-sandbox-warn`. */
+/* Which model the local engine runs: one row per catalog entry, so the radio
+   lands in the same column as the engine toggle above it. */
+.set-radio {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bg-0);
+  box-shadow: inset 0 0 0 1px var(--bd);
+  transition: var(--transition-ui);
+}
+.set-radio[data-on="1"] {
+  background: var(--accent);
+  box-shadow: none;
+}
+.set-radio i {
+  display: block;
+  width: 6px;
+  height: 6px;
+  margin: 6px;
+  border-radius: 50%;
+  background: oklch(0.98 0.01 60);
+  opacity: 0;
+  transition: opacity 0.18s var(--ease);
+}
+.set-radio[data-on="1"] i {
+  opacity: 1;
+}
+
+/* The status line for one model: what its weights are doing plus the one
+   action that applies, and the download bar. Sits under the model's note. */
 .set-dict {
   display: flex;
   flex-direction: column;

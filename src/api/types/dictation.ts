@@ -64,7 +64,7 @@ export interface DictationStateEvent {
   error: string | null;
 }
 
-/** The one Whisper model the local engine would use, as pinned in the Rust
+/** One Whisper model the local engine can be pointed at, as pinned in the Rust
  *  catalog (`dictation/whisper/models.rs`). */
 export interface DictationModel {
   id: string;
@@ -74,18 +74,29 @@ export interface DictationModel {
   /** Exact download size in bytes. Every size string in the UI is derived from
    *  it, so the copy can't drift from the pinned file. */
   size: number;
+  /** These weights are on disk and verified. Per model, because one the user
+   *  switched away from stays downloaded until it is removed in Settings. */
+  installed: boolean;
 }
 
-/** The local (Whisper) engine's opt-in and the state of its weights. `enabled`
- *  and `installed` move independently: the engine can be chosen while the
- *  download is still running, in which case dictation keeps using the platform
- *  recognizer. */
+/** The local (Whisper) engine's opt-in, which model it is set to use, and the
+ *  catalog to choose from. `enabled` and `installed` move independently: the
+ *  engine can be chosen while the download is still running, in which case
+ *  dictation keeps using the platform recognizer. */
 export interface DictationModelStatus {
   enabled: boolean;
+  /** The selected model's weights are ready. */
   installed: boolean;
   /** A download is running right now; watch `onDictationModelProgress`. */
   downloading: boolean;
+  /** Which model that download is for — one runs at a time process-wide, and
+   *  changing the selection doesn't cancel it, so this needn't be `model.id`.
+   *  `null` when nothing is downloading. */
+  downloading_id: string | null;
+  /** The `dictation_model` selection, or the platform default until the user
+   *  makes one (the small English model on Intel, the large one elsewhere). */
   model: DictationModel;
+  models: DictationModel[];
 }
 
 /** `verifying` is the tail of the download (the digest is computed as bytes
