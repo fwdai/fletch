@@ -89,6 +89,12 @@
   color: var(--fg-1);
   max-height: 280px;
   overflow: auto;
+  /* Same rule as the transcript's prose (Chat.css): break mid-token rather
+     than let a path or URL push the card into horizontal scroll. */
+  overflow-wrap: anywhere;
+}
+.q-body pre {
+  white-space: pre-wrap;
 }
 .q-body > *:first-child {
   margin-top: 0;
