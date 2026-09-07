@@ -53,6 +53,29 @@ pub struct Remote {
     /// The id most recently handed out. An attempt that finds a newer one when
     /// it comes back from its handshake has been superseded and stands down.
     latest: AtomicU64,
+    /// The device identity, loaded from disk once per process and shared by
+    /// every command. One place to load it means one place to create it: two
+    /// commands racing on first use cannot each generate a key and fight over
+    /// the file, and whichever one runs first hands the same identity to the
+    /// rest. A failed load is not cached, so a fixed disk is retried.
+    identity: std::sync::Mutex<Option<Arc<DeviceKey>>>,
+}
+
+impl Remote {
+    /// The device key from `dir`, creating it on first use. Serialized by the
+    /// lock for the whole load, so concurrent callers see one identity.
+    fn identity(&self, dir: &std::path::Path) -> Result<Arc<DeviceKey>, String> {
+        let mut cached = self
+            .identity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(key) = cached.as_ref() {
+            return Ok(key.clone());
+        }
+        let key = Arc::new(DeviceKey::load_or_create(dir)?);
+        *cached = Some(key.clone());
+        Ok(key)
+    }
 }
 
 #[derive(Serialize)]
@@ -100,7 +123,7 @@ pub async fn remote_connect(
     // Claim the id first, so a concurrent attempt can tell who is newer.
     let id = state.latest.fetch_add(1, Ordering::AcqRel) + 1;
     close_current(&state.slot).await;
-    let key = device_key(&app)?;
+    let key = device_key(&app, &state)?;
     let (mut ws, _) = connect_async(&url)
         .await
         .map_err(|e| format!("cannot reach {url}: {e}"))?;
@@ -178,18 +201,22 @@ pub async fn remote_close(
 
 /// This device's public key, base64url — what the host records when pairing.
 #[tauri::command]
-pub fn remote_device_public_key(app: AppHandle) -> Result<String, String> {
-    Ok(device_key(&app)?.public_base64())
+pub fn remote_device_public_key(
+    app: AppHandle,
+    state: State<'_, Remote>,
+) -> Result<String, String> {
+    Ok(device_key(&app, &state)?.public_base64())
 }
 
 // --- internals ---------------------------------------------------------------
 
-fn device_key(app: &AppHandle) -> Result<DeviceKey, String> {
+/// The process-wide device identity (see `Remote::identity`).
+fn device_key(app: &AppHandle, state: &Remote) -> Result<Arc<DeviceKey>, String> {
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("no app data dir: {e}"))?;
-    DeviceKey::load_or_create(&dir)
+    state.identity(&dir)
 }
 
 /// `-> e`, `<- e, ee, s, es`, `-> s, se`, all as binary messages with empty
@@ -377,4 +404,34 @@ async fn close_ws(ws: &mut Ws, code: u16, reason: &str) {
         })))
         .await;
     let _ = ws.close(None).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// First use from several commands at once must yield one identity and one
+    /// file: `remote_connect` and `remote_device_public_key` both go through
+    /// `Remote::identity`, which is what makes that true.
+    #[test]
+    fn concurrent_first_use_settles_on_one_identity() {
+        let dir = std::env::temp_dir().join(format!("fletch-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let remote = Arc::new(Remote::default());
+
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let remote = remote.clone();
+                let dir = dir.clone();
+                std::thread::spawn(move || remote.identity(&dir).unwrap().public_base64())
+            })
+            .collect();
+        let seen: std::collections::HashSet<String> =
+            workers.into_iter().map(|w| w.join().unwrap()).collect();
+
+        assert_eq!(seen.len(), 1, "every caller got the same identity");
+        let persisted = DeviceKey::load_or_create(&dir).unwrap().public_base64();
+        assert!(seen.contains(&persisted), "and it is the one on disk");
+        assert!(!dir.join("device_key.tmp").exists());
+    }
 }
