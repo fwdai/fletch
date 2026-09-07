@@ -92,7 +92,8 @@ user makes.
 
 The opt-in is the `dictation_engine` settings row (`whisper` or `apple`),
 written by the backend `set_dictation_engine` command. Enabling it starts the
-download in a background task and returns immediately; progress arrives as
+download of the chosen model (see [Choosing a model](#choosing-a-model)) in a
+background task and returns immediately; progress arrives as
 `dictation:model_progress` events, and `dictation_model_status` is what a
 freshly opened Settings screen reads instead. Weights only reach their final
 path after their SHA-256 matched, so "the file is there, at the pinned size"
@@ -105,35 +106,69 @@ is the same statement as "it was verified" — that is what
 `~/Library/Application Support/com.fletch.desktop/whisper-models` in a bundle,
 and `…/com.fletch.desktop/dev/whisper-models` in a debug build (`tauri dev`
 gets its own data dir, weights included, so a dev run downloads its own copy).
-Nothing else is written there, so deleting the directory is a clean uninstall
-(as is Remove in Settings). A download in flight is a `download-<pid>.tmp`
-alongside; a run killed mid-download leaves one behind and the next attempt
-sweeps it.
+One file per model the user has downloaded, so more than one can sit there at
+once. Nothing else is written there, so deleting the directory is a clean
+uninstall (as is Remove on every row in Settings). A download in flight is a
+`download-<pid>.tmp` alongside; a run killed mid-download leaves one behind and
+the next attempt sweeps it.
 
 | Layer | File |
 | --- | --- |
 | Settings section | `src/components/SettingsScreen/DictationSection/` |
-| IPC | `dictation_model_status` / `set_dictation_engine` / `dictation_model_download` / `dictation_model_remove` |
+| IPC | `dictation_model_status` / `set_dictation_engine` / `set_dictation_model` / `dictation_model_download` / `dictation_model_remove` |
 | Event | `src/api/events.ts` — `dictation:model_progress` |
 | Catalog | `src-tauri/src/dictation/whisper/models.rs` |
 | Download | `src-tauri/src/dictation/whisper/install.rs`, on the shared `download::download_verified` |
 
-### Swapping the default model
+### Choosing a model
+
+Settings lists every catalog entry with its size and a radio, and the choice
+is the `dictation_model` setting (a `WhisperModel::id`), written by
+`set_dictation_model`. Picking one while the engine is on starts its download
+if it isn't already there; picking one while the engine is off just records the
+choice.
+
+Absent or unrecognized, the setting resolves to the **platform default** —
+`small.en-q8_0` when `std::env::consts::ARCH` is `x86_64`, `DEFAULT_MODEL_ID`
+otherwise. Intel (and Rosetta, which reports the same arch) has no
+Metal-class GPU to hide the large model's decode behind, where a dictated
+sentence takes longer than saying it again. An id that isn't in `MODELS` is
+treated as absent rather than as an error, so dropping an entry in an update
+can't leave dictation unable to name a model at all.
+
+The model you switch away from **stays on disk**: it is already paid for, and
+switching back shouldn't cost the download twice. Its row keeps saying
+"Installed" with a Remove button, which is the only way to reclaim the space.
+
+One download runs at a time process-wide, and changing the selection does not
+cancel one in flight — `dictation_model_status` reports `downloading` plus
+`downloading_id` so the bar stays on the row actually being fetched.
+
+Everything reads the choice through one helper (`whisper::selected`, off a
+`&Connection`), so the row's status, the download target and the weights a
+session loads can't disagree. `whisper::engine` is the exception: it runs from
+the mic tap's teardown with no connection of its own and goes through
+`whisper::selected_now`, which takes the handle `whisper::init` was given. Its
+cached `WhisperContext` is keyed on the path it loaded from, so a switch drops
+the old weights before loading the new ones.
+
+### Adding a model to the catalog
 
 `src-tauri/src/dictation/whisper/models.rs` pins every candidate: file name,
 URL, SHA-256, and exact byte size. Nothing is discovered at runtime — the
 digest is the supply-chain boundary, and the size is both the progress total
-and the cheap installed check. To change what a fresh opt-in downloads:
+and the cheap installed check. Settings offers whatever `MODELS` holds, so:
 
 1. Open `https://huggingface.co/ggerganov/whisper.cpp/raw/main/<file>` — the
    LFS pointer, not the file itself. Copy `oid sha256` and `size` verbatim.
 2. Add a `WhisperModel` entry to `MODELS` with those values, a `label`, and a
    one-line `note` (both are display copy in Settings).
-3. Point `DEFAULT_MODEL_ID` at the new `id`.
+3. To make it what a fresh opt-in gets, point `DEFAULT_MODEL_ID` (or
+   `SMALL_MODEL_ID`, the Intel default) at the new `id`. Users who already
+   chose a model keep it.
 
-Users who already downloaded the old model keep it on disk; the new default is
-a fresh download. `size` is also where the "Downloads a 574 MB model once."
-copy comes from, so the UI can't drift from the pinned file.
+`size` is also where the "Downloads a 574 MB model once." copy comes from, so
+the UI can't drift from the pinned file.
 
 ### How a session runs on it
 
@@ -148,9 +183,9 @@ the tap's *sink*, and what a stop means.
 `dictation::engine`, which answers `whisper` only when **both** hold:
 
 - the `dictation_engine` setting is exactly `"whisper"`, and
-- the pinned model file is fully present (`whisper::models::installed_path`
-  checks the exact byte size, and the download only moves a digest-verified
-  file into place).
+- the *selected* model's file is fully present
+  (`whisper::models::installed_path` checks the exact byte size, and the
+  download only moves a digest-verified file into place).
 
 Dispatching on the setting alone would let an interrupted download leave the
 mic button dead, so a half-finished install silently falls back to Apple's
@@ -212,7 +247,9 @@ between the stop and the text, so a loaded `WhisperContext` is cached and shared
 by every session — then dropped after ten minutes (`IDLE_UNLOAD`) without a
 transcription. One sleeper task at a time checks the last-use `Instant` rather
 than trusting its own deadline, so a session that starts while it sleeps keeps
-the model.
+the model. The cache is keyed on the file it loaded, because a `WhisperContext`
+says nothing about which weights it holds and the user can change the choice
+between one session and the next.
 
 ### Testing it without the GUI
 
