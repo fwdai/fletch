@@ -36,7 +36,11 @@ const MIN_DURATION: Duration = Duration::from_millis(500);
 /// would hallucinate the same invented sentences over it. Well under speech at
 /// a conversational distance (RMS ~0.02 and up) and well over a muted or
 /// unplugged input's noise floor.
-const MIN_RMS: f32 = 0.002;
+///
+/// Also `capture`'s silence detector's absolute lower bound, so the two can't
+/// disagree about what silence is: audio the gate would refuse to transcribe
+/// isn't worth holding a session open for either.
+pub const MIN_RMS: f32 = 0.002;
 
 /// How long a loaded model may sit unused before its memory is released.
 const IDLE_UNLOAD: Duration = Duration::from_secs(600);

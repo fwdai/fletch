@@ -17,7 +17,9 @@
 
 use std::cell::Cell;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -38,6 +40,31 @@ use crate::error::{Error, Result};
 /// Audio past it is dropped, which truncates the transcript rather than failing.
 const MAX_CAPTURE_SECS: f64 = 300.0;
 
+/// How long a pause has to last, once something has been said, for the session
+/// to end itself — long enough to think mid-sentence, short enough that the
+/// text lands while the user is still looking at the composer.
+///
+/// This and the two constants below are the whole of the hands-free policy, so
+/// a Settings opt-out would gate the monitor that reads them rather than change
+/// them.
+const SILENCE_STOP: Duration = Duration::from_secs(2);
+
+/// How long a session in which nothing was ever said stays open: the user
+/// clicked the mic and walked away. The clip has no speech in it, so the
+/// engine's gate answers empty and the session just ends.
+const NO_SPEECH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How often the monitor looks. Well under [`SILENCE_STOP`], and cheap: three
+/// relaxed atomic loads.
+pub(super) const SILENCE_POLL: Duration = Duration::from_millis(100);
+
+/// How far above the room's own noise a buffer has to be to count as speech.
+const SPEECH_OVER_FLOOR: f32 = 3.0;
+
+/// Floor under the noise floor. Digital silence would otherwise put the speech
+/// threshold at zero and make the first faint buffer an utterance.
+const NOISE_FLOOR_MIN: f32 = 0.000_5;
+
 /// A session's captured audio: mono f32 at the microphone's own sample rate.
 pub(super) struct Pcm {
     /// The microphone's rate, which [`transcribe`] resamples from.
@@ -45,6 +72,81 @@ pub(super) struct Pcm {
     /// Sample ceiling derived from [`MAX_CAPTURE_SECS`] and `rate`.
     limit: usize,
     samples: Mutex<Vec<f32>>,
+    /// When capture began, which the two timings below are measured from.
+    start: Instant,
+    /// Set once a buffer has been loud enough to be speech. Until then a pause
+    /// is the user not having started, not the user having finished.
+    speech_seen: AtomicBool,
+    /// Milliseconds since [`Pcm::start`] of the last buffer that was speech.
+    /// Meaningless while `speech_seen` is false.
+    last_speech_ms: AtomicU64,
+    /// The quietest buffer heard so far (`f32` bits), i.e. this room on this
+    /// microphone with nobody talking. Adaptive because a threshold that suits
+    /// a laptop's built-in mic is silence on a hot USB interface.
+    floor: AtomicU32,
+    /// Set by `apple`'s `Sink::cancel` when the session is torn down, so the
+    /// silence monitor stops polling a buffer nothing will fill again.
+    closed: AtomicBool,
+}
+
+/// Is a buffer this loud speech, in a room whose noise floor is `floor`?
+///
+/// Pure, and the whole of the detector: the adaptive part is `floor`, and the
+/// absolute part is the same threshold the engine's clip gate uses — audio too
+/// quiet to transcribe can't be worth waiting for silence after.
+fn is_speech(rms: f32, floor: f32) -> bool {
+    rms >= (floor * SPEECH_OVER_FLOOR).max(engine::MIN_RMS)
+}
+
+/// Fold a buffer's loudness into the noise floor: the running minimum, never
+/// below [`NOISE_FLOOR_MIN`].
+fn settle_floor(floor: f32, rms: f32) -> f32 {
+    floor.min(rms.max(NOISE_FLOOR_MIN))
+}
+
+/// Should the session end itself now? Pure so the thresholds are testable
+/// without a microphone.
+fn should_auto_stop(speech_seen: bool, elapsed: Duration, since_speech: Duration) -> bool {
+    if speech_seen {
+        since_speech >= SILENCE_STOP
+    } else {
+        elapsed >= NO_SPEECH_TIMEOUT
+    }
+}
+
+impl Pcm {
+    /// Render thread: fold one buffer's loudness into the speech tracker. The
+    /// render thread is the only writer, so a load and a store are enough —
+    /// no read-modify-write to lose.
+    fn track_speech(&self, rms: f32) {
+        let floor = settle_floor(f32::from_bits(self.floor.load(Ordering::Relaxed)), rms);
+        self.floor.store(floor.to_bits(), Ordering::Relaxed);
+        if is_speech(rms, floor) {
+            self.speech_seen.store(true, Ordering::Relaxed);
+            self.last_speech_ms
+                .store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// Has the user spoken and then gone quiet (or never spoken at all)? Read
+    /// by the silence monitor, off both the render and the main thread.
+    pub(super) fn done_talking(&self) -> bool {
+        let elapsed = self.start.elapsed();
+        let last = Duration::from_millis(self.last_speech_ms.load(Ordering::Relaxed));
+        should_auto_stop(
+            self.speech_seen.load(Ordering::Relaxed),
+            elapsed,
+            elapsed.saturating_sub(last),
+        )
+    }
+
+    pub(super) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Build the accumulator and the tap block that fills it.
@@ -70,6 +172,13 @@ pub(super) fn sink(format: &AVAudioFormat) -> Result<(Arc<Pcm>, Tap)> {
         // Pre-sized to a long dictation so the render thread appends into spare
         // capacity instead of reallocating mid-buffer.
         samples: Mutex::new(Vec::with_capacity((rate * 60.0) as usize)),
+        start: Instant::now(),
+        speech_seen: AtomicBool::new(false),
+        last_speech_ms: AtomicU64::new(0),
+        // A running minimum has to start above anything it will see; the first
+        // buffer sets it, and can't be speech against itself.
+        floor: AtomicU32::new(1.0f32.to_bits()),
+        closed: AtomicBool::new(false),
     });
 
     let tap_pcm = pcm.clone();
@@ -81,10 +190,13 @@ pub(super) fn sink(format: &AVAudioFormat) -> Result<(Arc<Pcm>, Tap)> {
     Ok((pcm, tap))
 }
 
-/// Real-time audio thread: average the channels down and return. The only other
-/// lock holder is the one-shot take in [`transcribe`], so `try_lock` all but
-/// never fails — and dropping one buffer beats blocking the render thread if it
-/// ever does.
+/// Real-time audio thread: average the channels down, note how loud the result
+/// was, and return. The only other lock holder is the one-shot take in
+/// [`transcribe`], so `try_lock` all but never fails — and dropping one buffer
+/// beats blocking the render thread if it ever does.
+///
+/// The RMS rides along in the same pass because the silence monitor needs it
+/// and the samples are already in registers here.
 fn append_mono(pcm: &Pcm, buffer: &AVAudioPCMBuffer) {
     let frames = unsafe { buffer.frameLength() } as usize;
     let channels = unsafe { buffer.format().channelCount() } as usize;
@@ -98,6 +210,7 @@ fn append_mono(pcm: &Pcm, buffer: &AVAudioPCMBuffer) {
     if samples.len() + frames > pcm.limit {
         return;
     }
+    let mut squares = 0.0f64;
     for frame in 0..frames {
         let mut sum = 0.0;
         for channel in 0..channels {
@@ -105,8 +218,11 @@ fn append_mono(pcm: &Pcm, buffer: &AVAudioPCMBuffer) {
             // to `frameLength` contiguous samples.
             sum += unsafe { *(*data.add(channel)).as_ptr().add(frame) };
         }
-        samples.push(sum / channels as f32);
+        let mono = sum / channels as f32;
+        squares += f64::from(mono) * f64::from(mono);
+        samples.push(mono);
     }
+    pcm.track_speech(((squares / frames as f64).sqrt()) as f32);
 }
 
 /// Take the session's audio and transcribe it. Consumes the buffer: the session
@@ -251,6 +367,62 @@ mod tests {
             / out.len() as f64)
             .sqrt();
         assert!(rms > 0.5, "tone was lost: rms {rms}");
+    }
+
+    /// Walk a sequence of buffer RMS values through the detector the way the
+    /// render thread would, and report which of them counted as speech.
+    fn detect(sequence: &[f32]) -> Vec<bool> {
+        let mut floor = 1.0;
+        sequence
+            .iter()
+            .map(|rms| {
+                floor = settle_floor(floor, *rms);
+                is_speech(*rms, floor)
+            })
+            .collect()
+    }
+
+    /// The shape every session has: a quiet room, an utterance, then quiet
+    /// again. Only the utterance may count, and the trailing silence must not —
+    /// that is what ends the session.
+    #[test]
+    fn detects_speech_between_silences() {
+        let mut sequence = vec![0.001; 5];
+        sequence.extend([0.05; 10]);
+        sequence.extend([0.001; 5]);
+
+        let speech = detect(&sequence);
+
+        assert_eq!(speech[..5], [false; 5], "quiet room read as speech");
+        assert_eq!(speech[5..15], [true; 10], "speech missed");
+        assert_eq!(speech[15..], [false; 5], "the pause never arrives");
+    }
+
+    /// A hot input's noise is louder than a quiet one's speech, so the
+    /// threshold has to follow the room rather than sit at a fixed level.
+    #[test]
+    fn floor_adapts_to_the_room() {
+        assert_eq!(detect(&[0.01, 0.01, 0.02]), [false, false, false]);
+        assert_eq!(detect(&[0.0005, 0.0005, 0.02]), [false, false, true]);
+    }
+
+    /// A muted or unplugged input is all zeroes: the adaptive threshold
+    /// collapses to nothing there, and the absolute one has to hold.
+    #[test]
+    fn silence_is_never_speech() {
+        assert_eq!(detect(&[0.0; 4]), [false; 4]);
+        assert!(!is_speech(engine::MIN_RMS / 2.0, 0.0));
+    }
+
+    #[test]
+    fn auto_stops_on_a_pause_but_not_before_speech() {
+        let long = NO_SPEECH_TIMEOUT + Duration::from_secs(1);
+        assert!(!should_auto_stop(true, long, SILENCE_STOP / 2));
+        assert!(should_auto_stop(true, long, SILENCE_STOP));
+        // Never spoke: the pause is the whole session, and only the longer
+        // deadline ends it.
+        assert!(!should_auto_stop(false, SILENCE_STOP * 2, SILENCE_STOP * 2));
+        assert!(should_auto_stop(false, long, long));
     }
 
     #[test]
