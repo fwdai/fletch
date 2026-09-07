@@ -3,6 +3,7 @@ import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
+import { configDefaults } from "vitest/config";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -23,6 +24,9 @@ function copyFileIcons(): Plugin {
 
 export default defineConfig(async () => ({
   plugins: [tsconfigPaths(), react(), copyFileIcons()],
+  // The mobile companion under mobile/ is its own package with its own
+  // vitest run and node_modules; its tests do not resolve from here.
+  test: { exclude: [...configDefaults.exclude, "mobile/**"] },
   clearScreen: false,
   server: {
     port: 1420,

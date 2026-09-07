@@ -1,0 +1,30 @@
+[package]
+name = "fletch-mobile"
+version = "0.1.0"
+description = "Fletch mobile companion — a control panel for agents running on your Mac"
+authors = ["Alex Chaplinsky", "fwdai.org"]
+license = "AGPL-3.0-only"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "fletch_mobile_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Deliberately thin: the app defines no commands of its own. Everything it
+# needs from the platform is a plugin — a Rust-side WebSocket (so iOS ATS
+# doesn't block cleartext ws:// from the webview), a file for the device token
+# and settings, local notifications, and the fletch:// pairing deep link.
+tauri = { version = "2", features = [] }
+tauri-plugin-websocket = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-deep-link = "2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
