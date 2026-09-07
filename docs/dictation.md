@@ -207,17 +207,25 @@ is no PCM buffer on that path to measure.
 The detector is two atomics on the capture buffer, updated by the tap on the
 render thread. Each buffer's RMS is computed in the same pass that averages the
 channels (the samples are already in registers), and counts as speech when it
-clears `SPEECH_ABS` outright, or else `max(3 × noise floor, MIN_RMS)`. The
-noise floor is the running *minimum* of buffer RMS, clamped to
-`NOISE_FLOOR_MIN`: a laptop's built-in mic and a hot USB interface differ by
-more than an order of magnitude in what "a quiet room" measures, so a fixed
-ratio threshold alone would either stop mid-sentence on one or never trigger on
-the other. A buffer is judged against the floor as it stood *before* that
-buffer is folded in, and `SPEECH_ABS` covers the case the ratio can't: someone
-who starts talking as they click has no quiet buffer yet, so their own voice
-would become the floor. The lower bound is `engine::MIN_RMS`, the same
-threshold the [silence gate](#the-silence-gate) uses — audio too quiet to
-transcribe isn't worth holding a session open for.
+clears `max(3 × noise floor, MIN_RMS)`. The noise floor is the running
+*minimum* of buffer RMS, clamped to `NOISE_FLOOR_MIN`: a laptop's built-in mic
+and a hot USB interface differ by more than an order of magnitude in what "a
+quiet room" measures, so a fixed threshold would either stop mid-sentence on
+one or never trigger on the other. A buffer is judged against the floor as it
+stood *before* that buffer is folded in, so a loud first buffer isn't its own
+floor. The lower bound is `engine::MIN_RMS`, the same threshold the
+[silence gate](#the-silence-gate) uses — audio too quiet to transcribe isn't
+worth holding a session open for.
+
+Two consequences of "relative to the floor only", both deliberate. Someone who
+is already talking when the first buffer arrives sets the floor to their own
+voice, and is recognised at the first gap between words (tap buffers are
+~20 ms, so within the first second); the alternative — an absolute "this loud is
+always speech" level — was tried and dropped, because steady noise above it
+(music, air conditioning) refreshed the speech clock forever and the session
+could only end at the capture cap. And steady noise of any level never counts
+as speech, so a session in a loud room ends on the no-speech timeout like a
+silent one.
 
 "When was speech last heard" is one atomic word (milliseconds plus one, zero
 for never) rather than a flag beside a timestamp, so the monitor can never see

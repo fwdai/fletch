@@ -59,14 +59,13 @@ const NO_SPEECH_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const SILENCE_POLL: Duration = Duration::from_millis(100);
 
 /// How far above the room's own noise a buffer has to be to count as speech.
+///
+/// Deliberately the only loudness rule: an absolute "this loud is always
+/// speech" level was tried and dropped, because steady noise above it (music,
+/// air conditioning, a hot input) would refresh the speech clock on every
+/// buffer and the session could never observe a pause. Relative to the floor,
+/// steady noise *is* the floor and never counts.
 const SPEECH_OVER_FLOOR: f32 = 3.0;
-
-/// Loud enough to be speech whatever the room is doing: a voice at
-/// conversational distance on a typical input. The ratio rule needs a floor to
-/// compare against, and the floor is only known once a quiet buffer has been
-/// heard — someone who starts talking as they click would otherwise set the
-/// floor to their own voice and never clear three times it.
-const SPEECH_ABS: f32 = 0.02;
 
 /// Floor under the noise floor. Digital silence would otherwise put the speech
 /// threshold at zero and make the first faint buffer an utterance.
@@ -97,12 +96,12 @@ pub(super) struct Pcm {
 
 /// Is a buffer this loud speech, in a room whose noise floor is `floor`?
 ///
-/// Pure, and the whole of the detector. Three rules: clearly loud is speech
-/// ([`SPEECH_ABS`]); otherwise it has to stand out from the room
-/// ([`SPEECH_OVER_FLOOR`]); and nothing under the engine's clip gate counts —
-/// audio too quiet to transcribe can't be worth waiting for silence after.
+/// Pure, and the whole of the detector: a buffer has to stand out from the
+/// room ([`SPEECH_OVER_FLOOR`]), and nothing under the engine's clip gate
+/// counts — audio too quiet to transcribe can't be worth waiting for silence
+/// after.
 fn is_speech(rms: f32, floor: f32) -> bool {
-    rms >= SPEECH_ABS || rms >= (floor * SPEECH_OVER_FLOOR).max(engine::MIN_RMS)
+    rms >= (floor * SPEECH_OVER_FLOOR).max(engine::MIN_RMS)
 }
 
 /// Fold a buffer's loudness into the noise floor: the running minimum, never
@@ -414,11 +413,23 @@ mod tests {
         assert_eq!(speech[15..], [false; 5], "the pause never arrives");
     }
 
-    /// Talking from the very first buffer — clicking mid-sentence — must not
-    /// make that voice the room's noise floor.
+    /// Talking from the very first buffer — clicking mid-sentence — sets the
+    /// floor to the voice itself, so nothing counts until the first gap between
+    /// words lowers it; from then on the speech does.
     #[test]
-    fn speech_in_the_first_buffer_still_counts() {
-        assert_eq!(detect(&[0.05, 0.05, 0.001]), [true, true, false]);
+    fn speech_from_the_first_buffer_counts_after_the_first_gap() {
+        assert_eq!(
+            detect(&[0.05, 0.05, 0.002, 0.05, 0.05, 0.002]),
+            [false, false, false, true, true, false]
+        );
+    }
+
+    /// Steady noise of any level is the room, not a voice: it must never keep
+    /// the session open, however loud.
+    #[test]
+    fn steady_noise_is_never_speech() {
+        assert_eq!(detect(&[0.02; 6]), [false; 6]);
+        assert_eq!(detect(&[0.2; 6]), [false; 6]);
     }
 
     /// A hot input's noise is louder than a quiet one's speech, so below the
