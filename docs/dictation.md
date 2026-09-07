@@ -204,16 +204,25 @@ gone quiet, so dictating is one click rather than two. Apple's recognizer is
 untouched — it streams results and manages its own end-of-utterance, and there
 is no PCM buffer on that path to measure.
 
-The detector is a handful of atomics on the capture buffer, updated by the tap
-on the render thread. Each buffer's RMS is computed in the same pass that
-averages the channels (the samples are already in registers), and counts as
-speech when it clears `max(3 × noise floor, MIN_RMS)`. The noise floor is the
-running *minimum* of buffer RMS, clamped to `NOISE_FLOOR_MIN`: a laptop's
-built-in mic and a hot USB interface differ by more than an order of magnitude
-in what "a quiet room" measures, so a fixed threshold would either stop
-mid-sentence on one or never trigger on the other. The absolute bound is
-`engine::MIN_RMS`, the same threshold the [silence gate](#the-silence-gate)
-uses — audio too quiet to transcribe isn't worth holding a session open for.
+The detector is two atomics on the capture buffer, updated by the tap on the
+render thread. Each buffer's RMS is computed in the same pass that averages the
+channels (the samples are already in registers), and counts as speech when it
+clears `SPEECH_ABS` outright, or else `max(3 × noise floor, MIN_RMS)`. The
+noise floor is the running *minimum* of buffer RMS, clamped to
+`NOISE_FLOOR_MIN`: a laptop's built-in mic and a hot USB interface differ by
+more than an order of magnitude in what "a quiet room" measures, so a fixed
+ratio threshold alone would either stop mid-sentence on one or never trigger on
+the other. A buffer is judged against the floor as it stood *before* that
+buffer is folded in, and `SPEECH_ABS` covers the case the ratio can't: someone
+who starts talking as they click has no quiet buffer yet, so their own voice
+would become the floor. The lower bound is `engine::MIN_RMS`, the same
+threshold the [silence gate](#the-silence-gate) uses — audio too quiet to
+transcribe isn't worth holding a session open for.
+
+"When was speech last heard" is one atomic word (milliseconds plus one, zero
+for never) rather than a flag beside a timestamp, so the monitor can never see
+"spoken" paired with a timestamp that hasn't landed and mistake the whole
+session so far for the pause.
 
 One tokio task per whisper session polls those atomics every
 `SILENCE_POLL` (100 ms) and stops on whichever comes first:
