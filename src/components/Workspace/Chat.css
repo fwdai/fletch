@@ -504,6 +504,20 @@
   opacity: 1;
 }
 
+/* Transcript text is arbitrary: a $PATH dump, a URL, a base64 blob, a stack
+   frame. Those carry no space to break at, so `pre-wrap` alone leaves them
+   running past the bubble and drags the whole column into horizontal scroll.
+   `anywhere` breaks mid-token as a last resort — and because `overflow-wrap`
+   inherits, one declaration per prose root also covers its paragraphs, list
+   items, table cells, links and code spans. */
+.m-user,
+.m-agent,
+.m-reasoning,
+.m-cmdout__body,
+.m-sysbit__text {
+  overflow-wrap: anywhere;
+}
+
 .m-user {
   align-self: flex-end;
   max-width: 78%;
@@ -599,17 +613,25 @@
 .m-agent pre {
   margin: 12px 0 16px;
   padding: 12px 14px;
+  /* Kept as a backstop for anything unbreakable the wrap below can't split;
+     with soft-wrapped code it normally never engages. */
   overflow-x: auto;
   background: var(--bg-2);
   border: 1px solid var(--bd-soft);
   border-radius: var(--r-sm);
 }
+/* Soft-wrap rather than scroll. The transcript column is narrow (and narrower
+   still with the right panel open), so a horizontal scroller inside a block
+   that is itself inside a vertical scroller hides content behind a gesture
+   nobody reaches for. `pre-wrap` keeps indentation and explicit newlines and
+   only folds lines that don't fit; the inherited `overflow-wrap: anywhere`
+   handles the long unbroken token inside one. */
 .m-agent pre code {
   display: block;
   padding: 0;
   background: transparent;
   border: 0;
-  white-space: pre;
+  white-space: pre-wrap;
 }
 .m-agent table {
   width: 100%;
@@ -705,7 +727,6 @@
   line-height: var(--lh-relaxed);
   color: var(--fg-1);
   white-space: pre-wrap;
-  word-break: break-word;
 }
 
 /* A background-task notification, rendered as a single quiet system line
