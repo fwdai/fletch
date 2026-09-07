@@ -11,6 +11,11 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+// whisper.cpp itself is built for macOS only (iOS keeps the platform
+// recognizer), so the catalog and install compile everywhere but the
+// transcriber doesn't.
+#[cfg(target_os = "macos")]
+pub mod engine;
 pub mod install;
 pub mod models;
 

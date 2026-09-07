@@ -1,5 +1,12 @@
-//! Dictation on Apple's Speech framework: an `AVAudioEngine` mic tap feeding
-//! an `SFSpeechAudioBufferRecognitionRequest`.
+//! The microphone half of dictation: an `AVAudioEngine` input tap, and the two
+//! places its audio can go.
+//!
+//! Both engines share everything about opening the mic and owning the one live
+//! session; they differ only in the [`Sink`] the tap feeds. Apple's
+//! `SFSpeechAudioBufferRecognitionRequest` streams results back on its own,
+//! which is why a stop there hands off to the recognizer's flush. The local
+//! engine's sink is a plain PCM buffer (`super::capture`) that is transcribed in
+//! one pass once the mic is closed.
 //!
 //! # Threading
 //!
@@ -15,8 +22,8 @@
 //! state on rather than re-entering us, so it cannot run until the
 //! `on_main` block that created the task has returned. The one exception is
 //! the audio tap, which Apple invokes on a real-time render thread — it
-//! deliberately touches no session state, only `appendAudioPCMBuffer` on its
-//! own retained request, which is the pattern Apple documents for it.
+//! deliberately touches no session state, only its own retained sink, which is
+//! the pattern Apple documents for it.
 //!
 //! Note that `#[tauri::command]` futures must be `Send`, which is the second
 //! reason for this shape: no ObjC handle is ever live across an `.await`.
@@ -30,7 +37,9 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
-use objc2_avf_audio::{AVAudioEngine, AVAudioInputNode, AVAudioPCMBuffer, AVAudioTime};
+use objc2_avf_audio::{
+    AVAudioEngine, AVAudioFormat, AVAudioInputNode, AVAudioPCMBuffer, AVAudioTime,
+};
 use objc2_foundation::NSError;
 use objc2_speech::{
     SFSpeechAudioBufferRecognitionRequest, SFSpeechRecognitionResult, SFSpeechRecognitionTask,
@@ -38,7 +47,7 @@ use objc2_speech::{
 };
 use tauri::AppHandle;
 
-use super::{emit_state, emit_transcript, Auth, Availability, State};
+use super::{emit_state, emit_transcript, Auth, Availability, Engine, State};
 use crate::error::{Error, Result};
 
 /// The engine's only input bus.
@@ -53,6 +62,10 @@ const TAP_BUFFER_FRAMES: u32 = 1024;
 /// deadline exists so a wedged recognizer can't leave the UI stuck in
 /// `listening` with no way back.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The tap block Apple invokes on the render thread. Owned by the session for
+/// as long as the tap is installed.
+pub(super) type Tap = RcBlock<dyn Fn(NonNull<AVAudioPCMBuffer>, NonNull<AVAudioTime>)>;
 
 thread_local! {
     /// The one live session, main-thread only. See the module's threading note.
@@ -78,6 +91,32 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// Where a session's audio goes. `Retained` and `Arc` both clone cheaply, so
+/// `stop` can lift the sink out of `SESSION` before calling into ObjC.
+#[derive(Clone)]
+enum Sink {
+    /// Apple's recognizer, which delivers its own results through
+    /// `result_handler` and needs `endAudio` to flush the last of them.
+    Speech {
+        request: Retained<SFSpeechAudioBufferRecognitionRequest>,
+        task: Retained<SFSpeechRecognitionTask>,
+    },
+    /// The local engine's capture buffer, transcribed in one pass at stop.
+    #[cfg(target_os = "macos")]
+    Pcm(std::sync::Arc<super::capture::Pcm>),
+}
+
+impl Sink {
+    /// Drop the sink's work without waiting for a result — for a session that
+    /// failed to come up, or one being torn down. The local engine has nothing
+    /// to cancel: its buffer is simply dropped.
+    fn cancel(&self) {
+        if let Sink::Speech { task, .. } = self {
+            unsafe { task.cancel() };
+        }
+    }
+}
+
 struct Session {
     /// Distinguishes this session from its successors. Every block Apple may
     /// invoke late (a post-cancel result, the flush deadline) carries the
@@ -85,19 +124,29 @@ struct Session {
     /// — otherwise a straggler could tear down a session the user has since
     /// started.
     generation: u64,
-    engine: Retained<AVAudioEngine>,
+    audio: Retained<AVAudioEngine>,
     input: Retained<AVAudioInputNode>,
-    request: Retained<SFSpeechAudioBufferRecognitionRequest>,
-    task: Retained<SFSpeechRecognitionTask>,
+    sink: Sink,
     /// Kept alive for the tap's lifetime. `installTapOnBus` is documented to
     /// take ownership, but holding our own reference costs nothing and takes
     /// a use-after-free off the table.
-    _tap: RcBlock<dyn Fn(NonNull<AVAudioPCMBuffer>, NonNull<AVAudioTime>)>,
-    /// True once the user asked to stop. After that point the recognizer
+    _tap: Tap,
+    /// True once the user asked to stop. After that point Apple's recognizer
     /// reports the end of the stream *as an error* (a cancellation or
     /// no-speech code from a private domain), which is the expected tail of a
     /// normal session and must surface as `stopped`, not `error`.
     stopping: bool,
+}
+
+/// What a stop left for the caller to finish once it is off the main thread.
+enum Stopping {
+    /// Apple's recognizer owns the rest: `endAudio` makes it flush a final
+    /// result, and that result drives the teardown and the terminal state.
+    Flushing(u64),
+    /// The local engine: the mic is already closed and the session claimed, and
+    /// the audio is the caller's to transcribe.
+    #[cfg(target_os = "macos")]
+    Captured(u64, std::sync::Arc<super::capture::Pcm>),
 }
 
 // ---------------------------------------------------------------------------
@@ -136,13 +185,13 @@ fn claim(generation: u64) -> Option<Session> {
     })
 }
 
-/// Release the microphone and the recognizer, and let a new session start.
+/// Release the microphone and the sink, and let a new session start.
 fn teardown(session: Session) {
     unsafe {
-        session.engine.stop();
+        session.audio.stop();
         session.input.removeTapOnBus(BUS);
-        session.task.cancel();
     }
+    session.sink.cancel();
     ACTIVE.store(false, Ordering::SeqCst);
 }
 
@@ -238,17 +287,23 @@ fn request_microphone_auth() -> tokio::sync::oneshot::Receiver<Auth> {
     rx
 }
 
-/// Ensure both permissions are granted, prompting for whichever hasn't been
-/// asked yet. Sequential rather than concurrent so the user sees one dialog at
-/// a time.
-async fn ensure_authorized() -> Result<()> {
-    let mut speech = speech_auth();
-    if speech == Auth::NotDetermined {
-        speech = request_speech_auth().await.map_err(|_| {
-            Error::Other("dictation: speech permission prompt was dismissed".into())
-        })?;
+/// Ensure the permissions this engine needs, prompting for whichever hasn't
+/// been asked yet. Sequential rather than concurrent so the user sees one
+/// dialog at a time.
+///
+/// The local engine touches Apple's recognizer for nothing, so it must not
+/// raise its TCC prompt either: opting out of Apple's speech service and then
+/// being asked to authorize it would be a straight contradiction.
+async fn ensure_authorized(engine: Engine) -> Result<()> {
+    if engine == Engine::Apple {
+        let mut speech = speech_auth();
+        if speech == Auth::NotDetermined {
+            speech = request_speech_auth().await.map_err(|_| {
+                Error::Other("dictation: speech permission prompt was dismissed".into())
+            })?;
+        }
+        authorized_or_error("speech recognition", speech)?;
     }
-    authorized_or_error("speech recognition", speech)?;
 
     let mut mic = microphone_auth();
     if mic == Auth::NotDetermined {
@@ -262,24 +317,27 @@ async fn ensure_authorized() -> Result<()> {
 // ---------------------------------------------------------------------------
 // Commands
 
-pub fn availability() -> Availability {
-    // A recognizer only exists for a supported locale; without one there is
-    // nothing to ask about on-device support, so report the conservative
-    // answer and let `start` produce the readable error.
-    let on_device = unsafe { SFSpeechRecognizer::init(SFSpeechRecognizer::alloc()) }
-        .is_some_and(|r| unsafe { r.supportsOnDeviceRecognition() });
+pub fn availability(engine: Engine) -> Availability {
+    // The local engine is on-device by construction and needs no recognizer, so
+    // don't probe for one. Otherwise: a recognizer only exists for a supported
+    // locale, and without one there is nothing to ask about on-device support —
+    // report the conservative answer and let `start` produce the readable error.
+    let on_device = engine == Engine::Whisper
+        || unsafe { SFSpeechRecognizer::init(SFSpeechRecognizer::alloc()) }
+            .is_some_and(|r| unsafe { r.supportsOnDeviceRecognition() });
     Availability {
         supported: true,
         speech: speech_auth(),
         microphone: microphone_auth(),
         on_device,
+        engine,
     }
 }
 
 /// `Ok(Some(id))` once a session is live and `listening` has been emitted —
 /// the id every event of that session carries; `Ok(None)` when nothing was
 /// started, so no terminal event will follow.
-pub async fn start(app: AppHandle) -> Result<Option<u64>> {
+pub async fn start(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
     // Claiming ACTIVE up front is what makes a second start a no-op, and it
     // has to happen before the permission prompts, which can sit on screen
     // for a long time.
@@ -291,7 +349,7 @@ pub async fn start(app: AppHandle) -> Result<Option<u64>> {
     // session is up. Handing it over rather than clearing it from here means
     // a caller who drops this future after the session came up can't leave a
     // live recognizer behind a cleared flag.
-    if let Err(e) = ensure_authorized().await {
+    if let Err(e) = ensure_authorized(engine).await {
         ACTIVE.store(false, Ordering::SeqCst);
         // The only path that drops the claim without `begin` consuming a stop
         // that landed during the prompts — clear it, or it would cancel an
@@ -300,7 +358,7 @@ pub async fn start(app: AppHandle) -> Result<Option<u64>> {
         return Err(e);
     }
     let handle = app.clone();
-    match on_main(&app, move || begin(handle)).await {
+    match on_main(&app, move || begin(handle, engine)).await {
         Ok(started) => started,
         // The closure never ran, so `begin` never took the claim.
         Err(e) => {
@@ -310,7 +368,7 @@ pub async fn start(app: AppHandle) -> Result<Option<u64>> {
     }
 }
 
-fn begin(app: AppHandle) -> Result<Option<u64>> {
+fn begin(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
     // The user asked to stop while the permission prompts were up. Honour it
     // instead of opening the mic behind their back. No state event: the
     // session never came up, so there is nothing to close out — the `None`
@@ -319,7 +377,7 @@ fn begin(app: AppHandle) -> Result<Option<u64>> {
         ACTIVE.store(false, Ordering::SeqCst);
         return Ok(None);
     }
-    match build_session(app) {
+    match build_session(app, engine) {
         Ok(generation) => Ok(Some(generation)),
         Err(e) => {
             // `build_session` unwinds whatever it installed, so releasing the
@@ -335,7 +393,83 @@ fn begin(app: AppHandle) -> Result<Option<u64>> {
 /// keys events on. Main thread; permissions are already granted, which matters
 /// because reading `inputNode`'s format before that yields a zero-rate format
 /// and installing a tap with it throws in ObjC.
-fn build_session(app: AppHandle) -> Result<u64> {
+fn build_session(app: AppHandle, engine: Engine) -> Result<u64> {
+    let (audio, input, format) = open_microphone()?;
+    let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
+
+    let (sink, tap) = match engine {
+        Engine::Apple => speech_sink(&app, generation)?,
+        #[cfg(target_os = "macos")]
+        Engine::Whisper => {
+            let (pcm, tap) = super::capture::sink(&format)?;
+            (Sink::Pcm(pcm), tap)
+        }
+        // iOS: `super::engine` never answers `Whisper` where whisper.cpp isn't
+        // built, so this is unreachable rather than a fallback.
+        #[cfg(not(target_os = "macos"))]
+        Engine::Whisper => {
+            return Err(Error::Other(
+                "Local dictation isn't available on this platform.".into(),
+            ))
+        }
+    };
+
+    unsafe {
+        input.installTapOnBus_bufferSize_format_block(
+            BUS,
+            TAP_BUFFER_FRAMES,
+            Some(&format),
+            RcBlock::as_ptr(&tap),
+        );
+        audio.prepare();
+        if let Err(e) = audio.startAndReturnError() {
+            // Unwind what we just built rather than leaving a tap installed
+            // and a task running behind a failed start.
+            input.removeTapOnBus(BUS);
+            sink.cancel();
+            return Err(Error::Other(format!(
+                "Couldn't start the microphone: {}",
+                e.localizedDescription()
+            )));
+        }
+    }
+
+    SESSION.set(Some(Session {
+        generation,
+        audio,
+        input,
+        sink,
+        _tap: tap,
+        stopping: false,
+    }));
+    // Audio is flowing. Only now can the frontend show a live mic.
+    emit_state(&app, generation, State::Listening, None);
+    Ok(generation)
+}
+
+/// The input node and the format its tap will deliver.
+fn open_microphone() -> Result<(
+    Retained<AVAudioEngine>,
+    Retained<AVAudioInputNode>,
+    Retained<AVAudioFormat>,
+)> {
+    let audio = unsafe { AVAudioEngine::new() };
+    let input = unsafe { audio.inputNode() };
+    let format = unsafe { input.outputFormatForBus(BUS) };
+    // A zero-rate or channel-less format means the OS gave us no usable input
+    // device. Installing a tap with it raises an ObjC exception, which would
+    // abort the process rather than surface an error, so check first.
+    if unsafe { format.sampleRate() } <= 0.0 || unsafe { format.channelCount() } == 0 {
+        return Err(Error::Other(
+            "No microphone input is available. Check your input device in System Settings > Sound."
+                .into(),
+        ));
+    }
+    Ok((audio, input, format))
+}
+
+/// Apple's recognizer, plus the tap that streams the mic straight into it.
+fn speech_sink(app: &AppHandle, generation: u64) -> Result<(Sink, Tap)> {
     let recognizer = unsafe { SFSpeechRecognizer::init(SFSpeechRecognizer::alloc()) }
         .ok_or_else(|| Error::Other("Dictation doesn't support this Mac's language.".into()))?;
     if !unsafe { recognizer.isAvailable() } {
@@ -355,21 +489,6 @@ fn build_session(app: AppHandle) -> Result<u64> {
         request.setRequiresOnDeviceRecognition(recognizer.supportsOnDeviceRecognition());
     }
 
-    let engine = unsafe { AVAudioEngine::new() };
-    let input = unsafe { engine.inputNode() };
-    let format = unsafe { input.outputFormatForBus(BUS) };
-    // A zero-rate or channel-less format means the OS gave us no usable input
-    // device. Installing a tap with it raises an ObjC exception, which would
-    // abort the process rather than surface an error, so check first.
-    if unsafe { format.sampleRate() } <= 0.0 || unsafe { format.channelCount() } == 0 {
-        return Err(Error::Other(
-            "No microphone input is available. Check your input device in System Settings > Sound."
-                .into(),
-        ));
-    }
-
-    let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
-
     let tap_request = request.clone();
     let tap = RcBlock::new(
         move |buffer: NonNull<AVAudioPCMBuffer>, _when: NonNull<AVAudioTime>| {
@@ -378,44 +497,10 @@ fn build_session(app: AppHandle) -> Result<u64> {
             unsafe { tap_request.appendAudioPCMBuffer(buffer.as_ref()) };
         },
     );
-    unsafe {
-        input.installTapOnBus_bufferSize_format_block(
-            BUS,
-            TAP_BUFFER_FRAMES,
-            Some(&format),
-            RcBlock::as_ptr(&tap),
-        );
-    }
 
     let results = result_handler(app.clone(), generation);
     let task = unsafe { recognizer.recognitionTaskWithRequest_resultHandler(&request, &results) };
-
-    unsafe {
-        engine.prepare();
-        if let Err(e) = engine.startAndReturnError() {
-            // Unwind what we just built rather than leaving a tap installed
-            // and a task running behind a failed start.
-            input.removeTapOnBus(BUS);
-            task.cancel();
-            return Err(Error::Other(format!(
-                "Couldn't start the microphone: {}",
-                e.localizedDescription()
-            )));
-        }
-    }
-
-    SESSION.set(Some(Session {
-        generation,
-        engine,
-        input,
-        request,
-        task,
-        _tap: tap,
-        stopping: false,
-    }));
-    // Audio is flowing. Only now can the frontend show a live mic.
-    emit_state(&app, generation, State::Listening, None);
-    Ok(generation)
+    Ok((Sink::Speech { request, task }, tap))
 }
 
 /// The recognizer's result handler. Runs on the recognizer's queue — the main
@@ -465,8 +550,6 @@ fn result_handler(
 }
 
 pub async fn stop(app: AppHandle) -> Result<()> {
-    // The session stays in `SESSION` — the result handler still needs it to
-    // deliver the final transcript and own the teardown.
     let stopped = on_main(&app, || {
         // Clone the handles out before calling into ObjC: the rule for
         // `SESSION` is that no borrow is ever held across a framework call.
@@ -475,12 +558,12 @@ pub async fn stop(app: AppHandle) -> Result<()> {
             session.stopping = true;
             Some((
                 session.generation,
-                session.engine.clone(),
+                session.audio.clone(),
                 session.input.clone(),
-                session.request.clone(),
+                session.sink.clone(),
             ))
         });
-        let Some((generation, engine, input, request)) = live else {
+        let Some((generation, audio, input, sink)) = live else {
             // No session — but a claimed `ACTIVE` with an empty `SESSION` means
             // a `start` is still sitting on the permission prompts, so leave
             // the request for `begin` to consume. Genuinely idle, record
@@ -490,39 +573,83 @@ pub async fn stop(app: AppHandle) -> Result<()> {
             }
             return None;
         };
+        // The mic goes quiet either way; what happens after depends on the sink.
         unsafe {
-            engine.stop();
+            audio.stop();
             input.removeTapOnBus(BUS);
-            // Deliberately not `task.cancel()`: ending the audio is what makes
-            // the recognizer flush its final result, and that result is what
-            // drives the `stopped` emit. Cancelling would discard it.
-            request.endAudio();
         }
-        Some(generation)
+        match sink {
+            Sink::Speech { request, .. } => {
+                // Deliberately not `task.cancel()`: ending the audio is what
+                // makes the recognizer flush its final result, and that result
+                // is what drives the `stopped` emit. Cancelling would discard
+                // it — so the session stays in `SESSION` for the handler.
+                unsafe { request.endAudio() };
+                Some(Stopping::Flushing(generation))
+            }
+            #[cfg(target_os = "macos")]
+            Sink::Pcm(pcm) => {
+                // Nothing will flush, so the session is over here. Claiming it
+                // now gives the transcription sole ownership of the terminal
+                // state, and releases the mic for the next start.
+                if let Some(session) = claim(generation) {
+                    teardown(session);
+                }
+                Some(Stopping::Captured(generation, pcm))
+            }
+        }
     })
     .await?;
 
-    // Idle: nothing to stop, and no event.
-    let Some(generation) = stopped else {
-        return Ok(());
-    };
-
-    let handle = app.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(FLUSH_TIMEOUT).await;
-        let emit_to = handle.clone();
-        let _ = on_main(&handle, move || {
-            // Still live means the final result never arrived; `claim` is what
-            // keeps this from double-emitting against the result handler.
-            if let Some(session) = claim(generation) {
-                tracing::warn!(
-                    "dictation: no final result before the flush deadline; forcing stop"
-                );
-                teardown(session);
-                emit_state(&emit_to, generation, State::Stopped, None);
-            }
-        })
-        .await;
-    });
-    Ok(())
+    match stopped {
+        // Idle: nothing to stop, and no event.
+        None => Ok(()),
+        Some(Stopping::Flushing(generation)) => {
+            let handle = app.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(FLUSH_TIMEOUT).await;
+                let emit_to = handle.clone();
+                let _ = on_main(&handle, move || {
+                    // Still live means the final result never arrived; `claim`
+                    // is what keeps this from double-emitting against the
+                    // result handler.
+                    if let Some(session) = claim(generation) {
+                        tracing::warn!(
+                            "dictation: no final result before the flush deadline; forcing stop"
+                        );
+                        teardown(session);
+                        emit_state(&emit_to, generation, State::Stopped, None);
+                    }
+                })
+                .await;
+            });
+            Ok(())
+        }
+        #[cfg(target_os = "macos")]
+        Some(Stopping::Captured(generation, pcm)) => {
+            // The mic is already closed, but the model still has to run, which
+            // is seconds rather than milliseconds — the frontend gets a state
+            // of its own for that wait instead of a mic that looks stuck.
+            emit_state(&app, generation, State::Transcribing, None);
+            tokio::spawn(async move {
+                match super::capture::transcribe(pcm).await {
+                    Ok(text) => {
+                        // Empty means the clip had no speech in it (see the
+                        // engine's silence gate); there is nothing to splice
+                        // into the composer, but the session still ends.
+                        if !text.is_empty() {
+                            emit_transcript(&app, generation, text, true);
+                        }
+                        emit_state(&app, generation, State::Stopped, None);
+                    }
+                    Err(e) => {
+                        let message = e.to_string();
+                        tracing::warn!(error = %message, "dictation: transcription failed");
+                        emit_state(&app, generation, State::Error, Some(message));
+                    }
+                }
+            });
+            Ok(())
+        }
+    }
 }

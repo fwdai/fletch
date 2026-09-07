@@ -8,16 +8,25 @@
  *  MDM lock the user can't lift from the app. */
 export type DictationAuthorization = "not_determined" | "authorized" | "denied" | "restricted";
 
+/** Which recognizer a session would use: the platform's (`apple`) or the local
+ *  whisper.cpp model the user can opt into in Settings (`whisper`). The backend
+ *  picks per session — `whisper` only once its model is fully downloaded — so
+ *  this is what the engine *would* be, not just what the setting says. */
+export type DictationEngine = "apple" | "whisper";
+
 export interface DictationAvailability {
   /** False on platforms with no native recognizer (Linux, Windows). The
    *  composer hides the mic button entirely when this is false. */
   supported: boolean;
+  /** Meaningless when `engine` is `whisper`: that engine never calls Apple's
+   *  recognizer, so it neither prompts for this grant nor is blocked by it. */
   speech: DictationAuthorization;
   microphone: DictationAuthorization;
   /** The recognizer for the current locale can run without sending audio to
    *  Apple. When false, recognition uses Apple's servers and sessions are
-   *  capped at roughly one minute. */
+   *  capped at roughly one minute. Always true for `whisper`. */
   on_device: boolean;
+  engine: DictationEngine;
 }
 
 /** Identifies one dictation session: the value `dictationStart` resolved with,
@@ -38,7 +47,10 @@ export interface DictationTranscriptEvent {
   is_final: boolean;
 }
 
-export type DictationState = "listening" | "stopped" | "error";
+/** `transcribing` only happens on the `whisper` engine: the mic is closed but
+ *  the model is still running, so the session is alive and its final transcript
+ *  is still coming. It always precedes a terminal `stopped` or `error`. */
+export type DictationState = "listening" | "transcribing" | "stopped" | "error";
 
 /** Payload of the `dictation:state` event. `error` is a human-readable reason,
  *  set only when `state` is `error`, which only happens when a session that

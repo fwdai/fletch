@@ -1,18 +1,21 @@
 # Voice dictation
 
-The mic button in the agent composer (beside the paperclip) streams the
-platform's native speech recognizer into the prompt box. This document is the
-part that isn't obvious from the code: which platforms have it, what the OS
-demands before it works, and where your audio goes.
+The mic button in the agent composer (beside the paperclip) streams a speech
+recognizer into the prompt box. This document is the part that isn't obvious
+from the code: which platforms have it, what the OS demands before it works,
+and where your audio goes.
 
 ## Platform support
 
-**Apple only.** The implementation is Apple's Speech framework
+**Apple only.** The default implementation is Apple's Speech framework
 (`SFSpeechRecognizer` fed by an `AVAudioEngine` mic tap), reached through the
 `objc2` bindings — the same code compiles for macOS and iOS, with no Swift
 toolchain step. Linux and Windows get a stub that reports `supported: false`,
 and the composer hides the button entirely rather than offer one that can only
 fail.
+
+macOS additionally has a local whisper.cpp engine the user can opt into; see
+[The local engine](#the-local-engine) below.
 
 The flow, end to end:
 
@@ -23,11 +26,12 @@ The flow, end to end:
 | IPC | `src/api/domains/dictation.ts` → `dictation_availability` / `dictation_start` / `dictation_stop` |
 | Events | `src/api/events.ts` — `dictation:transcript`, `dictation:state` |
 | Commands + contract | `src-tauri/src/dictation/mod.rs` |
-| Recognizer | `src-tauri/src/dictation/apple.rs` |
+| Microphone (both engines) | `src-tauri/src/dictation/apple.rs` |
+| Local engine | `src-tauri/src/dictation/capture.rs`, `src-tauri/src/dictation/whisper/` |
 
 ## Permissions
 
-Dictation needs **two** separate TCC grants, prompted on the first
+Apple's recognizer needs **two** separate TCC grants, prompted on the first
 `dictation_start` (speech first, then the microphone, one dialog at a time):
 
 - `NSSpeechRecognitionUsageDescription`
@@ -38,6 +42,12 @@ filename and `tauri-codegen` also embeds into the dev binary — so the prompts
 work under `tauri dev`, not just in a bundle. The speech string is load-bearing
 rather than cosmetic: `requestAuthorization:` crashes the process outright if
 it is missing.
+
+The local engine asks for the microphone only. Opting out of Apple's speech
+service and then being made to authorize it would be a contradiction, so that
+path never calls `requestAuthorization:` — and `dictation_availability`'s
+`speech` field is meaningless when `engine` is `whisper`, which is why the
+button ignores it there.
 
 A denied grant can only be undone in System Settings › Privacy & Security, so
 the button shows a slashed mic and says so. To get the first-run prompts back
@@ -60,6 +70,17 @@ filename.
 The failure mode when this doesn't reach `codesign` is quiet: dev builds work,
 the notarized app lights the mic and transcribes silence. If dictation returns
 an empty transcript only in a released build, check the entitlement first.
+
+## On-device vs Apple's servers
+
+The request sets `requiresOnDeviceRecognition` to whatever the recognizer
+reports as `supportsOnDeviceRecognition()`. Where that is true (a supported
+locale on Apple Silicon, with the assets downloaded) **no audio leaves the
+machine**. Where it is false, recognition is server-backed and Apple caps a
+session at roughly a minute, after which the recognizer ends it itself — the
+composer sees the ordinary final transcript and `stopped`, so a long dictation
+simply stops rather than breaking. `dictation_availability` reports which mode
+this machine is in as `on_device`.
 
 ## Local Whisper engine (opt-in)
 
@@ -114,13 +135,103 @@ Users who already downloaded the old model keep it on disk; the new default is
 a fresh download. `size` is also where the "Downloads a 574 MB model once."
 copy comes from, so the UI can't drift from the pinned file.
 
-## On-device vs Apple's servers
+### How a session runs on it
 
-The request sets `requiresOnDeviceRecognition` to whatever the recognizer
-reports as `supportsOnDeviceRecognition()`. Where that is true (a supported
-locale on Apple Silicon, with the assets downloaded) **no audio leaves the
-machine**. Where it is false, recognition is server-backed and Apple caps a
-session at roughly a minute, after which the recognizer ends it itself — the
-composer sees the ordinary final transcript and `stopped`, so a long dictation
-simply stops rather than breaking. `dictation_availability` reports which mode
-this machine is in as `on_device`.
+Opting in to whisper.cpp in Settings replaces the recognizer, not the mic:
+`apple.rs` still opens the `AVAudioEngine` and installs the tap, and the
+commands, the events and the session-id contract are identical. What changes is
+the tap's *sink*, and what a stop means.
+
+### Dispatch
+
+`dictation_start` and `dictation_availability` both go through
+`dictation::engine`, which answers `whisper` only when **both** hold:
+
+- the `dictation_engine` setting is exactly `"whisper"`, and
+- the pinned model file is fully present (`whisper::models::installed_path`
+  checks the exact byte size, and the download only moves a digest-verified
+  file into place).
+
+Dispatching on the setting alone would let an interrupted download leave the
+mic button dead, so a half-finished install silently falls back to Apple's
+recognizer. `dictation_availability` reports the answer as `engine`, so the UI
+never has to guess which one a click will get.
+
+whisper.cpp is compiled from source by `whisper-rs-sys`, which needs **cmake**
+on the build host. The dependency lives under
+`[target.'cfg(target_os = "macos")'.dependencies]` for two reasons: `metal`
+puts inference on the GPU, and the Linux CI build has no business compiling a
+C++ tree it will never run. iOS therefore keeps Apple's recognizer whatever the
+setting says — `dictation/capture.rs` and `dictation/whisper/engine.rs` don't
+exist there. No link flags of our own are needed; `whisper-rs-sys` emits the
+`c++`/Accelerate/Foundation/Metal/MetalKit lines itself.
+
+### Capture, and why resampling isn't decimation
+
+whisper.cpp takes 16 kHz mono `f32`; the microphone is typically 48 kHz and may
+be stereo. The two conversions are split by thread on purpose:
+
+- **Channel averaging happens in the tap**, on Apple's real-time render thread,
+  because it is a few adds per frame into a pre-sized buffer behind a
+  `try_lock`. Nothing else happens there — no allocation, no session state, no
+  events.
+- **Resampling happens at stop**, in a `spawn_blocking` task, using
+  `AVAudioConverter`. Taking every third sample would be cheap enough for the
+  tap, but decimating without a low-pass folds everything above 8 kHz back into
+  the speech band and the model hears the aliases.
+
+A session is capped at five minutes of audio (`MAX_CAPTURE_SECS`); past that,
+new buffers are dropped, which truncates the transcript rather than failing.
+
+### The silence gate
+
+Whisper does not return nothing for nothing. Given silence or a fraction of a
+second of noise it invents a plausible sentence — "Thank you.", "[BLANK_AUDIO]",
+a line of subtitle boilerplate — because that is what its training data has in
+those places. So `whisper::engine::transcribe` refuses to run the model at all
+when the clip is under `MIN_DURATION` (0.5 s, i.e. a tap on the button) or its
+RMS is under `MIN_RMS` (0.002, i.e. a muted or unplugged input), and returns
+empty text. `whisper.cpp`'s own `suppress_blank` handles the milder case of
+silence at the head or tail of a real utterance.
+
+Empty text emits **no** `dictation:transcript` — only the terminal `stopped` —
+so a mistimed press leaves the composer exactly as it was.
+
+### `transcribing`, and the model's lifetime
+
+Apple's recognizer streams revisions while the user speaks; whisper.cpp has
+nothing to say until the whole clip is in. A stop on the local engine therefore
+closes the mic, emits a new `dictation:state` of **`transcribing`**, runs the
+model, and only then emits the one final transcript and `stopped` (or `error`
+with a readable message). `transcribing` is not terminal: `useDictation` treats
+it as "still stopping, not listening" and keeps the control held, and the button
+swaps the mic for a spinner and says "Transcribing…".
+
+The weights are hundreds of megabytes and take long enough to load to be felt
+between the stop and the text, so a loaded `WhisperContext` is cached and shared
+by every session — then dropped after ten minutes (`IDLE_UNLOAD`) without a
+transcription. One sleeper task at a time checks the last-use `Instant` rather
+than trusting its own deadline, so a session that starts while it sleeps keeps
+the model.
+
+### Testing it without the GUI
+
+`whisper/engine.rs` has an end-to-end test that is `#[ignore]`d because it needs
+real weights. Point it at a model and a **16 kHz mono 16-bit** WAV:
+
+```sh
+curl -L -o /tmp/ggml-small.en-q8_0.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q8_0.bin
+say -o /tmp/hello.wav --data-format=LEI16@16000 "hello world, this is a dictation test"
+
+FLETCH_WHISPER_TEST_MODEL=/tmp/ggml-small.en-q8_0.bin \
+FLETCH_WHISPER_TEST_WAV=/tmp/hello.wav \
+  cargo test --manifest-path src-tauri/Cargo.toml transcribes_a_wav -- --ignored --nocapture
+```
+
+The test asserts the transcript contains "hello world", case-insensitively.
+
+The silence gate needs no model, so its test always runs; set
+`FLETCH_WHISPER_TEST_SILENT_WAV` to try a real recording instead of synthetic
+zeroes. The resampler is likewise covered without a microphone — `capture.rs`
+puts a 440 Hz tone through it and checks the length and loudness that come out.

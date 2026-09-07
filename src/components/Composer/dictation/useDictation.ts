@@ -17,6 +17,7 @@ const UNAVAILABLE: DictationAvailability = {
   speech: "not_determined",
   microphone: "not_determined",
   on_device: false,
+  engine: "apple",
 };
 
 /** Voice dictation for one composer: owns the session state and pipes the
@@ -36,6 +37,10 @@ export function useDictation(input: ComposerInput) {
   // window. Holding the control until the session actually ends is what keeps a
   // quick second click from lighting the mic with nothing behind it.
   const [stopping, setStopping] = useState(false);
+  // The local engine's model is running: the mic is already closed, but the
+  // transcript is still coming. A subset of `stopping` — the button shows it as
+  // busy rather than as a live mic, because it can take a few seconds.
+  const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // The text present when this session started; the transcript is spliced onto
@@ -167,6 +172,14 @@ export function useDictation(input: ComposerInput) {
         // Someone else's session (see `sessionRef`) — the event is app-wide,
         // but the state it reports isn't ours to act on.
         if (e.session !== sessionRef.current) return;
+        if (e.state === "transcribing") {
+          // Not terminal: the mic is off but the final transcript is still
+          // coming, so keep the control held exactly as a flush does.
+          setListeningState(false);
+          setStoppingState(true);
+          setTranscribing(true);
+          return;
+        }
         // `stopped` and `error` both end the session; only `error` has a reason
         // worth showing (the backend's message doubles as the fix instruction).
         // Either one means teardown is done, so the mic is startable again.
@@ -174,6 +187,7 @@ export function useDictation(input: ComposerInput) {
         sessionRef.current = null;
         setListeningState(false);
         setStoppingState(false);
+        setTranscribing(false);
         acceptingRef.current = false;
         if (e.state === "error") setError(e.error ?? "Dictation failed");
       });
@@ -312,5 +326,5 @@ export function useDictation(input: ComposerInput) {
     }
   }
 
-  return { availability, listening, stopping, error, toggle, stop };
+  return { availability, listening, stopping, transcribing, error, toggle, stop };
 }
