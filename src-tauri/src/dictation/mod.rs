@@ -26,6 +26,9 @@ use crate::error::Result;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
+// Compiles everywhere (the catalog and download are plain Rust); the engine
+// itself is gated inside. `pub` so `lib.rs` can seed the models root.
+pub mod whisper;
 
 /// A TCC (privacy) permission state, for either the microphone or speech
 /// recognition. Mirrors both `SFSpeechRecognizerAuthorizationStatus` and
