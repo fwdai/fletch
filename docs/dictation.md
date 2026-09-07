@@ -233,6 +233,63 @@ silence at the head or tail of a real utterance.
 Empty text emits **no** `dictation:transcript` — only the terminal `stopped` —
 so a mistimed press leaves the composer exactly as it was.
 
+### Hands-free: auto-stop
+
+On the local engine a session ends itself once the user has spoken and then
+gone quiet, so dictating is one click rather than two. Apple's recognizer is
+untouched — it streams results and manages its own end-of-utterance, and there
+is no PCM buffer on that path to measure.
+
+The detector is two atomics on the capture buffer, updated by the tap on the
+render thread. Each buffer's RMS is computed in the same pass that averages the
+channels (the samples are already in registers), and counts as speech when it
+clears `max(3 × noise floor, MIN_RMS)`. The noise floor is the running
+*minimum* of buffer RMS, clamped to `NOISE_FLOOR_MIN`: a laptop's built-in mic
+and a hot USB interface differ by more than an order of magnitude in what "a
+quiet room" measures, so a fixed threshold would either stop mid-sentence on
+one or never trigger on the other. A buffer is judged against the floor as it
+stood *before* that buffer is folded in, so a loud first buffer isn't its own
+floor. The lower bound is `engine::MIN_RMS`, the same threshold the
+[silence gate](#the-silence-gate) uses — audio too quiet to transcribe isn't
+worth holding a session open for.
+
+Two consequences of "relative to the floor only", both deliberate. Someone who
+is already talking when the first buffer arrives sets the floor to their own
+voice, and is recognised at the first gap between words (tap buffers are
+~20 ms, so within the first second); the alternative — an absolute "this loud is
+always speech" level — was tried and dropped, because steady noise above it
+(music, air conditioning) refreshed the speech clock forever and the session
+could only end at the capture cap. And steady noise of any level never counts
+as speech, so a session in a loud room ends on the no-speech timeout like a
+silent one.
+
+"When was speech last heard" is one atomic word (milliseconds plus one, zero
+for never) rather than a flag beside a timestamp, so the monitor can never see
+"spoken" paired with a timestamp that hasn't landed and mistake the whole
+session so far for the pause.
+
+One tokio task per whisper session polls those atomics every
+`SILENCE_POLL` (100 ms) and stops on whichever comes first:
+
+| Constant | Value | Ends the session when |
+| --- | --- | --- |
+| `SILENCE_STOP` | 2 s | Something was said, and nothing has been since |
+| `NO_SPEECH_TIMEOUT` | 10 s | Nothing was ever said — clicked the mic, walked away |
+
+The second case stops with no transcript at all: the clip has no speech in it,
+so the gate answers empty and only `stopped` is emitted. The stop itself goes
+through the same path a second click takes (`stop_session`), so
+`transcribing` → transcript → `stopped` arrive in the usual order and the
+frontend needs nothing new.
+
+The monitor is scoped to its session's generation at both ends. It exits as
+soon as its buffer is marked closed — `Sink::cancel`, which every teardown runs
+— and the stop it issues names its own generation, so a monitor that wakes up
+after the user already stopped can't cut the *next* session short.
+
+There is no Settings toggle yet. The three constants are the whole policy, so
+an opt-out would gate the monitor rather than change them.
+
 ### `transcribing`, and the model's lifetime
 
 Apple's recognizer streams revisions while the user speaks; whisper.cpp has

@@ -108,11 +108,13 @@ enum Sink {
 
 impl Sink {
     /// Drop the sink's work without waiting for a result — for a session that
-    /// failed to come up, or one being torn down. The local engine has nothing
-    /// to cancel: its buffer is simply dropped.
+    /// failed to come up, or one being torn down. The local engine's buffer is
+    /// simply dropped; marking it closed is what retires its silence monitor.
     fn cancel(&self) {
-        if let Sink::Speech { task, .. } = self {
-            unsafe { task.cancel() };
+        match self {
+            Sink::Speech { task, .. } => unsafe { task.cancel() },
+            #[cfg(target_os = "macos")]
+            Sink::Pcm(pcm) => pcm.close(),
         }
     }
 }
@@ -170,6 +172,20 @@ async fn on_main<T: Send + 'static>(
 /// Is the session that `generation` belongs to still the live one?
 fn is_live(generation: u64) -> bool {
     SESSION.with_borrow(|s| s.as_ref().is_some_and(|s| s.generation == generation))
+}
+
+/// The live session's capture buffer, if `generation` is still it and it is a
+/// local-engine session. Main thread, like every read of `SESSION`; the buffer
+/// itself is then readable from anywhere.
+#[cfg(target_os = "macos")]
+fn captured(generation: u64) -> Option<std::sync::Arc<super::capture::Pcm>> {
+    SESSION.with_borrow(|slot| {
+        let session = slot.as_ref().filter(|s| s.generation == generation)?;
+        match &session.sink {
+            Sink::Pcm(pcm) => Some(pcm.clone()),
+            Sink::Speech { .. } => None,
+        }
+    })
 }
 
 /// Claim the live session, but only if it is still `generation`. Returning
@@ -358,14 +374,51 @@ pub async fn start(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
         return Err(e);
     }
     let handle = app.clone();
-    match on_main(&app, move || begin(handle, engine)).await {
-        Ok(started) => started,
+    let started = match on_main(&app, move || begin(handle, engine)).await {
+        Ok(started) => started?,
         // The closure never ran, so `begin` never took the claim.
         Err(e) => {
             ACTIVE.store(false, Ordering::SeqCst);
-            Err(e)
+            return Err(e);
         }
+    };
+    // Hands-free stop is the local engine's alone: Apple's recognizer decides
+    // for itself when an utterance has ended, and we have no PCM to measure.
+    #[cfg(target_os = "macos")]
+    if let (Some(generation), Engine::Whisper) = (started, engine) {
+        watch_for_silence(app, generation);
     }
+    Ok(started)
+}
+
+/// Poll a local-engine session's speech tracker and stop it once the user has
+/// spoken and then gone quiet — the whole of hands-free dictation. Stops
+/// through the same path a second click takes, so `transcribing`, the
+/// transcript and `stopped` follow in the usual order.
+///
+/// Everything here is keyed on `generation`: the task exits as soon as the
+/// buffer it was given is closed (any teardown does that), and the stop it
+/// finally issues names its own session, so a monitor that outlives its
+/// session cannot cut a later one short.
+#[cfg(target_os = "macos")]
+fn watch_for_silence(app: AppHandle, generation: u64) {
+    tokio::spawn(async move {
+        let Ok(Some(pcm)) = on_main(&app, move || captured(generation)).await else {
+            return;
+        };
+        loop {
+            tokio::time::sleep(super::capture::SILENCE_POLL).await;
+            if pcm.is_closed() {
+                return;
+            }
+            if pcm.done_talking() {
+                break;
+            }
+        }
+        if let Err(e) = stop_session(app, Some(generation)).await {
+            tracing::warn!(error = %e, "dictation: silence auto-stop failed");
+        }
+    });
 }
 
 fn begin(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
@@ -550,11 +603,21 @@ fn result_handler(
 }
 
 pub async fn stop(app: AppHandle) -> Result<()> {
-    let stopped = on_main(&app, || {
+    stop_session(app, None).await
+}
+
+/// End the live session. `expect` is `None` for a user's stop — whatever is
+/// listening — and `Some(generation)` for the silence monitor, which owns one
+/// session and must be a no-op against any other.
+async fn stop_session(app: AppHandle, expect: Option<u64>) -> Result<()> {
+    let stopped = on_main(&app, move || {
         // Clone the handles out before calling into ObjC: the rule for
         // `SESSION` is that no borrow is ever held across a framework call.
         let live = SESSION.with_borrow_mut(|slot| {
             let session = slot.as_mut()?;
+            if expect.is_some_and(|g| g != session.generation) {
+                return None;
+            }
             session.stopping = true;
             Some((
                 session.generation,
@@ -564,11 +627,14 @@ pub async fn stop(app: AppHandle) -> Result<()> {
             ))
         });
         let Some((generation, audio, input, sink)) = live else {
-            // No session — but a claimed `ACTIVE` with an empty `SESSION` means
-            // a `start` is still sitting on the permission prompts, so leave
-            // the request for `begin` to consume. Genuinely idle, record
-            // nothing: a flag left behind here would cancel a later start.
-            if ACTIVE.load(Ordering::SeqCst) {
+            // No session of ours — but a claimed `ACTIVE` with an empty
+            // `SESSION` means a `start` is still sitting on the permission
+            // prompts, so leave the request for `begin` to consume. Genuinely
+            // idle, record nothing: a flag left behind here would cancel a
+            // later start. A generation-scoped stop never leaves one: its own
+            // session existed, so this is a session that has already ended, and
+            // the pending start is somebody else's.
+            if expect.is_none() && ACTIVE.load(Ordering::SeqCst) {
                 STOP_PENDING.set(true);
             }
             return None;

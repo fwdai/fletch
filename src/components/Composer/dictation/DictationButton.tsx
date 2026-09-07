@@ -13,6 +13,11 @@ const SETTINGS_HINT =
  *  looking for a permission it doesn't use. */
 const MIC_HINT = "Enable Microphone for Fletch in System Settings → Privacy & Security";
 
+/** The local engine ends the session itself once the user stops talking, so the
+ *  tooltip has to say so — a mic that stops on its own otherwise reads as a bug,
+ *  and the pause is the only thing the user has to do. */
+const AUTO_STOP_HINT = "Listening… stops when you pause";
+
 /** Authorization states the app can't recover from on its own — `restricted` is
  *  an MDM/parental lock, `denied` needs a trip to System Settings. */
 const BLOCKED: DictationAuthorization[] = ["denied", "restricted"];
@@ -47,19 +52,21 @@ export function DictationButton({
   if (!availability?.supported) return null;
 
   // The speech grant gates only Apple's recognizer; the local engine is blocked
-  // by the microphone alone.
-  const needsSpeech = availability.engine !== "whisper";
+  // by the microphone alone — and it's the only one that stops itself.
+  const isLocal = availability.engine === "whisper";
   const blocked =
     BLOCKED.includes(availability.microphone) ||
-    (needsSpeech && BLOCKED.includes(availability.speech));
+    (!isLocal && BLOCKED.includes(availability.speech));
   const label = transcribing ? "Transcribing…" : listening ? "Stop dictation" : "Dictate";
 
-  // The last failure outranks the standing permission hint, which outranks the
-  // plain affordance. Blocked still clicks through: permission can be granted
-  // between attempts, and the failed start is what surfaces the reason.
+  // The last failure outranks the standing permission hint, which outranks
+  // what a live session is doing, which outranks the plain affordance. Blocked
+  // still clicks through: permission can be granted between attempts, and the
+  // failed start is what surfaces the reason.
   function tip() {
     if (error) return error;
-    if (blocked) return needsSpeech ? SETTINGS_HINT : MIC_HINT;
+    if (blocked) return isLocal ? MIC_HINT : SETTINGS_HINT;
+    if (listening && isLocal) return AUTO_STOP_HINT;
     return label;
   }
 
