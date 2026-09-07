@@ -34,9 +34,16 @@ pub async fn get_git_state(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<Option<GitState>> {
-    let Some((repo, checkout)) =
-        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
-    else {
+    get_git_state_impl(&supervisor, &agent_id, subdir.as_deref()).await
+}
+
+/// Shared with the remote dispatcher.
+pub(crate) async fn get_git_state_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<Option<GitState>> {
+    let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
         return Ok(None);
     };
     let parent = base_branch(&repo).await;

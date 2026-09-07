@@ -402,16 +402,24 @@ pub async fn list_checkout_tree(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Vec<CheckoutFile>> {
-    let record = supervisor.workspace.agent(&agent_id)?;
+    list_checkout_tree_impl(&supervisor, &agent_id).await
+}
+
+/// Shared with the remote dispatcher.
+pub(crate) async fn list_checkout_tree_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+) -> Result<Vec<CheckoutFile>> {
+    let record = supervisor.workspace.agent(agent_id)?;
     if record.repos.len() <= 1 {
-        let (checkout, parent) = primary_checkout(&supervisor, &agent_id)?;
+        let (checkout, parent) = primary_checkout(supervisor, agent_id)?;
         return Ok(checkout_tree_files(&checkout, &parent, None).await);
     }
     let mut out = Vec::new();
     for repo in &record.repos {
         // One broken checkout shouldn't blank the whole tree — skip it and
         // keep listing the others.
-        let Ok(checkout) = repo.checkout_path(&agent_id) else {
+        let Ok(checkout) = repo.checkout_path(agent_id) else {
             continue;
         };
         let parent = diff_base(repo).unwrap_or_else(|| "main".to_string());
@@ -484,7 +492,17 @@ pub async fn read_checkout_file(
     path: String,
     base_mode: Option<DiffBaseMode>,
 ) -> Result<CheckoutFileContents> {
-    let (checkout, parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
+    read_checkout_file_impl(&supervisor, &agent_id, &path, base_mode).await
+}
+
+/// Shared with the remote dispatcher.
+pub(crate) async fn read_checkout_file_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    path: &str,
+    base_mode: Option<DiffBaseMode>,
+) -> Result<CheckoutFileContents> {
+    let (checkout, parent, path) = checkout_scope_for_path(supervisor, agent_id, path)?;
     let parent = match base_mode.unwrap_or_default() {
         DiffBaseMode::Head => "HEAD".to_string(),
         DiffBaseMode::Fork => parent,
@@ -558,7 +576,17 @@ pub async fn get_file_diff(
     path: String,
     base_mode: Option<DiffBaseMode>,
 ) -> Result<String> {
-    let (checkout, parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
+    get_file_diff_impl(&supervisor, &agent_id, &path, base_mode).await
+}
+
+/// Shared with the remote dispatcher.
+pub(crate) async fn get_file_diff_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    path: &str,
+    base_mode: Option<DiffBaseMode>,
+) -> Result<String> {
+    let (checkout, parent, path) = checkout_scope_for_path(supervisor, agent_id, path)?;
     let parent = match base_mode.unwrap_or_default() {
         DiffBaseMode::Head => "HEAD".to_string(),
         DiffBaseMode::Fork => parent,

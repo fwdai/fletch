@@ -12,6 +12,10 @@ mod git_ops;
 mod git_state;
 mod github;
 mod issues;
+// Paired-device remote access is a desktop feature; the module it drives is
+// gated the same way.
+#[cfg(desktop)]
+mod remote;
 mod run;
 mod session;
 mod shell;
@@ -26,6 +30,8 @@ pub use git_ops::*;
 pub use git_state::*;
 pub use github::*;
 pub use issues::*;
+#[cfg(desktop)]
+pub use remote::*;
 pub use run::*;
 pub use session::*;
 pub use shell::*;

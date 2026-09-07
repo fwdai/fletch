@@ -8,6 +8,7 @@ import { useAppStore } from "@/store";
 import { IS_MAC } from "@/util/platform";
 import { ContainerAuth } from "./ContainerAuth";
 import { DictationSection } from "./DictationSection";
+import { MobileDevices } from "./MobileDevices";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 // A container runtime can start or stop while this pane stays open, so we
@@ -253,6 +254,8 @@ export function GeneralPane() {
         )}
         <ContainerAuth />
       </SetGroup>
+
+      <MobileDevices />
 
       <SetGroup label="Diagnostics" last>
         <SetRow

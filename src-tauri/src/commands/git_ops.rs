@@ -19,11 +19,22 @@ pub async fn push_agent(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<String> {
-    let (repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
+    push_agent_impl(supervisor.inner(), app, agent_id, subdir.as_deref()).await
+}
+
+/// Shared with the remote dispatcher, so a push from the phone triggers the
+/// same background PR-state fetch the desktop push does.
+pub(crate) async fn push_agent_impl(
+    supervisor: &Arc<Supervisor>,
+    app: AppHandle,
+    agent_id: String,
+    subdir: Option<&str>,
+) -> Result<String> {
+    let (repo, checkout) = agent_repo_checkout(supervisor, &agent_id, subdir)?;
     let branch = repo_branch(&repo)?.to_string();
     let summary = git::push(&checkout, &branch, false).await?;
     // After successful push, fetch PR state in background
-    supervisor.inner().fetch_and_emit_pr_state(app, agent_id);
+    supervisor.fetch_and_emit_pr_state(app, agent_id);
     Ok(summary)
 }
 
@@ -35,8 +46,18 @@ pub async fn commit_agent(
     message: String,
     subdir: Option<String>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    git::commit(&checkout, &message).await
+    commit_agent_impl(&supervisor, &agent_id, &message, subdir.as_deref()).await
+}
+
+/// Shared with the remote dispatcher.
+pub(crate) async fn commit_agent_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    message: &str,
+    subdir: Option<&str>,
+) -> Result<()> {
+    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    git::commit(&checkout, message).await
 }
 
 /// Discard every uncommitted change in the checkout (destructive).

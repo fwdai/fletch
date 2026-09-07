@@ -29,6 +29,15 @@ pub fn allocate_draft_name(
     supervisor: State<'_, Arc<Supervisor>>,
     drafts: Vec<String>,
 ) -> Result<String> {
+    allocate_draft_name_impl(&supervisor, drafts)
+}
+
+/// Shared with the remote dispatcher, so a phone's draft allocation reserves
+/// against the same live set.
+pub(crate) fn allocate_draft_name_impl(
+    supervisor: &Supervisor,
+    drafts: Vec<String>,
+) -> Result<String> {
     let mut reserved = supervisor.workspace.live_agent_ids()?;
     reserved.extend(drafts);
     Ok(names::allocate(&reserved))

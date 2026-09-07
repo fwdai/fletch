@@ -28,6 +28,10 @@ mod new_project;
 mod oauth;
 mod power;
 mod pty_session;
+// Paired-device remote access (Settings → Mobile devices). Desktop-only: the
+// host is the machine agents run on, never the phone.
+#[cfg(desktop)]
+mod remote;
 mod roadmap;
 mod rpc;
 mod run_detect;
@@ -1589,6 +1593,8 @@ pub fn run() {
             let db_for_wf = db.clone();
             let db_for_roadmap = db.clone();
             let db_for_merge_sweep = db.clone();
+            #[cfg(desktop)]
+            let db_for_remote = db.clone();
             let workspace = Arc::new(WorkspaceManager::new(db));
 
             // Drop RPC mailboxes left by agents that are gone. Teardown removes
@@ -1654,6 +1660,47 @@ pub fn run() {
             // At most one `claude setup-token` capture runs at a time; the
             // code-submit / cancel commands reach it through this slot.
             app.manage(ClaudeSetupState::default());
+
+            // Paired-device remote access. The event taps go in unconditionally
+            // (with nothing connected, forwarding short-circuits before it
+            // touches a payload); the listener itself only starts when the user
+            // has turned it on. A failure here is never fatal — the app is a
+            // desktop app first.
+            #[cfg(desktop)]
+            {
+                let dispatch = Arc::new(remote::SupervisorDispatch::new(
+                    app.handle().clone(),
+                    supervisor.clone(),
+                ));
+                // `RemoteState::new` cannot fail: the state has to be managed
+                // even when the device store is unusable, or `remote_status`
+                // panics the moment Settings opens. Such a failure travels as
+                // `RemoteStatus::error` instead.
+                let state = remote::RemoteState::new(&data_dir.join("remote"), dispatch);
+                remote::install_taps(app.handle(), state.clone());
+                let (enabled, port) = {
+                    let conn = db_for_remote.lock();
+                    (
+                        remote::parse_enabled(
+                            database::get_setting(&conn, remote::ENABLED_SETTING).as_deref(),
+                        ),
+                        remote::parse_port(
+                            database::get_setting(&conn, remote::PORT_SETTING).as_deref(),
+                        ),
+                    )
+                };
+                if enabled {
+                    // `start` binds synchronously but spawns onto the async
+                    // runtime, so it has to run inside it.
+                    let state = state.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = state.start(port) {
+                            tracing::error!(error = %e, "remote: autostart failed");
+                        }
+                    });
+                }
+                app.manage(state);
+            }
 
             // Menu-bar tray (close-to-tray + status line) — the second half of
             // the laptop-GUI hardening feature; the first half (the activity
@@ -1916,6 +1963,14 @@ pub fn run() {
             commands::detect_editors,
             commands::open_in_editor,
             commands::submit_feedback,
+            // Paired-device remote access. `generate_handler!` takes a flat
+            // path list with no room for a `cfg`, so these ride along
+            // unconditionally; the module behind them is desktop-gated, which
+            // is the only target this app ships for.
+            commands::remote_status,
+            commands::remote_set_enabled,
+            commands::remote_begin_pairing,
+            commands::remote_revoke_device,
             dictation::dictation_availability,
             dictation::dictation_start,
             dictation::dictation_stop,
