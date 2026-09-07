@@ -41,3 +41,13 @@ docs/superpowers/
 
 # Material Icon Theme SVGs copied at build (see vite.config.ts)
 public/file-icons/
+
+# Mobile companion app (mobile/). The Rust/Node ignores above contain a slash,
+# so git anchors them to the repo root and they do NOT cover mobile/ — hence
+# these explicit entries. Tauri recommends committing the mobile Xcode project
+# in gen/, so it is re-included after the target/ rule.
+mobile/node_modules/
+mobile/dist/
+mobile/.vite/
+mobile/src-tauri/target/
+!mobile/src-tauri/gen/
