@@ -32,23 +32,23 @@ export function DictationSection() {
           from under someone who wanted the other model — and weights on disk
           outlive the opt-in, so the Remove action has to stay reachable too. */}
       {status?.models.map((model) => (
-          <ModelRow
-            key={model.id}
-            model={model}
-            status={status}
-            progress={progress}
-            onSelect={() => select(model.id)}
-            onDownload={() => download(model.id)}
-            onRemove={async () => {
-              // Deleting the weights under an enabled engine would leave it
-              // silently falling back, so the opt-in goes first — and only if
-              // it actually persisted do the weights follow. A model that
-              // isn't the selected one is nothing the engine would load.
-              if (enabled && model.id === status.model.id && !(await setEnabled(false))) return;
-              remove(model.id);
-            }}
-          />
-        ))}
+        <ModelRow
+          key={model.id}
+          model={model}
+          status={status}
+          progress={progress}
+          onSelect={() => select(model.id)}
+          onDownload={() => download(model.id)}
+          onRemove={async () => {
+            // Deleting the weights under an enabled engine would leave it
+            // silently falling back, so the opt-in goes first — and only if
+            // it actually persisted do the weights follow. A model that
+            // isn't the selected one is nothing the engine would load.
+            if (enabled && model.id === status.model.id && !(await setEnabled(false))) return;
+            remove(model.id);
+          }}
+        />
+      ))}
     </SetGroup>
   );
 }
