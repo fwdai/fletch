@@ -390,6 +390,7 @@ export function Composer({
             availability={dictation.availability}
             listening={dictation.listening}
             stopping={dictation.stopping}
+            transcribing={dictation.transcribing}
             error={dictation.error}
             onToggle={dictation.toggle}
           />

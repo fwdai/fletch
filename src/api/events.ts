@@ -186,7 +186,8 @@ export function onDictationTranscript(
   return listen<DictationTranscriptEvent>("dictation:transcript", (event) => cb(event.payload));
 }
 
-/** Dictation session lifecycle: listening → stopped, or error with a reason.
+/** Dictation session lifecycle: listening → (transcribing) → stopped, or error
+ *  with a reason.
  *  App-wide, like the session itself — every subscriber sees every session's
  *  events, so a consumer that owns one has to ignore the rest (a composer that
  *  unmounted mid-session leaves its terminal event to land on the next one). */

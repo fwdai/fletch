@@ -9,7 +9,8 @@ export const dictationApi = {
   /** Whether native dictation exists on this platform and what the user has
    *  authorized so far. Cheap; safe to call on every composer mount. */
   dictationAvailability: () => invoke<DictationAvailability>("dictation_availability"),
-  /** Start listening. Requests mic + speech permission on first use. Rejects
+  /** Start listening. Requests whatever permission the chosen engine needs on
+   *  first use — mic + speech for `apple`, mic alone for `whisper`. Rejects
    *  with a message if permission is denied or the recognizer can't start.
    *
    *  Resolves with the session id once audio is flowing: `dictation:state`
@@ -26,7 +27,9 @@ export const dictationApi = {
    *  `dictation:state` `stopped`. The final transcript is best-effort — a
    *  recognizer that hasn't flushed within a couple of seconds is torn down
    *  and only `stopped` arrives — so treat `stopped` as the point to commit
-   *  whatever text was last received. No-op when not listening. */
+   *  whatever text was last received. The `whisper` engine has nothing to
+   *  flush and everything to compute: it emits `transcribing` first, then the
+   *  one final transcript, then `stopped`. No-op when not listening. */
   dictationStop: () => invoke<void>("dictation_stop"),
 
   /** The local (Whisper) engine's opt-in plus the state of its weights. Cheap
