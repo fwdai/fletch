@@ -69,7 +69,6 @@ pub async fn transcribe(samples: Vec<f32>) -> Result<String> {
     if !has_speech(&samples) {
         return Ok(String::new());
     }
-    arm_unload();
     // Inference pins a core for seconds; it has no business on the async
     // runtime's worker threads.
     tokio::task::spawn_blocking(move || {
@@ -111,6 +110,11 @@ fn context() -> Result<Arc<WhisperContext>> {
         ctx: ctx.clone(),
         used: Instant::now(),
     });
+    // Armed under the same lock the sleeper unloads under, so "a model is
+    // loaded" and "a sleeper is watching it" change together: the sleeper can't
+    // retire between our check and our load and leave this context resident
+    // forever.
+    arm_unload();
     Ok(ctx)
 }
 
@@ -138,24 +142,24 @@ fn load(path: &Path) -> Result<WhisperContext> {
 /// Release the model once it has gone [`IDLE_UNLOAD`] without a transcription.
 /// One sleeper at a time; it re-sleeps while the model is still in use rather
 /// than unloading on its own deadline.
+///
+/// Called with [`CONTEXT`] held (see [`context`]), and the sleeper disarms
+/// itself while holding it too, so the flag and the cache never disagree.
+/// Spawned on the app runtime by handle rather than `tokio::spawn`, because
+/// the caller is on a blocking thread.
 fn arm_unload() {
     if UNLOAD_ARMED.swap(true, Ordering::SeqCst) {
         return;
     }
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(IDLE_UNLOAD).await;
-            let unloaded = {
-                let mut slot = CONTEXT.lock();
-                let idle = !slot
-                    .as_ref()
-                    .is_some_and(|l| l.used.elapsed() < IDLE_UNLOAD);
-                if idle {
-                    *slot = None;
-                }
-                idle
-            };
-            if unloaded {
+            let mut slot = CONTEXT.lock();
+            let idle = !slot
+                .as_ref()
+                .is_some_and(|l| l.used.elapsed() < IDLE_UNLOAD);
+            if idle {
+                *slot = None;
                 UNLOAD_ARMED.store(false, Ordering::SeqCst);
                 return;
             }
