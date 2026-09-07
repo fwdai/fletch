@@ -79,6 +79,13 @@ tauri-plugin-window-state = "2"
 # transitively; pinned to the lockfile's major.
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+# Local dictation (dictation/whisper/): whisper.cpp, built from source by
+# whisper-rs-sys. macOS-only on purpose — `metal` puts inference on the GPU,
+# and the Linux CI build has no reason to compile a C++/CMake tree it never
+# runs (iOS keeps the platform recognizer). Requires cmake on the build host.
+# `tracing_backend` is what makes `install_logging_hooks` land whisper.cpp's and
+# GGML's own logging in our log file instead of on stderr.
+whisper-rs = { version = "0.16", features = ["metal", "tracing_backend"] }
 
 # Voice dictation (dictation/apple.rs): Apple's Speech framework driven by an
 # AVAudioEngine mic tap. objc2 + objc2-foundation + block2 are already in the
@@ -110,6 +117,9 @@ objc2-avf-audio = { version = "0.3", default-features = false, features = [
     "AVAudioFormat",
     "AVAudioTime",
     "AVAudioTypes",
+    # The local engine resamples the mic to whisper.cpp's 16 kHz with
+    # `AVAudioConverter` (dictation/capture.rs) rather than decimating by hand.
+    "AVAudioConverter",
 ] }
 # Microphone (as opposed to speech) authorization only: TCC's mic status lives
 # on AVCaptureDevice, which is in AVFoundation proper rather than AVFAudio.
