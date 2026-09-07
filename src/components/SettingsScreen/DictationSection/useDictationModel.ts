@@ -11,13 +11,16 @@ export interface DictationModelView {
   /** `null` until the first fetch resolves. */
   status: DictationModelStatus | null;
   /** The latest progress event, or `null` before one arrives (and after an
-   *  action that makes it stale). */
+   *  action that makes it stale). Carries `model_id`, so a row must check it
+   *  is the one being described. */
   progress: DictationModelProgressEvent | null;
-  download: () => void;
-  remove: () => void;
+  select: (id: string) => void;
+  download: (id: string) => void;
+  remove: (id: string) => void;
 }
 
-/** The model's install state, kept live. The download runs in the backend and
+/** The model choice and each candidate's install state, kept live. The
+ *  download runs in the backend and
  *  outlives this screen, so the state is fetched on mount (for a screen that
  *  opened mid-download, or after a failure whose event we never saw) and then
  *  followed through `dictation:model_progress`. Terminal events change what's
@@ -64,8 +67,20 @@ export function useDictationModel(): DictationModelView {
       .catch(() => {});
   }, []);
 
-  const download = useCallback(() => act(api.dictationModelDownload), [act]);
-  const remove = useCallback(() => act(api.dictationModelRemove), [act]);
+  const select = useCallback((id: string) => act(() => api.setDictationModel(id)), [act]);
+  // A download the user asked for on a row is also a choice of that row's
+  // model, so it selects first — `dictation_model_download` only ever fetches
+  // the selected one. Selecting what is already selected is a harmless
+  // re-write, which keeps this one path for both a fresh download and a retry.
+  const download = useCallback(
+    (id: string) =>
+      act(async () => {
+        await api.setDictationModel(id);
+        return api.dictationModelDownload();
+      }),
+    [act],
+  );
+  const remove = useCallback((id: string) => act(() => api.dictationModelRemove(id)), [act]);
 
-  return { status, progress, download, remove };
+  return { status, progress, select, download, remove };
 }

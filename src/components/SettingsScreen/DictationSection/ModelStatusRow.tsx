@@ -1,30 +1,32 @@
-import type { DictationModelProgressEvent, DictationModelStatus } from "@/api";
+import type { DictationModel, DictationModelProgressEvent, DictationModelStatus } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { downloadPercent, formatBytes } from "@/util/format";
 
-/** The line under the engine toggle: what the weights are doing and the one
- *  action that applies. Shown while the engine is on, and also while it's off
- *  but the model is still on disk — otherwise turning the engine off would
- *  strand half a gigabyte with no way to reclaim it. */
+/** What one model's weights are doing and the single action that applies, for
+ *  the line under its label in the chooser. Both the in-flight flag and the
+ *  progress event are process-wide, so each is checked against this model:
+ *  changing the selection doesn't cancel a download, and the bar belongs on
+ *  whichever row is actually being fetched. */
 export function ModelStatusRow({
-  enabled,
+  model,
   status,
   progress,
   onDownload,
   onRemove,
 }: {
-  enabled: boolean;
+  model: DictationModel;
   status: DictationModelStatus;
   progress: DictationModelProgressEvent | null;
   onDownload: () => void;
   onRemove: () => void;
 }) {
-  const size = formatBytes(status.model.size);
-  const error = progress?.state === "error" ? progress.error || "Download failed" : null;
+  const size = formatBytes(model.size);
+  const mine = progress?.model_id === model.id ? progress : null;
+  const error = mine?.state === "error" ? mine.error || "Download failed" : null;
   const busy =
-    status.downloading || progress?.state === "downloading" || progress?.state === "verifying";
-
-  if (!enabled && !status.installed && !busy && !error) return null;
+    status.downloading_id === model.id ||
+    mine?.state === "downloading" ||
+    mine?.state === "verifying";
 
   let line: React.ReactNode;
   let action: React.ReactNode;
@@ -40,18 +42,18 @@ export function ModelStatusRow({
   } else if (busy) {
     // No progress event yet (a screen that opened mid-download) means no
     // percentage to show, so the bar runs indeterminate.
-    const pct = progress ? downloadPercent(progress.received, progress.total) : null;
+    const pct = mine ? downloadPercent(mine.received, mine.total) : null;
     bar = pct;
     line = (
       <span className="set-dict-status">
-        {progress?.state === "verifying"
+        {mine?.state === "verifying"
           ? "Verifying…"
           : pct === null
             ? "Downloading…"
-            : `Downloading ${pct}% · ${formatBytes(progress?.received ?? 0)} of ${size}`}
+            : `Downloading ${pct}% · ${formatBytes(mine?.received ?? 0)} of ${size}`}
       </span>
     );
-  } else if (status.installed) {
+  } else if (model.installed) {
     line = <span className="set-dict-status">Installed · {size}</span>;
     action = (
       <Button variant="outline" size="sm" onClick={onRemove}>

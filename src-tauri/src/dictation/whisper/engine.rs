@@ -13,7 +13,7 @@
 //! dictated one sentence this morning shouldn't still be paying half a gigabyte
 //! of resident memory for it at lunchtime.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use super::models;
+use super::models::{self, WhisperModel};
 use crate::error::{Error, Result};
 
 /// The only input rate whisper.cpp accepts; capture resamples to it.
@@ -48,27 +48,43 @@ static CONTEXT: Mutex<Option<Loaded>> = Mutex::new(None);
 /// up timers.
 static UNLOAD_ARMED: AtomicBool = AtomicBool::new(false);
 
+/// One transcription at a time. Inference already saturates the GPU or a
+/// core, so two wouldn't finish sooner — and serialising them is what makes a
+/// model switch clean: the previous decode has dropped its handle on the old
+/// context before [`context`] clears the slot and loads the new one, so the two
+/// models are never resident together. Taken before [`CONTEXT`], never after.
+static DECODING: Mutex<()> = Mutex::new(());
+
 struct Loaded {
     ctx: Arc<WhisperContext>,
+    /// The weights this context came from. The user can change the model in
+    /// Settings between one session and the next, and a `WhisperContext` says
+    /// nothing about which file it holds — so the cache is keyed on the path
+    /// rather than assumed to be the current choice.
+    path: PathBuf,
     /// When the model was last handed to a transcription — the unload sleeper
     /// compares this against [`IDLE_UNLOAD`] rather than trusting its own
     /// deadline, so a session that started while it slept keeps the model.
     used: Instant,
 }
 
-/// Transcribe one whole clip of 16 kHz mono audio.
+/// Transcribe one whole clip of 16 kHz mono audio with `model`, the user's
+/// choice as the caller read it from settings — the engine has no database
+/// handle of its own, and a session should use the model that was chosen when
+/// it stopped.
 ///
 /// `Ok("")` for a clip with no speech in it (see [`MIN_DURATION`] and
 /// [`MIN_RMS`]) — that answer costs nothing, because the gate runs before the
 /// model is even loaded.
-pub async fn transcribe(samples: Vec<f32>) -> Result<String> {
+pub async fn transcribe(model: &'static WhisperModel, samples: Vec<f32>) -> Result<String> {
     if !has_speech(&samples) {
         return Ok(String::new());
     }
     // Inference pins a core for seconds; it has no business on the async
     // runtime's worker threads.
     tokio::task::spawn_blocking(move || {
-        let ctx = context()?;
+        let _one_at_a_time = DECODING.lock();
+        let ctx = context(model)?;
         decode(&ctx, &samples)
     })
     .await
@@ -86,24 +102,29 @@ fn rms(samples: &[f32]) -> f32 {
     (sum / samples.len() as f64).sqrt() as f32
 }
 
-/// The cached model, loading it on first use. Also stamps the load as used,
-/// which is what keeps [`arm_unload`]'s sleeper from taking it out from under a
-/// session that has only just started.
-fn context() -> Result<Arc<WhisperContext>> {
-    let mut slot = CONTEXT.lock();
-    if let Some(loaded) = slot.as_mut() {
-        loaded.used = Instant::now();
-        return Ok(loaded.ctx.clone());
-    }
-    let path = models::installed_path(models::default_model()).ok_or_else(|| {
+/// The cached context for `model`, loading it on first use. Also stamps the
+/// load as used, which is what keeps [`arm_unload`]'s sleeper from taking it
+/// out from under a session that has only just started.
+fn context(model: &WhisperModel) -> Result<Arc<WhisperContext>> {
+    let path = models::installed_path(model).ok_or_else(|| {
         Error::Other(
             "The local dictation model isn't installed. Download it in Settings > Dictation."
                 .into(),
         )
     })?;
+    let mut slot = CONTEXT.lock();
+    if let Some(loaded) = slot.as_mut().filter(|l| l.path == path) {
+        loaded.used = Instant::now();
+        return Ok(loaded.ctx.clone());
+    }
+    // Drop a context for the previous choice before loading the new one, so a
+    // switch doesn't hold both models resident. This is the last handle: any
+    // decode that held another finished before we took `DECODING`.
+    *slot = None;
     let ctx = Arc::new(load(&path)?);
     *slot = Some(Loaded {
         ctx: ctx.clone(),
+        path,
         used: Instant::now(),
     });
     // Armed under the same lock the sleeper unloads under, so "a model is
@@ -215,10 +236,12 @@ mod tests {
             Some(p) => read_wav(Path::new(&p)),
             None => vec![0.0; SAMPLE_RATE as usize * 2],
         };
-        assert_eq!(transcribe(silence).await.unwrap(), "");
+        // Any catalog entry will do: the gate answers before the model matters.
+        let model = models::platform_default();
+        assert_eq!(transcribe(model, silence).await.unwrap(), "");
         // Too short to be an utterance, however loud.
         assert_eq!(
-            transcribe(vec![0.5; SAMPLE_RATE as usize / 10])
+            transcribe(model, vec![0.5; SAMPLE_RATE as usize / 10])
                 .await
                 .unwrap(),
             ""

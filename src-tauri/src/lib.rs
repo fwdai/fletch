@@ -1921,6 +1921,7 @@ pub fn run() {
             dictation::dictation_stop,
             dictation::dictation_model_status,
             dictation::set_dictation_engine,
+            dictation::set_dictation_model,
             dictation::dictation_model_download,
             dictation::dictation_model_remove,
         ])

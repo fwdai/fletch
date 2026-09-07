@@ -113,15 +113,18 @@ fn append_mono(pcm: &Pcm, buffer: &AVAudioPCMBuffer) {
     }
 }
 
-/// Take the session's audio and transcribe it. Consumes the buffer: the session
-/// is already over by the time this runs.
-pub(super) async fn transcribe(pcm: Arc<Pcm>) -> Result<String> {
+/// Take the session's audio and transcribe it with `model`. Consumes the
+/// buffer: the session is already over by the time this runs.
+pub(super) async fn transcribe(
+    pcm: Arc<Pcm>,
+    model: &'static super::whisper::models::WhisperModel,
+) -> Result<String> {
     let rate = pcm.rate;
     let samples = std::mem::take(&mut *pcm.samples.lock());
     let samples = tokio::task::spawn_blocking(move || resample(rate, samples))
         .await
         .map_err(|e| Error::Other(format!("dictation: resampling task failed: {e}")))??;
-    engine::transcribe(samples).await
+    engine::transcribe(model, samples).await
 }
 
 /// Extra output capacity for the converter's priming, which can emit a little

@@ -1,4 +1,4 @@
-//! Getting the pinned weights onto disk.
+//! Getting a catalog entry's pinned weights onto disk.
 //!
 //! The download is fire-and-forget: half a gigabyte can't be awaited by the
 //! Settings toggle that asks for it, so [`download`] returns the moment the
@@ -11,9 +11,9 @@
 //! [`models::installed_path`] treat "right size, right place" as verified.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::AppHandle;
 
@@ -21,10 +21,11 @@ use super::models::{self, WhisperModel};
 use crate::download;
 use crate::error::{Error, Result};
 
-/// Guards the one download allowed at a time. The Settings toggle and its
-/// retry button both reach [`download`], and two streams would share one
-/// per-process temp path.
-static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// The one download allowed at a time, and which model it is for. The Settings
+/// rows all reach [`download`], and two streams would share one per-process
+/// temp path — so a second request is refused rather than queued, and the id is
+/// what lets [`status`] say whose bar is moving.
+static IN_FLIGHT: Mutex<Option<&'static WhisperModel>> = Mutex::new(None);
 
 /// How far along the model install is. `Verifying` is the tail of the
 /// download, not a separate pass — the digest is computed as bytes arrive.
@@ -49,48 +50,43 @@ struct Progress {
     error: Option<String>,
 }
 
-/// A snapshot of the default model's install state. `downloading` is this
-/// process's in-flight flag, so it is honest across a Settings screen that
-/// mounted mid-download and missed the events so far.
+/// A snapshot of one model's install state. `downloading` is this process's
+/// in-flight flag, so it is honest across a Settings screen that mounted
+/// mid-download and missed the events so far.
+///
+/// `installed` is about the model asked after, but `downloading` /
+/// `downloading_id` are process-wide: switching the selection while another
+/// model is being fetched doesn't cancel it, so the status reports whose
+/// download is actually running rather than pretending there is none.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Status {
     pub installed: bool,
     pub downloading: bool,
+    pub downloading_id: Option<&'static str>,
 }
 
-pub fn status() -> Status {
+pub fn status(model: &WhisperModel) -> Status {
+    let in_flight = *IN_FLIGHT.lock();
     Status {
-        installed: models::installed_path(models::default_model()).is_some(),
-        downloading: IN_FLIGHT.load(Ordering::Acquire),
+        installed: models::installed_path(model).is_some(),
+        downloading: in_flight.is_some(),
+        downloading_id: in_flight.map(|m| m.id),
     }
 }
 
-/// Start fetching the default model, unless it is already installed or a
-/// download is running — either way the returned status says what the caller
-/// asked about, so an opt-in and a retry are the same call.
-pub fn download(app: AppHandle) -> Status {
-    let model = models::default_model();
-    if models::installed_path(model).is_some() {
-        return Status {
-            installed: true,
-            downloading: false,
-        };
-    }
-    // The claim on the flag is the guard, so it's also the "already running"
-    // check — a separate read first would just be a wider race window.
-    if IN_FLIGHT
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return Status {
-            installed: false,
-            downloading: true,
-        };
+/// Start fetching `model`, unless it is already installed or a download is
+/// running — either way the returned status says what the caller asked about,
+/// so an opt-in and a retry are the same call.
+pub fn download(app: AppHandle, model: &'static WhisperModel) -> Status {
+    // Taking the slot is the guard, so it's also the "already running" check —
+    // a separate read first would just be a wider race window.
+    if models::installed_path(model).is_some() || !claim(model) {
+        return status(model);
     }
 
     tauri::async_runtime::spawn(async move {
         let result = run(&app, model).await;
-        IN_FLIGHT.store(false, Ordering::Release);
+        *IN_FLIGHT.lock() = None;
         match result {
             Ok(()) => emit(&app, model, State::Installed, model.size, None),
             Err(e) => {
@@ -102,19 +98,28 @@ pub fn download(app: AppHandle) -> Status {
     Status {
         installed: false,
         downloading: true,
+        downloading_id: Some(model.id),
     }
 }
 
-/// Delete the installed weights, so the disk cost of an engine the user turned
-/// off doesn't linger. Returns the state after the attempt.
-pub fn remove() -> Status {
-    let model = models::default_model();
+fn claim(model: &'static WhisperModel) -> bool {
+    let mut slot = IN_FLIGHT.lock();
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(model);
+    true
+}
+
+/// Delete a model's installed weights, so the disk cost of one the user isn't
+/// using doesn't linger. Returns the state after the attempt.
+pub fn remove(model: &WhisperModel) -> Status {
     if let Some(path) = models::installed_path(model) {
         if let Err(e) = std::fs::remove_file(&path) {
             tracing::warn!(error = %e, path = %path.display(), "removing whisper model failed");
         }
     }
-    status()
+    status(model)
 }
 
 async fn run(app: &AppHandle, model: &'static WhisperModel) -> Result<()> {
@@ -255,8 +260,9 @@ mod tests {
     /// installed — the status must say so rather than panic on the missing path.
     #[test]
     fn status_without_a_models_root_is_not_installed() {
-        let s = status();
+        let s = status(models::platform_default());
         assert!(!s.installed);
         assert!(!s.downloading);
+        assert!(s.downloading_id.is_none());
     }
 }

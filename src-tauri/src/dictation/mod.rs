@@ -172,58 +172,87 @@ fn emit_state(app: &AppHandle, session: u64, state: State, error: Option<String>
     );
 }
 
-/// The local engine's opt-in state, plus the one model it would use. Separate
-/// from [`Availability`], which describes the platform recognizer: this is the
-/// Settings section's contract, and both sides can be true at once (the engine
-/// is chosen, the weights are still downloading).
+/// The local engine's opt-in state, the model it is set to use, and the
+/// catalog to choose from. Separate from [`Availability`], which describes the
+/// platform recognizer: this is the Settings section's contract, and both
+/// sides can be true at once (the engine is chosen, the weights are still
+/// downloading).
 #[derive(Clone, Serialize)]
 pub struct ModelStatus {
     /// The `dictation_engine` setting selects the local engine.
     enabled: bool,
-    /// The weights are on disk and verified, so the engine can load them.
+    /// The selected model's weights are on disk and verified, so the engine
+    /// can load them.
     installed: bool,
     /// A download is running in this process; progress arrives as
-    /// `dictation:model_progress`.
+    /// `dictation:model_progress`. Process-wide, so it can be a model other
+    /// than the selected one — [`ModelStatus::downloading_id`] says which.
     downloading: bool,
+    downloading_id: Option<&'static str>,
+    /// The `dictation_model` selection, or the platform default until the user
+    /// makes one.
     model: ModelInfo,
+    /// Every catalog entry, so Settings can offer the choice without a second
+    /// command.
+    models: Vec<ModelInfo>,
 }
 
-/// The catalog entry Settings describes. `size` is the exact byte count, so
-/// every size string in the UI is derived rather than pinned in two places.
+/// One catalog entry as Settings describes it. `size` is the exact byte count,
+/// so every size string in the UI is derived rather than pinned in two places.
 #[derive(Clone, Serialize)]
 pub struct ModelInfo {
     id: &'static str,
     label: &'static str,
     note: &'static str,
     size: u64,
+    /// This entry's weights are on disk. Per-entry because a model the user
+    /// switched away from stays downloaded until it is removed explicitly.
+    installed: bool,
 }
 
-fn model_status(enabled: bool, install: whisper::install::Status) -> ModelStatus {
-    let model = whisper::models::default_model();
+fn model_info(model: &'static whisper::models::WhisperModel) -> ModelInfo {
+    ModelInfo {
+        id: model.id,
+        label: model.label,
+        note: model.note,
+        size: model.size,
+        installed: whisper::models::installed_path(model).is_some(),
+    }
+}
+
+fn model_status(
+    enabled: bool,
+    selected: &'static whisper::models::WhisperModel,
+    install: whisper::install::Status,
+) -> ModelStatus {
     ModelStatus {
         enabled,
         installed: install.installed,
         downloading: install.downloading,
-        model: ModelInfo {
-            id: model.id,
-            label: model.label,
-            note: model.note,
-            size: model.size,
-        },
+        downloading_id: install.downloading_id,
+        model: model_info(selected),
+        models: whisper::models::MODELS.iter().map(model_info).collect(),
     }
 }
 
-fn engine_enabled(state: &tauri::State<'_, DbState>) -> bool {
+/// The opt-in and the chosen model, read under one lock — the two settings
+/// always travel together, and the connection isn't reentrant.
+fn engine_settings(
+    state: &tauri::State<'_, DbState>,
+) -> (bool, &'static whisper::models::WhisperModel) {
     let conn = state.lock();
-    whisper::parse_enabled(database::get_setting(&conn, whisper::ENGINE_SETTING).as_deref())
+    let enabled =
+        whisper::parse_enabled(database::get_setting(&conn, whisper::ENGINE_SETTING).as_deref());
+    (enabled, whisper::selected(&conn))
 }
 
-/// Where the local engine stands: the opt-in, the weights, and what a download
-/// would fetch. Cheap — a metadata stat, no hashing — so the Settings pane
-/// calls it on mount and after every action.
+/// Where the local engine stands: the opt-in, the choice, and what each
+/// candidate's weights are doing. Cheap — a metadata stat per entry, no hashing
+/// — so the Settings pane calls it on mount and after every action.
 #[tauri::command]
 pub fn dictation_model_status(state: tauri::State<'_, DbState>) -> ModelStatus {
-    model_status(engine_enabled(&state), whisper::install::status())
+    let (enabled, model) = engine_settings(&state);
+    model_status(enabled, model, whisper::install::status(model))
 }
 
 /// Choose the dictation engine. Persists `dictation_engine` (backend-owned
@@ -240,7 +269,7 @@ pub fn set_dictation_engine(
     app: AppHandle,
     state: tauri::State<'_, DbState>,
 ) -> Result<()> {
-    {
+    let model = {
         let conn = state.lock();
         database::set_setting(
             &conn,
@@ -251,29 +280,83 @@ pub fn set_dictation_engine(
                 whisper::ENGINE_APPLE
             },
         )?;
-    }
+        whisper::selected(&conn)
+    };
     if enabled {
-        whisper::install::download(app);
+        whisper::install::download(app, model);
     }
     Ok(())
 }
 
-/// Retry a failed or never-started model download. Returns immediately with
-/// the state the call left things in; a download already running (or an
-/// already-installed model) makes it a no-op.
+/// Choose which catalog entry the local engine uses. Persists
+/// `dictation_model` and, when the engine is on and the new choice isn't
+/// downloaded, starts fetching it in the background — same shape as
+/// [`set_dictation_engine`], because the choice can't await half a gigabyte
+/// either.
+///
+/// The model being switched away from is left on disk: it is already paid for,
+/// and switching back shouldn't cost the download twice. Removing it is a
+/// separate, explicit action.
 #[tauri::command]
-pub fn dictation_model_download(app: AppHandle, state: tauri::State<'_, DbState>) -> ModelStatus {
-    let install = whisper::install::download(app);
-    model_status(engine_enabled(&state), install)
+pub fn set_dictation_model(
+    id: String,
+    app: AppHandle,
+    state: tauri::State<'_, DbState>,
+) -> Result<ModelStatus> {
+    let model = catalog_entry(&id)?;
+    let enabled = {
+        let conn = state.lock();
+        database::set_setting(&conn, whisper::MODEL_SETTING, model.id)?;
+        whisper::parse_enabled(database::get_setting(&conn, whisper::ENGINE_SETTING).as_deref())
+    };
+    let install = if enabled {
+        whisper::install::download(app, model)
+    } else {
+        whisper::install::status(model)
+    };
+    Ok(model_status(enabled, model, install))
 }
 
-/// Delete the downloaded weights. The caller is expected to turn the engine off
-/// first — an enabled engine with no model would fall back to the platform
-/// recognizer, but silently.
+/// Retry a failed or never-started download of the selected model. Returns
+/// immediately with the state the call left things in; an already-installed
+/// model, or any download already running, makes it a no-op.
 #[tauri::command]
-pub fn dictation_model_remove(state: tauri::State<'_, DbState>) -> ModelStatus {
-    let install = whisper::install::remove();
-    model_status(engine_enabled(&state), install)
+pub fn dictation_model_download(app: AppHandle, state: tauri::State<'_, DbState>) -> ModelStatus {
+    let (enabled, model) = engine_settings(&state);
+    let install = whisper::install::download(app, model);
+    model_status(enabled, model, install)
+}
+
+/// Delete a model's downloaded weights — the selected one unless `id` names
+/// another, since a model switched away from stays on disk and Settings is the
+/// only place to reclaim it. When removing the selected model, the caller is
+/// expected to turn the engine off first: an enabled engine with no model would
+/// fall back to the platform recognizer, but silently.
+#[tauri::command]
+pub fn dictation_model_remove(
+    id: Option<String>,
+    state: tauri::State<'_, DbState>,
+) -> Result<ModelStatus> {
+    let (enabled, selected) = engine_settings(&state);
+    let target = match &id {
+        Some(id) => catalog_entry(id)?,
+        None => selected,
+    };
+    whisper::install::remove(target);
+    Ok(model_status(
+        enabled,
+        selected,
+        whisper::install::status(selected),
+    ))
+}
+
+/// An id from the frontend is only ever one the catalog handed it, so an
+/// unknown one is a bug rather than a state to fall back from — silently
+/// acting on the selected model instead would download or delete the wrong
+/// weights.
+fn catalog_entry(id: &str) -> Result<&'static whisper::models::WhisperModel> {
+    whisper::models::find(id)
+        .ok_or_else(|| crate::error::Error::Other(format!("unknown dictation model: {id}")))
 }
 
 /// Which engine a session started right now would use. The local one takes
@@ -288,8 +371,8 @@ fn engine(app: &AppHandle) -> Engine {
     if !cfg!(target_os = "macos") {
         return Engine::Apple;
     }
-    let selected = engine_enabled(&app.state::<DbState>());
-    if selected && whisper::install::status().installed {
+    let (enabled, model) = engine_settings(&app.state::<DbState>());
+    if enabled && whisper::models::installed_path(model).is_some() {
         Engine::Whisper
     } else {
         Engine::Apple
