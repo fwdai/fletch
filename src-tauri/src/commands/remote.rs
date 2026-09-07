@@ -49,6 +49,31 @@ pub async fn remote_set_enabled(
     Ok(remote.status())
 }
 
+/// Set or clear the relay base URL: the host link comes up (or goes away)
+/// immediately, and the setting is persisted so the next launch agrees.
+///
+/// Persisted only after `set_relay` accepted the URL, for the same reason
+/// `remote_set_enabled` persists after the bind: a value the link could never
+/// use should not survive the restart. Clearing is stored as an empty string,
+/// which is what "no relay" reads as at launch.
+#[tauri::command]
+pub async fn remote_set_relay(
+    remote: State<'_, Arc<RemoteState>>,
+    db: State<'_, DbState>,
+    url: Option<String>,
+) -> Result<RemoteStatus> {
+    remote.inner().set_relay(url.clone())?;
+    {
+        let conn = db.lock();
+        database::set_setting(
+            &conn,
+            crate::remote::RELAY_URL_SETTING,
+            url.as_deref().unwrap_or("").trim(),
+        )?;
+    }
+    Ok(remote.status())
+}
+
 /// Mint a single-use pairing code and the `fletch://pair` deep link that
 /// carries it. Refuses while the listener is down — a code nothing can be typed
 /// into is worse than an error — and while the device store is unwritable,

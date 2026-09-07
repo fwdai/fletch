@@ -12,6 +12,7 @@ export interface Remote {
   error: string | null;
   busy: boolean;
   setEnabled: (enabled: boolean) => Promise<void>;
+  setRelay: (url: string | null) => Promise<void>;
   beginPairing: () => Promise<void>;
   revoke: (deviceId: string) => Promise<void>;
   clearInvite: () => void;
@@ -40,7 +41,7 @@ export function useRemote(): Remote {
     return () => clearInterval(timer);
   }, [refresh]);
 
-  /** Run a mutating command; all three answer with the fresh status. */
+  /** Run a mutating command; they all answer with the fresh status. */
   const mutate = useCallback(async (call: () => Promise<RemoteStatus>) => {
     setBusy(true);
     setError(null);
@@ -62,6 +63,11 @@ export function useRemote(): Remote {
     [mutate],
   );
 
+  const setRelay = useCallback(
+    (url: string | null) => mutate(() => api.remoteSetRelay(url)),
+    [mutate],
+  );
+
   const beginPairing = useCallback(async () => {
     setError(null);
     try {
@@ -78,5 +84,5 @@ export function useRemote(): Remote {
 
   const clearInvite = useCallback(() => setInvite(null), []);
 
-  return { status, invite, error, busy, setEnabled, beginPairing, revoke, clearInvite };
+  return { status, invite, error, busy, setEnabled, setRelay, beginPairing, revoke, clearInvite };
 }

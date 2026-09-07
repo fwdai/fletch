@@ -4,8 +4,8 @@
 // mock host and the real WebSocket share every line of this.
 
 import { backoffDelay } from "./backoff";
-import { wsUrl } from "./pairing";
-import type { Socket, SocketFactory } from "./socket";
+import { type Candidate, candidatesFor } from "./candidates";
+import type { Socket, SocketFactory, SocketHandlers } from "./socket";
 import {
   CLOSE_REASONS,
   CLOSE_REMOTE_DISABLED,
@@ -25,6 +25,7 @@ import {
   type RemoteClient,
   type RequestFrame,
   type StateHandler,
+  type Via,
 } from "./types";
 
 /** Close codes that mean "do not retry" — the device has to be paired again,
@@ -45,6 +46,9 @@ export interface ClientOptions {
   clearTimer?: (handle: unknown) => void;
   baseDelay?: number;
   maxDelay?: number;
+  /** Open timeout for the LAN candidate, in ms (see `LAN_OPEN_TIMEOUT_MS`).
+   *  Lowered in tests so a hanging dial does not cost three seconds. */
+  openTimeout?: number;
 }
 
 /** The transport's mismatch marker carries the two keys, which is right for a
@@ -73,6 +77,7 @@ export class ProtocolClient implements RemoteClient {
   private closedByUs = false;
   private _state: ConnectionState = "disconnected";
   private _host: HostInfo | null = null;
+  private _via: Via | null = null;
   private readonly newId: () => string;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
@@ -95,6 +100,19 @@ export class ProtocolClient implements RemoteClient {
    *  or pinned on first contact. */
   get hostKey(): string | null {
     return this._target?.hostKey ?? null;
+  }
+
+  /** Which candidate the live socket came from. Reported for the Host sheet;
+   *  nothing in the protocol depends on it. */
+  get via(): Via | null {
+    return this.socket ? this._via : null;
+  }
+
+  /** Add or change the relay on the held target. Nothing reconnects: the next
+   *  attempt picks up the new dial list. */
+  setRelay(relay: string | null): void {
+    if (!this._target) return;
+    this._target = { ...this._target, relay: relay?.trim() || undefined };
   }
 
   /** Where this client is (or was last) pointed. The client owns it: after a
@@ -189,8 +207,8 @@ export class ProtocolClient implements RemoteClient {
   }
 
   /** One connection attempt: open the socket, then run the first frame
-   *  (`pair` or `hello`). Every failure inside it — the open rejecting, the
-   *  handshake being refused — goes through `fail`, so the client is never
+   *  (`pair` or `hello`). Every failure inside it — every candidate rejecting,
+   *  the handshake being refused — goes through `fail`, so the client is never
    *  left sitting in `connecting` with nothing scheduled. */
   private async attemptConnect(): Promise<HelloResult> {
     let target = this._target;
@@ -198,28 +216,14 @@ export class ProtocolClient implements RemoteClient {
     const gen = ++this.gen;
     this.setState(target.pairingToken ? "pairing" : "connecting");
     try {
-      const socket = await this.opts.openSocket(
-        wsUrl(target),
-        {
-          onOpen: () => {},
-          onMessage: (text) => {
-            if (this.current(gen)) this.onMessage(text);
-          },
-          onClose: (code, reason) => {
-            if (this.current(gen)) this.onClose(code, reason);
-          },
-          onError: (message) => {
-            if (this.current(gen)) this.onSocketError(message);
-          },
-        },
-        { hostKey: target.hostKey },
-      );
+      const socket = await this.openFirstReachable(target, gen);
       if (!this.current(gen)) {
         // A newer attempt (or a disconnect) landed while the socket opened.
         socket.close();
         throw new Error("Connection superseded");
       }
       this.socket = socket;
+      this._via = socket.via;
       // Trust on first use: a hand-typed pairing has no key to compare, so the
       // one the handshake authenticated becomes the pinned identity. A target
       // that did have a key never gets here with a different one — the
@@ -243,6 +247,50 @@ export class ProtocolClient implements RemoteClient {
 
   private current(gen: number): boolean {
     return gen === this.gen;
+  }
+
+  /** Try the dial list in order within this one attempt: LAN, then the relay
+   *  (docs/remote-protocol.md, "Relay" → "Phone side"). The first candidate
+   *  that opens *is* the connection; the rest are never dialled. A candidate
+   *  that rejects — refused, unreachable, or timed out by the transport —
+   *  hands over to the next, and when none is left the attempt fails through
+   *  `fail` with the last error, retryable as before.
+   *
+   *  A host-key mismatch is the exception and stops the list at once: the
+   *  host's identity is wrong, not the path. Falling through to the relay
+   *  would let an impostor on the LAN quietly move the phone onto the relay
+   *  (and a hostile relay push it back onto the LAN), turning an alarm the
+   *  user must see into a silent path switch. */
+  private async openFirstReachable(target: HostTarget, gen: number): Promise<Socket> {
+    const handlers: SocketHandlers = {
+      onOpen: () => {},
+      onMessage: (text) => {
+        if (this.current(gen)) this.onMessage(text);
+      },
+      onClose: (code, reason) => {
+        if (this.current(gen)) this.onClose(code, reason);
+      },
+      onError: (message) => {
+        if (this.current(gen)) this.onSocketError(message);
+      },
+    };
+    const list: Candidate[] = candidatesFor(target, this.opts.openTimeout);
+    let last = new Error("no address to dial");
+    for (const candidate of list) {
+      try {
+        return await this.opts.openSocket(candidate.url, handlers, {
+          hostKey: target.hostKey,
+          timeoutMs: candidate.timeoutMs,
+          via: candidate.via,
+        });
+      } catch (e) {
+        last = e instanceof Error ? e : new Error(String(e));
+        if (last.message.includes(HOST_KEY_MISMATCH)) throw last;
+        // Superseded mid-list: the newer attempt owns the dialling now.
+        if (!this.current(gen)) throw last;
+      }
+    }
+    throw last;
   }
 
   /** The first frame on a fresh socket: `pair` when a pairing code is held,

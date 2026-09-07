@@ -16,6 +16,24 @@ export interface RemoteDevice {
   connected: boolean;
 }
 
+/** The relay the desktop offers when the switch goes on. Mirrors
+ *  `DEFAULT_RELAY_URL` in `src-tauri/src/remote/mod.rs`; only a suggestion —
+ *  the persisted setting is what decides, and anyone can run their own. */
+export const DEFAULT_RELAY_URL = "wss://relay.fletch.app";
+
+/** How the outbound host link is doing. `off` means no URL is set, or remote
+ *  access itself is off; `error` stands between reconnect attempts. */
+export type RelayState = "off" | "connecting" | "connected" | "error";
+
+/** `remote_status.relay`: the configured relay and the link to it. */
+export interface RelayStatus {
+  /** The configured base URL, reported whether or not the link is running. */
+  url: string | null;
+  state: RelayState;
+  /** The last failure, while the link is between reconnect attempts. */
+  error: string | null;
+}
+
 export interface RemoteStatus {
   /** The user's intent, independent of whether the bind currently holds. */
   enabled: boolean;
@@ -28,6 +46,8 @@ export interface RemoteStatus {
   /** Every IPv4 a phone could dial, best candidate (LAN) first. */
   addresses: string[];
   devices: RemoteDevice[];
+  /** The relay that carries devices off this network, and the host link to it. */
+  relay: RelayStatus;
   /** A standing problem with the remote surface itself, shown inline in the
    *  pane. Currently only one: paired devices cannot be stored, which also
    *  makes `remoteBeginPairing` refuse. */
@@ -37,8 +57,9 @@ export interface RemoteStatus {
 /** A minted pairing code: 8 characters from `A-Z2-9`, single use, five minutes. */
 export interface PairingInvite {
   token: string;
-  /** `fletch://pair?host=…&addr=…&token=…&name=…` — what the QR encodes.
-   *  `host` is the host ID (the public key), `addr` the `ip:port` to dial. */
+  /** `fletch://pair?host=…&addr=…&relay=…&token=…&name=…` — what the QR
+   *  encodes. `host` is the host ID (the public key), `addr` the `ip:port` to
+   *  dial, and `relay` is present only when one is configured. */
   url: string;
   /** RFC3339. */
   expiresAt: string;

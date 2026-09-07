@@ -95,6 +95,27 @@ impl HostKey {
         encode_key(&self.public)
     }
 
+    /// The raw public key — the host ID before it is base64url'd. The relay's
+    /// host-link challenge hashes these bytes, not the string.
+    pub(super) fn public_bytes(&self) -> &[u8; KEY_LEN] {
+        &self.public
+    }
+
+    /// `X25519(host private, their_public)`: the shared secret the relay's host
+    /// link challenge is answered with (`docs/remote-protocol.md` → "Relay").
+    ///
+    /// Goes through the same DH implementation the handshake and
+    /// `public_from_private` use, so the relay proof needs no second crypto
+    /// dependency and cannot disagree with the identity it is proving.
+    pub(super) fn diffie_hellman(&self, their_public: &[u8; KEY_LEN]) -> Result<[u8; KEY_LEN]> {
+        let mut dh = curve25519()?;
+        dh.set(&self.private);
+        let mut shared = [0u8; KEY_LEN];
+        dh.dh(their_public, &mut shared)
+            .map_err(|e| noise_error("relay challenge dh", e))?;
+        Ok(shared)
+    }
+
     /// A responder handshake state carrying this identity.
     pub(super) fn responder(&self) -> Result<HandshakeState> {
         noise_builder()?
@@ -103,7 +124,9 @@ impl HostKey {
             .map_err(|e| noise_error("host handshake state", e))
     }
 
-    fn from_private(private: [u8; KEY_LEN]) -> Result<Self> {
+    /// An identity from raw private bytes, without touching the disk. The relay
+    /// tests build both ends' keys this way.
+    pub(super) fn from_private(private: [u8; KEY_LEN]) -> Result<Self> {
         let public = public_from_private(&private)?;
         Ok(Self { private, public })
     }
@@ -128,16 +151,23 @@ fn write_private(path: &Path, private: &[u8; KEY_LEN]) -> Result<()> {
 /// disk (the doc fixes the file at 32 bytes), so the public half is derived at
 /// load through the same DH implementation the handshake uses.
 fn public_from_private(private: &[u8; KEY_LEN]) -> Result<[u8; KEY_LEN]> {
-    use snow::params::DHChoice;
-    use snow::resolvers::{CryptoResolver, DefaultResolver};
-
-    let mut dh = DefaultResolver
-        .resolve_dh(&DHChoice::Curve25519)
-        .ok_or_else(|| Error::Other("remote: no X25519 implementation".to_string()))?;
+    let mut dh = curve25519()?;
     dh.set(private);
     dh.pubkey()
         .try_into()
         .map_err(|_| Error::Other("remote: X25519 public key is not 32 bytes".to_string()))
+}
+
+/// The X25519 primitive `snow` would use inside the handshake, on its own — for
+/// the two places that need a bare DH: deriving the public key from the stored
+/// private one, and answering the relay's challenge.
+fn curve25519() -> Result<Box<dyn snow::types::Dh>> {
+    use snow::params::DHChoice;
+    use snow::resolvers::{CryptoResolver, DefaultResolver};
+
+    DefaultResolver
+        .resolve_dh(&DHChoice::Curve25519)
+        .ok_or_else(|| Error::Other("remote: no X25519 implementation".to_string()))
 }
 
 /// A fresh static keypair. Used for the host key, and by the tests for a device.

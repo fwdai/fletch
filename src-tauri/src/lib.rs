@@ -1678,7 +1678,7 @@ pub fn run() {
                 // failure travels as `RemoteStatus::error` instead.
                 let state = remote::RemoteState::new(&data_dir.join("remote"), dispatch);
                 remote::install_taps(app.handle(), state.clone());
-                let (enabled, port) = {
+                let (enabled, port, relay_url) = {
                     let conn = db_for_remote.lock();
                     (
                         remote::parse_enabled(
@@ -1687,8 +1687,16 @@ pub fn run() {
                         remote::parse_port(
                             database::get_setting(&conn, remote::PORT_SETTING).as_deref(),
                         ),
+                        database::get_setting(&conn, remote::RELAY_URL_SETTING),
                     )
                 };
+                // The URL is stored before the autostart, so `start` brings the
+                // host link up with the listener. Safe outside the async
+                // runtime: nothing is enabled yet, so this cannot spawn the
+                // link task here.
+                if let Err(e) = state.set_relay(relay_url) {
+                    tracing::warn!(error = %e, "remote: stored relay url rejected");
+                }
                 if enabled {
                     // `start` binds synchronously but spawns onto the async
                     // runtime, so it has to run inside it.
@@ -1969,6 +1977,7 @@ pub fn run() {
             // is the only target this app ships for.
             commands::remote_status,
             commands::remote_set_enabled,
+            commands::remote_set_relay,
             commands::remote_begin_pairing,
             commands::remote_revoke_device,
             dictation::dictation_availability,

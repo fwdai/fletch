@@ -17,9 +17,11 @@ use secure::{Channel, DeviceKey, Handshake, HOST_KEY_MISMATCH};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
@@ -113,24 +115,41 @@ struct ErrorPayload {
 /// Open a socket, run the Noise handshake and start reading. Supersedes any
 /// connection already open or still handshaking: the newest attempt owns the
 /// slot, and an older one that finishes later discards its socket.
+///
+/// `timeout_ms` bounds the dial and the handshake together. It is the only
+/// timeout: the caller walks a list of candidates (LAN, then relay) and needs
+/// a candidate it has given up on to be really gone, which a timer on the
+/// webview side could not deliver — so the budget is enforced here, where the
+/// socket is, and expiring closes it.
 #[tauri::command]
 pub async fn remote_connect(
     app: AppHandle,
     state: State<'_, Remote>,
     url: String,
     host_key: Option<String>,
+    timeout_ms: Option<u64>,
 ) -> Result<ConnectResult, String> {
     // Claim the id first, so a concurrent attempt can tell who is newer.
     let id = state.latest.fetch_add(1, Ordering::AcqRel) + 1;
     close_current(&state.slot).await;
     let key = device_key(&app, &state)?;
-    let (mut ws, _) = connect_async(&url)
+    let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+    let dialled = within(deadline, connect_async(&url))
         .await
-        .map_err(|e| format!("cannot reach {url}: {e}"))?;
-    let channel = match handshake(&mut ws, &key, host_key.as_deref()).await {
-        Ok(channel) => channel,
-        Err(e) => {
+        .ok_or_else(|| timed_out(&url, timeout_ms))?;
+    let (mut ws, _) = dialled.map_err(|e| format!("cannot reach {url}: {e}"))?;
+    // The borrow of `ws` ends with the statement, so the socket is ours again
+    // whether the handshake finished, failed or ran out of time.
+    let handshaken = within(deadline, handshake(&mut ws, &key, host_key.as_deref())).await;
+    let channel = match handshaken {
+        Some(Ok(channel)) => channel,
+        Some(Err(e)) => {
             close_ws(&mut ws, CLOSE_BAD_FRAME, &e).await;
+            return Err(e);
+        }
+        None => {
+            let e = timed_out(&url, timeout_ms);
+            close_ws(&mut ws, u16::from(CloseCode::Normal), &e).await;
             return Err(e);
         }
     };
@@ -209,6 +228,25 @@ pub fn remote_device_public_key(
 }
 
 // --- internals ---------------------------------------------------------------
+
+/// Run `fut` under `deadline`, or unbounded when there is none. `None` means it
+/// ran out of time and the future has been dropped.
+async fn within<F: std::future::Future>(deadline: Option<Instant>, fut: F) -> Option<F::Output> {
+    match deadline {
+        Some(at) => tokio::time::timeout_at(at, fut).await.ok(),
+        None => Some(fut.await),
+    }
+}
+
+/// The error a caller sees when opening a connection overran its budget. The
+/// wording matters only in that it says "timed out": that is what tells a
+/// candidate that did not answer from one that refused.
+fn timed_out(url: &str, timeout_ms: Option<u64>) -> String {
+    match timeout_ms {
+        Some(ms) => format!("cannot reach {url}: timed out after {ms} ms"),
+        None => format!("cannot reach {url}: timed out"),
+    }
+}
 
 /// The process-wide device identity (see `Remote::identity`).
 fn device_key(app: &AppHandle, state: &Remote) -> Result<Arc<DeviceKey>, String> {
@@ -433,5 +471,36 @@ mod tests {
         let persisted = DeviceKey::load_or_create(&dir).unwrap().public_base64();
         assert!(seen.contains(&persisted), "and it is the one on disk");
         assert!(!dir.join("device_key.tmp").exists());
+    }
+
+    /// A candidate that never answers has to be distinguishable from one that
+    /// refused, since the caller walks a list and reports the last failure.
+    #[test]
+    fn a_timeout_says_so_and_names_the_url() {
+        let with_budget = timed_out("ws://192.168.1.24:47285/ws", Some(3000));
+        assert!(with_budget.contains("timed out"), "{with_budget}");
+        assert!(with_budget.contains("3000 ms"), "{with_budget}");
+        assert!(with_budget.contains("ws://192.168.1.24:47285/ws"));
+        assert!(timed_out("wss://relay.fletch.app/v1/device/k", None).contains("timed out"));
+    }
+
+    /// `within` is what makes the budget real: a future that has not finished
+    /// is dropped, which is what closes a half-open socket.
+    #[test]
+    fn within_bounds_a_future_and_passes_one_through_unbounded() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let deadline = Some(Instant::now() + Duration::from_millis(5));
+            assert_eq!(within(deadline, async { 7 }).await, Some(7));
+            assert_eq!(
+                within(deadline, tokio::time::sleep(Duration::from_secs(30))).await,
+                None,
+                "an overrunning future is abandoned"
+            );
+            assert_eq!(within(None, async { 7 }).await, Some(7));
+        });
     }
 }

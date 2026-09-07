@@ -373,7 +373,7 @@ fn never_exposed_ops_are_not_dispatchable() {
 
 /// Answers only `get_workspace`, so the server can be exercised without a live
 /// `Supervisor`. Production runs `SupervisorDispatch`.
-struct StubDispatch;
+pub(super) struct StubDispatch;
 
 impl Dispatch for StubDispatch {
     fn dispatch<'a>(&'a self, op: &'a str, _args: Value) -> DispatchFuture<'a> {
@@ -420,12 +420,12 @@ fn boot_with(dispatch: Arc<dyn Dispatch>) -> Host {
 
 /// One phone's static identity: the keypair whose public half the host records
 /// and whose private half proves it in the handshake.
-struct Device {
-    private: Vec<u8>,
-    public: [u8; 32],
+pub(super) struct Device {
+    pub(super) private: Vec<u8>,
+    pub(super) public: [u8; 32],
 }
 
-fn device() -> Device {
+pub(super) fn device() -> Device {
     let keypair = secure::generate_keypair().unwrap();
     Device {
         public: keypair.public.clone().try_into().unwrap(),

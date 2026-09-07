@@ -6,9 +6,12 @@ import { Wordmark } from "../Home/Wordmark";
 
 /** Manual pairing: the host's address and the one-time code from the desktop's
  *  Settings → Mobile devices. A pasted `fletch://pair?…` link fills both and
- *  brings the host's public key with it, which is what authenticates the Mac;
- *  hand-typed entry has no key and pins the one it meets on first contact
- *  (docs/remote-protocol.md, "Secure channel"). */
+ *  brings the host's public key with it, which is what authenticates the Mac,
+ *  plus the relay URL when the host has one; hand-typed entry has no key and
+ *  pins the one it meets on first contact, and has no relay until a link
+ *  supplies one or it is entered in the Host sheet later
+ *  (docs/remote-protocol.md, "Secure channel" and "Authentication and
+ *  pairing"). */
 export function PairScreen() {
   const connect = useStore((s) => s.connect);
   const connection = useStore((s) => s.connection);
@@ -16,6 +19,7 @@ export function PairScreen() {
   const [address, setAddress] = useState("");
   const [token, setToken] = useState("");
   const [hostKey, setHostKey] = useState<string | undefined>(undefined);
+  const [relay, setRelay] = useState<string | undefined>(undefined);
   const busy = connection === "connecting" || connection === "pairing";
   const parsed = parseAddress(address);
 
@@ -25,6 +29,7 @@ export function PairScreen() {
     if (!link) return fallback(value);
     setAddress(`${link.host}:${link.port}`);
     setHostKey(link.hostKey);
+    setRelay(link.relay);
     if (link.pairingToken) setToken(link.pairingToken);
   };
 
@@ -33,6 +38,7 @@ export function PairScreen() {
     void connect({
       ...parsed,
       hostKey,
+      relay,
       pairingToken: token.trim().toUpperCase(),
     }).catch(() => {});
   };
@@ -82,8 +88,9 @@ export function PairScreen() {
         {busy ? "Pairing…" : "Pair"}
       </button>
       <div className="hint">
-        The code is valid for five minutes and can be used once. Everything stays on your network —
-        there is no relay in this version — and the link is end-to-end encrypted.
+        The code is valid for five minutes and can be used once. The link is end-to-end encrypted,
+        and the app talks to your Mac directly on your network — a pasted pairing link can also
+        bring a relay URL for when you are away from it.
       </div>
     </div>
   );

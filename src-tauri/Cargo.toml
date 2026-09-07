@@ -68,14 +68,21 @@ base64 = "0.22"
 sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
-# Paired-device remote access (`remote/`). Server side only: `handshake` is the
-# one feature needed, and no TLS backend is pulled in — confidentiality comes
-# from the Noise channel inside the WebSocket, not from the transport, so the
-# same frames survive the relay (see docs/remote-protocol.md). Pinned to
-# 0.27 rather than 0.30 deliberately: 0.30 moves to sha1 0.11 / digest 0.11 and
-# rand 0.10, which would add a second copy of the whole hashing and RNG stack
-# next to the sha2 0.10 and rand 0.9 already in the tree.
-tokio-tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }
+# Paired-device remote access (`remote/`). `handshake` for the LAN listener,
+# `connect` + `rustls-tls-webpki-roots` for the outbound relay link
+# (`remote/relay.rs`), which dials a `wss://` URL and therefore does need a TLS
+# backend — webpki roots rather than the platform store so the link behaves the
+# same on every OS. The *payload* is still end-to-end encrypted by the Noise
+# channel inside the WebSocket, not by TLS, so the same frames survive the relay
+# unchanged (see docs/remote-protocol.md). Pinned to 0.27 rather than 0.30
+# deliberately: 0.30 moves to sha1 0.11 / digest 0.11 and rand 0.10, which would
+# add a second copy of the whole hashing and RNG stack next to the sha2 0.10 and
+# rand 0.9 already in the tree.
+tokio-tungstenite = { version = "0.27", default-features = false, features = [
+  "handshake",
+  "connect",
+  "rustls-tls-webpki-roots",
+] }
 # The remote secure channel (`remote/secure.rs`):
 # `Noise_XX_25519_ChaChaPoly_BLAKE2s`, the pattern the protocol doc fixes.
 snow = "0.10"

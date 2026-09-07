@@ -8,13 +8,17 @@
 //!
 //! Layout: `secure` owns the Noise channel and the host identity, `auth` the
 //! pairing codes and the device registry, `server` the WebSocket listener,
-//! `session` the live-connection registry, `dispatch` the op allowlist,
-//! `events` the Tauri event taps. This module owns the state those six share
-//! and the listener's lifecycle.
+//! `relay` the outbound host link that carries off-LAN devices, `session` the
+//! live-connection registry, `dispatch` the op allowlist, `events` the Tauri
+//! event taps. This module owns the state those seven share and the lifecycle
+//! of the listener and the relay link.
 
 mod auth;
 mod dispatch;
 mod events;
+mod relay;
+#[cfg(test)]
+mod relay_tests;
 mod secure;
 mod server;
 mod session;
@@ -24,6 +28,7 @@ mod tests;
 pub use auth::{DeviceStore, PairingTokens};
 pub use dispatch::{Dispatch, DispatchResult, SupervisorDispatch};
 pub use events::install_taps;
+pub use relay::RelayStatus;
 pub use secure::HostKey;
 
 use std::net::Ipv4Addr;
@@ -34,6 +39,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::broadcast;
 
+use self::relay::{RelayLink, RelayTiming};
 use self::session::{Sessions, CLOSE_DISABLED, CLOSE_REVOKED};
 use crate::error::{Error, Result};
 
@@ -42,6 +48,18 @@ use crate::error::{Error, Result};
 pub const ENABLED_SETTING: &str = "remote.enabled";
 /// `settings` key holding a TCP port override.
 pub const PORT_SETTING: &str = "remote.port";
+/// `settings` key holding the relay base URL. Absent or empty means no relay:
+/// the setting has no default, since a host that is only ever on its own LAN
+/// should not be dialling anything outbound.
+pub const RELAY_URL_SETTING: &str = "remote.relay_url";
+/// The URL the settings pane offers when the user turns the relay on. Only a
+/// suggestion — the setting is what decides, and anyone can run their own.
+///
+/// The canonical copy: the pane sends this string down from TypeScript
+/// (`src/api/types/remote.ts`), so nothing in Rust reads it outside the tests
+/// that check it is a URL `set_relay` accepts.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const DEFAULT_RELAY_URL: &str = "wss://relay.fletch.app";
 /// Default listen port (protocol doc).
 pub const DEFAULT_PORT: u16 = 47285;
 /// The only path the listener serves.
@@ -101,6 +119,9 @@ pub struct RemoteStatus {
     /// Every address a phone could reach this host on, best candidate first.
     pub addresses: Vec<String>,
     pub devices: Vec<RemoteDevice>,
+    /// The outbound relay link: the configured URL and how the link to it is
+    /// doing. `off` when no URL is set or remote access is disabled.
+    pub relay: RelayStatus,
     /// A standing problem with the remote surface itself, for the pane to show
     /// inline. Currently only one: `devices.json` is not writable, so pairing
     /// is refused because the credential would not survive a restart.
@@ -123,6 +144,14 @@ struct Inner {
     /// The configured port; `listening` reports the bound one.
     port: u16,
     server: Option<ServerHandle>,
+    /// The configured relay base URL, normalized. `None` is "no relay", and is
+    /// also what the status reports whether or not the link is running.
+    relay_url: Option<String>,
+    /// The live host link. `Some` only while remote access is on *and* a URL is
+    /// set; dropping it asks the link to wind down.
+    relay: Option<RelayLink>,
+    /// Injectable so the relay tests do not sleep.
+    relay_timing: RelayTiming,
 }
 
 struct ServerHandle {
@@ -182,8 +211,18 @@ impl RemoteState {
                 enabled: false,
                 port: DEFAULT_PORT,
                 server: None,
+                relay_url: None,
+                relay: None,
+                relay_timing: RelayTiming::default(),
             }),
         })
+    }
+
+    /// Shorten every relay wait, so the reconnect and wind-down paths can be
+    /// tested without sleeping. Must be called before the link starts.
+    #[cfg(test)]
+    pub(in crate::remote) fn set_relay_timing(&self, timing: RelayTiming) {
+        self.inner.lock().relay_timing = timing;
     }
 
     pub fn devices(&self) -> &Arc<DeviceStore> {
@@ -206,8 +245,8 @@ impl RemoteState {
     }
 
     /// Start listening on `port` (0 binds an ephemeral one, which the socket
-    /// tests use). Returns the bound port. Idempotent: an already-running
-    /// listener is left alone.
+    /// tests use), and bring the relay link up if a URL is configured. Returns
+    /// the bound port. Idempotent: an already-running listener is left alone.
     ///
     /// Must be called from inside the async runtime — the bind itself is
     /// synchronous so that "port already in use" reaches the settings UI as an
@@ -216,6 +255,7 @@ impl RemoteState {
         let mut inner = self.inner.lock();
         if let Some(port) = inner.server.as_ref().map(|h| h.port) {
             inner.enabled = true;
+            self.spawn_relay(&mut inner);
             return Ok(port);
         }
 
@@ -236,11 +276,22 @@ impl RemoteState {
             port: bound,
             shutdown,
         });
+        self.spawn_relay(&mut inner);
         tracing::info!(port = bound, "remote: listening");
         Ok(bound)
     }
 
-    /// Stop listening and close every live connection with 4004.
+    /// Stop listening, close every live connection with 4004, and drop the
+    /// relay link.
+    ///
+    /// Order matters. `close_all` only *queues* a close on each session, and a
+    /// relayed session's close frame travels out over the link — so the
+    /// sessions are asked to close while the link is still up, and the link
+    /// handle is dropped after, which asks the link task to flush what those
+    /// sessions queued (bounded by `RelayTiming::shutdown_grace`) before it
+    /// hangs up. The doc's ordering: the host's own 4004 goes out first over
+    /// the virtual connections, and the relay's own 4404 follows from the link
+    /// dropping.
     pub fn stop(&self) {
         let mut inner = self.inner.lock();
         inner.enabled = false;
@@ -248,8 +299,52 @@ impl RemoteState {
             let _ = handle.shutdown.send(());
             tracing::info!(port = handle.port, "remote: stopped");
         }
+        let link = inner.relay.take();
         drop(inner);
         self.sessions.close_all(CLOSE_DISABLED);
+        drop(link);
+    }
+
+    /// Set (or clear) the relay base URL and bring the link in line with it.
+    ///
+    /// Normalizes as the doc does: trimmed, empty means no relay, and only
+    /// `ws://`/`wss://` are accepted — a typo is worth an error in Settings
+    /// rather than a link that can never connect.
+    pub fn set_relay(self: &Arc<Self>, url: Option<String>) -> Result<()> {
+        let url = match url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            None => None,
+            Some(url) if url.starts_with("ws://") || url.starts_with("wss://") => {
+                Some(url.trim_end_matches('/').to_string())
+            }
+            Some(url) => {
+                return Err(Error::Other(format!(
+                    "A relay URL has to start with ws:// or wss:// — {url} does not."
+                )))
+            }
+        };
+        let mut inner = self.inner.lock();
+        inner.relay_url = url;
+        // The old link goes first: two links for one host ID make the relay
+        // close one with 4409, and the one it keeps should be the new one.
+        drop(inner.relay.take());
+        if inner.enabled {
+            self.spawn_relay(&mut inner);
+        }
+        Ok(())
+    }
+
+    /// Start the host link if remote access is on, a URL is set and no link is
+    /// running. Called from every place that changes one of those three.
+    ///
+    /// Must run inside the async runtime, like `start`.
+    fn spawn_relay(self: &Arc<Self>, inner: &mut Inner) {
+        if !inner.enabled || inner.relay.is_some() {
+            return;
+        }
+        let Some(url) = inner.relay_url.clone() else {
+            return;
+        };
+        inner.relay = Some(RelayLink::spawn(self.clone(), url, inner.relay_timing));
     }
 
     pub fn status(&self) -> RemoteStatus {
@@ -264,6 +359,19 @@ impl RemoteState {
             port: inner.server.as_ref().map_or(inner.port, |h| h.port),
             host_id: self.host_id(),
             addresses: candidate_addresses(),
+            relay: match inner.relay.as_ref() {
+                Some(link) => {
+                    let (state, error) = link.snapshot();
+                    RelayStatus {
+                        url: inner.relay_url.clone(),
+                        state,
+                        error,
+                    }
+                }
+                // No link: either no URL, or remote access is off. The URL is
+                // still reported, so the pane can show what is configured.
+                None => RelayStatus::off(inner.relay_url.clone()),
+            },
             devices: self
                 .devices
                 .list()
@@ -291,9 +399,12 @@ impl RemoteState {
     pub fn begin_pairing(&self) -> PairingInvite {
         let minted = self.pairing.mint();
         let host = host_info();
-        let port = {
+        let (port, relay_url) = {
             let inner = self.inner.lock();
-            inner.server.as_ref().map_or(inner.port, |h| h.port)
+            (
+                inner.server.as_ref().map_or(inner.port, |h| h.port),
+                inner.relay_url.clone(),
+            )
         };
         let addr = candidate_addresses()
             .into_iter()
@@ -305,11 +416,19 @@ impl RemoteState {
         // The colon in `addr` is left literal, as the doc writes it; the values
         // around it are an IPv4 literal, a port, an 8-character code and a
         // machine name.
+        // `relay` is present only when one is configured, and the phone dials
+        // it only after `addr` fails — the same host key authenticates both
+        // paths, so which one the phone lands on changes nothing above the
+        // transport.
+        let relay = relay_url
+            .map(|url| format!("&relay={}", urlencode(&url)))
+            .unwrap_or_default();
         let url = format!(
-            "fletch://pair?host={}&addr={}:{}&token={}&name={}",
+            "fletch://pair?host={}&addr={}:{}{}&token={}&name={}",
             urlencode(&self.host_id()),
             urlencode(&addr),
             port,
+            relay,
             urlencode(&minted.token),
             urlencode(&host.name),
         );

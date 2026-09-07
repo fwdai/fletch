@@ -15,8 +15,9 @@ export function parseAddress(input: string): { host: string; port: number } | nu
   return { host, port: Number(port) || DEFAULT_PORT };
 }
 
-/** Parse a `fletch://pair?host=<host public key>&addr=<ip>:<port>&token=<code>
- *  &name=<name>` deep link into a connect target. Returns null when it isn't
+/** Parse a `fletch://pair?host=<host public key>&addr=<ip>:<port>
+ *  &relay=<url-encoded relay base URL>&token=<code>&name=<name>` deep link into
+ *  a connect target. Returns null when it isn't
  *  one — the deep-link handler connects on anything this accepts, so a bare
  *  address is `parseAddress`'s business, not this one's.
  *
@@ -41,6 +42,10 @@ export function parsePairUrl(input: string): HostTarget | null {
   if (token) target.pairingToken = token;
   const name = params.get("name")?.trim();
   if (name) target.name = name;
+  // `relay=` is url-encoded in the link and present only when the host has a
+  // relay configured; `URLSearchParams` has already decoded it.
+  const relay = params.get("relay")?.trim();
+  if (relay) target.relay = relay;
   return target;
 }
 
@@ -48,4 +53,11 @@ export function parsePairUrl(input: string): HostTarget | null {
 export function wsUrl(target: Pick<HostTarget, "host" | "port">): string {
   const host = target.host.includes(":") ? `[${target.host}]` : target.host;
   return `ws://${host}:${target.port}/ws`;
+}
+
+/** `<relay>/v1/device/<hostKey>` — the phone's endpoint on the relay
+ *  (docs/remote-protocol.md, "Relay"). The host key is the route, and it is
+ *  already base64url, so nothing needs encoding. */
+export function relayDeviceUrl(relay: string, hostKey: string): string {
+  return `${relay.trim().replace(/\/+$/, "")}/v1/device/${hostKey}`;
 }

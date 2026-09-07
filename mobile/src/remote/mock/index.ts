@@ -389,6 +389,8 @@ export function mockSocket(opts: MockOptions = {}): SocketFactory {
     handlers.onOpen();
     const socket: Socket = {
       hostKey: MOCK_HOST_KEY,
+      // There is no network under the mock host, so it is always the near path.
+      via: "lan",
       send: (text) => host.receive(text),
       close: () => host.close(),
     };

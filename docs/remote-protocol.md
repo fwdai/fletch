@@ -23,8 +23,8 @@ adapters (`src/adapters/*`) unchanged.
 - Host listens on TCP port `47285` by default (setting `remote.port`), all
   interfaces, path `/ws`. `ws://<host>:<port>/ws`. The WebSocket is a plain
   carrier: the secure channel, not the transport, provides confidentiality and
-  authentication, so the same frames travel unchanged through the relay that
-  the next contract revision adds. v2 is reachable over LAN and Tailscale.
+  authentication, so the same frames travel unchanged through the relay (see
+  "Relay"). The phone dials the LAN address first and falls back to the relay.
 - Host sends a WebSocket ping every 20 s and closes the connection after two
   missed pongs. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s).
 - WebSocket messages larger than 4 MiB are rejected (close code 1009).
@@ -88,6 +88,89 @@ ciphertext.
   the browser dev loop (`bun run dev` outside Tauri) can only reach the mock
   host.
 
+## Relay
+
+Off-network access goes through a relay that both ends dial outbound. The
+relay is a dumb pipe: it routes by host ID and sees nothing but the ciphertext
+the secure channel already produces. The reference implementation is a
+Cloudflare Worker fronting one Durable Object per host ID (`relay/` in this
+repo); anyone can run their own and point both apps at it.
+
+- **Base URL.** Host setting `remote.relay_url`; absent or empty means no
+  relay. The desktop's suggested default is `wss://relay.fletch.app`. The
+  pairing link carries the URL as `relay=<url-encoded>` when set, and the phone
+  persists it with the host.
+- **Endpoints.** `wss://<relay>/v1/host/<hostId>` for the Mac,
+  `wss://<relay>/v1/device/<hostId>` for a phone. `hostId` is the host public
+  key, base64url. Anything else is `404`.
+- **Host link authentication** proves possession of the host key with a DH
+  challenge, as three JSON text frames within 10 s of the upgrade:
+  1. relay → host `{ "type": "challenge", "nonce": "<base64url, 32 bytes>", "relayKey": "<base64url X25519 public key>" }`
+  2. host → relay `{ "type": "proof", "proof": "<base64url SHA-256( shared || nonce || hostKey )>" }`
+     where `shared = X25519(hostPrivate, relayKey)`, `nonce` and `hostKey` are
+     the raw 32-byte values, and `||` is concatenation.
+  3. relay → host `{ "type": "ready" }`, or close `4003` on a bad proof, a
+     malformed or non-text proof frame, or no proof within the 10 s.
+  The relay stores nothing: the host ID *is* the public key it verifies
+  against. A second host link for the same ID replaces the first, which is
+  closed with `4409`; devices attached to it are closed with `4404`. A known-
+  answer vector for the proof lives in `relay/test-vector.json`; both the
+  relay's and the host's implementations are tested against it.
+- **Device link.** No relay-level authentication: the Noise handshake is the
+  authentication, end to end. The phone speaks to the relay exactly as it
+  would to the host on the LAN — same handshake, same frames, same close codes
+  from the host. The relay closes a device link with `4404` ("host offline")
+  when no host link is attached, `4429` when the host already has 8 device
+  links, `1009` for a message over 4 MiB, and `1008` for more than 100
+  messages in 10 s.
+- **Multiplexing on the host link.** Every device link becomes a numbered
+  virtual connection on the one host link. Binary frames on the host link are
+  `type (1 byte) || connId (u32 big-endian) || payload`:
+
+  | type | direction | payload |
+  |---|---|---|
+  | `0x01` OPEN | relay → host | empty; a device link attached |
+  | `0x02` DATA | both | one device WebSocket **binary** message, verbatim |
+  | `0x03` CLOSE | both | `code (u16 big-endian) || reason (UTF-8)`; the link is over |
+  | `0x04` TEXT | relay → host | one device WebSocket **text** message, verbatim, so the host can apply its own `4001` rule |
+
+  A host-sent CLOSE makes the relay close the device link with that code and
+  reason. A device link that drops produces a CLOSE toward the host with
+  `1006`, and a device link the relay closed itself (`1008`, `1009`) produces
+  a CLOSE with that code, so the host always frees the virtual connection.
+  Frames the relay does not understand (unknown connId, truncated, a text
+  frame on the host link after `ready`) are ignored, not fatal. The host link
+  accepts messages up to 4 MiB + 5 bytes, so a legal 4 MiB device message fits
+  inside a DATA frame. The host serves each virtual connection through the
+  same code path as a LAN socket; WebSocket ping/pong is per hop (host↔relay
+  and relay↔device), never forwarded, and the host answers its own liveness
+  pings to a virtual connection locally. The relay originates no pings of its
+  own (they would keep the Durable Object awake); the host pings the relay,
+  and the runtime answers device pings without waking the object.
+- **Host side.** The Mac keeps the host link up whenever remote access is
+  enabled and a relay URL is set, reconnecting with backoff (1 s … 60 s) when
+  it drops, `4409` included: two Macs sharing one host key is a
+  misconfiguration, and the alternating link surfaces it in `relay.error`
+  rather than silently picking a winner. `remote_status.relay` reports the
+  link (see host commands). The host hashes the nonce it is given whatever its
+  length (the relay always sends 32 bytes), ignores frames for a connId it
+  does not know, and closes a single virtual connection with `1008` if that
+  device outruns the host's inbound queue for it. Disabling
+  remote access drops the link, which closes every relayed device with `4404`
+  from the relay's side; the host's own `4004` goes out first over the virtual
+  connections, as on the LAN.
+- **Phone side.** Connection candidates in order: `addr` over `ws://` with a
+  3 s open timeout, then `wss://<relay>/v1/device/<hostId>` with no extra
+  timeout (it is the last resort; the platform's TCP/TLS timeout applies). The
+  relay candidate exists only when the phone holds both the relay URL and the
+  host key, since the key is the route. A host-key mismatch on either path
+  stops the list at once and is not retried: an impostor must not be able to
+  steer the phone onto the other path. The relay URL arrives in the pairing
+  link and can be added or changed later in the phone's host sheet without
+  re-pairing. The Noise handshake and everything after it are identical on
+  both paths, so the app above the transport cannot tell which one it is on
+  and does not need to.
+
 ## Threat model (v2)
 
 A passive observer of the network sees the WebSocket upgrade, ping/pong timing
@@ -107,6 +190,15 @@ Still in place from v1: pairing needs a single-use code, minted on the desktop
 and valid five minutes; turning remote access off closes every connection with
 `4004`; ops are an explicit allowlist with no shell, no file writes and no raw
 PTY, and events are a whitelist that excludes PTY output.
+
+The relay adds a party that sees metadata but no content: which host IDs are
+online, when devices connect, and ciphertext sizes and timing. It cannot read
+or forge frames, and it cannot impersonate a host, because attaching a host
+link requires the host's private key. Anyone who learns a host ID can open
+device links to that host and make it run Noise handshakes that fail, which is
+why device links per host are capped and rate-limited; a host ID is a random
+public key, so it cannot be guessed or enumerated. A hostile relay operator
+can deny service and nothing more.
 
 ## Envelope
 
@@ -149,14 +241,15 @@ Desktop Settings → "Mobile devices" → "Pair a device" calls the Tauri comman
 as text and as a QR code encoding:
 
 ```
-fletch://pair?host=<host public key, base64url>&addr=<ip>:<port>&token=<code>&name=<url-encoded host name>
+fletch://pair?host=<host public key, base64url>&addr=<ip>:<port>&relay=<url-encoded relay base URL>&token=<code>&name=<url-encoded host name>
 ```
 
 `host` is the host ID (its public key) and is the phone's authentication of
-the Mac. `addr` is the best address to dial right now; when the relay arrives
-the link may add other ways to reach the host, but `host` stays the identity.
-A hand-typed pairing supplies only `addr` and `token`, and pins the host key it
-meets (see "Secure channel").
+the Mac. `addr` is the best LAN address to dial right now; `relay` is present
+only when the host has a relay configured (see "Relay"). `host` stays the
+identity whichever path is used. A hand-typed pairing supplies only `addr` and
+`token`, and pins the host key it meets (see "Secure channel"); it cannot use
+the relay until a later QR pairing or manual entry supplies the relay URL.
 
 Client request (first encrypted frame after the handshake):
 
@@ -284,17 +377,29 @@ connection is authenticated as, and `4004` when the host turns remote access
 off — in both cases the credential is gone or dormant, so the client should
 stop reconnecting until it is paired or the host is enabled again.
 
+Relay close codes reach the phone on the device link and are all retryable
+with the normal backoff — the condition is on the host's or relay's side and
+may clear: `4404` the Mac is not connected to the relay ("Your Mac is
+offline"), `4429` the Mac already has its 8 relayed devices, `1008` the relay
+throttled this connection, `1009` a message was over 4 MiB. `4409` is sent
+only on the host link (a newer host link replaced this one) and never reaches
+a phone.
+
 ## Host-side settings and commands (desktop Tauri commands, not remote ops)
 
 | command | purpose |
 |---|---|
-| `remote_status` | `{ enabled, listening, port, hostId, addresses: string[], devices: RemoteDevice[], error: string \| null }` — `hostId` is the host public key, base64url |
-| `remote_set_enabled` | `{ enabled }` start/stop the listener; persists setting `remote.enabled`; disabling closes live connections with `4004` |
+| `remote_status` | `{ enabled, listening, port, hostId, addresses: string[], devices: RemoteDevice[], relay: RelayStatus, error: string \| null }` — `hostId` is the host public key, base64url |
+| `remote_set_enabled` | `{ enabled }` start/stop the listener and the relay link; persists setting `remote.enabled`; disabling closes live connections with `4004` |
+| `remote_set_relay` | `{ url: string \| null }` persist setting `remote.relay_url` (null/empty clears it) and connect or drop the host link accordingly; returns `RemoteStatus` |
 | `remote_begin_pairing` | `{ token, url, expiresAt }`; refused while the listener is down or `error` is set |
 | `remote_revoke_device` | `{ deviceId }`; drops the credential and closes that device's live connections with `4003` |
 
 `RemoteDevice = { deviceId, name, platform, createdAt, lastSeenAt, connected }`,
 where `connected` is derived from the live connections, not from `lastSeenAt`.
+`RelayStatus = { url: string | null, state: "off" | "connecting" | "connected" | "error", error: string | null }`;
+`off` when no URL is set or remote access is disabled, `error` with the last
+failure while the link is between reconnect attempts.
 `error` is a standing problem with the remote surface itself — "`devices.json`
 could not be read or written", or "`host_key` could not be created or read";
 either blocks pairing, and without a host key no connection can be served
@@ -304,12 +409,10 @@ error stays in `error`, and every `remote_status` retries the write until it
 lands, so the stale file cannot quietly bring a revoked device back at the next
 launch once the disk recovers.
 
-## Out of scope for v2 (tracked, not built)
+## Out of scope (tracked, not built)
 
-The relay for off-network access (next revision: both ends connect outbound to
-a Cloudflare Durable Object keyed by host ID, which pipes these same encrypted
-frames; the phone tries `addr` first and falls back to the relay), push
-notifications (needs the relay and APNs), QR scanning on the phone (manual
-entry of address and code, plus `fletch://pair` deep-link parsing, in v2), Add
-project / clone, voice, attachments, Run scripts, Keychain storage of the
-device key on the phone (v2 stores it in the app data dir).
+Push notifications (the host sends the relay a content-free wake hint, the
+relay calls APNs, the phone connects and fetches), QR scanning on the phone
+(manual entry of address and code, plus `fletch://pair` deep-link parsing, for
+now), Add project / clone, voice, attachments, Run scripts, Keychain storage of
+the device key on the phone (it lives in the app data dir).
