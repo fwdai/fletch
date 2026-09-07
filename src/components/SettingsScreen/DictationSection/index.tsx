@@ -8,7 +8,11 @@ import { useDictationModel } from "./useDictationModel";
  *  of Apple's recognizer. The opt-in and the weights are separate states — the
  *  toggle flips immediately and the model downloads behind it — so the row
  *  below the toggle is the only place that says whether dictation can actually
- *  run locally yet. macOS-only, like the recognizer it replaces. */
+ *  run locally yet. macOS-only, like the recognizer it replaces.
+ *
+ *  Not mounted in `GeneralPane` until the engine that honours the setting
+ *  lands: a toggle that downloads weights nothing reads would be a broken
+ *  promise in any build shipped in between. */
 export function DictationSection() {
   const enabled = useAppStore((s) => s.dictationEngineEnabled);
   const setEnabled = useAppStore((s) => s.setDictationEngineEnabled);
@@ -32,10 +36,11 @@ export function DictationSection() {
           status={status}
           progress={progress}
           onDownload={download}
-          onRemove={() => {
+          onRemove={async () => {
             // Deleting the weights under an enabled engine would leave it
-            // silently falling back, so the opt-in goes with them.
-            if (enabled) setEnabled(false);
+            // silently falling back, so the opt-in goes first — and only if it
+            // actually persisted do the weights follow.
+            if (enabled && !(await setEnabled(false))) return;
             remove();
           }}
         />

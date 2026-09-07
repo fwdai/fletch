@@ -12,6 +12,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::AppHandle;
@@ -148,19 +149,38 @@ async fn run(app: &AppHandle, model: &'static WhisperModel) -> Result<()> {
     Ok(())
 }
 
-/// Drop temp files from an earlier run. The download path removes its own on
+/// A temp file untouched for this long is a dead download. A live one is
+/// written every network chunk, so even a slow link moves it far more often;
+/// only a process killed mid-stream leaves one that goes quiet.
+const STALE_TMP_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// Drop temp files from a run that died. The download path removes its own on
 /// failure, but a process killed mid-stream leaves a partial half-gigabyte
-/// behind under a pid-stamped name that is never reused. Our own in-flight
-/// file is skipped so a second app instance's sweep can't truncate this one.
+/// behind under a pid-stamped name that is never reused.
+///
+/// Staleness is judged by age, not by pid: `IN_FLIGHT` only coordinates one
+/// process, and a second app instance sharing this directory has its own
+/// in-flight file here that must not be unlinked from under it (its rename
+/// would fail after the whole download). Anything modified recently is
+/// presumed live, whoever owns it.
 async fn clear_stale_tmp(root: &Path) {
-    let ours = download::tmp_path(root);
     let Ok(mut dir) = tokio::fs::read_dir(root).await else {
         return;
     };
     while let Ok(Some(entry)) = dir.next_entry().await {
-        let path = entry.path();
-        if path != ours && download::is_tmp_name(&entry.file_name().to_string_lossy()) {
-            let _ = tokio::fs::remove_file(&path).await;
+        if !download::is_tmp_name(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let idle = entry
+            .metadata()
+            .await
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok());
+        // An unreadable mtime is left alone: a spurious keep costs disk until
+        // the next sweep, a spurious delete costs someone their download.
+        if idle.is_some_and(|d| d >= STALE_TMP_AFTER) {
+            let _ = tokio::fs::remove_file(entry.path()).await;
         }
     }
 }
@@ -192,23 +212,39 @@ mod tests {
     use super::*;
 
     /// A sweep must clear a killed run's leftovers without touching an
-    /// installed model or the temp file this process is streaming into.
+    /// installed model, or a temp file that is still being written — ours or
+    /// another instance's.
     #[tokio::test]
     async fn stale_temp_files_are_swept_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let stale = root.join("download-424242.tmp");
+        let live = root.join("download-424243.tmp");
         let model = root.join("ggml-large-v3-turbo-q5_0.bin");
-        let ours = download::tmp_path(root);
-        for f in [&stale, &model, &ours] {
+        for f in [&stale, &live, &model] {
             std::fs::write(f, b"x").unwrap();
         }
+        let long_ago = std::time::SystemTime::now() - STALE_TMP_AFTER * 2;
+        std::fs::File::open(&stale)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        std::fs::File::open(&model)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
 
         clear_stale_tmp(root).await;
 
-        assert!(!stale.exists(), "a previous run's temp file must be swept");
-        assert!(model.exists(), "installed weights must survive");
-        assert!(ours.exists(), "our own in-flight temp file must survive");
+        assert!(!stale.exists(), "a dead run's temp file must be swept");
+        assert!(
+            live.exists(),
+            "a temp file still being written must survive"
+        );
+        assert!(
+            model.exists(),
+            "installed weights must survive, however old"
+        );
     }
 
     /// Without `whisper::init` there is no models root, so nothing can be
