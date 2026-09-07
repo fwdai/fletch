@@ -115,9 +115,10 @@ repo); anyone can run their own and point both apps at it.
   against. A second host link for the same ID replaces the first — closed with
   `4409`, its devices closed with `4404` — but only once the newcomer's proof
   has verified. An unauthenticated link is a claim, not a host: it changes
-  nothing for the current host and its devices, and it alone is closed if it
-  fails or times out. The host ID is public, so anything less would let anyone
-  who knows it knock the real host offline. The deadline is enforced when the
+  nothing for the current host and its devices, whether it fails, times out,
+  hangs up or is cut for breaking a limit; only the authenticated host's
+  departure closes devices with `4404`. The host ID is public, so anything less
+  would let anyone who knows it knock the real host or its devices offline. The deadline is enforced when the
   proof arrives as well as by the alarm. A known-
   answer vector for the proof lives in `relay/test-vector.json`; both the
   relay's and the host's implementations are tested against it.

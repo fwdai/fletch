@@ -216,6 +216,41 @@ describe("host link authentication", () => {
     expect(frame?.type).toBe(FRAME_DATA);
     expect(Array.from(frame?.payload ?? [])).toEqual([1, 2, 3]);
   });
+
+  it("keeps the devices when an unauthenticated claim hangs up", async () => {
+    const host = await newHost();
+    const real = await attachHost(host);
+    const device = await attachDevice(host);
+    expect(decode(await real.nextBinary())?.type).toBe(FRAME_OPEN);
+
+    // Only the authenticated host's departure means "host offline". A claim
+    // that leaves without proving itself never owned the devices.
+    const impostor = await upgrade(`/v1/host/${host.hostId}`);
+    expect((await impostor.nextJson()).type).toBe("challenge");
+    impostor.ws.close(1000, "never mind");
+
+    device.ws.send(new Uint8Array([4, 5, 6]));
+    const frame = decode(await real.nextBinary());
+    expect(frame?.type).toBe(FRAME_DATA);
+    expect(Array.from(frame?.payload ?? [])).toEqual([4, 5, 6]);
+  });
+
+  it("keeps the devices when an unauthenticated claim is cut for an oversized message", async () => {
+    const host = await newHost();
+    const real = await attachHost(host);
+    const device = await attachDevice(host);
+    expect(decode(await real.nextBinary())?.type).toBe(FRAME_OPEN);
+
+    const impostor = await upgrade(`/v1/host/${host.hostId}`);
+    expect((await impostor.nextJson()).type).toBe("challenge");
+    impostor.ws.send(new Uint8Array(MAX_MESSAGE_BYTES + 6));
+    expect((await impostor.closed()).code).toBe(1009);
+
+    device.ws.send(new Uint8Array([7, 8, 9]));
+    const frame = decode(await real.nextBinary());
+    expect(frame?.type).toBe(FRAME_DATA);
+    expect(Array.from(frame?.payload ?? [])).toEqual([7, 8, 9]);
+  });
 });
 
 describe("device links", () => {

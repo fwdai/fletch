@@ -175,9 +175,25 @@ export class HostRelay {
   }
 
   private failHostAuth(ws: WebSocket, state: HostState): void {
+    this.retireHost(ws, state, { code: CLOSE_BAD_PROOF, reason: "host authentication failed" });
+  }
+
+  /** The one exit for a host link, however it ends: proof failure, eviction,
+   *  a relay-enforced limit, or the peer hanging up. Devices are dropped only
+   *  when the departing link was *the* authenticated host. A pending claim
+   *  never owned a device, so its departure disturbs nothing — otherwise
+   *  anyone who learns the host ID could knock every device offline by
+   *  opening the host route and closing it. */
+  private retireHost(
+    ws: WebSocket,
+    state: HostState,
+    close?: { code: number; reason: string },
+  ): void {
+    const wasReady = state.stage === "ready";
     state.stage = "gone";
     writeState(ws, state);
-    closeSocket(ws, CLOSE_BAD_PROOF, "host authentication failed");
+    if (close) closeSocket(ws, close.code, close.reason);
+    if (wasReady) this.closeAllDevices();
   }
 
   /** The one authenticated host link, or null. */
@@ -193,17 +209,12 @@ export class HostRelay {
    *  that were attached to it. Pending (unproven) links are left alone: they
    *  prove themselves or time out. */
   private evictReadyHosts(keep: WebSocket, code: number, reason: string): void {
-    let evicted = false;
     for (const ws of this.ctx.getWebSockets(TAG_HOST)) {
       if (ws === keep) continue;
       const state = readState(ws);
       if (state?.role !== "host" || state.stage !== "ready") continue;
-      state.stage = "gone";
-      writeState(ws, state);
-      closeSocket(ws, code, reason);
-      evicted = true;
+      this.retireHost(ws, state, { code, reason });
     }
-    if (evicted) this.closeAllDevices();
   }
 
   private closeAllDevices(): void {
@@ -306,9 +317,7 @@ export class HostRelay {
     if (!state) return;
 
     if (state.role === "host") {
-      state.stage = "gone";
-      writeState(ws, state);
-      this.closeAllDevices();
+      this.retireHost(ws, state);
       return;
     }
 
@@ -343,10 +352,7 @@ export class HostRelay {
   /** Relay-initiated end of a link; tells the host when it was a device. */
   private closeLink(ws: WebSocket, state: SocketState, code: number, reason: string): void {
     if (state.role === "host") {
-      state.stage = "gone";
-      writeState(ws, state);
-      closeSocket(ws, code, reason);
-      this.closeAllDevices();
+      this.retireHost(ws, state, { code, reason });
       return;
     }
     if (state.closed) return;
