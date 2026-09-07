@@ -123,27 +123,56 @@ pub struct DeviceRecord {
 pub struct DeviceStore {
     path: PathBuf,
     devices: Mutex<Vec<DeviceRecord>>,
+    /// Why the store could not be opened, if it could not. Surfaced as
+    /// `RemoteStatus.error`; pairing refuses while it is set, because a
+    /// credential that cannot be persisted would silently stop working at the
+    /// next launch.
+    storage_error: Option<String>,
 }
 
 impl DeviceStore {
-    /// Open (or start) the store at `<dir>/devices.json`. A file we can't parse
-    /// is treated as empty rather than fatal: the user can re-pair, whereas a
-    /// refusal to launch would be unrecoverable from the UI.
-    pub fn load(dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(dir)?;
+    /// Open (or start) the store at `<dir>/devices.json`. Never fails: a file
+    /// we can't parse, or a directory we can't create, is treated as an empty
+    /// list rather than as fatal — the user can re-pair, whereas a refusal to
+    /// launch (or an unmanaged state that panics the settings pane) would be
+    /// unrecoverable from the UI. An unusable directory is remembered in
+    /// `storage_error`.
+    pub fn load(dir: &Path) -> Self {
+        let mut storage_error = None;
+        let mut devices = Vec::new();
         let path = dir.join("devices.json");
-        let devices = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "remote: unreadable devices.json; starting empty");
-                Vec::new()
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(e.into()),
-        };
-        Ok(Self {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            storage_error = Some(format!(
+                "Paired devices cannot be stored in {}: {e}",
+                dir.display()
+            ));
+        } else {
+            match std::fs::read(&path) {
+                Ok(bytes) => devices = serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "remote: unreadable devices.json; starting empty");
+                    Vec::new()
+                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    storage_error = Some(format!(
+                        "Paired devices cannot be read from {}: {e}",
+                        path.display()
+                    ))
+                }
+            }
+        }
+        if let Some(error) = &storage_error {
+            tracing::error!(%error, "remote: device store unavailable");
+        }
+        Self {
             path,
             devices: Mutex::new(devices),
-        })
+            storage_error,
+        }
+    }
+
+    pub fn storage_error(&self) -> Option<&str> {
+        self.storage_error.as_deref()
     }
 
     pub fn list(&self) -> Vec<DeviceRecord> {
@@ -163,12 +192,7 @@ impl DeviceStore {
             created_at: Utc::now().to_rfc3339(),
             last_seen_at: None,
         };
-        let snapshot = {
-            let mut devices = self.devices.lock();
-            devices.push(record.clone());
-            devices.clone()
-        };
-        self.persist(&snapshot)?;
+        self.mutate(|devices| devices.push(record.clone()))?;
         Ok((record, token))
     }
 
@@ -183,35 +207,48 @@ impl DeviceStore {
             .cloned()
     }
 
+    /// Whether a device is still registered. Used to re-check a credential
+    /// after a connection has made itself revocable, closing the window where
+    /// a revoke lands between `verify` and that registration.
+    pub fn contains(&self, device_id: &str) -> bool {
+        self.devices.lock().iter().any(|d| d.device_id == device_id)
+    }
+
     /// Record that a device just authenticated. Best effort: a failed write
     /// costs a "last seen" timestamp, never a connection.
     pub fn touch(&self, device_id: &str) {
         let now = Utc::now().to_rfc3339();
-        let snapshot = {
-            let mut devices = self.devices.lock();
-            match devices.iter_mut().find(|d| d.device_id == device_id) {
-                Some(d) => d.last_seen_at = Some(now),
-                None => return,
+        let written = self.mutate(|devices| {
+            if let Some(d) = devices.iter_mut().find(|d| d.device_id == device_id) {
+                d.last_seen_at = Some(now);
             }
-            devices.clone()
-        };
-        if let Err(e) = self.persist(&snapshot) {
+        });
+        if let Err(e) = written {
             tracing::warn!(error = %e, "remote: persisting last-seen failed");
         }
     }
 
     /// Drop a device's credential. Returns whether anything was removed.
     pub fn revoke(&self, device_id: &str) -> Result<bool> {
-        let (removed, snapshot) = {
-            let mut devices = self.devices.lock();
+        self.mutate(|devices| {
             let before = devices.len();
             devices.retain(|d| d.device_id != device_id);
-            (devices.len() != before, devices.clone())
-        };
-        if removed {
-            self.persist(&snapshot)?;
-        }
-        Ok(removed)
+            devices.len() != before
+        })
+    }
+
+    /// The one write path: apply `f` to the list and persist it *while still
+    /// holding the lock*, so concurrent writers serialize.
+    ///
+    /// Every writer used to clone the list, release the lock and then write to
+    /// the same `devices.json.tmp`, which let two writes rename each other's
+    /// temp file and land out of order — a revoke overtaken by a `touch` would
+    /// resurrect the revoked credential at the next launch.
+    fn mutate<R>(&self, f: impl FnOnce(&mut Vec<DeviceRecord>) -> R) -> Result<R> {
+        let mut devices = self.devices.lock();
+        let out = f(&mut devices);
+        self.persist(&devices)?;
+        Ok(out)
     }
 
     /// Write the registry atomically (tmp + rename) at 0600 — it holds token

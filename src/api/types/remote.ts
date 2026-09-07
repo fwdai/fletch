@@ -24,6 +24,10 @@ export interface RemoteStatus {
   /** Every IPv4 a phone could dial, best candidate (LAN) first. */
   addresses: string[];
   devices: RemoteDevice[];
+  /** A standing problem with the remote surface itself, shown inline in the
+   *  pane. Currently only one: paired devices cannot be stored, which also
+   *  makes `remoteBeginPairing` refuse. */
+  error: string | null;
 }
 
 /** A minted pairing code: 8 characters from `A-Z2-9`, single use, five minutes. */

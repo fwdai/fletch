@@ -7,13 +7,15 @@
 //! reuse the desktop's TypeScript DTOs unchanged.
 //!
 //! Layout: `auth` owns the two credentials, `server` the WebSocket listener,
-//! `dispatch` the op allowlist, `events` the Tauri event taps. This module owns
-//! the state those four share and the listener's lifecycle.
+//! `session` the live-connection registry, `dispatch` the op allowlist,
+//! `events` the Tauri event taps. This module owns the state those five share
+//! and the listener's lifecycle.
 
 mod auth;
 mod dispatch;
 mod events;
 mod server;
+mod session;
 #[cfg(test)]
 mod tests;
 
@@ -21,7 +23,6 @@ pub use auth::{DeviceStore, PairingTokens};
 pub use dispatch::{Dispatch, DispatchResult, SupervisorDispatch};
 pub use events::install_taps;
 
-use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -30,6 +31,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::broadcast;
 
+use self::session::{Sessions, CLOSE_DISABLED, CLOSE_REVOKED};
 use crate::error::{Error, Result};
 
 /// `settings` key mirroring whether the listener should run. Read once at
@@ -92,6 +94,10 @@ pub struct RemoteStatus {
     /// Every address a phone could reach this host on, best candidate first.
     pub addresses: Vec<String>,
     pub devices: Vec<RemoteDevice>,
+    /// A standing problem with the remote surface itself, for the pane to show
+    /// inline. Currently only one: `devices.json` is not writable, so pairing
+    /// is refused because the credential would not survive a restart.
+    pub error: Option<String>,
 }
 
 /// `remote_begin_pairing`' reply: the code to read out and the deep link to
@@ -114,40 +120,46 @@ struct Inner {
 
 struct ServerHandle {
     port: u16,
-    /// Fires once to stop the accept loop and close live connections with 4004.
+    /// Fires once to stop the accept loop. Live connections are closed through
+    /// the session registry, which can also address one device at a time.
     shutdown: broadcast::Sender<()>,
 }
 
 /// Everything the remote surface shares: credentials, the event fan-out, the
-/// live-session census and the listener handle. Held in Tauri managed state.
+/// live sessions and the listener handle. Held in Tauri managed state.
 pub struct RemoteState {
     dispatch: Arc<dyn Dispatch>,
     devices: Arc<DeviceStore>,
     pairing: PairingTokens,
     events: broadcast::Sender<Arc<str>>,
-    /// device id → live connection count, so `RemoteDevice::connected` is a
-    /// fact about sockets rather than about the last `hello`.
-    connected: Mutex<HashMap<String, usize>>,
+    /// Every live connection, so `RemoteDevice::connected` is a fact about
+    /// sockets and a revoke can reach the socket it just de-authorized.
+    sessions: Arc<Sessions>,
     inner: Mutex<Inner>,
 }
 
 impl RemoteState {
     /// Build the state, loading `devices.json` from `<dir>` (which is
     /// `<app_data_dir>/remote`). Does not start the listener.
-    pub fn new(dir: &std::path::Path, dispatch: Arc<dyn Dispatch>) -> Result<Arc<Self>> {
+    ///
+    /// Infallible on purpose: this is Tauri managed state, and a state that is
+    /// not managed turns `remote_status` — which Settings calls on open — into
+    /// a panic. An unusable device store instead reports itself through
+    /// `RemoteStatus::error` and refuses to pair.
+    pub fn new(dir: &std::path::Path, dispatch: Arc<dyn Dispatch>) -> Arc<Self> {
         let (events, _) = broadcast::channel(EVENT_BUFFER);
-        Ok(Arc::new(Self {
+        Arc::new(Self {
             dispatch,
-            devices: Arc::new(DeviceStore::load(dir)?),
+            devices: Arc::new(DeviceStore::load(dir)),
             pairing: PairingTokens::new(),
             events,
-            connected: Mutex::new(HashMap::new()),
+            sessions: Arc::new(Sessions::new()),
             inner: Mutex::new(Inner {
                 enabled: false,
                 port: DEFAULT_PORT,
                 server: None,
             }),
-        }))
+        })
     }
 
     pub fn devices(&self) -> &Arc<DeviceStore> {
@@ -201,11 +213,13 @@ impl RemoteState {
             let _ = handle.shutdown.send(());
             tracing::info!(port = handle.port, "remote: stopped");
         }
+        drop(inner);
+        self.sessions.close_all(CLOSE_DISABLED);
     }
 
     pub fn status(&self) -> RemoteStatus {
         let inner = self.inner.lock();
-        let connected = self.connected.lock();
+        let connected = self.sessions.connected_devices();
         RemoteStatus {
             enabled: inner.enabled,
             listening: inner.server.is_some(),
@@ -216,7 +230,7 @@ impl RemoteState {
                 .list()
                 .into_iter()
                 .map(|d| RemoteDevice {
-                    connected: connected.get(&d.device_id).copied().unwrap_or(0) > 0,
+                    connected: connected.contains(&d.device_id),
                     device_id: d.device_id,
                     name: d.name,
                     platform: d.platform,
@@ -224,6 +238,7 @@ impl RemoteState {
                     last_seen_at: d.last_seen_at,
                 })
                 .collect(),
+            error: self.devices.storage_error().map(str::to_string),
         }
     }
 
@@ -253,12 +268,22 @@ impl RemoteState {
         }
     }
 
-    /// Revoke a device. Its live connection (if any) is not torn down here —
-    /// the next `hello` fails with 4003, and the connection dies on its own
-    /// ping timeout. Keeping revoke a pure credential operation avoids reaching
-    /// into per-connection state for a case the user retries anyway.
+    /// Revoke a device and hang up on it.
+    ///
+    /// Credential first, socket second: in that order a connection that is
+    /// authenticating right now either fails `verify`, or registers itself and
+    /// then finds itself gone from the store (see `server::read_loop`) — there
+    /// is no interleaving that leaves an authorized socket behind.
     pub fn revoke_device(&self, device_id: &str) -> Result<bool> {
-        self.devices.revoke(device_id)
+        let removed = self.devices.revoke(device_id)?;
+        self.sessions.close_device(device_id, CLOSE_REVOKED);
+        Ok(removed)
+    }
+
+    /// Private to this module tree: only `server` registers sessions, and only
+    /// through the guard.
+    fn sessions(&self) -> &Arc<Sessions> {
+        &self.sessions
     }
 
     pub(super) fn subscribe(&self) -> broadcast::Receiver<Arc<str>> {
@@ -285,24 +310,6 @@ impl RemoteState {
         let name = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".to_string());
         let frame = format!("{{\"event\":{name},\"payload\":{payload}}}");
         let _ = self.events.send(Arc::from(frame));
-    }
-
-    pub(super) fn mark_connected(&self, device_id: &str) {
-        *self
-            .connected
-            .lock()
-            .entry(device_id.to_string())
-            .or_insert(0) += 1;
-    }
-
-    pub(super) fn mark_disconnected(&self, device_id: &str) {
-        let mut connected = self.connected.lock();
-        if let Some(n) = connected.get_mut(device_id) {
-            *n = n.saturating_sub(1);
-            if *n == 0 {
-                connected.remove(device_id);
-            }
-        }
     }
 }
 

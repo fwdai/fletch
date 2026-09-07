@@ -1672,34 +1672,34 @@ pub fn run() {
                     app.handle().clone(),
                     supervisor.clone(),
                 ));
-                match remote::RemoteState::new(&data_dir.join("remote"), dispatch) {
-                    Ok(state) => {
-                        remote::install_taps(app.handle(), state.clone());
-                        let (enabled, port) = {
-                            let conn = db_for_remote.lock();
-                            (
-                                remote::parse_enabled(
-                                    database::get_setting(&conn, remote::ENABLED_SETTING).as_deref(),
-                                ),
-                                remote::parse_port(
-                                    database::get_setting(&conn, remote::PORT_SETTING).as_deref(),
-                                ),
-                            )
-                        };
-                        if enabled {
-                            // `start` binds synchronously but spawns onto the
-                            // async runtime, so it has to run inside it.
-                            let state = state.clone();
-                            tauri::async_runtime::spawn(async move {
-                                if let Err(e) = state.start(port) {
-                                    tracing::error!(error = %e, "remote: autostart failed");
-                                }
-                            });
+                // `RemoteState::new` cannot fail: the state has to be managed
+                // even when the device store is unusable, or `remote_status`
+                // panics the moment Settings opens. Such a failure travels as
+                // `RemoteStatus::error` instead.
+                let state = remote::RemoteState::new(&data_dir.join("remote"), dispatch);
+                remote::install_taps(app.handle(), state.clone());
+                let (enabled, port) = {
+                    let conn = db_for_remote.lock();
+                    (
+                        remote::parse_enabled(
+                            database::get_setting(&conn, remote::ENABLED_SETTING).as_deref(),
+                        ),
+                        remote::parse_port(
+                            database::get_setting(&conn, remote::PORT_SETTING).as_deref(),
+                        ),
+                    )
+                };
+                if enabled {
+                    // `start` binds synchronously but spawns onto the async
+                    // runtime, so it has to run inside it.
+                    let state = state.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = state.start(port) {
+                            tracing::error!(error = %e, "remote: autostart failed");
                         }
-                        app.manage(state);
-                    }
-                    Err(e) => tracing::error!(error = %e, "remote: state init failed"),
+                    });
                 }
+                app.manage(state);
             }
 
             // Menu-bar tray (close-to-tray + status line) — the second half of

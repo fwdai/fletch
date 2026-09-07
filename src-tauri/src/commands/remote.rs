@@ -51,10 +51,15 @@ pub async fn remote_set_enabled(
 
 /// Mint a single-use pairing code and the `fletch://pair` deep link that
 /// carries it. Refuses while the listener is down — a code nothing can be typed
-/// into is worse than an error.
+/// into is worse than an error — and while the device store is unwritable,
+/// since that pairing would stop working at the next launch.
 #[tauri::command]
 pub fn remote_begin_pairing(remote: State<'_, Arc<RemoteState>>) -> Result<PairingInvite> {
-    if !remote.status().listening {
+    let status = remote.status();
+    if let Some(error) = status.error {
+        return Err(Error::Other(error));
+    }
+    if !status.listening {
         return Err(Error::Other(
             "Turn on mobile access before pairing a device.".into(),
         ));

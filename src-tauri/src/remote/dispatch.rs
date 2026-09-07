@@ -41,6 +41,11 @@ pub trait Dispatch: Send + Sync + 'static {
 /// The error text the protocol reserves for an op that is not on the allowlist.
 pub const UNKNOWN_OP: &str = "unknown op";
 
+/// The error text a connection gets when it already has the per-connection
+/// maximum of requests outstanding (`server::MAX_IN_FLIGHT`). The request is
+/// answered without being dispatched; the client retries.
+pub const TOO_MANY_IN_FLIGHT: &str = "too many in-flight requests";
+
 /// The v1 allowlist, in the order of the protocol doc's table. Load-bearing:
 /// `dispatch` rejects anything absent here before the `match` runs, so a name
 /// is only reachable when it appears both here and as an arm.

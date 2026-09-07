@@ -4,6 +4,11 @@
 //! Requests are answered off the reader loop on purpose. Some ops (`push_agent`,
 //! `create_pr`) take tens of seconds, and a reader that awaited them inline
 //! would stop reading pongs and hang up on a healthy phone mid-push.
+//!
+//! Everything a connection owns is bounded and ends with it: the outbound queue
+//! holds `OUTBOUND_BUFFER` frames, at most `MAX_IN_FLIGHT` dispatches run at
+//! once, and both the dispatch tasks and the registry entry are dropped on
+//! every exit path out of `serve`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -15,6 +20,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
@@ -22,6 +28,7 @@ use tokio_tungstenite::tungstenite::{http, Bytes, Error as WsError, Message};
 use tokio_tungstenite::WebSocketStream;
 
 use super::auth::DeviceRecord;
+use super::session::{CloseRequest, SessionGuard};
 use super::{RemoteState, WS_PATH};
 
 /// Largest frame/message the host accepts. tungstenite answers anything larger
@@ -33,20 +40,26 @@ const MAX_MISSED_PONGS: u32 = 2;
 /// How long a closing connection keeps reading (and discarding) the peer's
 /// bytes before the socket is dropped. See `drain`.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+/// Frames one connection may have queued but not yet written. A control panel
+/// reads its own responses; a peer that lets this many pile up is either gone
+/// or not reading, and the session is dropped rather than buffered for.
+const OUTBOUND_BUFFER: usize = 64;
+/// Requests one connection may have in flight at once. The phone issues a
+/// handful per screen; past this the host answers `TOO_MANY_IN_FLIGHT` without
+/// dispatching, so a flood costs a response instead of a task and a `Supervisor`
+/// call each.
+const MAX_IN_FLIGHT: usize = 8;
 
 /// The first frame was neither `pair` nor `hello`.
 const CLOSE_BAD_FIRST_FRAME: CloseCode = CloseCode::Library(4001);
 /// Unauthenticated, or a bad/revoked credential.
 const CLOSE_UNAUTHENTICATED: CloseCode = CloseCode::Library(4003);
-/// The host turned remote access off under a live connection.
-const CLOSE_DISABLED: CloseCode = CloseCode::Library(4004);
 /// A frame past `MAX_FRAME_BYTES`. tungstenite surfaces this as a capacity
 /// error without closing, so the host sends the RFC's 1009 itself — the phone
 /// has no client-side cap and relies on this code to know what happened.
 const CLOSE_TOO_LARGE: CloseCode = CloseCode::Size;
 
 type Ws = WebSocketStream<TcpStream>;
-type Outbound = mpsc::UnboundedSender<Message>;
 
 pub(super) async fn accept_loop(
     state: Arc<RemoteState>,
@@ -61,7 +74,7 @@ pub(super) async fn accept_loop(
                     // Interactive control traffic: small frames, latency over
                     // throughput.
                     let _ = stream.set_nodelay(true);
-                    tokio::spawn(serve(state.clone(), stream, peer, shutdown.resubscribe()));
+                    tokio::spawn(serve(state.clone(), stream, peer));
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "remote: accept failed");
@@ -71,12 +84,7 @@ pub(super) async fn accept_loop(
     }
 }
 
-async fn serve(
-    state: Arc<RemoteState>,
-    stream: TcpStream,
-    peer: SocketAddr,
-    shutdown: broadcast::Receiver<()>,
-) {
+async fn serve(state: Arc<RemoteState>, stream: TcpStream, peer: SocketAddr) {
     let mut config = WebSocketConfig::default();
     config.max_message_size = Some(MAX_FRAME_BYTES);
     config.max_frame_size = Some(MAX_FRAME_BYTES);
@@ -91,17 +99,26 @@ async fn serve(
     };
 
     let (sink, stream) = ws.split();
-    let (tx, rx) = mpsc::unbounded_channel::<Message>();
+    let (tx, rx) = mpsc::channel::<Message>(OUTBOUND_BUFFER);
+    let (close_tx, close_rx) = mpsc::channel::<CloseRequest>(1);
+    // Registered before the first frame, so turning remote access off closes a
+    // socket that is still handshaking rather than leaving it free to pair
+    // against a stopped listener. The guard deregisters the session when it
+    // drops, which is every way out of this function.
+    let session = state.sessions().register(close_tx.clone());
+    let out = Outbox {
+        tx,
+        close: close_tx,
+    };
     let writer = tokio::spawn(pump(sink, rx));
 
-    let (device, stream) = read_loop(&state, stream, &tx, shutdown, peer).await;
+    let stream = read_loop(&state, stream, &out, close_rx, &session, peer).await;
 
-    if let Some(device) = &device {
-        state.mark_disconnected(&device.device_id);
-    }
-    // Closing `tx` lets the writer flush whatever is queued (a close frame
-    // last) and hand the sink back, so the socket can be drained before drop.
-    drop(tx);
+    // Dropping the guard and the outbox releases the last senders, which lets
+    // the writer flush whatever is queued (a close frame last) and hand the
+    // sink back, so the socket can be drained before drop.
+    drop(session);
+    drop(out);
     if let Ok(sink) = writer.await {
         if let Ok(ws) = stream.reunite(sink) {
             drain(ws).await;
@@ -145,12 +162,39 @@ fn check_path(req: &Request, response: Response) -> std::result::Result<Response
     Err(err)
 }
 
+/// One connection's outbound side: the bounded queue plus the switch that ends
+/// the session when that queue can no longer be written to.
+///
+/// Handed to the dispatch and event-forwarding tasks, which have no other way
+/// to stop a connection whose peer has stopped reading.
+#[derive(Clone)]
+struct Outbox {
+    tx: mpsc::Sender<Message>,
+    close: mpsc::Sender<CloseRequest>,
+}
+
+impl Outbox {
+    /// Queue a message. `false` means the session is over — the socket is gone,
+    /// or the peer let `OUTBOUND_BUFFER` frames pile up unread — and the
+    /// connection has been asked to close, so a caller in a loop should stop.
+    ///
+    /// A backpressure kill asks for a close with no frame: the queue a close
+    /// frame would travel through is exactly what is full.
+    fn send(&self, msg: Message) -> bool {
+        if self.tx.try_send(msg).is_ok() {
+            return true;
+        }
+        let _ = self.close.try_send(None);
+        false
+    }
+}
+
 /// Serialize the outbound queue onto the socket. A `Close` is the last thing
 /// written; anything queued behind it is dropped. Hands the sink back so the
 /// caller can reunite it with the reader and drain the socket before drop.
 async fn pump(
     mut sink: SplitSink<Ws, Message>,
-    mut rx: mpsc::UnboundedReceiver<Message>,
+    mut rx: mpsc::Receiver<Message>,
 ) -> SplitSink<Ws, Message> {
     while let Some(msg) = rx.recv().await {
         let closing = matches!(msg, Message::Close(_));
@@ -166,18 +210,21 @@ async fn pump(
     sink
 }
 
-/// The connection's state machine. Returns the authenticated device (if the
-/// connection ever got one) so the caller can drop it from the census, and
-/// the reader half so the socket can be reunited and drained.
+/// The connection's state machine. Returns the reader half so the socket can be
+/// reunited and drained.
 async fn read_loop(
     state: &Arc<RemoteState>,
     mut stream: futures_util::stream::SplitStream<Ws>,
-    tx: &Outbound,
-    mut shutdown: broadcast::Receiver<()>,
+    out: &Outbox,
+    mut close_rx: mpsc::Receiver<CloseRequest>,
+    session: &SessionGuard,
     peer: SocketAddr,
-) -> (Option<DeviceRecord>, futures_util::stream::SplitStream<Ws>) {
-    let mut device: Option<DeviceRecord> = None;
+) -> futures_util::stream::SplitStream<Ws> {
+    let mut authenticated = false;
     let mut event_task: Option<tokio::task::JoinHandle<()>> = None;
+    // Owns the dispatch tasks, so they are aborted when this loop ends instead
+    // of outliving the socket they were going to answer on.
+    let mut in_flight: JoinSet<()> = JoinSet::new();
     let mut first_frame = true;
     let mut missed_pongs = 0u32;
     let mut ping = tokio::time::interval(PING_INTERVAL);
@@ -186,8 +233,13 @@ async fn read_loop(
 
     loop {
         tokio::select! {
-            _ = shutdown.recv() => {
-                send_close(tx, CLOSE_DISABLED, "remote access disabled");
+            request = close_rx.recv() => {
+                // The host is hanging up: remote access was disabled, this
+                // device was revoked, or the outbound queue backed up (which
+                // is the `None` case — no frame can be written).
+                if let Some(Some(reason)) = request {
+                    out.send(close_frame(CloseCode::Library(reason.code), reason.reason));
+                }
                 break;
             }
             _ = ping.tick() => {
@@ -196,7 +248,7 @@ async fn read_loop(
                     break;
                 }
                 missed_pongs += 1;
-                if tx.send(Message::Ping(Bytes::new())).is_err() {
+                if !out.send(Message::Ping(Bytes::new())) {
                     break;
                 }
             }
@@ -205,7 +257,7 @@ async fn read_loop(
                     Some(Ok(msg)) => msg,
                     Some(Err(WsError::Capacity(e))) => {
                         tracing::debug!(error = %e, %peer, "remote: frame over the 4 MiB cap");
-                        send_close(tx, CLOSE_TOO_LARGE, "frame too large");
+                        out.send(close_frame(CLOSE_TOO_LARGE, "frame too large"));
                         break;
                     }
                     // A protocol error or a dropped socket: nothing useful to
@@ -219,7 +271,7 @@ async fn read_loop(
                         // The protocol is text-only; a binary first frame is a
                         // client that does not speak it at all.
                         if first_frame {
-                            send_close(tx, CLOSE_BAD_FIRST_FRAME, "expected pair or hello");
+                            out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "expected pair or hello"));
                             break;
                         }
                     }
@@ -228,7 +280,7 @@ async fn read_loop(
                             Ok(frame) => frame,
                             Err(e) => {
                                 if first_frame {
-                                    send_close(tx, CLOSE_BAD_FIRST_FRAME, "expected pair or hello");
+                                    out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "expected pair or hello"));
                                     break;
                                 }
                                 // No id to answer with; the client will time its
@@ -239,14 +291,14 @@ async fn read_loop(
                         };
                         let handshake = frame.op == "pair" || frame.op == "hello";
                         if first_frame && !handshake {
-                            send_close(tx, CLOSE_BAD_FIRST_FRAME, "expected pair or hello");
+                            out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "expected pair or hello"));
                             break;
                         }
                         first_frame = false;
 
-                        if device.is_none() {
+                        if !authenticated {
                             if !handshake {
-                                send_close(tx, CLOSE_UNAUTHENTICATED, "hello required");
+                                out.send(close_frame(CLOSE_UNAUTHENTICATED, "hello required"));
                                 break;
                             }
                             match authenticate(state, &frame).await {
@@ -255,22 +307,33 @@ async fn read_loop(
                                     // event emitted in the gap would otherwise
                                     // be lost, and the phone would render a
                                     // snapshot it can't see the next change to.
-                                    event_task = Some(spawn_event_forwarder(state, tx.clone()));
+                                    event_task = Some(spawn_event_forwarder(state, out.clone()));
+                                    // Makes this socket revocable and visible
+                                    // as `connected`.
+                                    session.bind_device(&record.device_id);
+                                    // The credential could have been revoked
+                                    // between `verify` above and the line
+                                    // above, in which case `revoke_device`
+                                    // found no session to close and this is
+                                    // where that is caught.
+                                    if !state.devices().contains(&record.device_id) {
+                                        out.send(close_frame(CLOSE_UNAUTHENTICATED, "bad credential"));
+                                        break;
+                                    }
                                     state.devices().touch(&record.device_id);
-                                    state.mark_connected(&record.device_id);
                                     // Reply last: the phone must not be able to
                                     // observe itself as authenticated before it
-                                    // is on the fan-out and in the census.
-                                    send(tx, ok_frame(&frame.id, result));
+                                    // is on the fan-out and in the registry.
+                                    out.send(text_frame(ok_frame(&frame.id, result)));
                                     tracing::info!(
                                         device = %record.name,
                                         platform = %record.platform,
                                         "remote: device authenticated"
                                     );
-                                    device = Some(record);
+                                    authenticated = true;
                                 }
                                 None => {
-                                    send_close(tx, CLOSE_UNAUTHENTICATED, "bad credential");
+                                    out.send(close_frame(CLOSE_UNAUTHENTICATED, "bad credential"));
                                     break;
                                 }
                             }
@@ -280,20 +343,28 @@ async fn read_loop(
                         if handshake {
                             // Already authenticated: the handshake ops are not
                             // part of the dispatchable surface.
-                            send(tx, err_frame(&frame.id, super::dispatch::UNKNOWN_OP));
+                            out.send(text_frame(err_frame(&frame.id, super::dispatch::UNKNOWN_OP)));
+                            continue;
+                        }
+
+                        // Reap finished dispatches before counting, so the cap
+                        // is on work actually outstanding.
+                        while in_flight.try_join_next().is_some() {}
+                        if in_flight.len() >= MAX_IN_FLIGHT {
+                            out.send(text_frame(err_frame(&frame.id, super::dispatch::TOO_MANY_IN_FLIGHT)));
                             continue;
                         }
 
                         let state = state.clone();
-                        let tx = tx.clone();
+                        let out = out.clone();
                         let RequestFrame { id, op, args } = frame;
-                        tokio::spawn(async move {
+                        in_flight.spawn(async move {
                             let outcome = state.dispatch(&op, args).await;
                             let frame = match outcome {
                                 Ok(result) => ok_frame(&id, result),
                                 Err(error) => err_frame(&id, &error),
                             };
-                            send(&tx, frame);
+                            out.send(text_frame(frame));
                         });
                     }
                     _ => {}
@@ -302,15 +373,22 @@ async fn read_loop(
         }
     }
 
+    // Nothing this connection started may outlive it. Git ops run inside
+    // `spawn_blocking` and run to completion regardless; aborting only stops
+    // the host from waiting for them and from answering into a dead socket.
+    in_flight.shutdown().await;
     if let Some(task) = event_task {
         task.abort();
+        // Awaited so the task's `Outbox` clone is gone before the caller drops
+        // its own and waits for the writer.
+        let _ = task.await;
     }
-    (device, stream)
+    stream
 }
 
 /// Forward the shared event stream to one connection. Owned by a task rather
 /// than the reader's `select!` so a lagging phone can't stall request handling.
-fn spawn_event_forwarder(state: &Arc<RemoteState>, tx: Outbound) -> tokio::task::JoinHandle<()> {
+fn spawn_event_forwarder(state: &Arc<RemoteState>, out: Outbox) -> tokio::task::JoinHandle<()> {
     // Subscribed here, not inside the task, so the connection is on the
     // fan-out the instant this returns.
     let mut rx = state.subscribe();
@@ -318,7 +396,7 @@ fn spawn_event_forwarder(state: &Arc<RemoteState>, tx: Outbound) -> tokio::task:
         loop {
             match rx.recv().await {
                 Ok(frame) => {
-                    if tx.send(Message::Text(frame.as_ref().into())).is_err() {
+                    if !out.send(Message::Text(frame.as_ref().into())) {
                         return;
                     }
                 }
@@ -376,15 +454,15 @@ async fn authenticate(
     }
 }
 
-fn send(tx: &Outbound, frame: String) {
-    let _ = tx.send(Message::Text(frame.into()));
+fn text_frame(frame: String) -> Message {
+    Message::Text(frame.into())
 }
 
-fn send_close(tx: &Outbound, code: CloseCode, reason: &str) {
-    let _ = tx.send(Message::Close(Some(CloseFrame {
+fn close_frame(code: CloseCode, reason: &str) -> Message {
+    Message::Close(Some(CloseFrame {
         code,
         reason: reason.into(),
-    })));
+    }))
 }
 
 fn ok_frame(id: &str, result: Value) -> String {

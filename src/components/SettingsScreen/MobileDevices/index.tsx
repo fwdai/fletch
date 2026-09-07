@@ -44,6 +44,10 @@ export function MobileDevices() {
         {listening && <span className="set-remote-port mono text-sm">port {status?.port}</span>}
       </SetRow>
 
+      {/* The host's own standing problem (an unwritable device store, which
+          also blocks pairing) first, then whatever the last command failed
+          with. */}
+      {status?.error && <div className="set-inline-warn">{status.error}</div>}
       {error && <div className="set-inline-warn">{error}</div>}
 
       {listening && !invite && (
@@ -51,7 +55,7 @@ export function MobileDevices() {
           title="Pair a device"
           sub="Generates a one-time code, good for five minutes. Enter it in Fletch on your phone."
         >
-          <Button variant="primary" onClick={() => void beginPairing()}>
+          <Button variant="primary" disabled={!!status?.error} onClick={() => void beginPairing()}>
             Pair a device
           </Button>
         </SetRow>

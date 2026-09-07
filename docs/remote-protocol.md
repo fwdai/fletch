@@ -23,6 +23,31 @@ adapters (`src/adapters/*`) unchanged.
 - Host sends a WebSocket ping every 20 s and closes the connection after two
   missed pongs. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s).
 - Frames larger than 4 MiB are rejected (close code 1009).
+- Everything the host holds for a connection is bounded, and ends with it. The
+  outbound queue holds 64 frames: a client that stops reading while the host
+  still has frames for it has its socket dropped (no close frame — the queue is
+  what one would travel through), and reconnects. At most 8 requests may be in
+  flight per connection; further requests are answered immediately with
+  `{ ok: false, error: "too many in-flight requests" }` and never dispatched.
+  Requests still running when the socket goes away are abandoned.
+
+## Threat model (v1)
+
+The transport is cleartext `ws://` on all interfaces, so v1 assumes a trusted
+LAN (or a Tailscale network). Anyone who can observe that network while a phone
+pairs or says `hello` sees the device token and can replay it: the token is a
+bearer credential, and there is nothing else to present.
+
+What is in place today: pairing needs a single-use code, minted on the desktop
+and valid five minutes; only the device token's sha256 is stored on the host;
+revoking a device drops the credential *and* closes its live connections with
+`4003`; turning remote access off closes every connection with `4004`; ops are
+an explicit allowlist with no shell, no file writes and no raw PTY, and events
+are a whitelist that excludes PTY output.
+
+Planned fix (follow-up, not v1): TLS with a self-signed host certificate whose
+fingerprint travels in the pairing QR and is pinned by the phone, which removes
+both the plaintext credential and the impersonable host.
 
 ## Envelope
 
@@ -177,20 +202,31 @@ refetch `get_workspace` on reconnect and on returning to the foreground, and
 
 ## Errors
 
-Host errors are strings (the `Display` of the Rust `Error`). Auth failures are
-WebSocket close codes, not error responses: `4001` bad first frame, `4003`
-unauthenticated or revoked, `4004` host has remote access disabled.
+Host errors are strings (the `Display` of the Rust `Error`). Two are reserved:
+`"unknown op"` for anything off the allowlist and `"too many in-flight
+requests"` for a connection over its concurrency cap.
+
+Auth failures are WebSocket close codes, not error responses: `4001` bad first
+frame, `4003` unauthenticated or revoked, `4004` host has remote access
+disabled. `4003` also arrives unprompted when the host revokes the device this
+connection is authenticated as, and `4004` when the host turns remote access
+off — in both cases the credential is gone or dormant, so the client should
+stop reconnecting until it is paired or the host is enabled again.
 
 ## Host-side settings and commands (desktop Tauri commands, not remote ops)
 
 | command | purpose |
 |---|---|
-| `remote_status` | `{ enabled, listening, port, addresses: string[], devices: RemoteDevice[] }` |
-| `remote_set_enabled` | `{ enabled }` start/stop the listener; persists setting `remote.enabled` |
-| `remote_begin_pairing` | `{ token, url, expiresAt }` |
-| `remote_revoke_device` | `{ deviceId }` |
+| `remote_status` | `{ enabled, listening, port, addresses: string[], devices: RemoteDevice[], error: string \| null }` |
+| `remote_set_enabled` | `{ enabled }` start/stop the listener; persists setting `remote.enabled`; disabling closes live connections with `4004` |
+| `remote_begin_pairing` | `{ token, url, expiresAt }`; refused while the listener is down or `error` is set |
+| `remote_revoke_device` | `{ deviceId }`; drops the credential and closes that device's live connections with `4003` |
 
-`RemoteDevice = { deviceId, name, platform, createdAt, lastSeenAt, connected }`.
+`RemoteDevice = { deviceId, name, platform, createdAt, lastSeenAt, connected }`,
+where `connected` is derived from the live connections, not from `lastSeenAt`.
+`error` is a standing problem with the remote surface itself — currently only
+"`devices.json` is not writable", which also blocks pairing — and the Settings
+pane shows it inline.
 
 ## Out of scope for v1 (tracked, not built)
 

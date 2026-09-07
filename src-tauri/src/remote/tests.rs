@@ -7,7 +7,8 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use super::dispatch::{self, Dispatch, DispatchFuture, UNKNOWN_OP};
+use super::auth::DeviceRecord;
+use super::dispatch::{self, Dispatch, DispatchFuture, TOO_MANY_IN_FLIGHT, UNKNOWN_OP};
 use super::{DeviceStore, PairingTokens, RemoteState};
 
 // ---------------------------------------------------------------------------
@@ -64,7 +65,7 @@ fn minting_does_not_invalidate_an_outstanding_token() {
 #[test]
 fn device_token_verifies_until_revoked() {
     let dir = tempfile::tempdir().unwrap();
-    let store = DeviceStore::load(dir.path()).unwrap();
+    let store = DeviceStore::load(dir.path());
     let (record, token) = store.register("Alex's iPhone", "ios").unwrap();
 
     assert_eq!(token.len(), 43, "32 random bytes as base64url");
@@ -82,7 +83,7 @@ fn device_token_verifies_until_revoked() {
 #[test]
 fn unknown_device_token_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let store = DeviceStore::load(dir.path()).unwrap();
+    let store = DeviceStore::load(dir.path());
     store.register("phone", "ios").unwrap();
     assert!(store.verify("not-a-real-token").is_none());
 }
@@ -90,7 +91,7 @@ fn unknown_device_token_is_rejected() {
 #[test]
 fn devices_json_holds_no_plaintext_token_and_is_owner_only() {
     let dir = tempfile::tempdir().unwrap();
-    let store = DeviceStore::load(dir.path()).unwrap();
+    let store = DeviceStore::load(dir.path());
     let (_, token) = store.register("phone", "ios").unwrap();
 
     let path = dir.path().join("devices.json");
@@ -113,12 +114,73 @@ fn devices_json_holds_no_plaintext_token_and_is_owner_only() {
 fn devices_survive_a_reload() {
     let dir = tempfile::tempdir().unwrap();
     let token = {
-        let store = DeviceStore::load(dir.path()).unwrap();
+        let store = DeviceStore::load(dir.path());
         store.register("phone", "ios").unwrap().1
     };
-    let reopened = DeviceStore::load(dir.path()).unwrap();
+    let reopened = DeviceStore::load(dir.path());
     assert!(reopened.verify(&token).is_some());
     assert_eq!(reopened.list().len(), 1);
+}
+
+#[test]
+fn concurrent_writers_leave_the_file_agreeing_with_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(DeviceStore::load(dir.path()));
+
+    // Every writer persists the whole list, so two of them racing used to be
+    // able to rename each other's temp file and land out of order —
+    // resurrecting a revoked credential at the next launch.
+    let workers: Vec<_> = (0..8)
+        .map(|w| {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                for i in 0..20 {
+                    let (record, _) = store.register(&format!("phone-{w}-{i}"), "ios").unwrap();
+                    store.touch(&record.device_id);
+                    if i % 2 == 0 {
+                        assert!(store.revoke(&record.device_id).unwrap());
+                    }
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+
+    let in_memory: Vec<String> = store.list().into_iter().map(|d| d.device_id).collect();
+    let raw = std::fs::read(dir.path().join("devices.json")).unwrap();
+    let on_disk: Vec<String> = serde_json::from_slice::<Vec<DeviceRecord>>(&raw)
+        .unwrap()
+        .into_iter()
+        .map(|d| d.device_id)
+        .collect();
+
+    assert_eq!(in_memory.len(), 8 * 10, "half of each worker's are revoked");
+    assert_eq!(on_disk, in_memory, "devices.json diverged from memory");
+    assert!(
+        !dir.path().join("devices.json.tmp").exists(),
+        "a temp file outlived its rename"
+    );
+}
+
+#[test]
+fn an_unusable_device_store_becomes_a_status_error() {
+    let dir = tempfile::tempdir().unwrap();
+    // A path already occupied by a regular file: `create_dir_all` cannot make
+    // the store directory, which used to leave `RemoteState` unmanaged and
+    // panic `remote_status` the moment Settings opened.
+    let occupied = dir.path().join("remote");
+    std::fs::write(&occupied, b"not a directory").unwrap();
+
+    let state = RemoteState::new(&occupied, Arc::new(StubDispatch));
+    let status = state.status();
+    assert!(
+        status.error.is_some(),
+        "an unusable device store must surface an error"
+    );
+    assert!(status.devices.is_empty());
+    assert!(!status.listening);
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +274,21 @@ impl Dispatch for StubDispatch {
     }
 }
 
+/// Answers the `hello` snapshot and then never answers anything, so a
+/// connection can be driven past its in-flight cap.
+struct HangingDispatch;
+
+impl Dispatch for HangingDispatch {
+    fn dispatch<'a>(&'a self, op: &'a str, _args: Value) -> DispatchFuture<'a> {
+        Box::pin(async move {
+            match op {
+                "get_workspace" => Ok(json!({ "projects": [], "agents": [] })),
+                _ => std::future::pending().await,
+            }
+        })
+    }
+}
+
 struct Host {
     _dir: tempfile::TempDir,
     state: Arc<RemoteState>,
@@ -219,8 +296,12 @@ struct Host {
 }
 
 fn boot() -> Host {
+    boot_with(Arc::new(StubDispatch))
+}
+
+fn boot_with(dispatch: Arc<dyn Dispatch>) -> Host {
     let dir = tempfile::tempdir().unwrap();
-    let state = RemoteState::new(dir.path(), Arc::new(StubDispatch)).unwrap();
+    let state = RemoteState::new(dir.path(), dispatch);
     let port = state.start(0).unwrap();
     Host {
         _dir: dir,
@@ -407,6 +488,77 @@ async fn disabling_remote_access_closes_live_connections_4004() {
     host.state.stop();
     assert_eq!(close_code(&mut ws).await, 4004);
     assert!(!host.state.status().listening);
+}
+
+#[tokio::test]
+async fn revoking_a_device_closes_its_live_connection_4003() {
+    let host = boot();
+    let (record, token) = host.state.devices().register("phone", "ios").unwrap();
+    let mut ws = connect(host.port).await;
+    request(&mut ws, "1", "hello", json!({ "deviceToken": token })).await;
+    assert_eq!(next_json(&mut ws).await["ok"], true);
+    assert!(host.state.status().devices[0].connected);
+
+    // The credential is gone *and* the socket that was using it is hung up on:
+    // an already-authenticated connection is not re-checked per request.
+    host.state.revoke_device(&record.device_id).unwrap();
+    assert_eq!(close_code(&mut ws).await, 4003);
+    assert!(host.state.status().devices.is_empty());
+}
+
+#[tokio::test]
+async fn revoking_one_device_leaves_another_connected() {
+    let host = boot();
+    let (first, first_token) = host.state.devices().register("phone", "ios").unwrap();
+    let (_, second_token) = host.state.devices().register("tablet", "android").unwrap();
+
+    let mut doomed = connect(host.port).await;
+    request(
+        &mut doomed,
+        "1",
+        "hello",
+        json!({ "deviceToken": first_token }),
+    )
+    .await;
+    assert_eq!(next_json(&mut doomed).await["ok"], true);
+    let mut kept = connect(host.port).await;
+    request(
+        &mut kept,
+        "1",
+        "hello",
+        json!({ "deviceToken": second_token }),
+    )
+    .await;
+    assert_eq!(next_json(&mut kept).await["ok"], true);
+
+    host.state.revoke_device(&first.device_id).unwrap();
+    assert_eq!(close_code(&mut doomed).await, 4003);
+
+    request(&mut kept, "2", "get_workspace", json!({})).await;
+    let reply = next_json(&mut kept).await;
+    assert_eq!(reply["id"], "2");
+    assert_eq!(reply["ok"], true);
+}
+
+#[tokio::test]
+async fn requests_past_the_in_flight_cap_are_refused_without_dispatching() {
+    let host = boot_with(Arc::new(HangingDispatch));
+    let (_, token) = host.state.devices().register("phone", "ios").unwrap();
+    let mut ws = connect(host.port).await;
+    request(&mut ws, "0", "hello", json!({ "deviceToken": token })).await;
+    assert_eq!(next_json(&mut ws).await["ok"], true);
+
+    // Eight ops that never answer fill the connection's slots; the reader
+    // handles frames in order, so the ninth is over the cap by construction.
+    for i in 1..=8 {
+        request(&mut ws, &i.to_string(), "get_git_state", json!({})).await;
+    }
+    request(&mut ws, "9", "get_git_state", json!({})).await;
+
+    let refused = next_json(&mut ws).await;
+    assert_eq!(refused["id"], "9");
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["error"], TOO_MANY_IN_FLIGHT);
 }
 
 #[tokio::test]
