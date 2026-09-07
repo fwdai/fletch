@@ -18,6 +18,7 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
   const setTheme = useStore((s) => s.setTheme);
   const reconnect = useStore((s) => s.reconnect);
   const unpair = useStore((s) => s.unpair);
+  const hostKey = useStore((s) => s.hostKey);
   const projects = useStore((s) => s.workspace?.projects.length ?? 0);
   const agents = useStore((s) => s.workspace?.agents.length ?? 0);
   // The client owns the target; this re-reads it on every render, which the
@@ -68,6 +69,12 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
         <div className="kv">
           <span>Platform</span>
           <span>{host?.os ?? "—"}</span>
+        </div>
+        <div className="kv">
+          <span>Identity</span>
+          {/* The pinned host key, abbreviated: enough to compare against the
+              one Settings shows on the Mac. */}
+          <span>{hostKey ? `${hostKey.slice(0, 12)}…` : "—"}</span>
         </div>
         <div className="kv">
           <span>Projects</span>

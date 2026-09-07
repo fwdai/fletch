@@ -69,12 +69,16 @@ sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
 # Paired-device remote access (`remote/`). Server side only: `handshake` is the
-# one feature needed, and no TLS backend is pulled in — v1 is plaintext on the
-# LAN or a Tailscale network by design (see docs/remote-protocol.md). Pinned to
+# one feature needed, and no TLS backend is pulled in — confidentiality comes
+# from the Noise channel inside the WebSocket, not from the transport, so the
+# same frames survive the relay (see docs/remote-protocol.md). Pinned to
 # 0.27 rather than 0.30 deliberately: 0.30 moves to sha1 0.11 / digest 0.11 and
 # rand 0.10, which would add a second copy of the whole hashing and RNG stack
 # next to the sha2 0.10 and rand 0.9 already in the tree.
 tokio-tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }
+# The remote secure channel (`remote/secure.rs`):
+# `Noise_XX_25519_ChaChaPoly_BLAKE2s`, the pattern the protocol doc fixes.
+snow = "0.10"
 # `sink` for `SinkExt` on the split WebSocket writer; nothing else in the crate
 # needs the combinator zoo.
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }

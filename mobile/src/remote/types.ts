@@ -42,7 +42,6 @@ export interface HostInfo {
 
 export interface PairResult {
   deviceId: string;
-  deviceToken: string;
   host: HostInfo;
 }
 
@@ -51,15 +50,19 @@ export interface HelloResult {
   workspace: Workspace | null;
 }
 
-/** Where and how to reach a host. `deviceToken` present = `hello`;
- *  `pairingToken` present = `pair`. */
+/** Where and how to reach a host. `pairingToken` present = `pair`, otherwise
+ *  `hello`; the device's credential is its Noise static key, held in Rust, so
+ *  there is nothing token-shaped here for a saved host. */
 export interface HostTarget {
   host: string;
   port: number;
+  /** The host's public key, base64url — its identity. Present from a QR or a
+   *  pairing link, absent for hand-typed entry until the first connection
+   *  pins the key it meets. */
+  hostKey?: string;
   /** Display name from the pairing URL, before `hello` reports the real one. */
   name?: string;
   pairingToken?: string;
-  deviceToken?: string;
 }
 
 /** Auth-related close codes the host uses instead of error responses. */
@@ -73,6 +76,13 @@ export const CLOSE_REASONS: Record<number, string> = {
   [CLOSE_REMOTE_DISABLED]: "Remote access is switched off on the host",
   1009: "Frame too large",
 };
+
+/** The marker the Rust transport puts in front of a pinned-key mismatch. It
+ *  is not retryable: the host's identity, not the network, is wrong. */
+export const HOST_KEY_MISMATCH = "host-key-mismatch";
+
+export const HOST_KEY_MISMATCH_REASON =
+  "This is not the Mac you paired with — its identity key has changed. Pair again to trust it.";
 
 export const DEFAULT_PORT = 47285;
 
@@ -100,10 +110,12 @@ export interface RemoteClient {
   onSnapshot(cb: (result: HelloResult) => void): () => void;
   readonly state: ConnectionState;
   readonly host: HostInfo | null;
-  /** The credential in use — set after a `pair` handshake mints one. */
-  readonly deviceToken: string | null;
-  /** Where the client is pointed, with any spent pairing token stripped. */
+  /** The host key in use: the one the target carried, or the one pinned on
+   *  first contact. */
+  readonly hostKey: string | null;
+  /** Where the client is pointed, with any spent pairing token stripped and
+   *  the host key it authenticated pinned in. */
   readonly target: Readonly<HostTarget> | null;
   pair(token: string, device: DeviceInfo): Promise<PairResult>;
-  hello(deviceToken: string, client: DeviceInfo): Promise<HelloResult>;
+  hello(client: DeviceInfo): Promise<HelloResult>;
 }

@@ -4,7 +4,7 @@ import type { DeviceInfo, RemoteClient } from "./types";
 import { openWebSocket } from "./ws";
 
 export { ProtocolClient } from "./client";
-export { parsePairUrl, wsUrl } from "./pairing";
+export { parseAddress, parsePairUrl, wsUrl } from "./pairing";
 export * from "./types";
 
 const search = () =>

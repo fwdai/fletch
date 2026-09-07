@@ -891,6 +891,12 @@
   gap: 8px;
   margin-top: 12px;
 }
+/* This Mac's public key: reference material, not something to read out. */
+.set-pair-host {
+  color: var(--fg-3);
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
 /* White quiet zone regardless of theme — a dark-on-dark QR does not scan. */
 .set-pair-qr {
   flex-shrink: 0;

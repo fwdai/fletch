@@ -1,18 +1,28 @@
 import { describe, expect, it, vi } from "vitest";
 import { backoffDelay } from "../src/remote/backoff";
 import { ProtocolClient } from "../src/remote/client";
-import { parsePairUrl, wsUrl } from "../src/remote/pairing";
-import type { Socket, SocketHandlers } from "../src/remote/socket";
-import { CLOSE_UNAUTHENTICATED, type DeviceInfo } from "../src/remote/types";
+import { parseAddress, parsePairUrl, wsUrl } from "../src/remote/pairing";
+import type { Socket, SocketHandlers, SocketOptions } from "../src/remote/socket";
+import {
+  CLOSE_UNAUTHENTICATED,
+  type DeviceInfo,
+  HOST_KEY_MISMATCH,
+  HOST_KEY_MISMATCH_REASON,
+} from "../src/remote/types";
 
 const DEVICE: DeviceInfo = { name: "test", platform: "web", appVersion: "0.1.0" };
+/** Stands in for the base64url key a real handshake would authenticate. */
+const HOST_KEY = "hostkey-aaa";
 
-/** A socket the test drives by hand: it records every frame the client sends
- *  and lets the test push frames and closes back. */
-function fakeSocket() {
+/** A socket the test drives by hand: it records every frame the client sends,
+ *  reports a host key the way the secure transport does, and lets the test
+ *  push frames and closes back. */
+function fakeSocket(hostKey = HOST_KEY) {
   const sent: Record<string, unknown>[] = [];
+  const asked: (string | undefined)[] = [];
   let handlers: SocketHandlers | null = null;
   const socket: Socket = {
+    hostKey,
     send: (text) => {
       sent.push(JSON.parse(text));
     },
@@ -20,8 +30,18 @@ function fakeSocket() {
   };
   return {
     sent,
-    factory: async (_url: string, h: SocketHandlers) => {
+    /** The expected host key handed to the factory on each attempt. */
+    asked,
+    factory: async (_url: string, h: SocketHandlers, opts?: SocketOptions) => {
       handlers = h;
+      asked.push(opts?.hostKey);
+      // A real transport aborts the handshake itself when the host presents a
+      // key other than the pinned one.
+      if (opts?.hostKey && opts.hostKey !== hostKey) {
+        throw new Error(
+          `${HOST_KEY_MISMATCH}: expected ${opts.hostKey}, host presented ${hostKey}`,
+        );
+      }
       h.onOpen();
       return socket;
     },
@@ -37,29 +57,51 @@ const helloOk = (id: string) => ({
 });
 
 describe("pairing URL", () => {
-  it("parses a full fletch://pair link", () => {
+  it("parses a full fletch://pair link: host is the key, addr the dial address", () => {
     expect(
-      parsePairUrl("fletch://pair?host=192.168.1.24&port=47285&token=K7PQ2M9X&name=Alex%27s%20Mac"),
+      parsePairUrl(
+        "fletch://pair?host=Zm9vYmFy&addr=192.168.1.24:47285&token=K7PQ2M9X&name=Alex%27s%20Mac",
+      ),
     ).toEqual({
       host: "192.168.1.24",
       port: 47285,
+      hostKey: "Zm9vYmFy",
       pairingToken: "K7PQ2M9X",
       name: "Alex's Mac",
     });
   });
 
   it("accepts the scheme without a double slash and defaults the port", () => {
-    expect(parsePairUrl("fletch:pair?host=mac.local&token=ABCD2345")).toEqual({
+    expect(parsePairUrl("fletch:pair?host=Zm9vYmFy&addr=mac.local&token=ABCD2345")).toEqual({
       host: "mac.local",
       port: 47285,
+      hostKey: "Zm9vYmFy",
       pairingToken: "ABCD2345",
     });
   });
 
-  it("rejects anything that is not a pair link", () => {
+  it("unwraps a bracketed IPv6 addr", () => {
+    expect(parsePairUrl("fletch://pair?host=Zm9vYmFy&addr=[::1]:47285&token=ABCD2345")).toEqual({
+      host: "::1",
+      port: 47285,
+      hostKey: "Zm9vYmFy",
+      pairingToken: "ABCD2345",
+    });
+  });
+
+  it("takes a bare host[:port] for hand-typed entry, with no key", () => {
+    expect(parseAddress("mac.local:1234")).toEqual({ host: "mac.local", port: 1234 });
+    expect(parseAddress("192.168.1.24")).toEqual({ host: "192.168.1.24", port: 47285 });
+    expect(parseAddress("fe80::1")).toEqual({ host: "fe80::1", port: 47285 });
+    expect(parseAddress("[fe80::1]:9")).toEqual({ host: "fe80::1", port: 9 });
+  });
+
+  it("rejects a link with no addr, a foreign URL and empty input", () => {
+    expect(parsePairUrl("fletch://pair?host=Zm9vYmFy&token=ABCD2345")).toBeNull();
+    // The deep-link handler connects on whatever this returns.
     expect(parsePairUrl("https://fletch.sh")).toBeNull();
-    expect(parsePairUrl("fletch://pair?token=ABCD2345")).toBeNull();
     expect(parsePairUrl("   ")).toBeNull();
+    expect(parseAddress("")).toBeNull();
   });
 
   it("brackets an IPv6 literal in the ws URL", () => {
@@ -80,12 +122,14 @@ describe("envelope", () => {
   it("sends hello as the first frame and resolves the handshake", async () => {
     const fake = fakeSocket();
     const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
-    const connected = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     const first = fake.sent[0];
     expect(first.op).toBe("hello");
-    expect(first.args).toEqual({ deviceToken: "tok", client: DEVICE });
+    // No credential in the frame: the handshake is the authentication.
+    expect(first.args).toEqual({ client: DEVICE });
     expect(typeof first.id).toBe("string");
+    expect(fake.asked).toEqual([HOST_KEY]);
     fake.reply(helloOk(first.id as string));
     await expect(connected).resolves.toMatchObject({ host: { name: "Mac" } });
     expect(client.state).toBe("connected");
@@ -94,7 +138,7 @@ describe("envelope", () => {
   it("matches responses to requests by id, in any order", async () => {
     const fake = fakeSocket();
     const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
-    const connected = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;
@@ -114,7 +158,7 @@ describe("envelope", () => {
   it("rejects a call with the host's error string", async () => {
     const fake = fakeSocket();
     const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
-    const connected = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;
@@ -124,33 +168,32 @@ describe("envelope", () => {
     await expect(call).rejects.toThrow("unknown op");
   });
 
-  it("switches to the minted device token after pairing", async () => {
+  it("pins the host key on first contact when the target had none", async () => {
     const fake = fakeSocket();
     const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    // Hand-typed pairing: address and code, no key to compare against.
     const connected = client.connect({ host: "h", port: 1, pairingToken: "K7PQ2M9X" });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     expect(fake.sent[0].op).toBe("pair");
+    expect(fake.asked).toEqual([undefined]);
     expect(client.state).toBe("pairing");
     fake.reply({
       id: fake.sent[0].id,
       ok: true,
-      result: {
-        deviceId: "d1",
-        deviceToken: "secret",
-        host: { name: "Mac", appVersion: "0.7.23", os: "macos" },
-      },
+      // No credential in the result: the host registered the device key.
+      result: { deviceId: "d1", host: { name: "Mac", appVersion: "0.7.23", os: "macos" } },
     });
     // Pairing is followed by an explicit get_workspace (pair carries no snapshot).
     await vi.waitFor(() => expect(fake.sent.length).toBe(2));
     expect(fake.sent[1].op).toBe("get_workspace");
     fake.reply({ id: fake.sent[1].id, ok: true, result: null });
     await connected;
-    expect(client.deviceToken).toBe("secret");
-    expect(client.target).toMatchObject({ host: "h", deviceToken: "secret" });
+    expect(client.hostKey).toBe(HOST_KEY);
+    expect(client.target).toMatchObject({ host: "h", hostKey: HOST_KEY });
     expect(client.target?.pairingToken).toBeUndefined();
   });
 
-  it("reconnects with the minted device token, not the spent pairing code", async () => {
+  it("reconnects with hello { client } and the pinned key, not the spent code", async () => {
     const fake = fakeSocket();
     const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
     const connected = client.connect({ host: "h", port: 1, pairingToken: "K7PQ2M9X" });
@@ -158,11 +201,7 @@ describe("envelope", () => {
     fake.reply({
       id: fake.sent[0].id,
       ok: true,
-      result: {
-        deviceId: "d1",
-        deviceToken: "secret",
-        host: { name: "Mac", appVersion: "0.7.23", os: "macos" },
-      },
+      result: { deviceId: "d1", host: { name: "Mac", appVersion: "0.7.23", os: "macos" } },
     });
     await vi.waitFor(() => expect(fake.sent.length).toBe(2));
     fake.reply({ id: fake.sent[1].id, ok: true, result: null });
@@ -171,9 +210,34 @@ describe("envelope", () => {
     const again = client.reconnect();
     await vi.waitFor(() => expect(fake.sent.length).toBe(3));
     expect(fake.sent[2].op).toBe("hello");
-    expect(fake.sent[2].args).toEqual({ deviceToken: "secret", client: DEVICE });
+    expect(fake.sent[2].args).toEqual({ client: DEVICE });
+    // The key pinned during pairing is what the second attempt insists on.
+    expect(fake.asked).toEqual([undefined, HOST_KEY]);
     fake.reply(helloOk(fake.sent[2].id as string));
     await expect(again).resolves.toMatchObject({ host: { name: "Mac" } });
+  });
+
+  it("refuses a host presenting a key other than the pinned one, and never retries", async () => {
+    const fake = fakeSocket("hostkey-bbb");
+    const timers: { fn: () => void; ms: number }[] = [];
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+      clearTimer: () => {},
+    });
+    await expect(client.connect({ host: "h", port: 1, hostKey: HOST_KEY })).rejects.toThrow(
+      HOST_KEY_MISMATCH_REASON,
+    );
+    expect(client.state).toBe("error");
+    expect(fake.sent).toHaveLength(0);
+    // Only re-pairing can clear it, so there is nothing to schedule.
+    expect(timers).toHaveLength(0);
+    // And the pinned key is untouched by the impostor.
+    expect(client.hostKey).toBe(HOST_KEY);
   });
 });
 
@@ -197,9 +261,9 @@ describe("connection lifecycle", () => {
     return { client, timers, attempts: () => attempts };
   }
 
-  it("surfaces a socket that never opens and retries a device-token target", async () => {
+  it("surfaces a socket that never opens and retries a paired target", async () => {
     const { client, timers, attempts } = unreachable();
-    await expect(client.connect({ host: "h", port: 1, deviceToken: "tok" })).rejects.toThrow(
+    await expect(client.connect({ host: "h", port: 1, hostKey: HOST_KEY })).rejects.toThrow(
       "Cannot reach",
     );
     expect(client.state).toBe("error");
@@ -235,10 +299,10 @@ describe("connection lifecycle", () => {
       },
       clearTimer: () => {},
     });
-    const stale = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    const stale = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(first.sent.length).toBe(1));
     // Reconnect before the first handshake answers: socket one is abandoned.
-    const live = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    const live = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await expect(stale).rejects.toThrow();
     await vi.waitFor(() => expect(second.sent.length).toBe(1));
 
@@ -265,7 +329,7 @@ describe("reconnect", () => {
       },
       clearTimer: () => {},
     });
-    const connected = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;
@@ -285,7 +349,7 @@ describe("reconnect", () => {
     expect(timers.map((t) => t.ms)).toEqual([1000, 1000]);
   });
 
-  it("does not retry after a 4003 close — the credential has to change", async () => {
+  it("does not retry after a 4003 close — the device has to be paired again", async () => {
     const fake = fakeSocket();
     const timers: { fn: () => void; ms: number }[] = [];
     const client = new ProtocolClient({
@@ -297,7 +361,7 @@ describe("reconnect", () => {
       },
       clearTimer: () => {},
     });
-    const connected = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;
@@ -314,7 +378,7 @@ describe("reconnect", () => {
       setTimer: () => 0,
       clearTimer: () => {},
     });
-    const connected = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;
@@ -328,7 +392,7 @@ describe("events", () => {
   it("fans an event frame out to its subscribers and ignores the rest", async () => {
     const fake = fakeSocket();
     const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
-    const connected = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;

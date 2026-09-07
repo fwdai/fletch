@@ -16,16 +16,15 @@ import {
 import * as fx from "./fixtures";
 import { scriptFor } from "./script";
 
-const MOCK_DEVICE_TOKEN = "mock-device-token";
+/** The mock host has no Noise handshake to run, so it reports a fixed
+ *  identity: the client pins it exactly as it would a real one. */
+export const MOCK_HOST_KEY = "mock-host-key";
 const MOCK_PAIRING_TOKEN_LEN = 8;
 
 export interface MockOptions {
   /** Wall-clock scale for the scripted stream; 0 emits everything at once
    *  (what the tests use). */
   speed?: number;
-  /** Accept any `hello` device token. On by default so a browser reload with a
-   *  stale token still connects. */
-  trustAnyToken?: boolean;
 }
 
 interface MockState {
@@ -172,11 +171,11 @@ export class MockHost {
         if (token.length !== MOCK_PAIRING_TOKEN_LEN) throw new Error("invalid pairing token");
         this.authed = true;
         this.later(() => this.bootstrap(), 400);
-        return { deviceId: "mock-device", deviceToken: MOCK_DEVICE_TOKEN, host: fx.hostInfo };
+        return { deviceId: "mock-device", host: fx.hostInfo };
       }
       case "hello": {
-        const token = String((args.deviceToken as string) ?? "");
-        if (!token && !this.opts.trustAnyToken) throw new Error("missing device token");
+        // Device authentication is the handshake, which the mock socket
+        // stands in for: anything that gets this far is a known device.
         this.authed = true;
         this.later(() => this.bootstrap(), 400);
         return { host: fx.hostInfo, workspace: this.state.workspace };
@@ -377,19 +376,19 @@ export class MockHost {
   }
 }
 
-/** `SocketFactory` that plugs the mock host into the real client. */
+/** `SocketFactory` that plugs the mock host into the real client. The expected
+ *  host key is ignored — there is no handshake to fail — but a key is still
+ *  reported, so pinning behaves as it does against a real host. */
 export function mockSocket(opts: MockOptions = {}): SocketFactory {
   return async (_url, handlers) => {
-    const host = new MockHost((frame) => handlers.onMessage(JSON.stringify(frame)), {
-      trustAnyToken: true,
-      ...opts,
-    });
+    const host = new MockHost((frame) => handlers.onMessage(JSON.stringify(frame)), opts);
     host.onClose = (code) => {
       host.close();
       handlers.onClose(code);
     };
     handlers.onOpen();
     const socket: Socket = {
+      hostKey: MOCK_HOST_KEY,
       send: (text) => host.receive(text),
       close: () => host.close(),
     };

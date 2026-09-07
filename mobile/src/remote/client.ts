@@ -15,6 +15,8 @@ import {
   type EventFrame,
   type EventHandler,
   type HelloResult,
+  HOST_KEY_MISMATCH,
+  HOST_KEY_MISMATCH_REASON,
   type HostFrame,
   type HostInfo,
   type HostTarget,
@@ -25,8 +27,8 @@ import {
   type StateHandler,
 } from "./types";
 
-/** Close codes that mean "do not retry" — the credential or the host's
- *  remote-access switch has to change first. */
+/** Close codes that mean "do not retry" — the device has to be paired again,
+ *  or the host's remote-access switch turned back on. */
 const FATAL_CLOSE = new Set([CLOSE_UNAUTHENTICATED, CLOSE_REMOTE_DISABLED]);
 
 interface Pending {
@@ -44,6 +46,11 @@ export interface ClientOptions {
   baseDelay?: number;
   maxDelay?: number;
 }
+
+/** The transport's mismatch marker carries the two keys, which is right for a
+ *  log and wrong for a user. */
+const reportable = (message: string) =>
+  message.includes(HOST_KEY_MISMATCH) ? HOST_KEY_MISMATCH_REASON : message;
 
 const randomId = () =>
   globalThis.crypto?.randomUUID?.() ??
@@ -84,16 +91,16 @@ export class ProtocolClient implements RemoteClient {
     return this._host;
   }
 
-  /** The credential the client is currently authenticating with — the one
-   *  `pair` minted, once a pairing handshake has run. */
-  get deviceToken(): string | null {
-    return this._target?.deviceToken ?? null;
+  /** The host identity this client is bound to — supplied by the pairing link
+   *  or pinned on first contact. */
+  get hostKey(): string | null {
+    return this._target?.hostKey ?? null;
   }
 
   /** Where this client is (or was last) pointed. The client owns it: after a
-   *  pairing handshake the spent `pairingToken` is gone and the minted
-   *  `deviceToken` is in its place, so this is always what a reconnect should
-   *  use. */
+   *  pairing handshake the spent `pairingToken` is gone and the host key the
+   *  transport authenticated is pinned in, so this is always what a reconnect
+   *  should use. */
   get target(): Readonly<HostTarget> | null {
     return this._target;
   }
@@ -126,8 +133,8 @@ export class ProtocolClient implements RemoteClient {
     return this.attemptConnect();
   }
 
-  /** Reconnect to the target the client already holds — the credential it is
-   *  actually authenticated with, never a spent pairing token. */
+  /** Reconnect to the target the client already holds — the pinned host key,
+   *  never a spent pairing token. */
   async reconnect(): Promise<HelloResult> {
     if (!this._target) throw new Error("no host configured");
     return this.connect(this._target);
@@ -135,7 +142,7 @@ export class ProtocolClient implements RemoteClient {
 
   /** Stop for good and forget the target. A dropped link is handled by the
    *  client itself, so the only caller is unpairing — which must not leave a
-   *  revoked credential behind for a later `reconnect`. */
+   *  host a later `reconnect` could greet as if it were still paired. */
   disconnect(): void {
     this.closedByUs = true;
     this.teardown("Disconnected");
@@ -154,8 +161,8 @@ export class ProtocolClient implements RemoteClient {
     return result;
   }
 
-  async hello(deviceToken: string, client: DeviceInfo): Promise<HelloResult> {
-    const result = await this.request<HelloResult>("hello", { deviceToken, client });
+  async hello(client: DeviceInfo): Promise<HelloResult> {
+    const result = await this.request<HelloResult>("hello", { client });
     this._host = result.host;
     return result;
   }
@@ -186,38 +193,51 @@ export class ProtocolClient implements RemoteClient {
    *  handshake being refused — goes through `fail`, so the client is never
    *  left sitting in `connecting` with nothing scheduled. */
   private async attemptConnect(): Promise<HelloResult> {
-    const target = this._target;
+    let target = this._target;
     if (!target) throw new Error("no host configured");
     const gen = ++this.gen;
     this.setState(target.pairingToken ? "pairing" : "connecting");
     try {
-      const socket = await this.opts.openSocket(wsUrl(target), {
-        onOpen: () => {},
-        onMessage: (text) => {
-          if (this.current(gen)) this.onMessage(text);
+      const socket = await this.opts.openSocket(
+        wsUrl(target),
+        {
+          onOpen: () => {},
+          onMessage: (text) => {
+            if (this.current(gen)) this.onMessage(text);
+          },
+          onClose: (code, reason) => {
+            if (this.current(gen)) this.onClose(code, reason);
+          },
+          onError: (message) => {
+            if (this.current(gen)) this.onSocketError(message);
+          },
         },
-        onClose: (code, reason) => {
-          if (this.current(gen)) this.onClose(code, reason);
-        },
-        onError: (message) => {
-          if (this.current(gen)) this.onSocketError(message);
-        },
-      });
+        { hostKey: target.hostKey },
+      );
       if (!this.current(gen)) {
         // A newer attempt (or a disconnect) landed while the socket opened.
         socket.close();
         throw new Error("Connection superseded");
       }
       this.socket = socket;
+      // Trust on first use: a hand-typed pairing has no key to compare, so the
+      // one the handshake authenticated becomes the pinned identity. A target
+      // that did have a key never gets here with a different one — the
+      // transport refuses the connection.
+      if (!target.hostKey) {
+        target = { ...target, hostKey: socket.hostKey };
+        this._target = target;
+      }
       return await this.handshake(target);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       // A pairing code is single use and short lived, so a refused pairing
-      // attempt is the user's to retry; a device token is retried with
-      // backoff. (`pair` succeeding swaps the token, so a failure after it
-      // counts as retryable.)
-      if (this.current(gen)) this.fail(message, !this._target?.pairingToken);
-      throw e instanceof Error ? e : new Error(message);
+      // attempt is the user's to retry. A host presenting the wrong identity
+      // is never worth retrying either: only re-pairing can clear it.
+      const retryable = !this._target?.pairingToken && !message.includes(HOST_KEY_MISMATCH);
+      const shown = reportable(message);
+      if (this.current(gen)) this.fail(shown, retryable);
+      throw shown === message && e instanceof Error ? e : new Error(shown);
     }
   }
 
@@ -230,16 +250,15 @@ export class ProtocolClient implements RemoteClient {
   private async handshake(target: HostTarget): Promise<HelloResult> {
     if (target.pairingToken) {
       const paired = await this.pair(target.pairingToken, this.opts.device);
-      // Pairing is single use: keep going on the device token from here, so a
-      // reconnect doesn't replay a spent pairing token.
-      this._target = { ...target, pairingToken: undefined, deviceToken: paired.deviceToken };
+      // Pairing is single use: drop the code, so a reconnect greets the host
+      // with `hello` on the device key it just registered.
+      this._target = { ...target, pairingToken: undefined };
       this.setState("connected");
       // `pair` answers with the host identity but no snapshot, so ask for it.
       const workspace = await this.call<HelloResult["workspace"]>("get_workspace");
       return this.publishSnapshot({ host: paired.host, workspace });
     }
-    if (!target.deviceToken) throw new Error("no device token");
-    const result = await this.hello(target.deviceToken, this.opts.device);
+    const result = await this.hello(this.opts.device);
     this.setState("connected");
     return this.publishSnapshot(result);
   }

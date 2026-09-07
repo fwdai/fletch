@@ -1,61 +1,72 @@
-// WebSocket transport. Inside Tauri the socket is opened on the Rust side
-// (tauri-plugin-websocket), which sidesteps iOS App Transport Security refusing
-// a cleartext `ws://` from the webview. Outside Tauri (`bun run dev` in a
-// desktop browser against a host on the LAN) the browser's own WebSocket is
-// used, so the same UI is drivable without a device build.
+// The secure transport, which is a thin shell over the app's own Rust layer:
+// `remote_connect` opens the WebSocket, runs the Noise handshake and reports
+// the host's identity key, then every frame travels encrypted. This side only
+// ever sees plaintext JSON (docs/remote-protocol.md, "Secure channel").
 
-import TauriWebSocket from "@tauri-apps/plugin-websocket";
-import type { Socket, SocketFactory, SocketHandlers } from "./socket";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { Socket, SocketFactory } from "./socket";
 
 export const inTauri = (): boolean =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-const tauriSocket: SocketFactory = async (url, handlers) => {
-  const ws = await TauriWebSocket.connect(url);
-  ws.addListener((message) => {
-    // The plugin models frames as a tagged union. Only Text carries protocol
-    // frames; Close reports both a peer close and a dead transport (null
-    // frame), and there is no separate error message — a failed connect
-    // rejects `connect` instead.
-    if (message.type === "Text") handlers.onMessage(message.data);
-    else if (message.type === "Close") {
-      handlers.onClose(message.data?.code ?? 1006, message.data?.reason);
-    }
-  });
+interface ConnectResult {
+  hostKey: string;
+}
+
+const secureSocket: SocketFactory = async (url, handlers, opts) => {
+  // Subscribe before connecting: the reader task starts as soon as the
+  // handshake completes, so a frame can arrive before `invoke` resolves.
+  const subscriptions: UnlistenFn[] = [];
+  let done = false;
+  const stop = () => {
+    for (const off of subscriptions) off();
+    subscriptions.length = 0;
+  };
+  subscriptions.push(
+    await listen<{ text: string }>("remote:message", (e) => handlers.onMessage(e.payload.text)),
+    await listen<{ code: number; reason: string }>("remote:close", (e) => {
+      if (done) return;
+      done = true;
+      stop();
+      handlers.onClose(e.payload.code, e.payload.reason || undefined);
+    }),
+    await listen<{ message: string }>("remote:error", (e) => handlers.onError(e.payload.message)),
+  );
+  let result: ConnectResult;
+  try {
+    result = await invoke<ConnectResult>("remote_connect", {
+      url,
+      hostKey: opts?.hostKey ?? null,
+    });
+  } catch (e) {
+    stop();
+    throw e instanceof Error ? e : new Error(String(e));
+  }
   handlers.onOpen();
-  return {
-    send: (text) => ws.send(text),
+  const socket: Socket = {
+    hostKey: result.hostKey,
+    send: (text) => invoke<void>("remote_send", { text }),
     close: () => {
-      void ws.disconnect().catch(() => {});
+      done = true;
+      stop();
+      void invoke("remote_close").catch(() => {});
     },
   };
+  return socket;
 };
 
-const browserSocket: SocketFactory = (url, handlers) =>
-  new Promise<Socket>((resolve, reject) => {
-    const ws = new WebSocket(url);
-    let opened = false;
-    ws.onopen = () => {
-      opened = true;
-      handlers.onOpen();
-      resolve({
-        send: (text) => ws.send(text),
-        close: () => ws.close(),
-      });
-    };
-    ws.onmessage = (e) => {
-      if (typeof e.data === "string") handlers.onMessage(e.data);
-    };
-    ws.onerror = () => {
-      if (!opened) reject(new Error(`Cannot reach ${url}`));
-      else handlers.onError("socket error");
-    };
-    ws.onclose = (e) => {
-      if (!opened) reject(new Error(e.reason || `Cannot reach ${url}`));
-      else handlers.onClose(e.code, e.reason);
-    };
-  });
+/** Outside Tauri there is no Rust layer to hold the device key or the Noise
+ *  state, so a real host is unreachable — `bun run dev` in a browser is a
+ *  mock-only dev loop. */
+const noTransport: SocketFactory = (url) =>
+  Promise.reject(
+    new Error(
+      `Cannot reach ${url}: the secure channel needs the app's Rust layer. ` +
+        "In a browser, run with ?mock=1.",
+    ),
+  );
 
-/** The transport for this runtime. Rust-side in Tauri, browser otherwise. */
-export const openWebSocket: SocketFactory = (url: string, handlers: SocketHandlers) =>
-  inTauri() ? tauriSocket(url, handlers) : browserSocket(url, handlers);
+/** The transport for this runtime. */
+export const openWebSocket: SocketFactory = (url, handlers, opts) =>
+  inTauri() ? secureSocket(url, handlers, opts) : noTransport(url, handlers, opts);

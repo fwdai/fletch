@@ -15,15 +15,26 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Deliberately thin: the app defines no commands of its own. Everything it
-# needs from the platform is a plugin — a Rust-side WebSocket (so iOS ATS
-# doesn't block cleartext ws:// from the webview), a file for the device token
-# and settings, local notifications, and the fletch:// pairing deep link.
+# Thin by design: the only commands the app defines are the secure channel to
+# the paired Mac (src/remote/), which has to live here — the webview never
+# sees ciphertext, and iOS ATS would block a cleartext ws:// from it anyway.
+# Everything else is a plugin: a settings file, local notifications and the
+# fletch:// pairing deep link.
 tauri = { version = "2", features = [] }
-tauri-plugin-websocket = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-deep-link = "2"
+
+# Secure channel: Noise over a plain WebSocket. rustls (not native-tls) so a
+# wss:// relay works on iOS without an OpenSSL build.
+snow = "0.10"
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+tokio = { version = "1", features = ["sync"] }
+futures-util = "0.3"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+# `generate_context!` expands to serde_json for the capability scopes.
+serde_json = "1"
 
 [features]
 default = ["custom-protocol"]

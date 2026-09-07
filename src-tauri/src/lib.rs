@@ -1673,9 +1673,9 @@ pub fn run() {
                     supervisor.clone(),
                 ));
                 // `RemoteState::new` cannot fail: the state has to be managed
-                // even when the device store is unusable, or `remote_status`
-                // panics the moment Settings opens. Such a failure travels as
-                // `RemoteStatus::error` instead.
+                // even when the device store or the host key is unusable, or
+                // `remote_status` panics the moment Settings opens. Such a
+                // failure travels as `RemoteStatus::error` instead.
                 let state = remote::RemoteState::new(&data_dir.join("remote"), dispatch);
                 remote::install_taps(app.handle(), state.clone());
                 let (enabled, port) = {

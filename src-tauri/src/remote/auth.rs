@@ -1,21 +1,21 @@
-//! Pairing tokens and device credentials for the remote server.
+//! Pairing tokens and device identities for the remote server.
 //!
-//! Two secrets with two lifetimes: a short pairing token the user reads off the
-//! desktop (single use, five minutes) and a long-lived device token the phone
-//! keeps. Only the device token's sha256 is ever written to disk, so a copied
-//! `devices.json` can't be replayed as a credential.
+//! One secret and one identity. The secret is the pairing token the user reads
+//! off the desktop (single use, five minutes). The identity is the phone's
+//! Noise static public key, learned from the handshake and never from a frame:
+//! there is no device token to steal, and `devices.json` holds only public
+//! keys, so a copied file is not a credential.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use base64::Engine;
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
-use rand::{Rng, RngCore};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use super::secure::encode_key;
 use crate::error::Result;
 
 /// Pairing-token alphabet — `A-Z2-9` per the protocol doc. `0` and `1` are out
@@ -26,9 +26,6 @@ const PAIRING_LEN: usize = 8;
 
 /// How long a minted pairing token stays redeemable.
 pub const PAIRING_TTL: Duration = Duration::from_secs(5 * 60);
-
-/// Device-token entropy: 32 bytes, which is 43 base64url characters.
-const DEVICE_TOKEN_BYTES: usize = 32;
 
 /// A freshly minted pairing token plus the wall-clock instant it lapses, which
 /// is what Settings counts down to.
@@ -113,9 +110,10 @@ pub struct DeviceRecord {
     pub device_id: String,
     pub name: String,
     pub platform: String,
-    /// Hex sha256 of the device token. The plaintext exists only in the `pair`
-    /// response and on the phone.
-    pub token_hash: String,
+    /// The device's Noise static public key, base64url without padding. Public
+    /// by definition: it authenticates the phone only because the phone holds
+    /// the matching private key, which never leaves it.
+    pub public_key: String,
     pub created_at: String,
     pub last_seen_at: Option<String>,
 }
@@ -155,10 +153,7 @@ impl DeviceStore {
             ));
         } else {
             match std::fs::read(&path) {
-                Ok(bytes) => devices = serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "remote: unreadable devices.json; starting empty");
-                    Vec::new()
-                }),
+                Ok(bytes) => devices = parse_devices(&bytes),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
                     storage_error = Some(format!(
@@ -198,31 +193,48 @@ impl DeviceStore {
         self.devices.lock().clone()
     }
 
-    /// Register a device and hand back its one-and-only plaintext token.
-    pub fn register(&self, name: &str, platform: &str) -> Result<(DeviceRecord, String)> {
-        let mut bytes = [0u8; DEVICE_TOKEN_BYTES];
-        rand::rng().fill_bytes(&mut bytes);
-        let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-        let record = DeviceRecord {
-            device_id: uuid::Uuid::new_v4().to_string(),
-            name: name.to_string(),
-            platform: platform.to_string(),
-            token_hash: hash_token(&token),
-            created_at: Utc::now().to_rfc3339(),
-            last_seen_at: None,
-        };
-        self.mutate(|devices| devices.push(record.clone()))?;
-        Ok((record, token))
+    /// Record a device under the static public key its handshake proved.
+    ///
+    /// One device, one record: pairing again with a key already on file updates
+    /// that record's name and platform rather than adding a duplicate, since
+    /// the key *is* the identity and a phone that re-pairs (a lapsed code, a
+    /// reinstall that kept its key) is the same device.
+    pub fn register(
+        &self,
+        name: &str,
+        platform: &str,
+        public_key: &[u8; 32],
+    ) -> Result<DeviceRecord> {
+        let public_key = encode_key(public_key);
+        let now = Utc::now().to_rfc3339();
+        self.mutate(move |devices| {
+            if let Some(existing) = devices.iter_mut().find(|d| d.public_key == public_key) {
+                existing.name = name.to_string();
+                existing.platform = platform.to_string();
+                return existing.clone();
+            }
+            let record = DeviceRecord {
+                device_id: uuid::Uuid::new_v4().to_string(),
+                name: name.to_string(),
+                platform: platform.to_string(),
+                public_key,
+                created_at: now,
+                last_seen_at: None,
+            };
+            devices.push(record.clone());
+            record
+        })
     }
 
-    /// Resolve a presented device token to its record. `None` for an unknown or
-    /// revoked token — the caller turns that into close code 4003.
-    pub fn verify(&self, token: &str) -> Option<DeviceRecord> {
-        let hash = hash_token(token);
+    /// Resolve the static key the handshake proved to its record. `None` for a
+    /// key that never paired or was revoked — the caller turns that into close
+    /// code 4003.
+    pub fn find_by_key(&self, public_key: &[u8; 32]) -> Option<DeviceRecord> {
+        let public_key = encode_key(public_key);
         self.devices
             .lock()
             .iter()
-            .find(|d| d.token_hash == hash)
+            .find(|d| d.public_key == public_key)
             .cloned()
     }
 
@@ -294,8 +306,9 @@ impl DeviceStore {
         }
     }
 
-    /// Write the registry atomically (tmp + rename) at 0600 — it holds token
-    /// hashes, so it should not be world-readable even inside the app data dir.
+    /// Write the registry atomically (tmp + rename) at 0600 — it is the list of
+    /// devices that may drive this Mac, so it should not be world-readable (or
+    /// world-writable) even inside the app data dir.
     fn persist(&self, devices: &[DeviceRecord]) -> Result<()> {
         let json = serde_json::to_vec_pretty(devices)?;
         let tmp = self.path.with_extension("json.tmp");
@@ -310,7 +323,30 @@ impl DeviceStore {
     }
 }
 
-fn hash_token(token: &str) -> String {
-    let digest = Sha256::digest(token.as_bytes());
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+/// Records are read one at a time so a single unusable one costs only itself.
+///
+/// The case that matters is the token era: a record with a `tokenHash` and no
+/// `publicKey` cannot authenticate anything under v2, and the doc has it
+/// dropped at load. The device re-pairs, which is the only way it could work
+/// again anyway.
+fn parse_devices(bytes: &[u8]) -> Vec<DeviceRecord> {
+    let raw: Vec<serde_json::Value> = match serde_json::from_slice(bytes) {
+        Ok(raw) => raw,
+        Err(e) => {
+            tracing::warn!(error = %e, "remote: unreadable devices.json; starting empty");
+            return Vec::new();
+        }
+    };
+    let total = raw.len();
+    let devices: Vec<DeviceRecord> = raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
+    if devices.len() != total {
+        tracing::warn!(
+            dropped = total - devices.len(),
+            "remote: dropped device records with no public key; those devices must pair again"
+        );
+    }
+    devices
 }

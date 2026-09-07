@@ -7,9 +7,10 @@ import { useRemote } from "./useRemote";
 /** Settings › General › Mobile devices: run the paired-device WebSocket server
  *  so a phone can drive the agents on this Mac.
  *
- *  LAN (or Tailscale) only and unencrypted in v1 — hence the plain statement of
- *  what the switch opens, and pairing that is an explicit, expiring, single-use
- *  act rather than a standing invitation. */
+ *  Reachable on the LAN (or Tailscale) only, and every frame is end-to-end
+ *  encrypted between the phone and this Mac — hence the plain statement of what
+ *  the switch opens, and pairing that is an explicit, expiring, single-use act
+ *  rather than a standing invitation. */
 export function MobileDevices() {
   const { status, invite, error, busy, setEnabled, beginPairing, revoke, clearInvite } =
     useRemote();
@@ -31,7 +32,7 @@ export function MobileDevices() {
     <SetGroup label="Mobile devices">
       <SetRow
         title="Remote control from your phone"
-        sub="Opens a local WebSocket port so a paired phone can watch and steer your agents. Unencrypted, so keep it to networks you trust — your own Wi-Fi or a Tailscale network. Only paired devices are ever answered."
+        sub="Opens a local WebSocket port so a paired phone can watch and steer your agents. Reachable on your own Wi-Fi or a Tailscale network; every frame is encrypted end to end, and only paired devices are ever answered."
       >
         <SetToggle
           on={enabled}
@@ -64,6 +65,7 @@ export function MobileDevices() {
       {invite && (
         <PairingCard
           invite={invite}
+          hostId={status?.hostId}
           onRegenerate={() => void beginPairing()}
           onDismiss={clearInvite}
         />

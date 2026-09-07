@@ -1,6 +1,7 @@
-// Small key/value store for the device token, the last host and the theme.
-// App data dir via the fs plugin inside Tauri, localStorage in a browser.
-// Keychain is a follow-up (docs/remote-protocol.md, out of scope for v1).
+// Small key/value store for the last host — its address, name and public key —
+// and the theme. App data dir via the fs plugin inside Tauri, localStorage in a
+// browser. There is no credential here: the device's identity is the Noise
+// static key, which lives in the Rust layer's app data dir.
 
 import { BaseDirectory, exists, mkdir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { inTauri } from "../remote/ws";
@@ -13,7 +14,8 @@ export interface Persisted {
   host?: string;
   port?: number;
   hostName?: string;
-  deviceToken?: string;
+  /** The host's public key. Its presence is what "paired" means. */
+  hostKey?: string;
   theme?: "system" | "light" | "dark";
 }
 
@@ -63,7 +65,8 @@ export async function saveSettings(patch: Persisted): Promise<Persisted> {
   return next;
 }
 
-export async function clearCredentials(): Promise<void> {
+/** Forget the paired host — address, name and pinned key — and keep the rest. */
+export async function clearHost(): Promise<void> {
   const { theme } = await readAll();
   await writeAll(theme ? { theme } : {});
 }
