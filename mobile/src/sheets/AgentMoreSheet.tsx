@@ -1,6 +1,7 @@
 import { Icon } from "../components/Icon";
 import { Sheet } from "../components/ui";
 import { isBusy } from "../lib/agents";
+import { ignore } from "../lib/ignore";
 import { agentOf, useStore } from "../store";
 
 /** Stop and archive only. "Open on host", "Run script" and copying the branch
@@ -36,7 +37,7 @@ export function AgentMoreSheet({
             className="row"
             onClick={() => {
               onClose();
-              void stop(agent.id);
+              void stop(agent.id).catch(ignore);
             }}
           >
             <span
@@ -56,7 +57,7 @@ export function AgentMoreSheet({
             </div>
           </button>
         )}
-        <button type="button" className="row" onClick={() => void archive(agent.id)}>
+        <button type="button" className="row" onClick={() => void archive(agent.id).catch(ignore)}>
           <span className="pm lg" style={{ background: "var(--bg-2)", color: "var(--fg-2)" }}>
             <Icon name="archive" size={15} />
           </span>

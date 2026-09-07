@@ -1,5 +1,6 @@
 import { PickerSheet } from "../components/ui";
 import { providerLabel } from "../lib/agents";
+import { ignore } from "../lib/ignore";
 import { contextLabel, modelsFor, useModels } from "../lib/models";
 import { agentOf, useStore } from "../store";
 
@@ -29,7 +30,7 @@ export function ModelPickerSheet({
         right: contextLabel(m.contextWindow),
       }))}
       value={agent.model ?? ""}
-      onChange={(id) => void setModel(agent.id, id)}
+      onChange={(id) => void setModel(agent.id, id).catch(ignore)}
     />
   );
 }

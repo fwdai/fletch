@@ -1,6 +1,7 @@
 import type { ChatItem } from "../../adapters";
 import { Icon } from "../../components/Icon";
 import { providerLabel } from "../../lib/agents";
+import { ignore } from "../../lib/ignore";
 import { toolArg } from "../../lib/tools";
 import { useStore } from "../../store";
 
@@ -23,7 +24,7 @@ export function ApprovalCard({
 }) {
   const answerToolUse = useStore((s) => s.answerToolUse);
   const answer = (behavior: "allow" | "deny") =>
-    void answerToolUse(agentId, toolUseId, call?.input ?? {}, behavior);
+    void answerToolUse(agentId, toolUseId, call?.input ?? {}, behavior).catch(ignore);
   return (
     <div className="appr rise">
       <div className="h">
@@ -59,7 +60,11 @@ export function ErrorCard({ agentId, message }: { agentId: string; message: stri
       </div>
       <div className="why">{message ?? "The agent stopped with an error."}</div>
       <div className="acts">
-        <button type="button" className="btn primary" onClick={() => void resume(agentId)}>
+        <button
+          type="button"
+          className="btn primary"
+          onClick={() => void resume(agentId).catch(ignore)}
+        >
           <Icon name="refresh" size={15} />
           Resume
         </button>

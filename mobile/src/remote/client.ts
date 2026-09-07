@@ -55,7 +55,12 @@ export class ProtocolClient implements RemoteClient {
   private listeners = new Map<string, Set<EventHandler>>();
   private stateListeners = new Set<StateHandler>();
   private snapshotListeners = new Set<(r: HelloResult) => void>();
-  private target: HostTarget | null = null;
+  private _target: HostTarget | null = null;
+  /** Bumped for every attempt and every teardown. A socket's callbacks carry
+   *  the generation they were opened under and are ignored once it is stale,
+   *  so a close arriving late from a replaced socket cannot touch the live
+   *  one. */
+  private gen = 0;
   private attempt = 0;
   private retryHandle: unknown = null;
   private closedByUs = false;
@@ -82,7 +87,15 @@ export class ProtocolClient implements RemoteClient {
   /** The credential the client is currently authenticating with — the one
    *  `pair` minted, once a pairing handshake has run. */
   get deviceToken(): string | null {
-    return this.target?.deviceToken ?? null;
+    return this._target?.deviceToken ?? null;
+  }
+
+  /** Where this client is (or was last) pointed. The client owns it: after a
+   *  pairing handshake the spent `pairingToken` is gone and the minted
+   *  `deviceToken` is in its place, so this is always what a reconnect should
+   *  use. */
+  get target(): Readonly<HostTarget> | null {
+    return this._target;
   }
 
   onState(cb: StateHandler): () => void {
@@ -106,20 +119,27 @@ export class ProtocolClient implements RemoteClient {
   }
 
   async connect(target: HostTarget): Promise<HelloResult> {
-    this.disconnect();
-    this.target = target;
+    this.teardown("Reconnecting");
+    this._target = target;
     this.closedByUs = false;
     this.attempt = 0;
-    return this.handshake();
+    return this.attemptConnect();
   }
 
+  /** Reconnect to the target the client already holds — the credential it is
+   *  actually authenticated with, never a spent pairing token. */
+  async reconnect(): Promise<HelloResult> {
+    if (!this._target) throw new Error("no host configured");
+    return this.connect(this._target);
+  }
+
+  /** Stop for good and forget the target. A dropped link is handled by the
+   *  client itself, so the only caller is unpairing — which must not leave a
+   *  revoked credential behind for a later `reconnect`. */
   disconnect(): void {
     this.closedByUs = true;
-    if (this.retryHandle !== null) {
-      this.clearTimer(this.retryHandle);
-      this.retryHandle = null;
-    }
     this.teardown("Disconnected");
+    this._target = null;
     this.setState("disconnected");
   }
 
@@ -161,41 +181,74 @@ export class ProtocolClient implements RemoteClient {
     });
   }
 
-  /** Open the socket and run the first frame (`pair` or `hello`). */
-  private async handshake(): Promise<HelloResult> {
-    const target = this.target;
+  /** One connection attempt: open the socket, then run the first frame
+   *  (`pair` or `hello`). Every failure inside it — the open rejecting, the
+   *  handshake being refused — goes through `fail`, so the client is never
+   *  left sitting in `connecting` with nothing scheduled. */
+  private async attemptConnect(): Promise<HelloResult> {
+    const target = this._target;
     if (!target) throw new Error("no host configured");
+    const gen = ++this.gen;
     this.setState(target.pairingToken ? "pairing" : "connecting");
-    this.socket = await this.opts.openSocket(wsUrl(target), {
-      onOpen: () => {},
-      onMessage: (text) => this.onMessage(text),
-      onClose: (code, reason) => this.onClose(code, reason),
-      onError: (message) => this.onSocketError(message),
-    });
     try {
-      if (target.pairingToken) {
-        const paired = await this.pair(target.pairingToken, this.opts.device);
-        // Pairing is single use: keep going on the device token from here, so a
-        // reconnect doesn't replay a spent pairing token.
-        this.target = {
-          ...target,
-          pairingToken: undefined,
-          deviceToken: paired.deviceToken,
-        };
-        this.setState("connected");
-        // `pair` answers with the host identity but no snapshot, so ask for it.
-        const workspace = await this.call<HelloResult["workspace"]>("get_workspace");
-        return this.publishSnapshot({ host: paired.host, workspace });
+      const socket = await this.opts.openSocket(wsUrl(target), {
+        onOpen: () => {},
+        onMessage: (text) => {
+          if (this.current(gen)) this.onMessage(text);
+        },
+        onClose: (code, reason) => {
+          if (this.current(gen)) this.onClose(code, reason);
+        },
+        onError: (message) => {
+          if (this.current(gen)) this.onSocketError(message);
+        },
+      });
+      if (!this.current(gen)) {
+        // A newer attempt (or a disconnect) landed while the socket opened.
+        socket.close();
+        throw new Error("Connection superseded");
       }
-      if (!target.deviceToken) throw new Error("no device token");
-      const result = await this.hello(target.deviceToken, this.opts.device);
-      this.setState("connected");
-      return this.publishSnapshot(result);
+      this.socket = socket;
+      return await this.handshake(target);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      this.setState("error", message);
+      // A pairing code is single use and short lived, so a refused pairing
+      // attempt is the user's to retry; a device token is retried with
+      // backoff. (`pair` succeeding swaps the token, so a failure after it
+      // counts as retryable.)
+      if (this.current(gen)) this.fail(message, !this._target?.pairingToken);
       throw e instanceof Error ? e : new Error(message);
     }
+  }
+
+  private current(gen: number): boolean {
+    return gen === this.gen;
+  }
+
+  /** The first frame on a fresh socket: `pair` when a pairing code is held,
+   *  `hello` otherwise. */
+  private async handshake(target: HostTarget): Promise<HelloResult> {
+    if (target.pairingToken) {
+      const paired = await this.pair(target.pairingToken, this.opts.device);
+      // Pairing is single use: keep going on the device token from here, so a
+      // reconnect doesn't replay a spent pairing token.
+      this._target = { ...target, pairingToken: undefined, deviceToken: paired.deviceToken };
+      this.setState("connected");
+      // `pair` answers with the host identity but no snapshot, so ask for it.
+      const workspace = await this.call<HelloResult["workspace"]>("get_workspace");
+      return this.publishSnapshot({ host: paired.host, workspace });
+    }
+    if (!target.deviceToken) throw new Error("no device token");
+    const result = await this.hello(target.deviceToken, this.opts.device);
+    this.setState("connected");
+    return this.publishSnapshot(result);
+  }
+
+  /** The single failure path: report it, and schedule a retry unless the
+   *  failure is one only the user can clear. */
+  private fail(message: string, retryable: boolean) {
+    this.setState("error", message);
+    if (retryable && !this.closedByUs) this.scheduleRetry();
   }
 
   /** Every successful handshake — the first and every reconnect — hands its
@@ -238,15 +291,17 @@ export class ProtocolClient implements RemoteClient {
     const message = CLOSE_REASONS[code] ?? reason ?? `Connection closed (${code})`;
     this.teardown(message);
     if (this.closedByUs) return;
-    if (FATAL_CLOSE.has(code)) {
-      this.setState("error", message);
-      return;
-    }
-    this.setState("error", message);
-    this.scheduleRetry();
+    this.fail(message, !FATAL_CLOSE.has(code));
   }
 
+  /** Abandon the current attempt: its socket and any callback still to arrive
+   *  from it stop counting, and everything waiting on it is rejected. */
   private teardown(reason: string) {
+    this.gen += 1;
+    if (this.retryHandle !== null) {
+      this.clearTimer(this.retryHandle);
+      this.retryHandle = null;
+    }
     for (const [, waiter] of this.pending) waiter.reject(new Error(reason));
     this.pending.clear();
     const socket = this.socket;
@@ -260,13 +315,14 @@ export class ProtocolClient implements RemoteClient {
     this.attempt += 1;
     this.retryHandle = this.setTimer(() => {
       this.retryHandle = null;
-      void this.handshake()
-        .then(() => {
+      // A failed attempt reports itself through `fail`, which schedules the
+      // next one, so there is nothing to do on the rejection here.
+      void this.attemptConnect().then(
+        () => {
           this.attempt = 0;
-        })
-        .catch(() => {
-          if (!this.closedByUs) this.scheduleRetry();
-        });
+        },
+        () => {},
+      );
     }, delay);
   }
 }

@@ -146,6 +146,109 @@ describe("envelope", () => {
     fake.reply({ id: fake.sent[1].id, ok: true, result: null });
     await connected;
     expect(client.deviceToken).toBe("secret");
+    expect(client.target).toMatchObject({ host: "h", deviceToken: "secret" });
+    expect(client.target?.pairingToken).toBeUndefined();
+  });
+
+  it("reconnects with the minted device token, not the spent pairing code", async () => {
+    const fake = fakeSocket();
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    const connected = client.connect({ host: "h", port: 1, pairingToken: "K7PQ2M9X" });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply({
+      id: fake.sent[0].id,
+      ok: true,
+      result: {
+        deviceId: "d1",
+        deviceToken: "secret",
+        host: { name: "Mac", appVersion: "0.7.23", os: "macos" },
+      },
+    });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    fake.reply({ id: fake.sent[1].id, ok: true, result: null });
+    await connected;
+
+    const again = client.reconnect();
+    await vi.waitFor(() => expect(fake.sent.length).toBe(3));
+    expect(fake.sent[2].op).toBe("hello");
+    expect(fake.sent[2].args).toEqual({ deviceToken: "secret", client: DEVICE });
+    fake.reply(helloOk(fake.sent[2].id as string));
+    await expect(again).resolves.toMatchObject({ host: { name: "Mac" } });
+  });
+});
+
+describe("connection lifecycle", () => {
+  /** A client whose socket never opens, plus the timers it schedules. */
+  function unreachable() {
+    const timers: { fn: () => void; ms: number }[] = [];
+    let attempts = 0;
+    const client = new ProtocolClient({
+      openSocket: async () => {
+        attempts += 1;
+        throw new Error("Cannot reach ws://h:1/ws");
+      },
+      device: DEVICE,
+      setTimer: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+      clearTimer: () => {},
+    });
+    return { client, timers, attempts: () => attempts };
+  }
+
+  it("surfaces a socket that never opens and retries a device-token target", async () => {
+    const { client, timers, attempts } = unreachable();
+    await expect(client.connect({ host: "h", port: 1, deviceToken: "tok" })).rejects.toThrow(
+      "Cannot reach",
+    );
+    expect(client.state).toBe("error");
+    expect(timers.map((t) => t.ms)).toEqual([1000]);
+    timers[0].fn();
+    await vi.waitFor(() => expect(attempts()).toBe(2));
+    // The retry failed the same way, so the next one is already scheduled.
+    expect(timers.map((t) => t.ms)).toEqual([1000, 2000]);
+  });
+
+  it("leaves a failed pairing attempt in error for the user to retry", async () => {
+    const { client, timers } = unreachable();
+    await expect(client.connect({ host: "h", port: 1, pairingToken: "K7PQ2M9X" })).rejects.toThrow(
+      "Cannot reach",
+    );
+    // Not `pairing` — the Pair button has to come back — and no retry, since a
+    // pairing code is single use.
+    expect(client.state).toBe("error");
+    expect(timers).toHaveLength(0);
+  });
+
+  it("ignores a close from a socket it has already replaced", async () => {
+    const first = fakeSocket();
+    const second = fakeSocket();
+    const timers: { fn: () => void; ms: number }[] = [];
+    let opens = 0;
+    const client = new ProtocolClient({
+      openSocket: (url, h) => (opens++ === 0 ? first.factory(url, h) : second.factory(url, h)),
+      device: DEVICE,
+      setTimer: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+      clearTimer: () => {},
+    });
+    const stale = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    await vi.waitFor(() => expect(first.sent.length).toBe(1));
+    // Reconnect before the first handshake answers: socket one is abandoned.
+    const live = client.connect({ host: "h", port: 1, deviceToken: "tok" });
+    await expect(stale).rejects.toThrow();
+    await vi.waitFor(() => expect(second.sent.length).toBe(1));
+
+    // Socket one's close finally arrives. It must not tear down socket two.
+    first.hangup(1006);
+    expect(timers).toHaveLength(0);
+    expect(client.state).toBe("connecting");
+    second.reply(helloOk(second.sent[0].id as string));
+    await expect(live).resolves.toMatchObject({ host: { name: "Mac" } });
+    expect(client.state).toBe("connected");
   });
 });
 

@@ -3,6 +3,7 @@ import { Icon } from "../../components/Icon";
 import { PickerSheet, ProviderMark, Sheet, Swatch } from "../../components/ui";
 import { modelLabel, providerLabel } from "../../lib/agents";
 import { autosize } from "../../lib/autosize";
+import { ignore } from "../../lib/ignore";
 import { modelsFor, useModels } from "../../lib/models";
 import { api, useStore } from "../../store";
 import { RunnerSheet } from "./RunnerSheet";
@@ -24,6 +25,8 @@ export function NewAgentSheet({
   const workspace = useStore((s) => s.workspace);
   const projects = workspace?.projects ?? [];
   const spawn = useStore((s) => s.spawn);
+  const lastError = useStore((s) => s.lastError);
+  const clearError = useStore((s) => s.clearError);
   const models = useModels();
 
   const [pid, setPid] = useState(projectId ?? projects[0]?.project_id ?? "");
@@ -52,8 +55,9 @@ export function NewAgentSheet({
     setPid(projectId ?? firstProjectId ?? "");
     setBase(null);
     setStarting(false);
+    clearError();
     void allocate([]);
-  }, [open, projectId, firstProjectId, allocate]);
+  }, [open, projectId, firstProjectId, allocate, clearError]);
 
   useEffect(() => {
     if (!open || !project) return;
@@ -87,6 +91,7 @@ export function NewAgentSheet({
   const start = () => {
     if (!prompt.trim() || starting) return;
     setStarting(true);
+    clearError();
     void spawn({
       repoPath: project.path,
       provider,
@@ -94,10 +99,11 @@ export function NewAgentSheet({
       effort,
       base: chosenBase,
       prompt: prompt.trim(),
-    }).finally(() => {
-      setPrompt("");
-      setStarting(false);
-    });
+    })
+      // Only a spawn that actually started the agent has consumed the prompt.
+      // A failed one keeps it, so the button below can just be pressed again.
+      .then(() => setPrompt(""), ignore)
+      .finally(() => setStarting(false));
   };
 
   return (
@@ -177,6 +183,7 @@ export function NewAgentSheet({
             <span className="grow" />
           </div>
         </div>
+        {lastError && <div className="err na-err">{lastError}</div>}
         <div className="na-ctx">
           <button type="button" className="chip" onClick={() => setPicker("project")}>
             <Swatch project={project} size={14} />

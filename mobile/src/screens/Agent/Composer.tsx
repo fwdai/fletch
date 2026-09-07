@@ -4,6 +4,7 @@ import { Icon } from "../../components/Icon";
 import { ProviderMark } from "../../components/ui";
 import { isBusy, modelLabel } from "../../lib/agents";
 import { autosize } from "../../lib/autosize";
+import { ignore } from "../../lib/ignore";
 import { useStore } from "../../store";
 
 export function Composer({ agent }: { agent: AgentRecord }) {
@@ -19,7 +20,7 @@ export function Composer({ agent }: { agent: AgentRecord }) {
     if (!value) return;
     setText("");
     requestAnimationFrame(() => autosize(ta.current));
-    void send(agent.id, value);
+    void send(agent.id, value).catch(ignore);
   };
 
   return (
@@ -58,7 +59,7 @@ export function Composer({ agent }: { agent: AgentRecord }) {
             <button
               type="button"
               className="sendbtn stop"
-              onClick={() => void stop(agent.id)}
+              onClick={() => void stop(agent.id).catch(ignore)}
               aria-label="Stop agent"
             >
               <Icon name="stop" size={14} />

@@ -17,6 +17,7 @@ import type {
 import type { PrStateChangedEvent } from "@desktop/api/types/pr";
 import type { SessionRecordsAppendedEvent, TurnStartedEvent } from "@desktop/api/types/session";
 import type { RawEvent } from "../adapters";
+import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
 import type { MobileState } from "./index";
 import { applyLiveEvent } from "./transcript";
@@ -71,7 +72,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // The canonical transcript for a finished turn — richer than the live render
   // (tool results the live stream dropped), so rebuild from it.
   on<SessionRecordsAppendedEvent>("session:records-appended", (e) => {
-    void get().rebuildLog(e.agent_id);
+    void get().rebuildLog(e.agent_id).catch(ignore);
   });
 
   on<AgentStatusEvent>("agent:status", (e) => {

@@ -4,7 +4,7 @@
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { PENDING_REQUEST_ID, PENDING_TOOL_USE_ID } from "../src/remote/mock/fixtures";
-import { agentOf, useStore } from "../src/store";
+import { agentOf, api, useStore } from "../src/store";
 
 const state = () => useStore.getState();
 
@@ -135,5 +135,32 @@ describe("spawn flow", () => {
         ).toBe(true),
       { timeout: 5000 },
     );
+  });
+
+  it("rejects and rolls back when the first message fails, so the prompt can be retried", async () => {
+    const send = vi
+      .spyOn(api, "sendUserMessage")
+      .mockRejectedValueOnce(new Error("host refused the message"));
+    const before = new Set((state().workspace?.agents ?? []).map((a) => a.id));
+
+    await expect(
+      state().spawn({
+        repoPath: state().workspace?.projects[0].path ?? "",
+        provider: "claude",
+        model: "claude-opus-5",
+        effort: "high",
+        base: "main",
+        prompt: "This one never reaches the agent",
+      }),
+    ).rejects.toThrow("host refused the message");
+
+    expect(state().lastError).toContain("host refused the message");
+    // The agent exists on the host, but nothing optimistic is left behind.
+    const fresh = (state().workspace?.agents ?? []).find((a) => !before.has(a.id));
+    expect(fresh).toBeTruthy();
+    const id = fresh?.id ?? "";
+    expect(state().busy[id]).toBeFalsy();
+    expect(state().logs[id]).toBeUndefined();
+    send.mockRestore();
   });
 });

@@ -1,6 +1,7 @@
 import { Icon } from "../components/Icon";
 import { Segmented, Sheet } from "../components/ui";
-import { useStore } from "../store";
+import { ignore } from "../lib/ignore";
+import { client, useStore } from "../store";
 
 const CONNECTION_TEXT: Record<string, string> = {
   connected: "Connected",
@@ -12,7 +13,6 @@ const CONNECTION_TEXT: Record<string, string> = {
 
 export function HostSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const host = useStore((s) => s.hostInfo);
-  const target = useStore((s) => s.target);
   const connection = useStore((s) => s.connection);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
@@ -20,6 +20,9 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
   const unpair = useStore((s) => s.unpair);
   const projects = useStore((s) => s.workspace?.projects.length ?? 0);
   const agents = useStore((s) => s.workspace?.agents.length ?? 0);
+  // The client owns the target; this re-reads it on every render, which the
+  // connection-state subscription above already drives.
+  const address = client.target ? `${client.target.host}:${client.target.port}` : "";
 
   return (
     <Sheet
@@ -53,7 +56,7 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
               style={{ width: 6, height: 6 }}
             />
             {CONNECTION_TEXT[connection]}
-            {target ? ` · ${target.host}:${target.port}` : ""}
+            {address ? ` · ${address}` : ""}
           </div>
         </div>
       </div>
@@ -90,7 +93,11 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
         </div>
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-        <button type="button" className="btn ghost block" onClick={() => void reconnect()}>
+        <button
+          type="button"
+          className="btn ghost block"
+          onClick={() => void reconnect().catch(ignore)}
+        >
           <Icon name="refresh" size={16} />
           Reconnect
         </button>

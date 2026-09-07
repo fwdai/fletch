@@ -1,4 +1,5 @@
 import { Icon } from "../../components/Icon";
+import { ignore } from "../../lib/ignore";
 import { useStore } from "../../store";
 
 const LABEL: Record<string, string> = {
@@ -19,7 +20,7 @@ export function ConnectionBanner() {
     <div className={`conn${isError ? " err" : ""}`}>
       <Icon name={isError ? "alert" : "refresh"} size={14} />
       <span className="grow">{isError ? (error ?? "Connection lost") : LABEL[connection]}</span>
-      <button type="button" onClick={() => void reconnect()}>
+      <button type="button" onClick={() => void reconnect().catch(ignore)}>
         Retry
       </button>
     </div>

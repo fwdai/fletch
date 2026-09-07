@@ -86,6 +86,9 @@ export interface RemoteClient {
   /** Open a connection and complete `pair` or `hello`. Rejects if the
    *  handshake fails; reconnects on its own afterwards. */
   connect(target: HostTarget): Promise<HelloResult>;
+  /** Re-run the handshake against the target the client already holds. */
+  reconnect(): Promise<HelloResult>;
+  /** Stop and forget the target — used when unpairing. */
   disconnect(): void;
   call<T>(op: string, args?: Record<string, unknown>): Promise<T>;
   /** Subscribe to one host event name. Returns an unsubscribe function. */
@@ -99,6 +102,8 @@ export interface RemoteClient {
   readonly host: HostInfo | null;
   /** The credential in use — set after a `pair` handshake mints one. */
   readonly deviceToken: string | null;
+  /** Where the client is pointed, with any spent pairing token stripped. */
+  readonly target: Readonly<HostTarget> | null;
   pair(token: string, device: DeviceInfo): Promise<PairResult>;
   hello(deviceToken: string, client: DeviceInfo): Promise<HelloResult>;
 }

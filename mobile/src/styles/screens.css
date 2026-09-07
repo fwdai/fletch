@@ -652,10 +652,15 @@
   grid-template-columns: 1fr 96px;
   gap: 10px;
 }
-.pair .err {
+/* Shared inline error line: pairing, the new-agent sheet, anywhere a failed
+   action has to be readable next to the control that caused it. */
+.err {
   font-size: 13px;
   color: var(--danger);
   line-height: 1.45;
+}
+.na-err {
+  padding: 12px 2px 0;
 }
 .pair .hint {
   font-size: 12.5px;

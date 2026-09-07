@@ -2,6 +2,7 @@ import type { AgentRecord } from "@desktop/api/types/agent";
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { branchOf } from "../../lib/agents";
+import { ignore } from "../../lib/ignore";
 import { buildTree, defaultOpen, flattenTree } from "../../lib/tree";
 import { useStore } from "../../store";
 
@@ -14,7 +15,7 @@ export function CodeTab({ agent }: { agent: AgentRecord }) {
   const [open, setOpen] = useState<Set<string> | null>(null);
 
   useEffect(() => {
-    if (!files) void loadTree(agent.id);
+    if (!files) void loadTree(agent.id).catch(ignore);
   }, [agent.id, files, loadTree]);
 
   const tree = useMemo(() => buildTree(files ?? []), [files]);

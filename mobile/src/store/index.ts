@@ -5,6 +5,7 @@ import type { PrChecks, PrState } from "@desktop/api/types/pr";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
 import { createApi } from "../api";
+import { ignore } from "../lib/ignore";
 import {
   type ConnectionState,
   createClient,
@@ -17,7 +18,7 @@ import { registerRemoteEvents } from "./events";
 import { clearCredentials, loadSettings, saveSettings } from "./persist";
 import { applyUserTurns, reduceRecords } from "./transcript";
 
-const client = createClient();
+export const client = createClient();
 export const api = createApi(client);
 
 export type ThemeMode = "system" | "light" | "dark";
@@ -42,7 +43,6 @@ export interface MobileState {
   connection: ConnectionState;
   connectionError: string | null;
   hostInfo: HostInfo | null;
-  target: HostTarget | null;
   deviceToken: string | null;
 
   workspace: Workspace | null;
@@ -114,6 +114,22 @@ let initialized = false;
 const newId = () =>
   globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36)}`;
 
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+type Setter = (partial: Partial<MobileState>) => void;
+
+/** Record the failure where the error UI can see it, then rethrow: an action
+ *  that swallows leaves its caller believing it succeeded — which is how a
+ *  failed spawn used to clear the prompt the user still needs. */
+async function guard<T>(set: Setter, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    set({ lastError: message(e) });
+    throw e;
+  }
+}
+
 export const agentOf = (ws: Workspace | null, id: string): AgentRecord | undefined =>
   ws?.agents.find((a) => a.id === id);
 
@@ -142,7 +158,6 @@ export const useStore = create<MobileState>()((set, get) => ({
   connection: "disconnected",
   connectionError: null,
   hostInfo: null,
-  target: null,
   deviceToken: null,
 
   workspace: null,
@@ -186,9 +201,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     if (mockEnabled()) {
       // The mock host has no pairing step worth clicking through every reload.
       set({ deviceToken: "mock" });
-      await get()
-        .connect({ host: "mock", port: DEFAULT_PORT, deviceToken: "mock" })
-        .catch(() => {});
+      await get().connect({ host: "mock", port: DEFAULT_PORT, deviceToken: "mock" }).catch(ignore);
       return;
     }
     if (saved.host && saved.deviceToken) {
@@ -196,16 +209,18 @@ export const useStore = create<MobileState>()((set, get) => ({
       await get()
         .connect({
           host: saved.host,
-          port: saved.port ?? 47285,
+          port: saved.port ?? DEFAULT_PORT,
           name: saved.hostName,
           deviceToken: saved.deviceToken,
         })
-        .catch(() => {});
+        .catch(ignore);
     }
   },
 
   async connect(target) {
-    set({ target, connectionError: null });
+    // The client owns the target from here: it strips the spent pairing token
+    // and keeps the minted device token for its own reconnects.
+    set({ connectionError: null });
     try {
       const snapshot = await client.connect(target);
       // After a `pair` handshake the client holds the freshly minted token.
@@ -227,17 +242,19 @@ export const useStore = create<MobileState>()((set, get) => ({
       }
       if (!snapshot.workspace) await get().refreshWorkspace();
     } catch (e) {
-      set({ connectionError: e instanceof Error ? e.message : String(e) });
+      set({ connectionError: message(e) });
       throw e;
     }
   },
 
+  /** Retry the link the client already holds — the store no longer keeps a
+   *  copy of the target, so there is no stale pairing token to replay. */
   async reconnect() {
-    const target = get().target;
-    if (target)
-      await get()
-        .connect(target)
-        .catch(() => {});
+    if (!client.target) return;
+    set({ connectionError: null });
+    // The snapshot subscription in `init` folds the fresh host and workspace
+    // in; the state subscription reports the failure.
+    await client.reconnect();
   },
 
   async unpair() {
@@ -245,7 +262,6 @@ export const useStore = create<MobileState>()((set, get) => ({
     await clearCredentials();
     set({
       deviceToken: null,
-      target: null,
       workspace: null,
       hostInfo: null,
       logs: {},
@@ -306,7 +322,7 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   openAgent(agentId) {
     get().push("agent", { agentId });
-    void get().loadAgent(agentId);
+    void get().loadAgent(agentId).catch(ignore);
   },
 
   async loadAgent(agentId) {
@@ -315,7 +331,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async rebuildLog(agentId) {
-    try {
+    return guard(set, async () => {
       const [records, turns] = await Promise.all([
         api.readSessionRecords(agentId),
         api.readUserTurns(agentId),
@@ -323,9 +339,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       const provider = agentOf(get().workspace, agentId)?.provider;
       const items = applyUserTurns(reduceRecords(provider, records), turns);
       set((s) => ({ logs: { ...s.logs, [agentId]: items } }));
-    } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
-    }
+    });
   },
 
   async loadGit(agentId) {
@@ -350,12 +364,10 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async loadTree(agentId) {
-    try {
+    return guard(set, async () => {
       const tree = await api.listCheckoutTree(agentId);
       set((s) => ({ trees: { ...s.trees, [agentId]: tree } }));
-    } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
-    }
+    });
   },
 
   async send(agentId, text) {
@@ -369,18 +381,18 @@ export const useStore = create<MobileState>()((set, get) => ({
       },
       busy: { ...s.busy, [agentId]: true },
     }));
-    try {
-      await api.sendUserMessage(agentId, newId(), trimmed);
-    } catch (e) {
-      set((s) => ({
-        lastError: e instanceof Error ? e.message : String(e),
-        busy: { ...s.busy, [agentId]: false },
-      }));
-    }
+    return guard(set, async () => {
+      try {
+        await api.sendUserMessage(agentId, newId(), trimmed);
+      } catch (e) {
+        set((s) => ({ busy: { ...s.busy, [agentId]: false } }));
+        throw e;
+      }
+    });
   },
 
   async spawn({ repoPath, provider, model, effort, base, prompt }) {
-    try {
+    return guard(set, async () => {
       const name = await api.allocateDraftName([]);
       const record = await api.spawnAgent(repoPath, provider, name, effort, model, base);
       set((s) => ({
@@ -392,11 +404,24 @@ export const useStore = create<MobileState>()((set, get) => ({
       }));
       get().closeSheet();
       get().push("agent", { agentId: record.id });
-      await waitForSpawn(get, record.id);
-      await api.sendUserMessage(record.id, newId(), prompt);
-    } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
-    }
+      try {
+        await waitForSpawn(get, record.id);
+        await api.sendUserMessage(record.id, newId(), prompt);
+      } catch (e) {
+        // The agent exists on the host but never got the prompt: drop the
+        // optimistic turn and the busy flag, and let the refreshed workspace
+        // show whatever state it is really in.
+        set((s) => {
+          const logs = { ...s.logs };
+          const busy = { ...s.busy };
+          delete logs[record.id];
+          delete busy[record.id];
+          return { logs, busy };
+        });
+        await get().refreshWorkspace();
+        throw e;
+      }
+    });
   },
 
   async answerToolUse(agentId, toolUseId, updatedInput, behavior) {
@@ -410,59 +435,45 @@ export const useStore = create<MobileState>()((set, get) => ({
         busy: { ...s.busy, [agentId]: true },
       };
     });
-    try {
-      await api.answerToolUse(agentId, requestId, updatedInput, behavior);
-    } catch (e) {
-      set((s) => ({
-        lastError: e instanceof Error ? e.message : String(e),
-        busy: { ...s.busy, [agentId]: false },
-      }));
-    }
+    return guard(set, async () => {
+      try {
+        await api.answerToolUse(agentId, requestId, updatedInput, behavior);
+      } catch (e) {
+        set((s) => ({ busy: { ...s.busy, [agentId]: false } }));
+        throw e;
+      }
+    });
   },
 
   async stop(agentId) {
-    try {
+    return guard(set, async () => {
       await api.stopAgent(agentId);
       set((s) => ({ busy: { ...s.busy, [agentId]: false } }));
-    } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
-    }
+    });
   },
 
   async resume(agentId) {
-    try {
+    return guard(set, async () => {
       await api.resumeAgent(agentId);
       set((s) => ({ busy: { ...s.busy, [agentId]: true } }));
-    } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
-    }
+    });
   },
 
   async archive(agentId) {
-    try {
+    return guard(set, async () => {
       await api.archiveAgent(agentId);
       get().closeSheet();
       get().pop();
       await get().refreshWorkspace();
-    } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
-    }
+    });
   },
 
   async setModel(agentId, model) {
-    try {
-      await api.setAgentModel(agentId, model);
-    } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
-    }
+    await guard(set, () => api.setAgentModel(agentId, model));
   },
 
   async setEffort(agentId, effort) {
-    try {
-      await api.setAgentEffort(agentId, effort);
-    } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
-    }
+    await guard(set, () => api.setAgentEffort(agentId, effort));
   },
 
   async publish(agentId, title, body) {
