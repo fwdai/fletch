@@ -9,6 +9,9 @@ export interface AccountSlice {
   telemetryEnabled: boolean;
   /** Code-indexing (codegraph) consent. Opt-out: defaults on. */
   codeIndexingEnabled: boolean;
+  /** Local (Whisper) dictation engine chosen over the platform recognizer.
+   *  Opt-in: defaults off, since it costs a model download. */
+  dictationEngineEnabled: boolean;
   /** GitHub connection: null until the first probe, then the live status.
    *  `authenticated` gates push/PR/clone affordances app-wide. */
   github: GhStatus | null;
@@ -30,12 +33,14 @@ export interface AccountSlice {
   refreshLinear: () => Promise<void>;
   setTelemetryEnabled: (enabled: boolean) => void;
   setCodeIndexingEnabled: (enabled: boolean) => void;
+  setDictationEngineEnabled: (enabled: boolean) => void;
 }
 
 export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   account: null,
   telemetryEnabled: true,
   codeIndexingEnabled: true,
+  dictationEngineEnabled: false,
   github: null,
   linear: null,
 
@@ -98,5 +103,11 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
     // The backend command persists `code_indexing_enabled` and (when enabling)
     // warms the index in the background, so we don't also call setSetting here.
     void api.setCodeIndexingEnabled(enabled);
+  },
+  setDictationEngineEnabled: (enabled) => {
+    set({ dictationEngineEnabled: enabled });
+    // The backend command persists `dictation_engine` and (when enabling)
+    // downloads the model in the background, so we don't also call setSetting.
+    void api.setDictationEngine(enabled);
   },
 });

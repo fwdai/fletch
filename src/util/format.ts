@@ -89,3 +89,22 @@ export function formatCost(usd: number): string {
   if (usd > 0 && usd < 0.01) return "<$0.01";
   return `$${usd.toFixed(usd < 1 ? 3 : 2)}`;
 }
+
+/** A download size in decimal units (574 MB), the way the files themselves are
+ *  advertised — a binary-unit "547 MiB" for the same bytes reads as a
+ *  different download. One decimal below 10 of a unit, none above. */
+export function formatBytes(bytes: number): string {
+  const mb = bytes / 1_000_000;
+  if (mb < 1) return `${Math.round(bytes / 1_000)} kB`;
+  if (mb < 1_000) return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
+  const gb = mb / 1_000;
+  return `${gb.toFixed(gb < 10 ? 1 : 0)} GB`;
+}
+
+/** Whole-percent progress, clamped to 0–100. `null` when the total is unknown
+ *  or zero, which is the caller's cue for an indeterminate bar rather than a
+ *  bogus 0%. */
+export function downloadPercent(received: number, total: number | null): number | null {
+  if (!total || total <= 0) return null;
+  return Math.min(100, Math.max(0, Math.round((received / total) * 100)));
+}

@@ -51,3 +51,42 @@ export interface DictationStateEvent {
   state: DictationState;
   error: string | null;
 }
+
+/** The one Whisper model the local engine would use, as pinned in the Rust
+ *  catalog (`dictation/whisper/models.rs`). */
+export interface DictationModel {
+  id: string;
+  label: string;
+  /** One line on when to pick it. */
+  note: string;
+  /** Exact download size in bytes. Every size string in the UI is derived from
+   *  it, so the copy can't drift from the pinned file. */
+  size: number;
+}
+
+/** The local (Whisper) engine's opt-in and the state of its weights. `enabled`
+ *  and `installed` move independently: the engine can be chosen while the
+ *  download is still running, in which case dictation keeps using the platform
+ *  recognizer. */
+export interface DictationModelStatus {
+  enabled: boolean;
+  installed: boolean;
+  /** A download is running right now; watch `onDictationModelProgress`. */
+  downloading: boolean;
+  model: DictationModel;
+}
+
+/** `verifying` is the tail of the download (the digest is computed as bytes
+ *  arrive), not a second pass — so it always follows a full `received`. */
+export type DictationModelState = "downloading" | "verifying" | "installed" | "error";
+
+/** Payload of the `dictation:model_progress` event. `total` is the pinned
+ *  catalog size, not the server's `Content-Length`. `error` is set for the
+ *  `error` state alone and is shown as-is. */
+export interface DictationModelProgressEvent {
+  model_id: string;
+  state: DictationModelState;
+  received: number;
+  total: number | null;
+  error: string | null;
+}
