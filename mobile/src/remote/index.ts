@@ -3,8 +3,9 @@ import { mockSocket } from "./mock";
 import type { DeviceInfo, RemoteClient } from "./types";
 import { openWebSocket } from "./ws";
 
+export { type Candidate, candidatesFor, LAN_OPEN_TIMEOUT_MS } from "./candidates";
 export { ProtocolClient } from "./client";
-export { parseAddress, parsePairUrl, wsUrl } from "./pairing";
+export { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
 export * from "./types";
 
 const search = () =>

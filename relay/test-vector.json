@@ -1,0 +1,11 @@
+{
+  "_comment": "Known-answer vector for the relay's host-link DH proof. Produced with Node's crypto (x25519 via crypto.diffieHellman) and verified against the Worker's WebCrypto implementation in test/auth.test.ts. The desktop's Rust host should reproduce `proof` from `hostPrivate`, `relayKey` and `nonce`. All values are unpadded base64url of raw bytes.",
+  "algorithm": "proof = SHA-256( X25519(hostPrivate, relayKey) || nonce || hostId ), on the raw 32-byte decodings of relayKey, nonce and hostId; hostId is the X25519 public key of hostPrivate",
+  "hostPrivate": "OqU0-7cJg-RJvvrbEO7QdOhyDkXsLgpcep6iAuRBhyM",
+  "hostId": "CByil-LnR3Z4wv604Br29p6iHZu2cmhqy35dlKs7Ojg",
+  "relayPrivate": "X3dswLZDY6e6AswL_bcW6V13_XV_3NnBcXngrkpTn38",
+  "relayKey": "9ULx3HxJf-CwYQMXrrUbub-mLokcC6O-EkH1Uv0bcR8",
+  "nonce": "91SDD6qePWgyP4B77YoYcp5T7H2CVoihopcC_iVs13U",
+  "shared": "3eRCj5nchCI2rpYP7m4yUk_eYadXHnLE8SIcsIEg82U",
+  "proof": "hVOvHwh5XlYzm95Ts3hqD2J6OAVe6lIt1wRxGMN30CM"
+}

@@ -13,6 +13,7 @@ import {
   type HostInfo,
   type HostTarget,
   mockEnabled,
+  type Via,
 } from "../remote";
 import { registerRemoteEvents } from "./events";
 import { clearHost, loadSettings, saveSettings } from "./persist";
@@ -46,6 +47,11 @@ export interface MobileState {
   /** The paired host's public key — pinned on first contact, and what makes
    *  the app paired at all. */
   hostKey: string | null;
+  /** The host's relay base URL, when it has one; the fallback path. */
+  relay: string | null;
+  /** Which path the live connection took — mirrored from the client for the
+   *  Host sheet, and null when there is no connection. */
+  via: Via | null;
 
   workspace: Workspace | null;
   logs: Record<string, ChatItem[]>;
@@ -69,6 +75,8 @@ export interface MobileState {
   connect(target: HostTarget): Promise<void>;
   reconnect(): Promise<void>;
   unpair(): Promise<void>;
+  /** Add or change the relay for the paired host without re-pairing. */
+  setRelay(url: string | null): Promise<void>;
   setTheme(theme: ThemeMode): void;
   setSystemTheme(t: "light" | "dark"): void;
   clearError(): void;
@@ -161,6 +169,8 @@ export const useStore = create<MobileState>()((set, get) => ({
   connectionError: null,
   hostInfo: null,
   hostKey: null,
+  relay: null,
+  via: null,
 
   workspace: null,
   logs: {},
@@ -186,7 +196,12 @@ export const useStore = create<MobileState>()((set, get) => ({
     initialized = true;
     registerRemoteEvents(client, set, get);
     client.onState((state, error) =>
-      set({ connection: state, connectionError: error ?? null, hostInfo: client.host }),
+      set({
+        connection: state,
+        connectionError: error ?? null,
+        hostInfo: client.host,
+        via: client.via,
+      }),
     );
     client.onSnapshot((snapshot) => {
       set({ hostInfo: snapshot.host });
@@ -199,7 +214,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       });
     }
     const saved = await loadSettings();
-    set({ ready: true, theme: saved.theme ?? "dark" });
+    set({ ready: true, theme: saved.theme ?? "dark", relay: saved.relay ?? null });
     if (mockEnabled()) {
       // The mock host has no pairing step worth clicking through every reload;
       // its fixed key is pinned by `connect` like any other.
@@ -216,6 +231,8 @@ export const useStore = create<MobileState>()((set, get) => ({
           port: saved.port ?? DEFAULT_PORT,
           name: saved.hostName,
           hostKey: saved.hostKey,
+          // The relay is dialled only if the LAN address does not answer.
+          relay: saved.relay,
         })
         .catch(ignore);
     }
@@ -229,10 +246,13 @@ export const useStore = create<MobileState>()((set, get) => ({
       const snapshot = await client.connect(target);
       // Either the key the target carried, or the one just pinned.
       const hostKey = client.hostKey ?? target.hostKey ?? get().hostKey;
+      const relay = client.target?.relay ?? null;
       set({
         hostInfo: snapshot.host,
         workspace: snapshot.workspace,
         hostKey,
+        relay,
+        via: client.via,
         nav: [{ key: Date.now(), screen: "home", props: {}, phase: "idle" }],
       });
       // Mock mode must not leave a "mock" host behind for the next real run.
@@ -241,6 +261,7 @@ export const useStore = create<MobileState>()((set, get) => ({
           host: target.host,
           port: target.port,
           hostName: snapshot.host.name,
+          relay: relay ?? undefined,
           ...(hostKey ? { hostKey } : {}),
         });
       }
@@ -266,12 +287,24 @@ export const useStore = create<MobileState>()((set, get) => ({
     await clearHost();
     set({
       hostKey: null,
+      relay: null,
+      via: null,
       workspace: null,
       hostInfo: null,
       logs: {},
       sheet: null,
       nav: [{ key: Date.now(), screen: "home", props: {}, phase: "idle" }],
     });
+  },
+
+  /** The relay is a property of the paired host, not of a pairing: a link that
+   *  never carried one (or a hand-typed pairing) can be given one here, and it
+   *  applies from the next connection attempt on. */
+  async setRelay(url) {
+    const relay = url?.trim() || null;
+    client.setRelay(relay);
+    set({ relay });
+    if (!mockEnabled()) await saveSettings({ relay: relay ?? undefined });
   },
 
   setTheme(theme) {

@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/Button";
 import { SetGroup, SetRow, SetToggle } from "../primitives";
 import { DeviceRow } from "./DeviceRow";
 import { PairingCard } from "./PairingCard";
+import { RelayRow } from "./RelayRow";
 import { useRemote } from "./useRemote";
 
 /** Settings › General › Mobile devices: run the paired-device WebSocket server
@@ -12,7 +13,7 @@ import { useRemote } from "./useRemote";
  *  the switch opens, and pairing that is an explicit, expiring, single-use act
  *  rather than a standing invitation. */
 export function MobileDevices() {
-  const { status, invite, error, busy, setEnabled, beginPairing, revoke, clearInvite } =
+  const { status, invite, error, busy, setEnabled, setRelay, beginPairing, revoke, clearInvite } =
     useRemote();
 
   const enabled = !!status?.enabled;
@@ -40,6 +41,14 @@ export function MobileDevices() {
           onClick={() => void setEnabled(!enabled)}
         />
       </SetRow>
+
+      {status && (
+        <RelayRow
+          relay={status.relay}
+          disabled={busy || !enabled}
+          onSet={(url) => void setRelay(url)}
+        />
+      )}
 
       <SetRow title="Reachable at" sub={reach} align="start">
         {listening && <span className="set-remote-port mono text-sm">port {status?.port}</span>}

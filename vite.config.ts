@@ -24,9 +24,10 @@ function copyFileIcons(): Plugin {
 
 export default defineConfig(async () => ({
   plugins: [tsconfigPaths(), react(), copyFileIcons()],
-  // The mobile companion under mobile/ is its own package with its own
-  // vitest run and node_modules; its tests do not resolve from here.
-  test: { exclude: [...configDefaults.exclude, "mobile/**"] },
+  // The mobile companion under mobile/ and the relay Worker under relay/ are
+  // their own packages with their own vitest runs and node_modules; their
+  // tests do not resolve from here.
+  test: { exclude: [...configDefaults.exclude, "mobile/**", "relay/**"] },
   clearScreen: false,
   server: {
     port: 1420,

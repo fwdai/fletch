@@ -1,7 +1,8 @@
 // The secure transport, which is a thin shell over the app's own Rust layer:
 // `remote_connect` opens the WebSocket, runs the Noise handshake and reports
 // the host's identity key, then every frame travels encrypted. This side only
-// ever sees plaintext JSON (docs/remote-protocol.md, "Secure channel").
+// ever sees plaintext JSON (docs/remote-protocol.md, "Secure channel"). The
+// URL may be a LAN `ws://` or a relay `wss://` — same call, same handshake.
 //
 // Every connection has an id the Rust layer hands back and stamps on every
 // event, and `remote_send`/`remote_close` take it. This wrapper only ever acts
@@ -71,6 +72,10 @@ const secureSocket: SocketFactory = async (url, handlers, opts) => {
     result = await invoke<ConnectResult>("remote_connect", {
       url,
       hostKey: opts?.hostKey ?? null,
+      // One timeout, and it lives in Rust: it bounds the dial and the
+      // handshake together and closes the socket when it expires, so a
+      // candidate this side has given up on is really gone.
+      timeoutMs: opts?.timeoutMs ?? null,
     });
   } catch (e) {
     stop();
@@ -82,6 +87,7 @@ const secureSocket: SocketFactory = async (url, handlers, opts) => {
 
   const socket: Socket = {
     hostKey: result.hostKey,
+    via: opts?.via ?? "lan",
     send: (text) => invoke<void>("remote_send", { connectionId: id, text }),
     close: () => {
       done = true;

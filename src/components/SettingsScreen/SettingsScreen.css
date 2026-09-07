@@ -843,6 +843,29 @@
   color: var(--fg-3);
   white-space: nowrap;
 }
+/* Relay URL, edited in place beside the link's state. */
+.set-relay-url {
+  width: 230px;
+  height: 26px;
+  padding: 0 8px;
+  color: var(--fg-0);
+  background: var(--bg-1);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+  outline: none;
+}
+.set-relay-url:focus {
+  border-color: var(--accent);
+}
+.set-relay-pill {
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.set-relay-pill[data-state="error"] {
+  color: var(--danger);
+  white-space: normal;
+  max-width: 28ch;
+}
 
 /* Live pairing code. Its own block rather than a `set-row`: the code is the
    content, not a control on the right of a label. */

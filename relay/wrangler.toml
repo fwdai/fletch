@@ -1,0 +1,23 @@
+# Fletch remote relay — a dumb pipe between a Mac ("host") and its phones
+# ("devices"). See ../docs/remote-protocol.md, section "Relay".
+name = "fletch-relay"
+main = "src/index.ts"
+# Keep at or below the newest date the bundled workerd (via miniflare, used by
+# `bun run test`) supports, or the test runtime refuses to start.
+compatibility_date = "2026-08-22"
+
+# One Durable Object per host ID (`idFromName(hostId)`) holds the single host
+# link and its device links.
+[[durable_objects.bindings]]
+name = "HOSTS"
+class_name = "HostRelay"
+
+# SQLite-backed Durable Objects are the only kind available on the free plan,
+# and they are what the WebSocket Hibernation API is billed against, so the
+# object can sleep while a host link sits idle.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HostRelay"]
+
+[observability]
+enabled = true

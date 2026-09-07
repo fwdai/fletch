@@ -1,5 +1,5 @@
-// Small key/value store for the last host — its address, name and public key —
-// and the theme. App data dir via the fs plugin inside Tauri, localStorage in a
+// Small key/value store for the last host — its address, name, public key and
+// relay URL — and the theme. App data dir via the fs plugin inside Tauri, localStorage in a
 // browser. There is no credential here: the device's identity is the Noise
 // static key, which lives in the Rust layer's app data dir.
 
@@ -16,6 +16,8 @@ export interface Persisted {
   hostName?: string;
   /** The host's public key. Its presence is what "paired" means. */
   hostKey?: string;
+  /** Relay base URL for this host, from the pairing link or the Host sheet. */
+  relay?: string;
   theme?: "system" | "light" | "dark";
 }
 
@@ -65,7 +67,8 @@ export async function saveSettings(patch: Persisted): Promise<Persisted> {
   return next;
 }
 
-/** Forget the paired host — address, name and pinned key — and keep the rest. */
+/** Forget the paired host — address, name, pinned key and relay — and keep the
+ *  rest. */
 export async function clearHost(): Promise<void> {
   const { theme } = await readAll();
   await writeAll(theme ? { theme } : {});

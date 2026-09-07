@@ -621,7 +621,8 @@
   color: var(--fg-2);
   line-height: 1.5;
 }
-.pair label {
+.pair label,
+.relay-field label {
   display: block;
   font-size: 11px;
   font-weight: 600;
@@ -633,7 +634,8 @@
 .pair .field {
   margin-top: 2px;
 }
-.pair input {
+.pair input,
+.relay-field input {
   width: 100%;
   background: var(--bg-2);
   border: 1px solid var(--bd-soft);
@@ -644,8 +646,20 @@
   font-family: var(--font-mono);
   transition: border-color 0.2s;
 }
-.pair input:focus {
+.pair input:focus,
+.relay-field input:focus {
   border-color: var(--accent-line);
+}
+/* Relay URL in the host sheet: the same field as pairing, one row down from
+   the values above it. */
+.relay-field {
+  margin-top: 16px;
+}
+.relay-field .hint {
+  font-size: 12px;
+  color: var(--fg-3);
+  line-height: 1.45;
+  margin-top: 6px;
 }
 .pair .grid {
   display: grid;

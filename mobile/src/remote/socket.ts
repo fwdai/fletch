@@ -3,12 +3,16 @@
 // Everything above it (envelopes, request matching, pairing, reconnect) lives
 // in client.ts and is therefore identical for both.
 
+import type { Via } from "./types";
+
 export interface Socket {
   send(text: string): void | Promise<void>;
   close(): void;
   /** The host public key the handshake authenticated, base64url. The client
    *  pins this when it had none to compare against. */
   readonly hostKey: string;
+  /** Which path this socket took — reported for the UI only. */
+  readonly via: Via;
 }
 
 export interface SocketHandlers {
@@ -24,6 +28,12 @@ export interface SocketOptions {
    *  host presents a different one; absent, any key is accepted and reported
    *  for pinning. */
   hostKey?: string;
+  /** Bound on opening the socket — dial plus handshake — after which the
+   *  attempt fails with a "timed out" error. Enforced inside the transport, so
+   *  the attempt is really cancelled and nothing races it from this side. */
+  timeoutMs?: number;
+  /** Which candidate this URL came from; echoed back as `Socket.via`. */
+  via?: Via;
 }
 
 /** Opens a socket to `url`. Rejecting is equivalent to `onError` + `onClose`;

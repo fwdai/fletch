@@ -52,3 +52,9 @@ mobile/src-tauri/target/
 # tauri-build regenerates these schemas on every build; the Xcode project that
 # `tauri ios init` puts beside them is committed once it exists.
 mobile/src-tauri/gen/schemas/
+
+# Remote relay Worker (relay/). Same story as mobile/: the root-anchored
+# entries above do not reach into it.
+relay/node_modules/
+relay/.wrangler/
+relay/dist/

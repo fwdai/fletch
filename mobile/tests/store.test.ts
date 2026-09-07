@@ -5,7 +5,8 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { PENDING_REQUEST_ID, PENDING_TOOL_USE_ID } from "../src/remote/mock/fixtures";
-import { agentOf, api, useStore } from "../src/store";
+import { agentOf, api, client, useStore } from "../src/store";
+import { clearHost, loadSettings, saveSettings } from "../src/store/persist";
 
 const state = () => useStore.getState();
 
@@ -25,12 +26,46 @@ describe("connection and snapshot", () => {
     expect(state().workspace?.agents).toHaveLength(4);
   });
 
+  it("mirrors which path the connection is on", () => {
+    // The mock host has no network under it, so it is the near path.
+    expect(state().via).toBe("lan");
+  });
+
   it("covers a running, a waiting, a finished and an errored agent", () => {
     const byId = Object.fromEntries((state().workspace?.agents ?? []).map((a) => [a.id, a]));
     expect(byId.arabia.status).toBe("running");
     expect(byId.kamakura.status).toBe("idle");
     expect(byId.caspian.status).toBe("error");
     expect(byId.caspian.last_error).toContain("429");
+  });
+});
+
+describe("relay setting", () => {
+  it("keeps the relay next to the host, and forgets it with the host", async () => {
+    await saveSettings({
+      host: "192.168.1.24",
+      port: 47285,
+      hostKey: "k",
+      relay: "wss://relay.test",
+      theme: "dark",
+    });
+    expect((await loadSettings()).relay).toBe("wss://relay.test");
+    await clearHost();
+    const after = await loadSettings();
+    expect(after.relay).toBeUndefined();
+    expect(after.host).toBeUndefined();
+    expect(after.theme).toBe("dark");
+  });
+
+  it("can be added later without re-pairing, and lands on the held target", async () => {
+    await state().setRelay(" wss://relay.test ");
+    expect(state().relay).toBe("wss://relay.test");
+    // It applies from the next attempt on; nothing reconnects here.
+    expect(client.target?.relay).toBe("wss://relay.test");
+    expect(state().connection).toBe("connected");
+    await state().setRelay(null);
+    expect(state().relay).toBeNull();
+    expect(client.target?.relay).toBeUndefined();
   });
 });
 

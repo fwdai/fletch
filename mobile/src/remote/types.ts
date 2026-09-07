@@ -60,21 +60,41 @@ export interface HostTarget {
    *  pairing link, absent for hand-typed entry until the first connection
    *  pins the key it meets. */
   hostKey?: string;
+  /** Relay base URL, e.g. `wss://relay.fletch.app` — the fallback path when the
+   *  LAN address cannot be reached. Comes from `relay=` in the pairing link, or
+   *  is entered later in the Host sheet; absent means LAN only. */
+  relay?: string;
   /** Display name from the pairing URL, before `hello` reports the real one. */
   name?: string;
   pairingToken?: string;
 }
+
+/** Which path a connection took. The protocol is identical on both, so nothing
+ *  above the transport branches on this — it is reported, not acted on. */
+export type Via = "lan" | "relay";
 
 /** Auth-related close codes the host uses instead of error responses. */
 export const CLOSE_BAD_FIRST_FRAME = 4001;
 export const CLOSE_UNAUTHENTICATED = 4003;
 export const CLOSE_REMOTE_DISABLED = 4004;
 
+/** Codes the *relay* closes a device link with (docs/remote-protocol.md,
+ *  "Relay" and "Errors"). None of them says the credential is gone, so all are
+ *  retryable on the normal backoff — they are conditions that clear on their
+ *  own: the Mac comes back, a device slot frees up, the rate window passes. */
+export const CLOSE_HOST_OFFLINE = 4404;
+export const CLOSE_TOO_MANY_DEVICES = 4429;
+export const CLOSE_RELAY_THROTTLED = 1008;
+export const CLOSE_FRAME_TOO_LARGE = 1009;
+
 export const CLOSE_REASONS: Record<number, string> = {
   [CLOSE_BAD_FIRST_FRAME]: "Host rejected the handshake",
   [CLOSE_UNAUTHENTICATED]: "This device is not paired with the host any more",
   [CLOSE_REMOTE_DISABLED]: "Remote access is switched off on the host",
-  1009: "Frame too large",
+  [CLOSE_HOST_OFFLINE]: "Your Mac is offline",
+  [CLOSE_TOO_MANY_DEVICES]: "This Mac already has its 8 remote devices connected",
+  [CLOSE_RELAY_THROTTLED]: "The relay throttled this connection",
+  [CLOSE_FRAME_TOO_LARGE]: "Frame too large",
 };
 
 /** The marker the Rust transport puts in front of a pinned-key mismatch. It
@@ -113,6 +133,11 @@ export interface RemoteClient {
   /** The host key in use: the one the target carried, or the one pinned on
    *  first contact. */
   readonly hostKey: string | null;
+  /** Which candidate the live connection is on, or null when not connected. */
+  readonly via: Via | null;
+  /** Point the held target at a relay (or none) without re-pairing. It takes
+   *  effect on the next connection attempt. */
+  setRelay(relay: string | null): void;
   /** Where the client is pointed, with any spent pairing token stripped and
    *  the host key it authenticated pinned in. */
   readonly target: Readonly<HostTarget> | null;
