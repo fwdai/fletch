@@ -56,7 +56,8 @@ use crate::workspace::WorkspaceManager;
 
 /// The managed DB handle every command that reads or writes settings asks for.
 /// `pub(crate)` because those commands don't all live here (see
-/// `dictation::dictation_model_status`).
+/// `dictation::dictation_model_status`, and `dictation::engine` which reaches
+/// it through `AppHandle::state`).
 pub(crate) type DbState = Arc<Mutex<Connection>>;
 
 /// The app's bundle identifier. Must match `identifier` in `tauri.conf.json`;

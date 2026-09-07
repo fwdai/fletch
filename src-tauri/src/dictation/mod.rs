@@ -11,6 +11,13 @@
 //! words as later context arrives ("to" → "two" → "too"), so a delta stream
 //! would be unreconstructable. Each event replaces the last.
 //!
+//! There are two engines behind these commands, chosen per session by
+//! [`engine`]: Apple's recognizer, which streams revisions while the user
+//! speaks, and local whisper.cpp, which has nothing to say until the mic
+//! closes and so spends the gap in `transcribing`. The commands, the events
+//! and the session-id contract are identical either way — `apple` owns the
+//! microphone for both.
+//!
 //! Only Apple platforms have an implementation (`apple`); everywhere else the
 //! commands are stubs that report `supported: false`, which is what keeps the
 //! Linux CI build compiling and lets the frontend hide the mic button without
@@ -25,6 +32,9 @@ use crate::DbState;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
+// The local engine's sink for the shared mic tap. macOS-only, like whisper.cpp.
+#[cfg(target_os = "macos")]
+mod capture;
 // Compiles everywhere (the catalog and download are plain Rust); the engine
 // itself is gated inside. `pub` so `lib.rs` can seed the models root.
 pub mod whisper;
@@ -47,18 +57,37 @@ pub enum Auth {
     Restricted,
 }
 
+/// Which recognizer a session would use. Reported by `dictation_availability`
+/// so the UI knows, among other things, that the local engine has no use for
+/// the speech-recognition grant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+// Both variants are the wire contract everywhere, but `Whisper` is only ever
+// chosen where whisper.cpp is built.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub enum Engine {
+    /// Apple's `SFSpeechRecognizer`, the default.
+    Apple,
+    /// Local whisper.cpp (see [`whisper`]).
+    Whisper,
+}
+
 /// What dictation can do on this machine, for a UI that wants to disable the
 /// mic button (or explain why) before the user ever presses it.
 #[derive(Clone, Debug, Serialize)]
 pub struct Availability {
     /// False on non-Apple platforms — nothing else in this struct matters.
     supported: bool,
+    /// Irrelevant when `engine` is `whisper`: that path never calls Apple's
+    /// recognizer, so it never prompts for this and can't be blocked by it.
     speech: Auth,
     microphone: Auth,
     /// The recognizer can transcribe without a network round-trip. When true
     /// we pin the request on-device, so no audio leaves the machine; when
-    /// false recognition is server-backed and capped at about a minute.
+    /// false recognition is server-backed and capped at about a minute. Always
+    /// true for the local engine.
     on_device: bool,
+    engine: Engine,
 }
 
 // The event machinery below is gated on the platforms that have an
@@ -87,8 +116,14 @@ struct TranscriptPayload {
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
+// `Transcribing` belongs to the local engine, which iOS doesn't build.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 enum State {
     Listening,
+    /// The mic is closed and the local engine is running the model. Only the
+    /// whisper path emits this, between `listening` and the terminal state:
+    /// the session is still alive and its final transcript is still coming.
+    Transcribing,
     Stopped,
     Error,
 }
@@ -241,28 +276,51 @@ pub fn dictation_model_remove(state: tauri::State<'_, DbState>) -> ModelStatus {
     model_status(engine_enabled(&state), install)
 }
 
+/// Which engine a session started right now would use. The local one takes
+/// both the opt-in AND a fully downloaded model: dispatching on the setting
+/// alone would let an interrupted download leave the mic button dead.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn engine(app: &AppHandle) -> Engine {
+    use tauri::Manager;
+
+    // whisper.cpp is built for macOS only, so iOS keeps the platform
+    // recognizer whatever the setting says.
+    if !cfg!(target_os = "macos") {
+        return Engine::Apple;
+    }
+    let selected = engine_enabled(&app.state::<DbState>());
+    if selected && whisper::install::status().installed {
+        Engine::Whisper
+    } else {
+        Engine::Apple
+    }
+}
+
 /// Whether dictation works here, and what permissions stand in the way. Cheap
 /// and side-effect free — it never prompts, so the UI can call it on mount.
 #[tauri::command]
-pub async fn dictation_availability() -> Availability {
+pub async fn dictation_availability(app: AppHandle) -> Availability {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        apple::availability()
+        apple::availability(engine(&app))
     }
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
+        let _ = app;
         Availability {
             supported: false,
             speech: Auth::NotDetermined,
             microphone: Auth::NotDetermined,
             on_device: false,
+            engine: Engine::Apple,
         }
     }
 }
 
-/// Start listening. Requests microphone and speech permission on first use
-/// (so the first call can block on two TCC prompts), and resolves once audio
-/// is actually flowing.
+/// Start listening. Requests the permissions the chosen engine needs on first
+/// use — microphone and speech for Apple's recognizer (so the first call can
+/// block on two TCC prompts), microphone alone for the local engine — and
+/// resolves once audio is actually flowing.
 ///
 /// `Some(id)` means a session is now live and `dictation:state` `listening` has
 /// been emitted, so a terminal state will follow; every event of that session
@@ -276,7 +334,8 @@ pub async fn dictation_availability() -> Availability {
 pub async fn dictation_start(app: AppHandle) -> Result<Option<u64>> {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        apple::start(app).await
+        let engine = engine(&app);
+        apple::start(app, engine).await
     }
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
@@ -290,9 +349,10 @@ pub async fn dictation_start(app: AppHandle) -> Result<Option<u64>> {
 /// Stop listening. Returns as soon as the microphone is released; the final
 /// transcript and the terminal `dictation:state` follow asynchronously once
 /// the recognizer has flushed, and a recognizer that doesn't flush in time
-/// yields the terminal state alone. A no-op when idle, except that a stop
-/// issued while `dictation_start` waits on a permission prompt cancels that
-/// pending session.
+/// yields the terminal state alone. The local engine takes the same shape,
+/// with a `transcribing` state for the gap while the model runs. A no-op when
+/// idle, except that a stop issued while `dictation_start` waits on a
+/// permission prompt cancels that pending session.
 #[tauri::command]
 pub async fn dictation_stop(app: AppHandle) -> Result<()> {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
