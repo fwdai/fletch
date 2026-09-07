@@ -105,9 +105,21 @@ pub async fn create_pr(
     body: String,
     subdir: Option<String>,
 ) -> Result<PrState> {
-    let (repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
+    create_pr_impl(&supervisor, agent_id, &title, &body, subdir.as_deref()).await
+}
+
+/// Shared with the remote dispatcher, so a PR opened from the phone is bound,
+/// snapshotted and cross-linked exactly like a desktop one.
+pub(crate) async fn create_pr_impl(
+    supervisor: &Supervisor,
+    agent_id: String,
+    title: &str,
+    body: &str,
+    subdir: Option<&str>,
+) -> Result<PrState> {
+    let (repo, checkout) = agent_repo_checkout(supervisor, &agent_id, subdir)?;
     let base = repo.parent_branch.as_deref().unwrap_or("main");
-    let pr = gh::pr_create(&checkout, &title, &body, base).await?;
+    let pr = gh::pr_create(&checkout, title, body, base).await?;
     crate::telemetry::track("pr_opened", serde_json::json!({ "source": "manual" }));
     // Bind the PR to this agent (number + state snapshot) so later lookups
     // don't rely on the (recyclable) branch name. A failure here isn't fatal —
@@ -145,10 +157,19 @@ pub async fn get_pr_state(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<Option<PrState>> {
+    get_pr_state_impl(&supervisor, &agent_id, subdir.as_deref()).await
+}
+
+/// Shared with the remote dispatcher.
+pub(crate) async fn get_pr_state_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<Option<PrState>> {
     Ok(crate::supervisor::resolve_pr_state(
         &supervisor.workspace,
-        &agent_id,
-        subdir.as_deref(),
+        agent_id,
+        subdir,
         // Called after a user action (create/merge/push, a delegated git op), so
         // a new PR is plausible right now — worth the branch scan immediately.
         crate::supervisor::Discovery::Forced,
@@ -211,9 +232,16 @@ pub async fn get_pr_checks(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<Option<gh::PrChecks>> {
-    let Some((repo, checkout)) =
-        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
-    else {
+    get_pr_checks_impl(&supervisor, &agent_id, subdir.as_deref()).await
+}
+
+/// Shared with the remote dispatcher.
+pub(crate) async fn get_pr_checks_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<Option<gh::PrChecks>> {
+    let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
         return Ok(None);
     };
     if repo.branch.is_none() {
@@ -246,10 +274,19 @@ pub async fn get_pr_live(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<Option<gh::PrLive>> {
+    get_pr_live_impl(&supervisor, &agent_id, subdir.as_deref()).await
+}
+
+/// Shared with the remote dispatcher.
+pub(crate) async fn get_pr_live_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<Option<gh::PrLive>> {
     let Some((state, _bound)) = crate::supervisor::resolve_pr_state(
         &supervisor.workspace,
-        &agent_id,
-        subdir.as_deref(),
+        agent_id,
+        subdir,
         // A background poll: an unbound repo scans on an interval rather than
         // paying a point every tick for the same "still no PR".
         crate::supervisor::Discovery::Throttled,
@@ -266,9 +303,7 @@ pub async fn get_pr_live(
             checks: None,
         }));
     }
-    let Some((repo, checkout)) =
-        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
-    else {
+    let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
         return Ok(Some(gh::PrLive {
             state,
             checks: None,

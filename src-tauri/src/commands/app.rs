@@ -104,6 +104,14 @@ pub async fn get_agent_diff_stats(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<DiffStats> {
+    get_agent_diff_stats_impl(&supervisor, agent_id).await
+}
+
+/// Shared with the remote dispatcher.
+pub(crate) async fn get_agent_diff_stats_impl(
+    supervisor: &Supervisor,
+    agent_id: String,
+) -> Result<DiffStats> {
     let record = supervisor.workspace.agent(&agent_id)?;
     let mut stats = DiffStats::default();
 

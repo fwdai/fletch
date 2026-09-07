@@ -68,6 +68,23 @@ base64 = "0.22"
 sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
+# Paired-device remote access (`remote/`). Server side only: `handshake` is the
+# one feature needed, and no TLS backend is pulled in — v1 is plaintext on the
+# LAN or a Tailscale network by design (see docs/remote-protocol.md). Pinned to
+# 0.27 rather than 0.30 deliberately: 0.30 moves to sha1 0.11 / digest 0.11 and
+# rand 0.10, which would add a second copy of the whole hashing and RNG stack
+# next to the sha2 0.10 and rand 0.9 already in the tree.
+tokio-tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }
+# `sink` for `SinkExt` on the split WebSocket writer; nothing else in the crate
+# needs the combinator zoo.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# Pairing codes and device tokens (`remote/auth.rs`). Already in the tree
+# transitively at this major.
+rand = "0.9"
+# The host's LAN addresses, for the pairing URL and the settings pane's
+# "reachable at" line. Smallest interface-enumeration crate: libc on unix,
+# windows-sys elsewhere, both already present.
+if-addrs = "0.13"
 
 # Window state (size/position/maximized) persistence — desktop only.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

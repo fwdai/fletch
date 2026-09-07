@@ -34,7 +34,48 @@ pub async fn spawn_agent(
     // Absent for a normal spawn.
     purpose: Option<String>,
 ) -> Result<AgentRecord> {
-    let sup = supervisor.inner().clone();
+    spawn_agent_impl(
+        supervisor.inner().clone(),
+        app,
+        view,
+        repo_path,
+        provider,
+        name,
+        effort,
+        model,
+        instructions,
+        custom_agent_id,
+        skills,
+        mcp_servers,
+        fork_base,
+        issue_ref,
+        purpose,
+    )
+    .await
+}
+
+/// The user-spawn field mapping: the argument defaults every caller funnels
+/// through on the way to `Supervisor::spawn_agent`. Shared by the command above
+/// and the remote dispatcher, which passes `None` for the custom-agent fields
+/// the mobile surface does not expose.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn spawn_agent_impl(
+    sup: Arc<Supervisor>,
+    app: AppHandle,
+    view: Option<AgentView>,
+    repo_path: String,
+    provider: Option<String>,
+    name: Option<String>,
+    effort: Option<String>,
+    model: Option<String>,
+    instructions: Option<String>,
+    custom_agent_id: Option<String>,
+    skills: Option<Vec<crate::agent_profile::SkillSnapshot>>,
+    mcp_servers: Option<Vec<crate::agent_profile::McpServerSnapshot>>,
+    fork_base: Option<String>,
+    issue_ref: Option<String>,
+    purpose: Option<String>,
+) -> Result<AgentRecord> {
     sup.spawn_agent(
         app,
         SpawnRequest {
