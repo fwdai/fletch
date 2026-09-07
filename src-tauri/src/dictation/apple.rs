@@ -631,8 +631,14 @@ pub async fn stop(app: AppHandle) -> Result<()> {
             // is seconds rather than milliseconds — the frontend gets a state
             // of its own for that wait instead of a mic that looks stuck.
             emit_state(&app, generation, State::Transcribing, None);
+            // The model is read here, at the stop, so the choice a session
+            // transcribes with is the one showing in Settings when it ended.
+            let (_, model) = {
+                use tauri::Manager;
+                super::engine_settings(&app.state::<crate::DbState>())
+            };
             tokio::spawn(async move {
-                match super::capture::transcribe(pcm).await {
+                match super::capture::transcribe(pcm, model).await {
                     Ok(text) => {
                         // Empty means the clip had no speech in it (see the
                         // engine's silence gate); there is nothing to splice

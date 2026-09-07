@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use super::models;
+use super::models::{self, WhisperModel};
 use crate::error::{Error, Result};
 
 /// The only input rate whisper.cpp accepts; capture resamples to it.
@@ -61,19 +61,22 @@ struct Loaded {
     used: Instant,
 }
 
-/// Transcribe one whole clip of 16 kHz mono audio.
+/// Transcribe one whole clip of 16 kHz mono audio with `model`, the user's
+/// choice as the caller read it from settings — the engine has no database
+/// handle of its own, and a session should use the model that was chosen when
+/// it stopped.
 ///
 /// `Ok("")` for a clip with no speech in it (see [`MIN_DURATION`] and
 /// [`MIN_RMS`]) — that answer costs nothing, because the gate runs before the
 /// model is even loaded.
-pub async fn transcribe(samples: Vec<f32>) -> Result<String> {
+pub async fn transcribe(model: &'static WhisperModel, samples: Vec<f32>) -> Result<String> {
     if !has_speech(&samples) {
         return Ok(String::new());
     }
     // Inference pins a core for seconds; it has no business on the async
     // runtime's worker threads.
     tokio::task::spawn_blocking(move || {
-        let ctx = context()?;
+        let ctx = context(model)?;
         decode(&ctx, &samples)
     })
     .await
@@ -91,11 +94,11 @@ fn rms(samples: &[f32]) -> f32 {
     (sum / samples.len() as f64).sqrt() as f32
 }
 
-/// The cached model for the current selection, loading it on first use. Also
-/// stamps the load as used, which is what keeps [`arm_unload`]'s sleeper from
-/// taking it out from under a session that has only just started.
-fn context() -> Result<Arc<WhisperContext>> {
-    let path = models::installed_path(super::selected_now()).ok_or_else(|| {
+/// The cached context for `model`, loading it on first use. Also stamps the
+/// load as used, which is what keeps [`arm_unload`]'s sleeper from taking it
+/// out from under a session that has only just started.
+fn context(model: &WhisperModel) -> Result<Arc<WhisperContext>> {
+    let path = models::installed_path(model).ok_or_else(|| {
         Error::Other(
             "The local dictation model isn't installed. Download it in Settings > Dictation."
                 .into(),
@@ -224,10 +227,12 @@ mod tests {
             Some(p) => read_wav(Path::new(&p)),
             None => vec![0.0; SAMPLE_RATE as usize * 2],
         };
-        assert_eq!(transcribe(silence).await.unwrap(), "");
+        // Any catalog entry will do: the gate answers before the model matters.
+        let model = models::platform_default();
+        assert_eq!(transcribe(model, silence).await.unwrap(), "");
         // Too short to be an utterance, however loud.
         assert_eq!(
-            transcribe(vec![0.5; SAMPLE_RATE as usize / 10])
+            transcribe(model, vec![0.5; SAMPLE_RATE as usize / 10])
                 .await
                 .unwrap(),
             ""

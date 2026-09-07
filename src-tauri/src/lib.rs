@@ -1493,10 +1493,8 @@ pub fn run() {
             // git-less machine is usually ready before the user gets there.
             git_dist::init(data_dir.join("git-dist"));
             // Whisper dictation weights live next to it; the engine loads
-            // from here and Settings downloads into it. The handle is for the
-            // model choice, which the engine reads mid-session with no
-            // connection of its own.
-            dictation::whisper::init(data_dir.join("whisper-models"), db.clone());
+            // from here and Settings downloads into it.
+            dictation::whisper::init(data_dir.join("whisper-models"));
             // Seed the in-process GitHub token so API calls and git network
             // auth work without a DB handle (updated on sign-in).
             seed_secret_mirror(&db, github::TOKEN_SETTING, github::seed_token);

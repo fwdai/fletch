@@ -14,7 +14,6 @@ use std::sync::OnceLock;
 use rusqlite::Connection;
 
 use crate::database;
-use crate::DbState;
 
 // whisper.cpp itself is built for macOS only (iOS keeps the platform
 // recognizer), so the catalog and install compile everywhere but the
@@ -60,24 +59,8 @@ pub fn selected(conn: &Connection) -> &'static models::WhisperModel {
 /// like `git_dist::init`, so download and load paths never need an `AppHandle`.
 static MODELS_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
-/// The database, for the one caller that reads the selection without a
-/// connection of its own — the engine loading weights mid-session, reached
-/// from the mic tap's teardown rather than from a command.
-static DB: OnceLock<DbState> = OnceLock::new();
-
-pub fn init(root: PathBuf, db: DbState) {
+pub fn init(root: PathBuf) {
     let _ = MODELS_ROOT.set(root);
-    let _ = DB.set(db);
-}
-
-/// The chosen model, taking the database lock itself. A caller already holding
-/// the connection must use [`selected`] instead — this one would deadlock.
-/// Before `init` (tests) it answers with the platform default.
-pub fn selected_now() -> &'static models::WhisperModel {
-    match DB.get() {
-        Some(db) => selected(&db.lock()),
-        None => models::platform_default(),
-    }
 }
 
 /// `None` only before `init` ran (tests, or a call from a build without setup).

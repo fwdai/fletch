@@ -146,11 +146,12 @@ cancel one in flight — `dictation_model_status` reports `downloading` plus
 
 Everything reads the choice through one helper (`whisper::selected`, off a
 `&Connection`), so the row's status, the download target and the weights a
-session loads can't disagree. `whisper::engine` is the exception: it runs from
-the mic tap's teardown with no connection of its own and goes through
-`whisper::selected_now`, which takes the handle `whisper::init` was given. Its
-cached `WhisperContext` is keyed on the path it loaded from, so a switch drops
-the old weights before loading the new ones.
+session loads can't disagree. The engine itself has no database handle: `stop`
+reads the choice when the mic closes and passes the model down through
+`capture::transcribe` to `engine::transcribe`, so a session transcribes with
+whatever Settings showed at the moment it ended. The engine's cached
+`WhisperContext` is keyed on the path it loaded from, so a switch drops the old
+weights before loading the new ones.
 
 ### Adding a model to the catalog
 
