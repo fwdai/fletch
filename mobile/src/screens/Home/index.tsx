@@ -111,6 +111,10 @@ export function HomeScreen() {
       <div className="scroll home-body">
         <div className="sect">
           Projects <span className="n">{projects.length}</span>
+          <button type="button" className="sect-add" onClick={() => openSheet("addProject")}>
+            <Icon name="plus" size={12} sw={2.2} />
+            Add
+          </button>
           <span className="grow" />
           {attention > 0 && (
             <span
@@ -143,7 +147,15 @@ export function HomeScreen() {
         {projects.length === 0 && (
           <div className="empty">
             <b>No projects on the host</b>
-            Pin a repo in Fletch on your Mac and it shows up here.
+            Open a folder on your Mac, or clone one from GitHub.
+            <button
+              type="button"
+              className="btn ghost ap-empty"
+              onClick={() => openSheet("addProject")}
+            >
+              <Icon name="plus" size={16} sw={2.2} />
+              Add project
+            </button>
           </div>
         )}
       </div>

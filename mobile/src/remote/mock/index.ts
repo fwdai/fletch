@@ -4,7 +4,10 @@
 // real in mock mode and in tests.
 
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
+import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
 import type { SessionRecord } from "@desktop/api/types/session";
+import { parseRepoSpec } from "@desktop/util/repoSpec";
+import { baseName, childPath, parentPath } from "../../lib/paths";
 import type { Socket, SocketFactory } from "../socket";
 import {
   CLOSE_BAD_FIRST_FRAME,
@@ -32,7 +35,22 @@ interface MockState {
   records: Record<string, SessionRecord[]>;
   pendingToolUse: Record<string, string>;
   nextPrNumber: number;
+  /** Mutable, because cloning creates a directory the next clone must trip
+   *  over ("a folder already exists at …"). */
+  filesystem: Record<string, DirEntry[]>;
 }
+
+/** Tilde expansion, as the host does it — including the trailing slash a bare
+ *  `~` comes back with, which is exactly the shape `childPath` has to collapse. */
+function expandTilde(path: string): string {
+  if (path === "~") return `${fx.HOME}/`;
+  if (path.startsWith("~/")) return `${fx.HOME}${path.slice(1)}`;
+  return path;
+}
+
+/** Trailing separators off (but never the root's), so one directory has one key
+ *  in the fake filesystem however it was reached. */
+const normalize = (path: string) => path.replace(/(.)\/+$/, "$1");
 
 /** A live mock host session. Exposed so tests can await the scripted stream. */
 export class MockHost {
@@ -51,6 +69,7 @@ export class MockHost {
       records: structuredClone(fx.records),
       pendingToolUse: { pamukkale: fx.PENDING_REQUEST_ID },
       nextPrNumber: 649,
+      filesystem: structuredClone(fx.filesystem),
     };
   }
 
@@ -137,6 +156,50 @@ export class MockHost {
         body,
       },
     ];
+  }
+
+  /** A directory exists if it has a row of its own or its parent names it as
+   *  one — so the fixture table only has to list the interesting nodes. */
+  private isDir(abs: string): boolean {
+    const path = normalize(abs);
+    if (path === "/") return true;
+    if (this.state.filesystem[path]) return true;
+    const parent = parentPath(path);
+    if (!parent) return false;
+    return !!this.state.filesystem[parent]?.some((e) => e.name === baseName(path) && e.is_dir);
+  }
+
+  private listDir(path: string): DirListing {
+    const base = expandTilde(path);
+    if (!this.isDir(base)) throw new Error(`no such directory: ${base}`);
+    return { base, entries: this.state.filesystem[normalize(base)] ?? [] };
+  }
+
+  /** Track a folder as a project, the way both add-project ops end. Mirrors
+   *  the host: a folder that is already a project comes back unchanged (the
+   *  desktop pin is idempotent), and a folder inside an existing repository is
+   *  refused with the host's own wording. */
+  private addProject(path: string): Workspace {
+    const repoPath = normalize(path);
+    if (this.state.workspace.projects.some((p) => p.path === repoPath)) {
+      return this.state.workspace;
+    }
+    const enclosing = this.state.workspace.projects.find((p) => repoPath.startsWith(`${p.path}/`));
+    if (enclosing) {
+      throw new Error(
+        `${repoPath} is inside the git repository at ${enclosing.path} — add that folder instead`,
+      );
+    }
+    const name = baseName(repoPath);
+    this.state.workspace = {
+      ...this.state.workspace,
+      repos: [...this.state.workspace.repos, repoPath],
+      projects: [
+        ...this.state.workspace.projects,
+        { path: repoPath, name, project_id: `prj-${name}`, label: null },
+      ],
+    };
+    return this.state.workspace;
   }
 
   /** Play a scripted turn: live `agent:event` frames, then the canonical
@@ -351,6 +414,34 @@ export class MockHost {
         return "main";
       case "discover_supported_models":
         return fx.supportedModels;
+      case "list_dir":
+        return this.listDir(String(args.path ?? "~"));
+      case "add_workspace_repo": {
+        const repoPath = expandTilde(String(args.repoPath ?? ""));
+        if (!this.isDir(repoPath)) throw new Error(`no such directory: ${repoPath}`);
+        // A folder that is not a repo yet gets `git init` on the real host, so
+        // there is nothing to refuse here.
+        return this.addProject(repoPath);
+      }
+      case "clone_repo": {
+        const spec = String(args.spec ?? "");
+        const destParent = expandTilde(String(args.destParent ?? ""));
+        const { valid, name } = parseRepoSpec(spec);
+        if (!valid || !name) throw new Error(`not a repository: ${spec}`);
+        if (!this.isDir(destParent)) throw new Error(`no such directory: ${destParent}`);
+        const dest = childPath(destParent, name);
+        if (this.isDir(dest)) throw new Error(`a folder already exists at ${dest}`);
+        const parent = normalize(destParent);
+        this.state.filesystem[parent] = [
+          ...(this.state.filesystem[parent] ?? []),
+          { name, is_dir: true },
+        ];
+        return this.addProject(dest);
+      }
+      case "gh_status":
+        return fx.ghStatus;
+      case "gh_repo_list":
+        return fx.ghRepos;
       default:
         throw new Error("unknown op");
     }
