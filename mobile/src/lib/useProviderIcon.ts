@@ -36,15 +36,25 @@ export function useProviderIcon(slug: string): { svg: string | null; failed: boo
   const current = loaded.slug === slug ? loaded : initial(slug);
   if (current !== loaded) setLoaded(current);
 
+  // Always go through the loader, even when the render above found the icon
+  // cached: effects flush after paint, so a sibling mark's shared request can
+  // land in between, and a cache write is not a render. Skipping the loader on
+  // a hit would strand this mark empty until it remounted. The loader answers a
+  // hit from cache, and returning `prev` unchanged keeps that free of a render.
   useEffect(() => {
-    if (cachedProviderIcon(slug)) return;
     let active = true;
     loadProviderIcon(slug)
       .then((svg) => {
-        if (active) setLoaded({ slug, svg, failed: false });
+        if (!active) return;
+        setLoaded((prev) =>
+          prev.slug === slug && prev.svg === svg ? prev : { slug, svg, failed: false },
+        );
       })
       .catch(() => {
-        if (active) setLoaded({ slug, svg: null, failed: true });
+        if (!active) return;
+        setLoaded((prev) =>
+          prev.slug === slug && prev.failed ? prev : { slug, svg: null, failed: true },
+        );
       });
     return () => {
       active = false;

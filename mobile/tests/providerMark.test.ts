@@ -94,3 +94,31 @@ test("switching provider never renders the previous brand", async () => {
   expect(seen.length).toBeGreaterThan(0);
   expect(seen).not.toContain(mark("opencode"));
 });
+
+test("adopts a cache entry that landed after its render", async () => {
+  // Effects flush after paint, so a sibling mark's shared request can fill the
+  // cache in the window between this mark's render and its effect. The stub
+  // reproduces that window exactly: empty at render time, warm afterwards.
+  const AGY_SVG = mark("antigravity");
+  let reads = 0;
+  vi.resetModules();
+  vi.doMock("@desktop/data/providerIcon", () => ({
+    cachedProviderIcon: () => (reads++ === 0 ? null : AGY_SVG),
+    loadProviderIcon: async () => AGY_SVG,
+  }));
+  const { useProviderIcon: hook } = await import("../src/lib/useProviderIcon");
+
+  let svg: string | null = null;
+  function Probe() {
+    svg = hook("antigravity").svg;
+    return null;
+  }
+  const { root } = mount();
+  await act(async () => {
+    root.render(createElement(Probe));
+  });
+  expect(svg).toBe(AGY_SVG);
+
+  vi.doUnmock("@desktop/data/providerIcon");
+  vi.resetModules();
+});
