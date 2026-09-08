@@ -96,7 +96,7 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
     await get().refreshProviderVersions();
   },
   refreshModelCatalog: async (force = false) => {
-    const catalog = await refreshCatalog(force);
+    const catalog = await refreshCatalog(api.discoverSupportedModels, force);
     if (catalog) set({ modelCatalog: catalog.byId, modelsByAgent: catalog.byAgent });
   },
 });

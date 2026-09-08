@@ -6,13 +6,17 @@
 // in localStorage with a 1h TTL and rebuilt in the background on expiry, so a
 // newly-released model shows up automatically without an app release.
 
-import { api } from "@/api";
 import { buildCatalog } from "./build";
 import { fetchModelsDevIndex } from "./modelsDev";
-import type { UnifiedCatalog } from "./types";
+import type { AgentModels, UnifiedCatalog } from "./types";
 
 export { lookupModel, lookupModelInList } from "./normalize";
 export type { ModelMeta, SlimCatalog } from "./types";
+
+/** How the caller asks the host which models each agent CLI supports. Injected
+ *  rather than imported so the mobile app can reuse this whole pipeline: its
+ *  discovery is a remote call over the host link, not a Tauri invoke. */
+export type DiscoverAgents = () => Promise<AgentModels[]>;
 
 const CACHE_KEY = "modelCatalog.cache.v14";
 const TTL_MS = 60 * 60 * 1000; // 1h
@@ -52,9 +56,9 @@ export function isCatalogStale(): boolean {
 
 /** Rebuild the catalog from agent discovery + models.dev, and cache it. Returns
  *  null on any failure so the caller keeps the last good cache intact. */
-export async function rebuildCatalog(): Promise<UnifiedCatalog | null> {
+export async function rebuildCatalog(discover: DiscoverAgents): Promise<UnifiedCatalog | null> {
   const [agents, index] = await Promise.all([
-    api.discoverSupportedModels().catch(() => []),
+    discover().catch(() => [] as AgentModels[]),
     fetchModelsDevIndex(),
   ]);
   if (index === null) return null;
@@ -71,11 +75,14 @@ export async function rebuildCatalog(): Promise<UnifiedCatalog | null> {
 
 /** Refresh the catalog, deduping concurrent requests so only one rebuild runs.
  *  `force=true` skips the TTL check and is used by the manual developer action. */
-export function refreshCatalog(force = false): Promise<UnifiedCatalog | null> {
+export function refreshCatalog(
+  discover: DiscoverAgents,
+  force = false,
+): Promise<UnifiedCatalog | null> {
   if (refreshInFlight) return refreshInFlight;
   if (!force && !isCatalogStale()) return Promise.resolve(loadCachedCatalog());
 
-  refreshInFlight = rebuildCatalog().finally(() => {
+  refreshInFlight = rebuildCatalog(discover).finally(() => {
     refreshInFlight = null;
   });
   return refreshInFlight;
