@@ -5,12 +5,6 @@ const mocks = vi.hoisted(() => ({
   fetchModelsDevIndex: vi.fn(),
 }));
 
-vi.mock("@/api", () => ({
-  api: {
-    discoverSupportedModels: mocks.discoverSupportedModels,
-  },
-}));
-
 vi.mock("@/data/modelCatalog/modelsDev", () => ({
   fetchModelsDevIndex: mocks.fetchModelsDevIndex,
 }));
@@ -61,7 +55,7 @@ describe("refreshCatalog", () => {
     mocks.fetchModelsDevIndex.mockResolvedValue(null);
 
     const { loadCachedCatalog, refreshCatalog } = await import("@/data/modelCatalog");
-    const result = await refreshCatalog(true);
+    const result = await refreshCatalog(mocks.discoverSupportedModels, true);
 
     expect(result).toBeNull();
     expect(loadCachedCatalog().byId.saved.id).toBe("saved");
@@ -82,8 +76,8 @@ describe("refreshCatalog", () => {
     mocks.fetchModelsDevIndex.mockReturnValue(index);
 
     const { refreshCatalog } = await import("@/data/modelCatalog");
-    const first = refreshCatalog(true);
-    const second = refreshCatalog(true);
+    const first = refreshCatalog(mocks.discoverSupportedModels, true);
+    const second = refreshCatalog(mocks.discoverSupportedModels, true);
 
     expect(first).toBe(second);
     expect(mocks.discoverSupportedModels).toHaveBeenCalledTimes(1);

@@ -116,7 +116,8 @@ export interface MobileState {
   stop(agentId: string): Promise<void>;
   resume(agentId: string): Promise<void>;
   archive(agentId: string): Promise<void>;
-  setModel(agentId: string, model: string): Promise<void>;
+  /** `null` clears the pinned model, leaving the provider CLI's own default. */
+  setModel(agentId: string, model: string | null): Promise<void>;
   setEffort(agentId: string, effort: string): Promise<void>;
   publish(agentId: string, title: string, body: string): Promise<void>;
   pushToPr(agentId: string): Promise<void>;

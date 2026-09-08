@@ -1,6 +1,11 @@
-import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import { ProviderMark, Sheet } from "../../components/ui";
-import { contextLabel, effortsFor, modelsFor, providerOptions } from "../../lib/models";
+import {
+  contextLabel,
+  effortsFor,
+  type ModelsByAgent,
+  modelsFor,
+  providerOptions,
+} from "../../lib/models";
 
 /** Agent, model and effort in one panel — the prototype's "Runner" sheet. */
 export function RunnerSheet({
@@ -16,7 +21,7 @@ export function RunnerSheet({
 }: {
   open: boolean;
   onClose: () => void;
-  models: AgentModels[];
+  models: ModelsByAgent;
   provider: string;
   model: string;
   effort: string;
@@ -70,7 +75,7 @@ export function RunnerSheet({
             onClick={() => setModel(m.id)}
           >
             <div className="main">
-              <div className="lbl">{m.name ?? m.id ?? "Default model"}</div>
+              <div className="lbl">{m.name}</div>
             </div>
             {contextLabel(m.contextWindow) && (
               <span className="val mono">{contextLabel(m.contextWindow)}</span>
