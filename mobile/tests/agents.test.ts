@@ -29,6 +29,15 @@ describe("agentsOfProject", () => {
     expect(list.map((a) => a.id)).toEqual(["new", "mid", "old"]);
   });
 
+  it("breaks a same-millisecond tie on id, so the order is total", () => {
+    const tied = ["c", "a", "b"].map((id) => agent({ id, created_at: "2026-01-01T00:00:01.000Z" }));
+    const list = agentsOfProject(
+      ws([...tied, agent({ id: "newer", created_at: "2026-01-01T00:00:02.000Z" })]),
+      "p1",
+    );
+    expect(list.map((a) => a.id)).toEqual(["newer", "a", "b", "c"]);
+  });
+
   it("keeps out other projects' agents and archived ones", () => {
     const list = agentsOfProject(
       ws([
