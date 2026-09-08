@@ -18,6 +18,10 @@ export interface Persisted {
   hostKey?: string;
   /** Relay base URL for this host, from the pairing link or the Host sheet. */
   relay?: string;
+  /** Host public key → what iOS answered when we asked for notification
+   *  permission for it. Keyed by host because the prompt belongs to a pairing,
+   *  and remembered so no host is ever asked twice. */
+  pushPermission?: Record<string, "granted" | "denied" | "prompt">;
   theme?: "system" | "light" | "dark";
 }
 
@@ -68,8 +72,9 @@ export async function saveSettings(patch: Persisted): Promise<Persisted> {
 }
 
 /** Forget the paired host — address, name, pinned key and relay — and keep the
- *  rest. */
+ *  rest. The notification answers survive: they record what iOS has already
+ *  been asked, which unpairing does not undo. */
 export async function clearHost(): Promise<void> {
-  const { theme } = await readAll();
-  await writeAll(theme ? { theme } : {});
+  const { theme, pushPermission } = await readAll();
+  await writeAll({ ...(theme ? { theme } : {}), ...(pushPermission ? { pushPermission } : {}) });
 }

@@ -1,0 +1,24 @@
+[package]
+name = "tauri-plugin-push"
+version = "0.1.0"
+description = "APNs device token and notification taps for the Fletch mobile companion"
+authors = ["Alex Chaplinsky", "fwdai.org"]
+license = "AGPL-3.0-only"
+edition = "2021"
+rust-version = "1.77"
+# Required by `tauri_plugin::Builder`: the ACL and the Swift library are keyed
+# off it, and the capability identifier becomes `push:*`.
+links = "tauri-plugin-push"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The mobile bridge (`ios_plugin_binding!`, `register_ios_plugin`) lives behind
+# tauri's `wry` feature, the same way tauri-plugin-notification pulls it in.
+[target.'cfg(target_os = "ios")'.dependencies]
+tauri = { version = "2", features = ["wry"] }

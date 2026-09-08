@@ -351,6 +351,10 @@ export class MockHost {
         return "main";
       case "discover_supported_models":
         return fx.supportedModels;
+      // There is no APNs behind a browser, so the mock host only has to accept
+      // the op — a registration that errored would surface as a real failure.
+      case "register_push":
+        return null;
       default:
         throw new Error("unknown op");
     }

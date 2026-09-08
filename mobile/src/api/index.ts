@@ -90,6 +90,12 @@ export function createApi(client: RemoteClient) {
     listRepoBranches: (repoPath: string) => call<string[]>("list_repo_branches", { repoPath }),
     repoDefaultBranch: (repoPath: string) => call<string>("repo_default_branch", { repoPath }),
     discoverSupportedModels: () => call<AgentModels[]>("discover_supported_models"),
+    /** Remote-only (docs/remote-protocol.md, "Push notifications"): where the
+     *  host should have the relay send this phone's alerts. A token needs its
+     *  environment — the host rejects one without it — while clearing is
+     *  `token: null` on its own. */
+    registerPush: (token: string | null, environment?: "sandbox" | "production") =>
+      call<null>("register_push", token === null ? { token: null } : { token, environment }),
   };
 }
 

@@ -33,6 +33,56 @@ them apart or needs to — the path is reported in the Host sheet and that is al
 it is used for. The open timeout is enforced in Rust, inside `remote_connect`,
 so a candidate the client has moved past is really closed.
 
+## Push notifications
+
+A turn finishing and an agent waiting on an approval reach the phone as APNs
+alerts (docs/remote-protocol.md, "Push notifications"). The Mac raises them, the
+relay signs and sends them, and all the phone does is hand the host a device
+token and act on a tap.
+
+Tauri ships no push plugin, so `src-tauri/plugins/push/` is a small in-repo one:
+`request_permission`, `register`, `unregister`, and two events —
+`push://token` (`{ token, environment }`) and `push://opened` (the alert's
+`fletch` object). The webview wrapper is `src/remote/push.ts` and the flow that
+drives it is `src/store/push.ts`: ask iOS once per paired host (the answer is
+persisted, so no host is ever asked twice and a refusal is final), then send
+`register_push` after every handshake and after every new token. Off iOS every
+command answers "push is iOS-only", which is why `cargo check` and the browser
+dev loop are unaffected.
+
+Two things in it are worth knowing about:
+
+- **The app delegate is patched at runtime.** The APNs device token only ever
+  arrives at `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)`,
+  Tauri's iOS `Plugin` base class forwards no app-delegate callbacks, and
+  `gen/apple` is generated and gitignored — so there is no AppDelegate to edit.
+  The plugin adds that callback (and the failure one) to Tao's delegate class
+  with `class_addMethod` when it loads. Tao implements neither, so nothing is
+  overridden.
+- **`aps-environment` is written by the build script.** Tauri's `bundle.iOS`
+  config has no entitlements key, so the plugin's `build.rs` inserts the
+  entitlement into the generated Xcode project through
+  `tauri_plugin::mobile::update_entitlements`, the same hook
+  tauri-plugin-deep-link uses for associated domains. It writes `development`,
+  which is what Xcode's own capability writes; Xcode substitutes `production`
+  when it signs with a distribution profile. Either way the phone reports the
+  environment the *embedded profile* names, so the relay always picks the right
+  APNs host.
+
+### Manual Apple steps
+
+These cannot be committed and have to be done once, per team:
+
+1. In the Apple Developer portal, enable the **Push Notifications** capability
+   on the `com.fletch.mobile` App ID, then regenerate the provisioning profile
+   (Xcode's automatic signing does this for you once the App ID has it). Without
+   it, signing fails with a missing-entitlement error.
+2. Create an APNs auth key (`.p8`) and give the relay `APNS_TEAM_ID`,
+   `APNS_KEY_ID`, `APNS_PRIVATE_KEY` and `APNS_BUNDLE_ID=com.fletch.mobile` —
+   `apns-topic` is the bundle id, so the two have to match.
+3. Run on a real device. The simulator has no embedded profile and cannot
+   receive a remote push; the plugin reports `sandbox` there.
+
 ## Web dev loop
 
 ```sh
