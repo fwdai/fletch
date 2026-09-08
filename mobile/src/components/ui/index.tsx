@@ -6,6 +6,7 @@ import type { AgentStatus, ProjectRef } from "@desktop/api/types/agent";
 import type { PrState } from "@desktop/api/types/pr";
 import { type ReactNode, useEffect, useState } from "react";
 import { hueColor, projectHue, providerHue, providerShort } from "../../lib/agents";
+import { useProviderIcon } from "../../lib/useProviderIcon";
 import { Icon, type IconName } from "../Icon";
 
 export function Nav({
@@ -261,8 +262,14 @@ export function Swatch({ project, size }: { project: ProjectRef; size?: number }
   );
 }
 
+/** A provider's brand icon in a hue-tinted square. The SVG comes from the same
+ *  website CDN the desktop chip uses (see `useProviderIcon`) and is inlined, so
+ *  marks authored with `currentColor` pick up the provider hue. A missing or
+ *  unreachable icon falls back to the abbreviation monogram; while the fetch is
+ *  in flight the square stays empty rather than flashing a monogram. */
 export function ProviderMark({ id, lg }: { id: string; lg?: boolean }) {
   const hue = providerHue(id);
+  const { svg, failed } = useProviderIcon(id);
   return (
     <span
       className={`pm${lg ? " lg" : ""}`}
@@ -271,15 +278,19 @@ export function ProviderMark({ id, lg }: { id: string; lg?: boolean }) {
         color: `oklch(0.78 0.13 ${hue})`,
       }}
     >
-      <span
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: lg ? 11 : 8,
-          fontWeight: 600,
-        }}
-      >
-        {providerShort(id)}
-      </span>
+      {svg && !failed ? (
+        <span className="pm-svg" dangerouslySetInnerHTML={{ __html: svg }} />
+      ) : failed ? (
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: lg ? 11 : 8,
+            fontWeight: 600,
+          }}
+        >
+          {providerShort(id)}
+        </span>
+      ) : null}
     </span>
   );
 }
