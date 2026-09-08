@@ -26,6 +26,9 @@ Close codes: `4003` host authentication failed, `4404` host offline, `4409`
 host link replaced, `4429` more than 8 device links, `1009` message over
 4 MiB, `1008` more than 100 messages in 10 s on one device link.
 
+The relay also sends Apple push notifications on the host's behalf; see
+"Push notifications" below.
+
 ## Host link authentication
 
 The host ID *is* the host's X25519 public key, so nothing has to be
@@ -76,12 +79,13 @@ accept.
 Every device link becomes a numbered virtual connection on the one host link.
 Binary messages on the host link are `type (1) || connId (u32 BE) || payload`:
 `0x01` OPEN, `0x02` DATA, `0x03` CLOSE (`code (u16 BE) || reason`), `0x04`
-TEXT. A device's binary message becomes DATA, its text message becomes TEXT
-(verbatim, so the host applies its own `4001` rule), and a device that goes
-away becomes CLOSE. Host DATA goes back out as a binary message to that
-device; host CLOSE closes it with that code and reason. Frames naming an
-unknown `connId` are dropped. `connId` is a u32 that is never reused for the
-life of a Durable Object; the counter is the object's only stored value.
+TEXT and `0x05` NOTIFY. A device's binary message becomes DATA, its text
+message becomes TEXT (verbatim, so the host applies its own `4001` rule), and
+a device that goes away becomes CLOSE. Host DATA goes back out as a binary
+message to that device; host CLOSE closes it with that code and reason. NOTIFY
+names no connection and asks for a push (below). Frames naming an unknown
+`connId` are dropped. `connId` is a u32 that is never reused for the life of a
+Durable Object; the counter is the object's only stored value.
 
 ## Hibernation
 
@@ -93,6 +97,52 @@ source of truth for who is attached, and each socket's own attachment
 id, authentication stage, challenge keypair and rate-limit window. The 10 s
 proof deadline is a storage alarm rather than a `setTimeout`, for the same
 reason.
+
+## Push notifications
+
+The phone cannot hold a socket open in the background, so the Mac asks the
+relay to send an Apple push instead: a NOTIFY frame (`0x05`, `connId` 0) whose
+payload is UTF-8 JSON naming up to 8 device tokens plus a title, body, kind
+and agent id. The relay signs Apple's provider JWT — the host never sees the
+APNs key — and POSTs one alert per token to `api.push.apple.com` or
+`api.sandbox.push.apple.com`, per token. It is fire and forget: no result
+frame goes back to the host, Apple's errors are logged and dropped, and
+nothing about a token is stored. At most 30 NOTIFY frames per minute per host;
+the rest are dropped, and neither that nor a malformed payload ever closes the
+host link. The contract is `../docs/remote-protocol.md`, "Push notifications".
+
+Four secrets turn it on. Without all four the relay ignores NOTIFY, which is a
+perfectly valid way to run one.
+
+| secret | where it comes from |
+|---|---|
+| `APNS_TEAM_ID` | Apple Developer → Membership, 10 characters |
+| `APNS_KEY_ID` | the Key ID of the APNs auth key (`.p8`), 10 characters |
+| `APNS_PRIVATE_KEY` | the PEM *contents* of that `.p8` (PKCS#8 EC P-256) |
+| `APNS_BUNDLE_ID` | the iOS app's bundle id, sent as `apns-topic` |
+
+```sh
+bunx wrangler secret put APNS_TEAM_ID       # prompts, paste, enter
+bunx wrangler secret put APNS_KEY_ID
+bunx wrangler secret put APNS_BUNDLE_ID
+# The key is multi-line, so pipe the file instead of pasting it:
+bunx wrangler secret put APNS_PRIVATE_KEY < AuthKey_XXXXXXXXXX.p8
+```
+
+The `.p8` never belongs in the repo or in `wrangler.toml`; it lives in your
+password manager and in Cloudflare's secret store, nowhere else. One APNs key
+serves both environments, so `sandbox` (a development build) and `production`
+(TestFlight or the App Store) need no extra configuration — the phone reports
+which one its token belongs to.
+
+**Verify the first deploy with one real send.** APNs requires HTTP/2, which
+Cloudflare negotiates for outbound `fetch`, but nothing in the test suite can
+prove it — the tests inject their own transport. So after the first deploy,
+trigger one notification from a paired phone's Mac (finish a turn while the
+Mac's window is not focused) and read `wrangler tail`: silence means it
+worked, and a failure shows up as an `apns …` line with Apple's status and
+`reason` (`BadDeviceToken`, `TopicDisallowed`, `ExpiredProviderToken`, …) or
+as a transport error, which is the case to escalate.
 
 ## Develop
 

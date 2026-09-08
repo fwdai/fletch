@@ -11,6 +11,7 @@
 // place per-socket state survives. That is why every handler starts by
 // reading state off the socket and writes it back after any change.
 
+import { ApnsClient, type ApnsEnv, parsePushRequest, readApnsConfig } from "./apns";
 import {
   b64urlDecode,
   b64urlEncode,
@@ -31,6 +32,7 @@ import {
   encodeClose,
   FRAME_CLOSE,
   FRAME_DATA,
+  FRAME_NOTIFY,
   FRAME_OPEN,
   FRAME_TEXT,
   HEADER_BYTES,
@@ -40,6 +42,8 @@ export const MAX_DEVICES = 8;
 export const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 export const RATE_LIMIT_MESSAGES = 100;
 export const RATE_LIMIT_WINDOW_MS = 10_000;
+export const NOTIFY_LIMIT_FRAMES = 30;
+export const NOTIFY_LIMIT_WINDOW_MS = 60_000;
 export const HOST_AUTH_TIMEOUT_MS = 10_000;
 
 /** 4003 unauthenticated, 4404 host offline, 4409 replaced, 4429 too many. */
@@ -68,6 +72,7 @@ interface HostState {
   keypair: X25519Keypair;
   nonce: string;
   deadline: number;
+  /** NOTIFY frames only; the host link is not otherwise rate-limited. */
   rate: RateWindow;
 }
 
@@ -82,10 +87,14 @@ type SocketState = HostState | DeviceState;
 
 export class HostRelay {
   private readonly ctx: DurableObjectState;
+  private readonly env: ApnsEnv;
   private nextConnId = 1;
+  private apnsClient: ApnsClient | null = null;
+  private apnsWarned = false;
 
-  constructor(ctx: DurableObjectState) {
+  constructor(ctx: DurableObjectState, env: ApnsEnv) {
     this.ctx = ctx;
+    this.env = env;
     // connIds must never repeat for the object's life, and the object is
     // rebuilt on every wake, so the counter lives in storage and is read once
     // here behind the input gate.
@@ -292,11 +301,13 @@ export class HostRelay {
       if (state.stage === "await-proof") return this.handleProof(ws, state, message);
       if (state.stage !== "ready") return;
       // After `ready` the host link carries only binary frames.
-      if (typeof message !== "string") this.routeHostFrame(message);
+      if (typeof message !== "string") this.routeHostFrame(ws, state, message);
       return;
     }
 
-    if (!this.allowRate(ws, state)) {
+    const allowed = allowRate(state, RATE_LIMIT_MESSAGES, RATE_LIMIT_WINDOW_MS);
+    writeState(ws, state);
+    if (!allowed) {
       this.closeLink(ws, state, CLOSE_RATE_LIMIT, "rate limit exceeded");
       return;
     }
@@ -363,9 +374,15 @@ export class HostRelay {
     closeSocket(ws, code, reason);
   }
 
-  private routeHostFrame(message: ArrayBuffer): void {
+  private routeHostFrame(ws: WebSocket, state: HostState, message: ArrayBuffer): void {
     const frame = decode(message);
     if (!frame) return;
+    // NOTIFY names no virtual connection, so it is handled before the lookup.
+    // Its `connId` is 0 by contract and simply not read.
+    if (frame.type === FRAME_NOTIFY) {
+      this.handleNotify(ws, state, frame.payload);
+      return;
+    }
     const device = this.deviceSocket(frame.connId);
     // "Frames from the host with an unknown connId are ignored."
     if (!device) return;
@@ -386,19 +403,66 @@ export class HostRelay {
     // OPEN and TEXT are relay -> host only; anything else is unknown. Ignored.
   }
 
-  /** Fixed 10 s window, 100 messages. The 101st in a window trips 1008. */
-  private allowRate(ws: WebSocket, state: DeviceState): boolean {
-    const now = Date.now();
-    if (now - state.rate.start >= RATE_LIMIT_WINDOW_MS) state.rate = { start: now, count: 1 };
-    else state.rate.count += 1;
+  // -- push notifications ---------------------------------------------------
+
+  /** Fire and forget: no result frame, and nothing here is fatal to the link.
+   *  See ../../docs/remote-protocol.md, "Push notifications". */
+  private handleNotify(ws: WebSocket, state: HostState, payload: Uint8Array): void {
+    const apns = this.apns();
+    if (!apns) return;
+    // The budget is per frame, not per accepted frame: a host spraying junk
+    // must not get unlimited parsing either.
+    const allowed = allowRate(state, NOTIFY_LIMIT_FRAMES, NOTIFY_LIMIT_WINDOW_MS);
     writeState(ws, state);
-    return state.rate.count <= RATE_LIMIT_MESSAGES;
+    if (!allowed) {
+      // Only the first frame over budget is logged, so a host stuck in a loop
+      // cannot fill the log with its own noise.
+      if (state.rate.count === NOTIFY_LIMIT_FRAMES + 1) {
+        console.log(`notify dropped: more than ${NOTIFY_LIMIT_FRAMES} per minute`);
+      }
+      return;
+    }
+    const parsed = parsePushRequest(payload);
+    if (!parsed.ok) {
+      console.log(`notify ignored: ${parsed.reason}`);
+      return;
+    }
+    // `waitUntil` so the hibernation handler returns without waiting on Apple.
+    this.ctx.waitUntil(apns.send(state.hostId, parsed.request));
+  }
+
+  /** Null when the relay has no APNs credentials, which is a valid way to run
+   *  one; the warning is once per object instance so it stays readable. */
+  private apns(): ApnsClient | null {
+    if (this.apnsClient) return this.apnsClient;
+    const config = readApnsConfig(this.env);
+    if (!config) {
+      if (!this.apnsWarned) {
+        console.log("notify ignored: APNs is not configured");
+        this.apnsWarned = true;
+      }
+      return null;
+    }
+    this.apnsClient = new ApnsClient(config);
+    return this.apnsClient;
   }
 
   private async scheduleAuthDeadline(at: number): Promise<void> {
     const current = await this.ctx.storage.getAlarm();
     if (current === null || current > at) await this.ctx.storage.setAlarm(at);
   }
+}
+
+/**
+ * A rolling window in the socket's own state, so it survives hibernation:
+ * 100 messages / 10 s on a device link, 30 NOTIFY frames / minute on a host
+ * link. Mutates `state.rate`; the caller writes the state back.
+ */
+function allowRate(state: SocketState, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  if (now - state.rate.start >= windowMs) state.rate = { start: now, count: 1 };
+  else state.rate.count += 1;
+  return state.rate.count <= limit;
 }
 
 function readState(ws: WebSocket): SocketState | null {

@@ -4,12 +4,14 @@
 //
 // See ../../docs/remote-protocol.md, section "Relay".
 
+import type { ApnsEnv } from "./apns";
 import { decodeHostKey, HOST_ID_LENGTH } from "./auth";
 import { HostRelay } from "./host-relay";
 
 export { HostRelay };
 
-export interface Env {
+/** The APNs secrets are optional: without them the relay ignores NOTIFY. */
+export interface Env extends ApnsEnv {
   HOSTS: DurableObjectNamespace;
 }
 

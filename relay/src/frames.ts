@@ -10,6 +10,7 @@ export const FRAME_OPEN = 0x01;
 export const FRAME_DATA = 0x02;
 export const FRAME_CLOSE = 0x03;
 export const FRAME_TEXT = 0x04;
+export const FRAME_NOTIFY = 0x05;
 
 export const HEADER_BYTES = 5;
 
