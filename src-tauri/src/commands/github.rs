@@ -3,7 +3,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::error::{Error, Result};
 use crate::github::{self as gh, GhRepoSummary, GhStatus, PrState};
@@ -31,11 +31,15 @@ pub async fn gh_repo_list() -> Result<Vec<GhRepoSummary>> {
 /// workspace project.
 #[tauri::command]
 pub async fn clone_repo(
+    app: AppHandle,
     supervisor: State<'_, Arc<Supervisor>>,
     spec: String,
     dest_parent: String,
 ) -> Result<crate::workspace::Workspace> {
-    clone_repo_impl(&supervisor, &spec, &dest_parent).await
+    super::workspace::announce_workspace(
+        &app,
+        clone_repo_impl(&supervisor, &spec, &dest_parent).await,
+    )
 }
 
 /// Shared with the remote dispatcher, so a phone clones and pins through the

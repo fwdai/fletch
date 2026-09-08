@@ -312,8 +312,12 @@ impl Dispatch for SupervisorDispatch {
                     ok(crate::model_catalog::discover_supported_models().await)
                 }
 
-                "list_dir" | "add_workspace_repo" | "clone_repo" | "gh_status" | "gh_repo_list" => {
-                    add_project_op(sup, op, args).await
+                "list_dir" | "gh_status" | "gh_repo_list" => add_project_op(sup, op, args).await,
+
+                // The two that change the project list also tell every other
+                // view about it, exactly as the Tauri commands do.
+                "add_workspace_repo" | "clone_repo" => {
+                    crate::commands::announce_workspace(app, add_project_op(sup, op, args).await)
                 }
 
                 // Unreachable while `OPS` and the arms above agree; kept so a
@@ -326,9 +330,11 @@ impl Dispatch for SupervisorDispatch {
 
 /// The "add a project" ops (protocol doc, "Adding a project from the phone"):
 /// browse the Mac's folders, pin one, or clone a GitHub repo into one. Split out
-/// of the match above because none of them needs the `AppHandle` — a bare
-/// `Supervisor` is the whole host state they touch, which is what lets the
-/// remote tests dispatch them for real without a Tauri app.
+/// of the match above because none of them needs the `AppHandle` to do its work
+/// — a bare `Supervisor` is the whole host state they touch, which is what lets
+/// the remote tests dispatch them for real without a Tauri app. The
+/// `workspace:changed` the two mutating ones owe everyone else is added by the
+/// caller, which has the handle.
 pub(super) async fn add_project_op(sup: &Supervisor, op: &str, args: Value) -> DispatchResult {
     match op {
         "list_dir" => {

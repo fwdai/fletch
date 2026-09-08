@@ -358,9 +358,11 @@ flows: **open an existing folder** on the Mac (`list_dir` to browse, then
 `gh` is signed in, `gh_repo_list` to pick one of the user's repos or a typed
 `owner/repo` / URL, `list_dir` to pick the destination parent, then
 `clone_repo`). The result of either is the new `Workspace`, which the caller
-applies itself; neither command emits `workspace:changed` (the desktop frontend
-uses the returned value too), so other connected clients see the project on
-their next `get_workspace`. Note `DirListing.entries[].is_dir` is snake_case:
+applies itself; on success the host also emits `workspace:changed` (forwarded
+to every phone like any whitelisted event), so the desktop window and the other
+paired phones reload their project list at once. Applying the result and
+receiving the event both replace the workspace wholesale, so the order they
+land in does not matter. Note `DirListing.entries[].is_dir` is snake_case:
 `DirEntry` is serialized as-is, the one non-camelCase payload on the allowlist.
 Pinning a folder that is not yet a git repository runs `git init` plus an
 initial commit in it, exactly as the desktop dialog does. The phone remembers
