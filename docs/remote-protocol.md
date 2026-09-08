@@ -236,12 +236,18 @@ title and the agent's name. Transcript text never leaves the Mac.
   otherwise dropped in v1 (feeding `410 Unregistered` back to the host is a
   follow-up). The relay persists nothing about tokens.
 - **Phone.** Notification permission is requested after the first successful
-  pairing, not on launch. Tapping an alert opens the app on that agent when
-  `fletch.hostId` is the paired host, otherwise Home; the payload also reaches
-  the webview as event `push:opened`. The token comes from
-  `didRegisterForRemoteNotificationsWithDeviceToken` through a small in-repo
-  Tauri iOS plugin (`mobile/src-tauri/plugins/push`); `aps-environment` must be
-  in the app's entitlements.
+  pairing, not on launch; the answer is remembered per host and a refusal is
+  never asked again. Tapping an alert opens the app on that agent when
+  `fletch.hostId` equals the paired host's key (the host ID *is* the host public
+  key, the value the phone stores as `hostKey`), otherwise Home; the plugin
+  delivers the payload to the webview as event `push://opened` and the token as
+  `push://token`, holding both until the app's listeners are attached so a
+  cold-start tap is not lost. The token comes from
+  `didRegisterForRemoteNotificationsWithDeviceToken`, added at runtime to the
+  generated app delegate by a small in-repo Tauri iOS plugin
+  (`mobile/src-tauri/plugins/push`), which also inserts `aps-environment` into
+  the entitlements at build time and reads the signed profile's value to pick
+  `sandbox` or `production`.
 
 ## Threat model (v2)
 
@@ -524,5 +530,7 @@ QR scanning on the phone (manual entry of address and code, plus
 `fletch://pair` deep-link parsing, for now), creating a brand-new repo from the
 phone (`create_repo`), voice, attachments, Run scripts, Keychain storage of the
 device key on the phone (it lives in the app data dir). Push follow-ups:
-feeding APNs `410 Unregistered` back to the host so stale tokens are dropped, a
-"mute while I'm at the Mac" setting, per-agent muting.
+feeding APNs `410 Unregistered` back to the host so stale tokens are dropped,
+noticing a permission revoked in iOS Settings (the phone has no way to observe
+it today, so the host keeps a token that can no longer alert), a "mute while
+I'm at the Mac" setting, per-agent muting.

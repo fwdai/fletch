@@ -18,12 +18,13 @@ tauri-build = { version = "2", features = [] }
 # Thin by design: the only commands the app defines are the secure channel to
 # the paired Mac (src/remote/), which has to live here — the webview never
 # sees ciphertext, and iOS ATS would block a cleartext ws:// from it anyway.
-# Everything else is a plugin: a settings file, local notifications and the
-# fletch:// pairing deep link.
+# Everything else is a plugin: a settings file, local notifications, the
+# fletch:// pairing deep link, and — in repo, because Tauri has none — APNs.
 tauri = { version = "2", features = [] }
 tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-deep-link = "2"
+tauri-plugin-push = { path = "plugins/push" }
 
 # Secure channel: Noise over a plain WebSocket. rustls (not native-tls) so a
 # wss:// relay works on iOS without an OpenSSL build.

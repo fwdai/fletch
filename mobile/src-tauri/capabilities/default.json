@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "default",
-  "description": "Everything the phone needs: the app's own remote commands (the secure channel to the paired host), a settings file in the app data dir, local notifications and the fletch:// pairing link.",
+  "description": "Everything the phone needs: the app's own remote commands (the secure channel to the paired host), a settings file in the app data dir, local notifications, the fletch:// pairing link and APNs registration.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "notification:default",
     "deep-link:default",
+    "push:default",
     "fs:allow-appdata-read-recursive",
     "fs:allow-appdata-write-recursive",
     {

@@ -1,0 +1,9 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = """
+Lets the app ask iOS for notification permission and register with APNs. The
+token and a tapped alert's payload arrive as the `push://token` and
+`push://opened` events, which need no permission of their own.
+"""
+permissions = ["allow-request-permission", "allow-register", "allow-unregister"]

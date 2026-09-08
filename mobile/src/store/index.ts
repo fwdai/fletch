@@ -16,8 +16,10 @@ import {
   mockEnabled,
   type Via,
 } from "../remote";
+import type { PushFletch } from "../remote/push";
 import { registerRemoteEvents } from "./events";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
+import { forgetPush, startPush, syncPush } from "./push";
 import { applyUserTurns, reduceRecords } from "./transcript";
 
 export const client = createClient();
@@ -87,6 +89,7 @@ export interface MobileState {
 
   push(screen: ScreenName, props?: Record<string, string>): void;
   pop(): void;
+  openFromPush(fletch: PushFletch): void;
   openSheet(name: SheetName, props?: Record<string, string>): void;
   /** Close whatever sheet is open. Safe to hand straight to an `onClose` or
    *  `onClick`: it ignores its arguments. */
@@ -135,6 +138,13 @@ export interface SpawnInput {
 }
 
 let initialized = false;
+
+/** A tapped alert that arrived before `init` finished. It cannot be acted on
+ *  yet: which screen it opens depends on the host key, which is still being
+ *  read off disk. */
+let queuedPush: PushFletch | null = null;
+
+const homeItem = (): NavItem => ({ key: Date.now(), screen: "home", props: {}, phase: "idle" });
 
 const newId = () =>
   globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36)}`;
@@ -211,6 +221,10 @@ export const useStore = create<MobileState>()((set, get) => ({
     if (initialized) return;
     initialized = true;
     registerRemoteEvents(client, set, get);
+    // Early, and awaited: the plugin holds the APNs token — and a tap that
+    // launched the app — until it is asked to register, and hands both over
+    // through events these listeners have to be in place for.
+    await startPush({ client, api, get }).catch(ignore);
     client.onState((state, error) =>
       set({
         connection: state,
@@ -223,6 +237,9 @@ export const useStore = create<MobileState>()((set, get) => ({
       set({ hostInfo: snapshot.host });
       if (snapshot.workspace) set({ workspace: snapshot.workspace });
       else void get().refreshWorkspace();
+      // Every handshake — the first pairing and every reconnect — is when the
+      // host is told the APNs token again.
+      void syncPush().catch(ignore);
     });
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
@@ -230,7 +247,16 @@ export const useStore = create<MobileState>()((set, get) => ({
       });
     }
     const saved = await loadSettings();
-    set({ ready: true, theme: saved.theme ?? "dark", relay: saved.relay ?? null });
+    // The pinned key comes back before `ready`, because it is what a queued
+    // notification tap has to be checked against — a tap must not wait out a
+    // connection attempt to open its agent.
+    const hostKey = saved.host && saved.hostKey ? saved.hostKey : null;
+    set({ ready: true, theme: saved.theme ?? "dark", relay: saved.relay ?? null, hostKey });
+    if (queuedPush) {
+      const fletch = queuedPush;
+      queuedPush = null;
+      get().openFromPush(fletch);
+    }
     if (mockEnabled()) {
       // The mock host has no pairing step worth clicking through every reload;
       // its fixed key is pinned by `connect` like any other.
@@ -239,17 +265,14 @@ export const useStore = create<MobileState>()((set, get) => ({
     }
     // A saved host key is the whole credential: `hello` authenticates with the
     // device key the Rust layer holds.
-    if (saved.host && saved.hostKey) {
-      set({
-        hostKey: saved.hostKey,
-        lastDestParent: saved.destParents?.[saved.hostKey] ?? null,
-      });
+    if (saved.host && hostKey) {
+      set({ lastDestParent: saved.destParents?.[hostKey] ?? null });
       await get()
         .connect({
           host: saved.host,
           port: saved.port ?? DEFAULT_PORT,
           name: saved.hostName,
-          hostKey: saved.hostKey,
+          hostKey,
           // The relay is dialled only if the LAN address does not answer.
           relay: saved.relay,
         })
@@ -275,7 +298,7 @@ export const useStore = create<MobileState>()((set, get) => ({
         // The remembered clone destination is per host, so it can only be
         // resolved once the handshake says which host this is.
         lastDestParent: await loadDestParent(hostKey),
-        nav: [{ key: Date.now(), screen: "home", props: {}, phase: "idle" }],
+        nav: [homeItem()],
       });
       // Mock mode must not leave a "mock" host behind for the next real run.
       if (!mockEnabled()) {
@@ -305,6 +328,8 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async unpair() {
+    // Before the link drops: the host keeps the push token until told otherwise.
+    await forgetPush();
     client.disconnect();
     await clearHost();
     set({
@@ -316,7 +341,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       hostInfo: null,
       logs: {},
       sheet: null,
-      nav: [{ key: Date.now(), screen: "home", props: {}, phase: "idle" }],
+      nav: [homeItem()],
     });
   },
 
@@ -362,6 +387,23 @@ export const useStore = create<MobileState>()((set, get) => ({
     const top = live[live.length - 1];
     set((s) => ({ nav: s.nav.map((i) => (i.key === top.key ? { ...i, phase: "leave" } : i)) }));
     setTimeout(() => set((s) => ({ nav: s.nav.filter((i) => i.phase !== "leave") })), 470);
+  },
+
+  /** A tapped alert (docs/remote-protocol.md, "Push notifications"). The stack
+   *  is reset first: waking straight into whatever five screens were open last
+   *  session is a maze, and the tap named exactly one place to be. */
+  openFromPush(fletch) {
+    if (!get().ready) {
+      queuedPush = fletch;
+      return;
+    }
+    set({ nav: [homeItem()], sheet: null });
+    // An alert from a Mac this phone is not paired with — an old token, or a
+    // host it has since forgotten — gets no deep link. Home is the Pair screen
+    // when there is no pairing, which is the honest answer.
+    const { hostKey } = get();
+    if (!fletch.agentId || !hostKey || fletch.hostId !== hostKey) return;
+    get().openAgent(fletch.agentId);
   },
 
   openSheet(name, props = {}) {

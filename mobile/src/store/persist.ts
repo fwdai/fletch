@@ -22,6 +22,10 @@ export interface Persisted {
    *  remembers the same thing, and the folder only means something on the Mac
    *  that owns it. */
   destParents?: Record<string, string>;
+  /** Host public key → what iOS answered when we asked for notification
+   *  permission for it. Keyed by host because the prompt belongs to a pairing,
+   *  and remembered so no host is ever asked twice. */
+  pushPermission?: Record<string, "granted" | "denied" | "prompt">;
   theme?: "system" | "light" | "dark";
 }
 
@@ -85,9 +89,15 @@ export async function saveDestParent(hostKey: string | null, parent: string): Pr
 }
 
 /** Forget the paired host — address, name, pinned key and relay — and keep the
- *  rest. The destination folders stay: they are keyed by host key, so they are
- *  meaningless to anyone else and useful again if this Mac is re-paired. */
+ *  rest. Both per-host-key maps survive: the destination folders are
+ *  meaningless to anyone else and useful again if this Mac is re-paired, and
+ *  the notification answers record what iOS has already been asked, which
+ *  unpairing does not undo. */
 export async function clearHost(): Promise<void> {
-  const { theme, destParents } = await readAll();
-  await writeAll({ ...(theme ? { theme } : {}), ...(destParents ? { destParents } : {}) });
+  const { theme, destParents, pushPermission } = await readAll();
+  await writeAll({
+    ...(theme ? { theme } : {}),
+    ...(destParents ? { destParents } : {}),
+    ...(pushPermission ? { pushPermission } : {}),
+  });
 }

@@ -104,6 +104,13 @@ export function createApi(client: RemoteClient) {
       call<Workspace>("clone_repo", { spec, destParent }),
     ghStatus: () => call<GhStatus>("gh_status"),
     ghRepoList: () => call<GhRepoSummary[]>("gh_repo_list"),
+
+    /** Remote-only (docs/remote-protocol.md, "Push notifications"): where the
+     *  host should have the relay send this phone's alerts. A token needs its
+     *  environment — the host rejects one without it — while clearing is
+     *  `token: null` on its own. */
+    registerPush: (token: string | null, environment?: "sandbox" | "production") =>
+      call<null>("register_push", token === null ? { token: null } : { token, environment }),
   };
 }
 
