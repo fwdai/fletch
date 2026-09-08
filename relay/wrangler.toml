@@ -26,3 +26,7 @@ new_sqlite_classes = ["HostRelay"]
 
 [observability]
 enabled = true
+
+[[routes]]
+pattern = "relay.fletch.sh"
+custom_domain = true
