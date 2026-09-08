@@ -30,6 +30,16 @@ export function useStickyScroll<T extends HTMLElement>(
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLOP;
   }, [pinned]);
 
+  // A freshly mounted scroller opens at its latest, so a lifted `pinRef` can't
+  // carry a stale `false` into it — scroll up in the chat, switch to Code and
+  // back, and the new scroller would otherwise sit at the top and never
+  // follow. The desktop re-pins on the same reasoning when you switch agents.
+  // Declared before the follow effect so it has already run when that one
+  // does its initial scroll.
+  useLayoutEffect(() => {
+    pinned.current = true;
+  }, [pinned]);
+
   // A layout effect, so the jump happens before the browser paints the content
   // that grew — a plain effect shows one frame at the old offset.
   useLayoutEffect(() => {
