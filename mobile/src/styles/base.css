@@ -725,9 +725,18 @@ a {
   justify-content: center;
   flex-shrink: 0;
 }
+.pm-svg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Brand marks authored with currentColor inherit the square's hue; full-colour
+     logos keep their own fills. */
+  color: currentColor;
+}
 .pm svg {
   width: 11px;
   height: 11px;
+  display: block;
 }
 .theme-light .pm {
   filter: saturate(1.1) brightness(0.72);
