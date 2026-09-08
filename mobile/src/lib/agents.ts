@@ -27,8 +27,16 @@ export const branchOf = (a: AgentRecord) => primaryRepo(a)?.branch ?? "—";
 
 export const baseOf = (a: AgentRecord) => primaryRepo(a)?.parent_branch ?? "main";
 
+/** A project's live agents, newest first. The host hands the snapshot back in
+ *  `created_at` order, so the list has to be reversed here or the most recent
+ *  agent lands at the bottom — same ordering the desktop sidebar applies.
+ *  Agents spawned in the same millisecond (a workflow's fan-out) break the tie
+ *  on id, so the order is total rather than left to the sort's discretion —
+ *  the tie-break `deriveStepChildren` already uses. */
 export const agentsOfProject = (ws: Workspace | null, projectId: string) =>
-  (ws?.agents ?? []).filter((a) => a.project_id === projectId && !a.archive);
+  (ws?.agents ?? [])
+    .filter((a) => a.project_id === projectId && !a.archive)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
 
 export const providerLabel = (id: string) => PROVIDERS.find((p) => p.id === id)?.label ?? id;
 
