@@ -22,6 +22,9 @@ vi.mock("@desktop/data/modelCatalog", () => ({
 /** Whether the call at `index` asked for a forced rebuild. */
 const forced = (index: number) => mocks.refreshCatalog.mock.calls[index][1];
 
+/** Let queued refreshes reach their `refreshCatalog` call. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 const index: ModelsDevIndex = {
   byId: {
     "claude-opus-9": {
@@ -93,6 +96,42 @@ describe("loadModels", () => {
     await loadModels("host-a");
 
     expect(forced(1)).toBe(false);
+  });
+
+  it("does not stamp a rebuild that was already running for another host", async () => {
+    // `refreshCatalog` dedupes on one global in-flight promise, so a host swap
+    // mid-rebuild used to be handed the previous host's catalog and save it as
+    // the new host's.
+    const forHostA = { byId: {}, byAgent: { claude: [] } };
+    let finishA: (value: unknown) => void = () => {};
+    let inFlight: Promise<unknown> | null = null;
+    // Faithful to the real refreshCatalog: one global in-flight promise, handed
+    // to every caller regardless of who asked or whether they forced.
+    mocks.refreshCatalog.mockImplementation(() => {
+      if (inFlight) return inFlight;
+      const result =
+        mocks.refreshCatalog.mock.calls.length === 1
+          ? new Promise((resolve) => {
+              finishA = resolve;
+            })
+          : Promise.resolve(catalog);
+      inFlight = result.finally(() => {
+        inFlight = null;
+      });
+      return inFlight;
+    });
+
+    const a = loadModels("host-a");
+    const b = loadModels("host-b");
+    await flush();
+    expect(mocks.refreshCatalog).toHaveBeenCalledTimes(1);
+
+    finishA(forHostA);
+    expect(await a).toEqual(forHostA.byAgent);
+    // host-b waited for its own rebuild rather than being handed host-a's.
+    expect(await b).toEqual(catalog.byAgent);
+    expect(forced(1)).toBe(true);
+    expect(localStorage.getItem("modelCatalog.host")).toBe("host-b");
   });
 
   it("does not claim the cache belongs to a host after a failed rebuild", async () => {

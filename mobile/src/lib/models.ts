@@ -68,16 +68,27 @@ function rememberHost(hostKey: string | null): void {
   }
 }
 
+// Refreshes run one at a time. `refreshCatalog` dedupes by a single global
+// in-flight promise, with no notion of who asked: a host swapped mid-rebuild
+// would be handed the *previous* host's result and stamp it as its own. Queuing
+// means each host's rebuild starts only once the last one has settled and that
+// dedupe has cleared.
+let queue: Promise<unknown> = Promise.resolve();
+
 /** The catalog for `hostKey`, rebuilt when the cache belongs to another host or
  *  has aged out, else served from it. Null when the rebuild failed and the
- *  caller should keep what it has. `refreshCatalog` dedupes the concurrent calls
- *  this makes when several pickers mount at once. */
-export async function loadModels(hostKey: string | null): Promise<ModelsByAgent | null> {
-  const catalog = await refreshCatalog(api.discoverSupportedModels, builtForHost() !== hostKey);
-  if (!catalog) return null;
-  rememberHost(hostKey);
-  current = catalog.byAgent;
-  return current;
+ *  caller should keep what it has. */
+export function loadModels(hostKey: string | null): Promise<ModelsByAgent | null> {
+  const run = queue.then(async () => {
+    const catalog = await refreshCatalog(api.discoverSupportedModels, builtForHost() !== hostKey);
+    if (!catalog) return null;
+    rememberHost(hostKey);
+    current = catalog.byAgent;
+    return current;
+  });
+  // A failed refresh must not wedge the queue for every later one.
+  queue = run.catch(() => null);
+  return run;
 }
 
 /** The catalog's per-agent model lists, refreshed when the connection comes up
