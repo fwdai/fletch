@@ -44,25 +44,58 @@ export const STATIC_MODELS: ModelsByAgent = {
 // value rather than re-reading (and re-parsing) the localStorage cache.
 let current: ModelsByAgent = loadCachedCatalog().byAgent;
 
-/** The catalog's per-agent model lists. Refreshed when the connection comes up,
- *  since discovery is a host round-trip; `refreshCatalog` dedupes the concurrent
- *  calls this makes when several pickers are mounted, and honours its own cache
- *  TTL, so this is cheap on every mount but the first. */
+// Which host the cached catalog was built from. Half of it is that host's
+// installed CLIs, so a phone re-paired to another Mac must not go on offering
+// the previous one's lists — a mismatch rebuilds instead of waiting out the
+// TTL. Persisted beside the catalog: holding it in memory only would force a
+// full rebuild (and its multi-megabyte models.dev fetch) on every launch.
+const HOST_KEY = "modelCatalog.host";
+
+function builtForHost(): string | null {
+  try {
+    return localStorage.getItem(HOST_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function rememberHost(hostKey: string | null): void {
+  try {
+    if (hostKey) localStorage.setItem(HOST_KEY, hostKey);
+    else localStorage.removeItem(HOST_KEY);
+  } catch {
+    // Storage unavailable — the catalog just rebuilds again next launch.
+  }
+}
+
+/** The catalog for `hostKey`, rebuilt when the cache belongs to another host or
+ *  has aged out, else served from it. Null when the rebuild failed and the
+ *  caller should keep what it has. `refreshCatalog` dedupes the concurrent calls
+ *  this makes when several pickers mount at once. */
+export async function loadModels(hostKey: string | null): Promise<ModelsByAgent | null> {
+  const catalog = await refreshCatalog(api.discoverSupportedModels, builtForHost() !== hostKey);
+  if (!catalog) return null;
+  rememberHost(hostKey);
+  current = catalog.byAgent;
+  return current;
+}
+
+/** The catalog's per-agent model lists, refreshed when the connection comes up
+ *  (discovery is a host round-trip) and whenever the paired host changes. */
 export function useModels(): ModelsByAgent {
   const connection = useStore((s) => s.connection);
+  const hostKey = useStore((s) => s.hostKey);
   const [models, setModels] = useState<ModelsByAgent>(current);
   useEffect(() => {
     if (connection !== "connected") return;
     let live = true;
-    void refreshCatalog(api.discoverSupportedModels).then((catalog) => {
-      if (!catalog) return;
-      current = catalog.byAgent;
-      if (live) setModels(catalog.byAgent);
+    void loadModels(hostKey).then((byAgent) => {
+      if (live && byAgent) setModels(byAgent);
     });
     return () => {
       live = false;
     };
-  }, [connection]);
+  }, [connection, hostKey]);
   return models;
 }
 

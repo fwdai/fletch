@@ -6,8 +6,21 @@
 import { buildCatalog } from "@desktop/data/modelCatalog/build";
 import type { ModelsDevIndex } from "@desktop/data/modelCatalog/modelsDev";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
-import { describe, expect, it } from "vitest";
-import { modelsFor } from "../src/lib/models";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { loadModels, modelsFor } from "../src/lib/models";
+
+const mocks = vi.hoisted(() => ({
+  refreshCatalog: vi.fn(),
+  loadCachedCatalog: vi.fn(() => ({ byId: {}, byAgent: {} })),
+}));
+
+vi.mock("@desktop/data/modelCatalog", () => ({
+  loadCachedCatalog: mocks.loadCachedCatalog,
+  refreshCatalog: mocks.refreshCatalog,
+}));
+
+/** Whether the call at `index` asked for a forced rebuild. */
+const forced = (index: number) => mocks.refreshCatalog.mock.calls[index][1];
 
 const index: ModelsDevIndex = {
   byId: {
@@ -54,5 +67,41 @@ describe("modelsFor", () => {
 
   it("shows only the default for a provider nothing knows about", () => {
     expect(modelsFor({}, "antigravity").map((m) => m.id)).toEqual([""]);
+  });
+});
+
+describe("loadModels", () => {
+  const catalog = { byId: {}, byAgent: { codex: [] } };
+
+  beforeEach(() => {
+    localStorage.clear();
+    mocks.refreshCatalog.mockReset();
+    mocks.refreshCatalog.mockResolvedValue(catalog);
+  });
+
+  it("rebuilds for a host the cache wasn't built from", async () => {
+    // Half the catalog is the host's installed CLIs, so a phone re-paired to
+    // another Mac must not serve the previous host's lists for up to an hour.
+    await loadModels("host-a");
+    await loadModels("host-b");
+
+    expect(forced(1)).toBe(true);
+  });
+
+  it("serves the cache while the host is unchanged", async () => {
+    await loadModels("host-a");
+    await loadModels("host-a");
+
+    expect(forced(1)).toBe(false);
+  });
+
+  it("does not claim the cache belongs to a host after a failed rebuild", async () => {
+    mocks.refreshCatalog.mockResolvedValue(null);
+    expect(await loadModels("host-a")).toBeNull();
+
+    mocks.refreshCatalog.mockResolvedValue(catalog);
+    await loadModels("host-a");
+
+    expect(forced(1)).toBe(true);
   });
 });
