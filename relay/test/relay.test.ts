@@ -607,6 +607,25 @@ describe("push notifications", () => {
     expect(sent).toHaveLength(NOTIFY_LIMIT_FRAMES);
   });
 
+  it("does not hand a reconnecting host a fresh NOTIFY budget", async () => {
+    const sent = recordApns();
+    const host = await newHost();
+    const first = await attachHost(host);
+    for (let i = 0; i < NOTIFY_LIMIT_FRAMES; i++) {
+      first.ws.send(notifyFrame(push([{ token: TOKEN, environment: "production" }])));
+    }
+    await vi.waitFor(() => expect(sent).toHaveLength(NOTIFY_LIMIT_FRAMES));
+
+    // The budget is the host's, not the link's: a new link within the same
+    // minute — after a drop or a deliberate replacement — is still over it.
+    first.ws.close(1000, "reconnecting");
+    const second = await attachHost(host);
+    second.ws.send(notifyFrame(push([{ token: TOKEN, environment: "production" }])));
+    await attachDevice(host);
+    expect(decode(await second.nextBinary())?.type).toBe(FRAME_OPEN);
+    expect(sent).toHaveLength(NOTIFY_LIMIT_FRAMES);
+  });
+
   it("ignores NOTIFY when the relay has no APNs credentials", async () => {
     const sent = recordApns();
     for (const key of ["APNS_TEAM_ID", "APNS_KEY_ID", "APNS_PRIVATE_KEY", "APNS_BUNDLE_ID"]) {

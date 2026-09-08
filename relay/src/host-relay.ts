@@ -57,6 +57,7 @@ const CLOSE_RATE_LIMIT = 1008;
 const TAG_HOST = "host";
 const TAG_DEVICE = "device";
 const KEY_NEXT_CONN_ID = "nextConnId";
+const KEY_NOTIFY_RATE = "notifyRate";
 const MAX_CONN_ID = 0xffffffff;
 
 interface RateWindow {
@@ -72,8 +73,6 @@ interface HostState {
   keypair: X25519Keypair;
   nonce: string;
   deadline: number;
-  /** NOTIFY frames only; the host link is not otherwise rate-limited. */
-  rate: RateWindow;
 }
 
 interface DeviceState {
@@ -89,6 +88,10 @@ export class HostRelay {
   private readonly ctx: DurableObjectState;
   private readonly env: ApnsEnv;
   private nextConnId = 1;
+  /** The NOTIFY budget belongs to the host, not to whichever link it is on:
+   *  kept in storage so neither a reconnect nor a wake from hibernation hands
+   *  out a fresh 30. */
+  private notifyRate: RateWindow = { start: 0, count: 0 };
   private apnsClient: ApnsClient | null = null;
   private apnsWarned = false;
 
@@ -97,9 +100,11 @@ export class HostRelay {
     this.env = env;
     // connIds must never repeat for the object's life, and the object is
     // rebuilt on every wake, so the counter lives in storage and is read once
-    // here behind the input gate.
+    // here behind the input gate. The NOTIFY window is per host for the same
+    // reason.
     ctx.blockConcurrencyWhile(async () => {
       this.nextConnId = (await ctx.storage.get<number>(KEY_NEXT_CONN_ID)) ?? 1;
+      this.notifyRate = (await ctx.storage.get<RateWindow>(KEY_NOTIFY_RATE)) ?? this.notifyRate;
     });
   }
 
@@ -134,7 +139,6 @@ export class HostRelay {
       keypair,
       nonce,
       deadline: Date.now() + HOST_AUTH_TIMEOUT_MS,
-      rate: { start: Date.now(), count: 0 },
     };
     this.ctx.acceptWebSocket(server, [TAG_HOST]);
     writeState(server, state);
@@ -305,7 +309,7 @@ export class HostRelay {
       return;
     }
 
-    const allowed = allowRate(state, RATE_LIMIT_MESSAGES, RATE_LIMIT_WINDOW_MS);
+    const allowed = allowRate(state.rate, RATE_LIMIT_MESSAGES, RATE_LIMIT_WINDOW_MS);
     writeState(ws, state);
     if (!allowed) {
       this.closeLink(ws, state, CLOSE_RATE_LIMIT, "rate limit exceeded");
@@ -407,17 +411,18 @@ export class HostRelay {
 
   /** Fire and forget: no result frame, and nothing here is fatal to the link.
    *  See ../../docs/remote-protocol.md, "Push notifications". */
-  private handleNotify(ws: WebSocket, state: HostState, payload: Uint8Array): void {
+  private handleNotify(_ws: WebSocket, state: HostState, payload: Uint8Array): void {
     const apns = this.apns();
     if (!apns) return;
     // The budget is per frame, not per accepted frame: a host spraying junk
-    // must not get unlimited parsing either.
-    const allowed = allowRate(state, NOTIFY_LIMIT_FRAMES, NOTIFY_LIMIT_WINDOW_MS);
-    writeState(ws, state);
+    // must not get unlimited parsing either. It is the host's budget, so it
+    // lives on the object (and in storage), not on this link.
+    const allowed = allowRate(this.notifyRate, NOTIFY_LIMIT_FRAMES, NOTIFY_LIMIT_WINDOW_MS);
+    this.ctx.waitUntil(this.ctx.storage.put(KEY_NOTIFY_RATE, this.notifyRate));
     if (!allowed) {
       // Only the first frame over budget is logged, so a host stuck in a loop
       // cannot fill the log with its own noise.
-      if (state.rate.count === NOTIFY_LIMIT_FRAMES + 1) {
+      if (this.notifyRate.count === NOTIFY_LIMIT_FRAMES + 1) {
         console.log(`notify dropped: more than ${NOTIFY_LIMIT_FRAMES} per minute`);
       }
       return;
@@ -454,15 +459,19 @@ export class HostRelay {
 }
 
 /**
- * A rolling window in the socket's own state, so it survives hibernation:
- * 100 messages / 10 s on a device link, 30 NOTIFY frames / minute on a host
- * link. Mutates `state.rate`; the caller writes the state back.
+ * A fixed window: 100 messages / 10 s on a device link (in the socket's own
+ * state), 30 NOTIFY frames / minute per host (on the object, in storage).
+ * Mutates `window` in place; the caller persists it wherever it lives.
  */
-function allowRate(state: SocketState, limit: number, windowMs: number): boolean {
+function allowRate(window: RateWindow, limit: number, windowMs: number): boolean {
   const now = Date.now();
-  if (now - state.rate.start >= windowMs) state.rate = { start: now, count: 1 };
-  else state.rate.count += 1;
-  return state.rate.count <= limit;
+  if (now - window.start >= windowMs) {
+    window.start = now;
+    window.count = 1;
+  } else {
+    window.count += 1;
+  }
+  return window.count <= limit;
 }
 
 function readState(ws: WebSocket): SocketState | null {
