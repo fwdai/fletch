@@ -481,7 +481,7 @@ mod tests {
         assert!(with_budget.contains("timed out"), "{with_budget}");
         assert!(with_budget.contains("3000 ms"), "{with_budget}");
         assert!(with_budget.contains("ws://192.168.1.24:47285/ws"));
-        assert!(timed_out("wss://relay.fletch.app/v1/device/k", None).contains("timed out"));
+        assert!(timed_out("wss://relay.fletch.sh/v1/device/k", None).contains("timed out"));
     }
 
     /// `within` is what makes the budget real: a future that has not finished

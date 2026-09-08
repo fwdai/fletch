@@ -461,12 +461,12 @@ fn the_challenge_proof_matches_a_known_answer_vector() {
 #[test]
 fn the_host_endpoint_is_the_documented_one() {
     assert_eq!(
-        relay::host_endpoint("wss://relay.fletch.app", "abc"),
-        "wss://relay.fletch.app/v1/host/abc"
+        relay::host_endpoint("wss://relay.fletch.sh", "abc"),
+        "wss://relay.fletch.sh/v1/host/abc"
     );
     assert_eq!(
-        relay::host_endpoint("wss://relay.fletch.app/", "abc"),
-        "wss://relay.fletch.app/v1/host/abc"
+        relay::host_endpoint("wss://relay.fletch.sh/", "abc"),
+        "wss://relay.fletch.sh/v1/host/abc"
     );
 }
 
@@ -929,7 +929,7 @@ async fn the_relay_url_is_normalized_and_validated() {
 
     // The scheme is the one thing worth refusing: a typo here is a link that
     // could never connect, and the pane can say so at once.
-    for bad in ["relay.fletch.app", "https://relay.fletch.app", "wss:/x"] {
+    for bad in ["relay.fletch.sh", "https://relay.fletch.sh", "wss:/x"] {
         assert!(
             state.set_relay(Some(bad.to_string())).is_err(),
             "{bad} should be refused"

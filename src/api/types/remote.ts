@@ -22,7 +22,7 @@ export interface RemoteDevice {
 /** The relay the desktop offers when the switch goes on. Mirrors
  *  `DEFAULT_RELAY_URL` in `src-tauri/src/remote/mod.rs`; only a suggestion —
  *  the persisted setting is what decides, and anyone can run their own. */
-export const DEFAULT_RELAY_URL = "wss://relay.fletch.app";
+export const DEFAULT_RELAY_URL = "wss://relay.fletch.sh";
 
 /** How the outbound host link is doing. `off` means no URL is set, or remote
  *  access itself is off; `error` stands between reconnect attempts. */

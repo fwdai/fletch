@@ -135,7 +135,7 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
         <input
           id="host-relay"
           value={draft}
-          placeholder="wss://relay.fletch.app"
+          placeholder="wss://relay.fletch.sh"
           autoCapitalize="off"
           autoCorrect="off"
           spellCheck={false}

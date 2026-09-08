@@ -141,13 +141,13 @@ describe("pairing URL", () => {
   it("parses relay= url-decoded, and leaves it out when the host has none", () => {
     expect(
       parsePairUrl(
-        "fletch://pair?host=Zm9vYmFy&addr=192.168.1.24:47285&relay=wss%3A%2F%2Frelay.fletch.app&token=K7PQ2M9X",
+        "fletch://pair?host=Zm9vYmFy&addr=192.168.1.24:47285&relay=wss%3A%2F%2Frelay.fletch.sh&token=K7PQ2M9X",
       ),
     ).toEqual({
       host: "192.168.1.24",
       port: 47285,
       hostKey: "Zm9vYmFy",
-      relay: "wss://relay.fletch.app",
+      relay: "wss://relay.fletch.sh",
       pairingToken: "K7PQ2M9X",
     });
     expect(
@@ -156,14 +156,14 @@ describe("pairing URL", () => {
   });
 
   it("builds the device endpoint and tolerates a trailing slash on the base", () => {
-    expect(relayDeviceUrl("wss://relay.fletch.app", "Zm9vYmFy")).toBe(
-      "wss://relay.fletch.app/v1/device/Zm9vYmFy",
+    expect(relayDeviceUrl("wss://relay.fletch.sh", "Zm9vYmFy")).toBe(
+      "wss://relay.fletch.sh/v1/device/Zm9vYmFy",
     );
-    expect(relayDeviceUrl("wss://relay.fletch.app/", "Zm9vYmFy")).toBe(
-      "wss://relay.fletch.app/v1/device/Zm9vYmFy",
+    expect(relayDeviceUrl("wss://relay.fletch.sh/", "Zm9vYmFy")).toBe(
+      "wss://relay.fletch.sh/v1/device/Zm9vYmFy",
     );
-    expect(relayDeviceUrl(" wss://relay.fletch.app// ", "Zm9vYmFy")).toBe(
-      "wss://relay.fletch.app/v1/device/Zm9vYmFy",
+    expect(relayDeviceUrl(" wss://relay.fletch.sh// ", "Zm9vYmFy")).toBe(
+      "wss://relay.fletch.sh/v1/device/Zm9vYmFy",
     );
   });
 });
