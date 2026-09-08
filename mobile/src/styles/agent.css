@@ -267,7 +267,13 @@
 
 .composer {
   flex-shrink: 0;
-  padding: 8px 12px calc(var(--safe-bottom) + 4px);
+  /* Deliberately does not honour --safe-bottom. Reserving the full home
+     indicator inset (34px on a notched phone) left the prompt box floating on
+     a band of empty panel; the inset exists so content isn't *obscured*, and
+     there is nothing below a text box to obscure. A flat 10px keeps the send
+     row clear of the indicator while the box sits at the bottom of the
+     screen. */
+  padding: 8px 12px 10px;
   background: var(--bg-0);
   border-top: 1px solid var(--bd-soft);
 }
