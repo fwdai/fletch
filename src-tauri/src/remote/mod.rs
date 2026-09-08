@@ -61,7 +61,7 @@ pub const RELAY_URL_SETTING: &str = "remote.relay_url";
 /// (`src/api/types/remote.ts`), so nothing in Rust reads it outside the tests
 /// that check it is a URL `set_relay` accepts.
 #[cfg_attr(not(test), allow(dead_code))]
-pub const DEFAULT_RELAY_URL: &str = "wss://relay.fletch.app";
+pub const DEFAULT_RELAY_URL: &str = "wss://relay.fletch.sh";
 /// Default listen port (protocol doc).
 pub const DEFAULT_PORT: u16 = 47285;
 /// The only path the listener serves.

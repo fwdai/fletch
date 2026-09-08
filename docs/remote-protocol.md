@@ -97,7 +97,7 @@ Cloudflare Worker fronting one Durable Object per host ID (`relay/` in this
 repo); anyone can run their own and point both apps at it.
 
 - **Base URL.** Host setting `remote.relay_url`; absent or empty means no
-  relay. The desktop's suggested default is `wss://relay.fletch.app`. The
+  relay. The desktop's suggested default is `wss://relay.fletch.sh`. The
   pairing link carries the URL as `relay=<url-encoded>` when set, and the phone
   persists it with the host.
 - **Endpoints.** `wss://<relay>/v1/host/<hostId>` for the Mac,

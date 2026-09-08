@@ -60,7 +60,7 @@ export interface HostTarget {
    *  pairing link, absent for hand-typed entry until the first connection
    *  pins the key it meets. */
   hostKey?: string;
-  /** Relay base URL, e.g. `wss://relay.fletch.app` — the fallback path when the
+  /** Relay base URL, e.g. `wss://relay.fletch.sh` — the fallback path when the
    *  LAN address cannot be reached. Comes from `relay=` in the pairing link, or
    *  is entered later in the Host sheet; absent means LAN only. */
   relay?: string;
