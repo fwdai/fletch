@@ -114,6 +114,24 @@ describe("clone from GitHub", () => {
     expect(state().lastError).toContain("a folder already exists at");
     spy.mockRestore();
   });
+
+  it("closes only the Add Project sheet when a slow clone finishes", async () => {
+    let finish: (w: NonNullable<ReturnType<typeof state>["workspace"]>) => void = () => {};
+    const spy = vi
+      .spyOn(api, "cloneRepo")
+      .mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    state().openSheet("addProject");
+    const cloning = state().cloneRepo("fwdai/other", await codeDir());
+
+    // The user gave up waiting and opened something else.
+    state().closeSheet();
+    state().openSheet("host");
+    finish(state().workspace as NonNullable<ReturnType<typeof state>["workspace"]>);
+    await cloning;
+
+    expect(state().sheet).toMatchObject({ name: "host", open: true });
+    spy.mockRestore();
+  });
 });
 
 // First-render markup only — enough to catch a form that cannot render and to

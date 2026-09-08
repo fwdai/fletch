@@ -88,7 +88,10 @@ export interface MobileState {
   push(screen: ScreenName, props?: Record<string, string>): void;
   pop(): void;
   openSheet(name: SheetName, props?: Record<string, string>): void;
-  closeSheet(): void;
+  /** Close the open sheet. With `name`, only if that is the sheet showing: an
+   *  async action finishing late must not dismiss whatever the user opened
+   *  since. */
+  closeSheet(name?: SheetName): void;
 
   refreshWorkspace(): Promise<void>;
   openAgent(agentId: string): void;
@@ -362,8 +365,10 @@ export const useStore = create<MobileState>()((set, get) => ({
   openSheet(name, props = {}) {
     set({ sheet: { name, props, open: true } });
   },
-  closeSheet() {
-    set((s) => (s.sheet ? { sheet: { ...s.sheet, open: false } } : s));
+  closeSheet(name) {
+    set((s) =>
+      s.sheet && (!name || s.sheet.name === name) ? { sheet: { ...s.sheet, open: false } } : s,
+    );
   },
 
   async refreshWorkspace() {
@@ -552,15 +557,16 @@ export const useStore = create<MobileState>()((set, get) => ({
     return guard(set, () => api.listDir(path));
   },
 
-  /** Both add-project ops answer with the whole new `Workspace`, and neither
-   *  raises `workspace:changed` — so applying the result is the only way the
-   *  new project appears. It replaces the workspace wholesale, which is what
-   *  `refreshWorkspace` does too: a `workspace:changed` from anything else
-   *  landing either side of this leaves the same state. */
+  /** Both add-project ops answer with the whole new `Workspace`, which is
+   *  applied here rather than waited for as a `workspace:changed`: it replaces
+   *  the workspace wholesale, exactly as `refreshWorkspace` does, so an event
+   *  landing either side of this leaves the same state. Only the Add Project
+   *  sheet is closed on success — a slow clone must not dismiss a sheet the user
+   *  opened in the meantime. */
   async addWorkspaceRepo(repoPath) {
     return guard(set, async () => {
       set({ workspace: await api.addWorkspaceRepo(repoPath) });
-      get().closeSheet();
+      get().closeSheet("addProject");
     });
   },
 
@@ -569,7 +575,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       const workspace = await api.cloneRepo(spec, destParent);
       set({ workspace, lastDestParent: destParent });
       await saveDestParent(get().hostKey, destParent);
-      get().closeSheet();
+      get().closeSheet("addProject");
     });
   },
 
