@@ -4,9 +4,15 @@
 // renamed or reshaped anywhere in mobile.
 
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
-import type { CheckoutFile, CheckoutFileContents, DiffBaseMode } from "@desktop/api/types/checkout";
+import type {
+  CheckoutFile,
+  CheckoutFileContents,
+  DiffBaseMode,
+  DirListing,
+} from "@desktop/api/types/checkout";
 import type { DiffStats, GitState } from "@desktop/api/types/git";
 import type { PrChecks, PrLive, PrState } from "@desktop/api/types/pr";
+import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import type { RemoteClient } from "../remote";
@@ -90,6 +96,14 @@ export function createApi(client: RemoteClient) {
     listRepoBranches: (repoPath: string) => call<string[]>("list_repo_branches", { repoPath }),
     repoDefaultBranch: (repoPath: string) => call<string>("repo_default_branch", { repoPath }),
     discoverSupportedModels: () => call<AgentModels[]>("discover_supported_models"),
+    /** `path` may be `~`-relative; the host expands it and reports the
+     *  absolute `base` it read, which is what the picker navigates from. */
+    listDir: (path: string) => call<DirListing>("list_dir", { path }),
+    addWorkspaceRepo: (repoPath: string) => call<Workspace>("add_workspace_repo", { repoPath }),
+    cloneRepo: (spec: string, destParent: string) =>
+      call<Workspace>("clone_repo", { spec, destParent }),
+    ghStatus: () => call<GhStatus>("gh_status"),
+    ghRepoList: () => call<GhRepoSummary[]>("gh_repo_list"),
   };
 }
 

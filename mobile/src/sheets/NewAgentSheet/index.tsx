@@ -80,7 +80,7 @@ export function NewAgentSheet({
       <Sheet open={open} onClose={onClose} full title="New agent">
         <div className="empty">
           <b>No projects on the host</b>
-          Pin a repo in Fletch on your Mac first.
+          Add one from Home first, or pin a repo in Fletch on your Mac.
         </div>
       </Sheet>
     );

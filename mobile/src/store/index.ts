@@ -1,7 +1,8 @@
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
-import type { CheckoutFile } from "@desktop/api/types/checkout";
+import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
 import type { DiffStats, GitState } from "@desktop/api/types/git";
 import type { PrChecks, PrState } from "@desktop/api/types/pr";
+import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
 import { createApi } from "../api";
@@ -16,7 +17,7 @@ import {
   type Via,
 } from "../remote";
 import { registerRemoteEvents } from "./events";
-import { clearHost, loadSettings, saveSettings } from "./persist";
+import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { applyUserTurns, reduceRecords } from "./transcript";
 
 export const client = createClient();
@@ -24,7 +25,7 @@ export const api = createApi(client);
 
 export type ThemeMode = "system" | "light" | "dark";
 export type ScreenName = "home" | "project" | "agent" | "file" | "diff";
-export type SheetName = "host" | "newAgent" | "agentMore" | "modelPicker" | "pr";
+export type SheetName = "host" | "newAgent" | "addProject" | "agentMore" | "modelPicker" | "pr";
 
 export interface NavItem {
   key: number;
@@ -52,6 +53,9 @@ export interface MobileState {
   /** Which path the live connection took — mirrored from the client for the
    *  Host sheet, and null when there is no connection. */
   via: Via | null;
+  /** Where the last clone landed on this host, so the next one is offered the
+   *  same folder. Hydrated from the persist layer when the host is known. */
+  lastDestParent: string | null;
 
   workspace: Workspace | null;
   logs: Record<string, ChatItem[]>;
@@ -108,6 +112,12 @@ export interface MobileState {
   setEffort(agentId: string, effort: string): Promise<void>;
   publish(agentId: string, title: string, body: string): Promise<void>;
   pushToPr(agentId: string): Promise<void>;
+
+  listDir(path: string): Promise<DirListing>;
+  addWorkspaceRepo(repoPath: string): Promise<void>;
+  cloneRepo(spec: string, destParent: string): Promise<void>;
+  ghStatus(): Promise<GhStatus>;
+  ghRepoList(): Promise<GhRepoSummary[]>;
 }
 
 export interface SpawnInput {
@@ -171,6 +181,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   hostKey: null,
   relay: null,
   via: null,
+  lastDestParent: null,
 
   workspace: null,
   logs: {},
@@ -224,7 +235,10 @@ export const useStore = create<MobileState>()((set, get) => ({
     // A saved host key is the whole credential: `hello` authenticates with the
     // device key the Rust layer holds.
     if (saved.host && saved.hostKey) {
-      set({ hostKey: saved.hostKey });
+      set({
+        hostKey: saved.hostKey,
+        lastDestParent: saved.destParents?.[saved.hostKey] ?? null,
+      });
       await get()
         .connect({
           host: saved.host,
@@ -253,6 +267,9 @@ export const useStore = create<MobileState>()((set, get) => ({
         hostKey,
         relay,
         via: client.via,
+        // The remembered clone destination is per host, so it can only be
+        // resolved once the handshake says which host this is.
+        lastDestParent: await loadDestParent(hostKey),
         nav: [{ key: Date.now(), screen: "home", props: {}, phase: "idle" }],
       });
       // Mock mode must not leave a "mock" host behind for the next real run.
@@ -289,6 +306,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       hostKey: null,
       relay: null,
       via: null,
+      lastDestParent: null,
       workspace: null,
       hostInfo: null,
       logs: {},
@@ -528,6 +546,39 @@ export const useStore = create<MobileState>()((set, get) => ({
     if (git?.files.length) await api.commitAgent(agentId, title);
     await api.pushAgent(agentId);
     await get().loadGit(agentId);
+  },
+
+  async listDir(path) {
+    return guard(set, () => api.listDir(path));
+  },
+
+  /** Both add-project ops answer with the whole new `Workspace`, and neither
+   *  raises `workspace:changed` — so applying the result is the only way the
+   *  new project appears. It replaces the workspace wholesale, which is what
+   *  `refreshWorkspace` does too: a `workspace:changed` from anything else
+   *  landing either side of this leaves the same state. */
+  async addWorkspaceRepo(repoPath) {
+    return guard(set, async () => {
+      set({ workspace: await api.addWorkspaceRepo(repoPath) });
+      get().closeSheet();
+    });
+  },
+
+  async cloneRepo(spec, destParent) {
+    return guard(set, async () => {
+      const workspace = await api.cloneRepo(spec, destParent);
+      set({ workspace, lastDestParent: destParent });
+      await saveDestParent(get().hostKey, destParent);
+      get().closeSheet();
+    });
+  },
+
+  async ghStatus() {
+    return guard(set, () => api.ghStatus());
+  },
+
+  async ghRepoList() {
+    return guard(set, () => api.ghRepoList());
   },
 }));
 
