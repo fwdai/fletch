@@ -49,9 +49,14 @@ mobile/node_modules/
 mobile/dist/
 mobile/.vite/
 mobile/src-tauri/target/
-# tauri-build regenerates these schemas on every build; the Xcode project that
-# `tauri ios init` puts beside them is committed once it exists.
-mobile/src-tauri/gen/schemas/
+# Everything under gen/ is generated: tauri-build rewrites the schemas on every
+# build, and `tauri ios init` regenerates the Xcode project from
+# tauri.conf.json plus the plugins' build scripts (which is where the
+# entitlements come from) — so it stays a local, per-machine artifact.
+mobile/src-tauri/gen/
+# Xcode/SPM writes this when it resolves a plugin's Swift package, and what it
+# pins comes from the Tauri package copied in at build time.
+mobile/src-tauri/plugins/*/ios/Package.resolved
 
 # Remote relay Worker (relay/). Same story as mobile/: the root-anchored
 # entries above do not reach into it.

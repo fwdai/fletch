@@ -74,11 +74,11 @@ Two things in it are worth knowing about:
 These cannot be committed and have to be done once, per team:
 
 1. In the Apple Developer portal, enable the **Push Notifications** capability
-   on the `com.fletch.mobile` App ID, then regenerate the provisioning profile
+   on the `sh.fletch.mobile` App ID, then regenerate the provisioning profile
    (Xcode's automatic signing does this for you once the App ID has it). Without
    it, signing fails with a missing-entitlement error.
 2. Create an APNs auth key (`.p8`) and give the relay `APNS_TEAM_ID`,
-   `APNS_KEY_ID`, `APNS_PRIVATE_KEY` and `APNS_BUNDLE_ID=com.fletch.mobile` —
+   `APNS_KEY_ID`, `APNS_PRIVATE_KEY` and `APNS_BUNDLE_ID=sh.fletch.mobile` —
    `apns-topic` is the bundle id, so the two have to match.
 3. Run on a real device. The simulator has no embedded profile and cannot
    receive a remote push; the plugin reports `sandbox` there.
@@ -95,8 +95,9 @@ bun run test           # vitest
 
 ## iOS setup
 
-`src-tauri/gen/` (the generated Xcode project) is **not** in the repo; it is
-created on the first init, which needs Xcode and an Apple team ID.
+`src-tauri/gen/` (the generated Xcode project) is gitignored and never in the
+repo. Each machine creates its own on the first init, which needs Xcode and an
+Apple team ID.
 
 ```sh
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
@@ -105,5 +106,7 @@ bun run ios:init       # tauri ios init — writes src-tauri/gen/
 bun run tauri ios dev
 ```
 
-Commit `src-tauri/gen/` after that first init if the team wants a shared Xcode
-project; until then it is a local artifact.
+There is no shared Xcode project to commit: `tauri ios init` regenerates
+`gen/apple` from `tauri.conf.json`, its `project.pbxproj` hardcodes whichever
+`DEVELOPMENT_TEAM` ran the init, and the entitlements are written at build time
+by the plugins (see above). Re-run `ios:init` instead of sharing the output.
