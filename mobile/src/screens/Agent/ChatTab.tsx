@@ -2,7 +2,7 @@ import type { AgentRecord } from "@desktop/api/types/agent";
 import { type MutableRefObject, useMemo } from "react";
 import { applyPolicy, type ChatItem, getAdapter } from "../../adapters";
 import { Icon } from "../../components/Icon";
-import { Md } from "../../components/ui";
+import { Md } from "../../components/Md";
 import { isBusy, providerLabel } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { useStickyScroll } from "../../lib/useStickyScroll";

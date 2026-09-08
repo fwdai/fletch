@@ -315,46 +315,6 @@ export function PrPill({ pr }: { pr: PrState | null | undefined }) {
   );
 }
 
-/** Minimal markdown: paragraphs, `**bold**`, `` `code` `` and "- " bullets.
- *  Deliberately not a markdown library — the chat needs these four things. */
-export function Md({ text }: { text: string }) {
-  const inline = (s: string) =>
-    s
-      .split(/(\*\*[^*]+\*\*|`[^`]+`)/g)
-      .filter(Boolean)
-      .map((part, i) =>
-        part.startsWith("**") ? (
-          // biome-ignore lint/suspicious/noArrayIndexKey: split fragments have no id
-          <b key={i}>{part.slice(2, -2)}</b>
-        ) : part.startsWith("`") ? (
-          // biome-ignore lint/suspicious/noArrayIndexKey: split fragments have no id
-          <code key={i}>{part.slice(1, -1)}</code>
-        ) : (
-          part
-        ),
-      );
-  return (
-    <>
-      {text.split(/\n\n+/).map((block, i) => {
-        const lines = block.split("\n");
-        if (lines.every((l) => l.startsWith("- "))) {
-          return (
-            // biome-ignore lint/suspicious/noArrayIndexKey: block position is its identity
-            <ul key={i}>
-              {lines.map((l, j) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: line position is its identity
-                <li key={j}>{inline(l.slice(2))}</li>
-              ))}
-            </ul>
-          );
-        }
-        // biome-ignore lint/suspicious/noArrayIndexKey: block position is its identity
-        return <p key={i}>{inline(block)}</p>;
-      })}
-    </>
-  );
-}
-
 const KEYWORDS =
   /^(pub|fn|let|const|mod|use|enum|struct|impl|return|export|function|if|else|import|from|async|await|match|for|in|self|true|false|default|type|interface)$/;
 
