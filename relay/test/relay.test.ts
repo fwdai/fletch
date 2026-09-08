@@ -1,11 +1,13 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { setApnsFetch } from "../src/apns";
 import {
   decode,
   decodeClose,
   encode,
   encodeClose,
   FRAME_DATA,
+  FRAME_NOTIFY,
   FRAME_OPEN,
   FRAME_TEXT,
 } from "../src/frames";
@@ -13,9 +15,10 @@ import {
   HOST_AUTH_TIMEOUT_MS,
   MAX_DEVICES,
   MAX_MESSAGE_BYTES,
+  NOTIFY_LIMIT_FRAMES,
   RATE_LIMIT_MESSAGES,
 } from "../src/host-relay";
-import { answerChallenge, attachDevice, attachHost, newHost, upgrade } from "./harness";
+import { answerChallenge, attachDevice, attachHost, newApnsKey, newHost, upgrade } from "./harness";
 
 const ORIGIN = "https://relay.test";
 const UPGRADE = { headers: { Upgrade: "websocket" } };
@@ -453,5 +456,187 @@ describe("limits", () => {
     for (let i = 0; i < RATE_LIMIT_MESSAGES; i++) {
       expect(decode(await hostLink.nextBinary())?.type).toBe(FRAME_DATA);
     }
+  });
+});
+
+describe("push notifications", () => {
+  const TOKEN = "a".repeat(64);
+  const OTHER = "b".repeat(64);
+  const SECRETS = {
+    APNS_TEAM_ID: "TEAM123456",
+    APNS_KEY_ID: "KEY1234567",
+    APNS_BUNDLE_ID: "ai.fletch.app",
+  };
+
+  interface Sent {
+    url: string;
+    headers: Record<string, string>;
+    body: Record<string, unknown>;
+  }
+
+  /** Replaces the transport the Durable Object's own client reaches for. */
+  function recordApns(): Sent[] {
+    const sent: Sent[] = [];
+    setApnsFetch(async (request) => {
+      sent.push({
+        url: request.url,
+        headers: Object.fromEntries(request.headers),
+        body: JSON.parse(await request.text()) as Record<string, unknown>,
+      });
+      return new Response("{}", { status: 200 });
+    });
+    return sent;
+  }
+
+  function notifyFrame(payload: unknown): Uint8Array {
+    return encode(FRAME_NOTIFY, 0, new TextEncoder().encode(JSON.stringify(payload)));
+  }
+
+  const push = (tokens: { token: string; environment: string }[]) => ({
+    tokens,
+    title: "Turn complete",
+    body: "Fix login crash",
+    kind: "turn_complete",
+    agentId: "agent-1",
+    collapseId: "agent-1",
+  });
+
+  let pem = "";
+  const configure = () => Object.assign(env, SECRETS, { APNS_PRIVATE_KEY: pem });
+
+  beforeAll(async () => {
+    // The relay reads its credentials from the environment, so the suite puts
+    // a throwaway signing key there rather than shipping a `.p8` fixture.
+    pem = (await newApnsKey()).pem;
+    configure();
+  });
+
+  afterEach(() => {
+    configure();
+    setApnsFetch((request) => fetch(request));
+  });
+
+  it("turns a NOTIFY from the ready host into one alert per token", async () => {
+    const sent = recordApns();
+    const host = await newHost();
+    const hostLink = await attachHost(host);
+    hostLink.ws.send(
+      notifyFrame(
+        push([
+          { token: TOKEN, environment: "production" },
+          { token: OTHER, environment: "sandbox" },
+        ]),
+      ),
+    );
+
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent.map((request) => request.url)).toEqual([
+      `https://api.push.apple.com/3/device/${TOKEN}`,
+      `https://api.sandbox.push.apple.com/3/device/${OTHER}`,
+    ]);
+    expect(sent[0].headers).toMatchObject({
+      "apns-topic": "ai.fletch.app",
+      "apns-push-type": "alert",
+      "apns-priority": "10",
+      "apns-collapse-id": "agent-1",
+    });
+    expect(sent[0].headers.authorization.startsWith("bearer ")).toBe(true);
+    expect(sent[0].body).toEqual({
+      aps: {
+        alert: { title: "Turn complete", body: "Fix login crash" },
+        sound: "default",
+        "thread-id": "agent-1",
+      },
+      // The relay fills in the host ID; the host never sends it.
+      fletch: { hostId: host.hostId, agentId: "agent-1", kind: "turn_complete" },
+    });
+  });
+
+  it("ignores a NOTIFY from a host link that has not proved itself", async () => {
+    const sent = recordApns();
+    const host = await newHost();
+    const claim = await upgrade(`/v1/host/${host.hostId}`);
+    expect((await claim.nextJson()).type).toBe("challenge");
+    // A binary frame where a proof belongs is a failed proof, as before.
+    claim.ws.send(notifyFrame(push([{ token: TOKEN, environment: "production" }])));
+    expect((await claim.closed()).code).toBe(4003);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("ignores a NOTIFY frame sent by a device", async () => {
+    const sent = recordApns();
+    const host = await newHost();
+    const hostLink = await attachHost(host);
+    const device = await attachDevice(host);
+    await hostLink.nextBinary();
+
+    // A device's bytes are opaque: this reaches the host as DATA, nothing more.
+    device.ws.send(notifyFrame(push([{ token: TOKEN, environment: "production" }])));
+    expect(decode(await hostLink.nextBinary())?.type).toBe(FRAME_DATA);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("ignores a malformed payload without disturbing the link", async () => {
+    const sent = recordApns();
+    const host = await newHost();
+    const hostLink = await attachHost(host);
+
+    hostLink.ws.send(encode(FRAME_NOTIFY, 0, new TextEncoder().encode("not json")));
+    hostLink.ws.send(notifyFrame({ tokens: "nope" }));
+    hostLink.ws.send(notifyFrame(push([{ token: "NOT-HEX", environment: "production" }])));
+    hostLink.ws.send(notifyFrame({ ...push([{ token: TOKEN, environment: "sandbox" }]), body: 7 }));
+    hostLink.ws.send(notifyFrame(push([{ token: TOKEN, environment: "production" }])));
+
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0].url).toBe(`https://api.push.apple.com/3/device/${TOKEN}`);
+  });
+
+  it("drops the 31st NOTIFY in a minute and keeps the link", async () => {
+    const sent = recordApns();
+    const host = await newHost();
+    const hostLink = await attachHost(host);
+    for (let i = 0; i <= NOTIFY_LIMIT_FRAMES; i++) {
+      hostLink.ws.send(notifyFrame(push([{ token: TOKEN, environment: "production" }])));
+    }
+
+    await vi.waitFor(() => expect(sent).toHaveLength(NOTIFY_LIMIT_FRAMES));
+    // A round trip after the last frame proves the link is still up and that
+    // the 31st was dropped rather than merely late.
+    await attachDevice(host);
+    expect(decode(await hostLink.nextBinary())?.type).toBe(FRAME_OPEN);
+    expect(sent).toHaveLength(NOTIFY_LIMIT_FRAMES);
+  });
+
+  it("does not hand a reconnecting host a fresh NOTIFY budget", async () => {
+    const sent = recordApns();
+    const host = await newHost();
+    const first = await attachHost(host);
+    for (let i = 0; i < NOTIFY_LIMIT_FRAMES; i++) {
+      first.ws.send(notifyFrame(push([{ token: TOKEN, environment: "production" }])));
+    }
+    await vi.waitFor(() => expect(sent).toHaveLength(NOTIFY_LIMIT_FRAMES));
+
+    // The budget is the host's, not the link's: a new link within the same
+    // minute — after a drop or a deliberate replacement — is still over it.
+    first.ws.close(1000, "reconnecting");
+    const second = await attachHost(host);
+    second.ws.send(notifyFrame(push([{ token: TOKEN, environment: "production" }])));
+    await attachDevice(host);
+    expect(decode(await second.nextBinary())?.type).toBe(FRAME_OPEN);
+    expect(sent).toHaveLength(NOTIFY_LIMIT_FRAMES);
+  });
+
+  it("ignores NOTIFY when the relay has no APNs credentials", async () => {
+    const sent = recordApns();
+    for (const key of ["APNS_TEAM_ID", "APNS_KEY_ID", "APNS_PRIVATE_KEY", "APNS_BUNDLE_ID"]) {
+      Object.assign(env, { [key]: undefined });
+    }
+    const host = await newHost();
+    const hostLink = await attachHost(host);
+    hostLink.ws.send(notifyFrame(push([{ token: TOKEN, environment: "production" }])));
+
+    await attachDevice(host);
+    expect(decode(await hostLink.nextBinary())?.type).toBe(FRAME_OPEN);
+    expect(sent).toHaveLength(0);
   });
 });

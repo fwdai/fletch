@@ -6,6 +6,7 @@ import {
   encodeClose,
   FRAME_CLOSE,
   FRAME_DATA,
+  FRAME_NOTIFY,
   FRAME_OPEN,
   HEADER_BYTES,
 } from "../src/frames";
@@ -22,10 +23,20 @@ describe("frames", () => {
 
   it("round-trips every frame type", () => {
     const payload = new Uint8Array([1, 2, 3, 250, 255]);
-    for (const type of [0x01, 0x02, 0x03, 0x04]) {
+    for (const type of [0x01, 0x02, 0x03, 0x04, 0x05]) {
       const frame = decode(encode(type, 7, payload));
       expect(frame).toEqual({ type, connId: 7, payload });
     }
+  });
+
+  // NOTIFY needs no codec of its own: it is the generic header with connId 0
+  // and a UTF-8 JSON payload the push module parses.
+  it("carries a NOTIFY payload verbatim on connId 0", () => {
+    const json = '{"title":"Turn complete","body":"göne ☃"}';
+    const frame = decode(encode(FRAME_NOTIFY, 0, new TextEncoder().encode(json)));
+    expect(frame?.type).toBe(FRAME_NOTIFY);
+    expect(frame?.connId).toBe(0);
+    expect(new TextDecoder().decode(frame?.payload)).toBe(json);
   });
 
   it("treats connId as unsigned", () => {

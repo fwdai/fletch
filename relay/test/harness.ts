@@ -170,3 +170,25 @@ export async function attachHost(host: TestHost): Promise<Link> {
 export function attachDevice(host: TestHost): Promise<Link> {
   return upgrade(`/v1/device/${host.hostId}`);
 }
+
+export interface TestApnsKey {
+  /** What `APNS_PRIVATE_KEY` holds: the PEM contents of a `.p8`. */
+  pem: string;
+  publicKey: CryptoKey;
+}
+
+/** A throwaway ES256 signing key, so no real Apple key is needed to test. */
+export async function newApnsKey(): Promise<TestApnsKey> {
+  const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+    "sign",
+    "verify",
+  ])) as CryptoKeyPair;
+  const pkcs8 = (await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer;
+  const der = new Uint8Array(pkcs8);
+  const base64 = btoa(String.fromCharCode(...der));
+  const lines = base64.match(/.{1,64}/g) ?? [];
+  return {
+    pem: `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----\n`,
+    publicKey: pair.publicKey,
+  };
+}

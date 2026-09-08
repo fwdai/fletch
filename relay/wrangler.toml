@@ -19,5 +19,10 @@ class_name = "HostRelay"
 tag = "v1"
 new_sqlite_classes = ["HostRelay"]
 
+# Push needs four values, which are secrets and so are deliberately not here:
+# APNS_TEAM_ID, APNS_KEY_ID, APNS_PRIVATE_KEY (the `.p8` PEM) and
+# APNS_BUNDLE_ID. Set them with `wrangler secret put` — see README.md, "Push
+# notifications". A relay without them simply ignores NOTIFY frames.
+
 [observability]
 enabled = true

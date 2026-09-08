@@ -139,6 +139,7 @@ repo); anyone can run their own and point both apps at it.
   | `0x02` DATA | both | one device WebSocket **binary** message, verbatim |
   | `0x03` CLOSE | both | `code (u16 big-endian) || reason (UTF-8)`; the link is over |
   | `0x04` TEXT | relay → host | one device WebSocket **text** message, verbatim, so the host can apply its own `4001` rule |
+  | `0x05` NOTIFY | host → relay | `connId` 0; UTF-8 JSON push request, see "Push notifications" |
 
   A host-sent CLOSE makes the relay close the device link with that code and
   reason. A device link that drops produces a CLOSE toward the host with
@@ -177,6 +178,67 @@ repo); anyone can run their own and point both apps at it.
   both paths, so the app above the transport cannot tell which one it is on
   and does not need to.
 
+## Push notifications
+
+The phone cannot keep a socket open in the background, so the two out-of-app
+signals the desktop already raises — a turn finishing, an agent waiting on a
+tool-use approval — reach it as APNs alerts. Content stays minimal: a fixed
+title and the agent's name. Transcript text never leaves the Mac.
+
+- **Registration.** After every successful `pair` or `hello`, and whenever iOS
+  hands it a new token, the phone sends `register_push` with
+  `{ token: "<APNs device token, lowercase hex>", environment: "sandbox" | "production" }`;
+  `token: null` clears it (the user turned notifications off). The host stores
+  `pushToken` and `pushEnvironment` on the device record and never displays
+  them. A token is a routing handle, not a credential: with it and the relay's
+  APNs key one can send this phone a Fletch-branded alert, nothing more.
+- **Triggers (host).** `turn_complete`: an agent's status goes
+  `running → idle` and the user did not stop or interrupt it. `needs_input`:
+  the first held `control_request` (`can_use_tool`) for an agent while none is
+  pending for it — one alert per batch of parallel prompts, cleared when the
+  turn ends. Both mirror `signalAway` in `src/store/eventListeners.ts`. The
+  host skips a trigger while its own main window has focus (the user is at the
+  Mac); otherwise it sends to every device with a token, and iOS itself hides
+  the banner when the app is in the foreground. Title is `Turn complete` or
+  `Needs your input`; body is the agent's name. No settings in v1.
+- **NOTIFY frame (host → relay).** Mux type `0x05`, `connId` 0, payload UTF-8 JSON:
+
+  ```json
+  { "tokens": [{ "token": "<hex>", "environment": "sandbox" }], "title": "Turn complete", "body": "Fix login crash", "kind": "turn_complete", "agentId": "…", "collapseId": "<agentId>" }
+  ```
+
+  One to 8 tokens; `title`, `body`, `kind` and `agentId` at most 200
+  characters each (Apple caps the whole payload at 4 KB). `collapseId` is
+  optional and at most 64 bytes, Apple's limit for `apns-collapse-id`; a
+  longer one is dropped and the alert still goes out uncoalesced. The relay
+  ignores `connId` on this frame. Fire and forget: the relay sends no result
+  frame. A relay without APNs configured, or one older than this frame type,
+  ignores it; an invalid payload is ignored too. Before `ready` any binary
+  frame is a failed proof (`4003`), NOTIFY included.
+- **Relay → APNs.** The relay signs an ES256 provider JWT from `APNS_TEAM_ID`,
+  `APNS_KEY_ID` and `APNS_PRIVATE_KEY` (the `.p8` PEM), cached and refreshed
+  every 50 minutes (Apple wants 20–60), and POSTs to
+  `https://api.push.apple.com/3/device/<token>` (`api.sandbox.push.apple.com`
+  for `sandbox`) with `apns-topic: <APNS_BUNDLE_ID>`, `apns-push-type: alert`,
+  `apns-priority: 10`, `apns-collapse-id: <collapseId>` and
+  `apns-expiration` one hour out. Body:
+
+  ```json
+  { "aps": { "alert": { "title": "…", "body": "…" }, "sound": "default", "thread-id": "<agentId>" }, "fletch": { "hostId": "<hostId>", "agentId": "…", "kind": "turn_complete" } }
+  ```
+
+  Per host at most 30 NOTIFY frames per minute; excess is dropped, never fatal
+  to the host link. Apple errors are logged with status and `reason` and
+  otherwise dropped in v1 (feeding `410 Unregistered` back to the host is a
+  follow-up). The relay persists nothing about tokens.
+- **Phone.** Notification permission is requested after the first successful
+  pairing, not on launch. Tapping an alert opens the app on that agent when
+  `fletch.hostId` is the paired host, otherwise Home; the payload also reaches
+  the webview as event `push:opened`. The token comes from
+  `didRegisterForRemoteNotificationsWithDeviceToken` through a small in-repo
+  Tauri iOS plugin (`mobile/src-tauri/plugins/push`); `aps-environment` must be
+  in the app's entitlements.
+
 ## Threat model (v2)
 
 A passive observer of the network sees the WebSocket upgrade, ping/pong timing
@@ -210,6 +272,15 @@ device links to that host and make it run Noise handshakes that fail, which is
 why device links per host are capped and rate-limited; a host ID is a random
 public key, so it cannot be guessed or enumerated. A hostile relay operator
 can deny service and nothing more.
+
+Push notifications add Apple as a party and hand the relay a little content: a
+fixed title, the agent's name and its ID, nothing from the transcript. A token
+is stored on the host with its device record, travels to the relay only inside
+a NOTIFY frame on the authenticated host link, and is never persisted there;
+only the relay's APNs key turns it into an alert. A hostile relay operator
+could send paired phones misleading alerts, which stays within the
+deny-or-annoy ceiling: tapping one only opens the app, which then talks to the
+real host over the secure channel.
 
 ## Envelope
 
@@ -276,7 +347,7 @@ Result:
 
 The frame carries no credential: the device's identity is the static key the
 handshake delivered. The host persists
-`{ deviceId, name, platform, publicKey (base64url), createdAt, lastSeenAt }`
+`{ deviceId, name, platform, publicKey (base64url), createdAt, lastSeenAt, pushToken?, pushEnvironment? }`
 in `<app_data_dir>/remote/devices.json`. Records from the token era (with a
 `tokenHash` and no `publicKey`) are dropped at load. After `pair` the
 connection is authenticated as if `hello` had succeeded and the host starts
@@ -340,6 +411,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `clone_repo` | `{ spec, destParent }` | `Workspace` |
 | `gh_status` | `{}` | `GhStatus` |
 | `gh_repo_list` | `{}` | `GhRepoSummary[]` |
+| `register_push` | `{ token: string \| null, environment: "sandbox" \| "production" }` (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
 (`write_checkout_file`, `rename_*`, `delete_*`, `create_*`, `copy_*`), shell
@@ -444,9 +516,9 @@ launch once the disk recovers.
 
 ## Out of scope (tracked, not built)
 
-Push notifications (the host sends the relay a content-free wake hint, the
-relay calls APNs, the phone connects and fetches), QR scanning on the phone
-(manual entry of address and code, plus `fletch://pair` deep-link parsing, for
-now), creating a brand-new repo from the phone (`create_repo`), voice,
-attachments, Run scripts, Keychain storage of the device key on the phone (it
-lives in the app data dir).
+QR scanning on the phone (manual entry of address and code, plus
+`fletch://pair` deep-link parsing, for now), creating a brand-new repo from the
+phone (`create_repo`), voice, attachments, Run scripts, Keychain storage of the
+device key on the phone (it lives in the app data dir). Push follow-ups:
+feeding APNs `410 Unregistered` back to the host so stale tokens are dropped, a
+"mute while I'm at the Mac" setting, per-agent muting.
