@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { Nav, ProviderMark, Segmented } from "../../components/ui";
 import { baseOf, branchOf, isBusy, STATUS_LABEL } from "../../lib/agents";
@@ -89,6 +89,8 @@ export function AgentScreen({ agentId }: { agentId: string }) {
   const git = useStore((s) => s.gitStates[agentId]);
   const [tab, setTab] = useState<Tab>("chat");
   const [dir, setDir] = useState(1);
+  // Owned here so sending a message can re-pin the log to the bottom.
+  const pinnedToBottom = useRef(true);
   if (!agent) return null;
 
   const go = (next: string) => {
@@ -147,13 +149,20 @@ export function AgentScreen({ agentId }: { agentId: string }) {
               } as React.CSSProperties
             }
           >
-            {tab === "chat" && <ChatTab agent={agent} />}
+            {tab === "chat" && <ChatTab agent={agent} pinRef={pinnedToBottom} />}
             {tab === "code" && <CodeTab agent={agent} />}
             {tab === "changes" && <ChangesTab agent={agent} />}
           </div>
         )}
       </div>
-      {tab === "chat" && agent.status !== "spawning" && <Composer agent={agent} />}
+      {tab === "chat" && agent.status !== "spawning" && (
+        <Composer
+          agent={agent}
+          onSend={() => {
+            pinnedToBottom.current = true;
+          }}
+        />
+      )}
     </>
   );
 }

@@ -1,10 +1,11 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { type MutableRefObject, useMemo } from "react";
 import { applyPolicy, type ChatItem, getAdapter } from "../../adapters";
 import { Icon } from "../../components/Icon";
 import { Md } from "../../components/ui";
 import { isBusy, providerLabel } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
+import { useStickyScroll } from "../../lib/useStickyScroll";
 import { useStore } from "../../store";
 import { ApprovalCard, ErrorCard } from "./ApprovalCard";
 import { ToolRow } from "./ToolRow";
@@ -70,13 +71,19 @@ function Item({ item }: { item: ChatItem }) {
   }
 }
 
-export function ChatTab({ agent }: { agent: AgentRecord }) {
+export function ChatTab({
+  agent,
+  pinRef,
+}: {
+  agent: AgentRecord;
+  /** Owned by the screen so the composer can re-pin on send. */
+  pinRef?: MutableRefObject<boolean>;
+}) {
   // No `?? []` inside a selector: a fresh empty value on every call is a new
   // reference and re-renders forever under zustand v5.
   const log = useStore((s) => s.logs[agent.id]);
   const pending = useStore((s) => s.pendingToolUse[agent.id]);
   const startedAt = useStore((s) => s.turnStartedAt[agent.id]);
-  const scroller = useRef<HTMLDivElement>(null);
   const busy = isBusy(agent);
   const elapsed = useElapsed(startedAt, busy);
 
@@ -92,24 +99,17 @@ export function ChatTab({ agent }: { agent: AgentRecord }) {
     return map;
   }, [log]);
 
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, []);
-  const blockCount = blocks.length;
-  useEffect(() => {
-    const el = scroller.current;
-    if (!el || blockCount === 0) return;
-    // Animate while a turn is streaming; jump when the log is rebuilt from
-    // records, where a long smooth scroll would look like a glitch.
-    el.scrollTo({
-      top: el.scrollHeight,
-      behavior: agent.status === "running" ? "smooth" : "auto",
-    });
-  }, [blockCount, agent.status]);
+  // `log` is the signal that matters: a streaming message is extended in
+  // place, so the item count stays put while the rendered height grows. The
+  // rest are the cards this pane draws as siblings of the log — the approval
+  // prompt, the error card, the working indicator.
+  const { ref: scroller, onScroll } = useStickyScroll<HTMLDivElement>(
+    [log, pending, agent.status, busy],
+    pinRef,
+  );
 
   return (
-    <div className="scroll chat" ref={scroller}>
+    <div className="scroll chat" ref={scroller} onScroll={onScroll}>
       {blocks.map((b) =>
         b.kind === "tools" ? (
           <div key={b.key} className="tools rise">

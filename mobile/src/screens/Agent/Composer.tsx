@@ -7,7 +7,14 @@ import { autosize } from "../../lib/autosize";
 import { ignore } from "../../lib/ignore";
 import { useStore } from "../../store";
 
-export function Composer({ agent }: { agent: AgentRecord }) {
+export function Composer({
+  agent,
+  onSend,
+}: {
+  agent: AgentRecord;
+  /** Fires as the message goes out, so the screen can re-pin the log. */
+  onSend?: () => void;
+}) {
   const send = useStore((s) => s.send);
   const stop = useStore((s) => s.stop);
   const openSheet = useStore((s) => s.openSheet);
@@ -20,6 +27,7 @@ export function Composer({ agent }: { agent: AgentRecord }) {
     if (!value) return;
     setText("");
     requestAnimationFrame(() => autosize(ta.current));
+    onSend?.();
     void send(agent.id, value).catch(ignore);
   };
 
