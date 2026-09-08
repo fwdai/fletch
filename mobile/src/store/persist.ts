@@ -18,6 +18,10 @@ export interface Persisted {
   hostKey?: string;
   /** Relay base URL for this host, from the pairing link or the Host sheet. */
   relay?: string;
+  /** Where the last clone landed, keyed by host public key — the desktop
+   *  remembers the same thing, and the folder only means something on the Mac
+   *  that owns it. */
+  destParents?: Record<string, string>;
   /** Host public key → what iOS answered when we asked for notification
    *  permission for it. Keyed by host because the prompt belongs to a pairing,
    *  and remembered so no host is ever asked twice. */
@@ -71,10 +75,29 @@ export async function saveSettings(patch: Persisted): Promise<Persisted> {
   return next;
 }
 
+/** The clone destination this host was last given, or null when it has none.
+ *  Keyed by host key so re-pairing the same Mac gets its folder back. */
+export async function loadDestParent(hostKey: string | null): Promise<string | null> {
+  if (!hostKey) return null;
+  return (await readAll()).destParents?.[hostKey] ?? null;
+}
+
+export async function saveDestParent(hostKey: string | null, parent: string): Promise<void> {
+  if (!hostKey) return;
+  const { destParents } = await readAll();
+  await saveSettings({ destParents: { ...destParents, [hostKey]: parent } });
+}
+
 /** Forget the paired host — address, name, pinned key and relay — and keep the
- *  rest. The notification answers survive: they record what iOS has already
- *  been asked, which unpairing does not undo. */
+ *  rest. Both per-host-key maps survive: the destination folders are
+ *  meaningless to anyone else and useful again if this Mac is re-paired, and
+ *  the notification answers record what iOS has already been asked, which
+ *  unpairing does not undo. */
 export async function clearHost(): Promise<void> {
-  const { theme, pushPermission } = await readAll();
-  await writeAll({ ...(theme ? { theme } : {}), ...(pushPermission ? { pushPermission } : {}) });
+  const { theme, destParents, pushPermission } = await readAll();
+  await writeAll({
+    ...(theme ? { theme } : {}),
+    ...(destParents ? { destParents } : {}),
+    ...(pushPermission ? { pushPermission } : {}),
+  });
 }

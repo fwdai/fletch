@@ -352,7 +352,7 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 27 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 32 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -384,6 +384,11 @@ fn allowlist_matches_the_protocol_table() {
         "list_repo_branches",
         "repo_default_branch",
         "discover_supported_models",
+        "list_dir",
+        "add_workspace_repo",
+        "clone_repo",
+        "gh_status",
+        "gh_repo_list",
         "register_push",
     ];
     assert_eq!(
@@ -433,12 +438,135 @@ fn never_exposed_ops_are_not_dispatchable() {
         "fork_agent",
         "merge_pr",
         "delete_project",
+        // Adding a project is exposed; creating a brand-new repo is the
+        // documented follow-up, so it stays off the wire.
+        "create_repo",
         "",
         "hello",
         "pair",
     ] {
         assert!(!dispatch::is_allowed(op), "{op} must not be dispatchable");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Add-project ops
+//
+// Dispatched in process against a real `Supervisor` — the same code path the
+// socket runs, minus the `AppHandle` none of these five ops touches. Network
+// ops (`gh_status`, `gh_repo_list`, a real clone) are left to manual testing:
+// they need a signed-in `gh`.
+// ---------------------------------------------------------------------------
+
+/// A supervisor over a throwaway DB. The temp dir is returned so it outlives
+/// the connection.
+fn supervisor() -> (tempfile::TempDir, crate::supervisor::Supervisor) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::database::init(dir.path()).unwrap();
+    let workspace = Arc::new(crate::workspace::WorkspaceManager::new(db));
+    (dir, crate::supervisor::Supervisor::new(workspace))
+}
+
+/// `git init` a folder, as the phone's "open an existing folder" flow expects
+/// to find one.
+fn git_init(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    assert!(std::process::Command::new("git")
+        .current_dir(dir)
+        .args(["init", "-q"])
+        .status()
+        .unwrap()
+        .success());
+}
+
+#[tokio::test]
+async fn list_dir_answers_with_a_listing_and_expands_a_tilde() {
+    let (_db, sup) = supervisor();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("file.txt"), b"x").unwrap();
+
+    let listing = dispatch::add_project_op(&sup, "list_dir", json!({ "path": dir.path() }))
+        .await
+        .expect("list_dir");
+    assert_eq!(listing["base"], dir.path().to_string_lossy().as_ref());
+    let entries = listing["entries"].as_array().expect("entries");
+    let sub = entries
+        .iter()
+        .find(|e| e["name"] == "sub")
+        .expect("the subdirectory is listed");
+    assert_eq!(sub["is_dir"], true);
+    assert!(entries.iter().any(|e| e["name"] == "file.txt"));
+
+    // The phone sends the path the user typed; the host resolves `~`.
+    let home = dirs::home_dir().expect("a home directory");
+    let expanded = dispatch::add_project_op(&sup, "list_dir", json!({ "path": "~" }))
+        .await
+        .expect("list_dir ~");
+    // Compared as a `Path`: bare `~` expands with a trailing separator.
+    assert_eq!(
+        std::path::Path::new(expanded["base"].as_str().expect("base")),
+        home,
+    );
+}
+
+#[tokio::test]
+async fn add_workspace_repo_pins_the_folder_and_answers_with_the_workspace() {
+    let (_db, sup) = supervisor();
+    let parent = tempfile::tempdir().unwrap();
+    let repo = parent.path().join("notes");
+    git_init(&repo);
+
+    let workspace =
+        dispatch::add_project_op(&sup, "add_workspace_repo", json!({ "repoPath": repo }))
+            .await
+            .expect("add_workspace_repo");
+    assert_eq!(
+        workspace["repos"],
+        json!([repo.to_string_lossy().as_ref()]),
+        "the pinned repo comes back in the workspace"
+    );
+    assert_eq!(workspace["projects"][0]["name"], "notes");
+}
+
+/// An unparseable clone spec must come back as an op error, not a panic — and
+/// must not reach the network or leave a partial folder behind.
+#[tokio::test]
+async fn clone_repo_rejects_an_invalid_spec() {
+    let (_db, sup) = supervisor();
+    let dest = tempfile::tempdir().unwrap();
+
+    let err = dispatch::add_project_op(
+        &sup,
+        "clone_repo",
+        json!({ "spec": "not a repo", "destParent": dest.path() }),
+    )
+    .await
+    .expect_err("an invalid spec is an error");
+    assert!(err.starts_with("invalid path:"), "unexpected error: {err}");
+    assert_eq!(std::fs::read_dir(dest.path()).unwrap().count(), 0);
+}
+
+/// Missing or misspelled argument keys are a deserialization error, not a
+/// panic, and an op name that never reaches the match still fails closed.
+#[tokio::test]
+async fn add_project_ops_reject_bad_args_and_unknown_names() {
+    let (_db, sup) = supervisor();
+    assert!(dispatch::add_project_op(&sup, "list_dir", json!({}))
+        .await
+        .is_err());
+    assert!(
+        dispatch::add_project_op(&sup, "add_workspace_repo", json!({ "repo_path": "/tmp" }))
+            .await
+            .is_err(),
+        "the wire key is camelCase"
+    );
+    assert_eq!(
+        dispatch::add_project_op(&sup, "create_repo", json!({}))
+            .await
+            .unwrap_err(),
+        UNKNOWN_OP
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1156,6 +1284,10 @@ async fn register_push_rejects_a_token_that_is_not_lowercase_hex() {
         // thing said differently.
         json!({ "token": "a1b2", "environment": "staging" }),
         json!({ "token": "a1b2" }),
+        // No `token` key at all is malformed, not a clear: `{}` must never
+        // wipe a live registration.
+        json!({}),
+        json!({ "environment": "sandbox" }),
     ]
     .into_iter()
     .enumerate()
@@ -1196,11 +1328,13 @@ async fn register_push_cannot_be_the_first_frame() {
 // Push triggers
 // ---------------------------------------------------------------------------
 
-/// The supervisor's half of the triggers, stubbed: an agent's name and whether
-/// the user stopped it. Production reads both off `Supervisor`.
+/// The supervisor's half of the triggers, stubbed: an agent's name, whether the
+/// user stopped it, and whether it runs in the native PTY view. Production
+/// reads all three off `Supervisor`.
 struct Agents {
     name: Option<&'static str>,
     interrupted: bool,
+    native: bool,
 }
 
 impl Agents {
@@ -1208,13 +1342,21 @@ impl Agents {
         Self {
             name: Some(name),
             interrupted: false,
+            native: false,
         }
     }
 
     fn stopped(name: &'static str) -> Self {
         Self {
-            name: Some(name),
             interrupted: true,
+            ..Self::named(name)
+        }
+    }
+
+    fn native(name: &'static str) -> Self {
+        Self {
+            native: true,
+            ..Self::named(name)
         }
     }
 }
@@ -1226,6 +1368,10 @@ impl AgentLookup for Agents {
 
     fn was_interrupted(&self, _agent_id: &str) -> bool {
         self.interrupted
+    }
+
+    fn is_native(&self, _agent_id: &str) -> bool {
+        self.native
     }
 }
 
@@ -1350,6 +1496,21 @@ fn a_stopped_turn_sends_nothing() {
     h.triggers
         .on_status(&agents, "arabia", &AgentStatus::Running);
     h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    assert!(h.sent().is_empty(), "{:?}", h.sent());
+}
+
+/// A native-view agent's status is read off terminal quiet, so one turn can go
+/// `running → idle → running → idle`; none of those is a turn ending, and the
+/// desktop never notifies for such an agent either.
+#[test]
+fn a_native_agents_idle_is_not_a_turn_end() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::native("Fix login crash");
+    for _ in 0..2 {
+        h.triggers
+            .on_status(&agents, "arabia", &AgentStatus::Running);
+        h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    }
     assert!(h.sent().is_empty(), "{:?}", h.sent());
 }
 
@@ -1508,6 +1669,7 @@ fn an_agent_with_no_name_still_alerts() {
     let agents = Agents {
         name: None,
         interrupted: false,
+        native: false,
     };
     h.triggers
         .on_status(&agents, "arabia", &AgentStatus::Running);

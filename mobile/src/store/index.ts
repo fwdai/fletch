@@ -1,7 +1,8 @@
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
-import type { CheckoutFile } from "@desktop/api/types/checkout";
+import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
 import type { DiffStats, GitState } from "@desktop/api/types/git";
 import type { PrChecks, PrState } from "@desktop/api/types/pr";
+import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
 import { createApi } from "../api";
@@ -17,7 +18,7 @@ import {
 } from "../remote";
 import type { PushFletch } from "../remote/push";
 import { registerRemoteEvents } from "./events";
-import { clearHost, loadSettings, saveSettings } from "./persist";
+import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { forgetPush, startPush, syncPush } from "./push";
 import { applyUserTurns, reduceRecords } from "./transcript";
 
@@ -26,7 +27,7 @@ export const api = createApi(client);
 
 export type ThemeMode = "system" | "light" | "dark";
 export type ScreenName = "home" | "project" | "agent" | "file" | "diff";
-export type SheetName = "host" | "newAgent" | "agentMore" | "modelPicker" | "pr";
+export type SheetName = "host" | "newAgent" | "addProject" | "agentMore" | "modelPicker" | "pr";
 
 export interface NavItem {
   key: number;
@@ -54,6 +55,9 @@ export interface MobileState {
   /** Which path the live connection took — mirrored from the client for the
    *  Host sheet, and null when there is no connection. */
   via: Via | null;
+  /** Where the last clone landed on this host, so the next one is offered the
+   *  same folder. Hydrated from the persist layer when the host is known. */
+  lastDestParent: string | null;
 
   workspace: Workspace | null;
   logs: Record<string, ChatItem[]>;
@@ -87,7 +91,12 @@ export interface MobileState {
   pop(): void;
   openFromPush(fletch: PushFletch): void;
   openSheet(name: SheetName, props?: Record<string, string>): void;
+  /** Close whatever sheet is open. Safe to hand straight to an `onClose` or
+   *  `onClick`: it ignores its arguments. */
   closeSheet(): void;
+  /** Close the sheet only if `name` is the one showing: for an async action
+   *  finishing late, which must not dismiss whatever the user opened since. */
+  closeSheetIf(name: SheetName): void;
 
   refreshWorkspace(): Promise<void>;
   openAgent(agentId: string): void;
@@ -111,6 +120,12 @@ export interface MobileState {
   setEffort(agentId: string, effort: string): Promise<void>;
   publish(agentId: string, title: string, body: string): Promise<void>;
   pushToPr(agentId: string): Promise<void>;
+
+  listDir(path: string): Promise<DirListing>;
+  addWorkspaceRepo(repoPath: string): Promise<void>;
+  cloneRepo(spec: string, destParent: string): Promise<void>;
+  ghStatus(): Promise<GhStatus>;
+  ghRepoList(): Promise<GhRepoSummary[]>;
 }
 
 export interface SpawnInput {
@@ -181,6 +196,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   hostKey: null,
   relay: null,
   via: null,
+  lastDestParent: null,
 
   workspace: null,
   logs: {},
@@ -250,6 +266,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     // A saved host key is the whole credential: `hello` authenticates with the
     // device key the Rust layer holds.
     if (saved.host && hostKey) {
+      set({ lastDestParent: saved.destParents?.[hostKey] ?? null });
       await get()
         .connect({
           host: saved.host,
@@ -278,6 +295,9 @@ export const useStore = create<MobileState>()((set, get) => ({
         hostKey,
         relay,
         via: client.via,
+        // The remembered clone destination is per host, so it can only be
+        // resolved once the handshake says which host this is.
+        lastDestParent: await loadDestParent(hostKey),
         nav: [homeItem()],
       });
       // Mock mode must not leave a "mock" host behind for the next real run.
@@ -316,6 +336,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       hostKey: null,
       relay: null,
       via: null,
+      lastDestParent: null,
       workspace: null,
       hostInfo: null,
       logs: {},
@@ -390,6 +411,9 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
   closeSheet() {
     set((s) => (s.sheet ? { sheet: { ...s.sheet, open: false } } : s));
+  },
+  closeSheetIf(name) {
+    if (get().sheet?.name === name) get().closeSheet();
   },
 
   async refreshWorkspace() {
@@ -572,6 +596,40 @@ export const useStore = create<MobileState>()((set, get) => ({
     if (git?.files.length) await api.commitAgent(agentId, title);
     await api.pushAgent(agentId);
     await get().loadGit(agentId);
+  },
+
+  async listDir(path) {
+    return guard(set, () => api.listDir(path));
+  },
+
+  /** Both add-project ops answer with the whole new `Workspace`, which is
+   *  applied here rather than waited for as a `workspace:changed`: it replaces
+   *  the workspace wholesale, exactly as `refreshWorkspace` does, so an event
+   *  landing either side of this leaves the same state. Only the Add Project
+   *  sheet is closed on success — a slow clone must not dismiss a sheet the user
+   *  opened in the meantime. */
+  async addWorkspaceRepo(repoPath) {
+    return guard(set, async () => {
+      set({ workspace: await api.addWorkspaceRepo(repoPath) });
+      get().closeSheetIf("addProject");
+    });
+  },
+
+  async cloneRepo(spec, destParent) {
+    return guard(set, async () => {
+      const workspace = await api.cloneRepo(spec, destParent);
+      set({ workspace, lastDestParent: destParent });
+      await saveDestParent(get().hostKey, destParent);
+      get().closeSheetIf("addProject");
+    });
+  },
+
+  async ghStatus() {
+    return guard(set, () => api.ghStatus());
+  },
+
+  async ghRepoList() {
+    return guard(set, () => api.ghRepoList());
   },
 }));
 

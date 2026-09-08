@@ -5,8 +5,8 @@ import { reduce } from "./reduce";
 import { usageEvents } from "./usage";
 
 // Reduces Codex's `codex exec --json` thread/turn/item event stream
-// (verified against codex-cli 0.135.0 — see ./reduce.ts). Transcript
-// replay on re-attach is a follow-up (see ./normalize.ts).
+// (verified against codex-cli 0.135.0 — see ./reduce.ts) and replays the
+// on-disk rollout, whose message schema changed at 0.153 (see ./normalize.ts).
 export const codexAdapter: ChatAdapter = {
   id: "codex",
   reduce,

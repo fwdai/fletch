@@ -11,6 +11,7 @@ pub(crate) mod run;
 mod session_sync;
 mod shell;
 
+pub(crate) use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};
 pub use lifecycle::SpawnRequest;
 pub(crate) use pr_set::sync_pr_set_links;

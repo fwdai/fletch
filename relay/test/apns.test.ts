@@ -142,7 +142,8 @@ describe("parsePushRequest", () => {
   });
 
   it("drops a collapse id it cannot use rather than the alert", () => {
-    for (const collapseId of [undefined, 7, "x".repeat(65)]) {
+    // 64 `é` is 64 characters but 128 UTF-8 bytes; Apple's cap is in bytes.
+    for (const collapseId of [undefined, 7, "x".repeat(65), "é".repeat(64)]) {
       const parsed = parsePushRequest(encode({ ...valid, collapseId }));
       expect(parsed.ok && parsed.request.collapseId).toBe("");
     }

@@ -124,6 +124,107 @@ describe("codexAdapter", () => {
     ]);
   });
 
+  // codex-cli ≥ 0.153 moved the rollout's conversational backbone from flat
+  // `user_message` / `agent_message` events to `item_completed` TurnItem
+  // envelopes (fixture mirrors a real 0.153.4 rollout). Before this was
+  // handled, a turn-end rebuild dropped every prompt and reply, leaving only
+  // tool rows (issue #653).
+  it("replays a 0.153 rollout (item_completed TurnItems) into the conversation", () => {
+    const lines = readJsonl("rollout-0153.jsonl");
+    const events = codexAdapter.normalizeTranscript(lines);
+    const items = run(events as RawEvent[]);
+    expect(items).toEqual([
+      { kind: "user_message", text: "run echo hello" },
+      { kind: "agent_message", text: "Running it now.", model: "gpt-5.4-mini" },
+      {
+        kind: "tool_call",
+        id: "call_1",
+        name: "exec",
+        input: 'const r = await tools.exec_command({cmd:"echo hello"}); text(r)',
+        streaming: false,
+      },
+      {
+        kind: "tool_result",
+        tool_use_id: "call_1",
+        content: "Script completed\nOutput:\nhello\n",
+        is_error: false,
+      },
+      { kind: "agent_message", text: "It printed hello.", model: "gpt-5.4-mini" },
+      { kind: "notice", subtype: "turn_end", text: "success" },
+    ]);
+  });
+
+  it("replays both commentary and final_answer AgentMessage phases", () => {
+    const events = codexAdapter.normalizeTranscript([
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "AgentMessage",
+            id: "m1",
+            content: [{ type: "Text", text: "Looking." }],
+            phase: "commentary",
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "AgentMessage",
+            id: "m2",
+            content: [{ type: "Text", text: "Done." }],
+            phase: "final_answer",
+          },
+        },
+      },
+    ]);
+    expect(run(events)).toEqual([
+      { kind: "agent_message", text: "Looking.", model: undefined },
+      { kind: "agent_message", text: "Done.", model: undefined },
+    ]);
+  });
+
+  it("ignores non-message TurnItems so tool rows aren't duplicated", () => {
+    const events = codexAdapter.normalizeTranscript([
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "McpToolCall",
+            id: "call_9",
+            server: "codegraph",
+            tool: "explore",
+            status: "completed",
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: {
+            type: "CommandExecution",
+            id: "exec-9",
+            command: ["/bin/zsh", "-lc", "ls"],
+            status: "completed",
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          item: { type: "Reasoning", id: "rs_9", summary_text: [], raw_content: [] },
+        },
+      },
+    ]);
+    expect(events).toEqual([]);
+  });
+
   it("stamps the turn_context model onto replayed agent messages", () => {
     const events = codexAdapter.normalizeTranscript([
       { type: "turn_context", payload: { model: "gpt-5.2-codex" } },

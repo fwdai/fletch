@@ -669,11 +669,16 @@ fn register_push(
     device_id: &str,
     args: Value,
 ) -> std::result::Result<Value, String> {
+    // `token` has to be said, even as `null`: an absent key is a malformed
+    // request, not a clear, or `{}` would silently wipe a live registration.
+    if args.get("token").is_none() {
+        return Err("token is required: a string to register, null to clear".to_string());
+    }
     let args: RegisterPushArgs = serde_json::from_value(args).map_err(|e| e.to_string())?;
-    // Both are checked only when there is a token to route. The doc writes
-    // `environment` as always present, but it means nothing without a token and
-    // `token: null` is the clear — so a phone turning notifications off is not
-    // made to name an environment it is about to forget.
+    // `environment` is checked only when there is a token to route. It means
+    // nothing without one, and `token: null` is the clear — so a phone turning
+    // notifications off is not made to name an environment it is about to
+    // forget.
     if let Some(token) = args.token.as_deref() {
         if !super::auth::valid_push_token(token) {
             return Err("a push token has to be lowercase hex".to_string());
@@ -733,11 +738,11 @@ fn empty_args() -> Value {
     json!({})
 }
 
-/// `register_push`'s args. `token: null` (or absent) clears the registration,
-/// in which case `environment` is not read — see `register_push`.
+/// `register_push`'s args. `token: null` clears the registration, in which case
+/// `environment` is not read; an absent `token` is rejected before this is
+/// parsed — see `register_push`.
 #[derive(Deserialize)]
 struct RegisterPushArgs {
-    #[serde(default)]
     token: Option<String>,
     #[serde(default)]
     environment: Option<String>,

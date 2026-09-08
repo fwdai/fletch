@@ -194,7 +194,10 @@ title and the agent's name. Transcript text never leaves the Mac.
   them. A token is a routing handle, not a credential: with it and the relay's
   APNs key one can send this phone a Fletch-branded alert, nothing more.
 - **Triggers (host).** `turn_complete`: an agent's status goes
-  `running → idle` and the user did not stop or interrupt it. `needs_input`:
+  `running → idle` and the user did not stop or interrupt it. Native-view
+  agents are excluded: their status is read off terminal quiet and can flap
+  several times in one turn, and the desktop does not notify for them either
+  (phones only spawn the structured view anyway). `needs_input`:
   the first held `control_request` (`can_use_tool`) for an agent while none is
   pending for it — one alert per batch of parallel prompts, cleared when the
   turn ends. Both mirror `signalAway` in `src/store/eventListeners.ts`. The
@@ -264,7 +267,12 @@ must pair again.
 Still in place from v1: pairing needs a single-use code, minted on the desktop
 and valid five minutes; turning remote access off closes every connection with
 `4004`; ops are an explicit allowlist with no shell, no file writes and no raw
-PTY, and events are a whitelist that excludes PTY output.
+PTY, and events are a whitelist that excludes PTY output. A paired phone can
+list directory names anywhere the desktop user can (`list_dir`), add any folder
+as a project and clone into any folder — the same reach the desktop's own New
+Project dialog has, and no more: it still cannot read files outside an agent's
+checkout, and the only writes outside one are the `git init` of a pinned folder
+and the clone itself, both into a folder the user chose.
 
 The relay adds a party that sees metadata but no content: which host IDs are
 online, when devices connect, and ciphertext sizes and timing. It cannot read
@@ -408,6 +416,11 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
 | `discover_supported_models` | as command | `AgentModels[]` |
+| `list_dir` | `{ path }` (tilde-expanded on the host) | `DirListing` |
+| `add_workspace_repo` | `{ repoPath }` | `Workspace` |
+| `clone_repo` | `{ spec, destParent }` | `Workspace` |
+| `gh_status` | `{}` | `GhStatus` |
+| `gh_repo_list` | `{}` | `GhRepoSummary[]` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
@@ -420,6 +433,23 @@ The spawn flow is the desktop's: `allocate_draft_name` → `spawn_agent` →
 wait for `agent:status` to leave `spawning` → `send_user_message` with the
 prompt as the first turn (`turnId` = client UUID). The phone does not send
 the prompt through `instructions`.
+
+Adding a project from the phone reuses the desktop's commands unchanged. Two
+flows: **open an existing folder** on the Mac (`list_dir` to browse, then
+`add_workspace_repo`) and **clone from GitHub** (`gh_status` to know whether
+`gh` is signed in, `gh_repo_list` to pick one of the user's repos or a typed
+`owner/repo` / URL, `list_dir` to pick the destination parent, then
+`clone_repo`). The result of either is the new `Workspace`, which the caller
+applies itself; on success the host also emits `workspace:changed` (forwarded
+to every phone like any whitelisted event), so the desktop window and the other
+paired phones reload their project list at once. Applying the result and
+receiving the event both replace the workspace wholesale, so the order they
+land in does not matter. Note `DirListing.entries[].is_dir` is snake_case:
+`DirEntry` is serialized as-is, the one non-camelCase payload on the allowlist.
+Pinning a folder that is not yet a git repository runs `git init` plus an
+initial commit in it, exactly as the desktop dialog does. The phone remembers
+the last destination parent per host, as the desktop does. Creating a brand-new
+repo from the phone (`create_repo`) is a follow-up.
 
 ## Events (v1 whitelist)
 
@@ -497,10 +527,10 @@ launch once the disk recovers.
 ## Out of scope (tracked, not built)
 
 QR scanning on the phone (manual entry of address and code, plus
-`fletch://pair` deep-link parsing, for now), Add project / clone, voice,
-attachments, Run scripts, Keychain storage of the device key on the phone (it
-lives in the app data dir). Push follow-ups: feeding APNs `410 Unregistered`
-back to the host so stale tokens are dropped, noticing a permission revoked in
-iOS Settings (the phone has no way to observe it today, so the host keeps a
-token that can no longer alert), a "mute while I'm at the Mac" setting,
-per-agent muting.
+`fletch://pair` deep-link parsing, for now), creating a brand-new repo from the
+phone (`create_repo`), voice, attachments, Run scripts, Keychain storage of the
+device key on the phone (it lives in the app data dir). Push follow-ups:
+feeding APNs `410 Unregistered` back to the host so stale tokens are dropped,
+noticing a permission revoked in iOS Settings (the phone has no way to observe
+it today, so the host keeps a token that can no longer alert), a "mute while
+I'm at the Mac" setting, per-agent muting.

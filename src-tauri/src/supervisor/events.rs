@@ -397,9 +397,10 @@ pub(super) fn emit_run_port(app: &AppHandle, agent_id: &str, port: u16) {
     );
 }
 
-/// Structural workspace change (archive/restore) — the frontend reloads the
-/// whole workspace on this signal rather than patching from finer events.
-pub(super) fn emit_workspace_changed(app: &AppHandle) {
+/// Structural workspace change (archive/restore, a project pinned or cloned) —
+/// the frontend reloads the whole workspace on this signal rather than patching
+/// from finer events.
+pub(crate) fn emit_workspace_changed(app: &AppHandle) {
     emit(app, "workspace:changed", ());
 }
 
