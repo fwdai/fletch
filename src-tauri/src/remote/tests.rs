@@ -1156,6 +1156,10 @@ async fn register_push_rejects_a_token_that_is_not_lowercase_hex() {
         // thing said differently.
         json!({ "token": "a1b2", "environment": "staging" }),
         json!({ "token": "a1b2" }),
+        // No `token` key at all is malformed, not a clear: `{}` must never
+        // wipe a live registration.
+        json!({}),
+        json!({ "environment": "sandbox" }),
     ]
     .into_iter()
     .enumerate()
@@ -1196,11 +1200,13 @@ async fn register_push_cannot_be_the_first_frame() {
 // Push triggers
 // ---------------------------------------------------------------------------
 
-/// The supervisor's half of the triggers, stubbed: an agent's name and whether
-/// the user stopped it. Production reads both off `Supervisor`.
+/// The supervisor's half of the triggers, stubbed: an agent's name, whether the
+/// user stopped it, and whether it runs in the native PTY view. Production
+/// reads all three off `Supervisor`.
 struct Agents {
     name: Option<&'static str>,
     interrupted: bool,
+    native: bool,
 }
 
 impl Agents {
@@ -1208,13 +1214,21 @@ impl Agents {
         Self {
             name: Some(name),
             interrupted: false,
+            native: false,
         }
     }
 
     fn stopped(name: &'static str) -> Self {
         Self {
-            name: Some(name),
             interrupted: true,
+            ..Self::named(name)
+        }
+    }
+
+    fn native(name: &'static str) -> Self {
+        Self {
+            native: true,
+            ..Self::named(name)
         }
     }
 }
@@ -1226,6 +1240,10 @@ impl AgentLookup for Agents {
 
     fn was_interrupted(&self, _agent_id: &str) -> bool {
         self.interrupted
+    }
+
+    fn is_native(&self, _agent_id: &str) -> bool {
+        self.native
     }
 }
 
@@ -1350,6 +1368,21 @@ fn a_stopped_turn_sends_nothing() {
     h.triggers
         .on_status(&agents, "arabia", &AgentStatus::Running);
     h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    assert!(h.sent().is_empty(), "{:?}", h.sent());
+}
+
+/// A native-view agent's status is read off terminal quiet, so one turn can go
+/// `running → idle → running → idle`; none of those is a turn ending, and the
+/// desktop never notifies for such an agent either.
+#[test]
+fn a_native_agents_idle_is_not_a_turn_end() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::native("Fix login crash");
+    for _ in 0..2 {
+        h.triggers
+            .on_status(&agents, "arabia", &AgentStatus::Running);
+        h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    }
     assert!(h.sent().is_empty(), "{:?}", h.sent());
 }
 
@@ -1508,6 +1541,7 @@ fn an_agent_with_no_name_still_alerts() {
     let agents = Agents {
         name: None,
         interrupted: false,
+        native: false,
     };
     h.triggers
         .on_status(&agents, "arabia", &AgentStatus::Running);

@@ -435,8 +435,9 @@ async fn attempt(
     }
 
     tracing::info!(%endpoint, "remote: relay link up");
-    published.lock().set(RelayState::Connected, None);
-    match demux(state, ws, timing, outbound, shutdown).await {
+    // `Connected` is published by `demux`, once the outbound sender is in place:
+    // a trigger that sees `Connected` must be able to send.
+    match demux(state, ws, timing, outbound, published, shutdown).await {
         Outcome::Done => Outcome::Done,
         Outcome::Retry { error, .. } => Outcome::Retry {
             error,
@@ -578,14 +579,18 @@ async fn demux(
     ws: LinkWs,
     timing: &RelayTiming,
     outbound: &Outgoing,
+    published: &Arc<Mutex<Published>>,
     shutdown: &mut broadcast::Receiver<()>,
 ) -> Outcome {
     let (sink, mut stream) = ws.split();
     let (out_tx, out_rx) = mpsc::channel::<Message>(LINK_OUTBOUND_BUFFER);
     let writer = tokio::spawn(write_loop(sink, out_rx));
     // Published only for the life of this attempt: a NOTIFY enqueued against a
-    // link that has gone away would sit in a queue nothing is writing.
+    // link that has gone away would sit in a queue nothing is writing. The
+    // sender goes in first and `Connected` second, so nothing that reads
+    // `Connected` can find the slot still empty.
     *outbound.lock() = Some(out_tx.clone());
+    published.lock().set(RelayState::Connected, None);
 
     let mut conns: HashMap<u32, Registered> = HashMap::new();
     // Owns the per-connection `serve` tasks, so winding the link down can wait

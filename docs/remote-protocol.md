@@ -194,7 +194,10 @@ title and the agent's name. Transcript text never leaves the Mac.
   them. A token is a routing handle, not a credential: with it and the relay's
   APNs key one can send this phone a Fletch-branded alert, nothing more.
 - **Triggers (host).** `turn_complete`: an agent's status goes
-  `running → idle` and the user did not stop or interrupt it. `needs_input`:
+  `running → idle` and the user did not stop or interrupt it. Native-view
+  agents are excluded: their status is read off terminal quiet and can flap
+  several times in one turn, and the desktop does not notify for them either
+  (phones only spawn the structured view anyway). `needs_input`:
   the first held `control_request` (`can_use_tool`) for an agent while none is
   pending for it — one alert per batch of parallel prompts, cleared when the
   turn ends. Both mirror `signalAway` in `src/store/eventListeners.ts`. The
