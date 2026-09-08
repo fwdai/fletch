@@ -41,4 +41,9 @@ pub fn install_taps(app: &AppHandle, state: Arc<RemoteState>) {
             state.forward_event(name, event.payload());
         });
     }
+    // Push notifications read two of the same events for a different purpose:
+    // not "mirror this to a phone" but "is this worth waking one". Separate
+    // taps rather than a branch in the loop above, because the whitelist is a
+    // security boundary and should stay a plain fan-out.
+    super::push::install_taps(app, state);
 }

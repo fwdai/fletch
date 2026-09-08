@@ -188,7 +188,8 @@ title and the agent's name. Transcript text never leaves the Mac.
 - **Registration.** After every successful `pair` or `hello`, and whenever iOS
   hands it a new token, the phone sends `register_push` with
   `{ token: "<APNs device token, lowercase hex>", environment: "sandbox" | "production" }`;
-  `token: null` clears it (the user turned notifications off). The host stores
+  `{ token: null }` alone clears it (the user turned notifications off), and
+  `environment` is only read, and required, when a token is present. The host stores
   `pushToken` and `pushEnvironment` on the device record and never displays
   them. A token is a routing handle, not a credential: with it and the relay's
   APNs key one can send this phone a Fletch-branded alert, nothing more.
@@ -401,7 +402,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
 | `discover_supported_models` | as command | `AgentModels[]` |
-| `register_push` | `{ token: string \| null, environment: "sandbox" \| "production" }` (remote-only, see "Push notifications") | `null` |
+| `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
 (`write_checkout_file`, `rename_*`, `delete_*`, `create_*`, `copy_*`), shell

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
@@ -9,8 +10,10 @@ use tokio_tungstenite::WebSocketStream;
 
 use super::auth::DeviceRecord;
 use super::dispatch::{self, Dispatch, DispatchFuture, TOO_MANY_IN_FLIGHT, UNKNOWN_OP};
+use super::push::{AgentLookup, PushTriggers};
 use super::secure::{self, SecureChannel};
 use super::{DeviceStore, PairingTokens, RemoteState};
+use crate::workspace::AgentStatus;
 
 // ---------------------------------------------------------------------------
 // Pairing tokens
@@ -183,6 +186,54 @@ fn token_era_records_are_dropped_at_load() {
     assert!(store.find_by_key(&key(1)).is_some());
 }
 
+/// Every record on disk predates push, so the two new fields must be absent-
+/// tolerant: a store that dropped these records would silently unpair every
+/// device the user has.
+#[test]
+fn records_without_the_push_fields_still_load() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("devices.json"),
+        serde_json::to_vec(&json!([{
+            "deviceId": "before-push",
+            "name": "phone",
+            "platform": "ios",
+            "publicKey": super::secure::encode_key(&key(1)),
+            "createdAt": "2026-01-02T00:00:00Z",
+            "lastSeenAt": null,
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let store = DeviceStore::load(dir.path());
+    let loaded = store.list();
+    assert_eq!(loaded.len(), 1, "a record without push fields was dropped");
+    assert!(loaded[0].push_token.is_none());
+    assert!(loaded[0].push_environment.is_none());
+
+    // And it can register one, which then survives a reload.
+    assert!(store
+        .set_push("before-push", Some("beef01"), "production")
+        .unwrap());
+    let reloaded = DeviceStore::load(dir.path()).list();
+    assert_eq!(reloaded[0].push_token.as_deref(), Some("beef01"));
+    assert_eq!(reloaded[0].push_environment.as_deref(), Some("production"));
+}
+
+/// A token belongs to a device that is still paired. A registration for one
+/// that was revoked under the connection writes nothing.
+#[test]
+fn setting_a_push_token_on_an_unknown_device_stores_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = DeviceStore::load(dir.path());
+    store.register("phone", "ios", &key(1)).unwrap();
+    assert!(!store
+        .set_push("never-paired", Some("aa"), "sandbox")
+        .unwrap());
+    assert!(store.list()[0].push_token.is_none());
+}
+
 #[test]
 fn concurrent_writers_leave_the_file_agreeing_with_memory() {
     let dir = tempfile::tempdir().unwrap();
@@ -301,8 +352,11 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 26 rows of docs/remote-protocol.md's op table, spelled out here so a
-    // silent widening of the wire surface fails this test.
+    // The 27 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // silent widening of the wire surface fails this test. `register_push` is
+    // the one the session layer answers itself (it needs the connection's
+    // device identity), so it lives in `SESSION_OPS`; the two together are what
+    // a phone may name, which is `is_allowed`.
     let documented = [
         "get_workspace",
         "allocate_draft_name",
@@ -330,8 +384,28 @@ fn allowlist_matches_the_protocol_table() {
         "list_repo_branches",
         "repo_default_branch",
         "discover_supported_models",
+        "register_push",
     ];
-    assert_eq!(dispatch::OPS, documented.as_slice());
+    assert_eq!(
+        [dispatch::OPS, dispatch::SESSION_OPS].concat(),
+        documented.as_slice()
+    );
+    for op in documented {
+        assert!(dispatch::is_allowed(op), "{op} is in the doc's table");
+    }
+}
+
+/// `register_push` is on the wire allowlist but *not* on the dispatcher's:
+/// answering it needs the calling device's identity, which the `Dispatch` trait
+/// does not carry, so a route that bypassed the session layer must fail closed
+/// rather than write to some other device's record.
+#[test]
+fn register_push_is_on_the_wire_but_not_on_the_dispatcher() {
+    assert!(dispatch::is_allowed(dispatch::REGISTER_PUSH));
+    assert!(
+        !dispatch::OPS.contains(&dispatch::REGISTER_PUSH),
+        "the generic dispatcher must not be able to answer it"
+    );
 }
 
 #[test]
@@ -950,4 +1024,493 @@ async fn only_the_ws_path_is_served() {
     assert!(connect_path(host.port, "/").await.is_err());
     assert!(connect_path(host.port, "/admin").await.is_err());
     assert!(connect_path(host.port, "/ws").await.is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// register_push
+// ---------------------------------------------------------------------------
+
+fn stored(state: &Arc<RemoteState>, device_id: &str) -> DeviceRecord {
+    state
+        .devices()
+        .list()
+        .into_iter()
+        .find(|d| d.device_id == device_id)
+        .expect("the device is on file")
+}
+
+/// A registration lands on the device the *handshake* proved, never on one a
+/// frame names — there is no device id in the args, by design.
+#[tokio::test]
+async fn register_push_stores_the_token_on_the_calling_device_and_clears_it() {
+    let host = boot();
+    let (one, two) = (device(), device());
+    let caller = host
+        .state
+        .devices()
+        .register("phone", "ios", &one.public)
+        .unwrap();
+    let bystander = host
+        .state
+        .devices()
+        .register("tablet", "ios", &two.public)
+        .unwrap();
+
+    let mut ws = secure_connect(host.port, &one).await;
+    ws.request("1", "hello", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+
+    ws.request(
+        "2",
+        "register_push",
+        json!({ "token": "a1b2c3d4", "environment": "sandbox" }),
+    )
+    .await;
+    let reply = ws.next_json().await;
+    assert_eq!(reply["id"], "2");
+    assert_eq!(reply["ok"], true);
+    assert_eq!(reply["result"], Value::Null, "the op answers null");
+
+    let record = stored(&host.state, &caller.device_id);
+    assert_eq!(record.push_token.as_deref(), Some("a1b2c3d4"));
+    assert_eq!(record.push_environment.as_deref(), Some("sandbox"));
+    assert!(
+        stored(&host.state, &bystander.device_id)
+            .push_token
+            .is_none(),
+        "the other paired device was touched"
+    );
+
+    // Settings learns that push is on and nothing more: the token itself is not
+    // in the status DTO at all.
+    let status = serde_json::to_value(host.state.status()).unwrap();
+    let devices = status["devices"].as_array().unwrap();
+    let caller_dto = devices
+        .iter()
+        .find(|d| d["deviceId"] == caller.device_id.as_str())
+        .unwrap();
+    assert_eq!(caller_dto["pushEnabled"], true);
+    assert!(
+        !status.to_string().contains("a1b2c3d4"),
+        "token leaked: {status}"
+    );
+    assert_eq!(
+        devices
+            .iter()
+            .find(|d| d["deviceId"] == bystander.device_id.as_str())
+            .unwrap()["pushEnabled"],
+        false
+    );
+
+    // `token: null` is the user turning notifications off: both fields go, so
+    // no environment is left pointing at nothing.
+    ws.request(
+        "3",
+        "register_push",
+        json!({ "token": null, "environment": "production" }),
+    )
+    .await;
+    assert_eq!(ws.next_json().await["ok"], true);
+    let cleared = stored(&host.state, &caller.device_id);
+    assert!(cleared.push_token.is_none());
+    assert!(cleared.push_environment.is_none());
+    assert!(!host.state.status().devices[0].push_enabled);
+
+    // Clearing needs no environment: there is nothing left for one to describe.
+    ws.request(
+        "4",
+        "register_push",
+        json!({ "token": "a1b2c3d4", "environment": "production" }),
+    )
+    .await;
+    assert_eq!(ws.next_json().await["ok"], true);
+    ws.request("5", "register_push", json!({ "token": null }))
+        .await;
+    assert_eq!(ws.next_json().await["ok"], true);
+    assert!(stored(&host.state, &caller.device_id).push_token.is_none());
+}
+
+/// A token that is not lowercase hex, or an environment that is not one of the
+/// two, is an op error — not a row on disk the relay could never route.
+#[tokio::test]
+async fn register_push_rejects_a_token_that_is_not_lowercase_hex() {
+    let host = boot();
+    let phone = device();
+    let record = host
+        .state
+        .devices()
+        .register("phone", "ios", &phone.public)
+        .unwrap();
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("0", "hello", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+
+    for (i, args) in [
+        // Uppercase hex, non-hex letters, whitespace and empty are all out.
+        json!({ "token": "A1B2C3D4", "environment": "sandbox" }),
+        json!({ "token": "zzzz", "environment": "sandbox" }),
+        json!({ "token": "a1 b2", "environment": "sandbox" }),
+        json!({ "token": "", "environment": "sandbox" }),
+        // A live token against an environment that does not exist routes
+        // nowhere either, and a token with no environment at all is the same
+        // thing said differently.
+        json!({ "token": "a1b2", "environment": "staging" }),
+        json!({ "token": "a1b2" }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("{}", i + 1);
+        ws.request(&id, "register_push", args.clone()).await;
+        let reply = ws.next_json().await;
+        assert_eq!(reply["id"], id);
+        assert_eq!(reply["ok"], false, "{args} should be refused");
+        assert!(reply["error"].is_string());
+    }
+
+    assert!(
+        stored(&host.state, &record.device_id).push_token.is_none(),
+        "a refused registration must not persist"
+    );
+    // The connection is still usable: a bad op is an error, not a hang-up.
+    ws.request("last", "get_workspace", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+}
+
+/// `register_push` is not a handshake op: an unauthenticated connection cannot
+/// reach it, because the device it would write to is not known yet.
+#[tokio::test]
+async fn register_push_cannot_be_the_first_frame() {
+    let host = boot();
+    let mut ws = secure_connect(host.port, &device()).await;
+    ws.request(
+        "1",
+        "register_push",
+        json!({ "token": "a1b2", "environment": "sandbox" }),
+    )
+    .await;
+    assert_eq!(ws.close_code().await, 4001);
+}
+
+// ---------------------------------------------------------------------------
+// Push triggers
+// ---------------------------------------------------------------------------
+
+/// The supervisor's half of the triggers, stubbed: an agent's name and whether
+/// the user stopped it. Production reads both off `Supervisor`.
+struct Agents {
+    name: Option<&'static str>,
+    interrupted: bool,
+}
+
+impl Agents {
+    fn named(name: &'static str) -> Self {
+        Self {
+            name: Some(name),
+            interrupted: false,
+        }
+    }
+
+    fn stopped(name: &'static str) -> Self {
+        Self {
+            name: Some(name),
+            interrupted: true,
+        }
+    }
+}
+
+impl AgentLookup for Agents {
+    fn agent_name(&self, _agent_id: &str) -> Option<String> {
+        self.name.map(str::to_string)
+    }
+
+    fn was_interrupted(&self, _agent_id: &str) -> bool {
+        self.interrupted
+    }
+}
+
+/// Triggers whose alerts land in a vec instead of on a relay link, plus the
+/// device store they read tokens from.
+struct Triggers {
+    _dir: tempfile::TempDir,
+    state: Arc<RemoteState>,
+    triggers: PushTriggers,
+    sent: Arc<Mutex<Vec<Value>>>,
+}
+
+impl Triggers {
+    /// `focused` forces the "is the user at the Mac" check; `tokens` is one
+    /// paired device per entry, each with that token and environment.
+    fn boot(focused: bool, tokens: &[(&str, &str)]) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
+        for (i, (token, environment)) in tokens.iter().enumerate() {
+            let seed = i as u8 + 1;
+            let record = state
+                .devices()
+                .register(&format!("phone-{seed}"), "ios", &key(seed))
+                .unwrap();
+            state
+                .devices()
+                .set_push(&record.device_id, Some(token), environment)
+                .unwrap();
+        }
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let captured = sent.clone();
+        let triggers = PushTriggers::new(
+            state.clone(),
+            Box::new(move || focused),
+            Box::new(move |payload| {
+                captured
+                    .lock()
+                    .push(serde_json::from_str(&payload).expect("a NOTIFY payload is JSON"));
+                true
+            }),
+        );
+        Self {
+            _dir: dir,
+            state,
+            triggers,
+            sent,
+        }
+    }
+
+    fn sent(&self) -> Vec<Value> {
+        self.sent.lock().clone()
+    }
+
+    fn kinds(&self) -> Vec<String> {
+        self.sent()
+            .iter()
+            .map(|s| s["kind"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+}
+
+/// One `agent:event` payload holding a `can_use_tool` permission prompt, shaped
+/// as `supervisor::events::emit_agent_event` writes it.
+fn can_use_tool(agent_id: &str) -> String {
+    json!({
+        "agent_id": agent_id,
+        "event": {
+            "type": "control_request",
+            "request_id": "req-1",
+            "request": { "subtype": "can_use_tool", "tool_use_id": "tu-1" },
+        },
+    })
+    .to_string()
+}
+
+fn status_of(agent_id: &str, status: &str) -> String {
+    json!({ "agent_id": agent_id, "status": status, "last_error": null }).to_string()
+}
+
+#[test]
+fn a_natural_turn_end_sends_one_alert_with_the_documented_payload() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+
+    h.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Running);
+    h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+
+    let sent = h.sent();
+    assert_eq!(sent.len(), 1, "one turn, one alert: {sent:?}");
+    assert_eq!(
+        sent[0],
+        json!({
+            "tokens": [{ "token": "a1b2", "environment": "sandbox" }],
+            "title": "Turn complete",
+            "body": "Fix login crash",
+            "kind": "turn_complete",
+            "agentId": "arabia",
+            "collapseId": "arabia",
+        })
+    );
+}
+
+/// The trigger is the `running → idle` *edge*. An Idle with no Running before
+/// it is an agent at rest (a spawn settling, a status resend), not a turn.
+#[test]
+fn an_idle_that_did_not_come_from_running_is_not_a_turn_end() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("arabia");
+    h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    h.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Spawning);
+    h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    assert!(h.sent().is_empty(), "{:?}", h.sent());
+}
+
+/// A user stop converges on the same Idle as a completion. It is not one.
+#[test]
+fn a_stopped_turn_sends_nothing() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::stopped("Fix login crash");
+    h.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Running);
+    h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    assert!(h.sent().is_empty(), "{:?}", h.sent());
+}
+
+/// A turn can forward several permission prompts at once; one alert for the
+/// batch beats one per prompt. The mark clears when the turn ends.
+#[test]
+fn the_first_held_prompt_alerts_and_the_rest_of_the_batch_does_not() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+
+    h.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Running);
+    h.triggers.on_agent_event(&agents, &can_use_tool("arabia"));
+    h.triggers.on_agent_event(&agents, &can_use_tool("arabia"));
+    assert_eq!(h.kinds(), ["needs_input"], "the batch sent twice");
+    assert_eq!(h.sent()[0]["title"], "Needs your input");
+    assert_eq!(h.sent()[0]["body"], "Fix login crash");
+
+    // The turn ends (its own alert), and the next turn's first prompt is a new
+    // batch.
+    h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    h.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Running);
+    h.triggers.on_agent_event(&agents, &can_use_tool("arabia"));
+    assert_eq!(h.kinds(), ["needs_input", "turn_complete", "needs_input"]);
+}
+
+/// Each agent has its own batch: two agents prompting at once are two alerts.
+#[test]
+fn a_held_prompt_is_tracked_per_agent() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers.on_agent_event(&agents, &can_use_tool("arabia"));
+    h.triggers
+        .on_agent_event(&agents, &can_use_tool("dolomites"));
+    let addressed: Vec<Value> = h.sent().iter().map(|s| s["agentId"].clone()).collect();
+    assert_eq!(addressed, [json!("arabia"), json!("dolomites")]);
+    // `collapseId` is the agent id, so two agents never collapse onto each
+    // other's banner.
+    assert_eq!(h.sent()[0]["collapseId"], "arabia");
+    assert_eq!(h.sent()[1]["collapseId"], "dolomites");
+}
+
+#[test]
+fn transcript_events_and_other_control_requests_are_ignored() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    for payload in [
+        json!({ "agent_id": "arabia", "event": { "type": "assistant", "message": {} } }),
+        // A held request the desktop widget does not signal on either.
+        json!({ "agent_id": "arabia", "event": { "type": "control_request", "request": { "subtype": "initialize" } } }),
+        json!({ "agent_id": "arabia", "event": { "type": "control_request" } }),
+        json!({ "agent_id": "arabia", "event": null }),
+        json!({ "nothing": "recognizable" }),
+    ] {
+        h.triggers.on_agent_event(&agents, &payload.to_string());
+    }
+    // And the payloads the *taps* hand over deserialize as expected, which is
+    // the other half of the wiring.
+    h.triggers.on_agent_event(&agents, &can_use_tool("arabia"));
+    assert_eq!(h.kinds(), ["needs_input"], "{:?}", h.sent());
+    assert!(serde_json::from_str::<Value>(&status_of("arabia", "running")).is_ok());
+}
+
+/// The user is at the Mac: they already see it. Mirrors `watchingChat` in
+/// `src/store/eventListeners.ts`.
+#[test]
+fn a_focused_window_suppresses_both_triggers() {
+    let h = Triggers::boot(true, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Running);
+    h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    h.triggers.on_agent_event(&agents, &can_use_tool("arabia"));
+    assert!(h.sent().is_empty(), "{:?}", h.sent());
+}
+
+/// A device without a token cannot receive an alert and is not in the frame;
+/// with no token anywhere there is nothing to send at all.
+#[test]
+fn only_devices_with_a_token_are_addressed() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox"), ("c3d4", "production")]);
+    // A third paired device that never registered.
+    h.state
+        .devices()
+        .register("laptop", "macos", &key(9))
+        .unwrap();
+    let agents = Agents::named("Fix login crash");
+
+    h.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Running);
+    h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    assert_eq!(
+        h.sent()[0]["tokens"],
+        json!([
+            { "token": "a1b2", "environment": "sandbox" },
+            { "token": "c3d4", "environment": "production" },
+        ])
+    );
+
+    let none = Triggers::boot(false, &[]);
+    none.state
+        .devices()
+        .register("laptop", "macos", &key(9))
+        .unwrap();
+    none.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Running);
+    none.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Idle);
+    assert!(none.sent().is_empty());
+}
+
+/// The relay caps device links per host at 8, so this cannot bite today; the
+/// truncation is there so a change to that cap cannot produce a frame the relay
+/// rejects wholesale.
+#[test]
+fn no_more_than_eight_tokens_travel_in_one_frame() {
+    let tokens: Vec<(&str, &str)> = (0..10).map(|_| ("a1b2", "sandbox")).collect();
+    let h = Triggers::boot(false, &tokens);
+    let agents = Agents::named("Fix login crash");
+    h.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Running);
+    h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    assert_eq!(h.sent()[0]["tokens"].as_array().unwrap().len(), 8);
+}
+
+/// With no relay link there is nowhere to send an alert. It is dropped (logged
+/// at debug) and nothing about the trigger path notices.
+#[test]
+fn an_alert_with_no_relay_link_is_dropped_quietly() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
+    let record = state.devices().register("phone", "ios", &key(1)).unwrap();
+    state
+        .devices()
+        .set_push(&record.device_id, Some("a1b2"), "sandbox")
+        .unwrap();
+
+    let triggers = PushTriggers::for_state(state.clone(), Box::new(|| false));
+    let agents = Agents::named("Fix login crash");
+    triggers.on_status(&agents, "arabia", &AgentStatus::Running);
+    triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    triggers.on_agent_event(&agents, &can_use_tool("arabia"));
+
+    assert!(
+        !state.send_notify("{}".to_string()),
+        "there is no link, so nothing can be queued"
+    );
+}
+
+/// An agent whose record has gone (archived as the turn landed) still gets an
+/// alert; only the body degrades.
+#[test]
+fn an_agent_with_no_name_still_alerts() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents {
+        name: None,
+        interrupted: false,
+    };
+    h.triggers
+        .on_status(&agents, "arabia", &AgentStatus::Running);
+    h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
+    assert_eq!(h.sent()[0]["body"], "Agent");
 }

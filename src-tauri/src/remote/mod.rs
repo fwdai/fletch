@@ -10,12 +10,14 @@
 //! pairing codes and the device registry, `server` the WebSocket listener,
 //! `relay` the outbound host link that carries off-LAN devices, `session` the
 //! live-connection registry, `dispatch` the op allowlist, `events` the Tauri
-//! event taps. This module owns the state those seven share and the lifecycle
-//! of the listener and the relay link.
+//! event taps, `push` the two alert triggers those taps raise. This module owns
+//! the state those eight share and the lifecycle of the listener and the relay
+//! link.
 
 mod auth;
 mod dispatch;
 mod events;
+mod push;
 mod relay;
 #[cfg(test)]
 mod relay_tests;
@@ -103,6 +105,10 @@ pub struct RemoteDevice {
     pub created_at: String,
     pub last_seen_at: Option<String>,
     pub connected: bool,
+    /// Whether this device has an APNs token registered, i.e. whether push
+    /// alerts reach it. The token itself never leaves the host — Settings only
+    /// needs to know that it is there.
+    pub push_enabled: bool,
 }
 
 /// `remote_status`' reply.
@@ -378,6 +384,7 @@ impl RemoteState {
                 .into_iter()
                 .map(|d| RemoteDevice {
                     connected: connected.contains(&d.device_id),
+                    push_enabled: d.push_target().is_some(),
                     device_id: d.device_id,
                     name: d.name,
                     platform: d.platform,
@@ -470,6 +477,20 @@ impl RemoteState {
 
     pub(super) async fn dispatch(&self, op: &str, args: Value) -> DispatchResult {
         self.dispatch.dispatch(op, args).await
+    }
+
+    /// Put one NOTIFY frame on the host link. `false` when there is no link —
+    /// push only exists off-LAN, and a phone on the LAN is either connected
+    /// (and already sees the events) or unreachable anyway.
+    ///
+    /// Never blocks: called from the synchronous event taps that raise the
+    /// triggers (see `push`).
+    pub(super) fn send_notify(&self, payload: String) -> bool {
+        let inner = self.inner.lock();
+        inner
+            .relay
+            .as_ref()
+            .is_some_and(|link| link.send_notify(payload))
     }
 
     /// Fan one Tauri event out to every authenticated connection.

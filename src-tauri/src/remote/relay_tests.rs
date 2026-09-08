@@ -232,6 +232,21 @@ impl HostLink {
         }
     }
 
+    /// The next frame as raw bytes, so a test can assert the wire layout the
+    /// relay's own decoder is written against rather than this codec's idea of
+    /// it. `None` once the link is over.
+    async fn read_raw(&mut self) -> Option<Bytes> {
+        loop {
+            match within("a link frame", self.ws.next()).await {
+                Some(Ok(Message::Binary(bytes))) => return Some(bytes),
+                Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => continue,
+                Some(Ok(Message::Close(_))) | None => return None,
+                Some(Ok(other)) => panic!("unexpected message on the link: {other:?}"),
+                Some(Err(_)) => return None,
+            }
+        }
+    }
+
     /// The next frame belonging to `conn`, buffering the others.
     async fn read_for(&mut self, conn: u32) -> Frame {
         if let Some(i) = self.pending.iter().position(|f| f.conn() == conn) {
@@ -762,6 +777,136 @@ async fn frames_for_an_unknown_connection_are_ignored() {
     conn.request(&mut link, "1", "hello", json!({})).await;
     assert_eq!(conn.next_json(&mut link).await["ok"], true);
     assert_eq!(host.state.status().relay.state, RelayState::Connected);
+}
+
+// ---------------------------------------------------------------------------
+// Push notifications
+// ---------------------------------------------------------------------------
+
+/// A NOTIFY reaches the relay as `type 0x05` on connId 0, with the JSON body
+/// verbatim — checked on the raw bytes, since those are what the relay's own
+/// decoder reads.
+#[tokio::test]
+async fn a_notify_travels_as_type_0x05_on_connid_zero() {
+    let mut relay = FakeRelay::start(Verdict::Accept).await;
+    let host = boot(&relay.url);
+    let mut link = relay.next_link().await;
+    until(&host.state, "the relay link connects", |s| {
+        s.relay.state == RelayState::Connected
+    })
+    .await;
+
+    let payload = json!({
+        "tokens": [{ "token": "a1b2", "environment": "sandbox" }],
+        "title": "Turn complete",
+        "body": "Fix login crash",
+        "kind": "turn_complete",
+        "agentId": "arabia",
+        "collapseId": "arabia",
+    })
+    .to_string();
+    assert!(host.state.send_notify(payload.clone()));
+
+    let bytes = link.read_raw().await.expect("a frame on the link");
+    assert_eq!(bytes[0], 0x05, "NOTIFY is type 0x05");
+    assert_eq!(&bytes[1..5], &[0, 0, 0, 0], "NOTIFY belongs to connId 0");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes[5..]).unwrap(),
+        serde_json::from_str::<Value>(&payload).unwrap()
+    );
+
+    // Fire and forget: the relay answers nothing, and the link carries on. A
+    // device attaching afterwards is served as if the NOTIFY had not happened.
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public)
+        .unwrap();
+    let mut conn = Phone::open(&mut link, 1, &phone).await;
+    conn.request(&mut link, "1", "hello", json!({})).await;
+    assert_eq!(conn.next_json(&mut link).await["ok"], true);
+    assert_eq!(host.state.status().relay.state, RelayState::Connected);
+}
+
+/// A NOTIFY frame the relay sends back is not part of the contract (it is host
+/// to relay only). Dropped, not fatal — a later relay revision must not be able
+/// to knock this host off its own link.
+#[tokio::test]
+async fn a_notify_from_the_relay_is_ignored() {
+    let mut relay = FakeRelay::start(Verdict::Accept).await;
+    let host = boot(&relay.url);
+    let mut link = relay.next_link().await;
+
+    link.send(Frame::Notify {
+        payload: Bytes::from_static(br#"{"kind":"turn_complete"}"#),
+    })
+    .await;
+
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public)
+        .unwrap();
+    let mut conn = Phone::open(&mut link, 1, &phone).await;
+    conn.request(&mut link, "1", "hello", json!({})).await;
+    assert_eq!(conn.next_json(&mut link).await["ok"], true);
+    assert_eq!(host.state.status().relay.state, RelayState::Connected);
+}
+
+/// With no link there is nothing to queue on, and saying so is the whole answer
+/// — a dropped alert is by contract.
+#[tokio::test]
+async fn a_notify_without_a_link_is_refused_not_queued() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
+    assert!(!state.send_notify("{}".to_string()), "no relay configured");
+
+    // Configured but never reachable: the link is between attempts, so still
+    // nothing to queue on.
+    state.set_relay_timing(fast());
+    state
+        .set_relay(Some("ws://127.0.0.1:1".to_string()))
+        .unwrap();
+    state.start(0).unwrap();
+    until(&state, "the dial fails", |s| {
+        s.relay.state == RelayState::Error
+    })
+    .await;
+    assert!(!state.send_notify("{}".to_string()));
+}
+
+/// The link going away takes the outbound queue with it: an alert must not be
+/// enqueued onto a link nothing is writing any more.
+#[tokio::test]
+async fn a_dropped_link_stops_accepting_notifies() {
+    let mut relay = FakeRelay::start(Verdict::Accept).await;
+    let host = boot(&relay.url);
+    let mut first = relay.next_link().await;
+    until(&host.state, "the first link connects", |s| {
+        s.relay.state == RelayState::Connected
+    })
+    .await;
+    assert!(host.state.send_notify("{}".to_string()));
+
+    let _ = first.ws.close(None).await;
+    drop(first);
+    until(&host.state, "the link goes down", |s| {
+        s.relay.state != RelayState::Connected
+    })
+    .await;
+    assert!(!host.state.send_notify("{}".to_string()));
+
+    // And it works again on the reconnect.
+    let mut second = relay.next_link().await;
+    until(&host.state, "the link comes back", |s| {
+        s.relay.state == RelayState::Connected
+    })
+    .await;
+    assert!(host.state.send_notify("{}".to_string()));
+    assert_eq!(
+        second.read_raw().await.expect("a frame on the new link")[0],
+        0x05
+    );
 }
 
 // ---------------------------------------------------------------------------

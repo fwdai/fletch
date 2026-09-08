@@ -116,6 +116,48 @@ pub struct DeviceRecord {
     pub public_key: String,
     pub created_at: String,
     pub last_seen_at: Option<String>,
+    /// The device's APNs token, lowercase hex, as `register_push` gave it. A
+    /// routing handle, not a credential: with it (and the relay's APNs key) one
+    /// can send this phone a Fletch-branded alert and nothing more. Never
+    /// displayed, never sent back to any device — Settings only learns whether
+    /// it is set (`RemoteDevice::push_enabled`). `None` before the first
+    /// registration and after the user turns notifications off.
+    ///
+    /// Defaulted so records written before push existed still load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_token: Option<String>,
+    /// `sandbox` or `production` — which APNs host the token is valid against.
+    /// Set and cleared together with `push_token`: an environment without a
+    /// token routes nowhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_environment: Option<String>,
+}
+
+impl DeviceRecord {
+    /// Where a push alert for this device goes, if anywhere: the token and the
+    /// APNs environment it is valid against. The one definition of "push is on
+    /// for this device", so what `RemoteDevice::push_enabled` reports and what
+    /// a NOTIFY frame addresses cannot disagree — a half-written record (a token
+    /// with no environment) is not routable and so counts as off.
+    pub fn push_target(&self) -> Option<(&str, &str)> {
+        Some((
+            self.push_token.as_deref()?,
+            self.push_environment.as_deref()?,
+        ))
+    }
+}
+
+/// The two APNs environments `register_push` accepts (protocol doc).
+pub const PUSH_ENVIRONMENTS: [&str; 2] = ["sandbox", "production"];
+
+/// Whether `token` is an APNs device token as the doc spells it: lowercase hex.
+/// Length is deliberately not checked — Apple has changed it before, and the
+/// relay is the only thing that can tell a live token from a dead one.
+pub fn valid_push_token(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// The paired-device registry, mirrored to `<dir>/devices.json`.
@@ -220,6 +262,12 @@ impl DeviceStore {
                 public_key,
                 created_at: now,
                 last_seen_at: None,
+                // A re-pair keeps whatever token the device already registered
+                // (the branch above), so only a genuinely new record starts
+                // without one; the phone registers again after every `pair`
+                // anyway.
+                push_token: None,
+                push_environment: None,
             };
             devices.push(record.clone());
             record
@@ -257,6 +305,31 @@ impl DeviceStore {
         if let Err(e) = written {
             tracing::warn!(error = %e, "remote: persisting last-seen failed");
         }
+    }
+
+    /// Record (or clear) a device's APNs token. `token: None` clears the
+    /// environment with it — see the field docs. Returns whether the device was
+    /// still on file; `false` means it was revoked between this connection
+    /// authenticating and the registration arriving.
+    ///
+    /// Callers validate `token` and `environment` first (`valid_push_token`,
+    /// `PUSH_ENVIRONMENTS`): the store persists what it is given, and a token
+    /// that is not routable should be an op error the phone can see rather than
+    /// a row on disk.
+    pub fn set_push(
+        &self,
+        device_id: &str,
+        token: Option<&str>,
+        environment: &str,
+    ) -> Result<bool> {
+        self.mutate(|devices| {
+            let Some(device) = devices.iter_mut().find(|d| d.device_id == device_id) else {
+                return false;
+            };
+            device.push_token = token.map(str::to_string);
+            device.push_environment = token.map(|_| environment.to_string());
+            true
+        })
     }
 
     /// Drop a device's credential. Returns whether anything was removed.
