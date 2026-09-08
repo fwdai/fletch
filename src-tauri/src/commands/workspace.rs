@@ -52,10 +52,18 @@ pub async fn add_workspace_repo(
     supervisor: State<'_, Arc<Supervisor>>,
     repo_path: String,
 ) -> Result<Workspace> {
-    let sup = supervisor.inner().clone();
+    add_workspace_repo_impl(&supervisor, repo_path).await
+}
+
+/// Shared with the remote dispatcher, so a folder pinned from a phone gets the
+/// same git initialization a folder picked on the desktop does.
+pub(crate) async fn add_workspace_repo_impl(
+    supervisor: &Supervisor,
+    repo_path: String,
+) -> Result<Workspace> {
     let path = PathBuf::from(repo_path);
     new_project::ensure_git_repo(&path).await?;
-    sup.add_workspace_repo(path)
+    supervisor.add_workspace_repo(path)
 }
 
 #[tauri::command]

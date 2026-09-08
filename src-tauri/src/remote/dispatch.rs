@@ -76,6 +76,11 @@ pub const OPS: &[&str] = &[
     "list_repo_branches",
     "repo_default_branch",
     "discover_supported_models",
+    "list_dir",
+    "add_workspace_repo",
+    "clone_repo",
+    "gh_status",
+    "gh_repo_list",
 ];
 
 pub fn is_allowed(op: &str) -> bool {
@@ -307,11 +312,46 @@ impl Dispatch for SupervisorDispatch {
                     ok(crate::model_catalog::discover_supported_models().await)
                 }
 
+                "list_dir" | "add_workspace_repo" | "clone_repo" | "gh_status" | "gh_repo_list" => {
+                    add_project_op(sup, op, args).await
+                }
+
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.
                 _ => Err(UNKNOWN_OP.to_string()),
             }
         })
+    }
+}
+
+/// The "add a project" ops (protocol doc, "Adding a project from the phone"):
+/// browse the Mac's folders, pin one, or clone a GitHub repo into one. Split out
+/// of the match above because none of them needs the `AppHandle` — a bare
+/// `Supervisor` is the whole host state they touch, which is what lets the
+/// remote tests dispatch them for real without a Tauri app.
+pub(super) async fn add_project_op(sup: &Supervisor, op: &str, args: Value) -> DispatchResult {
+    match op {
+        "list_dir" => {
+            let a: PathArgs = parse(args)?;
+            res(crate::commands::list_dir(a.path).await)
+        }
+
+        "add_workspace_repo" => {
+            let a: RepoPathArgs = parse(args)?;
+            res(crate::commands::add_workspace_repo_impl(sup, a.repo_path).await)
+        }
+
+        "clone_repo" => {
+            let a: CloneArgs = parse(args)?;
+            res(crate::commands::clone_repo_impl(sup, &a.spec, &a.dest_parent).await)
+        }
+
+        // Both take no arguments; calling the commands themselves keeps the
+        // repo-list cap in one place.
+        "gh_status" => res(crate::commands::gh_status().await),
+        "gh_repo_list" => res(crate::commands::gh_repo_list().await),
+
+        _ => Err(UNKNOWN_OP.to_string()),
     }
 }
 
@@ -353,6 +393,18 @@ struct AgentSubdirArgs {
 #[serde(rename_all = "camelCase")]
 struct RepoPathArgs {
     repo_path: String,
+}
+
+#[derive(Deserialize)]
+struct PathArgs {
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloneArgs {
+    spec: String,
+    dest_parent: String,
 }
 
 #[derive(Deserialize)]
