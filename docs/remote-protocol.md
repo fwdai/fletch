@@ -188,12 +188,16 @@ title and the agent's name. Transcript text never leaves the Mac.
 - **Registration.** After every successful `pair` or `hello`, and whenever iOS
   hands it a new token, the phone sends `register_push` with
   `{ token: "<APNs device token, lowercase hex>", environment: "sandbox" | "production" }`;
-  `token: null` clears it (the user turned notifications off). The host stores
+  `{ token: null }` alone clears it (the user turned notifications off), and
+  `environment` is only read, and required, when a token is present. The host stores
   `pushToken` and `pushEnvironment` on the device record and never displays
   them. A token is a routing handle, not a credential: with it and the relay's
   APNs key one can send this phone a Fletch-branded alert, nothing more.
 - **Triggers (host).** `turn_complete`: an agent's status goes
-  `running → idle` and the user did not stop or interrupt it. `needs_input`:
+  `running → idle` and the user did not stop or interrupt it. Native-view
+  agents are excluded: their status is read off terminal quiet and can flap
+  several times in one turn, and the desktop does not notify for them either
+  (phones only spawn the structured view anyway). `needs_input`:
   the first held `control_request` (`can_use_tool`) for an agent while none is
   pending for it — one alert per batch of parallel prompts, cleared when the
   turn ends. Both mirror `signalAway` in `src/store/eventListeners.ts`. The
@@ -411,7 +415,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `clone_repo` | `{ spec, destParent }` | `Workspace` |
 | `gh_status` | `{}` | `GhStatus` |
 | `gh_repo_list` | `{}` | `GhRepoSummary[]` |
-| `register_push` | `{ token: string \| null, environment: "sandbox" \| "production" }` (remote-only, see "Push notifications") | `null` |
+| `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
 (`write_checkout_file`, `rename_*`, `delete_*`, `create_*`, `copy_*`), shell

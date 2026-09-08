@@ -373,7 +373,10 @@ async fn read_loop<S: WsTransport>(
     secured: &Secured,
     peer: SocketAddr,
 ) -> SplitStream<S> {
-    let mut authenticated = false;
+    // The device this connection authenticated as, and thus also whether it
+    // has. Kept as the id rather than a bare flag because `register_push`
+    // writes to *this* device's record (see `dispatch::SESSION_OPS`).
+    let mut authenticated: Option<String> = None;
     let mut event_task: Option<tokio::task::JoinHandle<()>> = None;
     // Owns the dispatch tasks, so they are aborted when this loop ends instead
     // of outliving the socket they were going to answer on.
@@ -465,7 +468,7 @@ async fn read_loop<S: WsTransport>(
                         }
                         first_frame = false;
 
-                        if !authenticated {
+                        if authenticated.is_none() {
                             if !handshake {
                                 out.send(close_frame(CLOSE_UNAUTHENTICATED, "hello required"));
                                 break;
@@ -499,7 +502,7 @@ async fn read_loop<S: WsTransport>(
                                         platform = %record.platform,
                                         "remote: device authenticated"
                                     );
-                                    authenticated = true;
+                                    authenticated = Some(record.device_id);
                                 }
                                 None => {
                                     out.send(close_frame(CLOSE_UNAUTHENTICATED, "bad credential"));
@@ -513,6 +516,30 @@ async fn read_loop<S: WsTransport>(
                             // Already authenticated: the handshake ops are not
                             // part of the dispatchable surface.
                             out.send(json_frame(err_frame(&frame.id, super::dispatch::UNKNOWN_OP)));
+                            continue;
+                        }
+
+                        // The wire allowlist, applied once for the whole
+                        // surface — the ops the dispatcher answers and the ones
+                        // answered below. The dispatcher re-checks its own half
+                        // (see `dispatch::SESSION_OPS`), so this is the cheap
+                        // rejection and not the only one.
+                        if !super::dispatch::is_allowed(&frame.op) {
+                            out.send(json_frame(err_frame(&frame.id, super::dispatch::UNKNOWN_OP)));
+                            continue;
+                        }
+
+                        // Answered here rather than through the dispatcher: it
+                        // writes to this connection's own device record, and
+                        // the identity is the one the handshake proved — see
+                        // `dispatch::SESSION_OPS`.
+                        if frame.op == super::dispatch::REGISTER_PUSH {
+                            let device = authenticated.clone().unwrap_or_default();
+                            let RequestFrame { id, args, .. } = frame;
+                            out.send(json_frame(match register_push(state, &device, args) {
+                                Ok(result) => ok_frame(&id, result),
+                                Err(error) => err_frame(&id, &error),
+                            }));
                             continue;
                         }
 
@@ -629,6 +656,55 @@ async fn authenticate(
     }
 }
 
+/// `register_push`: store (or clear) the APNs token for the device on the other
+/// end of *this* connection.
+///
+/// Lives beside `authenticate` because that is where a device identity exists:
+/// the token belongs to the record the Noise handshake resolved, and nothing in
+/// the frame says (or may say) which device it is for. Persistence goes through
+/// `DeviceStore::set_push`, i.e. the store's one `mutate` write path, so a
+/// registration serializes against a concurrent revoke like every other write.
+fn register_push(
+    state: &Arc<RemoteState>,
+    device_id: &str,
+    args: Value,
+) -> std::result::Result<Value, String> {
+    // `token` has to be said, even as `null`: an absent key is a malformed
+    // request, not a clear, or `{}` would silently wipe a live registration.
+    if args.get("token").is_none() {
+        return Err("token is required: a string to register, null to clear".to_string());
+    }
+    let args: RegisterPushArgs = serde_json::from_value(args).map_err(|e| e.to_string())?;
+    // `environment` is checked only when there is a token to route. It means
+    // nothing without one, and `token: null` is the clear — so a phone turning
+    // notifications off is not made to name an environment it is about to
+    // forget.
+    if let Some(token) = args.token.as_deref() {
+        if !super::auth::valid_push_token(token) {
+            return Err("a push token has to be lowercase hex".to_string());
+        }
+        let environment = args.environment.as_deref().unwrap_or_default();
+        if !super::auth::PUSH_ENVIRONMENTS.contains(&environment) {
+            return Err(format!(
+                "environment has to be sandbox or production, not {environment:?}"
+            ));
+        }
+    }
+    let stored = state
+        .devices()
+        .set_push(
+            device_id,
+            args.token.as_deref(),
+            args.environment.as_deref().unwrap_or_default(),
+        )
+        .map_err(|e| e.to_string())?;
+    if !stored {
+        // Revoked under the connection; the 4003 is already on its way.
+        return Err("this device is no longer paired".to_string());
+    }
+    Ok(Value::Null)
+}
+
 /// Queue one JSON protocol frame. Plaintext here; `pump` encrypts it and puts
 /// it on the wire as a binary message.
 fn json_frame(frame: String) -> Message {
@@ -660,6 +736,16 @@ struct RequestFrame {
 
 fn empty_args() -> Value {
     json!({})
+}
+
+/// `register_push`'s args. `token: null` clears the registration, in which case
+/// `environment` is not read; an absent `token` is rejected before this is
+/// parsed — see `register_push`.
+#[derive(Deserialize)]
+struct RegisterPushArgs {
+    token: Option<String>,
+    #[serde(default)]
+    environment: Option<String>,
 }
 
 #[derive(Deserialize)]

@@ -36,6 +36,7 @@ export function DeviceRow({
           {device.name}
         </div>
         <div className="set-row-s text-sm">{sub}</div>
+        {device.pushEnabled && <div className="set-row-s text-sm">Notifications on</div>}
       </div>
       <div className="set-row-c flex-center">
         <Button variant="outline" size="sm" danger disabled={disabled} onClick={onRevoke}>

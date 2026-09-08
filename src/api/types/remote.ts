@@ -14,6 +14,9 @@ export interface RemoteDevice {
   /** Whether a WebSocket from this device is open right now — a fact about
    *  sockets, not about the last `hello`. */
   connected: boolean;
+  /** Whether this device has an APNs token registered, i.e. whether push
+   *  alerts reach it. The token itself never leaves the host. */
+  pushEnabled: boolean;
 }
 
 /** The relay the desktop offers when the switch goes on. Mirrors

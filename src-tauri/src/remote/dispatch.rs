@@ -9,7 +9,8 @@
 //! construction.
 //!
 //! Adding an op is: a row in `docs/remote-protocol.md`, a name in [`OPS`], and
-//! one match arm here.
+//! one match arm here — unless it needs to know *which device* is asking, in
+//! which case it goes in [`SESSION_OPS`] and is answered by `server`.
 
 use std::future::Future;
 use std::path::Path;
@@ -46,9 +47,10 @@ pub const UNKNOWN_OP: &str = "unknown op";
 /// answered without being dispatched; the client retries.
 pub const TOO_MANY_IN_FLIGHT: &str = "too many in-flight requests";
 
-/// The v1 allowlist, in the order of the protocol doc's table. Load-bearing:
-/// `dispatch` rejects anything absent here before the `match` runs, so a name
-/// is only reachable when it appears both here and as an arm.
+/// The ops the generic dispatcher answers, in the order of the protocol doc's
+/// table. Load-bearing: `dispatch` rejects anything absent here before the
+/// `match` runs, so a name is only reachable when it appears both here and as
+/// an arm.
 pub const OPS: &[&str] = &[
     "get_workspace",
     "allocate_draft_name",
@@ -83,8 +85,26 @@ pub const OPS: &[&str] = &[
     "gh_repo_list",
 ];
 
+pub const REGISTER_PUSH: &str = "register_push";
+
+/// The ops the *session* layer answers itself, because they act on the calling
+/// device's own record and [`Dispatch`] deliberately carries no notion of who
+/// is calling: every op in [`OPS`] is device-agnostic, and widening the trait
+/// to thread a device id through 26 arms that must not depend on one would put
+/// an identity where the design keeps it out. `server::read_loop` handles these
+/// next to `pair`/`hello`, the one place the key the Noise handshake proved has
+/// already been resolved to a record.
+///
+/// They are still on [`is_allowed`], so the doc's op table and the code agree
+/// about what a phone may name in a request frame; the generic dispatcher gates
+/// on [`OPS`] alone, so one of these reaching it anyway fails closed as
+/// [`UNKNOWN_OP`] instead of being silently answered without an identity.
+pub const SESSION_OPS: &[&str] = &[REGISTER_PUSH];
+
+/// The whole wire surface: every op name a phone may send. The union of what
+/// the dispatcher answers and what the session layer answers for itself.
 pub fn is_allowed(op: &str) -> bool {
-    OPS.contains(&op)
+    OPS.contains(&op) || SESSION_OPS.contains(&op)
 }
 
 /// The production dispatcher: the supervisor and app handle the Tauri commands
@@ -103,7 +123,9 @@ impl SupervisorDispatch {
 impl Dispatch for SupervisorDispatch {
     fn dispatch<'a>(&'a self, op: &'a str, args: Value) -> DispatchFuture<'a> {
         Box::pin(async move {
-            if !is_allowed(op) {
+            // `OPS`, not `is_allowed`: a session op belongs to the session
+            // layer and has no identity here, so it fails closed.
+            if !OPS.contains(&op) {
                 return Err(UNKNOWN_OP.to_string());
             }
             let sup = &self.sup;

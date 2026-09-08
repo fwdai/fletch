@@ -51,6 +51,11 @@ const TYPE_OPEN: u8 = 0x01;
 const TYPE_DATA: u8 = 0x02;
 const TYPE_CLOSE: u8 = 0x03;
 const TYPE_TEXT: u8 = 0x04;
+const TYPE_NOTIFY: u8 = 0x05;
+
+/// The `connId` a NOTIFY frame carries. It belongs to no virtual connection —
+/// the doc fixes it at 0 so the header stays one shape for every frame type.
+const NOTIFY_CONN: u32 = 0;
 
 /// Length of the fixed header: `type (1) || connId (u32 big-endian)`.
 const HEADER_LEN: usize = 5;
@@ -72,6 +77,10 @@ pub(super) enum Frame {
     /// One device WebSocket *text* message, verbatim, so the host can apply its
     /// own 4001 rule to it rather than the relay guessing.
     Text { conn: u32, text: String },
+    /// A push request for the relay itself to forward to APNs: UTF-8 JSON on
+    /// `connId` 0. Host → relay only, and fire and forget — the relay sends no
+    /// result frame, and one that does not know this type ignores it.
+    Notify { payload: Bytes },
 }
 
 impl Frame {
@@ -81,6 +90,7 @@ impl Frame {
             | Frame::Data { conn, .. }
             | Frame::Close { conn, .. }
             | Frame::Text { conn, .. } => *conn,
+            Frame::Notify { .. } => NOTIFY_CONN,
         }
     }
 
@@ -91,6 +101,7 @@ impl Frame {
             Frame::Data { .. } => TYPE_DATA,
             Frame::Close { .. } => TYPE_CLOSE,
             Frame::Text { .. } => TYPE_TEXT,
+            Frame::Notify { .. } => TYPE_NOTIFY,
         });
         out.extend_from_slice(&self.conn().to_be_bytes());
         match self {
@@ -101,6 +112,7 @@ impl Frame {
                 out.extend_from_slice(reason.as_bytes());
             }
             Frame::Text { text, .. } => out.extend_from_slice(text.as_bytes()),
+            Frame::Notify { payload } => out.extend_from_slice(payload),
         }
         Bytes::from(out)
     }
@@ -133,6 +145,14 @@ impl Frame {
             TYPE_TEXT => Ok(Frame::Text {
                 conn,
                 text: String::from_utf8_lossy(body).into_owned(),
+            }),
+            // Decoded for the round-trip tests and for symmetry; the host never
+            // receives one (see `route`). `conn` is not checked against 0: a
+            // frame this side only ever writes cannot arrive with another value
+            // unless the relay invented it, and dropping it in `route` is
+            // already the answer to that.
+            TYPE_NOTIFY => Ok(Frame::Notify {
+                payload: Bytes::copy_from_slice(body),
             }),
             other => Err(format!("unknown frame type {other:#04x}")),
         }
@@ -247,8 +267,16 @@ const MAX_LINK_MESSAGE: usize = 4 * 1024 * 1024 + 1024;
 /// still reach the relay (see `RemoteState::stop`).
 pub(super) struct RelayLink {
     published: Arc<Mutex<Published>>,
+    /// The live link's outbound queue, `Some` only while the link is connected.
+    /// The demux publishes it here so code that is not inside the read loop
+    /// (the push triggers) can enqueue a frame; everything else reaches the
+    /// queue through a `VirtualConn`, which has its own clone.
+    outbound: Outgoing,
     shutdown: broadcast::Sender<()>,
 }
+
+/// The slot [`RelayLink::outbound`] lives in, shared with the link task.
+type Outgoing = Arc<Mutex<Option<mpsc::Sender<Message>>>>;
 
 impl RelayLink {
     /// Dial `url` and keep the link up until this handle is dropped.
@@ -262,10 +290,19 @@ impl RelayLink {
             state: RelayState::Connecting,
             error: None,
         }));
+        let outbound: Outgoing = Arc::new(Mutex::new(None));
         let (shutdown, stop) = broadcast::channel(1);
-        tokio::spawn(run(state, url, timing, published.clone(), stop));
+        tokio::spawn(run(
+            state,
+            url,
+            timing,
+            published.clone(),
+            outbound.clone(),
+            stop,
+        ));
         Self {
             published,
+            outbound,
             shutdown,
         }
     }
@@ -273,6 +310,25 @@ impl RelayLink {
     pub(super) fn snapshot(&self) -> (RelayState, Option<String>) {
         let published = self.published.lock();
         (published.state, published.error.clone())
+    }
+
+    /// Queue one NOTIFY frame for the relay. `false` when the link is not
+    /// connected, or when its queue is full because the relay stopped reading.
+    ///
+    /// Never blocks and never waits: a push alert is worth less than the link
+    /// it would travel on, so a dropped one is by contract (the phone will see
+    /// the state when it next connects) and the caller logs it at debug.
+    pub(super) fn send_notify(&self, payload: String) -> bool {
+        let Some(tx) = self.outbound.lock().clone() else {
+            return false;
+        };
+        tx.try_send(
+            Frame::Notify {
+                payload: Bytes::from(payload),
+            }
+            .into_message(),
+        )
+        .is_ok()
     }
 }
 
@@ -293,12 +349,13 @@ async fn run(
     url: String,
     timing: RelayTiming,
     published: Arc<Mutex<Published>>,
+    outbound: Outgoing,
     mut shutdown: broadcast::Receiver<()>,
 ) {
     let mut backoff = timing.backoff_initial;
     loop {
         published.lock().set(RelayState::Connecting, None);
-        match attempt(&state, &url, &timing, &published, &mut shutdown).await {
+        match attempt(&state, &url, &timing, &published, &outbound, &mut shutdown).await {
             Outcome::Done => {
                 published.lock().set(RelayState::Off, None);
                 return;
@@ -345,6 +402,7 @@ async fn attempt(
     url: &str,
     timing: &RelayTiming,
     published: &Arc<Mutex<Published>>,
+    outbound: &Outgoing,
     shutdown: &mut broadcast::Receiver<()>,
 ) -> Outcome {
     let Some(host_id) = state.host_key().map(HostKey::host_id) else {
@@ -377,8 +435,9 @@ async fn attempt(
     }
 
     tracing::info!(%endpoint, "remote: relay link up");
-    published.lock().set(RelayState::Connected, None);
-    match demux(state, ws, timing, shutdown).await {
+    // `Connected` is published by `demux`, once the outbound sender is in place:
+    // a trigger that sees `Connected` must be able to send.
+    match demux(state, ws, timing, outbound, published, shutdown).await {
         Outcome::Done => Outcome::Done,
         Outcome::Retry { error, .. } => Outcome::Retry {
             error,
@@ -519,11 +578,19 @@ async fn demux(
     state: &Arc<RemoteState>,
     ws: LinkWs,
     timing: &RelayTiming,
+    outbound: &Outgoing,
+    published: &Arc<Mutex<Published>>,
     shutdown: &mut broadcast::Receiver<()>,
 ) -> Outcome {
     let (sink, mut stream) = ws.split();
     let (out_tx, out_rx) = mpsc::channel::<Message>(LINK_OUTBOUND_BUFFER);
     let writer = tokio::spawn(write_loop(sink, out_rx));
+    // Published only for the life of this attempt: a NOTIFY enqueued against a
+    // link that has gone away would sit in a queue nothing is writing. The
+    // sender goes in first and `Connected` second, so nothing that reads
+    // `Connected` can find the slot still empty.
+    *outbound.lock() = Some(out_tx.clone());
+    published.lock().set(RelayState::Connected, None);
 
     let mut conns: HashMap<u32, Registered> = HashMap::new();
     // Owns the per-connection `serve` tasks, so winding the link down can wait
@@ -585,6 +652,7 @@ async fn demux(
     // dropping this handle), and their close frames are still travelling
     // through `out_tx`; give them a bounded moment to land before the socket
     // goes. Then drop the senders so the writer flushes and finishes.
+    *outbound.lock() = None;
     drop(conns);
     let _ = tokio::time::timeout(timing.shutdown_grace, async {
         while serving.join_next().await.is_some() {}
@@ -678,6 +746,12 @@ fn route(
         }
         Frame::Text { text, .. } => {
             deliver(conns, conn, out_tx, Ok(Message::Text(text.into())));
+        }
+        // Host → relay only. A relay sending one back is either confused or
+        // speaking a later protocol; dropped, as the doc has every frame the
+        // host does not expect.
+        Frame::Notify { .. } => {
+            tracing::debug!("remote: the relay sent a NOTIFY frame, which is host to relay only");
         }
         Frame::Close { code, reason, .. } => {
             if let Some(registered) = conns.remove(&conn) {
@@ -921,6 +995,12 @@ mod codec_tests {
             conn: 3,
             text: "{\"op\":\"hello\"}".to_string(),
         });
+        roundtrip(Frame::Notify {
+            payload: Bytes::from_static(br#"{"kind":"turn_complete"}"#),
+        });
+        roundtrip(Frame::Notify {
+            payload: Bytes::new(),
+        });
     }
 
     /// The header the doc fixes: `type (1) || connId (u32 big-endian)`, then the
@@ -949,6 +1029,15 @@ mod codec_tests {
         assert_eq!(
             Frame::Open { conn: 1 }.encode().as_ref(),
             &[0x01, 0, 0, 0, 1]
+        );
+        // NOTIFY is `0x05` on connId 0 — it belongs to no virtual connection.
+        assert_eq!(
+            Frame::Notify {
+                payload: Bytes::from_static(b"{}"),
+            }
+            .encode()
+            .as_ref(),
+            &[0x05, 0, 0, 0, 0, b'{', b'}']
         );
     }
 
