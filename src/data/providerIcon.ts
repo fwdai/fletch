@@ -14,6 +14,14 @@ import { agentIconUrl } from "./providers";
  *  this just skips the empty frame on remount. */
 const svgCache = new Map<string, string>();
 
+/** Requests that haven't settled yet, so simultaneous marks for one provider
+ *  share a single fetch — the agent screen alone renders the same mark in its
+ *  header and its composer. Dropped once settled: a success is served from
+ *  `svgCache` afterwards, and a failure stays retryable on the next mount
+ *  rather than being cached for the session (an offline first run would
+ *  otherwise never recover). */
+const inFlight = new Map<string, Promise<string>>();
+
 /** Strip executable content from a trusted-origin SVG before inlining it:
  *  <script> elements, inline on* handlers, and <foreignObject> (which can host
  *  arbitrary HTML). Defense-in-depth — the markup comes from our own CDN. */
@@ -30,15 +38,29 @@ export function cachedProviderIcon(slug: string): string | null {
   return svgCache.get(slug) ?? null;
 }
 
-/** Fetch and sanitize a provider's brand icon, memoized by slug. Rejects when
- *  the icon is missing or unreachable (404, offline, network/CORS error), which
- *  callers render as the abbreviation monogram. */
-export async function loadProviderIcon(slug: string, signal?: AbortSignal): Promise<string> {
-  const cached = svgCache.get(slug);
-  if (cached) return cached;
-  const res = await fetch(agentIconUrl(slug), { signal });
+async function fetchProviderIcon(slug: string): Promise<string> {
+  const res = await fetch(agentIconUrl(slug));
   if (!res.ok) throw new Error(String(res.status));
   const clean = sanitizeSvg(await res.text());
   svgCache.set(slug, clean);
   return clean;
+}
+
+/** Fetch and sanitize a provider's brand icon, memoized by slug and shared
+ *  while in flight. Rejects when the icon is missing or unreachable (404,
+ *  offline, network/CORS error), which callers render as the abbreviation
+ *  monogram.
+ *
+ *  There is no per-caller cancellation on purpose: one caller walking away
+ *  must not abort a request its siblings are still waiting on, and a request
+ *  that outlives its component still lands in the cache, which is where the
+ *  next mount wants it. Callers that no longer care just ignore the result. */
+export function loadProviderIcon(slug: string): Promise<string> {
+  const cached = svgCache.get(slug);
+  if (cached) return Promise.resolve(cached);
+  const pending = inFlight.get(slug);
+  if (pending) return pending;
+  const req = fetchProviderIcon(slug).finally(() => inFlight.delete(slug));
+  inFlight.set(slug, req);
+  return req;
 }

@@ -1,6 +1,18 @@
 import { cachedProviderIcon, loadProviderIcon } from "@desktop/data/providerIcon";
 import { useEffect, useState } from "react";
 
+interface IconState {
+  slug: string;
+  svg: string | null;
+  failed: boolean;
+}
+
+const initial = (slug: string): IconState => ({
+  slug,
+  svg: cachedProviderIcon(slug),
+  failed: false,
+});
+
 /**
  * A provider's brand SVG for `slug`, sanitized and cached by the shared loader
  * in `@desktop/data/providerIcon` — the same icons and cache semantics the
@@ -14,28 +26,30 @@ import { useEffect, useState } from "react";
  * against the wrong copy. Everything with logic in it lives in the loader.
  */
 export function useProviderIcon(slug: string): { svg: string | null; failed: boolean } {
-  const [svg, setSvg] = useState<string | null>(() => cachedProviderIcon(slug));
-  const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState<IconState>(() => initial(slug));
+
+  // State carries the slug it belongs to and is reset *during* the render that
+  // changes slug (React's "adjusting state when a prop changes"), not in the
+  // effect that follows it. Resetting in the effect would commit one frame of
+  // the previous provider's mark under the new provider's colour — the runner
+  // sheet switches one mark in place like that.
+  const current = loaded.slug === slug ? loaded : initial(slug);
+  if (current !== loaded) setLoaded(current);
 
   useEffect(() => {
-    const cached = cachedProviderIcon(slug);
-    setSvg(cached);
-    setFailed(false);
-    if (cached) return;
-    const ctrl = new AbortController();
+    if (cachedProviderIcon(slug)) return;
     let active = true;
-    loadProviderIcon(slug, ctrl.signal)
-      .then((markup) => {
-        if (active) setSvg(markup);
+    loadProviderIcon(slug)
+      .then((svg) => {
+        if (active) setLoaded({ slug, svg, failed: false });
       })
-      .catch((e: Error) => {
-        if (active && e.name !== "AbortError") setFailed(true);
+      .catch(() => {
+        if (active) setLoaded({ slug, svg: null, failed: true });
       });
     return () => {
       active = false;
-      ctrl.abort();
     };
   }, [slug]);
 
-  return { svg, failed };
+  return { svg: current.svg, failed: current.failed };
 }
