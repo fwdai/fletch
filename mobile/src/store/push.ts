@@ -66,6 +66,15 @@ export async function syncPush(): Promise<void> {
   await report();
 }
 
+/** Called by `unpair`, while the authenticated link is still up: the host only
+ *  drops this phone's token on an explicit `{ token: null }`, so leaving without
+ *  one would let a Mac this phone has forgotten keep alerting it. Best effort —
+ *  an unpair must not be blocked by a host that is already gone. */
+export async function forgetPush(): Promise<void> {
+  if (deps?.client.state !== "connected") return;
+  await deps.api.registerPush(null).catch(ignore);
+}
+
 /** Ask iOS at most once per host. The answer is persisted, so neither a
  *  reconnect nor a relaunch re-prompts, and a denial is never revisited. */
 async function permissionFor(hostKey: string): Promise<PushPermission> {

@@ -18,7 +18,7 @@ import {
 import type { PushFletch } from "../remote/push";
 import { registerRemoteEvents } from "./events";
 import { clearHost, loadSettings, saveSettings } from "./persist";
-import { startPush, syncPush } from "./push";
+import { forgetPush, startPush, syncPush } from "./push";
 import { applyUserTurns, reduceRecords } from "./transcript";
 
 export const client = createClient();
@@ -308,6 +308,8 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async unpair() {
+    // Before the link drops: the host keeps the push token until told otherwise.
+    await forgetPush();
     client.disconnect();
     await clearHost();
     set({

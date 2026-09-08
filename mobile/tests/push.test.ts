@@ -33,7 +33,7 @@ vi.mock("@tauri-apps/api/event", async (importOriginal) => ({
 }));
 
 import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { api, useStore } from "../src/store";
+import { api, client, useStore } from "../src/store";
 import { loadSettings, saveSettings } from "../src/store/persist";
 
 // `inTauri()` gates the whole feature and the plugin below is faked, so say we
@@ -110,5 +110,21 @@ describe("a tapped alert", () => {
     emit("push://opened", { fletch: { hostId: "another-mac", agentId: "arabia" } });
     expect(state().nav).toHaveLength(1);
     expect(state().nav[0].screen).toBe("home");
+  });
+});
+
+describe("unpairing", () => {
+  it("clears the token on the host before the link drops", async () => {
+    const registerPush = vi.spyOn(api, "registerPush");
+    const disconnect = vi.spyOn(client, "disconnect");
+    await state().unpair();
+    // The clear goes out while still connected, or the host would keep alerting
+    // a phone that has forgotten it.
+    expect(registerPush).toHaveBeenCalledWith(null);
+    expect(registerPush.mock.invocationCallOrder[0]).toBeLessThan(
+      disconnect.mock.invocationCallOrder[0],
+    );
+    registerPush.mockRestore();
+    disconnect.mockRestore();
   });
 });
