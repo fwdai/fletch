@@ -35,6 +35,7 @@ vi.mock("@tauri-apps/api/event", async (importOriginal) => ({
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { api, client, useStore } from "../src/store";
 import { loadSettings, saveSettings } from "../src/store/persist";
+import { FORGET_PUSH_TIMEOUT_MS } from "../src/store/push";
 
 // `inTauri()` gates the whole feature and the plugin below is faked, so say we
 // are inside the app.
@@ -126,5 +127,24 @@ describe("unpairing", () => {
     );
     registerPush.mockRestore();
     disconnect.mockRestore();
+  });
+
+  it("still unpairs when the host never answers the clear", async () => {
+    await state().connect({ host: "mock", port: 1 });
+    await vi.waitFor(() => expect(state().connection).toBe("connected"));
+    // A host that has gone silent without closing the socket: the request
+    // would hang forever, and the unpair must not hang with it.
+    const registerPush = vi.spyOn(api, "registerPush").mockReturnValue(new Promise(() => {}));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const unpairing = state().unpair();
+      await vi.advanceTimersByTimeAsync(FORGET_PUSH_TIMEOUT_MS);
+      await unpairing;
+    } finally {
+      vi.useRealTimers();
+      registerPush.mockRestore();
+    }
+    expect(state().hostKey).toBeNull();
+    expect(state().connection).not.toBe("connected");
   });
 });

@@ -6,6 +6,7 @@
 
 import type { Api } from "../api";
 import { ignore } from "../lib/ignore";
+import { withTimeout } from "../lib/timeout";
 import type { RemoteClient } from "../remote";
 import {
   onPushOpened,
@@ -72,8 +73,13 @@ export async function syncPush(): Promise<void> {
  *  an unpair must not be blocked by a host that is already gone. */
 export async function forgetPush(): Promise<void> {
   if (deps?.client.state !== "connected") return;
-  await deps.api.registerPush(null).catch(ignore);
+  // Bounded: remote calls have no timeout, and a host that has stopped
+  // answering without closing the socket must not hold the unpair hostage.
+  await withTimeout(deps.api.registerPush(null).catch(ignore), FORGET_PUSH_TIMEOUT_MS);
 }
+
+/** How long an unpair waits for the host to acknowledge the token clear. */
+export const FORGET_PUSH_TIMEOUT_MS = 2000;
 
 /** Ask iOS at most once per host. The answer is persisted, so neither a
  *  reconnect nor a relaunch re-prompts, and a denial is never revisited. */
