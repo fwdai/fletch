@@ -12,7 +12,7 @@ export const MAX_TOKENS = 8;
 /** `title` and `body` are shown to a human; anything longer is a bug. */
 export const MAX_TEXT_CHARS = 200;
 /** Apple caps `apns-collapse-id` at 64 bytes. */
-const MAX_COLLAPSE_ID_CHARS = 64;
+const MAX_COLLAPSE_ID_BYTES = 64;
 /** Apple accepts a provider token for 20–60 minutes; 50 leaves slack. */
 export const JWT_TTL_MS = 50 * 60 * 1000;
 /** An alert about a finished turn is worthless a day later. */
@@ -85,8 +85,10 @@ export function parsePushRequest(payload: Uint8Array): ParsedPush {
     };
   }
   // An over-long or missing collapse id costs the coalescing, not the alert.
+  // Apple's limit is in bytes, so it is measured as UTF-8, not as characters.
   const collapseId =
-    typeof raw.collapseId === "string" && raw.collapseId.length <= MAX_COLLAPSE_ID_CHARS
+    typeof raw.collapseId === "string" &&
+    encoder.encode(raw.collapseId).length <= MAX_COLLAPSE_ID_BYTES
       ? raw.collapseId
       : "";
   return { ok: true, request: { tokens, title, body, kind, agentId, collapseId } };

@@ -3,9 +3,10 @@
 // desktop adapters render them exactly as they render a live host's.
 
 import type { AgentRecord, TrackedRepo, Workspace } from "@desktop/api/types/agent";
-import type { CheckoutFile, CheckoutFileContents } from "@desktop/api/types/checkout";
+import type { CheckoutFile, CheckoutFileContents, DirEntry } from "@desktop/api/types/checkout";
 import type { GitState } from "@desktop/api/types/git";
 import type { PrChecks, PrState } from "@desktop/api/types/pr";
+import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 
@@ -491,3 +492,72 @@ export const supportedModels: AgentModels[] = [
 ];
 
 export const hostInfo = { name: "Alex's MacBook Pro", appVersion: "0.7.23", os: "macos" };
+
+/** What `~` expands to on the fake host. */
+export const HOME = "/Users/alex";
+
+const dir = (name: string): DirEntry => ({ name, is_dir: true });
+const file = (name: string): DirEntry => ({ name, is_dir: false });
+
+/** A small fake filesystem for `list_dir`, so the folder picker has somewhere
+ *  real-looking to walk in the browser dev loop. Only the interesting nodes are
+ *  listed: a directory its parent names but that has no row of its own reads as
+ *  empty (see `MockHost.listDir`), which keeps this table short. Files are in
+ *  here too, because filtering them out is part of the picker's job. */
+export const filesystem: Record<string, DirEntry[]> = {
+  "/": [dir("Applications"), dir("Users"), dir("tmp")],
+  "/Users": [dir("alex"), dir("Shared")],
+  [HOME]: [
+    dir(".config"),
+    dir(".fletch"),
+    dir(".ssh"),
+    dir("Code"),
+    dir("Documents"),
+    dir("Downloads"),
+    file(".zshrc"),
+  ],
+  [`${HOME}/.config`]: [dir("gh")],
+  [`${HOME}/.config/gh`]: [file("hosts.yml")],
+  [`${HOME}/.fletch`]: [dir("workspaces")],
+  [`${HOME}/.fletch/workspaces`]: [dir("atlas"), dir("fletch"), dir("uluru")],
+  [FLETCH_REPO]: [dir("docs"), dir("mobile"), dir("src"), file("package.json")],
+  [ATLAS_REPO]: [dir("src"), file("Cargo.toml")],
+  [`${HOME}/Code`]: [dir("playground"), dir("scratch"), file("README.md")],
+  [`${HOME}/Code/playground`]: [dir("src"), file("README.md")],
+  [`${HOME}/Downloads`]: [file("fletch-0.7.23.dmg")],
+};
+
+export const ghStatus: GhStatus = { installed: true, authenticated: true, login: "alexchaplinsky" };
+
+export const ghRepos: GhRepoSummary[] = [
+  {
+    name_with_owner: "fwdai/fletch",
+    description: "Agent workspaces for the Mac",
+    is_private: true,
+    updated_at: "2026-09-08T08:41:00Z",
+  },
+  {
+    name_with_owner: "fwdai/atlas",
+    description: "Rust core for the model catalog",
+    is_private: true,
+    updated_at: "2026-09-06T17:02:00Z",
+  },
+  {
+    name_with_owner: "fwdai/relay",
+    description: "Cloudflare Worker relay for off-network access",
+    is_private: false,
+    updated_at: "2026-09-05T11:20:00Z",
+  },
+  {
+    name_with_owner: "alexchaplinsky/dotfiles",
+    description: null,
+    is_private: false,
+    updated_at: "2026-08-22T09:15:00Z",
+  },
+  {
+    name_with_owner: "alexchaplinsky/geist-playground",
+    description: "Type experiments",
+    is_private: false,
+    updated_at: "2026-07-30T14:48:00Z",
+  },
+];
