@@ -26,11 +26,13 @@ export function ModelPickerSheet({
       sectionLabel={providerLabel(agent.provider)}
       items={list.map((m) => ({
         id: m.id,
-        label: m.name ?? m.id ?? "Default model",
+        label: m.name,
         right: contextLabel(m.contextWindow),
       }))}
       value={agent.model ?? ""}
-      onChange={(id) => void setModel(agent.id, id).catch(ignore)}
+      // The default row's empty id means "no pinned model", which the host
+      // spells `null` — persisting "" would leave a model set to nothing.
+      onChange={(id) => void setModel(agent.id, id || null).catch(ignore)}
     />
   );
 }
