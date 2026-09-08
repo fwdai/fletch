@@ -12,6 +12,16 @@
 // function/custom-tool calls (which cover shell, MCP, and app tools).
 // `response_item` user/assistant messages are skipped — they duplicate the
 // event_msg ones and carry injected noise (AGENTS.md, permissions blurb).
+//
+// The event_msg backbone comes in two generations, both handled here:
+//   ≤ 0.144: { "type":"user_message", "message":"…" } / { "type":"agent_message", "message":"…" }
+//   ≥ 0.153: { "type":"item_completed", "item":{ "type":"UserMessage" | "AgentMessage", "content":[{ "text":"…" }], "phase"? } }
+// (verified against codex-cli 0.135.0 / 0.144.5 and 0.153.4). The newer shape
+// is a `TurnItem` envelope — PascalCase `item.type`, text in content blocks,
+// and `phase: "commentary" | "final_answer"` on agent messages. Only the two
+// message variants are read from it; tool variants (McpToolCall,
+// CommandExecution, …) still duplicate the `response_item` calls we already
+// render, so they're ignored to avoid double rows.
 
 import { asRecord } from "@/adapters/shared/json";
 import type { RawEvent } from "@/adapters/types";
@@ -27,8 +37,10 @@ function parseArgs(v: unknown): unknown {
   return v ?? {};
 }
 
-/** Flatten Codex's persisted output shapes. Legacy function calls store a
- * string; current custom tools store Responses-style input_text blocks. */
+/** Flatten Codex's persisted text shapes to one string. Legacy function calls
+ * store a string; current custom tools store Responses-style input_text blocks;
+ * TurnItem messages store `content` blocks (`text` / `Text`) — all read the
+ * same way, by joining every block's `text`. */
 function outputText(v: unknown): string {
   if (typeof v === "string") return v;
   if (Array.isArray(v)) {
@@ -114,6 +126,23 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
         }
       } else if (ptype === "task_complete") {
         out.push({ type: "turn.completed" });
+      } else if (ptype === "item_completed") {
+        const item = asRecord(p.item);
+        if (item.type === "UserMessage") {
+          const text = outputText(item.content);
+          if (text) out.push({ type: "user", text });
+        } else if (item.type === "AgentMessage") {
+          // Both phases (commentary preamble and final_answer) are prose the
+          // user saw live, so both replay as agent messages.
+          const text = outputText(item.content);
+          if (text) {
+            const id = typeof item.id === "string" ? item.id : `msg_${out.length}`;
+            out.push({
+              type: "item.completed",
+              item: { id, type: "agent_message", text, model: currentModel },
+            });
+          }
+        }
       }
       continue;
     }

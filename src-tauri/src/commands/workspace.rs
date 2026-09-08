@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::error::Result;
 use crate::names;
@@ -49,13 +49,37 @@ pub(crate) fn allocate_draft_name_impl(
 /// agents, checkouts, and history.
 #[tauri::command]
 pub async fn add_workspace_repo(
+    app: AppHandle,
     supervisor: State<'_, Arc<Supervisor>>,
     repo_path: String,
 ) -> Result<Workspace> {
-    let sup = supervisor.inner().clone();
+    announce_workspace(&app, add_workspace_repo_impl(&supervisor, repo_path).await)
+}
+
+/// Shared with the remote dispatcher, so a folder pinned from a phone gets the
+/// same git initialization a folder picked on the desktop does.
+pub(crate) async fn add_workspace_repo_impl(
+    supervisor: &Supervisor,
+    repo_path: String,
+) -> Result<Workspace> {
     let path = PathBuf::from(repo_path);
     new_project::ensure_git_repo(&path).await?;
-    sup.add_workspace_repo(path)
+    supervisor.add_workspace_repo(path)
+}
+
+/// Emit `workspace:changed` when a command has changed the project list, so
+/// every other view — the desktop window, each paired phone — reloads it rather
+/// than waiting for its next refresh. The caller still applies the returned
+/// `Workspace` itself; the event is for everyone else. Kept out of the `_impl`
+/// functions so the remote tests can drive those without a Tauri app.
+pub(crate) fn announce_workspace<T, E>(
+    app: &AppHandle,
+    result: std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    if result.is_ok() {
+        crate::supervisor::emit_workspace_changed(app);
+    }
+    result
 }
 
 #[tauri::command]
