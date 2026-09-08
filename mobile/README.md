@@ -74,11 +74,11 @@ Two things in it are worth knowing about:
 These cannot be committed and have to be done once, per team:
 
 1. In the Apple Developer portal, enable the **Push Notifications** capability
-   on the `com.fletch.mobile` App ID, then regenerate the provisioning profile
+   on the `sh.fletch.mobile` App ID, then regenerate the provisioning profile
    (Xcode's automatic signing does this for you once the App ID has it). Without
    it, signing fails with a missing-entitlement error.
 2. Create an APNs auth key (`.p8`) and give the relay `APNS_TEAM_ID`,
-   `APNS_KEY_ID`, `APNS_PRIVATE_KEY` and `APNS_BUNDLE_ID=com.fletch.mobile` —
+   `APNS_KEY_ID`, `APNS_PRIVATE_KEY` and `APNS_BUNDLE_ID=sh.fletch.mobile` —
    `apns-topic` is the bundle id, so the two have to match.
 3. Run on a real device. The simulator has no embedded profile and cannot
    receive a remote push; the plugin reports `sandbox` there.
