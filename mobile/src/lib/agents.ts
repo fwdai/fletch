@@ -27,8 +27,13 @@ export const branchOf = (a: AgentRecord) => primaryRepo(a)?.branch ?? "—";
 
 export const baseOf = (a: AgentRecord) => primaryRepo(a)?.parent_branch ?? "main";
 
+/** A project's live agents, newest first. The host hands the snapshot back in
+ *  `created_at` order, so the list has to be reversed here or the most recent
+ *  agent lands at the bottom — same ordering the desktop sidebar applies. */
 export const agentsOfProject = (ws: Workspace | null, projectId: string) =>
-  (ws?.agents ?? []).filter((a) => a.project_id === projectId && !a.archive);
+  (ws?.agents ?? [])
+    .filter((a) => a.project_id === projectId && !a.archive)
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
 
 export const providerLabel = (id: string) => PROVIDERS.find((p) => p.id === id)?.label ?? id;
 
