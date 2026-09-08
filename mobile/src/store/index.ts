@@ -88,10 +88,12 @@ export interface MobileState {
   push(screen: ScreenName, props?: Record<string, string>): void;
   pop(): void;
   openSheet(name: SheetName, props?: Record<string, string>): void;
-  /** Close the open sheet. With `name`, only if that is the sheet showing: an
-   *  async action finishing late must not dismiss whatever the user opened
-   *  since. */
-  closeSheet(name?: SheetName): void;
+  /** Close whatever sheet is open. Safe to hand straight to an `onClose` or
+   *  `onClick`: it ignores its arguments. */
+  closeSheet(): void;
+  /** Close the sheet only if `name` is the one showing: for an async action
+   *  finishing late, which must not dismiss whatever the user opened since. */
+  closeSheetIf(name: SheetName): void;
 
   refreshWorkspace(): Promise<void>;
   openAgent(agentId: string): void;
@@ -365,10 +367,11 @@ export const useStore = create<MobileState>()((set, get) => ({
   openSheet(name, props = {}) {
     set({ sheet: { name, props, open: true } });
   },
-  closeSheet(name) {
-    set((s) =>
-      s.sheet && (!name || s.sheet.name === name) ? { sheet: { ...s.sheet, open: false } } : s,
-    );
+  closeSheet() {
+    set((s) => (s.sheet ? { sheet: { ...s.sheet, open: false } } : s));
+  },
+  closeSheetIf(name) {
+    if (get().sheet?.name === name) get().closeSheet();
   },
 
   async refreshWorkspace() {
@@ -566,7 +569,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   async addWorkspaceRepo(repoPath) {
     return guard(set, async () => {
       set({ workspace: await api.addWorkspaceRepo(repoPath) });
-      get().closeSheet("addProject");
+      get().closeSheetIf("addProject");
     });
   },
 
@@ -575,7 +578,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       const workspace = await api.cloneRepo(spec, destParent);
       set({ workspace, lastDestParent: destParent });
       await saveDestParent(get().hostKey, destParent);
-      get().closeSheet("addProject");
+      get().closeSheetIf("addProject");
     });
   },
 

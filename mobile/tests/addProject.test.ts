@@ -132,6 +132,14 @@ describe("clone from GitHub", () => {
     expect(state().sheet).toMatchObject({ name: "host", open: true });
     spy.mockRestore();
   });
+
+  it("closeSheet still closes when wired straight to a click handler", () => {
+    state().openSheet("host");
+    // React hands an onClick/onClose callback its event; the unconditional
+    // closer must ignore it rather than read it as a sheet name.
+    (state().closeSheet as (e: unknown) => void)({ type: "click" });
+    expect(state().sheet).toMatchObject({ name: "host", open: false });
+  });
 });
 
 // First-render markup only — enough to catch a form that cannot render and to
