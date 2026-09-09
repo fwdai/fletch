@@ -494,6 +494,61 @@
 .na-tools .grow {
   flex: 1;
 }
+/* Dictation in the prompt box: the mic keeps the row's right end in every
+   state, and the pickers to its left are replaced by the waveform while the
+   mic is open. The voice row is the chat composer's, sized down to the band
+   this box leaves under the field. */
+.na-prompt.is-listening {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.na-mic {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--bg-3);
+  color: var(--fg-1);
+}
+.na-mic.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.na-mic:disabled {
+  opacity: 0.5;
+}
+.na-mic:active:not(:disabled) {
+  background: oklch(from var(--bg-3) calc(l + 0.04) c h);
+}
+.na-voice {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.na-voice .m-cancel,
+.na-voice .m-cancel .circ {
+  width: 30px;
+  height: 30px;
+}
+.na-voice .m-wave {
+  padding: 0 4px;
+  gap: 8px;
+}
+.na-voice .m-wave .bars {
+  height: 18px;
+}
+.na-voice .m-wave .clock {
+  font-size: 12px;
+}
+.na-voice .m-wave.tx {
+  font-size: 13px;
+  padding-left: 6px;
+}
 .na-ctx {
   display: flex;
   gap: 6px;

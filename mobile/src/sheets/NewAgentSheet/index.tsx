@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { PickerSheet, ProviderMark, Sheet, Swatch } from "../../components/ui";
 import { modelLabel, providerLabel } from "../../lib/agents";
-import { autosize } from "../../lib/autosize";
 import { ignore } from "../../lib/ignore";
 import { modelsFor, useModels } from "../../lib/models";
 import { api, useStore } from "../../store";
+import { PromptField } from "./PromptField";
 import { RunnerSheet } from "./RunnerSheet";
 
 type Picker = "project" | "branch" | "runner" | null;
@@ -40,7 +40,9 @@ export function NewAgentSheet({
   const [name, setName] = useState("");
   const [picker, setPicker] = useState<Picker>(null);
   const [starting, setStarting] = useState(false);
-  const ta = useRef<HTMLTextAreaElement>(null);
+  // A live mic holds the Start button: the words are still on their way into
+  // the draft, and spawning now would send it without them.
+  const [dictating, setDictating] = useState(false);
 
   const project = projects.find((p) => p.project_id === pid) ?? projects[0];
 
@@ -89,7 +91,7 @@ export function NewAgentSheet({
   const chosenBase = base ?? defaultBase;
   const providerModels = modelsFor(models, provider);
   const start = () => {
-    if (!prompt.trim() || starting) return;
+    if (!prompt.trim() || starting || dictating) return;
     setStarting(true);
     clearError();
     void spawn({
@@ -123,7 +125,7 @@ export function NewAgentSheet({
           <button
             type="button"
             className="btn primary block"
-            disabled={!prompt.trim() || starting}
+            disabled={!prompt.trim() || starting || dictating}
             onClick={start}
           >
             <Icon name="play" size={15} />
@@ -160,30 +162,17 @@ export function NewAgentSheet({
           </button>
           .
         </p>
-        <div className="na-prompt">
-          <textarea
-            ref={ta}
-            rows={4}
-            placeholder="Describe the task — this becomes the agent's first message."
-            value={prompt}
-            onChange={(e) => {
-              setPrompt(e.target.value);
-              autosize(e.currentTarget, 120, 260);
-            }}
-          />
-          <div className="na-tools">
-            <button type="button" className="chip runner" onClick={() => setPicker("runner")}>
-              <ProviderMark id={provider} />
-              <span>{providerLabel(provider)}</span>
-              <span className="sep">·</span>
-              <span>{modelLabel(model)}</span>
-              <span className="sep">·</span>
-              <span>{effort}</span>
-              <Icon name="chevD" size={11} style={{ color: "var(--fg-3)" }} />
-            </button>
-            <span className="grow" />
-          </div>
-        </div>
+        <PromptField value={prompt} onChange={setPrompt} onDictating={setDictating}>
+          <button type="button" className="chip runner" onClick={() => setPicker("runner")}>
+            <ProviderMark id={provider} />
+            <span>{providerLabel(provider)}</span>
+            <span className="sep">·</span>
+            <span>{modelLabel(model)}</span>
+            <span className="sep">·</span>
+            <span>{effort}</span>
+            <Icon name="chevD" size={11} style={{ color: "var(--fg-3)" }} />
+          </button>
+        </PromptField>
         {lastError && <div className="err na-err">{lastError}</div>}
         <div className="na-ctx">
           <button type="button" className="chip" onClick={() => setPicker("project")}>

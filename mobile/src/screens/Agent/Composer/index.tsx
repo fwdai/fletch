@@ -8,13 +8,12 @@ import { primaryState } from "@desktop/components/Composer/PrimaryControl/primar
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../../components/Icon";
 import { ProviderMark } from "../../../components/ui";
-import { useDictation } from "../../../dictation";
+import { useDictation, VoiceRow } from "../../../dictation";
 import { isBusy, modelLabel } from "../../../lib/agents";
 import { autosize } from "../../../lib/autosize";
 import { ignore } from "../../../lib/ignore";
 import { useStore } from "../../../store";
 import { PrimaryPair } from "./PrimaryPair";
-import { VoiceRow } from "./VoiceRow";
 
 /** Stop ignores taps this long after send, so a double-tap can't kill the run
  *  it just started. Taps are swallowed, not queued. */
