@@ -18,9 +18,36 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* `.scroll` sets overflow-y only, which computes overflow-x to `auto` rather
+     than leaving it visible — so a single unbreakable row pans the whole
+     transcript sideways. The wrap rule below is the real fix; this is the
+     backstop that stops a future row type from re-opening the gesture. Code
+     blocks and tables carry their own overflow-x and still swipe. */
+  overflow-x: hidden;
 }
 .chat > * {
   flex-shrink: 0;
+}
+/* Transcript text is arbitrary: a URL, a $PATH dump, a base64 blob, a stack
+   frame. Those carry no space to break at, and `.msg-user` is sized to
+   fit-content — so its min-content width (the whole token) beats its 88%
+   max-width and the bubble grows past the viewport. `anywhere` breaks mid-token
+   as a last resort; unlike `break-word` its break points count toward
+   min-content sizing, which is what pulls the bubble back inside. And because
+   `overflow-wrap` inherits, one declaration per row root also covers that row's
+   paragraphs, list items, links and inline code. */
+.msg-user,
+.msg-text,
+.reasoning,
+.notice {
+  overflow-wrap: anywhere;
+}
+/* Tables opt back out: they scroll sideways by design (see `.msg-text table`),
+   and mid-word breaks would shrink the columns instead of letting the table
+   scroll. Fenced code needs no opt-out — `white-space: pre` already disables
+   wrapping there, so the inherited value has no effect. */
+.msg-text table {
+  overflow-wrap: normal;
 }
 .msg-user {
   align-self: flex-end;
