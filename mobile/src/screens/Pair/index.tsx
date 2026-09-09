@@ -5,7 +5,7 @@ import { useStore } from "../../store";
 import { Wordmark } from "../Home/Wordmark";
 
 /** Manual pairing: the host's address and the one-time code from the desktop's
- *  Settings → Mobile devices. A pasted `fletch://pair?…` link fills both and
+ *  Settings → Remote control. A pasted `fletch://pair?…` link fills both and
  *  brings the host's public key with it, which is what authenticates the Mac,
  *  plus the relay URL when the host has one; hand-typed entry has no key and
  *  pins the one it meets on first contact, and has no relay until a link
@@ -49,7 +49,7 @@ export function PairScreen() {
       <div className="hero">
         <h1>Pair with your Mac</h1>
         <p>
-          On the desktop app open <b>Settings → Mobile devices → Pair a device</b>, then enter its
+          On the desktop app open <b>Settings → Remote control → Pair a device</b>, then enter its
           address and the one-time code here.
         </p>
       </div>

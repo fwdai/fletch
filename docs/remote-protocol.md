@@ -336,7 +336,7 @@ not have on record (never paired, or revoked) closes with `4003`.
 
 ### `pair`
 
-Desktop Settings → "Mobile devices" → "Pair a device" calls the Tauri command
+Desktop Settings → "Remote control" → "Pair a device" calls the Tauri command
 `remote_begin_pairing`, which mints a one-time pairing code (8 chars from
 `A-Z2-9`, no ambiguous glyphs), valid 5 minutes, single use. Settings shows it
 as text and as a QR code encoding:

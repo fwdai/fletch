@@ -11,7 +11,7 @@ const PILL: Record<RelayState, string> = {
   error: "not connected",
 };
 
-/** Settings › Mobile devices › the relay switch.
+/** Settings › Remote control › the relay switch.
  *
  *  The relay is a dumb pipe: it routes on this Mac's public key and sees only
  *  the same ciphertext the LAN path carries, so turning it on adds reach and

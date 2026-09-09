@@ -10,6 +10,7 @@ import { ExperimentalPane } from "./ExperimentalPane";
 import { GeneralPane } from "./GeneralPane";
 import { McpServersPane } from "./McpServers";
 import { ProvidersPane } from "./ProvidersPane";
+import { RemoteControlPane } from "./RemoteControl";
 import { SkillsPane } from "./Skills";
 
 // Lazily loaded — code-split into its own chunk, fetched only when the Developer
@@ -40,6 +41,9 @@ const CUSTOMIZE_IDS: SettingsSection[] = ["agents", "tools", "skills"];
 const NAV: NavItem[] = [
   { id: "account", label: "Account", icon: "user", order: 10 },
   { id: "general", label: "General", icon: "settings", order: 20 },
+  // Pairing a phone and the relay are a few related knobs that would otherwise
+  // be buried at the bottom of General, so they get their own entry.
+  { id: "remote", label: "Remote control", icon: "phone", order: 25 },
   { id: "providers", label: "Providers", icon: "cube", order: 30 },
   {
     id: "agents",
@@ -112,6 +116,7 @@ export function SettingsScreen() {
       <div className="set-main">
         <div className="set-content">
           {section === "account" && <AccountPane />}
+          {section === "remote" && <RemoteControlPane />}
           {section === "providers" && <ProvidersPane />}
           {section === "agents" && <CustomAgentsPane />}
           {section === "workflows" && <WorkflowsPane />}
