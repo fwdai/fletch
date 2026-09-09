@@ -370,9 +370,12 @@
   padding-top: 2px;
 }
 
+/* The box sits as far from the bottom as from the sides. The home indicator
+   overlays the bottom ~14px of the inset, so on a phone the gap is the inset
+   minus that; anywhere without an inset it's just the side margin. */
 .composer {
   flex-shrink: 0;
-  padding: 8px 12px calc(var(--safe-bottom) + 4px);
+  padding: 8px 12px max(12px, calc(env(safe-area-inset-bottom, 0px) - 14px));
   background: var(--bg-0);
   border-top: 1px solid var(--bd-soft);
 }
@@ -413,7 +416,7 @@
   font-size: 16px;
   line-height: 1.4;
   min-height: 48px;
-  max-height: 160px;
+  max-height: 40dvh; /* keep in step with fieldCap() in Composer/index.tsx */
   letter-spacing: -0.005em;
   display: block;
 }
