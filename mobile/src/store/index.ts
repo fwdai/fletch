@@ -234,17 +234,27 @@ export const useStore = create<MobileState>()((set, get) => ({
         via: client.via,
       }),
     );
+    // The log of an open thread is kept current by live events, which a
+    // dropped socket or a backgrounded webview silently misses — so every
+    // reconnect and every return to the foreground re-reads it from the host.
+    const refreshOpenAgent = () => {
+      const agentId = [...get().nav].reverse().find((n) => n.props.agentId)?.props.agentId;
+      if (agentId) void get().loadAgent(agentId).catch(ignore);
+    };
     client.onSnapshot((snapshot) => {
       set({ hostInfo: snapshot.host });
       if (snapshot.workspace) set({ workspace: snapshot.workspace });
       else void get().refreshWorkspace();
+      refreshOpenAgent();
       // Every handshake — the first pairing and every reconnect — is when the
       // host is told the APNs token again.
       void syncPush().catch(ignore);
     });
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
-        if (!document.hidden && client.state === "connected") void get().refreshWorkspace();
+        if (document.hidden || client.state !== "connected") return;
+        void get().refreshWorkspace();
+        refreshOpenAgent();
       });
     }
     const saved = await loadSettings();
