@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "ios:init": "tauri ios init",
+    "icons": "node scripts/generate-icons.mjs",
     "check": "tsc --noEmit",
     "lint": "biome check",
     "lint:fix": "biome check --write",
