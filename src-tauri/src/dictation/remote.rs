@@ -82,6 +82,8 @@ pub(super) struct Store {
 }
 
 /// What `end` hands to the transcriber: the audio and the rate it was captured at.
+// Only the macOS transcriber reads it; the stub elsewhere refuses before looking.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(super) struct Clip {
     pub rate: f64,
     pub samples: Vec<i16>,
