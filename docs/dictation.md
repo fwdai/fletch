@@ -21,13 +21,16 @@ the focus anywhere else in the window that isn't an editable field
 (`useDictationHotkey`): it toggles dictation in the composer and brings the
 caret there.
 
-| Key | empty | draft | listening | agent running |
+| Key | empty | draft | listening | agent running, empty |
 | --- | --- | --- | --- | --- |
-| ↵ | — | send | stop & transcribe | — (the draft waits) |
-| ⌘↵ | — | send | stop & transcribe | send mid-turn |
+| ↵ | — | send | stop & transcribe | — |
 | ⇧↵ | newline | newline | newline | newline |
-| ⌘⇧D | start dictation | start dictation | stop & transcribe | — |
+| ⌘⇧D | start dictation | start dictation | stop & transcribe | start dictation |
 | esc | — | — | cancel, discard interim | stop agent |
+
+The stop button holds the slot only while the box is empty. Once there is a
+draft the control is `draft` again — ↵ sends the follow-up mid-turn (delivered
+live, or queued for the next turn boundary) and esc still stops the run.
 
 Nothing is ever sent by voice alone: speech lands as editable text and waits
 for ↵.

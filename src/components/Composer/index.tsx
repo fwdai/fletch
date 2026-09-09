@@ -326,11 +326,14 @@ export function Composer({
 
   const hasContent = input.text.trim().length > 0 || input.attachments.length > 0;
   // What the primary control is right now — the mic, send, or stop. Derived,
-  // top to bottom (see `primaryState`); the control stores nothing.
+  // top to bottom (see `primaryState`); the control stores nothing. A busy
+  // agent claims the slot only while the box is empty: once the user types,
+  // the control is Send again so a follow-up goes with ↵ mid-turn (delivered
+  // live or queued — see store.sendUserMessage). Esc still stops the run.
   const state = primaryState({
     sttError: dictation.error !== null,
     dictation: dictation.phase,
-    agentRunning: stopping,
+    agentRunning: stopping && !hasContent,
     hasDraft: hasContent,
     micDenied,
   });
@@ -338,13 +341,11 @@ export function Composer({
     ? `${providerLabel(provider)} isn't available in ${sandboxEngineLabel(sandboxEngine)} sandboxes yet — switch to Claude to send`
     : undefined;
 
-  /** Send the draft. While the agent works the draft waits — ↵ does nothing —
-   *  except for ⌘↵, which still sends mid-turn (delivered live or queued for
-   *  the next turn boundary; see store.sendUserMessage). Nothing is sent by
-   *  voice alone: a send only happens once dictation is idle. */
-  function send(opts: { midTurn?: boolean } = {}) {
+  /** Send the draft — also while the agent works, as a mid-turn follow-up.
+   *  Nothing is sent by voice alone: a send only happens once dictation is
+   *  idle. */
+  function send() {
     if (dictation.phase !== "idle") return;
-    if (stopping && !opts.midTurn) return;
     const trimmed = input.text.trim();
     if ((!trimmed && input.attachments.length === 0) || disabled || dockerBlocked) return;
     onSend({
@@ -358,11 +359,11 @@ export function Composer({
     input.clear();
   }
 
-  /** The mic's action, from the control or ⌘⇧D. Not offered while the agent
-   *  runs (the slot is the stop button then), nor while the grant is off — the
-   *  control's tooltip explains, and a click on it opens Settings. */
+  /** The mic's action, from the control or ⌘⇧D. Not offered while the grant
+   *  is off — the control's tooltip explains, and a click on it opens Settings.
+   *  A running agent doesn't block it: dictating only adds to the draft. */
   function toggleDictation() {
-    if (disabled || !dictationAvailable || micDenied || stopping) return;
+    if (disabled || !dictationAvailable || micDenied) return;
     dictation.toggle();
   }
 
@@ -377,7 +378,6 @@ export function Composer({
   // dictation; esc backs out of whatever is live. While listening, ↵ stops and
   // transcribes rather than sending — the operator is already reaching for it.
   keysRef.current = (e) => {
-    const mod = e.metaKey || e.ctrlKey;
     if (isDictationHotkey(e)) {
       e.preventDefault();
       toggleDictation();
@@ -387,7 +387,7 @@ export function Composer({
       e.preventDefault();
       const phase = dictation.phase;
       if (phase === "listening" || phase === "starting") dictation.stop();
-      else if (phase === "idle") send({ midTurn: mod });
+      else if (phase === "idle") send();
       return true;
     }
     if (e.key === "Escape") {
