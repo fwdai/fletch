@@ -411,6 +411,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `set_agent_effort` | `{ agentId, effort }` | `null` |
 | `read_session_records` | `{ agentId }` | `SessionRecord[]` |
 | `read_user_turns` | `{ agentId }` | `UserTurn[]` |
+| `sync_session` | `{ agentId }` | `null` |
 | `get_git_state` | `{ agentId }` | `GitState \| null` |
 | `get_agent_diff_stats` | `{ agentId }` | `DiffStats` |
 | `list_checkout_tree` | as command | `CheckoutFile[]` |
@@ -534,7 +535,10 @@ Never forwarded: `agent:output`, `shell:output` (raw PTY bytes), `run:*`,
 
 Delivery is best effort, exactly like the desktop frontend: the phone must
 refetch `get_workspace` on reconnect and on returning to the foreground, and
-`read_session_records` when it opens an agent.
+`read_session_records` when it opens an agent. An empty record list is not
+proof of an empty conversation — the turn-end ingest can lag or miss — so the
+phone then asks the host to `sync_session` and reads once more, and keeps
+whatever log it already rendered from live events if that is still empty.
 
 ## Errors
 

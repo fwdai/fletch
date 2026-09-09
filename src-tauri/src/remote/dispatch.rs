@@ -64,6 +64,7 @@ pub const OPS: &[&str] = &[
     "set_agent_effort",
     "read_session_records",
     "read_user_turns",
+    "sync_session",
     "get_git_state",
     "get_agent_diff_stats",
     "list_checkout_tree",
@@ -228,6 +229,15 @@ impl Dispatch for SupervisorDispatch {
                 "read_user_turns" => {
                     let a: AgentArgs = parse(args)?;
                     res(sup.workspace.read_user_turns(&a.agent_id))
+                }
+
+                // Lazy backfill, same as the `sync_session` command: the phone
+                // calls it when `read_session_records` comes back empty for an
+                // agent that plainly has a transcript on disk.
+                "sync_session" => {
+                    let a: AgentArgs = parse(args)?;
+                    sup.sync_session(&a.agent_id);
+                    res::<()>(Ok(()))
                 }
 
                 "get_git_state" => {

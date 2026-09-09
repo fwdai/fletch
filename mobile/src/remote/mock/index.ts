@@ -368,6 +368,8 @@ export class MockHost {
         return this.state.records[id] ?? [];
       case "read_user_turns":
         return fx.userTurns[id] ?? [];
+      case "sync_session":
+        return null;
       case "get_git_state":
         return fx.gitStates[id] ?? null;
       case "get_agent_diff_stats": {
