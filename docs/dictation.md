@@ -28,9 +28,10 @@ The flow, end to end:
 | Button | `src/components/Composer/dictation/DictationButton.tsx` |
 | Session state | `src/components/Composer/dictation/useDictation.ts` |
 | IPC | `src/api/domains/dictation.ts` → `dictation_availability` / `dictation_start` / `dictation_stop` |
-| Events | `src/api/events.ts` — `dictation:transcript`, `dictation:state` |
+| Events | `src/api/events.ts` — `dictation:transcript`, `dictation:state`, `dictation:level` |
 | Commands + contract | `src-tauri/src/dictation/mod.rs` |
 | Microphone (both engines) | `src-tauri/src/dictation/apple.rs` |
+| Level meter (both engines) | `src-tauri/src/dictation/level.rs` |
 | Default engine | `src-tauri/src/dictation/speech.rs` (Rust side), `src-tauri/swift/SpeechBridge.swift` (Swift side) |
 | Local engine | `src-tauri/src/dictation/capture.rs`, `src-tauri/src/dictation/whisper/` |
 
@@ -127,6 +128,32 @@ unchanged: hand the buffer over and return. The conversion from the mic's
 format to the analyzer's (an `AVAudioConverter`, which also serves as the copy
 the tap's reused buffer needs) happens inside the bridge's `feed`, on the render
 thread — the same thing Apple's own `SpeechAnalyzer` sample does.
+
+## The level meter
+
+While the mic is open the composer shows level bars, fed by `dictation:level`:
+a value from 0 (silence) to 1 (loud, close speech), stamped with the session
+id like every other dictation event, about every 90 ms (`level::LEVEL_POLL`).
+It is display only — nothing about the session depends on it — and it stops
+when the mic closes, so on Apple's engine the last few events precede the
+flushed final transcript and `stopped`.
+
+Both engines feed the same `level::Meter`, which is one atomic holding the most
+recent tap buffer's RMS. The local engine already computes that RMS in the tap
+for the [silence gate](#hands-free-auto-stop) and hands it over; Apple's path,
+which otherwise passes the buffer to the bridge untouched, measures it in the
+same callback. The tap does nothing else there — one pass over the samples and
+one relaxed store — and a tokio task off the render thread samples the atomic
+and emits. Should a microphone ever deliver something other than deinterleaved
+float32, the meter reads nothing and reports silence rather than read the wrong
+memory (the local engine refuses such a format outright; Apple's engine
+converts it in the bridge and works regardless).
+
+The mapping to 0–1 is linear in dBFS between −50 dB and −15 dB
+(`level::normalize`): a quiet room on a laptop mic sits under the floor,
+conversational speech lands mid-range, and only close, loud speech pins the
+bars. That range is a display choice and is the one thing to tune if the bars
+read too shy or too hot on common hardware.
 
 ## Building the Swift bridge
 

@@ -29,6 +29,7 @@ use objc2_avf_audio::{
 use parking_lot::Mutex;
 
 use super::apple::Tap;
+use super::level::Meter;
 use super::whisper::engine;
 use crate::error::{Error, Result};
 
@@ -154,8 +155,9 @@ impl Pcm {
     }
 }
 
-/// Build the accumulator and the tap block that fills it.
-pub(super) fn sink(format: &AVAudioFormat) -> Result<(Arc<Pcm>, Tap)> {
+/// Build the accumulator and the tap block that fills it. The tap also feeds
+/// `meter`, the session's level indicator, with the RMS it computes anyway.
+pub(super) fn sink(format: &AVAudioFormat, meter: Arc<Meter>) -> Result<(Arc<Pcm>, Tap)> {
     // The input node hands out deinterleaved float32 on every OS that has
     // shipped. Reading a buffer in any other layout would be reading the wrong
     // memory, so refuse the session instead of guessing at it.
@@ -192,31 +194,32 @@ pub(super) fn sink(format: &AVAudioFormat) -> Result<(Arc<Pcm>, Tap)> {
     let tap_pcm = pcm.clone();
     let tap = RcBlock::new(
         move |buffer: NonNull<AVAudioPCMBuffer>, _when: NonNull<AVAudioTime>| {
-            append_mono(&tap_pcm, unsafe { buffer.as_ref() });
+            if let Some(rms) = append_mono(&tap_pcm, unsafe { buffer.as_ref() }) {
+                meter.record(rms);
+            }
         },
     );
     Ok((pcm, tap))
 }
 
 /// Real-time audio thread: average the channels down, note how loud the result
-/// was, and return. The only other lock holder is the one-shot take in
+/// was, and return it. The only other lock holder is the one-shot take in
 /// [`transcribe`], so `try_lock` all but never fails — and dropping one buffer
-/// beats blocking the render thread if it ever does.
+/// beats blocking the render thread if it ever does. `None` when the buffer
+/// was dropped, whichever reason.
 ///
-/// The RMS rides along in the same pass because the silence monitor needs it
-/// and the samples are already in registers here.
-fn append_mono(pcm: &Pcm, buffer: &AVAudioPCMBuffer) {
+/// The RMS rides along in the same pass because the silence monitor (and the
+/// level meter) need it and the samples are already in registers here.
+fn append_mono(pcm: &Pcm, buffer: &AVAudioPCMBuffer) -> Option<f32> {
     let frames = unsafe { buffer.frameLength() } as usize;
     let channels = unsafe { buffer.format().channelCount() } as usize;
     let data = unsafe { buffer.floatChannelData() };
     if data.is_null() || frames == 0 || channels == 0 {
-        return;
+        return None;
     }
-    let Some(mut samples) = pcm.samples.try_lock() else {
-        return;
-    };
+    let mut samples = pcm.samples.try_lock()?;
     if samples.len() + frames > pcm.limit {
-        return;
+        return None;
     }
     let mut squares = 0.0f64;
     for frame in 0..frames {
@@ -230,7 +233,9 @@ fn append_mono(pcm: &Pcm, buffer: &AVAudioPCMBuffer) {
         squares += f64::from(mono) * f64::from(mono);
         samples.push(mono);
     }
-    pcm.track_speech(((squares / frames as f64).sqrt()) as f32);
+    let rms = ((squares / frames as f64).sqrt()) as f32;
+    pcm.track_speech(rms);
+    Some(rms)
 }
 
 /// Take the session's audio and transcribe it with `model`. Consumes the
