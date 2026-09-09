@@ -154,3 +154,34 @@ There is no shared Xcode project to commit: `tauri ios init` regenerates
 `gen/apple` from `tauri.conf.json`, its `project.pbxproj` hardcodes whichever
 `DEVELOPMENT_TEAM` ran the init, and the entitlements are written at build time
 by the plugins (see above). Re-run `ios:init` instead of sharing the output.
+
+### Release to TestFlight
+
+```sh
+bun run release:ios
+```
+
+That builds the release archive, exports it, then uploads the archive to App
+Store Connect with `xcodebuild -exportArchive` and
+`src-tauri/ExportOptions.upload.plist` (`destination: upload`). The upload goes
+through the Apple account signed in to Xcode — the same path as Organizer >
+Distribute App — so there is no `altool` password to manage, and the build
+number is bumped automatically past whatever App Store Connect already has.
+The build shows up under TestFlight a few minutes after processing.
+
+One-time setup, per machine:
+
+- Sign in to Xcode (Settings > Accounts) with a member of the team.
+- Set the Xcode project to manual signing with the App Store distribution
+  profile, and put that profile in `mobile/.env` so the CLI's own export step
+  can find it. The `tauri` script loads `.env` before every run:
+
+  ```sh
+  echo "IOS_MOBILE_PROVISION=$(base64 -i ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/<uuid>.mobileprovision)" >> .env
+  ```
+
+  Without it the CLI writes `signingStyle: manual` into its export options but
+  no profile mapping, and `exportArchive` fails claiming the profile lacks the
+  Push Notifications capability — even when it has it. Automatic signing on the
+  *project* is not a way out: it wants a development profile, and a team with
+  no registered devices cannot mint one.

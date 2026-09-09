@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Export options for `bun run release:ios`: re-exports the archive that
+  `tauri ios build` produced and uploads it straight to App Store Connect
+  (TestFlight) through the Apple account signed in to Xcode — the same path
+  as Organizer > Distribute App, so no altool password is involved.
+
+  Automatic signing here re-signs a finished archive with an App Store
+  distribution profile, which needs no registered devices (unlike the
+  development profile Xcode wants when the *project* is set to automatic).
+  manageAppVersionAndBuildNumber bumps the build number past what App Store
+  Connect already has, so a repeat upload of the same version is not rejected.
+-->
+<plist version="1.0">
+<dict>
+  <key>method</key>
+  <string>app-store-connect</string>
+  <key>destination</key>
+  <string>upload</string>
+  <key>teamID</key>
+  <string>UFBL3F444A</string>
+  <key>signingStyle</key>
+  <string>automatic</string>
+  <key>manageAppVersionAndBuildNumber</key>
+  <true/>
+  <key>uploadSymbols</key>
+  <true/>
+</dict>
+</plist>
