@@ -36,6 +36,9 @@ mod apple;
 // The local engine's sink for the shared mic tap.
 #[cfg(target_os = "macos")]
 mod capture;
+// The mic's loudness, for the composer's level bars.
+#[cfg(target_os = "macos")]
+mod level;
 // The default engine's `SpeechAnalyzer` bridge (Rust side of
 // `swift/SpeechBridge.swift`).
 #[cfg(target_os = "macos")]
@@ -151,12 +154,29 @@ struct StatePayload {
     error: Option<String>,
 }
 
+/// How loud the mic is right now. Display only: the composer's level bars.
+/// Emitted every `level::LEVEL_POLL` from the moment audio flows until the mic
+/// closes, then never again for that session.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Serialize)]
+struct LevelPayload {
+    /// Same id as on [`TranscriptPayload`].
+    session: u64,
+    /// 0 (silence) to 1 (loud speech) — see `level::normalize`.
+    level: f32,
+}
+
 /// Emit one event, logging (not propagating) failure — same posture as
 /// `supervisor::events`: no event is delivery-guaranteed.
 fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
     if let Err(e) = app.emit(event, payload) {
         tracing::warn!(error = %e, event, "emit failed");
     }
+}
+
+#[cfg(target_os = "macos")]
+fn emit_level(app: &AppHandle, session: u64, level: f32) {
+    emit(app, "dictation:level", LevelPayload { session, level });
 }
 
 #[cfg(target_os = "macos")]

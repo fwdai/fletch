@@ -3,11 +3,13 @@ import {
   api,
   type DictationAvailability,
   type DictationSessionId,
+  onDictationLevel,
   onDictationState,
   onDictationTranscript,
 } from "@/api";
+import type { DictationPhase } from "../PrimaryControl/primaryState";
 import { type ComposerInput, grow } from "../useComposerInput";
-import { spliceTranscript } from "./spliceTranscript";
+import { type FreshSpan, insertTranscript } from "./spliceTranscript";
 
 /** What we assume when the availability probe itself fails — an older backend
  *  without the command, or a non-Tauri environment (tests, storybook-ish
@@ -20,55 +22,62 @@ const UNAVAILABLE: DictationAvailability = {
   engine: "apple",
 };
 
-/** Voice dictation for one composer: owns the session state and pipes the
- *  native recognizer's running transcript into the textarea.
+/** How long a failure shows before the control returns to idle on its own.
+ *  Typing dismisses it sooner. */
+export const ERROR_TTL_MS = 2600;
+
+/** How long a just-committed span is marked, so the eye can find what just
+ *  arrived. A hair longer than its CSS wash, which fades over 1.1 s. */
+export const FRESH_TTL_MS = 1200;
+
+/** How many recent microphone levels the waveform shows. */
+export const LEVEL_BARS = 5;
+const IDLE_LEVELS: number[] = Array(LEVEL_BARS).fill(0);
+
+/** The last probe's answer, so a composer that mounts after the first one
+ *  starts with the right control instead of flashing the wrong one while its
+ *  own probe is in flight. */
+let lastAvailability: DictationAvailability | null = null;
+
+/** Voice dictation for one composer: owns the session state, shows the
+ *  recognizer's running transcript beside the text, and commits it once.
  *
  *  Every `dictation:transcript` carries the WHOLE transcript of the session
- *  (Apple revises earlier words as it hears more), so the in-progress segment
- *  is REPLACED on each event — see [`spliceTranscript`]. The text the user had
- *  typed when they hit the mic is the `base` that segment is spliced onto, and
- *  it lives in a ref: a partial result lands several times a second and must
- *  not re-render anything but the textarea's value. */
+ *  (Apple revises earlier words as it hears more), so `interim` is REPLACED on
+ *  each event. It is not written into the box: the composer renders it in a
+ *  ghost layer over the textarea, so undo history stays clean and a cancel is
+ *  a no-op on the draft. The final result is inserted at the caret of whatever
+ *  the box holds at that moment (see [`insertTranscript`]) — the user may have
+ *  kept typing — and the inserted span is reported as `fresh` for a moment. */
 export function useDictation(input: ComposerInput) {
-  const [availability, setAvailability] = useState<DictationAvailability | null>(null);
-  const [listening, setListening] = useState(false);
-  // The backend keeps the recognizer claimed after a stop until its final
-  // result lands (or the flush deadline passes), and starts nothing in that
-  // window. Holding the control until the session actually ends is what keeps a
-  // quick second click from lighting the mic with nothing behind it.
-  const [stopping, setStopping] = useState(false);
-  // The local engine's model is running: the mic is already closed, but the
-  // transcript is still coming. A subset of `stopping` — the button shows it as
-  // busy rather than as a live mic, because it can take a few seconds.
-  const [transcribing, setTranscribing] = useState(false);
+  const [availability, setAvailability] = useState<DictationAvailability | null>(lastAvailability);
+  const [phase, setPhase] = useState<DictationPhase>("idle");
+  const [interim, setInterim] = useState("");
+  // When audio started flowing, for the clock. Null outside `listening`.
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  // The last `LEVEL_BARS` microphone levels, oldest first.
+  const [levels, setLevels] = useState<number[]>(IDLE_LEVELS);
   const [error, setError] = useState<string | null>(null);
+  const [fresh, setFresh] = useState<FreshSpan | null>(null);
 
-  // The text present when this session started; the transcript is spliced onto
-  // it. Re-based when the user edits mid-session (see the effect below).
-  const baseRef = useRef("");
-  // The exact value we last wrote into the box. Distinguishes our own writes
-  // from the user's edits, and guards against a late flush landing in a box
-  // that has since been cleared (send) or rewritten.
-  const lastWrittenRef = useRef("");
   // Read inside the event listeners, which are registered once for the
   // component's lifetime and so can't close over render-scoped values.
-  const listeningRef = useRef(false);
-  // Whether a transcript may still be written into the box. Outlives
-  // `listening` by one event: `dictation_stop` is followed by the recognizer's
-  // final result (punctuation and last revisions), which we do want. Closed by
-  // that result, and by the box changing hands after the session ended.
+  const phaseRef = useRef<DictationPhase>("idle");
+  const interimRef = useRef("");
+  // Whether a transcript may still be written. Outlives the mic by one event:
+  // `dictation_stop` is followed by the recognizer's final result (punctuation
+  // and last revisions), which we do want. Closed by that result, by a cancel,
+  // and by the terminal state.
   const acceptingRef = useRef(false);
-  // True between `dictation_start` being called and resolving — the window the
-  // OS permission prompts occupy on first use. An edit made then is the user
-  // getting ahead of the mic, not the box changing hands, so it re-bases the
-  // session instead of closing it.
-  const startingRef = useRef(false);
+  // Whether this session's text has landed in the box (or was discarded), so
+  // the terminal event knows whether to commit what was last heard — Apple's
+  // flush deadline can pass without a final result.
+  const committedRef = useRef(true);
   // Set when a pending start is no longer wanted — the composer unmounted, or
-  // the message went out from under it. Every path that sets it also sends the
-  // backend a stop, so this only decides what the start's continuation does
-  // with whatever it gets back: never adopt it.
+  // the user backed out while the permission prompt was up. Every path that
+  // sets it also sends the backend a stop, so this only decides what the
+  // start's continuation does with whatever it gets back: never adopt it.
   const abortStartRef = useRef(false);
-  const stoppingRef = useRef(false);
   // The id of the session this hook owns, or null. Both dictation events are
   // app-wide and a session outlives the composer that started it (a stop is
   // followed by a flush), so a composer that starts the next one would otherwise
@@ -87,21 +96,78 @@ export function useDictation(input: ComposerInput) {
   const mountedRef = useRef(true);
   const inputRef = useRef(input);
   inputRef.current = input;
+  // The exact value the last commit wrote, so the "typing dismisses the error"
+  // effect can tell our own write from the user's edit.
+  const lastWrittenRef = useRef<string | null>(null);
+  const errorTimer = useRef<number | null>(null);
+  const freshTimer = useRef<number | null>(null);
 
-  function setListeningState(next: boolean) {
-    listeningRef.current = next;
-    setListening(next);
+  function setPhaseState(next: DictationPhase) {
+    phaseRef.current = next;
+    setPhase(next);
   }
 
-  function setStoppingState(next: boolean) {
-    stoppingRef.current = next;
-    setStopping(next);
+  /** The phase as of now. A plain read, but through a function so TypeScript
+   *  doesn't carry a narrowing across the awaits in `start`. */
+  const phaseNow = (): DictationPhase => phaseRef.current;
+
+  function setInterimState(next: string) {
+    interimRef.current = next;
+    setInterim(next);
+  }
+
+  function fail(message: string) {
+    setError(message);
+    if (errorTimer.current !== null) window.clearTimeout(errorTimer.current);
+    errorTimer.current = window.setTimeout(() => {
+      errorTimer.current = null;
+      if (mountedRef.current) setError(null);
+    }, ERROR_TTL_MS);
+  }
+
+  /** Insert what the session heard at the caret. Once per session at most;
+   *  nothing heard leaves the box untouched — no dangling space, no toast. */
+  function commit(transcript: string) {
+    committedRef.current = true;
+    if (!transcript) return;
+    const ip = inputRef.current;
+    const { text, start, caret } = insertTranscript(ip.text, ip.caret, transcript);
+    lastWrittenRef.current = text;
+    ip.setText(text);
+    ip.setCaret(caret);
+    setFresh({ start, end: caret });
+    if (freshTimer.current !== null) window.clearTimeout(freshTimer.current);
+    freshTimer.current = window.setTimeout(() => {
+      freshTimer.current = null;
+      if (mountedRef.current) setFresh(null);
+    }, FRESH_TTL_MS);
+    // Same tail as `append`: the box has to grow with the text and keep the
+    // caret behind the last dictated word so typing continues there. Focus
+    // returns to the field after every commit.
+    requestAnimationFrame(() => {
+      const el = ip.ta.current;
+      if (!el) return;
+      el.focus();
+      grow(el);
+      el.setSelectionRange(caret, caret);
+    });
+  }
+
+  /** The session is over, whatever the reason: forget it and rest the control. */
+  function settle() {
+    sessionRef.current = null;
+    acceptingRef.current = false;
+    setInterimState("");
+    setStartedAt(null);
+    setLevels(IDLE_LEVELS);
+    setPhaseState("idle");
   }
 
   function probe() {
     api
       .dictationAvailability()
       .then((a) => {
+        lastAvailability = a;
         if (mountedRef.current) setAvailability(a);
       })
       .catch(() => {
@@ -109,176 +175,182 @@ export function useDictation(input: ComposerInput) {
       });
   }
 
-  // Probe on mount, and again after every start attempt settles (see `toggle`):
+  // Probe on mount, and again after every start attempt settles (see `start`):
   // the first-run prompt and a trip to System Settings both move the answer, and
-  // a stale one leaves the wrong icon and tooltip until the composer remounts.
+  // a stale one leaves the wrong control until the composer remounts.
   // biome-ignore lint/correctness/useExhaustiveDependencies: probe on mount only; it reads nothing from render scope
   useEffect(() => {
     mountedRef.current = true;
     probe();
     return () => {
       mountedRef.current = false;
+      if (errorTimer.current !== null) window.clearTimeout(errorTimer.current);
+      if (freshTimer.current !== null) window.clearTimeout(freshTimer.current);
     };
   }, []);
 
-  // One subscription pair for the component's lifetime. The listener factories
-  // resolve to their unlisten fn, so a mount that unmounts mid-await has to
-  // unsubscribe on arrival (same pattern as the store's listener wiring).
+  // One set of subscriptions for the component's lifetime. The listener
+  // factories resolve to their unlisten fn, so a mount that unmounts mid-await
+  // has to unsubscribe on arrival (same pattern as the store's listener wiring).
   // biome-ignore lint/correctness/useExhaustiveDependencies: subscribe once; live values are read through refs
   useEffect(() => {
     let cancelled = false;
-    let offTranscript: (() => void) | null = null;
-    let offState: (() => void) | null = null;
+    const offs: (() => void)[] = [];
 
     (async () => {
-      const unTranscript = await onDictationTranscript((e) => {
-        // A previous session's flush, or one we've since disowned — not ours to
-        // write. A partial of our own arriving before the id is known is safe
-        // to drop: the next one carries the whole transcript again.
-        if (e.session !== sessionRef.current) return;
-        if (!acceptingRef.current) return;
-        if (e.is_final) acceptingRef.current = false;
-        const ip = inputRef.current;
-        const { text, caret } = spliceTranscript(baseRef.current, e.text);
-        lastWrittenRef.current = text;
-        ip.setText(text);
-        // Same tail as `append`: the box has to grow with the transcript and
-        // keep the caret behind the last dictated word so typing continues there.
-        requestAnimationFrame(() => {
-          const el = ip.ta.current;
-          if (!el) return;
-          el.focus();
-          grow(el);
-          el.setSelectionRange(caret, caret);
-        });
-      });
-      if (cancelled) {
-        unTranscript();
-        return;
-      }
-      offTranscript = unTranscript;
+      const subscribe = async (make: () => Promise<() => void>) => {
+        const off = await make();
+        if (cancelled) off();
+        else offs.push(off);
+        return !cancelled;
+      };
 
-      const unState = await onDictationState((e) => {
-        if (e.state === "listening") {
-          // Only one session can come up at a time, so the `listening` that
-          // lands while our start is in flight is ours: adopt its id here, so
-          // a terminal event that beats the start's own reply is still matched.
-          if (startingRef.current && sessionRef.current === null) {
-            sessionRef.current = e.session;
+      const live = await subscribe(() =>
+        onDictationTranscript((e) => {
+          // A previous session's flush, or one we've since disowned — not ours
+          // to show. A partial of our own arriving before the id is known is
+          // safe to drop: the next one carries the whole transcript again.
+          if (e.session !== sessionRef.current) return;
+          if (!acceptingRef.current) return;
+          if (e.is_final) {
+            acceptingRef.current = false;
+            setInterimState("");
+            commit(e.text);
+          } else {
+            setInterimState(e.text);
           }
-          if (e.session === sessionRef.current) setListeningState(true);
-          return;
-        }
-        // Someone else's session (see `sessionRef`) — the event is app-wide,
-        // but the state it reports isn't ours to act on.
-        if (e.session !== sessionRef.current) return;
-        if (e.state === "transcribing") {
-          // Not terminal: the mic is off but the final transcript is still
-          // coming, so keep the control held exactly as a flush does.
-          setListeningState(false);
-          setStoppingState(true);
-          setTranscribing(true);
-          return;
-        }
-        // `stopped` and `error` both end the session; only `error` has a reason
-        // worth showing (the backend's message doubles as the fix instruction).
-        // Either one means teardown is done, so the mic is startable again.
-        endedRef.current = e.session;
-        sessionRef.current = null;
-        setListeningState(false);
-        setStoppingState(false);
-        setTranscribing(false);
-        acceptingRef.current = false;
-        if (e.state === "error") setError(e.error ?? "Dictation failed");
-      });
-      if (cancelled) {
-        unState();
-        return;
-      }
-      offState = unState;
+        }),
+      );
+      if (!live) return;
+
+      const stillLive = await subscribe(() =>
+        onDictationState((e) => {
+          if (e.state === "listening") {
+            // Only one session can come up at a time, so the `listening` that
+            // lands while our start is in flight is ours: adopt its id here, so
+            // a terminal event that beats the start's own reply is still matched.
+            if (phaseRef.current === "starting" && sessionRef.current === null) {
+              sessionRef.current = e.session;
+            }
+            if (e.session === sessionRef.current) {
+              setPhaseState("listening");
+              setStartedAt(Date.now());
+            }
+            return;
+          }
+          // Someone else's session (see `sessionRef`) — the event is app-wide,
+          // but the state it reports isn't ours to act on.
+          if (e.session !== sessionRef.current) return;
+          if (e.state === "transcribing") {
+            // Not terminal: the mic is off but the final transcript is still
+            // coming. The bars have nothing left to show.
+            setPhaseState("transcribing");
+            setStartedAt(null);
+            return;
+          }
+          // `stopped` and `error` both end the session; only `error` has a reason
+          // worth showing. Either one means teardown is done, so the mic is
+          // startable again. A session that ended without a final result (the
+          // flush deadline, an error mid-utterance) still had text: commit what
+          // was last heard rather than lose it.
+          endedRef.current = e.session;
+          if (acceptingRef.current && !committedRef.current) commit(interimRef.current);
+          settle();
+          if (e.state === "error") fail(e.error ?? "Dictation failed");
+        }),
+      );
+      if (!stillLive) return;
+
+      await subscribe(() =>
+        onDictationLevel((e) => {
+          if (e.session !== sessionRef.current) return;
+          setLevels((prev) => [...prev.slice(1), e.level]);
+        }),
+      );
     })();
 
     return () => {
       cancelled = true;
-      offTranscript?.();
-      offState?.();
+      for (const off of offs) off();
       acceptingRef.current = false;
       // Unmounting mid-session (a view switch) must not leave the mic open —
       // nothing is left to receive its transcript. A start still sitting on the
       // permission prompt is stopped too: the backend cancels it before the mic
       // ever opens, or stops the session if it came up first (see `stop`).
-      if (startingRef.current) abortStartRef.current = true;
-      if (startingRef.current || listeningRef.current) {
-        listeningRef.current = false;
+      const ph = phaseRef.current;
+      if (ph === "starting") abortStartRef.current = true;
+      if (ph === "starting" || ph === "listening") {
+        phaseRef.current = "idle";
         void api.dictationStop().catch(() => {});
       }
     };
   }, []);
 
-  // Runs after every committed change to the box, including our own writes —
-  // so a mismatch against `lastWritten` is the user's own edit, whether they
-  // typed it or the composer cleared the box on send.
+  // The failure was about the last attempt, not about the text; typing
+  // dismisses it. Our own commit doesn't count as typing — a session that
+  // failed after hearing something commits and reports the error in the same
+  // breath, and the error has to survive that write.
   useEffect(() => {
-    // The failure was about the last attempt, not about the text; typing
-    // dismisses it.
-    setError(null);
     if (input.text === lastWrittenRef.current) return;
-    if (listeningRef.current || startingRef.current) {
-      // Editing mid-session re-bases it: the next partial carries the whole
-      // transcript again, and must replace the dictated tail, not their edit.
-      baseRef.current = input.text;
-      lastWrittenRef.current = input.text;
-    } else {
-      // The box changed hands after the session ended (send clears it) — the
-      // recognizer's pending final result no longer belongs anywhere.
-      acceptingRef.current = false;
+    if (errorTimer.current !== null) {
+      window.clearTimeout(errorTimer.current);
+      errorTimer.current = null;
     }
+    setError(null);
   }, [input.text]);
 
-  /** End the session, whatever stage it's at — including a start still waiting
-   *  on the OS permission prompt, which the backend cancels before the mic
-   *  opens. A no-op when the mic is idle, so callers that just want it quiet
-   *  (send) don't have to check first.
+  /** Close the mic and let the recognizer finish: the final transcript lands in
+   *  the box. Also ends a start still waiting on the OS permission prompt, which
+   *  the backend cancels before the mic opens. A no-op when idle.
    *
-   *  Optimistic about `listening`: the mic shouldn't stay lit while the final
-   *  result is flushed — `dictation:state` `stopped` confirms the end. */
+   *  Optimistic about the phase: the flush is the same wait as the local
+   *  engine's model run, so the control shows `transcribing` until the
+   *  terminal `dictation:state` confirms the end. */
   function stop() {
-    if (!listeningRef.current && !startingRef.current) return;
-    if (startingRef.current) {
+    const ph = phaseRef.current;
+    if (ph !== "listening" && ph !== "starting") return;
+    if (ph === "starting") {
       // The start hasn't resolved yet, so send the stop anyway: the backend
       // honours one issued while a permission prompt is up and the mic never
       // opens. Both ends run on its main thread, so the request lands either
-      // before the session is built (cancelled, the start resolves `false`) or
+      // before the session is built (cancelled, the start resolves `null`) or
       // after (a real stop, terminal event to follow) — never in between. The
       // flag tells the start's continuation not to adopt what it opened.
       abortStartRef.current = true;
       acceptingRef.current = false;
     }
-    setListeningState(false);
-    setStoppingState(true);
+    setPhaseState("transcribing");
+    setStartedAt(null);
     void api.dictationStop().catch(() => {
       // A failed stop emits no `stopped`, so nothing else would release the mic.
-      sessionRef.current = null;
-      setStoppingState(false);
+      settle();
     });
   }
 
-  async function toggle() {
-    if (listeningRef.current) {
-      stop();
-      return;
-    }
-    // A start still on the permission prompt, or a session still tearing down.
-    // The backend starts nothing in either window, and a second attempt would
-    // take over the refs the one in flight still needs. (The control is disabled
-    // while stopping; this also catches a raced click.)
-    if (startingRef.current || stoppingRef.current) return;
-    baseRef.current = input.text;
-    lastWrittenRef.current = input.text;
+  /** Back out: close the mic and discard whatever it heard. The draft is
+   *  untouched — the interim text was never in it. */
+  function cancel() {
+    const ph = phaseRef.current;
+    if (ph !== "listening" && ph !== "starting") return;
+    acceptingRef.current = false;
+    committedRef.current = true;
+    setInterimState("");
+    stop();
+  }
+
+  async function start() {
+    // A start still on the permission prompt, or a session still ending. The
+    // backend starts nothing in either window, and a second attempt would take
+    // over the refs the one in flight still needs.
+    if (phaseRef.current !== "idle") return;
     acceptingRef.current = true;
-    startingRef.current = true;
+    committedRef.current = false;
     abortStartRef.current = false;
     sessionRef.current = null;
+    setInterimState("");
+    setLevels(IDLE_LEVELS);
+    setError(null);
+    setPhaseState("starting");
     try {
       // Resolves once audio is flowing; on first use this is where the OS
       // permission prompts appear, so it can sit pending for a while.
@@ -287,9 +359,7 @@ export function useDictation(input: ComposerInput) {
         // Nothing came up — a stop of ours landed while the prompts were up, or
         // the backend was already busy. No terminal event is coming, so this is
         // the only place the control can be released.
-        acceptingRef.current = false;
-        setListeningState(false);
-        setStoppingState(false);
+        settle();
         return;
       }
       if (endedRef.current === id) {
@@ -303,28 +373,54 @@ export function useDictation(input: ComposerInput) {
       if (abortStartRef.current) {
         // A stop was requested while this start was in flight, and it reached
         // the backend after the session came up — so it stopped that session for
-        // real and the terminal event is on its way. Don't adopt what we're
-        // about to be told is over; just leave the control held until it lands.
-        setListeningState(false);
+        // real and the terminal event is on its way. Don't show a live mic for
+        // what we're about to be told is over; hold until it lands.
+        setPhaseState("transcribing");
         return;
       }
-      setError(null);
-      setListeningState(true);
+      if (phaseNow() === "starting") {
+        setPhaseState("listening");
+        setStartedAt(Date.now());
+      }
     } catch (e) {
       // Nothing was started, so no event will release the control from here.
-      sessionRef.current = null;
-      acceptingRef.current = false;
-      setListeningState(false);
-      setStoppingState(false);
+      settle();
       // The start's owner is gone; there's nothing to report the failure to.
-      if (!abortStartRef.current) setError(String(e));
+      if (!abortStartRef.current) fail(String(e));
     } finally {
-      startingRef.current = false;
       // The attempt may have settled a permission (the first-run prompt), which
-      // decides the icon and its tooltip.
+      // decides the control and its tooltip.
       probe();
     }
   }
 
-  return { availability, listening, stopping, transcribing, error, toggle, stop };
+  /** The mic's own action: open it, or close it and transcribe. */
+  function toggle() {
+    if (phaseRef.current === "listening") stop();
+    else if (phaseRef.current === "idle") void start();
+  }
+
+  /** The error pill's action: try again. */
+  function retry() {
+    if (errorTimer.current !== null) {
+      window.clearTimeout(errorTimer.current);
+      errorTimer.current = null;
+    }
+    setError(null);
+    void start();
+  }
+
+  return {
+    availability,
+    phase,
+    interim,
+    startedAt,
+    levels,
+    error,
+    fresh,
+    toggle,
+    stop,
+    cancel,
+    retry,
+  };
 }

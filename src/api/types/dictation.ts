@@ -50,6 +50,18 @@ export interface DictationTranscriptEvent {
   is_final: boolean;
 }
 
+/** Payload of the `dictation:level` event: how loud the microphone is right
+ *  now, from 0 (silence) to 1 (loud, close speech), linear in decibels between
+ *  the two. Emitted about every 90 ms from the moment audio flows until the mic
+ *  closes — so it stops at `dictationStop`, before the session's final
+ *  transcript and terminal state arrive. Display only, for the composer's
+ *  level bars; nothing about the session depends on it. Session-stamped like
+ *  every other dictation event, and to be matched the same way. */
+export interface DictationLevelEvent {
+  session: DictationSessionId;
+  level: number;
+}
+
 /** `transcribing` only happens on the `whisper` engine: the mic is closed but
  *  the model is still running, so the session is alive and its final transcript
  *  is still coming. It always precedes a terminal `stopped` or `error`. */

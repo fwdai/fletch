@@ -1,9 +1,54 @@
 # Voice dictation
 
-The mic button in the agent composer (beside the paperclip) streams a speech
-recognizer into the prompt box. This document is the part that isn't obvious
-from the code: which platforms have it, what the OS demands before it works,
-and where your audio goes.
+The agent composer's primary control — the pill at the far right of its footer,
+which is the microphone when the box is empty, send once there is a draft, and
+stop while the agent runs — streams a speech recognizer into the prompt box.
+This document is the part that isn't obvious from the code: which platforms
+have it, what the OS demands before it works, and where your audio goes.
+
+## The control
+
+`src/components/Composer/PrimaryControl/` renders one pill whose state is
+derived, never stored (`primaryState`): `error` outranks `listening`,
+`transcribing`, `running`, `draft`, `unavailable`, `empty`, in that order. The
+mic is a separate button on the same slot that slides left as a neutral
+secondary once there is a draft, and collapses while listening or running.
+Widths per state, tones, and timings follow the design spec; the CSS is the
+source of those numbers.
+
+Keys, handled on the textarea (`Composer/index.tsx`). ⌘⇧D also works with
+the focus anywhere else in the window that isn't an editable field
+(`useDictationHotkey`): it toggles dictation in the composer and brings the
+caret there.
+
+| Key | empty | draft | listening | agent running |
+| --- | --- | --- | --- | --- |
+| ↵ | — | send | stop & transcribe | — (the draft waits) |
+| ⌘↵ | — | send | stop & transcribe | send mid-turn |
+| ⇧↵ | newline | newline | newline | newline |
+| ⌘⇧D | start dictation | start dictation | stop & transcribe | — |
+| esc | — | — | cancel, discard interim | stop agent |
+
+Nothing is ever sent by voice alone: speech lands as editable text and waits
+for ↵.
+
+While the mic is open the recognizer's running transcript is **not** written
+into the textarea. It is shown by `InterimGhost`, a layer over the textarea
+with identical metrics (the textarea's own text repeated invisibly, then the
+interim words in italic with a pulsing dot), so undo history stays clean and
+esc is a no-op on the draft. The final result is inserted at the caret of
+whatever the box holds when it arrives (`insertTranscript`, space-normalised on
+both sides; the ghost previews exactly that join), the caret moves to its end,
+and the new span carries a short wash. A session that ends without a final result
+(Apple's flush deadline, an error mid-utterance) commits what was last heard.
+
+A failed transcription turns the pill danger-tinted with a retry glyph for
+2.6 s (click retries; typing dismisses it sooner). A denied microphone grant
+shows an outlined mic-off pill whose click opens System Settings › Privacy &
+Security › Microphone — the shell plugin's open scope in `tauri.conf.json`
+admits that URL scheme for this. Where no engine exists at all the mic is never
+offered and the empty slot degrades to a plain, disabled send arrow — which is
+also the form the workflow and roadmap composers use, having no dictation.
 
 ## Platform support
 
@@ -15,7 +60,8 @@ through a small Swift bridge compiled into the binary — see
 a stub that reports `supported: false`, and the composer hides the button
 entirely rather than offer one that can only fail. A Mac below 26 gets the same
 answer from the real implementation, as does a Mac whose language Apple has no
-model for.
+model for. (`supported: false` is what degrades the control to a send arrow —
+see [The control](#the-control).)
 
 macOS additionally has a local whisper.cpp engine the user can opt into; see
 [Local Whisper engine](#local-whisper-engine-opt-in) below. It has no macOS 26
@@ -25,12 +71,14 @@ The flow, end to end:
 
 | Layer | File |
 | --- | --- |
-| Button | `src/components/Composer/dictation/DictationButton.tsx` |
+| Control | `src/components/Composer/PrimaryControl/` (state derivation, pill, level bars, running trace) |
+| Interim text | `src/components/Composer/InterimGhost.tsx` |
 | Session state | `src/components/Composer/dictation/useDictation.ts` |
 | IPC | `src/api/domains/dictation.ts` → `dictation_availability` / `dictation_start` / `dictation_stop` |
-| Events | `src/api/events.ts` — `dictation:transcript`, `dictation:state` |
+| Events | `src/api/events.ts` — `dictation:transcript`, `dictation:state`, `dictation:level` |
 | Commands + contract | `src-tauri/src/dictation/mod.rs` |
 | Microphone (both engines) | `src-tauri/src/dictation/apple.rs` |
+| Level meter (both engines) | `src-tauri/src/dictation/level.rs` |
 | Default engine | `src-tauri/src/dictation/speech.rs` (Rust side), `src-tauri/swift/SpeechBridge.swift` (Swift side) |
 | Local engine | `src-tauri/src/dictation/capture.rs`, `src-tauri/src/dictation/whisper/` |
 
@@ -52,8 +100,9 @@ always `not_determined`, kept only so the wire shape didn't change. The button
 ignores it.
 
 A denied microphone grant can only be undone in System Settings › Privacy &
-Security, so the button shows a slashed mic and says so. To get the first-run
-prompt back while testing:
+Security, so the control shows an outlined mic-off pill whose tooltip says so
+and whose click opens that pane. To get the first-run prompt back while
+testing:
 
 ```sh
 tccutil reset Microphone com.fletch.desktop
@@ -127,6 +176,32 @@ unchanged: hand the buffer over and return. The conversion from the mic's
 format to the analyzer's (an `AVAudioConverter`, which also serves as the copy
 the tap's reused buffer needs) happens inside the bridge's `feed`, on the render
 thread — the same thing Apple's own `SpeechAnalyzer` sample does.
+
+## The level meter
+
+While the mic is open the composer shows level bars, fed by `dictation:level`:
+a value from 0 (silence) to 1 (loud, close speech), stamped with the session
+id like every other dictation event, about every 90 ms (`level::LEVEL_POLL`).
+It is display only — nothing about the session depends on it — and it stops
+when the mic closes, so on Apple's engine the last few events precede the
+flushed final transcript and `stopped`.
+
+Both engines feed the same `level::Meter`, which is one atomic holding the most
+recent tap buffer's RMS. The local engine already computes that RMS in the tap
+for the [silence gate](#hands-free-auto-stop) and hands it over; Apple's path,
+which otherwise passes the buffer to the bridge untouched, measures it in the
+same callback. The tap does nothing else there — one pass over the samples and
+one relaxed store — and a tokio task off the render thread samples the atomic
+and emits. Should a microphone ever deliver something other than deinterleaved
+float32, the meter reads nothing and reports silence rather than read the wrong
+memory (the local engine refuses such a format outright; Apple's engine
+converts it in the bridge and works regardless).
+
+The mapping to 0–1 is linear in dBFS between −50 dB and −15 dB
+(`level::normalize`): a quiet room on a laptop mic sits under the floor,
+conversational speech lands mid-range, and only close, loud speech pins the
+bars. That range is a display choice and is the one thing to tune if the bars
+read too shy or too hot on common hardware.
 
 ## Building the Swift bridge
 
@@ -390,8 +465,8 @@ nothing to say until the whole clip is in. A stop on the local engine therefore
 closes the mic, emits a new `dictation:state` of **`transcribing`**, runs the
 model, and only then emits the one final transcript and `stopped` (or `error`
 with a readable message). `transcribing` is not terminal: `useDictation` treats
-it as "still stopping, not listening" and keeps the control held, and the button
-swaps the mic for a spinner and says "Transcribing…".
+it as its `transcribing` phase and the pill shows the "Transcribing…" label —
+the same state Apple's post-stop flush shows, just longer.
 
 The weights are hundreds of megabytes and take long enough to load to be felt
 between the stop and the text, so a loaded `WhisperContext` is cached and shared
@@ -426,11 +501,37 @@ puts a 440 Hz tone through it and checks the length and loudness that come out.
 
 ## Dictating from the phone
 
-The mobile app has a mic button in its composer, but no speech model on the
-phone: it captures the microphone in the webview and streams PCM to the Mac
-over the remote protocol, and the Mac runs the local engine on it. The wire
-contract is in [remote-protocol.md](remote-protocol.md), "Dictation"; the host
-side is `src-tauri/src/dictation/remote.rs`.
+The mobile app's composer has the same primary control as the desktop, in the
+phone's physics: one **44 pt disc** in the bottom-right corner that morphs in
+place — mic → send → ✓ done → stop — with the mic stepping aside as a smaller
+neutral disc once there is a draft (`mobile/src/screens/Agent/Composer/`). It
+derives its state with the desktop's `primaryState` and reuses the desktop's
+`ContourTrace`, `InterimGhost` and `spliceTranscript` through the `@desktop/`
+alias. What differs on the phone:
+
+- **No split targets.** The disc is the only primary; a thumb on two fused
+  segments is a coin-flip. Accent always means send, neutral always means
+  "dictate more".
+- **Return inserts a newline.** There is no ↵ to send with, so the arrow is
+  always visible and send is only ever a deliberate tap. While the agent works
+  the disc is the stop, and the draft waits — there is no mid-turn send on the
+  phone.
+- **Every exit has a button.** While listening the footer's leading row
+  becomes the voice row: ✕ cancel, a 12-bar waveform of recent mic levels with
+  the clock, and ✓ in the disc. Stop-agent ignores taps for 450 ms after send
+  so a double-tap can't kill the run it just started.
+- **Errors are a banner** that expands above the footer for 2.6 s (a failed
+  transcription, a Mac that can't transcribe, a denied microphone), not a
+  toast.
+- The waveform's levels come from the phone's own capture (`level.ts`, the
+  same dB mapping as the Mac's `level.rs`), reported every 90 ms while the mic
+  is open.
+
+There is no speech model on the phone: it captures the microphone in the
+webview and streams PCM to the Mac over the remote protocol, and the Mac runs
+the local engine on it. The wire contract is in
+[remote-protocol.md](remote-protocol.md), "Dictation"; the host side is
+`src-tauri/src/dictation/remote.rs`.
 
 What it reuses, and what it doesn't:
 
@@ -452,7 +553,9 @@ What it reuses, and what it doesn't:
   RMS-over-noise-floor rule, computed on the main thread from the Float32
   frames the worklet posts (the worklet stays a plain copy) and polled by
   `capture.ts`, which hands the pause to the session — so the stop takes the
-  same path a tap on the button takes.
+  same path a tap on the disc takes. (The design spec would rather silence
+  ended nothing and the user tapped ✓; auto-stop is kept as the hands-free
+  choice made deliberately before it, and it never sends.)
 
 Audio is held in memory only, for the length of a session plus a 60 s idle
 sweep, and never written to disk. The phone's `NSMicrophoneUsageDescription`

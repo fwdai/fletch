@@ -38,8 +38,9 @@ export class DictationSession {
    *
    *  `onAutoStop` fires when the mic hears the pause that ends a session. It is
    *  the caller's job to run the same `stop` a tap on the button runs, so that
-   *  hands-free and by-hand take one code path. */
-  async start(onAutoStop?: () => void): Promise<void> {
+   *  hands-free and by-hand take one code path. `onLevel` reports the mic's
+   *  loudness for the waveform while it is open. */
+  async start(onAutoStop?: () => void, onLevel?: (level: number) => void): Promise<void> {
     const { session } = await this.api.dictationBegin();
     this.session = session;
     // A pause that lands while the session is already ending — the user tapped
@@ -52,6 +53,7 @@ export class DictationSession {
     try {
       this.capture = await this.startCapture((pcm, rate) => this.send(pcm, rate), {
         onDoneTalking,
+        onLevel,
       });
     } catch (e) {
       await this.cancel();

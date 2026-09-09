@@ -5,6 +5,7 @@
 // chunks go and what a pause means.
 
 import { concatPcm16, floatToPcm16 } from "./encode";
+import { LEVEL_POLL_MS, normalizeLevel } from "./level";
 import { SILENCE_POLL_MS, SilenceMonitor } from "./silence";
 
 /** How much audio one chunk holds. A second keeps the wire under the relay's
@@ -18,6 +19,9 @@ export interface CaptureOptions {
    *  never spoke at all) — see `silence.ts`. What that means is the caller's
    *  business: this module knows nothing about sessions. */
   onDoneTalking?: () => void;
+  /** Called about every `LEVEL_POLL_MS` with how loud the mic is, 0 to 1 (see
+   *  `level.ts`), for the composer's waveform. Display only. */
+  onLevel?: (level: number) => void;
 }
 
 export interface Capture {
@@ -77,8 +81,11 @@ export async function startCapture(
   // there the better), and one pass over a render quantum is nothing next to
   // the conversion `flush` already does on this thread.
   const silence = new SilenceMonitor();
+  // The most recent quantum's loudness, sampled by the level timer. The
+  // detector computes it anyway; this is the same number kept for display.
+  let latestRms = 0;
   const push = (frames: Float32Array) => {
-    silence.hear(frames);
+    latestRms = silence.hear(frames);
     pending.push(frames);
     pendingFrames += frames.length;
     if (pendingFrames >= framesPerChunk) flush();
@@ -101,10 +108,12 @@ export async function startCapture(
   }
 
   const unwatch = watchForSilence(silence, opts.onDoneTalking);
+  const unlevel = watchLevel(() => latestRms, opts.onLevel);
   return {
     rate,
     async stop() {
       unwatch();
+      unlevel();
       teardown();
       for (const t of stream.getTracks()) t.stop();
       await ctx.close().catch(() => {});
@@ -123,6 +132,15 @@ function watchForSilence(silence: SilenceMonitor, onDoneTalking?: () => void): (
     clearInterval(timer);
     onDoneTalking();
   }, SILENCE_POLL_MS);
+  return () => clearInterval(timer);
+}
+
+/** Report the level on a steady timer, like the Mac's emitter task — every
+ *  tick rather than on change, so a consumer keeping a short history of
+ *  samples (the waveform) sees steady time. Returns the teardown. */
+function watchLevel(latestRms: () => number, onLevel?: (level: number) => void): () => void {
+  if (!onLevel) return () => {};
+  const timer = setInterval(() => onLevel(normalizeLevel(latestRms())), LEVEL_POLL_MS);
   return () => clearInterval(timer);
 }
 

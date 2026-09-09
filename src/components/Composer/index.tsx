@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { hasUsage } from "@/adapters/usage";
 import type { DirListing, IssueComment, PrSummary, TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
@@ -17,11 +18,26 @@ import { isContainerEngine, sandboxEngineLabel } from "@/storage/preferences";
 import type { UsageSnapshot } from "@/store";
 import { useAppStore } from "@/store";
 import { ComposerFrame } from "./ComposerFrame";
-import { DictationButton, useDictation } from "./dictation";
+import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
 import { IssuePicker } from "./IssuePicker";
 import { ModelPicker } from "./ModelPicker";
+import { PrimaryControl, primaryState } from "./PrimaryControl";
 import { UsageMeter } from "./UsageMeter";
 import { useComposerInput } from "./useComposerInput";
+
+/** System Settings › Privacy & Security › Microphone — where a denied grant is
+ *  undone. The shell plugin's open scope admits this scheme (tauri.conf.json). */
+const MICROPHONE_SETTINGS_URL =
+  "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
+
+/** The default placeholder. Mentions the dictation shortcut once, when there is
+ *  a mic to dictate with; says why there isn't when the grant is off. */
+function defaultPlaceholder(dictation: "available" | "off" | "none"): string {
+  const rest = "/commands · @ to attach · # for PRs";
+  if (dictation === "available") return `Message agent · ⌘⇧D to dictate · ${rest}`;
+  if (dictation === "off") return `Message agent · microphone is off · ${rest}`;
+  return `Message agent · ${rest}`;
+}
 
 interface Props {
   /** Initial provider id — defaults to claude. */
@@ -277,9 +293,10 @@ export function Composer({
   }, [provider, customAgentId, thinkingLevels, modelReasoning, existingSession]);
 
   // Shared input core (textarea + `/`·`@`·`#` autocomplete + attachments +
-  // draft/seed). `onEnter` sends via a ref so the callback can reference the
-  // `input` and `send` defined just below (they depend on `input` in turn).
-  const submitRef = useRef<() => void>(() => {});
+  // draft/seed). Keys route through a ref so the handler can reference the
+  // `input`, `dictation` and `send` defined just below (they depend on `input`
+  // in turn).
+  const keysRef = useRef<(e: KeyboardEvent) => boolean>(() => false);
   const input = useComposerInput({
     provider,
     projectDir,
@@ -294,32 +311,42 @@ export function Composer({
     autoFocus,
     seed,
     onSeedConsumed,
-    onEnter: () => submitRef.current(),
+    onKeyDown: (e) => keysRef.current(e),
   });
 
-  // Voice dictation writes into the same textarea, so it hangs off the input.
+  // Voice dictation commits into the same textarea, so it hangs off the input.
   const dictation = useDictation(input);
+  // No engine at all (Linux, Windows, an older Mac) — the mic is never offered.
+  // A denied grant is different: the control shows it, and points at Settings.
+  const dictationAvailable = dictation.availability?.supported ?? false;
+  const micDenied =
+    dictationAvailable &&
+    (dictation.availability?.microphone === "denied" ||
+      dictation.availability?.microphone === "restricted");
 
   const hasContent = input.text.trim().length > 0 || input.attachments.length > 0;
-  // Busy + empty → Stop; busy + typed (or idle) → Send. So a mid-turn
-  // follow-up sends with Enter, and an empty composer still stops the turn.
-  const showStop = stopping && !hasContent;
-  const sendDisabled = showStop ? !onStop : disabled || !hasContent || dockerBlocked;
+  // What the primary control is right now — the mic, send, or stop. Derived,
+  // top to bottom (see `primaryState`); the control stores nothing.
+  const state = primaryState({
+    sttError: dictation.error !== null,
+    dictation: dictation.phase,
+    agentRunning: stopping,
+    hasDraft: hasContent,
+    micDenied,
+  });
+  const sendBlocked = dockerBlocked
+    ? `${providerLabel(provider)} isn't available in ${sandboxEngineLabel(sandboxEngine)} sandboxes yet — switch to Claude to send`
+    : undefined;
 
-  function send() {
-    // While the agent works, an empty composer's primary action is Stop; once
-    // the user types, it becomes Send so the message can be queued/injected
-    // mid-turn (the agent keeps running — see store.sendUserMessage).
-    if (showStop) {
-      onStop?.();
-      return;
-    }
+  /** Send the draft. While the agent works the draft waits — ↵ does nothing —
+   *  except for ⌘↵, which still sends mid-turn (delivered live or queued for
+   *  the next turn boundary; see store.sendUserMessage). Nothing is sent by
+   *  voice alone: a send only happens once dictation is idle. */
+  function send(opts: { midTurn?: boolean } = {}) {
+    if (dictation.phase !== "idle") return;
+    if (stopping && !opts.midTurn) return;
     const trimmed = input.text.trim();
     if ((!trimmed && input.attachments.length === 0) || disabled || dockerBlocked) return;
-    // The message is leaving; the mic has nothing left to dictate into. This
-    // also cancels a start still waiting on the OS permission prompt, so its
-    // transcript can't land in the box we're about to clear.
-    dictation.stop();
     onSend({
       text: trimmed,
       provider,
@@ -330,14 +357,68 @@ export function Composer({
     });
     input.clear();
   }
-  submitRef.current = send;
+
+  /** The mic's action, from the control or ⌘⇧D. Not offered while the agent
+   *  runs (the slot is the stop button then), nor while the grant is off — the
+   *  control's tooltip explains, and a click on it opens Settings. */
+  function toggleDictation() {
+    if (disabled || !dictationAvailable || micDenied || stopping) return;
+    dictation.toggle();
+  }
+
+  // ⌘⇧D with the focus elsewhere in the window still dictates into this box —
+  // and brings the caret here, so the interim text is where the eye goes.
+  useDictationHotkey(() => {
+    toggleDictation();
+    input.ta.current?.focus();
+  });
+
+  // ↵ sends; ⇧↵ is a newline (falls through to the textarea); ⌘⇧D toggles
+  // dictation; esc backs out of whatever is live. While listening, ↵ stops and
+  // transcribes rather than sending — the operator is already reaching for it.
+  keysRef.current = (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (isDictationHotkey(e)) {
+      e.preventDefault();
+      toggleDictation();
+      return true;
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      const phase = dictation.phase;
+      if (phase === "listening" || phase === "starting") dictation.stop();
+      else if (phase === "idle") send({ midTurn: mod });
+      return true;
+    }
+    if (e.key === "Escape") {
+      if (dictation.phase === "listening" || dictation.phase === "starting") {
+        dictation.cancel();
+        return true;
+      }
+      if (stopping && onStop) {
+        onStop();
+        return true;
+      }
+    }
+    return false;
+  };
 
   return (
     <ComposerFrame
       input={input}
-      placeholder={placeholder || "Message agent · /commands · @ to attach · # for PRs"}
+      placeholder={
+        placeholder ||
+        defaultPlaceholder(
+          state === "unavailable" ? "off" : dictationAvailable ? "available" : "none",
+        )
+      }
       disabled={disabled}
       minRows={minRows}
+      dictation={{
+        interim: dictation.interim,
+        listening: state === "listening",
+        fresh: dictation.fresh,
+      }}
       foot={
         <>
           <ModelPicker
@@ -384,16 +465,10 @@ export function Composer({
             </Chip>
           )}
           <span style={{ flex: 1 }} />
-          {/* Insert actions live on the right, beside send: what runs (agent/
-           *  model/effort) reads left, what goes into this message reads right. */}
-          <DictationButton
-            availability={dictation.availability}
-            listening={dictation.listening}
-            stopping={dictation.stopping}
-            transcribing={dictation.transcribing}
-            error={dictation.error}
-            onToggle={dictation.toggle}
-          />
+          {/* Insert actions live on the right, beside the primary control: what
+           *  runs (agent/model/effort) reads left, what goes into this message
+           *  reads right. The mic is not among them — it belongs beside send,
+           *  one step left, inside the control. */}
           <IconButton className="composer-action" tip="Attach files" onClick={input.browse}>
             <Icon name="attach" size={15} />
           </IconButton>
@@ -417,27 +492,22 @@ export function Composer({
            *  a known total and a temporarily unknown window, and hiding the
            *  gauge there would look like the usage had been lost. */}
           {features.tokenUsage && usage && hasUsage(usage) && <UsageMeter usage={usage} />}
-          {/* A disabled <button> swallows hover in the WebView, so the reason
-           *  rides a wrapper span that stays hover-capable (same pattern as the
-           *  ModelPicker's disabled rows). */}
-          <span
-            className={dockerBlocked ? "tip" : undefined}
-            data-tip={
-              dockerBlocked
-                ? `${providerLabel(provider)} isn't available in ${sandboxEngineLabel(sandboxEngine)} sandboxes yet — switch to Claude to send`
-                : undefined
-            }
-          >
-            <button
-              type="button"
-              className={`send flex-center ${showStop ? "is-stop" : ""}`}
-              disabled={sendDisabled}
-              onClick={showStop ? () => onStop?.() : send}
-              aria-label={showStop ? "Stop" : "Send"}
-            >
-              <Icon name={showStop ? "stop" : "arrowUp"} size={13} />
-            </button>
-          </span>
+          <PrimaryControl
+            state={state}
+            dictationAvailable={dictationAvailable}
+            autoStops={dictation.availability?.engine === "whisper"}
+            levels={dictation.levels}
+            startedAt={dictation.startedAt}
+            sendBlocked={sendBlocked}
+            error={dictation.error}
+            disabled={disabled}
+            onMic={toggleDictation}
+            onSend={() => send()}
+            onStopDictation={dictation.stop}
+            onStopRun={() => onStop?.()}
+            onRetry={dictation.retry}
+            onUnavailable={() => void openExternal(MICROPHONE_SETTINGS_URL).catch(() => {})}
+          />
         </>
       }
     />

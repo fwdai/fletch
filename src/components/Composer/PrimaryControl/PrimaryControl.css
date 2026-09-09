@@ -1,0 +1,326 @@
+/* composer · primary control — one 28px pill that is the mic, send, or stop.
+ * Height is fixed; only width changes, and the right edge is pinned. Segments
+ * are flex children whose width animates 0 → N; the mic is a separate button
+ * layered on the slot that slides left when a draft exists. One ease, two
+ * durations. */
+.pc-wrap {
+  --pc-dur: 0.22s;
+  --pc-fast: 0.14s;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* secondary mic: on the primary slot when empty, aside (left, neutral) in draft */
+.pc-sec {
+  position: relative;
+  z-index: 3;
+  width: 28px;
+  height: 28px;
+  margin-right: -28px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  background: transparent;
+  flex-shrink: 0;
+  transition:
+    margin-right var(--pc-dur) var(--ease),
+    width var(--pc-dur) var(--ease),
+    background var(--pc-dur) var(--ease),
+    color var(--pc-dur) var(--ease),
+    opacity var(--pc-fast) var(--ease),
+    transform 0.08s var(--ease);
+}
+.pc-sec:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.pc-sec.aside {
+  margin-right: 6px;
+  background: var(--bg-3);
+  color: var(--fg-1);
+}
+.pc-sec.aside:hover:not(:disabled) {
+  background: oklch(from var(--bg-3) calc(l + 0.045) c h);
+  color: var(--fg-0);
+}
+.pc-sec.gone {
+  width: 0;
+  margin-right: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.pc-sec svg {
+  transition: transform var(--pc-dur) var(--ease);
+}
+.pc-sec.gone svg {
+  transform: scale(0.6);
+}
+
+/* the primary pill */
+.pc {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  height: 28px;
+  min-width: 28px;
+  border-radius: 8px;
+  background: var(--bg-3);
+  color: var(--fg-1);
+  isolation: isolate;
+  transition:
+    background var(--pc-dur) var(--ease),
+    color var(--pc-dur) var(--ease),
+    box-shadow var(--pc-dur) var(--ease),
+    transform 0.08s var(--ease);
+}
+.pc:active:not(.s-transcribing):not(.s-unavailable):not(.is-disabled) {
+  transform: scale(0.96);
+}
+.pc.is-disabled {
+  opacity: 0.55;
+}
+
+/* running trace */
+.pc-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 28px;
+  height: 28px;
+  pointer-events: none;
+  z-index: 2;
+  color: var(--accent);
+  opacity: 0;
+  overflow: visible;
+  transition: opacity var(--pc-dur) var(--ease);
+}
+.pc.s-running .pc-ring {
+  opacity: 1;
+}
+.pc-ring rect {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: butt;
+}
+
+/* segments */
+.seg {
+  position: relative;
+  width: 0;
+  opacity: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  flex-shrink: 0;
+  color: inherit;
+  transition:
+    width var(--pc-dur) var(--ease),
+    opacity var(--pc-fast) var(--ease),
+    background var(--pc-dur) var(--ease),
+    color var(--pc-dur) var(--ease);
+}
+.seg.on {
+  opacity: 1;
+  pointer-events: auto;
+}
+.seg-in {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.seg svg {
+  flex-shrink: 0;
+}
+.seg.sq.on {
+  width: 28px;
+}
+.seg.sq .seg-in {
+  width: 28px;
+}
+.seg.wave.on {
+  width: 50px;
+}
+.seg.wave .seg-in {
+  width: 50px;
+}
+.seg.timer.on {
+  width: 36px;
+}
+.seg.timer .seg-in {
+  width: 36px;
+  justify-content: flex-start;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.seg.label.on {
+  width: 110px;
+}
+.seg.label .seg-in {
+  width: 110px;
+  justify-content: flex-start;
+  padding-left: 10px;
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.seg.label.wide.on {
+  width: 132px;
+}
+.seg.label.wide .seg-in {
+  width: 132px;
+}
+.seg.sq.stopd:hover {
+  background: color-mix(in oklch, var(--fg-0), transparent 92%);
+}
+
+/* glyphs scale in with their segment */
+.glyph {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  transition:
+    transform var(--pc-dur) var(--ease),
+    opacity var(--pc-fast) var(--ease);
+}
+.seg:not(.on) .glyph {
+  transform: scale(0.6);
+  opacity: 0;
+}
+
+/* per-state tones — accent is spent on one thing at a time */
+.pc.s-empty {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pc-wrap:hover .pc.s-empty {
+  background: color-mix(in oklch, var(--accent), transparent 76%);
+}
+/* no engine here: the empty slot is the old disabled send arrow */
+.pc.no-mic.s-empty,
+.pc-wrap:hover .pc.no-mic.s-empty {
+  background: var(--hover);
+  color: var(--fg-3);
+}
+.pc.s-draft {
+  background: var(--bg-3);
+  color: var(--fg-1);
+}
+.pc.s-draft.split {
+  background: var(--accent);
+  color: var(--btn-fg-dark-alt);
+}
+.theme-light .pc.s-draft.split {
+  color: var(--btn-fg-light);
+}
+.pc.s-draft.split:hover {
+  background: oklch(from var(--accent) calc(l + 0.04) c h);
+}
+.pc.s-draft.split .seg.send:disabled {
+  opacity: 0.55;
+}
+.pc.s-listening {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-line) inset;
+}
+.pc.s-listening:hover {
+  background: color-mix(in oklch, var(--accent), transparent 78%);
+}
+.pc.s-transcribing {
+  background: var(--bg-3);
+  color: var(--fg-2);
+}
+.pc.s-running {
+  background: var(--bg-3);
+  color: var(--fg-0);
+}
+.pc.s-running:hover {
+  background: color-mix(in oklch, var(--danger), transparent 84%);
+  color: var(--danger);
+}
+.pc.s-error {
+  background: color-mix(in oklch, var(--danger), transparent 86%);
+  color: var(--danger);
+  animation: pcShake 0.36s var(--ease);
+}
+.pc.s-error:hover {
+  background: color-mix(in oklch, var(--danger), transparent 78%);
+}
+@keyframes pcShake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-3px);
+  }
+  45% {
+    transform: translateX(3px);
+  }
+  70% {
+    transform: translateX(-2px);
+  }
+}
+.pc.s-unavailable {
+  background: transparent;
+  color: var(--fg-3);
+  box-shadow: 0 0 0 1px var(--bd) inset;
+}
+.pc.s-unavailable:hover {
+  color: var(--fg-2);
+}
+
+/* waveform */
+.pc-bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 16px;
+}
+.pc-bars i {
+  width: 2.5px;
+  height: 3px;
+  border-radius: 2px;
+  background: currentColor;
+  transition: height 0.09s linear;
+}
+
+/* stop square */
+.pc-stop-sq {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+/* transcribing dots — the run timer's working vocabulary */
+.pc-dots {
+  --ui-loader-dot: 3.5px;
+  margin-left: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Widths snap, the trace is a static outline; bars still react — they carry
+     information. */
+  .pc-wrap {
+    --pc-dur: 0s;
+    --pc-fast: 0s;
+  }
+  /* The dash pattern is a presentation attribute, so a rule here overrides it
+     without any weight; the rAF loop that would move it never starts. */
+  .pc-ring rect {
+    stroke-dasharray: none;
+    stroke-dashoffset: 0;
+    opacity: 0.45;
+  }
+  .pc.s-error {
+    animation: none;
+  }
+}

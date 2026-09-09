@@ -13,6 +13,7 @@ import type {
   ShellOutputEvent,
 } from "./types/agent";
 import type {
+  DictationLevelEvent,
   DictationModelProgressEvent,
   DictationStateEvent,
   DictationTranscriptEvent,
@@ -194,6 +195,13 @@ export function onDictationTranscript(
  *  unmounted mid-session leaves its terminal event to land on the next one). */
 export function onDictationState(cb: (e: DictationStateEvent) => void): Promise<UnlistenFn> {
   return listen<DictationStateEvent>("dictation:state", (event) => cb(event.payload));
+}
+
+/** The microphone's loudness while a dictation session listens, about every
+ *  90 ms (see `DictationLevelEvent`). App-wide and session-stamped like the
+ *  other dictation events. */
+export function onDictationLevel(cb: (e: DictationLevelEvent) => void): Promise<UnlistenFn> {
+  return listen<DictationLevelEvent>("dictation:level", (event) => cb(event.payload));
 }
 
 /** Progress of the local engine's model download, ending in `installed` or

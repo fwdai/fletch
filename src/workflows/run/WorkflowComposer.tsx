@@ -13,6 +13,7 @@
 import { type CSSProperties, Fragment, useRef, useState } from "react";
 import { api } from "../../api";
 import { ComposerFrame } from "../../components/Composer/ComposerFrame";
+import { PrimaryControl } from "../../components/Composer/PrimaryControl";
 import { useComposerInput } from "../../components/Composer/useComposerInput";
 import { Icon } from "../../components/Icon";
 import { Chip } from "../../components/ui/Chip";
@@ -197,15 +198,16 @@ export function WorkflowComposer({
         <>
           <WorkflowSelect definitions={definitions} selected={def} onPick={pickDef} />
           <span style={{ flex: 1 }} />
-          <button
-            type="button"
-            className="send"
+          {/* The agent composer's primary control, in its no-dictation form:
+           *  a plain arrow that fills accent once there is a task to launch.
+           *  Held (dimmed) while the launch is in flight. */}
+          <PrimaryControl
+            state={input.text.trim() ? "draft" : "empty"}
+            dictationAvailable={false}
             disabled={!canLaunch}
-            onClick={() => void launch()}
-            aria-label="Launch run"
-          >
-            <Icon name={busy ? "refresh" : "arrowUp"} size={13} />
-          </button>
+            sendLabel="Launch run"
+            onSend={() => void launch()}
+          />
         </>
       }
     />

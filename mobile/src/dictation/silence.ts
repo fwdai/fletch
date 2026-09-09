@@ -88,11 +88,14 @@ export class SilenceMonitor {
     this.start = now();
   }
 
-  /** Fold one render quantum's frames into the tracker. */
-  hear(frames: Float32Array): void {
-    const [speech, floor] = track(this.floor, rms(frames));
+  /** Fold one render quantum's frames into the tracker. Returns the quantum's
+   *  RMS, which the level meter displays — one pass over the samples for both. */
+  hear(frames: Float32Array): number {
+    const level = rms(frames);
+    const [speech, floor] = track(this.floor, level);
     this.floor = floor;
     if (speech) this.lastSpeech = this.now() - this.start;
+    return level;
   }
 
   /** Has the user spoken and then gone quiet (or never spoken at all)? */

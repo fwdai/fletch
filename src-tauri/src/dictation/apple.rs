@@ -32,6 +32,7 @@
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -42,6 +43,7 @@ use objc2_avf_audio::{
 };
 use tauri::AppHandle;
 
+use super::level::{self, Meter};
 use super::{emit_state, emit_transcript, speech, Auth, Availability, Engine, State};
 use crate::error::{Error, Result};
 
@@ -119,6 +121,9 @@ struct Session {
     audio: Retained<AVAudioEngine>,
     input: Retained<AVAudioInputNode>,
     sink: Sink,
+    /// The mic's loudness, fed by the tap whichever sink it has, and read by
+    /// the `dictation:level` emitter until the mic closes.
+    meter: Arc<Meter>,
     /// Kept alive for the tap's lifetime. `installTapOnBus` is documented to
     /// take ownership, but holding our own reference costs nothing and takes
     /// a use-after-free off the table.
@@ -204,6 +209,7 @@ fn teardown(session: Session) {
         session.input.removeTapOnBus(BUS);
     }
     session.sink.cancel();
+    session.meter.close();
     ACTIVE.store(false, Ordering::SeqCst);
 }
 
@@ -347,12 +353,17 @@ pub async fn start(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
             return Err(e);
         }
     };
+    let Some((generation, meter)) = started else {
+        return Ok(None);
+    };
+    // The level bars run for every session; the meter closes with the mic.
+    level::watch(app.clone(), generation, meter);
     // Hands-free stop is the local engine's alone: Apple's analyzer decides
     // for itself when an utterance has ended, and we have no PCM to measure.
-    if let (Some(generation), Engine::Whisper) = (started, engine) {
+    if engine == Engine::Whisper {
         watch_for_silence(app, generation);
     }
-    Ok(started)
+    Ok(Some(generation))
 }
 
 /// Poll a local-engine session's speech tracker and stop it once the user has
@@ -384,7 +395,10 @@ fn watch_for_silence(app: AppHandle, generation: u64) {
     });
 }
 
-fn begin(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
+/// `Some((generation, meter))` for a session that came up: its id, and the
+/// level meter its tap feeds, handed out so the emitter can be started off the
+/// main thread.
+fn begin(app: AppHandle, engine: Engine) -> Result<Option<(u64, Arc<Meter>)>> {
     // The user asked to stop while the permission prompt was up. Honour it
     // instead of opening the mic behind their back. No state event: the
     // session never came up, so there is nothing to close out — the `None`
@@ -394,7 +408,7 @@ fn begin(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
         return Ok(None);
     }
     match build_session(app, engine) {
-        Ok(generation) => Ok(Some(generation)),
+        Ok(started) => Ok(Some(started)),
         Err(e) => {
             // `build_session` unwinds whatever it installed, so releasing the
             // claim here is what lets the user retry. No state event — the
@@ -409,14 +423,15 @@ fn begin(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
 /// keys events on. Main thread; permissions are already granted, which matters
 /// because reading `inputNode`'s format before that yields a zero-rate format
 /// and installing a tap with it throws in ObjC.
-fn build_session(app: AppHandle, engine: Engine) -> Result<u64> {
+fn build_session(app: AppHandle, engine: Engine) -> Result<(u64, Arc<Meter>)> {
     let (audio, input, format) = open_microphone()?;
     let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
 
+    let meter = Meter::new(&format);
     let (sink, tap) = match engine {
-        Engine::Apple => speech_sink(&app, generation, &format)?,
+        Engine::Apple => speech_sink(&app, generation, &format, meter.clone())?,
         Engine::Whisper => {
-            let (pcm, tap) = super::capture::sink(&format)?;
+            let (pcm, tap) = super::capture::sink(&format, meter.clone())?;
             (Sink::Pcm(pcm), tap)
         }
     };
@@ -446,12 +461,13 @@ fn build_session(app: AppHandle, engine: Engine) -> Result<u64> {
         audio,
         input,
         sink,
+        meter: meter.clone(),
         _tap: tap,
         stopping: false,
     }));
     // Audio is flowing. Only now can the frontend show a live mic.
     emit_state(&app, generation, State::Listening, None);
-    Ok(generation)
+    Ok((generation, meter))
 }
 
 /// The input node and the format its tap will deliver.
@@ -477,7 +493,12 @@ fn open_microphone() -> Result<(
 
 /// Apple's analyzer, plus the tap that streams the mic straight into it. The
 /// format conversion the analyzer needs happens in the bridge, not here.
-fn speech_sink(app: &AppHandle, generation: u64, format: &AVAudioFormat) -> Result<(Sink, Tap)> {
+fn speech_sink(
+    app: &AppHandle,
+    generation: u64,
+    format: &AVAudioFormat,
+    meter: Arc<Meter>,
+) -> Result<(Sink, Tap)> {
     let session = speech::Session::start(
         format,
         speech::Events {
@@ -487,9 +508,12 @@ fn speech_sink(app: &AppHandle, generation: u64, format: &AVAudioFormat) -> Resu
     )?;
     let tap = RcBlock::new(
         move |buffer: NonNull<AVAudioPCMBuffer>, _when: NonNull<AVAudioTime>| {
-            // Real-time audio thread. Handing the buffer over is the only
-            // thing that may happen here — no session state, no emit.
-            session.feed(unsafe { buffer.as_ref() });
+            // Real-time audio thread. Measuring the buffer (one pass, one
+            // atomic store) and handing it over are the only things that may
+            // happen here — no session state, no emit.
+            let buffer = unsafe { buffer.as_ref() };
+            meter.record_buffer(buffer);
+            session.feed(buffer);
         },
     );
     Ok((Sink::Speech(session), tap))
@@ -561,9 +585,10 @@ async fn stop_session(app: AppHandle, expect: Option<u64>) -> Result<()> {
                 session.audio.clone(),
                 session.input.clone(),
                 session.sink.clone(),
+                session.meter.clone(),
             ))
         });
-        let Some((generation, audio, input, sink)) = live else {
+        let Some((generation, audio, input, sink, meter)) = live else {
             // No session of ours — but a claimed `ACTIVE` with an empty
             // `SESSION` means a `start` is still sitting on the permission
             // prompt, so leave the request for `begin` to consume. Genuinely
@@ -581,6 +606,9 @@ async fn stop_session(app: AppHandle, expect: Option<u64>) -> Result<()> {
             audio.stop();
             input.removeTapOnBus(BUS);
         }
+        // No more buffers, so no more levels — even while Apple's flush keeps
+        // the session alive for its final result.
+        meter.close();
         match sink {
             Sink::Speech(session) => {
                 // Deliberately not `cancel`: ending the input is what makes

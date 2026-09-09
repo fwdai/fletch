@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Icon } from "@/components/Icon";
+import { PrimaryControl } from "@/components/Composer/PrimaryControl";
 
 /** The PM composer. Reuses the agent composer's skin, but not its input core:
  *  this thread has no attachments, no mentions and no model picker — the agent
@@ -63,15 +63,13 @@ export function Composer({
           />
           <div className="composer-foot flex-center">
             <span className="grow" />
-            <button
-              type="button"
-              className="send flex-center"
-              disabled={disabled || !draft.trim()}
-              onClick={send}
-              aria-label="Send"
-            >
-              <Icon name="arrowUp" size={13} />
-            </button>
+            {/* The agent composer's primary control in its no-dictation form. */}
+            <PrimaryControl
+              state={draft.trim() ? "draft" : "empty"}
+              dictationAvailable={false}
+              disabled={disabled}
+              onSend={send}
+            />
           </div>
         </div>
       </div>
