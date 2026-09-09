@@ -57,6 +57,11 @@ custom-protocol = ["tauri/custom-protocol"]
 # crates.io/git tauri crates would duplicate types) until the next tauri
 # release, then delete this section.
 [patch.crates-io]
+# Vendored 1.0.8 with one fix: also globalize the SwiftRs support module's
+# @_cdecl exports in the Tauri package's archive on Xcode 27 — upstream skips
+# every dependency member, so those symbols stay internalized and the final
+# link fails (see vendor/swift-rs/src-rs/build.rs, "Fletch vendored change").
+swift-rs = { path = "vendor/swift-rs" }
 tauri = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
 tauri-build = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
 tauri-codegen = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
