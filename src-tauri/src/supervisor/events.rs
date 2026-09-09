@@ -137,6 +137,45 @@ pub(super) fn emit_turn_started(app: &AppHandle, agent_id: &str, started_at: i64
     );
 }
 
+/// A user message was accepted for an agent — from any client (desktop
+/// webview, a paired phone, a git-action trigger). Every connected client
+/// mirrors it into its chat log, so the conversation reads the same on every
+/// device rather than each one seeing only the prompts it typed itself. The
+/// sender dedupes against its own optimistic bubble by `turn_id`. `follow_up`
+/// says whether the agent was mid-turn when the message arrived — the same
+/// fact the sending client keyed its own render on — so a mirroring client
+/// draws a follow-up bubble vs. a turn-opening one without consulting its own
+/// (possibly lagging) busy flag.
+#[derive(Clone, serde::Serialize)]
+struct TurnSentPayload {
+    agent_id: String,
+    turn_id: String,
+    text: String,
+    attachments: Vec<String>,
+    follow_up: bool,
+}
+
+pub(super) fn emit_turn_sent(
+    app: &AppHandle,
+    agent_id: &str,
+    turn_id: &str,
+    text: &str,
+    attachments: &[String],
+    follow_up: bool,
+) {
+    emit(
+        app,
+        "turn:sent",
+        TurnSentPayload {
+            agent_id: agent_id.to_string(),
+            turn_id: turn_id.to_string(),
+            text: text.to_string(),
+            attachments: attachments.to_vec(),
+            follow_up,
+        },
+    );
+}
+
 #[derive(Clone, serde::Serialize)]
 struct AgentStatusPayload {
     agent_id: String,

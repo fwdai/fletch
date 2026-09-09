@@ -10,7 +10,7 @@ use crate::managed_session::ToolUseBehavior;
 use crate::message_queue::{decide_delivery, Delivery, PendingMsg};
 use crate::workspace::AgentStatus;
 
-use super::events::{emit_task, emit_turn_started};
+use super::events::{emit_task, emit_turn_sent, emit_turn_started};
 use super::{transition_active, Supervisor};
 
 impl Supervisor {
@@ -48,6 +48,16 @@ impl Supervisor {
             text: text.to_string(),
             attachments: attachments.to_vec(),
         };
+
+        // Announce the message to every client before delivering it. The one
+        // that sent it already shows an optimistic bubble and dedupes on
+        // `turn_id`; the others (a paired phone, or the desktop when the phone
+        // sent) would otherwise watch the agent's answer stream in with no
+        // prompt above it until the turn-end transcript rebuild. Before
+        // delivery, so it lands ahead of the `agent:status` Running flip that
+        // delivery raises — a mirroring client renders a turn-opening bubble
+        // for `!busy` and must not be told the turn is running first.
+        emit_turn_sent(app, agent_id, turn_id, text, attachments, busy);
 
         let delivery = decide_delivery(busy, mode, tool_gated, queue_nonempty);
         // Whether the message is genuinely held for a later boundary. A path

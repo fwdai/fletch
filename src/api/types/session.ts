@@ -49,6 +49,21 @@ export interface SessionSyncHealthEvent {
   version: string | null;
 }
 
+/** A user message the host accepted for an agent, from whichever client sent
+ *  it. Every client mirrors it into the chat log (skipping its own, by
+ *  `turn_id`), so a prompt typed on the phone shows on the desktop and vice
+ *  versa while the turn is still running. */
+export interface TurnSentEvent {
+  agent_id: string;
+  /** The sender's client-generated turn id — matches the optimistic bubble. */
+  turn_id: string;
+  text: string;
+  attachments: string[];
+  /** The agent was mid-turn when this arrived: a follow-up (injected live or
+   *  queued), not the message that opened the turn. */
+  follow_up: boolean;
+}
+
 export interface TurnStartedEvent {
   agent_id: string;
   /** Backend epoch millis the turn began — the live-timer anchor. */

@@ -11,6 +11,7 @@
 
 export * from "./agentLookups";
 export * from "./commands";
+export * from "./mirrorTurn";
 export * from "./reasoning";
 export * from "./spawn";
 export * from "./transcript";

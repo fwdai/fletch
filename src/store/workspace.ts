@@ -520,6 +520,8 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         // Optimistic mid-turn follow-up: default to no badge (the common case is
         // immediate live injection). If the backend reports it was enqueued, we
         // flip `queued` on below — carried by `turnId` so we can find it again.
+        // The turn-opening bubble carries `turnId` too, so the `turn:sent`
+        // mirror (see eventListeners) recognizes it as ours and skips it.
         const entry: ChatItem = wasBusy
           ? attachments.length > 0
             ? { kind: "queued_message", text, attachments, turnId }
@@ -527,8 +529,8 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
           : slashName
             ? { kind: "notice", subtype: "slash_command", text: `/${slashName}` }
             : attachments.length > 0
-              ? { kind: "user_message", text, attachments }
-              : { kind: "user_message", text };
+              ? { kind: "user_message", text, attachments, turnId }
+              : { kind: "user_message", text, turnId };
         return {
           managedLogs: {
             ...state.managedLogs,

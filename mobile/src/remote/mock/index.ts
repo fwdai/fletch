@@ -297,6 +297,15 @@ export class MockHost {
       }
       case "send_user_message": {
         const text = String(args.text ?? "");
+        // Echoed to every client before delivery, as the host does; the sender
+        // recognizes its own turn id and does not draw the bubble twice.
+        this.event("turn:sent", {
+          agent_id: id,
+          turn_id: String(args.turnId ?? ""),
+          text,
+          attachments: [],
+          follow_up: this.agent(id).status === "running",
+        });
         this.appendRecord(id, this.agent(id).provider, {
           type: "user",
           message: { role: "user", content: [{ type: "text", text }] },

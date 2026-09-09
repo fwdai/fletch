@@ -93,6 +93,22 @@ describe("event folding", () => {
       true,
     );
   });
+
+  it("does not draw our own send twice when the host echoes it as turn:sent", async () => {
+    await state().rebuildLog("kamakura");
+    const before = (state().logs.kamakura ?? []).length;
+    await state().send("kamakura", "one more thing from the phone");
+    // The echo arrived with the response; the optimistic bubble carries the
+    // same turn id, so the log grew by exactly one user-side item — whether we
+    // are looking at that bubble or at the canonical rebuild that replaced it.
+    const mine = (state().logs.kamakura ?? []).filter(
+      (i) =>
+        (i.kind === "queued_message" || i.kind === "user_message") &&
+        i.text === "one more thing from the phone",
+    );
+    expect(mine).toHaveLength(1);
+    expect((state().logs.kamakura ?? []).length).toBe(before + 1);
+  });
 });
 
 describe("transcripts through the desktop adapters", () => {
