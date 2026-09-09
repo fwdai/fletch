@@ -1,4 +1,4 @@
-/** DTOs for the paired-device remote server (Settings › Mobile devices).
+/** DTOs for the paired-device remote server (Settings › Remote control).
  *  Mirrors the Rust types in `src-tauri/src/remote/`; the wire contract is
  *  `docs/remote-protocol.md`. */
 

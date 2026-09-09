@@ -181,7 +181,7 @@ Cloudflare provisions the certificate; WebSockets need no extra configuration.
 
 ## Pointing the apps at it
 
-The relay is opt-in and per host. On the Mac, Settings → Mobile devices sets
+The relay is opt-in and per host. On the Mac, Settings → Remote control sets
 `remote.relay_url` (Tauri command `remote_set_relay`) to the base URL, e.g.
 `wss://relay.example.com` — no path, the app appends `/v1/host/<hostId>`. Empty
 or absent means no relay, and the Mac only dials LAN. With it set, the desktop

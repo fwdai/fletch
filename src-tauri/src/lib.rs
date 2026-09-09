@@ -28,7 +28,7 @@ mod new_project;
 mod oauth;
 mod power;
 mod pty_session;
-// Paired-device remote access (Settings → Mobile devices). Desktop-only: the
+// Paired-device remote access (Settings → Remote control). Desktop-only: the
 // host is the machine agents run on, never the phone.
 #[cfg(desktop)]
 mod remote;

@@ -18,7 +18,7 @@ export interface Remote {
   clearInvite: () => void;
 }
 
-/** Server state for the Mobile devices section. Deliberately local rather than
+/** Server state for the Remote control pane. Deliberately local rather than
  *  a store slice: nothing outside this pane reads it, and it is only live while
  *  the pane is mounted. */
 export function useRemote(): Remote {
