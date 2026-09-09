@@ -6,6 +6,7 @@ import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
 import { createApi } from "../api";
+import { isBusy } from "../lib/agents";
 import { ignore } from "../lib/ignore";
 import {
   type ConnectionState,
@@ -446,7 +447,14 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async loadAgent(agentId) {
-    await get().rebuildLog(agentId);
+    // A running turn's log is built from live events; the host's records only
+    // catch up at turn end (see rebuildLog). Rebuilding now would replace it
+    // with the prompt alone, so a re-open or reconnect mid-turn keeps what the
+    // stream rendered. The turn-end `session:records-appended` rebuild — which
+    // calls rebuildLog directly — is the authoritative one.
+    const agent = agentOf(get().workspace, agentId);
+    const midTurn = agent !== undefined && isBusy(agent) && get().logs[agentId] !== undefined;
+    if (!midTurn) await get().rebuildLog(agentId);
     await get().loadGit(agentId);
   },
 
