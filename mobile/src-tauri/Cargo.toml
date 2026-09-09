@@ -50,17 +50,11 @@ tokio = { version = "1", features = ["rt", "time"] }
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
-# iOS 27 refuses to launch apps built with its SDK unless they adopt the
-# UIScene lifecycle. tao grew scene support in 0.36/0.37, but no published
-# tauri release ships the tao 0.37 bump yet — it only exists on tauri's dev
-# branch. Pin the whole tauri stack to one rev of that branch (mixed
-# crates.io/git tauri crates would duplicate types) until the next tauri
-# release, then delete this section.
+# iOS 27 requires the UIScene lifecycle; only tauri's dev branch ships the
+# scene-capable tao 0.37. Drop this section on the next tauri release.
 [patch.crates-io]
-# Vendored 1.0.8 with one fix: also globalize the SwiftRs support module's
-# @_cdecl exports in the Tauri package's archive on Xcode 27 — upstream skips
-# every dependency member, so those symbols stay internalized and the final
-# link fails (see vendor/swift-rs/src-rs/build.rs, "Fletch vendored change").
+# Vendored 1.0.8: exports the SwiftRs runtime symbols on Xcode 27 (see
+# "Vendored change" in vendor/swift-rs/src-rs/build.rs).
 swift-rs = { path = "vendor/swift-rs" }
 tauri = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
 tauri-build = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }

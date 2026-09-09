@@ -322,10 +322,8 @@ impl SwiftLinker {
                 // Release/Debug configuration
                 .args(["-c", configuration]);
 
-            // Fletch vendored change: SwiftPM's own sandbox (sandbox-exec)
-            // cannot nest inside another sandbox — builds driven from sandboxed
-            // agents die with `sandbox_apply: Operation not permitted`. Opt out
-            // explicitly where needed; default behavior is unchanged.
+            // Vendored change: SwiftPM's sandbox cannot nest inside another
+            // sandbox (agent/CI jails) — allow opting out.
             if env::var_os("SWIFT_RS_DISABLE_SANDBOX").is_some() {
                 command.arg("--disable-sandbox");
             }
@@ -510,14 +508,10 @@ fn globalize_cdecl_symbols(archive: &std::path::Path, package_name: &str) {
             .collect::<String>()
     };
     let pkg = norm(package_name);
-    // Fletch vendored change: the SwiftRs support module's own @_cdecl exports
-    // (retain_object, release_object, string_from_bytes, data_from_bytes) are
-    // referenced by the swift-rs Rust crate but live in a *dependency* member,
-    // which the own-member guard below skips in every archive — so nothing ever
-    // exports them and the final link fails. Promote them in exactly one
-    // archive: the Tauri package's, which every tauri iOS app links exactly
-    // once. Plugin archives keep their embedded SwiftRs.o local, so no global
-    // is ever duplicated across archives.
+    // Vendored change: the SwiftRs module's own @_cdecl exports live in a
+    // dependency member the own-member guard skips, so no archive exports them
+    // and the final link fails. Promote them in exactly one archive — the
+    // Tauri package's, which every tauri iOS app links once.
     let promote_swiftrs_dep = pkg == "tauri";
     let mut in_own_member = false;
     let mut candidates: Vec<String> = Vec::new();
