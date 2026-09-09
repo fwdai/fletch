@@ -169,7 +169,7 @@ describe("answering a tool-use prompt", () => {
 });
 
 describe("spawn flow", () => {
-  it("allocates a name, spawns, waits for spawning to clear, then sends the prompt", async () => {
+  it("spawns under the name the sheet showed, waits for spawning to clear, then sends the prompt", async () => {
     const before = state().workspace?.agents.length ?? 0;
     await state().spawn({
       repoPath: state().workspace?.projects[0].path ?? "",
@@ -178,9 +178,12 @@ describe("spawn flow", () => {
       effort: "high",
       base: "main",
       prompt: "Add a settings row for the dictation engine",
+      name: "zermatt",
     });
     expect(state().workspace?.agents.length).toBe(before + 1);
     const fresh = state().workspace?.agents[0];
+    // The sheet's name, not a fresh allocation (which would have been "tasman").
+    expect(fresh?.name).toBe("zermatt");
     expect(fresh?.status).not.toBe("spawning");
     await vi.waitFor(
       () =>
@@ -191,6 +194,21 @@ describe("spawn flow", () => {
         ).toBe(true),
       { timeout: 5000 },
     );
+  });
+
+  it("allocates a name itself only when the sheet had none", async () => {
+    const before = new Set((state().workspace?.agents ?? []).map((a) => a.id));
+    await state().spawn({
+      repoPath: state().workspace?.projects[0].path ?? "",
+      provider: "claude",
+      model: "claude-opus-5",
+      effort: "high",
+      base: "main",
+      prompt: "The sheet never got a name for this one",
+      name: "",
+    });
+    const fresh = (state().workspace?.agents ?? []).find((a) => !before.has(a.id));
+    expect(fresh?.name).toBeTruthy();
   });
 
   it("rejects and rolls back when the first message fails, so the prompt can be retried", async () => {
@@ -207,6 +225,7 @@ describe("spawn flow", () => {
         effort: "high",
         base: "main",
         prompt: "This one never reaches the agent",
+        name: "sedona",
       }),
     ).rejects.toThrow("host refused the message");
 
