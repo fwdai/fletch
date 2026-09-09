@@ -1365,7 +1365,6 @@ dependencies = [
  "objc2-av-foundation",
  "objc2-avf-audio",
  "objc2-foundation",
- "objc2-speech",
  "parking_lot",
  "portable-pty",
  "rand",
@@ -3133,18 +3132,6 @@ dependencies = [
  "bitflags 2.11.1",
  "objc2",
  "objc2-core-foundation",
- "objc2-foundation",
-]
-
-[[package]]
-name = "objc2-speech"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9eb609f9d2a25e0f8b76954f3acaa58348ce2a91285fe867643b2224ac4d263"
-dependencies = [
- "block2",
- "objc2",
- "objc2-avf-audio",
  "objc2-foundation",
 ]
 
