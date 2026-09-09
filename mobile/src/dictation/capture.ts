@@ -1,14 +1,24 @@
 // Microphone capture in the webview: `getUserMedia` into an `AudioWorklet`
-// tap, batched into ~1 s chunks of 16-bit PCM. Nothing here knows about the
-// host; `session.ts` decides where the chunks go.
+// tap, batched into ~1 s chunks of 16-bit PCM, with each quantum's loudness
+// fed to the silence detector so the owner can be told when the talking
+// stopped. Nothing here knows about the host; `session.ts` decides where the
+// chunks go and what a pause means.
 
 import { concatPcm16, floatToPcm16 } from "./encode";
+import { SILENCE_POLL_MS, SilenceMonitor } from "./silence";
 
 /** How much audio one chunk holds. A second keeps the wire under the relay's
  *  message-rate limit with room to spare and the host's per-chunk cap far off. */
 const CHUNK_MS = 1000;
 
 export type ChunkSink = (pcm: Int16Array, rate: number) => void;
+
+export interface CaptureOptions {
+  /** Called at most once, when the user has spoken and then gone quiet (or
+   *  never spoke at all) — see `silence.ts`. What that means is the caller's
+   *  business: this module knows nothing about sessions. */
+  onDoneTalking?: () => void;
+}
 
 export interface Capture {
   /** The audio session's rate — typically 48 000 on an iPhone. The host
@@ -34,7 +44,10 @@ export function canCapture(): boolean {
  *  Call this from the tap handler: WebKit only lets an `AudioContext` start
  *  inside a user gesture, and the context is created before the first `await`
  *  so the gesture still covers it. */
-export async function startCapture(onChunk: ChunkSink): Promise<Capture> {
+export async function startCapture(
+  onChunk: ChunkSink,
+  opts: CaptureOptions = {},
+): Promise<Capture> {
   const ctx = new AudioContext();
   let stream: MediaStream;
   try {
@@ -59,7 +72,13 @@ export async function startCapture(onChunk: ChunkSink): Promise<Capture> {
     pendingFrames = 0;
     onChunk(chunk, rate);
   };
+  // Loudness is measured here rather than in the worklet: the worklet stays a
+  // plain copy (it is loaded by URL, not bundled, so the less logic that lives
+  // there the better), and one pass over a render quantum is nothing next to
+  // the conversion `flush` already does on this thread.
+  const silence = new SilenceMonitor();
   const push = (frames: Float32Array) => {
+    silence.hear(frames);
     pending.push(frames);
     pendingFrames += frames.length;
     if (pendingFrames >= framesPerChunk) flush();
@@ -81,15 +100,30 @@ export async function startCapture(onChunk: ChunkSink): Promise<Capture> {
     throw new Error(`Couldn't start the microphone: ${describe(e)}`);
   }
 
+  const unwatch = watchForSilence(silence, opts.onDoneTalking);
   return {
     rate,
     async stop() {
+      unwatch();
       teardown();
       for (const t of stream.getTracks()) t.stop();
       await ctx.close().catch(() => {});
       flush();
     },
   };
+}
+
+/** Poll the detector on a timer, like the desktop's monitor task, and report
+ *  the pause once. A timer rather than a check inside `push`, so a mic that
+ *  stopped delivering frames still ends its session. Returns the teardown. */
+function watchForSilence(silence: SilenceMonitor, onDoneTalking?: () => void): () => void {
+  if (!onDoneTalking) return () => {};
+  const timer = setInterval(() => {
+    if (!silence.doneTalking()) return;
+    clearInterval(timer);
+    onDoneTalking();
+  }, SILENCE_POLL_MS);
+  return () => clearInterval(timer);
 }
 
 type Push = (frames: Float32Array) => void;

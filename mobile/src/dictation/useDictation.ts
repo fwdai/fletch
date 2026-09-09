@@ -16,7 +16,11 @@ const fail = (e: unknown) => {
  *  the transcript is handed to `onText` once, when the host answers.
  *
  *  Unlike the desktop hook there are no partials to splice as they arrive —
- *  whisper answers once, at the end — so the composer only has to append. */
+ *  whisper answers once, at the end — so the composer only has to append.
+ *
+ *  A session usually ends itself: the mic reports the pause after the user
+ *  stops talking (`silence.ts`), and that runs the same stop a second tap
+ *  would, so dictating is one tap. */
 export function useDictation(onText: (text: string) => void) {
   const connection = useStore((s) => s.connection);
   // null while the probe is in flight; `available: false` with no reason is a
@@ -54,20 +58,27 @@ export function useDictation(onText: (text: string) => void) {
     [],
   );
 
+  /** Close the session and splice what the Mac heard. The one stop path: a tap
+   *  on the button and the mic's own "done talking" both land here, and taking
+   *  the session out of the ref claims it, so the two can't end it twice. */
+  const finish = useCallback(async () => {
+    const session = sessionRef.current;
+    if (!session) return;
+    sessionRef.current = null;
+    setPhase("transcribing");
+    try {
+      const text = await session.stop();
+      if (text) onTextRef.current(text);
+    } catch (e) {
+      fail(e);
+    } finally {
+      setPhase("idle");
+    }
+  }, []);
+
   const toggle = useCallback(async () => {
     if (phase === "listening") {
-      const session = sessionRef.current;
-      if (!session) return;
-      setPhase("transcribing");
-      try {
-        const text = await session.stop();
-        if (text) onTextRef.current(text);
-      } catch (e) {
-        fail(e);
-      } finally {
-        sessionRef.current = null;
-        setPhase("idle");
-      }
+      await finish();
       return;
     }
     if (phase !== "idle") return;
@@ -80,14 +91,14 @@ export function useDictation(onText: (text: string) => void) {
     const session = new DictationSession(api, startCapture);
     sessionRef.current = session;
     try {
-      await session.start();
+      await session.start(() => void finish());
       setPhase("listening");
     } catch (e) {
       sessionRef.current = null;
       setPhase("idle");
       fail(e);
     }
-  }, [phase, status]);
+  }, [phase, status, finish]);
 
   return {
     /** False until the host says it can transcribe, or when this webview has

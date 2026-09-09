@@ -9,6 +9,12 @@ import { autosize } from "../../lib/autosize";
 import { ignore } from "../../lib/ignore";
 import { useStore } from "../../store";
 
+/** The session ends itself once the user stops talking, so the placeholder has
+ *  to say so — a mic that stops on its own otherwise reads as a bug, and the
+ *  pause is the only thing left for the user to do. Same words as the desktop's
+ *  mic tooltip. */
+const LISTENING_HINT = "Listening… stops when you pause";
+
 export function Composer({
   agent,
   onSend,
@@ -41,7 +47,7 @@ export function Composer({
 
   const placeholder =
     dictation.phase === "listening"
-      ? "Listening…"
+      ? LISTENING_HINT
       : dictation.phase === "transcribing"
         ? "Transcribing…"
         : busy

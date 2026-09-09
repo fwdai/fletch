@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Capture, ChunkSink } from "../src/dictation/capture";
+import type { Capture, CaptureOptions, ChunkSink } from "../src/dictation/capture";
 import {
   bytesToBase64,
   concatPcm16,
@@ -63,19 +63,25 @@ function harness(opts: { failAudioAt?: number; beginFails?: boolean } = {}) {
   };
   let sink: ChunkSink | null = null;
   let stopped = 0;
+  let doneTalking: (() => void) | undefined;
   const mic = {
     started: 0,
     /** Feed a chunk as the worklet would. */
     speak(samples: number[]) {
       sink?.(Int16Array.from(samples), 48_000);
     },
+    /** Report the pause, as the capture's silence monitor would. */
+    pause() {
+      doneTalking?.();
+    },
     get stopped() {
       return stopped;
     },
   };
-  const startCapture = async (onChunk: ChunkSink): Promise<Capture> => {
+  const startCapture = async (onChunk: ChunkSink, opts: CaptureOptions): Promise<Capture> => {
     mic.started += 1;
     sink = onChunk;
+    doneTalking = opts.onDoneTalking;
     return {
       rate: 48_000,
       async stop() {
@@ -146,12 +152,50 @@ describe("DictationSession", () => {
     expect(h.mic.stopped).toBe(1);
   });
 
+  it("a mic that reports the pause ends the session through the normal stop", async () => {
+    const h = harness();
+    const s = new DictationSession(h.api, h.startCapture);
+    // What `useDictation` does with the signal: run the very stop a tap runs.
+    const stops: Promise<string>[] = [];
+    await s.start(() => stops.push(s.stop()));
+
+    h.mic.speak([1, 2]);
+    h.mic.pause();
+
+    expect(await Promise.all(stops)).toEqual(["hello world"]);
+    expect(h.ops.map((o) => o.op)).toEqual(["begin", "audio", "audio", "end"]);
+    expect(h.mic.stopped).toBe(1);
+  });
+
+  it("a pause that lands while the user is stopping cannot end the session twice", async () => {
+    const h = harness();
+    const s = new DictationSession(h.api, h.startCapture);
+    const stops: Promise<string>[] = [];
+    await s.start(() => stops.push(s.stop()));
+    h.mic.speak([1]);
+
+    // The tap wins, and the pause arriving inside it is dropped rather than
+    // stopping a mic that is already closing or transcribing twice.
+    const tapped = s.stop();
+    h.mic.pause();
+
+    expect(await tapped).toBe("hello world");
+    expect(stops).toEqual([]);
+    expect(h.ops.filter((o) => o.op === "end")).toHaveLength(1);
+    expect(h.mic.stopped).toBe(1);
+  });
+
   it("cancel releases the mic and the host session, and is idempotent", async () => {
     const h = harness();
     const s = new DictationSession(h.api, h.startCapture);
-    await s.start();
+    const stops: Promise<string>[] = [];
+    await s.start(() => stops.push(s.stop()));
     await s.cancel();
     await s.cancel();
+    // A pause reported after the teardown — the screen was left mid-session —
+    // has nothing left to end.
+    h.mic.pause();
+    expect(stops).toEqual([]);
     expect(h.mic.stopped).toBe(1);
     expect(h.ops.map((o) => o.op)).toEqual(["begin", "cancel"]);
     expect(await s.stop()).toBe("");

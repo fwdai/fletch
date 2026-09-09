@@ -4,7 +4,7 @@
 // browser APIs — the capture is injected — so the sequencing is unit-tested.
 
 import type { Api } from "../api";
-import type { Capture, ChunkSink } from "./capture";
+import type { Capture, CaptureOptions, ChunkSink } from "./capture";
 import { pcm16ToBase64 } from "./encode";
 
 export type DictationApi = Pick<
@@ -12,7 +12,7 @@ export type DictationApi = Pick<
   "dictationBegin" | "dictationAudio" | "dictationEnd" | "dictationCancel"
 >;
 
-export type CaptureStarter = (onChunk: ChunkSink) => Promise<Capture>;
+export type CaptureStarter = (onChunk: ChunkSink, opts: CaptureOptions) => Promise<Capture>;
 
 export class DictationSession {
   private session: string | null = null;
@@ -34,12 +34,25 @@ export class DictationSession {
 
   /** Open the host session, then the mic. The host is asked first so a Mac
    *  that can't transcribe (engine off, model missing) answers before the
-   *  user has said anything. */
-  async start(): Promise<void> {
+   *  user has said anything.
+   *
+   *  `onAutoStop` fires when the mic hears the pause that ends a session. It is
+   *  the caller's job to run the same `stop` a tap on the button runs, so that
+   *  hands-free and by-hand take one code path. */
+  async start(onAutoStop?: () => void): Promise<void> {
     const { session } = await this.api.dictationBegin();
     this.session = session;
+    // A pause that lands while the session is already ending — the user tapped
+    // stop at the same moment — is nobody's to act on: `done` says so.
+    const onDoneTalking = onAutoStop
+      ? () => {
+          if (!this.done) onAutoStop();
+        }
+      : undefined;
     try {
-      this.capture = await this.startCapture((pcm, rate) => this.send(pcm, rate));
+      this.capture = await this.startCapture((pcm, rate) => this.send(pcm, rate), {
+        onDoneTalking,
+      });
     } catch (e) {
       await this.cancel();
       throw e;

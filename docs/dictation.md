@@ -353,9 +353,13 @@ What it reuses, and what it doesn't:
 - The microphone is the phone's, so `apple.rs` is not involved, and neither are
   the desktop's `dictation:*` events: whisper has no partials, so the transcript
   is simply the reply to `dictation_end`.
-- Hands-free auto-stop is not there yet. The detector in `capture.rs` runs in
-  the mic tap, and the phone's tap is JavaScript; porting the three constants
-  and the RMS-over-noise-floor rule is a follow-up.
+- Hands-free auto-stop is the same policy, ported to TypeScript in
+  `mobile/src/dictation/silence.ts`: the same `SILENCE_STOP` (2 s),
+  `NO_SPEECH_TIMEOUT` (10 s) and `SILENCE_POLL` (100 ms), and the same
+  RMS-over-noise-floor rule, computed on the main thread from the Float32
+  frames the worklet posts (the worklet stays a plain copy) and polled by
+  `capture.ts`, which hands the pause to the session — so the stop takes the
+  same path a tap on the button takes.
 
 Audio is held in memory only, for the length of a session plus a 60 s idle
 sweep, and never written to disk. The phone's `NSMicrophoneUsageDescription`

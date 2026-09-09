@@ -91,7 +91,11 @@ phone"). There is no speech model on the phone: `src/dictation/capture.ts` opens
 `getUserMedia` into an `AudioWorklet` tap and batches a second of 16-bit PCM at
 a time, `src/dictation/session.ts` streams those chunks to the host in order and
 asks for the transcript on stop, and `useDictation` turns that into the button's
-phases. The Mac has to have its local Whisper engine on with a model downloaded;
+phases. One tap is enough: `src/dictation/silence.ts` is a port of the desktop's
+detector — same constants, same RMS-over-noise-floor rule, run on the main
+thread over the frames the worklet posts — and the session ends itself two
+seconds after you stop talking. The Mac has to have its local Whisper engine on
+with a model downloaded;
 `dictation_status` says so, and a slashed mic that explains itself on tap is
 what the phone shows otherwise.
 
