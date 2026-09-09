@@ -501,11 +501,37 @@ puts a 440 Hz tone through it and checks the length and loudness that come out.
 
 ## Dictating from the phone
 
-The mobile app has a mic button in its composer, but no speech model on the
-phone: it captures the microphone in the webview and streams PCM to the Mac
-over the remote protocol, and the Mac runs the local engine on it. The wire
-contract is in [remote-protocol.md](remote-protocol.md), "Dictation"; the host
-side is `src-tauri/src/dictation/remote.rs`.
+The mobile app's composer has the same primary control as the desktop, in the
+phone's physics: one **44 pt disc** in the bottom-right corner that morphs in
+place — mic → send → ✓ done → stop — with the mic stepping aside as a smaller
+neutral disc once there is a draft (`mobile/src/screens/Agent/Composer/`). It
+derives its state with the desktop's `primaryState` and reuses the desktop's
+`ContourTrace`, `InterimGhost` and `spliceTranscript` through the `@desktop/`
+alias. What differs on the phone:
+
+- **No split targets.** The disc is the only primary; a thumb on two fused
+  segments is a coin-flip. Accent always means send, neutral always means
+  "dictate more".
+- **Return inserts a newline.** There is no ↵ to send with, so the arrow is
+  always visible and send is only ever a deliberate tap. While the agent works
+  the disc is the stop, and the draft waits — there is no mid-turn send on the
+  phone.
+- **Every exit has a button.** While listening the footer's leading row
+  becomes the voice row: ✕ cancel, a 12-bar waveform of recent mic levels with
+  the clock, and ✓ in the disc. Stop-agent ignores taps for 450 ms after send
+  so a double-tap can't kill the run it just started.
+- **Errors are a banner** that expands above the footer for 2.6 s (a failed
+  transcription, a Mac that can't transcribe, a denied microphone), not a
+  toast.
+- The waveform's levels come from the phone's own capture (`level.ts`, the
+  same dB mapping as the Mac's `level.rs`), reported every 90 ms while the mic
+  is open.
+
+There is no speech model on the phone: it captures the microphone in the
+webview and streams PCM to the Mac over the remote protocol, and the Mac runs
+the local engine on it. The wire contract is in
+[remote-protocol.md](remote-protocol.md), "Dictation"; the host side is
+`src-tauri/src/dictation/remote.rs`.
 
 What it reuses, and what it doesn't:
 
@@ -527,7 +553,9 @@ What it reuses, and what it doesn't:
   RMS-over-noise-floor rule, computed on the main thread from the Float32
   frames the worklet posts (the worklet stays a plain copy) and polled by
   `capture.ts`, which hands the pause to the session — so the stop takes the
-  same path a tap on the button takes.
+  same path a tap on the disc takes. (The design spec would rather silence
+  ended nothing and the user tapped ✓; auto-stop is kept as the hands-free
+  choice made deliberately before it, and it never sends.)
 
 Audio is held in memory only, for the length of a session plus a 60 s idle
 sweep, and never written to disk. The phone's `NSMicrophoneUsageDescription`

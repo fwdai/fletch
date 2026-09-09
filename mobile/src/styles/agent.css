@@ -376,114 +376,516 @@
   background: var(--bg-0);
   border-top: 1px solid var(--bd-soft);
 }
+/* The composer box. One ease, two durations, shared with the primary control
+   below: the same choreography as the desktop pill, at thumb sizes. */
 .cmp {
+  --pc-dur: 0.22s;
+  --pc-fast: 0.14s;
   position: relative;
   background: var(--bg-2);
   border: 1px solid var(--bd-soft);
-  border-radius: 18px;
-  padding: 10px 8px 8px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  border-radius: 22px;
   transition:
-    border-color 0.2s,
-    box-shadow 0.2s;
+    border-color 0.2s var(--ease),
+    box-shadow 0.2s var(--ease);
 }
 .cmp:focus-within {
   border-color: var(--accent-line);
 }
-.cmp textarea {
+/* Dictation live: glows accent regardless of focus, and the placeholder yields
+   to the ghost's "Listening…". */
+.cmp.is-listening {
+  border-color: color-mix(in oklch, var(--accent), transparent 30%);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent), transparent 88%);
+}
+.cmp.is-error {
+  border-color: color-mix(in oklch, var(--danger), transparent 50%);
+}
+.cmp-field {
+  position: relative;
+}
+/* 16px type: iOS won't zoom the page when the field takes focus. The ghost
+   repeats these metrics exactly. */
+.cmp textarea,
+.cmp-ghost {
   width: 100%;
-  resize: none;
-  font-size: 15px;
+  padding: 12px 16px 6px;
+  font-size: 16px;
   line-height: 1.4;
-  max-height: 120px;
-  color: var(--fg-0);
-  letter-spacing: -0.01em;
+  min-height: 48px;
+  max-height: 160px;
+  letter-spacing: -0.005em;
   display: block;
+}
+.cmp textarea {
+  resize: none;
+  color: var(--fg-0);
+  position: relative;
+  z-index: 1;
 }
 .cmp textarea::placeholder {
   color: var(--fg-3);
 }
-.cmp-bar {
+.cmp.is-listening textarea::placeholder {
+  color: transparent;
+}
+/* The dictation ghost (desktop InterimGhost): "Listening…" while the mic is
+   open, and the wash over the span a commit just inserted. */
+.cmp-ghost-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}
+.cmp-ghost {
+  min-height: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  color: transparent;
+}
+.cmp-ghost .listen-hint {
+  color: var(--fg-3);
+  font-style: italic;
+}
+.cmp-ghost .fresh {
+  border-radius: 3px;
+  animation: freshWash 1.1s var(--ease) both;
+}
+@keyframes freshWash {
+  0% {
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  100% {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+/* Error banner: one line that expands above the footer, and collapses. */
+.cmp-banner {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--pc-dur) var(--ease);
+}
+.cmp-banner.on {
+  grid-template-rows: 1fr;
+}
+.cmp-banner > div {
+  overflow: hidden;
+  min-height: 0;
+}
+.cmp-banner p {
+  margin: 0;
+  padding: 4px 16px 2px;
+  font-size: 12.5px;
+  color: var(--danger);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
-.cmp-bar .mdl {
+.cmp-banner p svg {
+  flex-shrink: 0;
+}
+/* Footer: the leading row (actions ⇄ voice) and the primary pair. */
+.cmp-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 6px;
+  min-height: 52px;
+}
+.cmp-rows {
+  flex: 1;
+  position: relative;
+  display: grid;
+  min-width: 0;
+  height: 44px;
+}
+.cmp-row {
+  grid-area: 1 / 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  transition:
+    opacity var(--pc-dur) var(--ease),
+    transform var(--pc-dur) var(--ease);
+}
+.cmp-row.off {
+  opacity: 0;
+  pointer-events: none;
+}
+.cmp-row.actions.off {
+  transform: translateY(6px) scale(0.98);
+}
+.cmp-row.voice.off {
+  transform: translateY(-6px) scale(0.98);
+}
+.cmp-row .grow {
+  flex: 1;
+}
+.cmp-row .mdl {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 9px 0 6px;
-  border-radius: 9px;
-  font-size: 12px;
+  height: 36px;
+  padding: 0 12px 0 8px;
+  margin-left: 4px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--fg-1);
   background: var(--bg-3);
-  max-width: 200px;
+  max-width: 220px;
 }
-.cmp-bar .mdl span {
+.cmp-row .mdl span {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.cmp-bar .mdl .sep {
+.cmp-row .mdl .sep {
   color: var(--fg-3);
 }
-.cmp-bar .grow {
-  flex: 1;
+/* Voice row: ✕ cancel, the waveform + clock, or the transcribing label. */
+.m-cancel {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-1);
+  flex-shrink: 0;
 }
-.sendbtn {
+.m-cancel .circ {
   width: 36px;
   height: 36px;
-  border-radius: 12px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  display: grid;
-  place-items: center;
-  transition: all 0.22s var(--ease-out);
-  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--bg-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-.sendbtn:active {
+.m-cancel:active .circ {
+  background: oklch(from var(--bg-3) calc(l + 0.04) c h);
+}
+.m-wave {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 6px 0 4px;
+  color: var(--accent);
+}
+.m-wave .bars {
+  flex: 1;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 3px;
+}
+.m-wave .bars i {
+  width: 3px;
+  flex: 1;
+  max-width: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: currentColor;
+  transition: height 0.09s linear;
+}
+.m-wave .clock {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-1);
+  flex-shrink: 0;
+}
+.m-wave.tx {
+  color: var(--fg-2);
+  font-size: 14px;
+  gap: 8px;
+  justify-content: flex-start;
+  padding-left: 10px;
+}
+.tdots {
+  display: inline-flex;
+  gap: 3px;
+}
+.tdots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: tdotBounce 1.2s var(--ease) infinite;
+}
+.tdots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.tdots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes tdotBounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+/* The primary pair: the mic that steps aside, and the disc. */
+.mpc-wrap {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+  flex-shrink: 0;
+}
+/* Secondary mic: on the disc when empty (margin −44 pulls it over the slot),
+   36 pt neutral disc 6 pt to the left once a draft exists. */
+.m-sec {
+  position: relative;
+  z-index: 3;
+  width: 44px;
+  height: 44px;
+  margin-right: -44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    margin-right var(--pc-dur) var(--ease),
+    width var(--pc-dur) var(--ease),
+    opacity var(--pc-fast) var(--ease);
+}
+.m-sec .circ {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--accent);
+  transition:
+    background var(--pc-dur) var(--ease),
+    color var(--pc-dur) var(--ease),
+    transform 0.1s var(--ease);
+}
+.m-sec .circ svg {
+  width: 20px;
+  height: 20px;
+  transition:
+    width var(--pc-dur) var(--ease),
+    height var(--pc-dur) var(--ease);
+}
+.m-sec:active:not(:disabled) .circ {
   transform: scale(0.92);
 }
-.sendbtn.stop {
-  background: var(--danger);
-  color: var(--knob);
+.m-sec.aside {
+  margin-right: 6px;
 }
-.sendbtn[disabled] {
-  background: var(--bg-3);
-  color: var(--fg-3);
-}
-/* Dictation: same footprint as send, quiet until it is listening. */
-.micbtn {
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
+.m-sec.aside .circ {
   background: var(--bg-3);
   color: var(--fg-1);
-  display: grid;
-  place-items: center;
-  transition: all 0.22s var(--ease-out);
 }
-.micbtn:active {
+.m-sec.aside .circ svg {
+  width: 18px;
+  height: 18px;
+}
+.m-sec.aside:active .circ {
+  background: oklch(from var(--bg-3) calc(l + 0.04) c h);
+}
+.m-sec.gone {
+  width: 0;
+  margin-right: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.m-sec.gone .circ {
+  transform: scale(0.6);
+}
+/* The disc: 40 pt visual inside a 44 pt target, pinned bottom-right. It never
+   moves or resizes; glyphs rotate through it. */
+.mpc {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+.mpc .disc {
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  transition:
+    background var(--pc-dur) var(--ease),
+    opacity var(--pc-dur) var(--ease),
+    transform 0.1s var(--ease),
+    box-shadow var(--pc-dur) var(--ease);
+}
+.mpc:active:not(:disabled) .disc {
   transform: scale(0.92);
 }
-.micbtn.off,
-.micbtn[disabled] {
+.mpc .g {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.55) rotate(-25deg);
+  color: var(--accent);
+  pointer-events: none;
+  transition:
+    opacity var(--pc-fast) var(--ease),
+    transform var(--pc-dur) var(--ease);
+}
+.mpc .g.on {
+  opacity: 1;
+  transform: none;
+}
+.mpc-stop {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: currentColor;
+}
+.mpc-spin {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--bd-strong);
+  border-top-color: var(--fg-1);
+  animation: spin 0.9s linear infinite;
+}
+/* per-state tones — accent is spent on one thing at a time */
+.mpc.s-empty .disc {
+  background: var(--accent-soft);
+}
+.mpc.s-empty .g {
+  color: var(--accent);
+}
+/* no engine, or no mic: the empty disc is a plain, inert send arrow */
+.mpc.no-mic.s-empty .disc {
+  background: var(--bg-3);
+}
+.mpc.no-mic.s-empty .g {
   color: var(--fg-3);
 }
-.micbtn.listening {
-  background: var(--danger);
-  color: var(--knob);
-  animation: mic-pulse 1.4s ease-out infinite;
+.mpc.s-draft .disc,
+.mpc.s-listening .disc {
+  background: var(--accent);
 }
-@keyframes mic-pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 50%, transparent);
-  }
+.mpc.s-draft .g,
+.mpc.s-listening .g {
+  color: var(--accent-ink);
+}
+.mpc.s-listening .disc {
+  box-shadow: 0 0 0 6px color-mix(in oklch, var(--accent), transparent 84%);
+  animation: mpcBreath 1.6s var(--ease) infinite;
+}
+@keyframes mpcBreath {
+  0%,
   100% {
-    box-shadow: 0 0 0 8px transparent;
+    box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent), transparent 86%);
+  }
+  50% {
+    box-shadow: 0 0 0 8px color-mix(in oklch, var(--accent), transparent 92%);
+  }
+}
+.mpc.s-transcribing .disc {
+  background: var(--bg-3);
+}
+.mpc.s-transcribing .g {
+  color: var(--fg-2);
+}
+.mpc.s-running .disc {
+  background: var(--bg-3);
+}
+.mpc.s-running .g {
+  color: var(--fg-0);
+}
+/* the double-tap guard right after send: visibly not yet, not disabled */
+.mpc.s-running.unarmed .disc {
+  opacity: 0.7;
+}
+.mpc.s-error .disc {
+  background: color-mix(in oklch, var(--danger), transparent 84%);
+}
+.mpc.s-error .g {
+  color: var(--danger);
+}
+.mpc.s-error {
+  animation: pcShake 0.36s var(--ease);
+}
+@keyframes pcShake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-3px);
+  }
+  45% {
+    transform: translateX(3px);
+  }
+  70% {
+    transform: translateX(-2px);
+  }
+}
+.mpc.s-unavailable .disc {
+  background: transparent;
+  box-shadow: 0 0 0 1px var(--bd) inset;
+}
+.mpc.s-unavailable .g {
+  color: var(--fg-3);
+}
+/* the running trace (desktop ContourTrace) around the 40 pt disc */
+.mpc .pc-ring {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  pointer-events: none;
+  color: var(--accent);
+  opacity: 0;
+  overflow: visible;
+  transition: opacity var(--pc-dur) var(--ease);
+}
+.mpc.s-running .pc-ring {
+  opacity: 1;
+}
+.mpc .pc-ring rect {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: butt;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Widths snap, the halo holds, the trace is a static outline; bars still
+     react — they carry information. */
+  .cmp {
+    --pc-dur: 0s;
+    --pc-fast: 0s;
+  }
+  .mpc.s-listening .disc,
+  .mpc.s-error {
+    animation: none;
+  }
+  .mpc .pc-ring rect {
+    stroke-dasharray: none;
+    stroke-dashoffset: 0;
+    opacity: 0.45;
   }
 }
 

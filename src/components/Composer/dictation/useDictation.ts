@@ -9,7 +9,7 @@ import {
 } from "@/api";
 import type { DictationPhase } from "../PrimaryControl/primaryState";
 import { type ComposerInput, grow } from "../useComposerInput";
-import { insertTranscript } from "./spliceTranscript";
+import { type FreshSpan, insertTranscript } from "./spliceTranscript";
 
 /** What we assume when the availability probe itself fails — an older backend
  *  without the command, or a non-Tauri environment (tests, storybook-ish
@@ -33,12 +33,6 @@ export const FRESH_TTL_MS = 1200;
 /** How many recent microphone levels the waveform shows. */
 export const LEVEL_BARS = 5;
 const IDLE_LEVELS: number[] = Array(LEVEL_BARS).fill(0);
-
-/** Offsets into the composer text of the span the last commit inserted. */
-export interface FreshSpan {
-  start: number;
-  end: number;
-}
 
 /** The last probe's answer, so a composer that mounts after the first one
  *  starts with the right control instead of flashing the wrong one while its

@@ -1,4 +1,6 @@
-import { type FreshSpan, splitForTranscript } from "./dictation";
+// Imported by file, not through `./dictation`, so the phone can reuse this
+// component: the barrel pulls in the desktop hook and its `@/api` imports.
+import { type FreshSpan, splitForTranscript } from "./dictation/spliceTranscript";
 
 export interface GhostProps {
   /** The textarea's own value, repeated invisibly so the interim text lands

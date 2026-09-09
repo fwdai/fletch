@@ -1,3 +1,10 @@
+/** Offsets into the composer text of the span the last commit inserted — what
+ *  the ghost layer marks for a moment so the eye can find what just arrived. */
+export interface FreshSpan {
+  start: number;
+  end: number;
+}
+
 export interface SplicedTranscript {
   text: string;
   /** Offset where the transcript begins in `text` — the span to mark as fresh. */
