@@ -20,3 +20,11 @@
 # and i8mm keep being probed; those succeed, and never crash.
 GGML_MACHINE_SUPPORTS_sve = "0"
 GGML_MACHINE_SUPPORTS_sme = "0"
+
+# Xcode 27's SwiftPM internalizes the SwiftRs runtime's @_cdecl exports, and
+# they must be re-exported from exactly ONE archive or the linker sees duplicate
+# globals. The patched swift-rs (mobile/src-tauri/Cargo.toml, [patch.crates-io])
+# promotes them in the archive named here. It has to live at the repo root:
+# `tauri ios build` runs cargo from mobile/, so a config under mobile/src-tauri/
+# is never discovered.
+SWIFT_RS_RUNTIME_ARCHIVE = "Tauri"

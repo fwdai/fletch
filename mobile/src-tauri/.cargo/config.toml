@@ -1,4 +1,0 @@
-[env]
-# The one archive that exports the SwiftRs runtime symbols on Xcode 27 —
-# consumed by the patched swift-rs (see [patch.crates-io] in Cargo.toml).
-SWIFT_RS_RUNTIME_ARCHIVE = "Tauri"
