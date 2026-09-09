@@ -124,6 +124,21 @@ bun run test           # vitest
 
 ## iOS setup
 
+### App icons
+
+`app-icon.png` is the 1024 × 1024 mobile master, adapted from the desktop's
+white and orange chevrons. It has an opaque, edge-to-edge dark background;
+iOS applies the corner mask itself. Keep the desktop border and shadow out
+of this image.
+
+Run `bun run icons` from `mobile/` after changing the master. It regenerates
+the committed iPhone, iPad, and App Store PNGs in `src-tauri/icons/ios/` and
+the desktop-preview icons. It also refreshes any existing local Xcode
+`AppIcon.appiconset` while preserving its manifest. New `ios:init` projects
+use the committed icons.
+
+### Initialize the project
+
 `src-tauri/gen/` (the generated Xcode project) is gitignored and never in the
 repo. Each machine creates its own on the first init, which needs Xcode and an
 Apple team ID.
