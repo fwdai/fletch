@@ -479,17 +479,20 @@ export const useStore = create<MobileState>()((set, get) => ({
   async send(agentId, text) {
     const trimmed = text.trim();
     if (!trimmed) return;
-    // Optimistic bubble, reconciled away when the canonical records land.
+    // Optimistic bubble, reconciled away when the canonical records land. It
+    // carries the turn id so the host's `turn:sent` echo (which every device
+    // mirrors, see events.ts) is recognized as ours and not drawn twice.
+    const turnId = newId();
     set((s) => ({
       logs: {
         ...s.logs,
-        [agentId]: [...(s.logs[agentId] ?? []), { kind: "queued_message", text: trimmed }],
+        [agentId]: [...(s.logs[agentId] ?? []), { kind: "queued_message", text: trimmed, turnId }],
       },
       busy: { ...s.busy, [agentId]: true },
     }));
     return guard(set, async () => {
       try {
-        await api.sendUserMessage(agentId, newId(), trimmed);
+        await api.sendUserMessage(agentId, turnId, trimmed);
       } catch (e) {
         set((s) => ({ busy: { ...s.busy, [agentId]: false } }));
         throw e;
@@ -501,18 +504,19 @@ export const useStore = create<MobileState>()((set, get) => ({
     return guard(set, async () => {
       const name = await api.allocateDraftName([]);
       const record = await api.spawnAgent(repoPath, provider, name, effort, model, base);
+      const turnId = newId();
       set((s) => ({
         workspace: s.workspace
           ? { ...s.workspace, agents: [record, ...s.workspace.agents] }
           : s.workspace,
-        logs: { ...s.logs, [record.id]: [{ kind: "user_message", text: prompt }] },
+        logs: { ...s.logs, [record.id]: [{ kind: "user_message", text: prompt, turnId }] },
         busy: { ...s.busy, [record.id]: true },
       }));
       get().closeSheet();
       get().push("agent", { agentId: record.id });
       try {
         await waitForSpawn(get, record.id);
-        await api.sendUserMessage(record.id, newId(), prompt);
+        await api.sendUserMessage(record.id, turnId, prompt);
       } catch (e) {
         // The agent exists on the host but never got the prompt: drop the
         // optimistic turn and the busy flag, and let the refreshed workspace

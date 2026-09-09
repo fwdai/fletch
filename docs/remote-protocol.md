@@ -462,13 +462,17 @@ authenticated connection:
 agent:event            agent:status           agent:task
 agent:branch           agent:model            agent:effort
 agent:repo_added       agent:git-action       session:records-appended
-turn:started           workspace:changed      pr:state_changed
-verify:report          publish:approval-requested
+turn:sent              turn:started           workspace:changed
+pr:state_changed       verify:report          publish:approval-requested
 ```
 
 `agent:event` is forwarded unfiltered, including the provider's
 `control_request` records: that is the only way a held tool-use approval
 reaches the phone, and `answer_tool_use` needs the `request_id` it carries.
+`turn:sent` carries every accepted user message (`turn_id`, `text`,
+`attachments`, `follow_up`) whichever client sent it, so a chat reads the same
+on every device; a client skips the one whose `turn_id` matches its own
+optimistic bubble.
 On the `error` status transition, `agent:status` must carry the real
 `last_error`, since both clients keep the previous error when it is null.
 

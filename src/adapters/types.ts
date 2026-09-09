@@ -17,6 +17,10 @@ export type ChatItem =
        *  flight (the live turn); both absent for turns with no timing row. */
       startedAt?: number;
       endedAt?: number;
+      /** Client turn id on a store-inserted optimistic bubble (the message that
+       *  opened a turn, before the transcript echoes it). Lets the `turn:sent`
+       *  mirror skip this client's own send. Never set on adapter-reduced items. */
+      turnId?: string;
     }
   // A follow-up the user sent mid-turn that hasn't landed in the transcript
   // yet: delivered live into the running turn (claude) or queued for the next

@@ -34,6 +34,7 @@ import type { DockerBuildEvent, PublishApproval } from "./types/sandbox";
 import type {
   SessionRecordsAppendedEvent,
   SessionSyncHealthEvent,
+  TurnSentEvent,
   TurnStartedEvent,
 } from "./types/session";
 import type { VerificationReportEvent } from "./types/verify";
@@ -225,6 +226,12 @@ export function onSessionRecordsAppended(
  *  detected, or a prior drift cleared. Emitted on change only. */
 export function onSessionSyncHealth(cb: (e: SessionSyncHealthEvent) => void): Promise<UnlistenFn> {
   return listen<SessionSyncHealthEvent>("session:sync-health", (event) => cb(event.payload));
+}
+
+/** Fires when the host accepts a user message for an agent, from any client.
+ *  Mirror it into the log unless it is this client's own send (same turn id). */
+export function onTurnSent(cb: (e: TurnSentEvent) => void): Promise<UnlistenFn> {
+  return listen<TurnSentEvent>("turn:sent", (event) => cb(event.payload));
 }
 
 /** Fires when a turn flips to Running, carrying the backend's own start

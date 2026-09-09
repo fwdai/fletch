@@ -15,7 +15,12 @@ import type {
   Workspace,
 } from "@desktop/api/types/agent";
 import type { PrStateChangedEvent } from "@desktop/api/types/pr";
-import type { SessionRecordsAppendedEvent, TurnStartedEvent } from "@desktop/api/types/session";
+import type {
+  SessionRecordsAppendedEvent,
+  TurnSentEvent,
+  TurnStartedEvent,
+} from "@desktop/api/types/session";
+import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import type { RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
@@ -93,6 +98,22 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
             ? { ...s.busy, [e.agent_id]: true }
             : { ...s.busy, [e.agent_id]: false },
         turnStartedAt,
+      };
+    });
+  });
+
+  // A user message the host accepted, from whichever device sent it. Mirror it
+  // so a prompt typed on the Mac shows here while its turn is still running;
+  // our own send is already in the log under its turnId (see `send`) and is
+  // skipped. A turn-opening message asserts busy the way `send` does.
+  on<TurnSentEvent>("turn:sent", (e) => {
+    set((s) => {
+      const prev = s.logs[e.agent_id] ?? [];
+      const next = mirrorSentTurn(prev, e);
+      if (next === prev) return {};
+      return {
+        logs: { ...s.logs, [e.agent_id]: next },
+        busy: e.follow_up ? s.busy : { ...s.busy, [e.agent_id]: true },
       };
     });
   });

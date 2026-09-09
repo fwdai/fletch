@@ -24,6 +24,7 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "agent:repo_added",
     "agent:git-action",
     "session:records-appended",
+    "turn:sent",
     "turn:started",
     "workspace:changed",
     "pr:state_changed",

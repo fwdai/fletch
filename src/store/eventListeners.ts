@@ -26,6 +26,7 @@ import {
   onSessionRecordsAppended,
   onSessionSyncHealth,
   onShellOutput,
+  onTurnSent,
   onTurnStarted,
   onVerificationReport,
   onWorkspaceChanged,
@@ -36,6 +37,7 @@ import {
   applyEvent,
   applyUserTurns,
   carryForwardStoreOnly,
+  mirrorSentTurn,
   needsSessionIdRefresh,
   persistLiveReasoning,
   persistLiveUsage,
@@ -444,6 +446,23 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
               ? { ...state.managedBusy, [e.agent_id]: false }
               : state.managedBusy,
         turnStartedAt,
+      };
+    });
+  });
+
+  // A user message the host accepted, from whichever client sent it — this
+  // window, a paired phone, a git-action trigger. Mirror it so the chat reads
+  // the same on every device; our own send is already in the log under its
+  // turnId (see workspace.sendMessage) and is skipped. A turn-opening message
+  // asserts busy the way the sender did; the Running status lands right after.
+  await onTurnSent((e) => {
+    set((state) => {
+      const prev = state.managedLogs[e.agent_id] ?? [];
+      const next = mirrorSentTurn(prev, e);
+      if (next === prev) return {};
+      return {
+        managedLogs: { ...state.managedLogs, [e.agent_id]: next },
+        ...(e.follow_up ? {} : { managedBusy: { ...state.managedBusy, [e.agent_id]: true } }),
       };
     });
   });
