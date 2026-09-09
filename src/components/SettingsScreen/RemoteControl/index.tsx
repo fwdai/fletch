@@ -88,6 +88,7 @@ export function RemoteControlPane() {
           <PairingCard
             invite={invite}
             hostId={status?.hostId}
+            lanOnly={status?.relay.state !== "connected"}
             onRegenerate={() => void beginPairing()}
             onDismiss={clearInvite}
           />

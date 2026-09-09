@@ -1305,6 +1305,14 @@ fn setup_tray(app: &tauri::AppHandle, status_slot: &TrayStatusSlot) -> tauri::Re
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // rustls has two crypto backends compiled in (see `rustls` in Cargo.toml)
+    // and panics on the first TLS client it is asked to build unless one has
+    // been installed as the process default. The relay link was that first
+    // client on autostart, and its task died with the panic — so the relay
+    // only ever came up when switched on by hand, after something else had
+    // installed a provider. `Err` means one is already installed; fine.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Error/crash reporting. The DSN is baked in at build time via
     // `QUORUM_SENTRY_DSN` (empty/unset → a disabled, no-op client, so dev and
     // unconfigured builds send nothing). This captures app health — Rust
