@@ -57,3 +57,20 @@ tokio = { version = "1", features = ["rt", "time"] }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# iOS 27 requires the UIScene lifecycle; only tauri's dev branch ships the
+# scene-capable tao 0.37. Drop this section on the next tauri release.
+[patch.crates-io]
+# 1.0.8 + upstream PR #80: exports the SwiftRs runtime symbols on Xcode 27
+# for the package named in SWIFT_RS_RUNTIME_ARCHIVE (set in the repo-root
+# .cargo/config.toml — cargo discovers config from its working directory, and
+# the tauri CLI runs cargo from mobile/, not from here).
+swift-rs = { git = "https://github.com/alchaplinsky/swift-rs", rev = "aaf38d45ab3a4b10a5af3a3dbc64424e998fae8c" }
+tauri = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
+tauri-build = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
+tauri-codegen = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
+tauri-macros = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
+tauri-plugin = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
+tauri-runtime = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
+tauri-runtime-wry = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
+tauri-utils = { git = "https://github.com/tauri-apps/tauri", rev = "7f2b7cb7921caf7d9370b7ebe99e3cf47dbcfed6" }
