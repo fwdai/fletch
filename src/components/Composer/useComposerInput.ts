@@ -10,8 +10,9 @@ import { triggerQueryAt } from "./autocomplete/triggers";
 import { useAutocomplete } from "./autocomplete/useAutocomplete";
 import { useFileDrop } from "./useFileDrop";
 
-/** Max grown height of the input, in px, before it scrolls internally. */
-const MAX_HEIGHT = 240;
+/** Max grown height of the input, in px, before it scrolls internally. Exported
+ *  for the frame, which sizes the box to the dictation ghost as well. */
+export const MAX_HEIGHT = 240;
 
 export interface ComposerInputConfig {
   /** Provider id driving the `/` slash-command source (claude has commands;
@@ -35,8 +36,13 @@ export interface ComposerInputConfig {
   /** Text injected from elsewhere; appended to the draft, then consumed. */
   seed?: string;
   onSeedConsumed?: () => void;
-  /** Fired on Enter without Shift, after the autocomplete menu declines it. */
-  onEnter: () => void;
+  /** Fired on Enter without Shift, after the autocomplete menu declines it
+   *  (and after `onKeyDown`, if that didn't claim the key). */
+  onEnter?: () => void;
+  /** First look at every key the autocomplete menu declines. Return true to
+   *  claim it — the agent composer routes Enter, Escape and ⌘⇧D through here
+   *  because what they do depends on dictation and the agent's state. */
+  onKeyDown?: (e: React.KeyboardEvent) => boolean;
 }
 
 /** Resize a textarea to fit its content, capped at `MAX_HEIGHT`. Exported for
@@ -52,7 +58,7 @@ export function grow(el: HTMLTextAreaElement) {
  *  workflow composer build their own footer + submit on top of this, so the
  *  input behaves identically everywhere. */
 export function useComposerInput(cfg: ComposerInputConfig) {
-  const { draftKey, autoFocus, seed, onSeedConsumed, onEnter } = cfg;
+  const { draftKey, autoFocus, seed, onSeedConsumed, onEnter, onKeyDown } = cfg;
   const setComposerDraft = useAppStore((s) => s.setComposerDraft);
 
   // Read the restored draft once at mount via getState (not a subscription) so
@@ -200,9 +206,10 @@ export function useComposerInput(cfg: ComposerInputConfig) {
         setCaret(e.currentTarget.selectionStart ?? 0),
       onKeyDown: (e: React.KeyboardEvent) => {
         if (autocomplete.onKeyDown(e)) return;
+        if (onKeyDown?.(e)) return;
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
-          onEnter();
+          onEnter?.();
         }
       },
     },

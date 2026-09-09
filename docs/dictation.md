@@ -1,9 +1,49 @@
 # Voice dictation
 
-The mic button in the agent composer (beside the paperclip) streams a speech
-recognizer into the prompt box. This document is the part that isn't obvious
-from the code: which platforms have it, what the OS demands before it works,
-and where your audio goes.
+The agent composer's primary control — the pill at the far right of its footer,
+which is the microphone when the box is empty, send once there is a draft, and
+stop while the agent runs — streams a speech recognizer into the prompt box.
+This document is the part that isn't obvious from the code: which platforms
+have it, what the OS demands before it works, and where your audio goes.
+
+## The control
+
+`src/components/Composer/PrimaryControl/` renders one pill whose state is
+derived, never stored (`primaryState`): `error` outranks `listening`,
+`transcribing`, `running`, `draft`, `unavailable`, `empty`, in that order. The
+mic is a separate button on the same slot that slides left as a neutral
+secondary once there is a draft, and collapses while listening or running.
+Widths per state, tones, and timings follow the design spec; the CSS is the
+source of those numbers.
+
+Keys, all handled on the textarea (`Composer/index.tsx`):
+
+| Key | empty | draft | listening | agent running |
+| --- | --- | --- | --- | --- |
+| ↵ | — | send | stop & transcribe | — (the draft waits) |
+| ⌘↵ | — | send | stop & transcribe | send mid-turn |
+| ⇧↵ | newline | newline | newline | newline |
+| ⌘⇧D | start dictation | start dictation | stop & transcribe | — |
+| esc | — | — | cancel, discard interim | stop agent |
+
+Nothing is ever sent by voice alone: speech lands as editable text and waits
+for ↵.
+
+While the mic is open the recognizer's running transcript is **not** written
+into the textarea. It is shown by `InterimGhost`, a layer over the textarea
+with identical metrics (the textarea's own text repeated invisibly, then the
+interim words in italic with a pulsing dot), so undo history stays clean and
+esc is a no-op on the draft. The final result is spliced onto whatever the box
+holds when it arrives (`spliceTranscript`), the caret moves to its end, and the
+new span carries a short wash. A session that ends without a final result
+(Apple's flush deadline, an error mid-utterance) commits what was last heard.
+
+A failed transcription turns the pill danger-tinted with a retry glyph for
+2.6 s (click retries; typing dismisses it sooner). A denied microphone grant
+shows an outlined mic-off pill whose click opens System Settings › Privacy &
+Security › Microphone — the shell plugin's open scope in `tauri.conf.json`
+admits that URL scheme for this. Where no engine exists at all the mic is never
+offered and the empty slot degrades to a plain, disabled send arrow.
 
 ## Platform support
 
@@ -15,7 +55,8 @@ through a small Swift bridge compiled into the binary — see
 a stub that reports `supported: false`, and the composer hides the button
 entirely rather than offer one that can only fail. A Mac below 26 gets the same
 answer from the real implementation, as does a Mac whose language Apple has no
-model for.
+model for. (`supported: false` is what degrades the control to a send arrow —
+see [The control](#the-control).)
 
 macOS additionally has a local whisper.cpp engine the user can opt into; see
 [Local Whisper engine](#local-whisper-engine-opt-in) below. It has no macOS 26
@@ -25,7 +66,8 @@ The flow, end to end:
 
 | Layer | File |
 | --- | --- |
-| Button | `src/components/Composer/dictation/DictationButton.tsx` |
+| Control | `src/components/Composer/PrimaryControl/` (state derivation, pill, level bars, running trace) |
+| Interim text | `src/components/Composer/InterimGhost.tsx` |
 | Session state | `src/components/Composer/dictation/useDictation.ts` |
 | IPC | `src/api/domains/dictation.ts` → `dictation_availability` / `dictation_start` / `dictation_stop` |
 | Events | `src/api/events.ts` — `dictation:transcript`, `dictation:state`, `dictation:level` |
@@ -53,8 +95,9 @@ always `not_determined`, kept only so the wire shape didn't change. The button
 ignores it.
 
 A denied microphone grant can only be undone in System Settings › Privacy &
-Security, so the button shows a slashed mic and says so. To get the first-run
-prompt back while testing:
+Security, so the control shows an outlined mic-off pill whose tooltip says so
+and whose click opens that pane. To get the first-run prompt back while
+testing:
 
 ```sh
 tccutil reset Microphone com.fletch.desktop
@@ -417,8 +460,8 @@ nothing to say until the whole clip is in. A stop on the local engine therefore
 closes the mic, emits a new `dictation:state` of **`transcribing`**, runs the
 model, and only then emits the one final transcript and `stopped` (or `error`
 with a readable message). `transcribing` is not terminal: `useDictation` treats
-it as "still stopping, not listening" and keeps the control held, and the button
-swaps the mic for a spinner and says "Transcribing…".
+it as its `transcribing` phase and the pill shows the "Transcribing…" label —
+the same state Apple's post-stop flush shows, just longer.
 
 The weights are hundreds of megabytes and take long enough to load to be felt
 between the stop and the text, so a loaded `WhisperContext` is cached and shared

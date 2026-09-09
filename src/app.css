@@ -22,6 +22,7 @@
 @import "./components/Workspace/Chat.css";
 @import "./components/Workspace/messages/UserInput/UserInput.css";
 @import "./components/Composer/Composer.css";
+@import "./components/Composer/PrimaryControl/PrimaryControl.css";
 @import "./styles/shared/dropdown.css";
 @import "./components/Composer/ModelPicker.css";
 @import "./components/RightPanel/RightPanel.css";

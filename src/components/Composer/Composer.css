@@ -135,6 +135,9 @@
   background: var(--hover);
   color: var(--fg-0);
 }
+.cmp-field {
+  position: relative;
+}
 .composer-input {
   width: 100%;
   padding: 12px 14px 8px;
@@ -149,6 +152,85 @@
 }
 .composer-input:disabled {
   opacity: 0.55;
+}
+/* Dictation live: the frame glows accent regardless of focus, and the
+   placeholder yields to the ghost's "Listening…". */
+.composer.is-listening {
+  border-color: color-mix(in oklch, var(--accent), transparent 30%);
+  box-shadow:
+    var(--shadow-2),
+    0 0 0 4px color-mix(in oklch, var(--accent), transparent 88%);
+}
+.composer.is-listening .composer-input::placeholder {
+  color: transparent;
+}
+/* The dictation ghost: a layer with the textarea's exact metrics, its own text
+   repeated invisibly so the interim transcript lands right after the caret. */
+.cmp-ghost-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}
+.cmp-ghost {
+  min-height: 100%;
+  padding: 12px 14px 8px;
+  line-height: var(--lh-normal);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  color: transparent;
+}
+.cmp-ghost .interim {
+  color: var(--fg-2);
+  font-style: italic;
+}
+.cmp-ghost .interim::after {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 5px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--accent);
+  animation: ghostPulse 1s var(--ease) infinite;
+}
+@keyframes ghostPulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.cmp-ghost .listen-hint {
+  color: var(--fg-3);
+  font-style: italic;
+}
+/* The span a commit just inserted washes accent-soft and fades, so the eye can
+   find what arrived. */
+.cmp-ghost .fresh {
+  border-radius: 3px;
+  animation: freshWash 1.1s var(--ease) both;
+}
+@keyframes freshWash {
+  0% {
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  100% {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cmp-ghost .interim::after {
+    animation: none;
+  }
 }
 .composer-foot {
   gap: 6px;
@@ -183,32 +265,7 @@
   color: var(--accent);
   background: color-mix(in oklch, var(--accent), transparent 90%);
 }
-/* Dictation running. Tinted like the pressed state above, plus a slow breathe
-   on the glyph — an open mic has to be unmistakable from across the room, but
-   this sits next to a text box, so nothing louder than opacity. */
-.composer-foot .composer-action.is-listening {
-  color: var(--accent);
-  background: color-mix(in oklch, var(--accent), transparent 88%);
-}
-.composer-foot .composer-action.is-listening svg {
-  animation: micBreathe 1.6s var(--ease) infinite;
-}
-@keyframes micBreathe {
-  0%,
-  100% {
-    opacity: 0.5;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  /* The tint alone still reads as on. */
-  .composer-foot .composer-action.is-listening svg {
-    animation: none;
-  }
-}
-/* Hairline between the insert actions and the usage/send group. */
+/* Hairline between the insert actions and the usage/primary-control group. */
 .composer-foot-sep {
   width: 1px;
   height: 16px;
@@ -273,6 +330,8 @@
   color: var(--fg-2);
 }
 
+/* The plain send button of the workflow and roadmap composers. The agent
+   composer's slot is the primary control (PrimaryControl.css). */
 .send {
   width: 28px;
   height: 28px;
