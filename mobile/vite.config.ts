@@ -7,6 +7,11 @@ const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
   plugins: [tsconfigPaths(), react()],
+  build: {
+    // The dictation AudioWorklet module is loaded by URL. Small assets are
+    // otherwise inlined as `data:` URLs, which `script-src 'self'` refuses.
+    assetsInlineLimit: (file) => (file.endsWith("worklet.js") ? false : undefined),
+  },
   resolve: {
     // vite-tsconfig-paths only rewrites imports inside this project, and the
     // reused desktop files (../src/**) are written against the desktop's own

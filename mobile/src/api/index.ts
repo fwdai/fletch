@@ -111,7 +111,25 @@ export function createApi(client: RemoteClient) {
      *  `token: null` on its own. */
     registerPush: (token: string | null, environment?: "sandbox" | "production") =>
       call<null>("register_push", token === null ? { token: null } : { token, environment }),
+
+    /** Remote-only (docs/remote-protocol.md, "Dictation"): the phone captures,
+     *  the Mac transcribes with its local whisper engine. `pcm` is base64 of
+     *  16-bit little-endian mono samples at `rate` Hz; the transcript is the
+     *  reply to `dictationEnd`. */
+    dictationStatus: () => call<DictationStatus>("dictation_status"),
+    dictationBegin: () => call<{ session: string }>("dictation_begin"),
+    dictationAudio: (session: string, rate: number, pcm: string) =>
+      call<null>("dictation_audio", { session, rate, pcm }),
+    dictationEnd: (session: string) => call<{ text: string }>("dictation_end", { session }),
+    dictationCancel: (session: string) => call<null>("dictation_cancel", { session }),
   };
+}
+
+/** Whether the Mac can transcribe for this phone right now. `reason` is shown
+ *  as-is when it can't (the local engine is off, or its model isn't downloaded). */
+export interface DictationStatus {
+  available: boolean;
+  reason: string | null;
 }
 
 export type Api = ReturnType<typeof createApi>;

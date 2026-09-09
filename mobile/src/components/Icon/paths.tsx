@@ -264,6 +264,22 @@ export const ICON_PATHS = {
       <circle cx="11.5" cy="8" r="1" fill="currentColor" stroke="none" />
     </>
   ),
+  mic: (
+    <>
+      <rect x="6" y="1.5" width="4" height="8" rx="2" />
+      <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0" />
+      <path d="M8 12v2.5M5.5 14.5h5" />
+    </>
+  ),
+  micOff: (
+    <>
+      <path d="M6 6v1.5a2 2 0 0 0 3.4 1.4" />
+      <path d="M10 7.5V3.5a2 2 0 0 0-4 0v.5" />
+      <path d="M3.5 7.5a4.5 4.5 0 0 0 7.2 3.6M12.5 7.5a4.5 4.5 0 0 1-.4 1.8" />
+      <path d="M8 12v2.5M5.5 14.5h5" />
+      <path d="M2.5 2.5l11 11" />
+    </>
+  ),
 } satisfies Record<string, ReactElement>;
 
 export type IconName = keyof typeof ICON_PATHS;
