@@ -352,7 +352,7 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 32 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 37 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -389,6 +389,11 @@ fn allowlist_matches_the_protocol_table() {
         "clone_repo",
         "gh_status",
         "gh_repo_list",
+        "dictation_status",
+        "dictation_begin",
+        "dictation_audio",
+        "dictation_end",
+        "dictation_cancel",
         "register_push",
     ];
     assert_eq!(

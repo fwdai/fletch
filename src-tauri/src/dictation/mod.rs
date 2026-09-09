@@ -38,6 +38,17 @@ mod capture;
 // Compiles everywhere (the catalog and download are plain Rust); the engine
 // itself is gated inside. `pub` so `lib.rs` can seed the models root.
 pub mod whisper;
+// A paired phone's dictation: it captures, this Mac transcribes. Compiles
+// everywhere so the remote dispatcher can name the ops; the transcription
+// itself is macOS-only inside, like the engine.
+pub mod remote;
+
+/// How much audio one session may capture, whichever microphone it comes from.
+/// A dictation is a sentence or two; this is the bound that keeps a mic left
+/// open by a forgotten window (or a phone that stopped talking to us) from
+/// growing the buffer — and the transcription that follows — without limit.
+/// Audio past it is dropped, which truncates the transcript rather than failing.
+pub(super) const MAX_CAPTURE_SECS: f64 = 300.0;
 
 /// A TCC (privacy) permission state, for either the microphone or speech
 /// recognition. Mirrors both `SFSpeechRecognizerAuthorizationStatus` and

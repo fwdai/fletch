@@ -34,11 +34,7 @@ use super::apple::Tap;
 use super::whisper::engine;
 use crate::error::{Error, Result};
 
-/// How much audio one session may capture. A dictation is a sentence or two;
-/// this is the bound that keeps a mic left open by a forgotten window from
-/// growing the buffer — and the transcription that follows — without limit.
-/// Audio past it is dropped, which truncates the transcript rather than failing.
-const MAX_CAPTURE_SECS: f64 = 300.0;
+use super::MAX_CAPTURE_SECS;
 
 /// How long a pause has to last, once something has been said, for the session
 /// to end itself — long enough to think mid-sentence, short enough that the
@@ -261,8 +257,9 @@ const RESAMPLE_SLACK_FRAMES: u32 = 4096;
 ///
 /// Every ObjC handle here is created, used and dropped inside this call, so
 /// nothing is shared across threads and nothing is live across an `.await` —
-/// the same rule the recognizer path follows.
-fn resample(rate: f64, samples: Vec<f32>) -> Result<Vec<f32>> {
+/// the same rule the recognizer path follows. Shared with `super::remote`,
+/// whose audio arrives at whatever rate the phone captured.
+pub(super) fn resample(rate: f64, samples: Vec<f32>) -> Result<Vec<f32>> {
     let target = f64::from(engine::SAMPLE_RATE);
     if rate == target || samples.is_empty() {
         return Ok(samples);
