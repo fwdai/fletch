@@ -211,6 +211,51 @@ describe("spawn flow", () => {
     expect(fresh?.name).toBeTruthy();
   });
 
+  it("keeps the live log when the agent is re-opened mid-turn", async () => {
+    await state().spawn({
+      repoPath: state().workspace?.projects[0].path ?? "",
+      provider: "claude",
+      model: "claude-opus-5",
+      effort: "high",
+      base: "main",
+      prompt: "Wire the dictation engine picker",
+      name: "lofoten",
+    });
+    const id = state().workspace?.agents[0]?.id ?? "";
+    // A tool call has streamed in and the turn is still running.
+    await vi.waitFor(
+      () => {
+        expect(agentOf(state().workspace, id)?.status).toBe("running");
+        expect((state().logs[id] ?? []).some((i) => i.kind === "tool_call")).toBe(true);
+      },
+      { timeout: 10_000 },
+    );
+    const live = state().logs[id] ?? [];
+    // The real host ingests a turn's transcript only at turn end, so mid-turn its
+    // records stop at the prompt. The mock persists every step, so hold it back.
+    const records = await api.readSessionRecords(id);
+    const read = vi.spyOn(api, "readSessionRecords").mockResolvedValue(records.slice(0, 1));
+    try {
+      // Back to the list, then into the agent again: what openAgent runs.
+      state().pop();
+      await state().loadAgent(id);
+    } finally {
+      read.mockRestore();
+    }
+    const after = state().logs[id] ?? [];
+    expect(after.length).toBeGreaterThanOrEqual(live.length);
+    for (const item of live) expect(after).toContainEqual(item);
+
+    // Once the turn ends the host's records are complete and authoritative:
+    // re-opening then does rebuild from them.
+    await vi.waitFor(() => expect(agentOf(state().workspace, id)?.status).toBe("idle"), {
+      timeout: 10_000,
+    });
+    useStore.setState((s) => ({ logs: { ...s.logs, [id]: (s.logs[id] ?? []).slice(0, 1) } }));
+    await state().loadAgent(id);
+    expect((state().logs[id] ?? []).some((i) => i.kind === "tool_call")).toBe(true);
+  }, 30_000);
+
   it("rejects and rolls back when the first message fails, so the prompt can be retried", async () => {
     const send = vi
       .spyOn(api, "sendUserMessage")
