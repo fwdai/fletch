@@ -167,10 +167,13 @@ repo); anyone can run their own and point both apps at it.
   from the relay's side; the host's own `4004` goes out first over the virtual
   connections, as on the LAN.
 - **Phone side.** Connection candidates in order: `addr` over `ws://` with a
-  3 s open timeout, then `wss://<relay>/v1/device/<hostId>` with no extra
-  timeout (it is the last resort; the platform's TCP/TLS timeout applies). The
-  relay candidate exists only when the phone holds both the relay URL and the
-  host key, since the key is the route. A host-key mismatch on either path
+  3 s open timeout, then `wss://<relay>/v1/device/<hostId>` with a 15 s one.
+  Both budgets cover the dial and the Noise handshake together; the first
+  frame after the handshake (`pair` or `hello`, and the snapshot request that
+  follows a `pair`) has its own 15 s bound, so a relay that accepted the
+  socket for a Mac that has silently gone away turns into an error rather than
+  an attempt that never ends. The relay candidate exists only when the phone
+  holds both the relay URL and the host key, since the key is the route. A host-key mismatch on either path
   stops the list at once and is not retried: an impostor must not be able to
   steer the phone onto the other path. The relay URL arrives in the pairing
   link and can be added or changed later in the phone's host sheet without

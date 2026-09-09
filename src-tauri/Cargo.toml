@@ -83,6 +83,14 @@ tokio-tungstenite = { version = "0.27", default-features = false, features = [
   "connect",
   "rustls-tls-webpki-roots",
 ] }
+# rustls ends up with *both* crypto backends enabled in this tree (reqwest 0.12
+# via sentry wants aws-lc-rs, reqwest 0.13 wants ring), and with two it refuses
+# to pick: the first `ClientConfig::builder()` panics unless a process-level
+# provider was installed beforehand. The relay link was that first caller on
+# autostart, and its task died with the panic. `run()` installs `ring` before
+# anything dials; this direct dependency is only what gives `run()` the path to
+# name it — it enables nothing that was not already on.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # The remote secure channel (`remote/secure.rs`):
 # `Noise_XX_25519_ChaChaPoly_BLAKE2s`, the pattern the protocol doc fixes.
 snow = "0.10"

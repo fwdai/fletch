@@ -34,11 +34,15 @@ function useCountdown(iso: string): number {
 export function PairingCard({
   invite,
   hostId,
+  lanOnly,
   onRegenerate,
   onDismiss,
 }: {
   invite: PairingInvite;
   hostId?: string;
+  /** No relay link is up, so the link carries no relay and the phone can
+   *  only reach this Mac from the same network. */
+  lanOnly?: boolean;
   onRegenerate: () => void;
   onDismiss: () => void;
 }) {
@@ -55,6 +59,13 @@ export function PairingCard({
             ? "This code has expired. Generate a new one."
             : "Enter this code in Fletch on your phone, or scan the code."}
         </div>
+        {!expired && lanOnly && (
+          <div className="set-inline-warn text-sm">
+            The relay is not connected, so this pairing only works while the phone is on the same
+            network as this Mac. Turn on “Reach this Mac from anywhere” and generate a new code to
+            pair from anywhere.
+          </div>
+        )}
         <div className="set-pair-meta text-xs flex-center">
           <span className={`set-pair-clock mono ${left <= 30 ? "urgent" : ""}`}>
             {expired ? "expired" : `expires in ${mmss}`}

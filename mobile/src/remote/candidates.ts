@@ -10,11 +10,17 @@ import type { HostTarget, Via } from "./types";
  *  is enforced by the transport, not by a timer on this side. */
 export const LAN_OPEN_TIMEOUT_MS = 3000;
 
+/** The relay's open budget: a TLS dial across a cellular network plus the
+ *  Noise handshake through the relay to the Mac. Longer than the LAN's because
+ *  there is nothing after it to move on to, but bounded all the same — a relay
+ *  that accepted the socket for a Mac that has silently gone away never
+ *  answers, and the user has to be told rather than left waiting. */
+export const RELAY_OPEN_TIMEOUT_MS = 15_000;
+
 export interface Candidate {
   url: string;
   via: Via;
-  /** Absent means "no bound" — the relay is the last resort, so waiting on it
-   *  is waiting on the only path left. */
+  /** Bound on the dial plus handshake, enforced by the transport. */
   timeoutMs?: number;
 }
 
@@ -24,7 +30,11 @@ export interface Candidate {
 export function candidatesFor(target: HostTarget, lanTimeoutMs = LAN_OPEN_TIMEOUT_MS): Candidate[] {
   const list: Candidate[] = [{ url: wsUrl(target), via: "lan", timeoutMs: lanTimeoutMs }];
   if (target.relay && target.hostKey) {
-    list.push({ url: relayDeviceUrl(target.relay, target.hostKey), via: "relay" });
+    list.push({
+      url: relayDeviceUrl(target.relay, target.hostKey),
+      via: "relay",
+      timeoutMs: RELAY_OPEN_TIMEOUT_MS,
+    });
   }
   return list;
 }

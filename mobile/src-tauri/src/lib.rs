@@ -34,6 +34,12 @@ fn own_the_whole_screen(webview: tauri::webview::PlatformWebview) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The TLS backend for the relay's `wss://` dial (see `rustls` in
+    // Cargo.toml). Installed here, before any command can run, so the choice
+    // is made once and never at the first dial. `Err` means one is already
+    // installed, which is fine.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
@@ -58,4 +64,16 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running fletch mobile");
+}
+
+#[cfg(test)]
+mod tests {
+    /// The relay dial builds a rustls client the moment it sees `wss://`. With
+    /// no crypto backend compiled in — or two — rustls panics right there,
+    /// inside a Tauri command, which the webview sees as an `invoke` that never
+    /// resolves. This is the call that panicked; it must not.
+    #[test]
+    fn rustls_can_pick_its_crypto_backend() {
+        let _ = rustls::ClientConfig::builder();
+    }
 }

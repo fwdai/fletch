@@ -3,7 +3,12 @@ import { mockSocket } from "./mock";
 import type { DeviceInfo, RemoteClient } from "./types";
 import { openWebSocket } from "./ws";
 
-export { type Candidate, candidatesFor, LAN_OPEN_TIMEOUT_MS } from "./candidates";
+export {
+  type Candidate,
+  candidatesFor,
+  LAN_OPEN_TIMEOUT_MS,
+  RELAY_OPEN_TIMEOUT_MS,
+} from "./candidates";
 export { ProtocolClient } from "./client";
 export { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
 export * from "./types";

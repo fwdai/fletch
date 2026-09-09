@@ -32,6 +32,14 @@ import {
  *  or the host's remote-access switch turned back on. */
 const FATAL_CLOSE = new Set([CLOSE_UNAUTHENTICATED, CLOSE_REMOTE_DISABLED]);
 
+/** Bound on the first frames after the socket opens: `pair` or `hello`, and
+ *  the snapshot that follows a `pair`. The transport's open budget stops once
+ *  the Noise handshake is done, and a relay that has accepted the socket for a
+ *  Mac that has gone quiet forwards the request into nothing — so without a
+ *  bound of its own the attempt would sit in `pairing` for ever. */
+export const HANDSHAKE_TIMEOUT_MS = 15_000;
+const HANDSHAKE_TIMED_OUT = "The Mac did not answer. Check that it is awake and connected.";
+
 interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
@@ -232,7 +240,11 @@ export class ProtocolClient implements RemoteClient {
         target = { ...target, hostKey: socket.hostKey };
         this._target = target;
       }
-      return await this.handshake(target);
+      return await this.withTimeout(
+        this.handshake(target),
+        HANDSHAKE_TIMEOUT_MS,
+        HANDSHAKE_TIMED_OUT,
+      );
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       // A pairing code is single use and short lived, so a refused pairing
@@ -240,9 +252,34 @@ export class ProtocolClient implements RemoteClient {
       // is never worth retrying either: only re-pairing can clear it.
       const retryable = !this._target?.pairingToken && !message.includes(HOST_KEY_MISMATCH);
       const shown = reportable(message);
-      if (this.current(gen)) this.fail(shown, retryable);
+      if (this.current(gen)) {
+        // A socket whose handshake did not complete is no use, and after a
+        // timeout it is still open with the host yet to answer.
+        const socket = this.socket;
+        this.socket = null;
+        socket?.close();
+        this.fail(shown, retryable);
+      }
       throw shown === message && e instanceof Error ? e : new Error(shown);
     }
+  }
+
+  /** `promise`, or `message` as an error once `ms` have passed. Runs on the
+   *  client's injectable timer so tests can drive it. */
+  private withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const handle = this.setTimer(() => reject(new Error(message)), ms);
+      promise.then(
+        (value) => {
+          this.clearTimer(handle);
+          resolve(value);
+        },
+        (error: unknown) => {
+          this.clearTimer(handle);
+          reject(error);
+        },
+      );
+    });
   }
 
   private current(gen: number): boolean {

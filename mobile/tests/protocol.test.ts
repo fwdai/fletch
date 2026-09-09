@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { backoffDelay } from "../src/remote/backoff";
-import { candidatesFor, LAN_OPEN_TIMEOUT_MS } from "../src/remote/candidates";
-import { ProtocolClient } from "../src/remote/client";
+import {
+  candidatesFor,
+  LAN_OPEN_TIMEOUT_MS,
+  RELAY_OPEN_TIMEOUT_MS,
+} from "../src/remote/candidates";
+import { HANDSHAKE_TIMEOUT_MS, ProtocolClient } from "../src/remote/client";
 import { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "../src/remote/pairing";
 import type { Socket, SocketHandlers, SocketOptions } from "../src/remote/socket";
 import {
@@ -76,6 +80,27 @@ function fakeSocket(hostKey = HOST_KEY, unreachable: Record<string, "reject" | "
     },
     reply: (frame: unknown) => handlers?.onMessage(JSON.stringify(frame)),
     hangup: (code: number) => handlers?.onClose(code),
+  };
+}
+
+/** The client's timers, captured instead of scheduled: what it has set and
+ *  not yet cleared. A handle is the entry itself, so clearing removes exactly
+ *  that one — the handshake bound, cleared on every answered `hello`, must not
+ *  show up next to the retry a test is looking for. */
+function captureTimers() {
+  type Timer = { fn: () => void; ms: number };
+  const timers: Timer[] = [];
+  return {
+    timers,
+    setTimer: (fn: () => void, ms: number): unknown => {
+      const timer: Timer = { fn, ms };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (handle: unknown) => {
+      const at = timers.indexOf(handle as Timer);
+      if (at >= 0) timers.splice(at, 1);
+    },
   };
 }
 
@@ -169,12 +194,16 @@ describe("pairing URL", () => {
 });
 
 describe("connection candidates", () => {
-  it("dials the LAN address first, with a 3 s open budget, then the relay", () => {
+  it("dials the LAN address first, with a 3 s open budget, then the relay with a longer one", () => {
     expect(
       candidatesFor({ host: "h", port: 1, hostKey: HOST_KEY, relay: "wss://relay.test" }),
     ).toEqual([
       { url: "ws://h:1/ws", via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS },
-      { url: `wss://relay.test/v1/device/${HOST_KEY}`, via: "relay" },
+      {
+        url: `wss://relay.test/v1/device/${HOST_KEY}`,
+        via: "relay",
+        timeoutMs: RELAY_OPEN_TIMEOUT_MS,
+      },
     ]);
   });
 
@@ -295,15 +324,12 @@ describe("envelope", () => {
 
   it("refuses a host presenting a key other than the pinned one, and never retries", async () => {
     const fake = fakeSocket("hostkey-bbb");
-    const timers: { fn: () => void; ms: number }[] = [];
+    const { timers, setTimer, clearTimer } = captureTimers();
     const client = new ProtocolClient({
       openSocket: fake.factory,
       device: DEVICE,
-      setTimer: (fn, ms) => {
-        timers.push({ fn, ms });
-        return timers.length;
-      },
-      clearTimer: () => {},
+      setTimer,
+      clearTimer,
     });
     await expect(client.connect({ host: "h", port: 1, hostKey: HOST_KEY })).rejects.toThrow(
       HOST_KEY_MISMATCH_REASON,
@@ -320,7 +346,7 @@ describe("envelope", () => {
 describe("connection lifecycle", () => {
   /** A client whose socket never opens, plus the timers it schedules. */
   function unreachable() {
-    const timers: { fn: () => void; ms: number }[] = [];
+    const { timers, setTimer, clearTimer } = captureTimers();
     let attempts = 0;
     const client = new ProtocolClient({
       openSocket: async () => {
@@ -328,11 +354,8 @@ describe("connection lifecycle", () => {
         throw new Error("Cannot reach ws://h:1/ws");
       },
       device: DEVICE,
-      setTimer: (fn, ms) => {
-        timers.push({ fn, ms });
-        return timers.length;
-      },
-      clearTimer: () => {},
+      setTimer,
+      clearTimer,
     });
     return { client, timers, attempts: () => attempts };
   }
@@ -361,19 +384,47 @@ describe("connection lifecycle", () => {
     expect(timers).toHaveLength(0);
   });
 
+  it("gives up on a pairing the host never answers, instead of waiting for ever", async () => {
+    // The relay accepts a device link whenever it believes a host link is up,
+    // and a Mac that went to sleep leaves it believing that: the socket opens,
+    // `pair` goes out, and nothing ever comes back.
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const pairing = client.connect({
+      host: "h",
+      port: 1,
+      hostKey: HOST_KEY,
+      pairingToken: "K7PQ2M9X",
+    });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    expect(fake.sent[0].op).toBe("pair");
+    expect(client.state).toBe("pairing");
+    expect(timers.map((t) => t.ms)).toEqual([HANDSHAKE_TIMEOUT_MS]);
+
+    timers[0].fn();
+    await expect(pairing).rejects.toThrow("did not answer");
+    // Back to a state the Pair button can act on, and no retry: the code is
+    // single use, so the next attempt is the user's.
+    expect(client.state).toBe("error");
+    expect(timers.filter((t) => t.ms !== HANDSHAKE_TIMEOUT_MS)).toHaveLength(0);
+  });
+
   it("ignores a close from a socket it has already replaced", async () => {
     const first = fakeSocket();
     const second = fakeSocket();
-    const timers: { fn: () => void; ms: number }[] = [];
+    const { timers, setTimer, clearTimer } = captureTimers();
     let opens = 0;
     const client = new ProtocolClient({
       openSocket: (url, h) => (opens++ === 0 ? first.factory(url, h) : second.factory(url, h)),
       device: DEVICE,
-      setTimer: (fn, ms) => {
-        timers.push({ fn, ms });
-        return timers.length;
-      },
-      clearTimer: () => {},
+      setTimer,
+      clearTimer,
     });
     const stale = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(first.sent.length).toBe(1));
@@ -382,28 +433,28 @@ describe("connection lifecycle", () => {
     await expect(stale).rejects.toThrow();
     await vi.waitFor(() => expect(second.sent.length).toBe(1));
 
-    // Socket one's close finally arrives. It must not tear down socket two.
+    // Socket one's close finally arrives. It must not tear down socket two,
+    // nor schedule a retry: the only timer live is socket two's handshake
+    // bound (socket one's was cleared when its handshake was abandoned).
     first.hangup(1006);
-    expect(timers).toHaveLength(0);
+    expect(timers.map((t) => t.ms)).toEqual([HANDSHAKE_TIMEOUT_MS]);
     expect(client.state).toBe("connecting");
     second.reply(helloOk(second.sent[0].id as string));
     await expect(live).resolves.toMatchObject({ host: { name: "Mac" } });
     expect(client.state).toBe("connected");
+    expect(timers).toHaveLength(0);
   });
 });
 
 describe("reconnect", () => {
   it("retries with backoff after an unexpected close and re-sends hello", async () => {
     const fake = fakeSocket();
-    const timers: { fn: () => void; ms: number }[] = [];
+    const { timers, setTimer, clearTimer } = captureTimers();
     const client = new ProtocolClient({
       openSocket: fake.factory,
       device: DEVICE,
-      setTimer: (fn, ms) => {
-        timers.push({ fn, ms });
-        return timers.length;
-      },
-      clearTimer: () => {},
+      setTimer,
+      clearTimer,
     });
     const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
@@ -427,15 +478,12 @@ describe("reconnect", () => {
 
   it("retries a relay 4404 and says what it means: the Mac is offline", async () => {
     const fake = fakeSocket();
-    const timers: { fn: () => void; ms: number }[] = [];
+    const { timers, setTimer, clearTimer } = captureTimers();
     const client = new ProtocolClient({
       openSocket: fake.factory,
       device: DEVICE,
-      setTimer: (fn, ms) => {
-        timers.push({ fn, ms });
-        return timers.length;
-      },
-      clearTimer: () => {},
+      setTimer,
+      clearTimer,
     });
     const reported: (string | undefined)[] = [];
     client.onState((_state, error) => reported.push(error));
@@ -457,15 +505,12 @@ describe("reconnect", () => {
 
   it("does not retry after a 4003 close — the device has to be paired again", async () => {
     const fake = fakeSocket();
-    const timers: { fn: () => void; ms: number }[] = [];
+    const { timers, setTimer, clearTimer } = captureTimers();
     const client = new ProtocolClient({
       openSocket: fake.factory,
       device: DEVICE,
-      setTimer: (fn, ms) => {
-        timers.push({ fn, ms });
-        return timers.length;
-      },
-      clearTimer: () => {},
+      setTimer,
+      clearTimer,
     });
     const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
@@ -504,16 +549,13 @@ describe("relay fallback", () => {
   /** A client with a tiny open budget and captured timers, so a hanging dial
    *  and a scheduled retry are both observable without real waiting. */
   function relayClient(fake: ReturnType<typeof fakeSocket>) {
-    const timers: { fn: () => void; ms: number }[] = [];
+    const { timers, setTimer, clearTimer } = captureTimers();
     const client = new ProtocolClient({
       openSocket: fake.factory,
       device: DEVICE,
       openTimeout: 5,
-      setTimer: (fn, ms) => {
-        timers.push({ fn, ms });
-        return timers.length;
-      },
-      clearTimer: () => {},
+      setTimer,
+      clearTimer,
     });
     return { client, timers };
   }
@@ -543,7 +585,7 @@ describe("relay fallback", () => {
     // `hello` on the same pinned key.
     expect(fake.urls).toEqual([LAN, RELAY]);
     expect(fake.asked).toEqual([HOST_KEY, HOST_KEY]);
-    expect(fake.budgets).toEqual([5, undefined]);
+    expect(fake.budgets).toEqual([5, RELAY_OPEN_TIMEOUT_MS]);
     expect(client.via).toBe("relay");
   });
 

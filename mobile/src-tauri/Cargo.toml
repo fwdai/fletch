@@ -30,6 +30,14 @@ tauri-plugin-push = { path = "plugins/push" }
 # wss:// relay works on iOS without an OpenSSL build.
 snow = "0.10"
 tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+# tokio-tungstenite's rustls feature brings no crypto backend of its own, and
+# rustls panics at the first `wss://` dial unless exactly one is compiled in or
+# installed — inside a Tauri command that is an `invoke` that never resolves,
+# which is how a relay dial used to leave the Pair screen on "Pairing…" for
+# good. `ring`: already in the tree via `snow`, and it builds for iOS without
+# cmake. `run()` also installs it explicitly, so a future dependency that
+# drags in aws-lc-rs cannot reintroduce the ambiguity.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio = { version = "1", features = ["sync", "time"] }
 futures-util = "0.3"
 base64 = "0.22"
