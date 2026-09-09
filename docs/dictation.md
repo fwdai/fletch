@@ -330,3 +330,37 @@ The silence gate needs no model, so its test always runs; set
 `FLETCH_WHISPER_TEST_SILENT_WAV` to try a real recording instead of synthetic
 zeroes. The resampler is likewise covered without a microphone — `capture.rs`
 puts a 440 Hz tone through it and checks the length and loudness that come out.
+
+## Dictating from the phone
+
+The mobile app has a mic button in its composer, but no speech model on the
+phone: it captures the microphone in the webview and streams PCM to the Mac
+over the remote protocol, and the Mac runs the local engine on it. The wire
+contract is in [remote-protocol.md](remote-protocol.md), "Dictation"; the host
+side is `src-tauri/src/dictation/remote.rs`.
+
+What it reuses, and what it doesn't:
+
+- The transcription is `whisper::engine::transcribe` — the same call the desktop
+  stop makes, with the same silence gate, the same model cache and the same
+  one-decode-at-a-time lock. The resampler is `capture::resample`, so the phone
+  can send audio at whatever rate its audio session runs at.
+- It requires the local engine: `dictation_engine` set to `whisper` and the
+  selected model downloaded — the same two conditions [Dispatch](#dispatch)
+  requires. Unlike the desktop there is **no fallback** to Apple's recognizer,
+  which needs a microphone the Mac doesn't have; `dictation_status` tells the
+  phone why, and it shows the reason instead of a mic.
+- The microphone is the phone's, so `apple.rs` is not involved, and neither are
+  the desktop's `dictation:*` events: whisper has no partials, so the transcript
+  is simply the reply to `dictation_end`.
+- Hands-free auto-stop is the same policy, ported to TypeScript in
+  `mobile/src/dictation/silence.ts`: the same `SILENCE_STOP` (2 s),
+  `NO_SPEECH_TIMEOUT` (10 s) and `SILENCE_POLL` (100 ms), and the same
+  RMS-over-noise-floor rule, computed on the main thread from the Float32
+  frames the worklet posts (the worklet stays a plain copy) and polled by
+  `capture.ts`, which hands the pause to the session — so the stop takes the
+  same path a tap on the button takes.
+
+Audio is held in memory only, for the length of a session plus a 60 s idle
+sweep, and never written to disk. The phone's `NSMicrophoneUsageDescription`
+lives in `mobile/src-tauri/Info.ios.plist`.

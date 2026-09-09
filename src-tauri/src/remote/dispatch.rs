@@ -83,6 +83,11 @@ pub const OPS: &[&str] = &[
     "clone_repo",
     "gh_status",
     "gh_repo_list",
+    "dictation_status",
+    "dictation_begin",
+    "dictation_audio",
+    "dictation_end",
+    "dictation_cancel",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -342,6 +347,25 @@ impl Dispatch for SupervisorDispatch {
                     crate::commands::announce_workspace(app, add_project_op(sup, op, args).await)
                 }
 
+                // Remote-only: the phone captures, this Mac transcribes with the
+                // local whisper engine (`dictation::remote`). The transcript is
+                // the reply to `dictation_end`; no event is involved.
+                "dictation_status" => ok(crate::dictation::remote::status(app)),
+                "dictation_begin" => res(crate::dictation::remote::begin(app)),
+                "dictation_audio" => {
+                    let a: DictationAudioArgs = parse(args)?;
+                    res(crate::dictation::remote::append(&a.session, a.rate, &a.pcm))
+                }
+                "dictation_end" => {
+                    let a: DictationSessionArgs = parse(args)?;
+                    res(crate::dictation::remote::end(app, &a.session).await)
+                }
+                "dictation_cancel" => {
+                    let a: DictationSessionArgs = parse(args)?;
+                    crate::dictation::remote::cancel(&a.session);
+                    Ok(Value::Null)
+                }
+
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.
                 _ => Err(UNKNOWN_OP.to_string()),
@@ -524,6 +548,20 @@ struct CreatePrArgs {
     body: String,
     #[serde(default)]
     subdir: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DictationSessionArgs {
+    session: String,
+}
+
+/// One chunk of a phone's dictation: 16-bit little-endian mono PCM, base64,
+/// at the rate the phone captured it. See `dictation::remote`.
+#[derive(Deserialize)]
+struct DictationAudioArgs {
+    session: String,
+    rate: f64,
+    pcm: String,
 }
 
 #[cfg(test)]

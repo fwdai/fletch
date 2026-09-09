@@ -292,6 +292,15 @@ could send paired phones misleading alerts, which stays within the
 deny-or-annoy ceiling: tapping one only opens the app, which then talks to the
 real host over the secure channel.
 
+Dictation puts the user's voice on the wire, which nothing did before. It
+travels inside the same Noise channel as every other frame, so the relay sees
+ciphertext sizes and timing (someone is talking, roughly how long) and nothing
+else; the Mac holds the audio in memory only until `dictation_end` or the idle
+sweep and never writes it out; and the transcript comes back over the same
+channel. Apple is not a party: the local engine never calls a speech service.
+A paired phone can make the Mac spend CPU on transcription, bounded by the
+session cap and the capture cap.
+
 ## Envelope
 
 Client → host request:
@@ -421,6 +430,11 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `clone_repo` | `{ spec, destParent }` | `Workspace` |
 | `gh_status` | `{}` | `GhStatus` |
 | `gh_repo_list` | `{}` | `GhRepoSummary[]` |
+| `dictation_status` | `{}` (remote-only, see "Dictation") | `{ available: boolean, reason: string \| null }` |
+| `dictation_begin` | `{}` (remote-only) | `{ session: string }` |
+| `dictation_audio` | `{ session, rate: number, pcm: string }` — base64 of 16-bit little-endian mono PCM at `rate` Hz (remote-only) | `null` |
+| `dictation_end` | `{ session }` (remote-only) | `{ text: string }` |
+| `dictation_cancel` | `{ session }` (remote-only) | `null` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
@@ -450,6 +464,45 @@ Pinning a folder that is not yet a git repository runs `git init` plus an
 initial commit in it, exactly as the desktop dialog does. The phone remembers
 the last destination parent per host, as the desktop does. Creating a brand-new
 repo from the phone (`create_repo`) is a follow-up.
+
+## Dictation
+
+The phone has a mic button too, but no speech model: it captures, and the Mac
+transcribes with the local whisper.cpp engine the desktop composer can opt into
+(docs/dictation.md, "Local Whisper engine"). The five `dictation_*` ops are
+remote-only — the desktop has its own microphone and its own commands — and
+answer through the generic dispatcher, since none of them needs to know which
+device is asking.
+
+- **Preconditions.** The Mac's `dictation_engine` setting must be `whisper` and
+  the selected model's weights must be on disk. `dictation_status` reports
+  exactly that as `available`, with a `reason` the phone shows as-is when it is
+  false ("Local dictation is off on your Mac. Turn on the Whisper engine in
+  Settings › Dictation."). There is no fallback to Apple's recognizer on this
+  path: it needs a microphone the Mac does not have.
+- **Flow.** `dictation_begin` re-checks the preconditions (so the phone learns
+  before its mic opens) and answers with a host-minted `session` id. While the
+  user talks, the phone sends `dictation_audio` about once a second with the
+  PCM captured since the last chunk. On stop it sends `dictation_end` and shows
+  "transcribing" until the reply, whose `text` is the whole transcript (empty
+  when the clip had no speech in it — the engine's silence gate, identical to
+  the desktop). `dictation_cancel` throws the audio away; it is idempotent.
+- **Audio.** `pcm` is base64 of 16-bit little-endian mono samples at `rate` Hz,
+  whatever rate the phone's audio session runs at (typically 48 000). The rate
+  is fixed by the first chunk of a session; a chunk that names another is
+  refused. The host resamples to the model's 16 kHz itself with the same
+  converter the desktop path uses. A decoded chunk over 2 MiB is refused.
+- **Bounds.** Everything a session holds is bounded and lives in memory only.
+  Audio past the desktop's capture cap (five minutes) is dropped, not refused,
+  so the transcript is truncated rather than the session failing. At most 4
+  sessions are open at once across every phone; a session that has received no
+  chunk for 60 s is swept (a phone that lost its connection mid-sentence never
+  sends `dictation_end`), after which its id is unknown. Nothing is written to
+  disk, and no `dictation:*` event is forwarded — the transcript is the reply.
+- **Wire cost.** Chunks are about 100 KB a second at 48 kHz mono before base64,
+  well under the 4 MiB frame cap and the relay's 100-messages-per-10-s limit at
+  one chunk a second. Two decodes never run at once (the engine serialises
+  them), so a phone's transcription may wait behind a desktop session's.
 
 ## Events (v1 whitelist)
 
@@ -532,7 +585,7 @@ launch once the disk recovers.
 
 QR scanning on the phone (manual entry of address and code, plus
 `fletch://pair` deep-link parsing, for now), creating a brand-new repo from the
-phone (`create_repo`), voice, attachments, Run scripts, Keychain storage of the
+phone (`create_repo`), attachments, Run scripts, Keychain storage of the
 device key on the phone (it lives in the app data dir). Push follow-ups:
 feeding APNs `410 Unregistered` back to the host so stale tokens are dropped,
 noticing a permission revoked in iOS Settings (the phone has no way to observe

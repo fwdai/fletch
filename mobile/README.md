@@ -83,6 +83,35 @@ These cannot be committed and have to be done once, per team:
 3. Run on a real device. The simulator has no embedded profile and cannot
    receive a remote push; the plugin reports `sandbox` there.
 
+## Dictation
+
+The composer's mic button records in the webview and has the Mac transcribe
+(docs/remote-protocol.md, "Dictation"; docs/dictation.md, "Dictating from the
+phone"). There is no speech model on the phone: `src/dictation/capture.ts` opens
+`getUserMedia` into an `AudioWorklet` tap and batches a second of 16-bit PCM at
+a time, `src/dictation/session.ts` streams those chunks to the host in order and
+asks for the transcript on stop, and `useDictation` turns that into the button's
+phases. One tap is enough: `src/dictation/silence.ts` is a port of the desktop's
+detector — same constants, same RMS-over-noise-floor rule, run on the main
+thread over the frames the worklet posts — and the session ends itself two
+seconds after you stop talking. The Mac has to have its local Whisper engine on
+with a model downloaded;
+`dictation_status` says so, and a slashed mic that explains itself on tap is
+what the phone shows otherwise.
+
+Two things are worth knowing:
+
+- **The mic prompt string is `src-tauri/Info.ios.plist`.** The Tauri CLI merges
+  it into the generated project's `Info.plist` during `ios dev` / `ios build`
+  (it is not applied by `ios init`). Without `NSMicrophoneUsageDescription` iOS
+  kills the app on the first `getUserMedia`.
+- **The webview's permission prompt is answered by wry.** Its `WKUIDelegate`
+  grants `requestMediaCapturePermission` outright, so the only prompt the user
+  sees is the system one for the microphone.
+
+`mobile/spike/` holds a standalone capture diagnostic for when something about
+the webview's audio needs checking on a device.
+
 ## Web dev loop
 
 ```sh

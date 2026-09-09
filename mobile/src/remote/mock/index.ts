@@ -59,6 +59,8 @@ export class MockHost {
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private state: MockState;
   private seq = 1000;
+  /** Open dictation sessions → chunks received. */
+  private dictation = new Map<string, number>();
 
   constructor(
     private readonly emit: (frame: ResponseFrame | EventFrame) => void,
@@ -426,6 +428,34 @@ export class MockHost {
       // There is no APNs behind a browser, so the mock host only has to accept
       // the op — a registration that errored would surface as a real failure.
       case "register_push":
+        return null;
+      // Dictation: the browser has a mic but no Mac to transcribe on, so the
+      // mock counts chunks and answers a fixed sentence for any session that
+      // sent audio — enough to exercise the composer's listening → transcribing
+      // → text path.
+      case "dictation_status":
+        return { available: true, reason: null };
+      case "dictation_begin": {
+        const session = `dict-${this.dictation.size + 1}`;
+        this.dictation.set(session, 0);
+        return { session };
+      }
+      case "dictation_audio": {
+        const session = String(args.session ?? "");
+        const chunks = this.dictation.get(session);
+        if (chunks === undefined) throw new Error("dictation: unknown session");
+        this.dictation.set(session, chunks + 1);
+        return null;
+      }
+      case "dictation_end": {
+        const session = String(args.session ?? "");
+        const chunks = this.dictation.get(session);
+        if (chunks === undefined) throw new Error("dictation: unknown session");
+        this.dictation.delete(session);
+        return { text: chunks > 0 ? "Add retries to the upload path and log each attempt" : "" };
+      }
+      case "dictation_cancel":
+        this.dictation.delete(String(args.session ?? ""));
         return null;
       case "list_dir":
         return this.listDir(String(args.path ?? "~"));

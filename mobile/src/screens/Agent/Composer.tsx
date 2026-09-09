@@ -1,11 +1,19 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
+import { spliceTranscript } from "@desktop/components/Composer/dictation/spliceTranscript";
 import { useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { ProviderMark } from "../../components/ui";
+import { DictationButton, useDictation } from "../../dictation";
 import { isBusy, modelLabel } from "../../lib/agents";
 import { autosize } from "../../lib/autosize";
 import { ignore } from "../../lib/ignore";
 import { useStore } from "../../store";
+
+/** The session ends itself once the user stops talking, so the placeholder has
+ *  to say so — a mic that stops on its own otherwise reads as a bug, and the
+ *  pause is the only thing left for the user to do. Same words as the desktop's
+ *  mic tooltip. */
+const LISTENING_HINT = "Listening… stops when you pause";
 
 export function Composer({
   agent,
@@ -21,6 +29,12 @@ export function Composer({
   const [text, setText] = useState("");
   const ta = useRef<HTMLTextAreaElement>(null);
   const busy = isBusy(agent);
+  // The transcript lands once, appended to whatever was typed — the same join
+  // rule as the desktop, so a dictated list item keeps its newline.
+  const dictation = useDictation((spoken) => {
+    setText((current) => spliceTranscript(current, spoken).text);
+    requestAnimationFrame(() => autosize(ta.current));
+  });
 
   const submit = () => {
     const value = text.trim();
@@ -31,13 +45,22 @@ export function Composer({
     void send(agent.id, value).catch(ignore);
   };
 
+  const placeholder =
+    dictation.phase === "listening"
+      ? LISTENING_HINT
+      : dictation.phase === "transcribing"
+        ? "Transcribing…"
+        : busy
+          ? "Message agent · queued until it pauses"
+          : "Message agent";
+
   return (
     <div className="composer">
       <div className="cmp">
         <textarea
           ref={ta}
           rows={1}
-          placeholder={busy ? "Message agent · queued until it pauses" : "Message agent"}
+          placeholder={placeholder}
           value={text}
           onChange={(e) => {
             setText(e.target.value);
@@ -63,6 +86,13 @@ export function Composer({
             <Icon name="chevD" size={12} style={{ color: "var(--fg-3)" }} />
           </button>
           <span className="grow" />
+          {dictation.supported && (
+            <DictationButton
+              phase={dictation.phase}
+              blocked={dictation.blocked}
+              onToggle={() => void dictation.toggle()}
+            />
+          )}
           {busy && !text.trim() ? (
             <button
               type="button"

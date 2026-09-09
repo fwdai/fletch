@@ -455,6 +455,37 @@
   background: var(--bg-3);
   color: var(--fg-3);
 }
+/* Dictation: same footprint as send, quiet until it is listening. */
+.micbtn {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: var(--bg-3);
+  color: var(--fg-1);
+  display: grid;
+  place-items: center;
+  transition: all 0.22s var(--ease-out);
+}
+.micbtn:active {
+  transform: scale(0.92);
+}
+.micbtn.off,
+.micbtn[disabled] {
+  color: var(--fg-3);
+}
+.micbtn.listening {
+  background: var(--danger);
+  color: var(--knob);
+  animation: mic-pulse 1.4s ease-out infinite;
+}
+@keyframes mic-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 50%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
 
 /* Code tab */
 .tree {
