@@ -452,10 +452,26 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async rebuildLog(agentId) {
     return guard(set, async () => {
-      const [records, turns] = await Promise.all([
+      let [records, turns] = await Promise.all([
         api.readSessionRecords(agentId),
         api.readUserTurns(agentId),
       ]);
+      // The host ingests a turn's transcript into session_records only at
+      // turn-end, and that ingest can insert nothing (session id not captured
+      // yet, transcript not located). Mirror the desktop's readReducedLog: ask
+      // for a backfill and read again before concluding there is no history.
+      if (records.length === 0) {
+        await api.syncSession(agentId);
+        [records, turns] = await Promise.all([
+          api.readSessionRecords(agentId),
+          api.readUserTurns(agentId),
+        ]);
+      }
+      // Still nothing stored: keep the log the live events built rather than
+      // wiping the conversation the user was just looking at (the desktop's
+      // records-appended handler makes the same call). A brand-new agent has
+      // no log either way, so the empty state still renders for it.
+      if (records.length === 0) return;
       const provider = agentOf(get().workspace, agentId)?.provider;
       const items = applyUserTurns(reduceRecords(provider, records), turns);
       set((s) => ({ logs: { ...s.logs, [agentId]: items } }));

@@ -73,6 +73,7 @@ export function createApi(client: RemoteClient) {
     readSessionRecords: (agentId: string) =>
       call<SessionRecord[]>("read_session_records", { agentId }),
     readUserTurns: (agentId: string) => call<UserTurn[]>("read_user_turns", { agentId }),
+    syncSession: (agentId: string) => call<null>("sync_session", { agentId }),
     getGitState: (agentId: string, subdir?: string) =>
       call<GitState | null>("get_git_state", { agentId, subdir }),
     getAgentDiffStats: (agentId: string) => call<DiffStats>("get_agent_diff_stats", { agentId }),
