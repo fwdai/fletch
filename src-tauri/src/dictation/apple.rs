@@ -3,27 +3,28 @@
 //!
 //! Both engines share everything about opening the mic and owning the one live
 //! session; they differ only in the [`Sink`] the tap feeds. Apple's
-//! `SFSpeechAudioBufferRecognitionRequest` streams results back on its own,
-//! which is why a stop there hands off to the recognizer's flush. The local
-//! engine's sink is a plain PCM buffer (`super::capture`) that is transcribed in
-//! one pass once the mic is closed.
+//! `SpeechAnalyzer` (behind [`super::speech`] and its Swift bridge) streams
+//! results back on its own, which is why a stop there hands off to the
+//! analyzer's flush. The local engine's sink is a plain PCM buffer
+//! (`super::capture`) that is transcribed in one pass once the mic is closed.
 //!
 //! # Threading
 //!
-//! Speech and AVFoundation objects are not `Send`, and Apple calls our blocks
-//! back on queues of its own choosing. Rather than wrap the handles in a
-//! `Send` lie, everything that touches session state runs on the main thread
-//! (`on_main`), and the session itself lives in a `thread_local` — so there is
-//! no lock to hold, nothing to declare `unsafe impl Send`, and no way for a
-//! callback to observe a half-built session.
+//! AVFoundation objects are not `Send`, and both Apple and the Swift bridge
+//! call us back on threads of their own choosing. Rather than wrap the handles
+//! in a `Send` lie, everything that touches session state runs on the main
+//! thread ([`on_main`], [`spawn_main`]), and the session itself lives in a
+//! `thread_local` — so there is no lock to hold, nothing to declare
+//! `unsafe impl Send`, and no way for a callback to observe a half-built
+//! session.
 //!
-//! That works because `SFSpeechRecognizer`'s `queue` defaults to the main
-//! queue: the result handler is *dispatched* to the same thread we mutate
-//! state on rather than re-entering us, so it cannot run until the
-//! `on_main` block that created the task has returned. The one exception is
-//! the audio tap, which Apple invokes on a real-time render thread — it
-//! deliberately touches no session state, only its own retained sink, which is
-//! the pattern Apple documents for it.
+//! The bridge's callbacks arrive on Swift's executors, never on the main
+//! thread, so each one hops onto it with `run_on_main_thread`. The hop is a
+//! dispatch, not a re-entry: a callback cannot run before the `on_main` block
+//! that created its session has returned. The one exception is the audio tap,
+//! which Apple invokes on a real-time render thread — it deliberately touches
+//! no session state, only its own sink handle, which is the pattern Apple
+//! documents for it.
 //!
 //! Note that `#[tauri::command]` futures must be `Send`, which is the second
 //! reason for this shape: no ObjC handle is ever live across an `.await`.
@@ -35,19 +36,13 @@ use std::time::Duration;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::AllocAnyThread;
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use objc2_avf_audio::{
     AVAudioEngine, AVAudioFormat, AVAudioInputNode, AVAudioPCMBuffer, AVAudioTime,
 };
-use objc2_foundation::NSError;
-use objc2_speech::{
-    SFSpeechAudioBufferRecognitionRequest, SFSpeechRecognitionResult, SFSpeechRecognitionTask,
-    SFSpeechRecognizer, SFSpeechRecognizerAuthorizationStatus,
-};
 use tauri::AppHandle;
 
-use super::{emit_state, emit_transcript, Auth, Availability, Engine, State};
+use super::{emit_state, emit_transcript, speech, Auth, Availability, Engine, State};
 use crate::error::{Error, Result};
 
 /// The engine's only input bus.
@@ -57,9 +52,9 @@ const BUS: usize = 0;
 /// sample. The engine clamps this to a size it can service.
 const TAP_BUFFER_FRAMES: u32 = 1024;
 
-/// How long to wait after `endAudio` for the recognizer's final result before
-/// forcing the teardown. Apple normally flushes in well under a second; the
-/// deadline exists so a wedged recognizer can't leave the UI stuck in
+/// How long to wait after the input ends for the analyzer's final result
+/// before forcing the teardown. It normally finalizes in well under a second;
+/// the deadline exists so a wedged analyzer can't leave the UI stuck in
 /// `listening` with no way back.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -73,12 +68,12 @@ thread_local! {
 
     /// A `dictation_stop` that arrived while a start was in flight — `ACTIVE`
     /// claimed but `SESSION` still empty, which is exactly the span of the
-    /// permission prompts. Without this the stop would be swallowed and the
-    /// mic would open anyway once the user granted access. Set only in that
-    /// window (an idle stop leaves nothing behind), consumed by `begin`, and
-    /// cleared on the one path that abandons a claim without reaching `begin`.
-    /// Both ends run on the main thread, which is what orders a stop against a
-    /// concurrent start.
+    /// permission prompt and the model check. Without this the stop would be
+    /// swallowed and the mic would open anyway once the user granted access.
+    /// Set only in that window (an idle stop leaves nothing behind), consumed
+    /// by `begin`, and cleared on the one path that abandons a claim without
+    /// reaching `begin`. Both ends run on the main thread, which is what orders
+    /// a stop against a concurrent start.
     static STOP_PENDING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -91,18 +86,14 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Where a session's audio goes. `Retained` and `Arc` both clone cheaply, so
-/// `stop` can lift the sink out of `SESSION` before calling into ObjC.
+/// Where a session's audio goes. Both variants clone cheaply, so `stop` can
+/// lift the sink out of `SESSION` before calling into the frameworks.
 #[derive(Clone)]
 enum Sink {
-    /// Apple's recognizer, which delivers its own results through
-    /// `result_handler` and needs `endAudio` to flush the last of them.
-    Speech {
-        request: Retained<SFSpeechAudioBufferRecognitionRequest>,
-        task: Retained<SFSpeechRecognitionTask>,
-    },
+    /// Apple's analyzer, which delivers its own results through the bridge's
+    /// callbacks and needs `finish` to flush the last of them.
+    Speech(speech::Session),
     /// The local engine's capture buffer, transcribed in one pass at stop.
-    #[cfg(target_os = "macos")]
     Pcm(std::sync::Arc<super::capture::Pcm>),
 }
 
@@ -112,16 +103,15 @@ impl Sink {
     /// simply dropped; marking it closed is what retires its silence monitor.
     fn cancel(&self) {
         match self {
-            Sink::Speech { task, .. } => unsafe { task.cancel() },
-            #[cfg(target_os = "macos")]
+            Sink::Speech(session) => session.cancel(),
             Sink::Pcm(pcm) => pcm.close(),
         }
     }
 }
 
 struct Session {
-    /// Distinguishes this session from its successors. Every block Apple may
-    /// invoke late (a post-cancel result, the flush deadline) carries the
+    /// Distinguishes this session from its successors. Every callback that may
+    /// arrive late (a post-cancel result, the flush deadline) carries the
     /// generation it was created for and does nothing if it no longer matches
     /// — otherwise a straggler could tear down a session the user has since
     /// started.
@@ -133,21 +123,19 @@ struct Session {
     /// take ownership, but holding our own reference costs nothing and takes
     /// a use-after-free off the table.
     _tap: Tap,
-    /// True once the user asked to stop. After that point Apple's recognizer
-    /// reports the end of the stream *as an error* (a cancellation or
-    /// no-speech code from a private domain), which is the expected tail of a
-    /// normal session and must surface as `stopped`, not `error`.
+    /// True once the user asked to stop. An analyzer error after that point
+    /// (a cancellation racing the finalization) is the tail of a normal
+    /// session and must surface as `stopped`, not `error`.
     stopping: bool,
 }
 
 /// What a stop left for the caller to finish once it is off the main thread.
 enum Stopping {
-    /// Apple's recognizer owns the rest: `endAudio` makes it flush a final
+    /// Apple's analyzer owns the rest: ending the input makes it flush a final
     /// result, and that result drives the teardown and the terminal state.
     Flushing(u64),
     /// The local engine: the mic is already closed and the session claimed, and
     /// the audio is the caller's to transcribe.
-    #[cfg(target_os = "macos")]
     Captured(u64, std::sync::Arc<super::capture::Pcm>),
 }
 
@@ -169,6 +157,15 @@ async fn on_main<T: Send + 'static>(
         .map_err(|_| Error::Other("dictation: main thread task was dropped".into()))
 }
 
+/// Fire-and-forget [`on_main`], for callbacks that have no one to answer to.
+/// The only failure is an app that is shutting down, which is logged, not
+/// propagated — there is no session left to matter.
+fn spawn_main(app: &AppHandle, f: impl FnOnce() + Send + 'static) {
+    if let Err(e) = app.run_on_main_thread(f) {
+        tracing::warn!(error = %e, "dictation: main thread unavailable");
+    }
+}
+
 /// Is the session that `generation` belongs to still the live one?
 fn is_live(generation: u64) -> bool {
     SESSION.with_borrow(|s| s.as_ref().is_some_and(|s| s.generation == generation))
@@ -177,13 +174,12 @@ fn is_live(generation: u64) -> bool {
 /// The live session's capture buffer, if `generation` is still it and it is a
 /// local-engine session. Main thread, like every read of `SESSION`; the buffer
 /// itself is then readable from anywhere.
-#[cfg(target_os = "macos")]
 fn captured(generation: u64) -> Option<std::sync::Arc<super::capture::Pcm>> {
     SESSION.with_borrow(|slot| {
         let session = slot.as_ref().filter(|s| s.generation == generation)?;
         match &session.sink {
             Sink::Pcm(pcm) => Some(pcm.clone()),
-            Sink::Speech { .. } => None,
+            Sink::Speech(_) => None,
         }
     })
 }
@@ -214,24 +210,13 @@ fn teardown(session: Session) {
 // ---------------------------------------------------------------------------
 // Permissions
 
-impl From<SFSpeechRecognizerAuthorizationStatus> for Auth {
-    fn from(status: SFSpeechRecognizerAuthorizationStatus) -> Self {
-        match status {
-            SFSpeechRecognizerAuthorizationStatus::Authorized => Auth::Authorized,
-            SFSpeechRecognizerAuthorizationStatus::Denied => Auth::Denied,
-            SFSpeechRecognizerAuthorizationStatus::Restricted => Auth::Restricted,
-            // NotDetermined, and anything a future OS adds: treat as "ask".
-            _ => Auth::NotDetermined,
-        }
-    }
-}
-
 impl From<AVAuthorizationStatus> for Auth {
     fn from(status: AVAuthorizationStatus) -> Self {
         match status {
             AVAuthorizationStatus::Authorized => Auth::Authorized,
             AVAuthorizationStatus::Denied => Auth::Denied,
             AVAuthorizationStatus::Restricted => Auth::Restricted,
+            // NotDetermined, and anything a future OS adds: treat as "ask".
             _ => Auth::NotDetermined,
         }
     }
@@ -245,10 +230,6 @@ fn microphone_auth() -> Auth {
         return Auth::NotDetermined;
     };
     unsafe { AVCaptureDevice::authorizationStatusForMediaType(audio) }.into()
-}
-
-fn speech_auth() -> Auth {
-    unsafe { SFSpeechRecognizer::authorizationStatus() }.into()
 }
 
 /// Turn a settled permission state into a message the user can act on. The
@@ -267,23 +248,11 @@ fn authorized_or_error(what: &str, auth: Auth) -> Result<()> {
     }
 }
 
-/// The two `requestAuthorization`-style APIs hand their answer to a block on
-/// an arbitrary queue. These helpers are deliberately non-`async`: the block
-/// is created, handed off, and dropped entirely within them, so no ObjC handle
-/// is ever live across the caller's `.await`. Apple copies the block, so
-/// releasing our reference here is safe.
-fn request_speech_auth() -> tokio::sync::oneshot::Receiver<Auth> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let tx = parking_lot::Mutex::new(Some(tx));
-    let handler = RcBlock::new(move |status: SFSpeechRecognizerAuthorizationStatus| {
-        if let Some(tx) = tx.lock().take() {
-            let _ = tx.send(status.into());
-        }
-    });
-    unsafe { SFSpeechRecognizer::requestAuthorization(&handler) };
-    rx
-}
-
+/// `requestAccessForMediaType:` hands its answer to a block on an arbitrary
+/// queue. Deliberately non-`async`: the block is created, handed off, and
+/// dropped entirely within the call, so no ObjC handle is ever live across the
+/// caller's `.await`. Apple copies the block, so releasing our reference here
+/// is safe.
 fn request_microphone_auth() -> tokio::sync::oneshot::Receiver<Auth> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let Some(audio) = (unsafe { AVMediaTypeAudio }) else {
@@ -303,24 +272,11 @@ fn request_microphone_auth() -> tokio::sync::oneshot::Receiver<Auth> {
     rx
 }
 
-/// Ensure the permissions this engine needs, prompting for whichever hasn't
-/// been asked yet. Sequential rather than concurrent so the user sees one
-/// dialog at a time.
-///
-/// The local engine touches Apple's recognizer for nothing, so it must not
-/// raise its TCC prompt either: opting out of Apple's speech service and then
-/// being asked to authorize it would be a straight contradiction.
-async fn ensure_authorized(engine: Engine) -> Result<()> {
-    if engine == Engine::Apple {
-        let mut speech = speech_auth();
-        if speech == Auth::NotDetermined {
-            speech = request_speech_auth().await.map_err(|_| {
-                Error::Other("dictation: speech permission prompt was dismissed".into())
-            })?;
-        }
-        authorized_or_error("speech recognition", speech)?;
-    }
-
+/// Ensure the microphone permission, prompting if it hasn't been asked yet.
+/// The only grant either engine needs: Apple's analyzer runs on-device and
+/// asks for no Speech Recognition authorization (verified against a fresh
+/// bundle id — no prompt, no usage string, status stays "not determined").
+async fn ensure_authorized() -> Result<()> {
     let mut mic = microphone_auth();
     if mic == Auth::NotDetermined {
         mic = request_microphone_auth().await.map_err(|_| {
@@ -330,22 +286,31 @@ async fn ensure_authorized(engine: Engine) -> Result<()> {
     authorized_or_error("microphone", mic)
 }
 
+/// Everything a session needs settled before the mic opens: the permission,
+/// and for Apple's engine the locale, model assets and audio format. Both can
+/// take a while (a TCC prompt; a model download) and both reject with a message
+/// the user can act on.
+async fn ready(engine: Engine) -> Result<()> {
+    ensure_authorized().await?;
+    if engine == Engine::Apple {
+        speech::prepare().await?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 
-pub fn availability(engine: Engine) -> Availability {
-    // The local engine is on-device by construction and needs no recognizer, so
-    // don't probe for one. Otherwise: a recognizer only exists for a supported
-    // locale, and without one there is nothing to ask about on-device support —
-    // report the conservative answer and let `start` produce the readable error.
-    let on_device = engine == Engine::Whisper
-        || unsafe { SFSpeechRecognizer::init(SFSpeechRecognizer::alloc()) }
-            .is_some_and(|r| unsafe { r.supportsOnDeviceRecognition() });
+pub async fn availability(engine: Engine) -> Availability {
+    // The local engine runs wherever whisper.cpp is built; Apple's needs
+    // macOS 26 and a model for this Mac's language. Neither sends audio off
+    // the machine, and neither asks for the speech-recognition grant.
+    let supported = engine == Engine::Whisper || speech::supported().await;
     Availability {
-        supported: true,
-        speech: speech_auth(),
+        supported,
+        speech: Auth::NotDetermined,
         microphone: microphone_auth(),
-        on_device,
+        on_device: true,
         engine,
     }
 }
@@ -355,7 +320,7 @@ pub fn availability(engine: Engine) -> Availability {
 /// started, so no terminal event will follow.
 pub async fn start(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
     // Claiming ACTIVE up front is what makes a second start a no-op, and it
-    // has to happen before the permission prompts, which can sit on screen
+    // has to happen before the permission prompt, which can sit on screen
     // for a long time.
     if ACTIVE.swap(true, Ordering::SeqCst) {
         return Ok(None);
@@ -364,11 +329,11 @@ pub async fn start(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
     // hasn't run, then `begin` itself on failure, then `teardown` once the
     // session is up. Handing it over rather than clearing it from here means
     // a caller who drops this future after the session came up can't leave a
-    // live recognizer behind a cleared flag.
-    if let Err(e) = ensure_authorized(engine).await {
+    // live analyzer behind a cleared flag.
+    if let Err(e) = ready(engine).await {
         ACTIVE.store(false, Ordering::SeqCst);
         // The only path that drops the claim without `begin` consuming a stop
-        // that landed during the prompts — clear it, or it would cancel an
+        // that landed during the wait — clear it, or it would cancel an
         // unrelated later start.
         let _ = on_main(&app, || STOP_PENDING.set(false)).await;
         return Err(e);
@@ -382,9 +347,8 @@ pub async fn start(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
             return Err(e);
         }
     };
-    // Hands-free stop is the local engine's alone: Apple's recognizer decides
+    // Hands-free stop is the local engine's alone: Apple's analyzer decides
     // for itself when an utterance has ended, and we have no PCM to measure.
-    #[cfg(target_os = "macos")]
     if let (Some(generation), Engine::Whisper) = (started, engine) {
         watch_for_silence(app, generation);
     }
@@ -400,7 +364,6 @@ pub async fn start(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
 /// buffer it was given is closed (any teardown does that), and the stop it
 /// finally issues names its own session, so a monitor that outlives its
 /// session cannot cut a later one short.
-#[cfg(target_os = "macos")]
 fn watch_for_silence(app: AppHandle, generation: u64) {
     tokio::spawn(async move {
         let Ok(Some(pcm)) = on_main(&app, move || captured(generation)).await else {
@@ -422,7 +385,7 @@ fn watch_for_silence(app: AppHandle, generation: u64) {
 }
 
 fn begin(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
-    // The user asked to stop while the permission prompts were up. Honour it
+    // The user asked to stop while the permission prompt was up. Honour it
     // instead of opening the mic behind their back. No state event: the
     // session never came up, so there is nothing to close out — the `None`
     // is what tells the caller not to wait for one.
@@ -451,19 +414,10 @@ fn build_session(app: AppHandle, engine: Engine) -> Result<u64> {
     let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
 
     let (sink, tap) = match engine {
-        Engine::Apple => speech_sink(&app, generation)?,
-        #[cfg(target_os = "macos")]
+        Engine::Apple => speech_sink(&app, generation, &format)?,
         Engine::Whisper => {
             let (pcm, tap) = super::capture::sink(&format)?;
             (Sink::Pcm(pcm), tap)
-        }
-        // iOS: `super::engine` never answers `Whisper` where whisper.cpp isn't
-        // built, so this is unreachable rather than a fallback.
-        #[cfg(not(target_os = "macos"))]
-        Engine::Whisper => {
-            return Err(Error::Other(
-                "Local dictation isn't available on this platform.".into(),
-            ))
         }
     };
 
@@ -521,85 +475,68 @@ fn open_microphone() -> Result<(
     Ok((audio, input, format))
 }
 
-/// Apple's recognizer, plus the tap that streams the mic straight into it.
-fn speech_sink(app: &AppHandle, generation: u64) -> Result<(Sink, Tap)> {
-    let recognizer = unsafe { SFSpeechRecognizer::init(SFSpeechRecognizer::alloc()) }
-        .ok_or_else(|| Error::Other("Dictation doesn't support this Mac's language.".into()))?;
-    if !unsafe { recognizer.isAvailable() } {
-        return Err(Error::Other(
-            "Speech recognition is unavailable right now. If it needs the network, check your \
-             connection and try again."
-                .into(),
-        ));
-    }
-
-    let request = unsafe { SFSpeechAudioBufferRecognitionRequest::new() };
-    unsafe {
-        request.setShouldReportPartialResults(true);
-        // Keep the audio on this machine whenever the recognizer can manage
-        // it, and fall back to Apple's servers (with their ~1 minute cap)
-        // only when it can't.
-        request.setRequiresOnDeviceRecognition(recognizer.supportsOnDeviceRecognition());
-    }
-
-    let tap_request = request.clone();
+/// Apple's analyzer, plus the tap that streams the mic straight into it. The
+/// format conversion the analyzer needs happens in the bridge, not here.
+fn speech_sink(app: &AppHandle, generation: u64, format: &AVAudioFormat) -> Result<(Sink, Tap)> {
+    let session = speech::Session::start(
+        format,
+        speech::Events {
+            on_result: Box::new(on_result(app.clone(), generation)),
+            on_error: Box::new(on_error(app.clone(), generation)),
+        },
+    )?;
     let tap = RcBlock::new(
         move |buffer: NonNull<AVAudioPCMBuffer>, _when: NonNull<AVAudioTime>| {
-            // Real-time audio thread. Appending is the only thing that may
-            // happen here — no session state, no allocation, no emit.
-            unsafe { tap_request.appendAudioPCMBuffer(buffer.as_ref()) };
+            // Real-time audio thread. Handing the buffer over is the only
+            // thing that may happen here — no session state, no emit.
+            session.feed(unsafe { buffer.as_ref() });
         },
     );
-
-    let results = result_handler(app.clone(), generation);
-    let task = unsafe { recognizer.recognitionTaskWithRequest_resultHandler(&request, &results) };
-    Ok((Sink::Speech { request, task }, tap))
+    Ok((Sink::Speech(session), tap))
 }
 
-/// The recognizer's result handler. Runs on the recognizer's queue — the main
-/// queue by default, i.e. the thread `SESSION` lives on.
-fn result_handler(
-    app: AppHandle,
-    generation: u64,
-) -> RcBlock<dyn Fn(*mut SFSpeechRecognitionResult, *mut NSError)> {
-    RcBlock::new(
-        move |result: *mut SFSpeechRecognitionResult, error: *mut NSError| {
-            // Apple passes one or the other, and both may be null.
-            if let Some(result) = unsafe { result.as_ref() } {
-                let text = unsafe { result.bestTranscription().formattedString() }.to_string();
-                let is_final = unsafe { result.isFinal() };
-                // A result for an already-replaced session must stay silent,
-                // or it would overwrite the new session's transcript.
-                if !is_live(generation) {
-                    return;
-                }
-                emit_transcript(&app, generation, text, is_final);
-                if is_final {
-                    if let Some(session) = claim(generation) {
-                        teardown(session);
-                        emit_state(&app, generation, State::Stopped, None);
-                    }
-                }
+/// The analyzer's transcript callback: every revision of the running text, and
+/// once, last, the final one that ends the session.
+fn on_result(app: AppHandle, generation: u64) -> impl Fn(String, bool) + Send + Sync {
+    move |text, is_final| {
+        let emit_to = app.clone();
+        spawn_main(&app, move || {
+            // A result for an already-replaced session must stay silent, or it
+            // would overwrite the new session's transcript.
+            if !is_live(generation) {
                 return;
             }
-            if let Some(error) = unsafe { error.as_ref() } {
-                let Some(session) = claim(generation) else {
-                    return;
-                };
-                let message = error.localizedDescription().to_string();
-                let stopping = session.stopping;
-                teardown(session);
-                if stopping {
-                    // The expected end of a user-requested stop, not a failure.
-                    tracing::debug!(error = %message, "dictation stream ended");
-                    emit_state(&app, generation, State::Stopped, None);
-                } else {
-                    tracing::warn!(error = %message, "dictation failed");
-                    emit_state(&app, generation, State::Error, Some(message));
+            emit_transcript(&emit_to, generation, text, is_final);
+            if is_final {
+                if let Some(session) = claim(generation) {
+                    teardown(session);
+                    emit_state(&emit_to, generation, State::Stopped, None);
                 }
             }
-        },
-    )
+        });
+    }
+}
+
+/// The analyzer's failure callback. After a user's stop it is the expected
+/// tail of the session; before one it is a real error.
+fn on_error(app: AppHandle, generation: u64) -> impl Fn(String) + Send + Sync {
+    move |message| {
+        let emit_to = app.clone();
+        spawn_main(&app, move || {
+            let Some(session) = claim(generation) else {
+                return;
+            };
+            let stopping = session.stopping;
+            teardown(session);
+            if stopping {
+                tracing::debug!(error = %message, "dictation stream ended");
+                emit_state(&emit_to, generation, State::Stopped, None);
+            } else {
+                tracing::warn!(error = %message, "dictation failed");
+                emit_state(&emit_to, generation, State::Error, Some(message));
+            }
+        });
+    }
 }
 
 pub async fn stop(app: AppHandle) -> Result<()> {
@@ -611,8 +548,8 @@ pub async fn stop(app: AppHandle) -> Result<()> {
 /// session and must be a no-op against any other.
 async fn stop_session(app: AppHandle, expect: Option<u64>) -> Result<()> {
     let stopped = on_main(&app, move || {
-        // Clone the handles out before calling into ObjC: the rule for
-        // `SESSION` is that no borrow is ever held across a framework call.
+        // Clone the handles out before calling into the frameworks: the rule
+        // for `SESSION` is that no borrow is ever held across such a call.
         let live = SESSION.with_borrow_mut(|slot| {
             let session = slot.as_mut()?;
             if expect.is_some_and(|g| g != session.generation) {
@@ -629,7 +566,7 @@ async fn stop_session(app: AppHandle, expect: Option<u64>) -> Result<()> {
         let Some((generation, audio, input, sink)) = live else {
             // No session of ours — but a claimed `ACTIVE` with an empty
             // `SESSION` means a `start` is still sitting on the permission
-            // prompts, so leave the request for `begin` to consume. Genuinely
+            // prompt, so leave the request for `begin` to consume. Genuinely
             // idle, record nothing: a flag left behind here would cancel a
             // later start. A generation-scoped stop never leaves one: its own
             // session existed, so this is a session that has already ended, and
@@ -645,15 +582,14 @@ async fn stop_session(app: AppHandle, expect: Option<u64>) -> Result<()> {
             input.removeTapOnBus(BUS);
         }
         match sink {
-            Sink::Speech { request, .. } => {
-                // Deliberately not `task.cancel()`: ending the audio is what
-                // makes the recognizer flush its final result, and that result
-                // is what drives the `stopped` emit. Cancelling would discard
-                // it — so the session stays in `SESSION` for the handler.
-                unsafe { request.endAudio() };
+            Sink::Speech(session) => {
+                // Deliberately not `cancel`: ending the input is what makes
+                // the analyzer finalize, and that final result is what drives
+                // the `stopped` emit. Cancelling would discard it — so the
+                // session stays in `SESSION` for the callback.
+                session.finish();
                 Some(Stopping::Flushing(generation))
             }
-            #[cfg(target_os = "macos")]
             Sink::Pcm(pcm) => {
                 // Nothing will flush, so the session is over here. Claiming it
                 // now gives the transcription sole ownership of the terminal
@@ -678,7 +614,7 @@ async fn stop_session(app: AppHandle, expect: Option<u64>) -> Result<()> {
                 let _ = on_main(&handle, move || {
                     // Still live means the final result never arrived; `claim`
                     // is what keeps this from double-emitting against the
-                    // result handler.
+                    // result callback.
                     if let Some(session) = claim(generation) {
                         tracing::warn!(
                             "dictation: no final result before the flush deadline; forcing stop"
@@ -691,7 +627,6 @@ async fn stop_session(app: AppHandle, expect: Option<u64>) -> Result<()> {
             });
             Ok(())
         }
-        #[cfg(target_os = "macos")]
         Some(Stopping::Captured(generation, pcm)) => {
             // The mic is already closed, but the model still has to run, which
             // is seconds rather than milliseconds — the frontend gets a state

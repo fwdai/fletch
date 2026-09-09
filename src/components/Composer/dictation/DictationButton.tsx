@@ -5,13 +5,9 @@ import { Spinner } from "@/components/ui/Spinner";
 
 /** What the user has to do outside the app. The backend answers a blocked start
  *  with the same guidance, so the tooltip reads identically whether we knew up
- *  front or found out on the attempt. */
-const SETTINGS_HINT =
-  "Enable Microphone and Speech Recognition for Fletch in System Settings → Privacy & Security";
-
-/** The local engine never calls Apple's recognizer, so don't send the user
- *  looking for a permission it doesn't use. */
-const MIC_HINT = "Enable Microphone for Fletch in System Settings → Privacy & Security";
+ *  front or found out on the attempt. Both engines run on-device and need the
+ *  microphone alone — neither asks for the Speech Recognition grant. */
+const SETTINGS_HINT = "Enable Microphone for Fletch in System Settings → Privacy & Security";
 
 /** The local engine ends the session itself once the user stops talking, so the
  *  tooltip has to say so — a mic that stops on its own otherwise reads as a bug,
@@ -51,12 +47,10 @@ export function DictationButton({
   // only ever error is worse than no mic (Linux/Windows have none).
   if (!availability?.supported) return null;
 
-  // The speech grant gates only Apple's recognizer; the local engine is blocked
-  // by the microphone alone — and it's the only one that stops itself.
+  // The microphone is the only grant either engine needs. The local engine is
+  // the one that stops itself.
   const isLocal = availability.engine === "whisper";
-  const blocked =
-    BLOCKED.includes(availability.microphone) ||
-    (!isLocal && BLOCKED.includes(availability.speech));
+  const blocked = BLOCKED.includes(availability.microphone);
   const label = transcribing ? "Transcribing…" : listening ? "Stop dictation" : "Dictate";
 
   // The last failure outranks the standing permission hint, which outranks
@@ -65,7 +59,7 @@ export function DictationButton({
   // failed start is what surfaces the reason.
   function tip() {
     if (error) return error;
-    if (blocked) return isLocal ? MIC_HINT : SETTINGS_HINT;
+    if (blocked) return SETTINGS_HINT;
     if (listening && isLocal) return AUTO_STOP_HINT;
     return label;
   }

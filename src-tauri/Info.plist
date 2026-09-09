@@ -4,17 +4,15 @@
   Merged into the bundle's generated Info.plist by the Tauri CLI, which picks
   this file up by name from the config directory (no tauri.conf.json entry).
   tauri-codegen additionally embeds it into the dev binary via embed_plist, so
-  the dictation permission prompts also appear under `tauri dev`.
+  the dictation permission prompt also appears under `tauri dev`.
 
-  These two usage strings are load-bearing, not cosmetic: SFSpeechRecognizer's
-  requestAuthorization: crashes the process outright if
-  NSSpeechRecognitionUsageDescription is missing.
+  Dictation asks for the microphone only: Apple's SpeechAnalyzer runs on-device
+  and needs no Speech Recognition grant (see docs/dictation.md), so there is no
+  NSSpeechRecognitionUsageDescription here.
 -->
 <plist version="1.0">
   <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>Fletch uses the microphone to dictate prompts.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Fletch uses speech recognition to turn your dictated prompts into text.</string>
   </dict>
 </plist>

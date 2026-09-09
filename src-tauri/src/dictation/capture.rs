@@ -12,8 +12,6 @@
 //!   allocation behind it. Decimating 48 kHz by taking every third sample would
 //!   be cheap enough for the tap, but folds everything above 8 kHz back into the
 //!   speech band, and the model hears the aliases.
-//!
-//! macOS-only, like `whisper::engine` — iOS keeps the platform recognizer.
 
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -328,7 +326,7 @@ fn resample(rate: f64, samples: Vec<f32>) -> Result<Vec<f32>> {
 }
 
 /// Deinterleaved float32, one channel, at `rate`.
-fn standard_mono(rate: f64) -> Result<Retained<AVAudioFormat>> {
+pub(super) fn standard_mono(rate: f64) -> Result<Retained<AVAudioFormat>> {
     unsafe {
         AVAudioFormat::initStandardFormatWithSampleRate_channels(AVAudioFormat::alloc(), rate, 1)
     }
@@ -339,7 +337,10 @@ fn standard_mono(rate: f64) -> Result<Retained<AVAudioFormat>> {
     })
 }
 
-fn pcm_buffer(format: &AVAudioFormat, frames: u32) -> Result<Retained<AVAudioPCMBuffer>> {
+pub(super) fn pcm_buffer(
+    format: &AVAudioFormat,
+    frames: u32,
+) -> Result<Retained<AVAudioPCMBuffer>> {
     unsafe {
         AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(AVAudioPCMBuffer::alloc(), format, frames)
     }
@@ -348,7 +349,7 @@ fn pcm_buffer(format: &AVAudioFormat, frames: u32) -> Result<Retained<AVAudioPCM
 
 /// The one channel's samples. Null for a buffer that isn't float32, which the
 /// formats above always are.
-fn channel(buffer: &AVAudioPCMBuffer) -> Result<NonNull<f32>> {
+pub(super) fn channel(buffer: &AVAudioPCMBuffer) -> Result<NonNull<f32>> {
     NonNull::new(unsafe { buffer.floatChannelData() })
         .map(|data| unsafe { *data.as_ptr() })
         .ok_or_else(|| Error::Other("dictation: audio buffer has no float samples".into()))

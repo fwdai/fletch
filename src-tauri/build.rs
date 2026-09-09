@@ -43,9 +43,124 @@ fn main() {
     }
 
     link_clang_runtime();
+    build_speech_bridge();
 
     tauri_build::build()
 }
+
+/// The Swift half of dictation's default engine (see `swift/SpeechBridge.swift`
+/// and `docs/dictation.md`). `SpeechAnalyzer` is Swift-only, so this compiles
+/// the one Swift file into a static library with `swiftc` and links it in.
+///
+/// The Swift objects carry autolink entries (`LC_LINKER_OPTION`) for
+/// `swiftCore`, `Foundation`, `Speech` and friends, so the only thing the Rust
+/// link needs beyond the archive itself is a search path to the OS runtime's
+/// stubs in the SDK — nothing is bundled; the Swift runtime has shipped with
+/// macOS since 10.14.4.
+fn build_speech_bridge() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    println!("cargo::rerun-if-changed={SPEECH_BRIDGE}");
+    // `xcrun` honours both; a switch of SDK or deployment target must rebuild.
+    println!("cargo::rerun-if-env-changed=SDKROOT");
+    println!("cargo::rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
+
+    let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("aarch64") => "arm64",
+        Ok("x86_64") => "x86_64",
+        other => panic!("dictation: no Swift target for architecture {other:?}"),
+    };
+    let deployment = std::env::var("MACOSX_DEPLOYMENT_TARGET")
+        .unwrap_or_else(|_| MACOS_DEPLOYMENT_TARGET.to_string());
+
+    let sdk = xcrun(&["--sdk", "macosx", "--show-sdk-path"]);
+    let sdk_version = xcrun(&["--sdk", "macosx", "--show-sdk-version"]);
+    let sdk_major: u32 = sdk_version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        sdk_major >= 26,
+        "dictation: the Swift bridge needs the macOS 26 SDK (Xcode 26 or newer); \
+         `xcrun --show-sdk-path` found SDK {sdk_version} at {sdk}. Select a newer Xcode \
+         with `sudo xcode-select -s /Applications/Xcode.app`."
+    );
+    let swiftc = xcrun(&["--sdk", "macosx", "--find", "swiftc"]);
+
+    let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
+    let archive = format!("{out_dir}/libfletch_speech.a");
+    let status = std::process::Command::new(&swiftc)
+        .args([
+            "-emit-library",
+            "-static",
+            "-parse-as-library",
+            "-module-name",
+            "FletchSpeech",
+            "-swift-version",
+            "5",
+            "-O",
+            "-target",
+            &format!("{arch}-apple-macos{deployment}"),
+            "-sdk",
+            &sdk,
+            SPEECH_BRIDGE,
+            "-o",
+            &archive,
+        ])
+        .status();
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            panic!("dictation: `{swiftc}` failed with {status} compiling {SPEECH_BRIDGE}")
+        }
+        Err(e) => panic!("dictation: couldn't run `{swiftc}`: {e}"),
+    }
+
+    println!("cargo::rustc-link-search=native={out_dir}");
+    println!("cargo::rustc-link-lib=static=fletch_speech");
+    println!("cargo::rustc-link-search=native={sdk}/usr/lib/swift");
+    // `libswift_Concurrency` is the one runtime library the objects reference
+    // as `@rpath/…` rather than by absolute path (it is the back-deployable
+    // one), so without an rpath the binary aborts at load with "Library not
+    // loaded". `swiftc` adds this same rpath to everything it links on macOS.
+    println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+}
+
+/// Run `xcrun` and return its trimmed stdout, or stop the build with a message
+/// that says what to install. `xcrun` is the one tool that knows which Xcode
+/// (or Command Line Tools) is selected, so it locates both the SDK and
+/// `swiftc` rather than us guessing at versioned paths.
+fn xcrun(args: &[&str]) -> String {
+    match std::process::Command::new("xcrun").args(args).output() {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        Ok(out) => panic!(
+            "dictation: `xcrun {}` failed: {}\nBuilding Fletch for macOS needs Xcode 26 or \
+             newer (its Swift compiler builds the dictation bridge, {SPEECH_BRIDGE}). \
+             Install Xcode and select it with `sudo xcode-select -s /Applications/Xcode.app`, \
+             or install the Command Line Tools with `xcode-select --install`.",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => panic!(
+            "dictation: couldn't run `xcrun`: {e}\nBuilding Fletch for macOS needs Xcode 26 or \
+             newer (its Swift compiler builds the dictation bridge, {SPEECH_BRIDGE}). \
+             Install Xcode and select it with `sudo xcode-select -s /Applications/Xcode.app`, \
+             or install the Command Line Tools with `xcode-select --install`."
+        ),
+    }
+}
+
+/// The dictation bridge, relative to this package (build scripts run with the
+/// package directory as CWD).
+const SPEECH_BRIDGE: &str = "swift/SpeechBridge.swift";
+
+/// Deployment target for the bridge when the build doesn't set one — the same
+/// `13.0` as `bundle.macOS.minimumSystemVersion` in `tauri.conf.json`. It only
+/// decides which Swift runtime the objects expect at link time; the code itself
+/// is gated at runtime on macOS 26 with `#available`.
+const MACOS_DEPLOYMENT_TARGET: &str = "13.0";
 
 /// whisper.cpp's Metal backend guards its residency-set path on
 /// `@available(macOS 15.0, ...)` (`ggml/src/ggml-metal/ggml-metal-device.m`),

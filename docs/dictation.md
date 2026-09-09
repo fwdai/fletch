@@ -7,15 +7,19 @@ and where your audio goes.
 
 ## Platform support
 
-**Apple only.** The default implementation is Apple's Speech framework
-(`SFSpeechRecognizer` fed by an `AVAudioEngine` mic tap), reached through the
-`objc2` bindings — the same code compiles for macOS and iOS, with no Swift
-toolchain step. Linux and Windows get a stub that reports `supported: false`,
-and the composer hides the button entirely rather than offer one that can only
-fail.
+**macOS 26 or newer.** The default engine is Apple's on-device `SpeechAnalyzer`
+(the model behind the system's own dictation since macOS 26), fed by an
+`AVAudioEngine` mic tap. The analyzer is a Swift-only API, so it is reached
+through a small Swift bridge compiled into the binary — see
+[Building the Swift bridge](#building-the-swift-bridge). Linux and Windows get
+a stub that reports `supported: false`, and the composer hides the button
+entirely rather than offer one that can only fail. A Mac below 26 gets the same
+answer from the real implementation, as does a Mac whose language Apple has no
+model for.
 
 macOS additionally has a local whisper.cpp engine the user can opt into; see
-[The local engine](#the-local-engine) below.
+[Local Whisper engine](#local-whisper-engine-opt-in) below. It has no macOS 26
+requirement, so on an older Mac it is the only way to get the button back.
 
 The flow, end to end:
 
@@ -27,35 +31,32 @@ The flow, end to end:
 | Events | `src/api/events.ts` — `dictation:transcript`, `dictation:state` |
 | Commands + contract | `src-tauri/src/dictation/mod.rs` |
 | Microphone (both engines) | `src-tauri/src/dictation/apple.rs` |
+| Default engine | `src-tauri/src/dictation/speech.rs` (Rust side), `src-tauri/swift/SpeechBridge.swift` (Swift side) |
 | Local engine | `src-tauri/src/dictation/capture.rs`, `src-tauri/src/dictation/whisper/` |
 
 ## Permissions
 
-Apple's recognizer needs **two** separate TCC grants, prompted on the first
-`dictation_start` (speech first, then the microphone, one dialog at a time):
+Dictation needs **one** TCC grant, the microphone, prompted on the first
+`dictation_start`. The usage string, `NSMicrophoneUsageDescription`, lives in
+`src-tauri/Info.plist`, which the Tauri CLI picks up by filename and
+`tauri-codegen` also embeds into the dev binary — so the prompt works under
+`tauri dev`, not just in a bundle.
 
-- `NSSpeechRecognitionUsageDescription`
-- `NSMicrophoneUsageDescription`
+Apple's analyzer does **not** need the Speech Recognition grant. This was
+checked rather than assumed: a throwaway app bundle with a fresh bundle id and
+no `NSSpeechRecognitionUsageDescription` transcribed a file with
+`SFSpeechRecognizer.authorizationStatus()` reading "not determined" before and
+after, and no prompt. So nothing calls `requestAuthorization:` any more, the
+plist key is gone, and `dictation_availability`'s `speech` field is vestigial —
+always `not_determined`, kept only so the wire shape didn't change. The button
+ignores it.
 
-Both strings live in `src-tauri/Info.plist`, which the Tauri CLI picks up by
-filename and `tauri-codegen` also embeds into the dev binary — so the prompts
-work under `tauri dev`, not just in a bundle. The speech string is load-bearing
-rather than cosmetic: `requestAuthorization:` crashes the process outright if
-it is missing.
-
-The local engine asks for the microphone only. Opting out of Apple's speech
-service and then being made to authorize it would be a contradiction, so that
-path never calls `requestAuthorization:` — and `dictation_availability`'s
-`speech` field is meaningless when `engine` is `whisper`, which is why the
-button ignores it there.
-
-A denied grant can only be undone in System Settings › Privacy & Security, so
-the button shows a slashed mic and says so. To get the first-run prompts back
-while testing:
+A denied microphone grant can only be undone in System Settings › Privacy &
+Security, so the button shows a slashed mic and says so. To get the first-run
+prompt back while testing:
 
 ```sh
 tccutil reset Microphone com.fletch.desktop
-tccutil reset SpeechRecognition com.fletch.desktop
 ```
 
 ## The audio-input entitlement
@@ -71,24 +72,106 @@ The failure mode when this doesn't reach `codesign` is quiet: dev builds work,
 the notarized app lights the mic and transcribes silence. If dictation returns
 an empty transcript only in a released build, check the entitlement first.
 
-## On-device vs Apple's servers
+## The default engine
 
-The request sets `requiresOnDeviceRecognition` to whatever the recognizer
-reports as `supportsOnDeviceRecognition()`. Where that is true (a supported
-locale on Apple Silicon, with the assets downloaded) **no audio leaves the
-machine**. Where it is false, recognition is server-backed and Apple caps a
-session at roughly a minute, after which the recognizer ends it itself — the
-composer sees the ordinary final transcript and `stopped`, so a long dictation
-simply stops rather than breaking. `dictation_availability` reports which mode
-this machine is in as `on_device`.
+`SpeechAnalyzer` runs entirely on this machine: **no audio leaves it**, there
+is no server path and so no server-side session cap. `dictation_availability`
+reports `on_device: true` for both engines, and the field exists only because
+the wire shape predates this.
+
+### Locale and the model
+
+`SpeechTranscriber` takes its locale explicitly. The bridge uses
+`Locale.current` and matches it against `SpeechTranscriber.supportedLocales` —
+exactly first, then any variant of the same language, so a Mac set to
+English/Poland still dictates in English. No match means
+`dictation_availability.supported` is false and a start would say "Dictation
+doesn't support this Mac's language." There is no setting for it.
+
+The per-locale model is downloaded by the OS on demand, not bundled. The first
+`dictation_start` (not launch) asks `AssetInventory` whether anything is
+missing; if so it kicks off the download in the background and **rejects** the
+start with "Downloading the speech model for English (12%). Try again in a
+moment." — a readable failure rather than a mic button that hangs for a
+multi-hundred-megabyte fetch. Once the model has landed the next start goes
+through. `AssetInventory.reserve(locale:)` is called each time so the OS keeps
+the model resident for us.
+
+All of that is the bridge's `prepare` step, which `apple::start` awaits after
+the permission check and before opening the mic. It also caches the audio
+format the analyzer wants (`bestAvailableAudioFormat`, 16 kHz mono `Int16` in
+practice), so the actual session start is synchronous.
+
+### Volatile and final results
+
+The transcriber is configured for `.volatileResults`: while the user speaks it
+emits guesses that each replace the previous guess, and periodically a
+`isFinal` result that commits a stretch of text. The bridge keeps the
+concatenation of finalized results and sends `finalized + latest volatile` on
+every result, so each `dictation:transcript` event is the whole running text —
+the contract `useDictation` already relied on with the legacy recognizer.
+
+A stop finishes the input stream and calls
+`finalizeAndFinishThroughEndOfInput()`; the results sequence then ends, and
+that end is reported as the one `is_final` transcript, which is what drives
+`stopped` (the same shape `endAudio` had). A teardown calls
+`cancelAndFinishNow()` instead. Should the analyzer never finish, the
+two-second flush deadline in `apple.rs` forces the stop.
+
+### Threading
+
+The bridge's callbacks arrive on Swift's cooperative executors, never on the
+main thread, so each one hops onto it with `run_on_main_thread` before touching
+session state, stamped with the generation it belongs to. The tap's job is
+unchanged: hand the buffer over and return. The conversion from the mic's
+format to the analyzer's (an `AVAudioConverter`, which also serves as the copy
+the tap's reused buffer needs) happens inside the bridge's `feed`, on the render
+thread — the same thing Apple's own `SpeechAnalyzer` sample does.
+
+## Building the Swift bridge
+
+`SpeechAnalyzer`, `SpeechTranscriber`, `AnalyzerInput` and `AssetInventory`
+have no Objective-C surface, so `objc2` can't reach them. `src-tauri/build.rs`
+(`build_speech_bridge`) compiles `src-tauri/swift/SpeechBridge.swift` into a
+static library and links it into the Rust binary; the Swift side exposes six
+`@_cdecl` C functions (`availability`, `prepare`, `start`, `feed`, `finish`,
+`cancel`) and takes C function pointers for its callbacks. All session state
+stays in Rust; the Swift object holds only what has to be Swift.
+
+The invocation, per target architecture:
+
+```sh
+xcrun --sdk macosx --find swiftc   # the compiler of the selected Xcode / CLT
+swiftc -emit-library -static -parse-as-library -module-name FletchSpeech \
+  -swift-version 5 -O \
+  -target arm64-apple-macos13.0 \       # or x86_64-apple-macos13.0
+  -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+  swift/SpeechBridge.swift -o "$OUT_DIR/libfletch_speech.a"
+```
+
+The deployment target is `13.0`, matching `minimumSystemVersion`; the Swift
+code guards every entry point with `#available(macOS 26, *)`, so the binary
+still launches on older macOS and dictation reports unsupported there. Nothing
+is bundled: the Swift objects carry autolink entries for `swiftCore`,
+`Foundation`, `Speech` and friends, and the only thing the Rust link adds is a
+search path to the SDK's `usr/lib/swift` stubs, which resolve to the runtime
+that has shipped with macOS since 10.14.4. Both release slices (`arm64`,
+`x86_64`) build from the same file.
+
+The build needs the macOS 26 SDK — Xcode 26 or the matching Command Line Tools
+— and stops early with a message saying so if `xcrun` is missing or the
+selected SDK is older, rather than failing at the linker. The Linux CI build
+compiles none of this (`CARGO_CFG_TARGET_OS` gate). A change to the Swift file
+reruns the build script; so does a change of `SDKROOT` or
+`MACOSX_DEPLOYMENT_TARGET`.
 
 ## Local Whisper engine (opt-in)
 
 Settings › General › Dictation offers a second engine: whisper.cpp running
-locally, for people who want transcription that never depends on Apple's
-locale support or its servers. Apple's recognizer stays the default — the
-local engine costs a one-time model download, so it can only be a choice the
-user makes.
+locally, for people who want transcription that doesn't depend on Apple's
+locale support or on macOS 26. Apple's engine stays the default — the local
+engine costs a one-time model download, so it can only be a choice the user
+makes.
 
 The opt-in is the `dictation_engine` settings row (`whisper` or `apple`),
 written by the backend `set_dictation_engine` command. Enabling it starts the
@@ -197,10 +280,20 @@ whisper.cpp is compiled from source by `whisper-rs-sys`, which needs **cmake**
 on the build host. The dependency lives under
 `[target.'cfg(target_os = "macos")'.dependencies]` for two reasons: `metal`
 puts inference on the GPU, and the Linux CI build has no business compiling a
-C++ tree it will never run. iOS therefore keeps Apple's recognizer whatever the
-setting says — `dictation/capture.rs` and `dictation/whisper/engine.rs` don't
-exist there. No link flags of our own are needed; `whisper-rs-sys` emits the
-`c++`/Accelerate/Foundation/Metal/MetalKit lines itself.
+C++ tree it will never run. No link flags of our own are needed;
+`whisper-rs-sys` emits the `c++`/Accelerate/Foundation/Metal/MetalKit lines
+itself.
+
+ggml's CMake detects ARM CPU features by compiling probe programs with
+`-mcpu=native+<feature>` and running them; the probes for features the CPU
+lacks (SVE and SME on Apple Silicon) are meant to die with SIGILL. Under a
+sandbox that stalls crash handling they can instead hang forever, and the whole
+cargo build with them — silently, at the cmake configure step. The repo-root
+`.cargo/config.toml` therefore pre-answers those two probes through the
+`GGML_MACHINE_SUPPORTS_sve` / `GGML_MACHINE_SUPPORTS_sme` env vars, which
+`whisper-rs-sys` forwards to cmake as defines. If a build ever sits in
+`whisper-rs-sys` with no output, look for a `cmTC_*` process and check
+`CMakeConfigureLog.yaml` under its `out/build` for which probe is running.
 
 ### Capture, and why resampling isn't decimation
 
@@ -236,9 +329,9 @@ so a mistimed press leaves the composer exactly as it was.
 ### Hands-free: auto-stop
 
 On the local engine a session ends itself once the user has spoken and then
-gone quiet, so dictating is one click rather than two. Apple's recognizer is
-untouched — it streams results and manages its own end-of-utterance, and there
-is no PCM buffer on that path to measure.
+gone quiet, so dictating is one click rather than two. Apple's engine is
+untouched — it streams results while the mic is open, and there is no PCM
+buffer on that path to measure.
 
 The detector is two atomics on the capture buffer, updated by the tap on the
 render thread. Each buffer's RMS is computed in the same pass that averages the
@@ -292,7 +385,7 @@ an opt-out would gate the monitor rather than change them.
 
 ### `transcribing`, and the model's lifetime
 
-Apple's recognizer streams revisions while the user speaks; whisper.cpp has
+Apple's engine streams revisions while the user speaks; whisper.cpp has
 nothing to say until the whole clip is in. A stop on the local engine therefore
 closes the mic, emits a new `dictation:state` of **`transcribing`**, runs the
 model, and only then emits the one final transcript and `stopped` (or `error`

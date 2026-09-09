@@ -1,0 +1,22 @@
+# Repo-wide cargo settings. Discovered from the repo root and from src-tauri/
+# alike (cargo walks up from the working directory), so CI's
+# `--manifest-path src-tauri/Cargo.toml` invocations and `tauri build` both see
+# it.
+
+[env]
+# whisper.cpp (built from source by whisper-rs-sys, macOS only) lets ggml's
+# CMake detect ARM CPU features by compiling tiny probe programs with
+# `-mcpu=native+<feature>` and *running* them. The probes for features the CPU
+# lacks are meant to die with SIGILL, and cmake records "failed to run". Under
+# a sandbox that stalls macOS crash handling, a probe that faults can instead
+# sit suspended at the faulting instruction forever — and the whole cargo build
+# hangs behind it with no output.
+#
+# whisper-rs-sys forwards every `GGML_*` env var to cmake as a define, and
+# `check_cxx_source_runs` skips a probe whose result variable is already
+# defined. So answer the two probes that fault on Apple Silicon up front:
+# no Mac has SVE (Apple never implemented it), and SME (M4 onwards) buys ggml
+# nothing here — its SME kernels live behind KleidiAI, which is off. dotprod
+# and i8mm keep being probed; those succeed, and never crash.
+GGML_MACHINE_SUPPORTS_sve = "0"
+GGML_MACHINE_SUPPORTS_sme = "0"

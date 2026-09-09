@@ -1,30 +1,33 @@
-// Voice dictation: the composer's mic button, backed by the platform's native
-// speech recognizer (Apple's SFSpeechRecognizer on macOS/iOS). Mirrors the Rust
-// `dictation` module's serde shapes — keep the two in sync.
+// Voice dictation: the composer's mic button, backed by Apple's on-device
+// SpeechAnalyzer on macOS 26+ (or the local whisper engine the user can opt
+// into). Mirrors the Rust `dictation` module's serde shapes — keep the two in
+// sync.
 
-/** Apple's authorization states for the mic and for speech recognition.
- *  `not_determined` means the OS hasn't asked the user yet; the first
- *  `dictation_start` triggers the prompt. `restricted` is a parental-control /
- *  MDM lock the user can't lift from the app. */
+/** Apple's authorization states for the microphone. `not_determined` means the
+ *  OS hasn't asked the user yet; the first `dictation_start` triggers the
+ *  prompt. `restricted` is a parental-control / MDM lock the user can't lift
+ *  from the app. */
 export type DictationAuthorization = "not_determined" | "authorized" | "denied" | "restricted";
 
-/** Which recognizer a session would use: the platform's (`apple`) or the local
- *  whisper.cpp model the user can opt into in Settings (`whisper`). The backend
- *  picks per session — `whisper` only once its model is fully downloaded — so
- *  this is what the engine *would* be, not just what the setting says. */
+/** Which recognizer a session would use: Apple's `SpeechAnalyzer` (`apple`) or
+ *  the local whisper.cpp model the user can opt into in Settings (`whisper`).
+ *  The backend picks per session — `whisper` only once its model is fully
+ *  downloaded — so this is what the engine *would* be, not just what the
+ *  setting says. */
 export type DictationEngine = "apple" | "whisper";
 
 export interface DictationAvailability {
-  /** False on platforms with no native recognizer (Linux, Windows). The
-   *  composer hides the mic button entirely when this is false. */
+  /** False where no engine can run: Linux and Windows, and a Mac below
+   *  macOS 26 (or with a language Apple has no model for) when the local
+   *  engine isn't chosen. The composer hides the mic button when this is
+   *  false. */
   supported: boolean;
-  /** Meaningless when `engine` is `whisper`: that engine never calls Apple's
-   *  recognizer, so it neither prompts for this grant nor is blocked by it. */
+  /** Vestigial: no engine asks for the Speech Recognition grant any more, so
+   *  this is always `not_determined`. Kept so the wire shape is unchanged. */
   speech: DictationAuthorization;
   microphone: DictationAuthorization;
-  /** The recognizer for the current locale can run without sending audio to
-   *  Apple. When false, recognition uses Apple's servers and sessions are
-   *  capped at roughly one minute. Always true for `whisper`. */
+  /** Always true: both engines transcribe on this machine and no audio leaves
+   *  it. */
   on_device: boolean;
   engine: DictationEngine;
 }
