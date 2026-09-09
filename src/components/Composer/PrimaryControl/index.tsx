@@ -13,34 +13,42 @@ export { type DictationPhase, type PrimaryState, primaryState } from "./primaryS
  *  front or found out on the attempt. */
 export const SETTINGS_HINT = "Microphone is off — allow it in System Settings";
 
+const NO_LEVELS: number[] = [0, 0, 0, 0, 0];
+
+/** Everything but `state`, `dictationAvailable` and `onSend` is optional so a
+ *  composer without dictation (the workflow launcher, the roadmap chat) can
+ *  render the same control in its empty/draft states with nothing to wire. */
 interface Props {
   state: PrimaryState;
   /** False where no engine exists (Linux, Windows, a Mac below 26 without the
-   *  local engine): the mic is never offered, and the empty pill degrades to a
-   *  plain send arrow — the control the composer had before. */
+   *  local engine) or the composer has no dictation at all: the mic is never
+   *  offered, and the empty pill degrades to a plain send arrow. */
   dictationAvailable: boolean;
   /** The local engine ends the session itself once the user pauses, and the
    *  tooltip has to say so — a mic that stops on its own otherwise reads as a
    *  bug. */
-  autoStops: boolean;
+  autoStops?: boolean;
   /** Recent microphone levels, oldest first, each 0–1. */
-  levels: number[];
+  levels?: number[];
   /** When the mic opened (epoch ms), for the clock; null when it isn't open. */
-  startedAt: number | null;
+  startedAt?: number | null;
   /** Why sending is blocked right now, if it is (a provider the sandbox engine
    *  can't run). Shown as the tooltip in `draft`; the arrow is disabled. */
   sendBlocked?: string;
   /** The last failure's reason, shown as the error pill's tooltip. */
-  error: string | null;
+  error?: string | null;
   /** The composer can't take input (agent not ready, transcript loading). The
    *  mic and send are inert; stopping a run stays possible. */
   disabled?: boolean;
-  onMic: () => void;
+  /** What the send arrow is called — "Send" unless the composer launches
+   *  something else. */
+  sendLabel?: string;
+  onMic?: () => void;
   onSend: () => void;
-  onStopDictation: () => void;
-  onStopRun: () => void;
-  onRetry: () => void;
-  onUnavailable: () => void;
+  onStopDictation?: () => void;
+  onStopRun?: () => void;
+  onRetry?: () => void;
+  onUnavailable?: () => void;
 }
 
 /** The composer's primary control: the mic when the field is empty, the send
@@ -54,12 +62,13 @@ interface Props {
 export function PrimaryControl({
   state,
   dictationAvailable,
-  autoStops,
-  levels,
-  startedAt,
+  autoStops = false,
+  levels = NO_LEVELS,
+  startedAt = null,
   sendBlocked,
-  error,
+  error = null,
   disabled = false,
+  sendLabel = "Send",
   onMic,
   onSend,
   onStopDictation,
@@ -79,14 +88,14 @@ export function PrimaryControl({
   const showSend = split || (!dictationAvailable && is("empty"));
   const sendDisabled = disabled || !!sendBlocked || !is("draft");
 
-  const tip = tipFor(state, { dictationAvailable, autoStops, sendBlocked, error });
+  const tip = tipFor(state, { dictationAvailable, autoStops, sendBlocked, error, sendLabel });
 
   // The whole pill is one target in the states that have one action.
   function onPillClick() {
-    if (is("listening")) onStopDictation();
-    else if (is("running")) onStopRun();
-    else if (is("error") && !disabled) onRetry();
-    else if (is("unavailable")) onUnavailable();
+    if (is("listening")) onStopDictation?.();
+    else if (is("running")) onStopRun?.();
+    else if (is("error") && !disabled) onRetry?.();
+    else if (is("unavailable")) onUnavailable?.();
   }
 
   const pillClass = [
@@ -107,7 +116,7 @@ export function PrimaryControl({
         aria-label={micAside ? "Dictate more" : "Dictate"}
         tabIndex={micHome || micAside ? 0 : -1}
         disabled={disabled || !(micHome || micAside)}
-        onClick={onMic}
+        onClick={() => onMic?.()}
       >
         <Icon name="mic" size={14} />
       </button>
@@ -141,17 +150,22 @@ export function PrimaryControl({
           on={is("listening")}
           className="sq stopd"
           label="Stop dictation"
-          onClick={onStopDictation}
+          onClick={() => onStopDictation?.()}
         >
           <span className="pc-stop-sq" />
         </SegButton>
-        <SegButton on={is("running")} className="sq stopr" label="Stop agent" onClick={onStopRun}>
+        <SegButton
+          on={is("running")}
+          className="sq stopr"
+          label="Stop agent"
+          onClick={() => onStopRun?.()}
+        >
           <span className="pc-stop-sq" />
         </SegButton>
         <SegButton
           on={showSend}
           className="sq send"
-          label="Send"
+          label={sendLabel}
           disabled={sendDisabled}
           onClick={onSend}
         >
@@ -219,14 +233,17 @@ function tipFor(
     autoStops: boolean;
     sendBlocked?: string;
     error: string | null;
+    sendLabel: string;
   },
 ): string {
   switch (state) {
     case "empty":
-      return o.dictationAvailable ? "Dictate · ⌘⇧D" : "Send · ↵";
+      return o.dictationAvailable ? "Dictate · ⌘⇧D" : `${o.sendLabel} · ↵`;
     case "draft":
       if (o.sendBlocked) return o.sendBlocked;
-      return o.dictationAvailable ? "Send · ↵  ·  Dictate more · ⌘⇧D" : "Send · ↵";
+      return o.dictationAvailable
+        ? `${o.sendLabel} · ↵  ·  Dictate more · ⌘⇧D`
+        : `${o.sendLabel} · ↵`;
     case "listening":
       return o.autoStops
         ? "Listening… stops when you pause  ·  Esc cancels"

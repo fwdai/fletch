@@ -16,7 +16,10 @@ secondary once there is a draft, and collapses while listening or running.
 Widths per state, tones, and timings follow the design spec; the CSS is the
 source of those numbers.
 
-Keys, all handled on the textarea (`Composer/index.tsx`):
+Keys, handled on the textarea (`Composer/index.tsx`). ⌘⇧D also works with
+the focus anywhere else in the window that isn't an editable field
+(`useDictationHotkey`): it toggles dictation in the composer and brings the
+caret there.
 
 | Key | empty | draft | listening | agent running |
 | --- | --- | --- | --- | --- |
@@ -33,9 +36,10 @@ While the mic is open the recognizer's running transcript is **not** written
 into the textarea. It is shown by `InterimGhost`, a layer over the textarea
 with identical metrics (the textarea's own text repeated invisibly, then the
 interim words in italic with a pulsing dot), so undo history stays clean and
-esc is a no-op on the draft. The final result is spliced onto whatever the box
-holds when it arrives (`spliceTranscript`), the caret moves to its end, and the
-new span carries a short wash. A session that ends without a final result
+esc is a no-op on the draft. The final result is inserted at the caret of
+whatever the box holds when it arrives (`insertTranscript`, space-normalised on
+both sides; the ghost previews exactly that join), the caret moves to its end,
+and the new span carries a short wash. A session that ends without a final result
 (Apple's flush deadline, an error mid-utterance) commits what was last heard.
 
 A failed transcription turns the pill danger-tinted with a retry glyph for
@@ -43,7 +47,8 @@ A failed transcription turns the pill danger-tinted with a retry glyph for
 shows an outlined mic-off pill whose click opens System Settings › Privacy &
 Security › Microphone — the shell plugin's open scope in `tauri.conf.json`
 admits that URL scheme for this. Where no engine exists at all the mic is never
-offered and the empty slot degrades to a plain, disabled send arrow.
+offered and the empty slot degrades to a plain, disabled send arrow — which is
+also the form the workflow and roadmap composers use, having no dictation.
 
 ## Platform support
 

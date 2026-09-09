@@ -1,9 +1,11 @@
-import { type FreshSpan, separator } from "./dictation";
+import { type FreshSpan, splitForTranscript } from "./dictation";
 
 export interface GhostProps {
   /** The textarea's own value, repeated invisibly so the interim text lands
-   *  exactly where the caret is. */
+   *  exactly where it will be inserted. */
   text: string;
+  /** Where the transcript will be inserted — the textarea's caret. */
+  caret: number;
   /** The recognizer's running transcript, not yet in the box. */
   interim: string;
   /** The mic is open. With nothing typed and nothing heard yet, the layer says
@@ -15,11 +17,12 @@ export interface GhostProps {
 }
 
 /** A layer over the textarea with identical metrics. Interim tokens render
- *  inline at the end of the text, italic, with a pulsing accent dot; they are
- *  not in the textarea's value, so undo history stays clean and a cancel is a
- *  no-op on the draft. After a commit the same layer carries the wash over the
- *  new span. Pointer events pass through to the textarea beneath. */
-export function InterimGhost({ text, interim, listening, fresh }: GhostProps) {
+ *  inline at the caret, italic, with a pulsing accent dot — spaced exactly as
+ *  the commit will space them; they are not in the textarea's value, so undo
+ *  history stays clean and a cancel is a no-op on the draft. After a commit the
+ *  same layer carries the wash over the new span. Pointer events pass through
+ *  to the textarea beneath. */
+export function InterimGhost({ text, caret, interim, listening, fresh }: GhostProps) {
   if (fresh) {
     return (
       <div className="cmp-ghost text-base" aria-hidden="true">
@@ -29,15 +32,18 @@ export function InterimGhost({ text, interim, listening, fresh }: GhostProps) {
       </div>
     );
   }
+  const { before, lead, trail, after } = splitForTranscript(text, caret, interim);
   return (
     <div className="cmp-ghost text-base" aria-live="polite">
-      {text}
-      {separator(text, interim)}
+      {before}
+      {lead}
       {interim ? (
         <span className="interim">{interim}</span>
       ) : listening && !text ? (
         <span className="listen-hint">Listening…</span>
       ) : null}
+      {trail}
+      {after}
     </div>
   );
 }

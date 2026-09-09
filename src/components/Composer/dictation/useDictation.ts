@@ -9,7 +9,7 @@ import {
 } from "@/api";
 import type { DictationPhase } from "../PrimaryControl/primaryState";
 import { type ComposerInput, grow } from "../useComposerInput";
-import { spliceTranscript } from "./spliceTranscript";
+import { insertTranscript } from "./spliceTranscript";
 
 /** What we assume when the availability probe itself fails — an older backend
  *  without the command, or a non-Tauri environment (tests, storybook-ish
@@ -52,9 +52,9 @@ let lastAvailability: DictationAvailability | null = null;
  *  (Apple revises earlier words as it hears more), so `interim` is REPLACED on
  *  each event. It is not written into the box: the composer renders it in a
  *  ghost layer over the textarea, so undo history stays clean and a cancel is
- *  a no-op on the draft. The final result is spliced onto whatever the box
- *  holds at that moment (see [`spliceTranscript`]) — the user may have kept
- *  typing — and the inserted span is reported as `fresh` for a moment. */
+ *  a no-op on the draft. The final result is inserted at the caret of whatever
+ *  the box holds at that moment (see [`insertTranscript`]) — the user may have
+ *  kept typing — and the inserted span is reported as `fresh` for a moment. */
 export function useDictation(input: ComposerInput) {
   const [availability, setAvailability] = useState<DictationAvailability | null>(lastAvailability);
   const [phase, setPhase] = useState<DictationPhase>("idle");
@@ -131,16 +131,17 @@ export function useDictation(input: ComposerInput) {
     }, ERROR_TTL_MS);
   }
 
-  /** Splice what the session heard onto the box. Once per session at most;
+  /** Insert what the session heard at the caret. Once per session at most;
    *  nothing heard leaves the box untouched — no dangling space, no toast. */
   function commit(transcript: string) {
     committedRef.current = true;
     if (!transcript) return;
     const ip = inputRef.current;
-    const { text, caret } = spliceTranscript(ip.text, transcript);
+    const { text, start, caret } = insertTranscript(ip.text, ip.caret, transcript);
     lastWrittenRef.current = text;
     ip.setText(text);
-    setFresh({ start: text.length - transcript.length, end: text.length });
+    ip.setCaret(caret);
+    setFresh({ start, end: caret });
     if (freshTimer.current !== null) window.clearTimeout(freshTimer.current);
     freshTimer.current = window.setTimeout(() => {
       freshTimer.current = null;

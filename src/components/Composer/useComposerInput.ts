@@ -67,8 +67,10 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   const [text, setText] = useState(() =>
     draftKey ? (useAppStore.getState().composerDrafts[draftKey] ?? "") : "",
   );
-  // Caret offset, tracked so triggers can be detected at the cursor.
-  const [caret, setCaret] = useState(0);
+  // Caret offset, tracked so triggers can be detected at the cursor and
+  // dictation can insert there. Starts at the end of the restored draft, which
+  // is where the browser puts the caret of a textarea given a value.
+  const [caret, setCaret] = useState(text.length);
   const [attachments, setAttachments] = useState<string[]>([]);
   const ta = useRef<HTMLTextAreaElement>(null);
 
@@ -187,6 +189,9 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     setText,
     append,
     caret,
+    /** For a caller that writes text itself (dictation's commit) and has to
+     *  tell the input where the caret ended up; `placeCaret` moves the DOM's. */
+    setCaret,
     attachments,
     addPaths,
     removePath,

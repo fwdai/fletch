@@ -237,8 +237,9 @@
   padding: 6px 8px 6px 10px;
 }
 /* Right-side insert actions (attach, issue) — square icon buttons sized to
- * pair with .send, so they read as first-class actions rather than stray
- * glyphs. Rides .btn-i (IconButton) for base behavior + tooltip. */
+ * pair with the 28px primary control, so they read as first-class actions
+ * rather than stray glyphs. Rides .btn-i (IconButton) for base behavior +
+ * tooltip. */
 .composer-foot .composer-action {
   width: 28px;
   height: 28px;
@@ -328,44 +329,6 @@
   min-width: 0;
   max-width: 170px;
   color: var(--fg-2);
-}
-
-/* The plain send button of the workflow and roadmap composers. The agent
-   composer's slot is the primary control (PrimaryControl.css). */
-.send {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--r-sm);
-  background: var(--accent);
-  color: var(--btn-fg-dark-alt);
-  justify-content: center;
-  transition:
-    background 0.12s,
-    transform 0.08s;
-}
-.theme-light .send {
-  color: var(--btn-fg-light);
-}
-.send:hover:not(:disabled) {
-  background: oklch(from var(--accent) calc(l + 0.04) c h);
-}
-.send:active:not(:disabled) {
-  transform: scale(0.94);
-}
-.send svg {
-  width: 13px;
-  height: 13px;
-}
-.send:disabled {
-  background: var(--hover);
-  color: var(--fg-3);
-}
-.send.is-stop {
-  background: var(--danger);
-  color: var(--btn-fg-light);
-}
-.send.is-stop:hover:not(:disabled) {
-  background: oklch(from var(--danger) calc(l + 0.04) c h);
 }
 
 /* composer · token usage meter */

@@ -18,7 +18,7 @@ import { isContainerEngine, sandboxEngineLabel } from "@/storage/preferences";
 import type { UsageSnapshot } from "@/store";
 import { useAppStore } from "@/store";
 import { ComposerFrame } from "./ComposerFrame";
-import { useDictation } from "./dictation";
+import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
 import { IssuePicker } from "./IssuePicker";
 import { ModelPicker } from "./ModelPicker";
 import { PrimaryControl, primaryState } from "./PrimaryControl";
@@ -366,12 +366,19 @@ export function Composer({
     dictation.toggle();
   }
 
+  // ⌘⇧D with the focus elsewhere in the window still dictates into this box —
+  // and brings the caret here, so the interim text is where the eye goes.
+  useDictationHotkey(() => {
+    toggleDictation();
+    input.ta.current?.focus();
+  });
+
   // ↵ sends; ⇧↵ is a newline (falls through to the textarea); ⌘⇧D toggles
   // dictation; esc backs out of whatever is live. While listening, ↵ stops and
   // transcribes rather than sending — the operator is already reaching for it.
   keysRef.current = (e) => {
     const mod = e.metaKey || e.ctrlKey;
-    if (mod && e.shiftKey && (e.key === "d" || e.key === "D")) {
+    if (isDictationHotkey(e)) {
       e.preventDefault();
       toggleDictation();
       return true;

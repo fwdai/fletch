@@ -20,7 +20,7 @@ interface Props {
   /** Dictation's view of the field: the interim transcript to preview over the
    *  text, whether the mic is open (the frame glows accent), and the span a
    *  commit just inserted. Omit for a composer without dictation. */
-  dictation?: Omit<GhostProps, "text">;
+  dictation?: Omit<GhostProps, "text" | "caret">;
 }
 
 /** The shared composer chrome: the `.composer` shell, drop overlay, autocomplete
@@ -95,7 +95,7 @@ export function ComposerFrame({
         />
         {showGhost && dictation && (
           <div ref={ghostRef} className="cmp-ghost-clip">
-            <InterimGhost text={input.text} {...dictation} />
+            <InterimGhost text={input.text} caret={input.caret} {...dictation} />
           </div>
         )}
       </div>
