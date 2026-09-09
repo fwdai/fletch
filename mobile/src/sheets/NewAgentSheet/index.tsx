@@ -99,6 +99,7 @@ export function NewAgentSheet({
       effort,
       base: chosenBase,
       prompt: prompt.trim(),
+      name,
     })
       // Only a spawn that actually started the agent has consumed the prompt.
       // A failed one keeps it, so the button below can just be pressed again.

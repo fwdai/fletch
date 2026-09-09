@@ -136,6 +136,10 @@ export interface SpawnInput {
   effort: string | null;
   base: string;
   prompt: string;
+  /** The workspace name the New Agent sheet showed. Empty when the sheet
+   *  never got one (its allocation failed), in which case one is allocated
+   *  here so the spawn still goes through. */
+  name: string;
 }
 
 let initialized = false;
@@ -510,9 +514,11 @@ export const useStore = create<MobileState>()((set, get) => ({
     });
   },
 
-  async spawn({ repoPath, provider, model, effort, base, prompt }) {
+  async spawn({ repoPath, provider, model, effort, base, prompt, name: shown }) {
     return guard(set, async () => {
-      const name = await api.allocateDraftName([]);
+      // The user has been looking at (and possibly rerolled) this name; the
+      // agent must launch under it, not a fresh draw.
+      const name = shown || (await api.allocateDraftName([]));
       const record = await api.spawnAgent(repoPath, provider, name, effort, model, base);
       const turnId = newId();
       set((s) => ({
