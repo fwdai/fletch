@@ -24,8 +24,11 @@ const SEND_ARM_MS = 450;
  *  which fades over 1.1 s. */
 const FRESH_TTL_MS = 1200;
 
-/** Field height cap before it scrolls internally. */
-const MAX_FIELD_PX = 160;
+/** Field height cap before it scrolls internally: the field follows the text
+ *  up to 40% of the visible viewport, so a long draft stays readable while the
+ *  log keeps most of the screen. Read per call, since the keyboard changes the
+ *  viewport. Mirrors the `40dvh` max-height in agent.css. */
+const fieldCap = () => Math.round(window.innerHeight * 0.4);
 
 /** The phone's composer: the field, and a footer whose primary control is one
  *  44 pt disc that morphs in place — mic → send → done → stop — with the mic
@@ -68,7 +71,7 @@ export function Composer({
       freshTimer.current = null;
       setFresh(null);
     }, FRESH_TTL_MS);
-    requestAnimationFrame(() => autosize(ta.current, 0, MAX_FIELD_PX));
+    requestAnimationFrame(() => autosize(ta.current, 0, fieldCap()));
   });
 
   useEffect(
@@ -101,7 +104,7 @@ export function Composer({
     const value = text.trim();
     if (!value || busy || dictation.phase !== "idle") return;
     setText("");
-    requestAnimationFrame(() => autosize(ta.current, 0, MAX_FIELD_PX));
+    requestAnimationFrame(() => autosize(ta.current, 0, fieldCap()));
     setArmed(false);
     if (armTimer.current !== null) window.clearTimeout(armTimer.current);
     armTimer.current = window.setTimeout(() => {
@@ -159,7 +162,7 @@ export function Composer({
             value={text}
             onChange={(e) => {
               setText(e.target.value);
-              autosize(e.currentTarget, 0, MAX_FIELD_PX);
+              autosize(e.currentTarget, 0, fieldCap());
             }}
           />
           {(listening || fresh !== null) && (
