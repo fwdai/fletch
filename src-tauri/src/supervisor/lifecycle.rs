@@ -21,6 +21,7 @@ use crate::workspace::{
 
 use super::events::{
     emit_agent_event, emit_agent_output, emit_effort, emit_model, emit_repo_added, emit_view,
+    emit_workspace_changed,
 };
 use super::messaging::{
     drain_message_queue, flush_queued, mark_user_turn_started, on_first_user_message,
@@ -469,6 +470,13 @@ impl Supervisor {
             }),
         );
         self.set_status(&app, &agent_id, AgentStatus::Spawning, None);
+        // A new row is a structural change: `agent:status` alone is dropped by
+        // any view that doesn't have the agent yet (the desktop window when a
+        // paired phone spawned it, and vice versa). Announce it so every other
+        // client refetches the workspace now rather than on its next focus. The
+        // caller that issued the spawn refetches on its own; the generation
+        // guard in `refreshWorkspace` makes the extra fetch harmless.
+        emit_workspace_changed(&app);
         arm_spawn_timeout(self.clone(), app.clone(), agent_id.clone());
 
         let sup = self.clone();
