@@ -752,7 +752,12 @@ pub fn save_pasted_attachment(request: tauri::ipc::Request<'_>) -> Result<String
         .headers()
         .get("name")
         .and_then(|v| v.to_str().ok())
-        .map(|s| Path::new(s).file_name().and_then(|n| n.to_str()).unwrap_or(s))
+        .map(|s| {
+            Path::new(s)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(s)
+        })
         .filter(|s| !s.is_empty())
         .unwrap_or("pasted");
     let dir = crate::data_dir()
