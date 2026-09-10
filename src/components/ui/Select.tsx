@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { arrowTarget } from "@/util/arrowNav";
 import { Scrim } from "./Scrim";
 
 export interface SelectOption<T extends string> {
@@ -64,21 +65,11 @@ export function Select<T extends string>({
 
   function onListKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     const items = focusableItems(listRef.current);
-    if (items.length === 0) return;
     const current = items.indexOf(document.activeElement as HTMLButtonElement);
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      items[(current + 1) % items.length]?.focus();
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      items[(current - 1 + items.length) % items.length]?.focus();
-    } else if (e.key === "Home") {
-      e.preventDefault();
-      items[0]?.focus();
-    } else if (e.key === "End") {
-      e.preventDefault();
-      items[items.length - 1]?.focus();
-    }
+    const target = arrowTarget(items, current, e.key, { wrap: true });
+    if (!target) return;
+    e.preventDefault();
+    target.focus();
   }
 
   function pick(v: T) {

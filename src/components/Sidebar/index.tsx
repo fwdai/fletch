@@ -4,10 +4,13 @@ import { Icon } from "@/components/Icon";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
+import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
 import { useRuns } from "@/workflows/run/useRuns";
+import { isGroupOpen, type OpenMap } from "./groupOpen";
 import { NewProjectPopover } from "./NewProjectPopover";
 import { ProjectGroup } from "./ProjectGroup";
+import { focusRow, rowOf, visibleRows } from "./rowNav";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarHeader } from "./SidebarHeader";
 import { useProjectReorder } from "./useProjectReorder";
@@ -136,7 +139,21 @@ export function Sidebar() {
   const selectedRunId = useAppStore((s) => s.selectedRunId);
 
   const [query, setQuery] = useState("");
-  const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
+  const [openMap, setOpenMap] = useState<OpenMap>({});
+  // Toggles made while searching (see isGroupOpen). Reset with every query
+  // change: the result set changes under the user anyway, and starting each
+  // search with matches fully visible is what makes ⌘K → ↓ land on a row.
+  const [searchOpenMap, setSearchOpenMap] = useState<OpenMap>({});
+  const searching = query.trim().length > 0;
+  function onQueryChange(q: string) {
+    setQuery(q);
+    setSearchOpenMap({});
+  }
+  function toggleGroup(key: string) {
+    const setMap = searching ? setSearchOpenMap : setOpenMap;
+    const fallback = searching; // isGroupOpen's default for the active map
+    setMap((m) => ({ ...m, [key]: !(m[key] ?? fallback) }));
+  }
   const [npOpen, setNpOpen] = useState(false);
   const [npMode, setNpMode] = useState<NewProjectMode | null>(null);
   // Transient drag state for reordering: the group being dragged and the one
@@ -179,7 +196,7 @@ export function Sidebar() {
   const filtered = useMemo(() => applySearch(groups, query), [groups, query]);
 
   // Reordering is only meaningful over the full, unfiltered list.
-  const reorderable = !query.trim();
+  const reorderable = !searching;
   const orderedPaths = useMemo(() => groups.map((g) => g.primaryPath), [groups]);
 
   // Begin a pointer-driven reorder. `markDragged` lets the group swallow the
@@ -241,6 +258,28 @@ export function Sidebar() {
   // so they don't leak past this component's life.
   useEffect(() => () => dragCleanup.current?.(), []);
 
+  // ↑/↓ (Home/End) step through the visible rows and select as they go. Scoped
+  // to keys fired inside the list, so the composer, chat, and dropdowns keep
+  // their arrows; modifier chords pass through (Alt+↑/↓ belongs to ChatNav).
+  const listRef = useRef<HTMLDivElement>(null);
+  function onListKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.altKey || e.metaKey || e.ctrlKey) return;
+    const rows = visibleRows(listRef.current);
+    const row = rowOf(e.target);
+    const target = arrowTarget(rows, row ? rows.indexOf(row) : -1, e.key);
+    if (!target) return;
+    e.preventDefault();
+    focusRow(target);
+  }
+
+  // ↓ in the search box enters the list at the selected row (or the top), so
+  // ⌘K then arrows is the whole keyboard flow.
+  function enterList() {
+    const rows = visibleRows(listRef.current);
+    const row = rows.find((r) => r.classList.contains("active")) ?? rows[0];
+    if (row) focusRow(row);
+  }
+
   // Auto-expand a project when its agent, draft, or run is selected.
   useEffect(() => {
     setOpenMap((prev) => {
@@ -259,8 +298,8 @@ export function Sidebar() {
 
   return (
     <>
-      <SidebarHeader query={query} onChange={setQuery} />
-      <div className="side-scroll">
+      <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
+      <div className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">
           <button
             className="add-proj-cta flex-center text-sm"
@@ -293,8 +332,8 @@ export function Sidebar() {
                   agents={g.agents}
                   drafts={g.drafts}
                   runs={g.runs}
-                  open={openMap[g.key] ?? false}
-                  onToggle={() => setOpenMap((m) => ({ ...m, [g.key]: !m[g.key] }))}
+                  open={isGroupOpen(g.key, searching, openMap, searchOpenMap)}
+                  onToggle={() => toggleGroup(g.key)}
                   reorderable={reorderable}
                   dragging={dragPath === g.primaryPath}
                   dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}
