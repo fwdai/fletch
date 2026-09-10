@@ -11,9 +11,15 @@ export const LEVEL_BARS = 12;
 
 /** The dBFS range the bars span: below the floor is silence, the ceiling is
  *  loud, close speech. Linear in dB between, because that is how loudness
- *  reads. */
-const FLOOR_DB = -50;
-const CEIL_DB = -15;
+ *  reads.
+ *
+ *  −54 dBFS is where the silence detector's `MIN_RMS` (0.002) sits — the
+ *  quietest a buffer can be and still be called speech. At −50 the bars
+ *  rendered empty for audio the detector was hearing as speech, so the waveform
+ *  contradicted the session's own behaviour: the user watched a flat line while
+ *  the mic stayed open on them. Move it with `level.rs`'s. */
+export const FLOOR_DB = -54;
+export const CEIL_DB = -15;
 
 /** Map a linear RMS onto the bars' 0–1 range. */
 export function normalizeLevel(rms: number): number {

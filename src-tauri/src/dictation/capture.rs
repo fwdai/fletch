@@ -39,9 +39,9 @@ use super::MAX_CAPTURE_SECS;
 /// to end itself — long enough to think mid-sentence, short enough that the
 /// text lands while the user is still looking at the composer.
 ///
-/// This and the two constants below are the whole of the hands-free policy, so
-/// a Settings opt-out would gate the monitor that reads them rather than change
-/// them.
+/// This and the two constants below are the whole of the hands-free policy. The
+/// Settings opt-out (`dictation_auto_stop`) gates the monitor that reads them
+/// rather than changing them — see [`should_auto_stop`].
 const SILENCE_STOP: Duration = Duration::from_secs(2);
 
 /// How long a session in which nothing was ever said stays open: the user
@@ -53,6 +53,31 @@ const NO_SPEECH_TIMEOUT: Duration = Duration::from_secs(10);
 /// relaxed atomic loads.
 pub(super) const SILENCE_POLL: Duration = Duration::from_millis(100);
 
+/// How fast the floor may climb back toward the room once a quiet moment has
+/// pulled it down, in dB per second.
+///
+/// The floor drops to a quieter buffer instantly but recovers only at this
+/// rate, which is what keeps a transient dropout from pinning it: the mic's
+/// first buffers after `startAndReturnError` are commonly near-silent, and
+/// before this existed that one moment set the threshold for the whole session
+/// (see `a_quiet_dip_does_not_pin_the_floor`).
+///
+/// The rate is the whole of the tradeoff. Too slow and the room reads as speech
+/// for seconds after a dip, holding the session open; too fast and an unbroken
+/// stretch of talking lifts the floor into its own range and the session cuts
+/// out mid-sentence. Six dB/s forgets a dropout in about a second and would
+/// need tens of seconds of gapless speech to reach it — and real speech is not
+/// gapless, so the instant drop wins there on every stop consonant.
+const FLOOR_RISE_DB_PER_SEC: f32 = 6.0;
+
+/// Longest gap the floor is aged across. Buffers arrive a few milliseconds
+/// apart, so a gap far longer than that is not a quiet room — it is an audio
+/// graph that stalled (or, on the phone's port, a webview the OS suspended).
+/// Ageing the floor across the whole of such a gap would teleport it up to
+/// whatever the first buffer back happens to be and cut the next utterance
+/// short.
+const MAX_FLOOR_AGE: Duration = Duration::from_millis(250);
+
 /// How far above the room's own noise a buffer has to be to count as speech.
 ///
 /// Deliberately the only loudness rule: an absolute "this loud is always
@@ -63,7 +88,8 @@ pub(super) const SILENCE_POLL: Duration = Duration::from_millis(100);
 const SPEECH_OVER_FLOOR: f32 = 3.0;
 
 /// Floor under the noise floor. Digital silence would otherwise put the speech
-/// threshold at zero and make the first faint buffer an utterance.
+/// threshold at zero and make the first faint buffer an utterance — and, since
+/// the floor climbs back by multiplication, leave it stuck at zero for good.
 const NOISE_FLOOR_MIN: f32 = 0.000_5;
 
 /// A session's captured audio: mono f32 at the microphone's own sample rate.
@@ -80,9 +106,16 @@ pub(super) struct Pcm {
     /// the monitor can't read a flag that says "spoken" next to a timestamp
     /// that hasn't landed yet and take the whole session so far for a pause.
     last_speech: AtomicU64,
-    /// The quietest buffer heard so far (`f32` bits), i.e. this room on this
-    /// microphone with nobody talking. Adaptive because a threshold that suits
-    /// a laptop's built-in mic is silence on a hot USB interface.
+    /// When the previous buffer arrived, as microseconds since [`Pcm::start`],
+    /// so the floor's rise can be paced in real time rather than in buffers —
+    /// the tap's buffer size is the device's to choose, and the phone's port
+    /// works in much smaller quanta.
+    last_buffer_us: AtomicU64,
+    /// This room on this microphone with nobody talking (`f32` bits). Adaptive
+    /// because a threshold that suits a laptop's built-in mic is silence on a
+    /// hot USB interface — and *recovering* (see [`settle_floor`]) because a
+    /// floor that only ever fell would be pinned by the first quiet moment of
+    /// the session and never rise back to the room.
     floor: AtomicU32,
     /// Set by `apple`'s `Sink::cancel` when the session is torn down, so the
     /// silence monitor stops polling a buffer nothing will fill again.
@@ -99,17 +132,34 @@ fn is_speech(rms: f32, floor: f32) -> bool {
     rms >= (floor * SPEECH_OVER_FLOOR).max(engine::MIN_RMS)
 }
 
-/// Fold a buffer's loudness into the noise floor: the running minimum, never
-/// below [`NOISE_FLOOR_MIN`].
-fn settle_floor(floor: f32, rms: f32) -> f32 {
-    floor.min(rms.max(NOISE_FLOOR_MIN))
+/// How much the floor may climb over `dt`, as a multiplier. Capped at
+/// [`MAX_FLOOR_AGE`], so a stalled graph can't hand the floor a jump.
+fn rise_factor(dt: Duration) -> f32 {
+    10f32.powf(FLOOR_RISE_DB_PER_SEC * dt.min(MAX_FLOOR_AGE).as_secs_f32() / 20.0)
+}
+
+/// Fold a buffer's loudness into the noise floor: instantly down to anything
+/// quieter, back up only at [`FLOOR_RISE_DB_PER_SEC`], and never above what is
+/// actually being heard.
+///
+/// The lower bound matters on the way down and not only for tidiness: digital
+/// silence would otherwise put the floor at zero, where a multiplicative rise
+/// can never lift it again.
+fn settle_floor(floor: f32, rms: f32, dt: Duration) -> f32 {
+    let heard = rms.max(NOISE_FLOOR_MIN);
+    if heard <= floor {
+        heard
+    } else {
+        (floor * rise_factor(dt)).min(heard)
+    }
 }
 
 /// Classify one buffer against the floor as it stood *before* this buffer, then
 /// fold the buffer in. Judging a buffer against a floor it has just lowered
-/// would make the first loud buffer of a session its own noise floor.
-fn track(floor: f32, rms: f32) -> (bool, f32) {
-    (is_speech(rms, floor), settle_floor(floor, rms))
+/// would make the first loud buffer of a session its own noise floor. `dt` is
+/// how long since the previous buffer, which is what paces the floor's rise.
+fn track(floor: f32, rms: f32, dt: Duration) -> (bool, f32) {
+    (is_speech(rms, floor), settle_floor(floor, rms, dt))
 }
 
 /// Should the session end itself now? `last_speech` is when speech was last
@@ -132,11 +182,16 @@ impl Pcm {
     /// render thread is the only writer, so a load and a store are enough —
     /// no read-modify-write to lose.
     fn track_speech(&self, rms: f32) {
-        let (speech, floor) = track(f32::from_bits(self.floor.load(Ordering::Relaxed)), rms);
+        let now = self.start.elapsed();
+        let now_us = now.as_micros() as u64;
+        let dt = Duration::from_micros(
+            now_us.saturating_sub(self.last_buffer_us.swap(now_us, Ordering::Relaxed)),
+        );
+        let (speech, floor) = track(f32::from_bits(self.floor.load(Ordering::Relaxed)), rms, dt);
         self.floor.store(floor.to_bits(), Ordering::Relaxed);
         if speech {
-            let ms = self.start.elapsed().as_millis() as u64;
-            self.last_speech.store(ms + 1, Ordering::Relaxed);
+            self.last_speech
+                .store(now.as_millis() as u64 + 1, Ordering::Relaxed);
         }
     }
 
@@ -190,8 +245,9 @@ pub(super) fn sink(format: &AVAudioFormat, meter: Arc<Meter>) -> Result<(Arc<Pcm
         samples: Mutex::new(Vec::with_capacity(limit)),
         start: Instant::now(),
         last_speech: AtomicU64::new(0),
-        // A running minimum has to start above anything it will see; the first
-        // buffer sets it, and can't be speech against itself.
+        last_buffer_us: AtomicU64::new(0),
+        // The floor has to start above anything it will see; the first buffer
+        // sets it, and can't be speech against itself.
         floor: AtomicU32::new(1.0f32.to_bits()),
         closed: AtomicBool::new(false),
     });
@@ -394,18 +450,28 @@ mod tests {
         assert!(rms > 0.5, "tone was lost: rms {rms}");
     }
 
+    /// One tap buffer, near enough: 1024 frames at 44.1 kHz.
+    const BUFFER: Duration = Duration::from_millis(23);
+
     /// Walk a sequence of buffer RMS values through the detector the way the
-    /// render thread would, and report which of them counted as speech.
+    /// render thread would, and report which of them counted as speech. The
+    /// buffers arrive one [`BUFFER`] apart, which is what paces the floor.
     fn detect(sequence: &[f32]) -> Vec<bool> {
         let mut floor = 1.0;
         sequence
             .iter()
             .map(|rms| {
-                let (speech, next) = track(floor, *rms);
+                let (speech, next) = track(floor, *rms, BUFFER);
                 floor = next;
                 speech
             })
             .collect()
+    }
+
+    /// `seconds` of buffers at a steady `rms`, for the cases about what a room
+    /// sounds like over time rather than what one buffer means.
+    fn steady(seconds: f32, rms: f32) -> Vec<f32> {
+        vec![rms; (seconds / BUFFER.as_secs_f32()) as usize]
     }
 
     /// The shape every session has: a quiet room, an utterance, then quiet
@@ -458,6 +524,109 @@ mod tests {
     fn silence_is_never_speech() {
         assert_eq!(detect(&[0.0; 4]), [false; 4]);
         assert!(!is_speech(engine::MIN_RMS / 2.0, 0.0));
+    }
+
+    /// The regression this whole tracker exists for. One near-silent buffer —
+    /// the mic warming up, a breath between words — used to pull the floor to
+    /// [`NOISE_FLOOR_MIN`] and leave it there for the rest of the session,
+    /// because the floor was a minimum that could only ever fall. From then on
+    /// the threshold was the absolute lower bound, ordinary room tone cleared
+    /// it on every buffer, and the pause the session was waiting for could
+    /// never arrive: dictation ran until the user clicked stop.
+    ///
+    /// Room tone at 0.003 is about −50 dBFS: a fan, an air conditioner, traffic
+    /// through a window.
+    #[test]
+    fn a_quiet_dip_does_not_pin_the_floor() {
+        let mut sequence = vec![0.0];
+        sequence.extend(steady(3.0, 0.003));
+
+        let speech = detect(&sequence);
+
+        // The floor needs a moment to climb back to the room, so the tone may
+        // read as speech at first. What matters is that it stops.
+        let recovered = speech.iter().rposition(|s| *s).unwrap_or(0);
+        let took = BUFFER.as_secs_f32() * recovered as f32;
+        assert!(
+            took < SILENCE_STOP.as_secs_f32(),
+            "room tone still read as speech after {took:.1}s — the floor is pinned again"
+        );
+    }
+
+    /// A pause has to survive the floor's recovery: the session may not be held
+    /// open by the room, however long it goes on.
+    #[test]
+    fn steady_room_tone_after_speech_still_ends_the_session() {
+        let mut sequence = vec![0.0];
+        sequence.extend(steady(1.0, 0.05));
+        sequence.extend(steady(6.0, 0.003));
+
+        let speech = detect(&sequence);
+        let last = speech.iter().rposition(|s| *s).unwrap();
+        let quiet_for = BUFFER.as_secs_f32() * (speech.len() - 1 - last) as f32;
+
+        assert!(
+            quiet_for >= SILENCE_STOP.as_secs_f32(),
+            "only {quiet_for:.1}s of quiet observed; the session would not stop"
+        );
+    }
+
+    /// The other side of the tradeoff: the floor must not climb fast enough to
+    /// swallow the voice that is lifting it, or a long sentence would cut out
+    /// mid-word.
+    ///
+    /// Speech, not a tone — words with the gaps between them, which is what
+    /// keeps pulling the floor back down. A held, gapless level is deliberately
+    /// *not* speech here however loud it is (see
+    /// [`steady_noise_is_never_speech`]), so a constant RMS would be testing
+    /// the opposite rule.
+    #[test]
+    fn a_long_sentence_is_heard_all_the_way_through() {
+        let mut sequence = vec![0.001];
+        for _ in 0..18 {
+            sequence.extend(steady(0.30, 0.05));
+            sequence.extend(steady(0.12, 0.004));
+        }
+
+        let speech = detect(&sequence);
+        let words = speech.len() - 14;
+
+        assert!(
+            speech[words..].iter().any(|s| *s),
+            "after {:.0}s the floor had caught up with the voice and the session \
+             would have stopped mid-sentence",
+            BUFFER.as_secs_f32() * words as f32
+        );
+    }
+
+    /// Instantly down, gradually up, and never past what is actually being
+    /// heard — a floor that overshot the room would stop hearing it.
+    #[test]
+    fn the_floor_falls_at_once_and_climbs_slowly() {
+        assert_eq!(settle_floor(0.05, 0.001, BUFFER), 0.001);
+
+        let climbed = settle_floor(NOISE_FLOOR_MIN, 0.05, BUFFER);
+        assert!(climbed > NOISE_FLOOR_MIN, "the floor never recovers");
+        assert!(climbed < 0.001, "the floor jumped rather than climbed");
+
+        // A whole second of it still can't pass the level it is climbing towards.
+        let mut floor = NOISE_FLOOR_MIN;
+        for _ in 0..43 {
+            floor = settle_floor(floor, 0.002, BUFFER);
+        }
+        assert!(floor <= 0.002, "the floor overshot the room: {floor}");
+    }
+
+    /// A suspended webview or a stalled graph hands the tracker one buffer with
+    /// minutes on it. Ageing the floor across all of that would put it at the
+    /// level of whatever came back and swallow the utterance in progress.
+    #[test]
+    fn a_stalled_graph_does_not_teleport_the_floor() {
+        let stalled = settle_floor(NOISE_FLOOR_MIN, 0.05, Duration::from_secs(120));
+        let capped = settle_floor(NOISE_FLOOR_MIN, 0.05, MAX_FLOOR_AGE);
+
+        assert_eq!(stalled, capped);
+        assert!(is_speech(0.05, stalled), "the voice was lost to the stall");
     }
 
     #[test]

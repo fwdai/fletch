@@ -23,7 +23,13 @@ pub(super) const LEVEL_POLL: Duration = Duration::from_millis(90);
 /// The dBFS range the bars span. Below the floor is silence (a quiet room on a
 /// laptop mic sits around −60 dB); the ceiling is loud, close speech. Linear in
 /// dB between the two, because that is how loudness reads.
-const FLOOR_DB: f32 = -50.0;
+///
+/// The floor is where `whisper::engine::MIN_RMS` sits — the quietest audio the
+/// silence detector will ever call speech. Any higher and the bars would render
+/// empty for audio the session was still hearing as speech, so the waveform
+/// would flatly contradict a mic that refused to stop (see `the_bars_start_
+/// where_speech_can`).
+const FLOOR_DB: f32 = -54.0;
 const CEIL_DB: f32 = -15.0;
 
 /// The latest buffer's loudness, written by the render thread and read by the
@@ -155,6 +161,19 @@ mod tests {
         assert!((normalize(from_db(mid)) - 0.5).abs() < 1e-5);
         let quarter = FLOOR_DB + (CEIL_DB - FLOOR_DB) / 4.0;
         assert!((normalize(from_db(quarter)) - 0.25).abs() < 1e-5);
+    }
+
+    /// The bars and the silence detector have to agree about what silence is.
+    /// While the floor sat above `MIN_RMS` there was a band where the waveform
+    /// read empty and the detector still heard speech — the exact combination
+    /// that makes a session which won't end look like a frozen UI instead of a
+    /// mic that thinks you're talking.
+    #[test]
+    fn the_bars_start_where_speech_can() {
+        use crate::dictation::whisper::engine::MIN_RMS;
+
+        assert_eq!(normalize(MIN_RMS * 0.99), 0.0);
+        assert!(normalize(MIN_RMS * 1.5) > 0.0);
     }
 
     #[test]
