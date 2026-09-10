@@ -12,7 +12,7 @@ use crate::git_state::{self, GitState, ShortStats};
 use crate::github as gh;
 use crate::supervisor::Supervisor;
 
-use super::files::agent_repo_checkout_opt;
+use super::files::{agent_repo_checkout_opt, checkout_pending};
 
 /// The base branch a checkout is measured against. Every repo tracked since the
 /// spawn path started resolving a default has one recorded; the fallback only
@@ -43,6 +43,16 @@ pub(crate) async fn get_git_state_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<Option<GitState>> {
+    // Still cloning: no checkout to describe yet. `None` is what an unresolvable
+    // agent already returns, and the panel renders it as Loading… rather than
+    // as a status full of phantom deletions.
+    if supervisor
+        .workspace
+        .agent(agent_id)
+        .is_ok_and(|a| checkout_pending(&a))
+    {
+        return Ok(None);
+    }
     let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
         return Ok(None);
     };
@@ -74,7 +84,10 @@ pub async fn get_all_shortstats(
     };
     let mut set = tokio::task::JoinSet::new();
     for agent in workspace.agents {
-        if agent.archive.is_some() {
+        // Omitted while provisioning for the same reason as archived agents:
+        // there is nothing to count yet, and counting a half-written clone
+        // would flash a phantom file count on the badge.
+        if agent.archive.is_some() || checkout_pending(&agent) {
             continue;
         }
         // One shortstat per checkout; a multi-repo agent's badge shows the
@@ -131,7 +144,7 @@ pub async fn get_all_git_meta(
     };
     let mut set = tokio::task::JoinSet::new();
     for agent in workspace.agents {
-        if agent.archive.is_some() {
+        if agent.archive.is_some() || checkout_pending(&agent) {
             continue;
         }
         for (i, repo) in agent.repos.iter().enumerate() {

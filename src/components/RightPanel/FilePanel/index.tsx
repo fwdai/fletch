@@ -73,10 +73,14 @@ export function FilePanel({ agent, openPath, onOpenPath, diffBase }: FilePanelPr
   const refresh = useCallback(async () => {
     try {
       setFiles(await api.listCheckoutTree(agent.id));
+      // Only a listing that actually came back counts as loaded: a workspace
+      // still being provisioned rejects the call, and the tree should keep
+      // saying Loading… until its checkout exists rather than claiming the
+      // checkout is empty.
+      setLoaded(true);
     } catch {
       // Keep the previous tree on a transient IPC error rather than blanking it.
     }
-    setLoaded(true);
   }, [agent.id]);
 
   // Poll the tree at 2s, but only while the explorer is showing — no point

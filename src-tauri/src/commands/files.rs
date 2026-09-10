@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::git_state::{self, FileStatus, StatusKind};
 use crate::supervisor::Supervisor;
-use crate::workspace::TrackedRepo;
+use crate::workspace::{AgentRecord, AgentStatus, TrackedRepo};
 
 /// The ref a checkout's *committed* changes are diffed against: the immutable
 /// fork-point SHA captured at spawn when known, else the parent branch name
@@ -278,6 +278,24 @@ pub(super) fn agent_repo_checkout_opt(
     Ok(Some((repo, checkout)))
 }
 
+/// Whether `agent`'s checkouts are still being provisioned, and so can't be
+/// described yet.
+///
+/// The spawn path writes the agent row and announces it — so the panels start
+/// polling — before the provisioning task has finished cloning (see
+/// `supervisor::lifecycle::spawn`). A `git status` inside that window is
+/// accurate but meaningless: every file the clone hasn't written yet reads as
+/// deleted, and the ones it just wrote read as untracked, so the Git and Code
+/// panels would flash a thousand phantom changes before settling. Provisioning
+/// is the first phase of `Spawning`, so that status is the readiness signal.
+///
+/// Read-only surfaces only. The git *write* paths (commit / push / PR) resolve
+/// their checkouts through [`agent_repo_checkout`] and must keep working
+/// throughout a spawn, so they deliberately don't consult this.
+pub(super) fn checkout_pending(agent: &AgentRecord) -> bool {
+    agent.status == AgentStatus::Spawning
+}
+
 /// The agent's branch name, or an error if the checkout has no branch yet.
 pub(super) fn repo_branch(repo: &TrackedRepo) -> Result<&str> {
     repo.branch
@@ -411,6 +429,11 @@ pub(crate) async fn list_checkout_tree_impl(
     agent_id: &str,
 ) -> Result<Vec<CheckoutFile>> {
     let record = supervisor.workspace.agent(agent_id)?;
+    // Still cloning: fail rather than list a half-written tree. The explorer
+    // treats a failed listing as "keep waiting" and holds its Loading… state.
+    if checkout_pending(&record) {
+        return Err(Error::Other("workspace is still being provisioned".into()));
+    }
     if record.repos.len() <= 1 {
         let (checkout, parent) = primary_checkout(supervisor, agent_id)?;
         return Ok(checkout_tree_files(&checkout, &parent, None).await);
