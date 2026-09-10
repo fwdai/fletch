@@ -167,6 +167,18 @@ let initialized = false;
  *  read off disk. */
 let queuedPush: PushFletch | null = null;
 
+/** A pairing link that arrived before `init` finished — the usual case, in
+ *  fact: `registerDeepLinks` and `init` start together, and the link has only
+ *  two plugin calls to wait on where `init` has the push registration and the
+ *  settings read.
+ *
+ *  It cannot be acted on yet either, for two reasons. `init` finishes by
+ *  reconnecting the saved host, which would tear this pairing down mid-flight
+ *  and spend a code that is single use; and it publishes the settings it read
+ *  before that, which on a fresh install means a null host key written over
+ *  the one a pairing that got in first had just pinned. */
+let queuedLink: HostTarget | null = null;
+
 const homeItem = (): NavItem => ({ key: Date.now(), screen: "home", props: {}, phase: "idle" });
 
 const newId = () =>
@@ -339,6 +351,16 @@ export const useStore = create<MobileState>()((set, get) => ({
       queuedPush = null;
       get().openFromPush(fletch);
     }
+    // Before the saved host, and instead of it: a scanned link says to pair
+    // with *this* Mac, which is an instruction, where reconnecting the last
+    // one is only a default. Racing them would supersede the pairing and burn
+    // its code.
+    if (queuedLink) {
+      const target = queuedLink;
+      queuedLink = null;
+      await get().connect(target).catch(ignore);
+      return;
+    }
     if (mockEnabled()) {
       // The mock host has no pairing step worth clicking through every reload;
       // its fixed key is pinned by `connect` like any other.
@@ -346,8 +368,11 @@ export const useStore = create<MobileState>()((set, get) => ({
       return;
     }
     // A saved host key is the whole credential: `hello` authenticates with the
-    // device key the Rust layer holds.
-    if (saved.host && hostKey) {
+    // device key the Rust layer holds. Stood down while a pairing is running,
+    // for the same reason the queued link goes first: a link that arrived in
+    // the moment between `ready` and here is already connecting, and this
+    // would replace it.
+    if (saved.host && hostKey && !get().pairStep) {
       set({ lastDestParent: saved.destParents?.[hostKey] ?? null });
       await get()
         .connect({
@@ -396,6 +421,14 @@ export const useStore = create<MobileState>()((set, get) => ({
       running?.port === target.port;
     if (get().pairStep && same) return;
     set({ pairTarget: target, connectionError: null });
+    if (!get().ready) {
+      // Held until `init` has read what is on disk — see `queuedLink`. The
+      // step is set anyway: the screen is already showing this link, and a
+      // button offering to start a second pairing is the same race by hand.
+      queuedLink = target;
+      set({ pairStep: "connecting" });
+      return;
+    }
     void get().connect(target).catch(ignore);
   },
 
