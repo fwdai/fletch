@@ -60,6 +60,7 @@ export function grow(el: HTMLTextAreaElement) {
 export function useComposerInput(cfg: ComposerInputConfig) {
   const { draftKey, autoFocus, seed, onSeedConsumed, onEnter, onKeyDown } = cfg;
   const setComposerDraft = useAppStore((s) => s.setComposerDraft);
+  const setLastError = useAppStore((s) => s.setLastError);
 
   // Read the restored draft once at mount via getState (not a subscription) so
   // persisting on each keystroke doesn't re-render; a view switch remounts us
@@ -107,11 +108,12 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   /** Files on the clipboard — a screenshot's image data, or files copied in
    *  Finder — arrive as bytes with no path, so each is written out by the
    *  backend and staged by the returned path. Plain text falls through to the
-   *  browser's default paste. */
+   *  browser's default paste. Files that fail to read or save are reported in
+   *  the global error banner; the rest still attach. */
   async function pasteFiles(files: FileList) {
     // Copied image data has no real name (WebKit labels it "image.png"), so
     // stamp one; a Finder copy keeps its own.
-    const paths = await Promise.all(
+    const results = await Promise.allSettled(
       Array.from(files).map(async (f, i) => {
         const ext = f.type.split("/")[1] || "bin";
         const generic = !f.name || f.name === "image.png";
@@ -119,7 +121,16 @@ export function useComposerInput(cfg: ComposerInputConfig) {
         return api.savePastedAttachment(name, new Uint8Array(await f.arrayBuffer()));
       }),
     );
-    addPaths(paths);
+    addPaths(results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : [])));
+    const failed = results.filter((r) => r.status === "rejected");
+    if (failed.length) {
+      const reason = failed[0].reason;
+      setLastError(
+        `Couldn't attach ${failed.length} pasted file${failed.length > 1 ? "s" : ""}: ${
+          reason instanceof Error ? reason.message : String(reason)
+        }`,
+      );
+    }
   }
 
   // Autocompletions share one menu + keyboard mechanics (useAutocomplete);
