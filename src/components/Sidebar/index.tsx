@@ -7,6 +7,7 @@ import { useAppStore } from "@/store";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
 import { useRuns } from "@/workflows/run/useRuns";
+import { isGroupOpen, type OpenMap } from "./groupOpen";
 import { NewProjectPopover } from "./NewProjectPopover";
 import { ProjectGroup } from "./ProjectGroup";
 import { focusRow, rowOf, visibleRows } from "./rowNav";
@@ -138,7 +139,21 @@ export function Sidebar() {
   const selectedRunId = useAppStore((s) => s.selectedRunId);
 
   const [query, setQuery] = useState("");
-  const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
+  const [openMap, setOpenMap] = useState<OpenMap>({});
+  // Toggles made while searching (see isGroupOpen). Reset with every query
+  // change: the result set changes under the user anyway, and starting each
+  // search with matches fully visible is what makes ⌘K → ↓ land on a row.
+  const [searchOpenMap, setSearchOpenMap] = useState<OpenMap>({});
+  const searching = query.trim().length > 0;
+  function onQueryChange(q: string) {
+    setQuery(q);
+    setSearchOpenMap({});
+  }
+  function toggleGroup(key: string) {
+    const setMap = searching ? setSearchOpenMap : setOpenMap;
+    const fallback = searching; // isGroupOpen's default for the active map
+    setMap((m) => ({ ...m, [key]: !(m[key] ?? fallback) }));
+  }
   const [npOpen, setNpOpen] = useState(false);
   const [npMode, setNpMode] = useState<NewProjectMode | null>(null);
   // Transient drag state for reordering: the group being dragged and the one
@@ -181,7 +196,7 @@ export function Sidebar() {
   const filtered = useMemo(() => applySearch(groups, query), [groups, query]);
 
   // Reordering is only meaningful over the full, unfiltered list.
-  const reorderable = !query.trim();
+  const reorderable = !searching;
   const orderedPaths = useMemo(() => groups.map((g) => g.primaryPath), [groups]);
 
   // Begin a pointer-driven reorder. `markDragged` lets the group swallow the
@@ -283,7 +298,7 @@ export function Sidebar() {
 
   return (
     <>
-      <SidebarHeader query={query} onChange={setQuery} onArrowDown={enterList} />
+      <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
       <div className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">
           <button
@@ -317,8 +332,8 @@ export function Sidebar() {
                   agents={g.agents}
                   drafts={g.drafts}
                   runs={g.runs}
-                  open={openMap[g.key] ?? false}
-                  onToggle={() => setOpenMap((m) => ({ ...m, [g.key]: !m[g.key] }))}
+                  open={isGroupOpen(g.key, searching, openMap, searchOpenMap)}
+                  onToggle={() => toggleGroup(g.key)}
                   reorderable={reorderable}
                   dragging={dragPath === g.primaryPath}
                   dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}
