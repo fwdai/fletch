@@ -22,9 +22,11 @@ import {
   type HostTarget,
   isEventFrame,
   type PairResult,
+  type PairStep,
   type RemoteClient,
   type RequestFrame,
   type StateHandler,
+  type StepHandler,
   type Via,
 } from "./types";
 
@@ -73,6 +75,7 @@ export class ProtocolClient implements RemoteClient {
   private pending = new Map<string, Pending>();
   private listeners = new Map<string, Set<EventHandler>>();
   private stateListeners = new Set<StateHandler>();
+  private stepListeners = new Set<StepHandler>();
   private snapshotListeners = new Set<(r: HelloResult) => void>();
   private _target: HostTarget | null = null;
   /** Bumped for every attempt and every teardown. A socket's callbacks carry
@@ -135,6 +138,11 @@ export class ProtocolClient implements RemoteClient {
     this.stateListeners.add(cb);
     cb(this._state);
     return () => this.stateListeners.delete(cb);
+  }
+
+  onStep(cb: StepHandler): () => void {
+    this.stepListeners.add(cb);
+    return () => this.stepListeners.delete(cb);
   }
 
   onSnapshot(cb: (result: HelloResult) => void): () => void {
@@ -200,6 +208,13 @@ export class ProtocolClient implements RemoteClient {
     for (const cb of this.stateListeners) cb(state, error);
   }
 
+  /** Announce where the attempt has got to. Not held anywhere: a step is only
+   *  meaningful while the attempt that reported it is still running, and the
+   *  state changes above are what say how it ended. */
+  private step(step: PairStep) {
+    for (const cb of this.stepListeners) cb(step);
+  }
+
   private request<T>(op: string, args: Record<string, unknown>): Promise<T> {
     const socket = this.socket;
     if (!socket) return Promise.reject(new Error("not connected"));
@@ -223,6 +238,7 @@ export class ProtocolClient implements RemoteClient {
     if (!target) throw new Error("no host configured");
     const gen = ++this.gen;
     this.setState(target.pairingToken ? "pairing" : "connecting");
+    this.step("connecting");
     try {
       const socket = await this.openFirstReachable(target, gen);
       if (!this.current(gen)) {
@@ -315,6 +331,7 @@ export class ProtocolClient implements RemoteClient {
     let last = new Error("no address to dial");
     for (const candidate of list) {
       try {
+        this.step(candidate.via);
         return await this.opts.openSocket(candidate.url, handlers, {
           hostKey: target.hostKey,
           timeoutMs: candidate.timeoutMs,
@@ -334,15 +351,21 @@ export class ProtocolClient implements RemoteClient {
    *  `hello` otherwise. */
   private async handshake(target: HostTarget): Promise<HelloResult> {
     if (target.pairingToken) {
+      this.step("registering");
       const paired = await this.pair(target.pairingToken, this.opts.device);
       // Pairing is single use: drop the code, so a reconnect greets the host
       // with `hello` on the device key it just registered.
       this._target = { ...target, pairingToken: undefined };
       this.setState("connected");
       // `pair` answers with the host identity but no snapshot, so ask for it.
+      // Still part of pairing as far as anyone watching is concerned: the
+      // state above says `connected`, but there is nothing to show until this
+      // answers, and over a relay it is not instant.
+      this.step("workspace");
       const workspace = await this.call<HelloResult["workspace"]>("get_workspace");
       return this.publishSnapshot({ host: paired.host, workspace });
     }
+    this.step("greeting");
     const result = await this.hello(this.opts.device);
     this.setState("connected");
     return this.publishSnapshot(result);

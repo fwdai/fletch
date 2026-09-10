@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { parseAddress, parsePairUrl } from "../../remote";
 import { useStore } from "../../store";
 import { Wordmark } from "../Home/Wordmark";
+import { Progress } from "./Progress";
 
 /** Manual pairing: the host's address and the one-time code from the desktop's
  *  Settings → Remote control. A pasted `fletch://pair?…` link fills both and
@@ -11,17 +12,33 @@ import { Wordmark } from "../Home/Wordmark";
  *  pins the one it meets on first contact, and has no relay until a link
  *  supplies one or it is entered in the Host sheet later
  *  (docs/remote-protocol.md, "Secure channel" and "Authentication and
- *  pairing"). */
+ *  pairing").
+ *
+ *  A link the app was *opened* with pairs on its own, and fills the same
+ *  fields as it goes: the connection can take the best part of half a minute
+ *  from a phone off the Mac's network, so what is being paired and how far it
+ *  has got are on screen throughout, and the details stay put for a one-tap
+ *  retry if it fails. */
 export function PairScreen() {
   const connect = useStore((s) => s.connect);
-  const connection = useStore((s) => s.connection);
+  const step = useStore((s) => s.pairStep);
+  const linked = useStore((s) => s.pairTarget);
   const error = useStore((s) => s.connectionError);
   const [address, setAddress] = useState("");
   const [token, setToken] = useState("");
   const [hostKey, setHostKey] = useState<string | undefined>(undefined);
   const [relay, setRelay] = useState<string | undefined>(undefined);
-  const busy = connection === "connecting" || connection === "pairing";
+  const busy = step !== null;
   const parsed = parseAddress(address);
+
+  // A link the app was opened with lands in the store, not in these fields.
+  useEffect(() => {
+    if (!linked) return;
+    setAddress(`${linked.host}:${linked.port}`);
+    setHostKey(linked.hostKey);
+    setRelay(linked.relay);
+    if (linked.pairingToken) setToken(linked.pairingToken);
+  }, [linked]);
 
   /** Anything pasted into a field may be the whole deep link. */
   const absorb = (value: string, fallback: (v: string) => void) => {
@@ -47,11 +64,18 @@ export function PairScreen() {
     <div className="pair">
       <Wordmark />
       <div className="hero">
-        <h1>Pair with your Mac</h1>
-        <p>
-          On the desktop app open <b>Settings → Remote control → Pair a device</b>, then enter its
-          address and the one-time code here.
-        </p>
+        <h1>{linked?.name ? `Pair with ${linked.name}` : "Pair with your Mac"}</h1>
+        {linked ? (
+          <p>
+            Your Mac sent these details. Pairing starts on its own — from another network it can
+            take a few moments.
+          </p>
+        ) : (
+          <p>
+            On the desktop app open <b>Settings → Remote control → Pair a device</b>, then enter its
+            address and the one-time code here.
+          </p>
+        )}
       </div>
       <div className="field">
         <label htmlFor="pair-host">Address</label>
@@ -77,7 +101,7 @@ export function PairScreen() {
           onChange={(e) => absorb(e.target.value, (v) => setToken(v.toUpperCase()))}
         />
       </div>
-      {error && <div className="err">{error}</div>}
+      {step ? <Progress step={step} /> : error && <div className="err">{error}</div>}
       <button
         type="button"
         className="btn primary block"
@@ -85,7 +109,7 @@ export function PairScreen() {
         onClick={submit}
       >
         <Icon name="laptop" size={17} />
-        {busy ? "Pairing…" : "Pair"}
+        {busy ? "Pairing…" : error ? "Try again" : "Pair"}
       </button>
       <div className="hint">
         The code is valid for five minutes and can be used once. The link is end-to-end encrypted,

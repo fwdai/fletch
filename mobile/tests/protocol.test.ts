@@ -17,6 +17,7 @@ import {
   type DeviceInfo,
   HOST_KEY_MISMATCH,
   HOST_KEY_MISMATCH_REASON,
+  type PairStep,
 } from "../src/remote/types";
 
 const DEVICE: DeviceInfo = { name: "test", platform: "web", appVersion: "0.1.0" };
@@ -660,5 +661,55 @@ describe("events", () => {
     off();
     fake.reply({ event: "agent:status", payload: { agent_id: "a", status: "idle" } });
     expect(seen).toHaveLength(1);
+  });
+});
+
+/** The Pair screen has nothing but these to show while an attempt runs, and
+ *  the connection state cannot stand in for them: it says `pairing` for the
+ *  whole dial — including the LAN address a phone on another network has to
+ *  wait out before the relay is tried — and `connected` from the moment `pair`
+ *  is answered, with the workspace still to fetch. */
+describe("attempt progress", () => {
+  const LAN = "ws://h:1/ws";
+  const HOST = { name: "Mac", appVersion: "0.7.23", os: "macos" };
+
+  it("reports every candidate and every frame of a pairing that lands on the relay", async () => {
+    const fake = fakeSocket(HOST_KEY, { [LAN]: "reject" });
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE, openTimeout: 5 });
+    const steps: PairStep[] = [];
+    client.onStep((s) => steps.push(s));
+    const paired = client.connect({
+      host: "h",
+      port: 1,
+      hostKey: HOST_KEY,
+      relay: "wss://relay.test",
+      pairingToken: "K7PQ2M9X",
+    });
+
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    expect(fake.sent[0].op).toBe("pair");
+    fake.reply({ id: fake.sent[0].id, ok: true, result: { deviceId: "d1", host: HOST } });
+
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    expect(fake.sent[1].op).toBe("get_workspace");
+    // The state has said all it can say — and says it before the wait that is
+    // still to come.
+    expect(client.state).toBe("connected");
+    expect(steps).toEqual(["connecting", "lan", "relay", "registering", "workspace"]);
+
+    fake.reply({ id: fake.sent[1].id, ok: true, result: null });
+    await expect(paired).resolves.toMatchObject({ host: { name: "Mac" } });
+  });
+
+  it("reports a greeting rather than a registration when there is no code to spend", async () => {
+    const fake = fakeSocket();
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    const steps: PairStep[] = [];
+    client.onStep((s) => steps.push(s));
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply(helloOk(fake.sent[0].id as string));
+    await connected;
+    expect(steps).toEqual(["connecting", "lan", "greeting"]);
   });
 });
