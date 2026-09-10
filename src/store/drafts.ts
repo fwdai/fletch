@@ -11,6 +11,7 @@ import {
   sendWhenAgentReady,
 } from "@/helpers";
 import { setSetting } from "@/storage/settings";
+import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppState, SliceCreator } from "./types";
 
@@ -368,10 +369,14 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       }
       // Apply the selection, draft cleanup and log seed immediately, ahead of
       // the guarded workspace refresh, so this user-intent state can never be
-      // dropped if a concurrent refresh supersedes ours.
+      // dropped if a concurrent refresh supersedes ours. The record lands in the
+      // same update: selecting an id the snapshot still holds an *archived*
+      // record for (a recycled name) would otherwise open the chat against
+      // that stale record — see adoptSpawnedAgent.
       set((state) => {
         const { [id]: _droppedDraft, ...restComposerDrafts } = state.composerDrafts;
         const patches: Partial<AppState> = {
+          workspace: adoptSpawnedAgent(state.workspace, rec),
           selectedAgentId: rec.id,
           drafts: state.drafts.filter((d) => d.id !== id),
           activeDraftId: null,

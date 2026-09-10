@@ -26,6 +26,7 @@ import {
 import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { createKeyedQueue } from "@/util/keyedQueue";
+import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { forkContextDigest } from "./forkDigest";
 import { interruptedAgents } from "./interrupted";
 import { refreshWorkspace } from "./refreshWorkspace";
@@ -387,9 +388,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       );
       // Apply the selection (and custom-view log seeds) immediately, ahead of the
       // guarded workspace refresh, so this user-intent state can never be dropped
-      // if a concurrent refresh supersedes ours.
+      // if a concurrent refresh supersedes ours. The record rides along so a
+      // recycled name can't open the chat against its archived predecessor
+      // (see adoptSpawnedAgent).
       set((state) => {
-        const patches: Partial<AppState> = { selectedAgentId: rec.id };
+        const patches: Partial<AppState> = {
+          workspace: adoptSpawnedAgent(state.workspace, rec),
+          selectedAgentId: rec.id,
+        };
         if (view === "custom") {
           patches.managedLogs = { ...state.managedLogs, [rec.id]: [] };
           patches.managedBusy = { ...state.managedBusy, [rec.id]: false };
@@ -437,8 +443,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // created with a non-empty task, so opening it triggers
       // loadHistoryTranscript to render the copied history; a context-less fork
       // opens as an empty chat. Set the selection ahead of the guarded refresh
-      // so it survives a superseding concurrent refresh.
-      set({ selectedAgentId: rec.id, activeDraftId: null });
+      // so it survives a superseding concurrent refresh, with the record in the
+      // same update so a recycled name can't mount against its archived
+      // predecessor (see adoptSpawnedAgent).
+      set((state) => ({
+        workspace: adoptSpawnedAgent(state.workspace, rec),
+        selectedAgentId: rec.id,
+        activeDraftId: null,
+      }));
       await refreshWorkspace(set);
       return rec;
     } catch (e) {
