@@ -269,6 +269,11 @@
   background: var(--bd-soft);
   color: var(--fg-0);
 }
+/* Keyboard focus only (arrow stepping, Tab) — mouse clicks don't draw a ring. */
+.agent:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: -1px;
+}
 
 /* status rail — the left spine; colored by status, faint grey when idle */
 .ag-rail {
