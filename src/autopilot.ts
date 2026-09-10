@@ -141,8 +141,6 @@ export interface AutopilotState {
   /** Autopilot is tracking this checkout. On by default: the driver enrolls
    *  every live checkout of a project whose switch is on. */
   enrolled: boolean;
-  /** Paused by the user; enrollment is kept so resuming is one click. */
-  paused: boolean;
   cycle: Cycle | null;
   /** Cycles spent per rung. Reset on a successful cycle, so a long-lived PR
    *  isn't capped globally — only a non-converging stretch is. */
@@ -167,7 +165,7 @@ export interface AutopilotState {
 
 /** Fresh state for a newly enrolled checkout. */
 export function newEnrollment(): AutopilotState {
-  return { enrolled: true, paused: false, cycle: null, attempts: {}, barren: [], stuck: null };
+  return { enrolled: true, cycle: null, attempts: {}, barren: [], stuck: null };
 }
 
 /** A fingerprint of everything autopilot could act on. Two cycles with the same
@@ -257,7 +255,6 @@ export function unstagedEdits(git: GitState | null): number {
 
 export type WaitReason =
   | "not-enrolled"
-  | "paused"
   | "stuck"
   | "agent-busy"
   | "delegation-in-flight"
@@ -317,8 +314,8 @@ export interface AutopilotInput {
 
 /** Decide the next move for one checkout. Pure and total.
  *
- *  Every reason NOT to act is checked before any reason to act, so a paused or
- *  stuck checkout can never be talked into a dispatch by an interesting-looking
+ *  Every reason NOT to act is checked before any reason to act, so a stuck
+ *  checkout can never be talked into a dispatch by an interesting-looking
  *  ladder result. */
 export function autopilotStep(input: AutopilotInput): AutopilotEffect {
   const { state, readiness, ladder, agentBusy, delegationInFlight } = input;
@@ -332,7 +329,6 @@ export function autopilotStep(input: AutopilotInput): AutopilotEffect {
   });
 
   if (!state?.enrolled) return { do: "wait", why: "not-enrolled" };
-  if (state.paused) return { do: "wait", why: "paused" };
   if (state.stuck) {
     // Stay stopped only while the situation that stopped us still holds. Autopilot
     // stops because it needs the user, and the user acts OUTSIDE Fletch — so the

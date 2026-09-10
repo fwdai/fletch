@@ -417,20 +417,17 @@ function ciTint(checks: PrChecks | null): { variant: BadgeVariant; tip: string }
 /** Autopilot's mark on the row — advisory, so it decorates the sub-row it shares
  *  with the stale/diff hints and never claims space of its own.
  *
- *  Only two of the five modes render at all. `working` explains motion the user
- *  didn't start, and `stuck` is waiting on them; enrolled-and-idle is the normal
- *  case, paused is a state they chose, and off is the default everywhere — a mark
- *  for any of those would be noise on most rows and would train the eye to skip
- *  the two that matter. The full state stays one click away in the Git panel. */
+ *  `working` is the one glyph autopilot owns anywhere in the app: the agent
+ *  started this turn itself. `stuck` borrows the app's ordinary "needs you"
+ *  vocabulary — an amber dot, no autopilot iconography — because from the user's
+ *  side it is just a PR waiting on them. The why is in the tooltip and in the
+ *  Git panel's status line. */
 function AutopilotMark({ signal }: { signal: AutopilotSignal | null }) {
-  if (!signal || (signal.mode !== "working" && signal.mode !== "stuck")) return null;
+  if (!signal) return null;
   const tip = autopilotTip(signal);
   return (
     <span className={`a-autopilot ${signal.mode} tip`} data-tip={tip} aria-label={tip}>
-      <Icon name={signal.mode === "working" ? "refresh" : "wrench"} size={9} />
-      {/* The retry count only while it means something — a second or third try is
-       *  how close autopilot is to giving up, which mirrors the git-panel chip. */}
-      {signal.mode === "working" && signal.attempt != null && signal.attempt > 1 && signal.attempt}
+      {signal.mode === "working" ? <Icon name="zap" size={9} /> : <span className="d" />}
     </span>
   );
 }

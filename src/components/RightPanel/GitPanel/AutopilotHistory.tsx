@@ -1,34 +1,19 @@
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
-import type { DelegationKind } from "@/delegation";
+import { rungNoun, stuckLabel } from "@/helpers/autopilotCopy";
 import { useAppStore } from "@/store";
 import type { AutopilotLogEntry } from "@/store/autopilotLog";
 import { checkoutKey } from "@/store/git";
-import { stuckLabel } from "./AutopilotChip";
 
-// ── What autopilot did on this checkout ───────────────────────────────────────
-// Directly under the chip, because the chip answers "what is it doing now?" and
-// the very next question a user has — especially about a loop that ran while they
-// were away — is "what did it already do, and what did that cost?". Collapsed by
-// default: it is a receipt, not a dashboard, and absent entirely until autopilot
-// has done something worth reading.
+// ── What the agent did on this PR by itself ───────────────────────────────────
+// Directly above the action bar, because the first question a user has about a
+// loop that ran while they were away is "what did it already do, and what did
+// that cost?". Collapsed by default: it is a receipt, not a dashboard, and absent
+// entirely until autopilot has done something worth reading.
 
-/** The rung as a thing on the PR, not as an action name — a log row reads as
- *  "what it was working on". Partial because an escalation can name a rung
- *  autopilot doesn't drive (`needs-human` on a commit), and the raw kind is a
- *  perfectly honest fallback for those. */
-const RUNG_NOUN: Partial<Record<DelegationKind, string>> = {
-  "fix-checks": "failing checks",
-  resolve: "conflicts",
-  "update-branch": "branch update",
-  "resolve-comments": "review comments",
-};
-
-const rungNoun = (kind: DelegationKind): string => RUNG_NOUN[kind] ?? kind;
-
-/** One row's phrasing, past tense — this already happened. Escalations reuse the
- *  chip's `stuckLabel`, so the reason a user reads in the log is worded exactly
- *  like the one that stopped the chip. */
+/** One row's phrasing, past tense — this already happened. Escalations reuse
+ *  `stuckLabel`, so the reason a user reads in the log is worded exactly like
+ *  the one in the status line. */
 export function eventLabel(entry: AutopilotLogEntry): string {
   switch (entry.outcome) {
     case "dispatch":
@@ -38,7 +23,7 @@ export function eventLabel(entry: AutopilotLogEntry): string {
     case "retry":
       return "Didn't work — trying again";
     case "escalate":
-      return entry.reason ? stuckLabel(entry.reason) : "Autopilot stopped";
+      return entry.reason ? stuckLabel(entry.reason, entry.rung) : "Stopped";
     case "revive":
       // Phrased as what changed, not as a state flag: the user did something
       // outside Fletch (committed, approved, settled a thread) and autopilot
@@ -69,11 +54,11 @@ export function AutopilotHistory({ agentId, subdir }: { agentId: string; subdir?
         className="ap-log-toggle text-xs"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        title="What autopilot has done on this checkout"
+        title="What the agent has done on this PR by itself"
       >
         <Icon name={open ? "chevD" : "chevR"} />
         <Icon name="history" />
-        <span>Autopilot history</span>
+        <span>Auto-fixes</span>
         <span className="ap-log-count">{log.length}</span>
       </button>
 

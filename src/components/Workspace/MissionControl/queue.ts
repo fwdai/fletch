@@ -17,6 +17,7 @@ import type {
   WfRun,
 } from "@/api";
 import type { AutopilotState, StuckReason } from "@/autopilot";
+import type { DelegationKind } from "@/delegation";
 
 /** A card's tests-evidence chip state, derived from a turn-end
  *  [`VerificationReport`]. Only ever a definitive verdict — `undefined` while
@@ -113,8 +114,8 @@ export interface ReviewItem {
    *  and never fakes a state. */
   tests?: TestsEvidence;
   /** Why autopilot handed this agent back, when it did. Drives the card's
-   *  "Autopilot stopped" line and its retry affordance. */
-  autopilotStuck?: { reason: StuckReason; rung: string | null };
+   *  reason line and its retry affordance. */
+  autopilotStuck?: { reason: StuckReason; rung: DelegationKind | null };
   staleness?: Staleness | null;
   /** Advisory overlap hints — other agents on the same repo touching some of
    *  the same files. Omitted when there are none. */
@@ -250,7 +251,7 @@ function collectPrSignals(agentId: string, input: QueueInput): PrSignal[] {
 function stuckCheckout(
   agentId: string,
   input: QueueInput,
-): { reason: StuckReason; rung: string | null } | null {
+): { reason: StuckReason; rung: DelegationKind | null } | null {
   const prefix = `${agentId}::`;
   for (const [key, state] of Object.entries(input.autopilot)) {
     if (key !== agentId && !key.startsWith(prefix)) continue;

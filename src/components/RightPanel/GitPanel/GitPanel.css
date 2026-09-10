@@ -1078,61 +1078,16 @@
   filter: brightness(1.15);
 }
 
-/* ── Autopilot chip ────────────────────────────────────────────────────────
-   Sits in the footer above the action bar, next to the action it automates.
-   On is the norm (a project-level default), so idle is stated rather than
-   shouted; the chip only takes on real colour once it is doing something or has
-   stopped needing you. Off means the project switched it off. */
-.git-autopilot {
-  gap: 6px;
-  padding: 10px 18px 0;
-}
-.ap-chip {
+/* ── Autopilot's mark in the status slot ───────────────────────────────────
+   Autopilot has no chip of its own: it is how the agent behaves on a PR, so its
+   only trace is this glyph on a delegation the agent started itself. Accent,
+   like the spinner beside it, and gone the moment the turn ends. When it gives
+   up, the status slot's ordinary warn line says why — no autopilot styling. */
+.git-act-status .git-auto {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  border: 1px solid var(--bd);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg-2);
-  cursor: pointer;
-}
-.ap-chip:hover {
-  color: var(--fg-1);
-  border-color: var(--bd-2);
-}
-.ap-chip svg {
-  width: 12px;
-  height: 12px;
-}
-/* On but idle: enrolled and watching, nothing to do — stated, not shouted. */
-.ap-chip.m-idle {
   color: var(--accent);
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-/* Working: a turn is in flight. The spin marks it as live rather than stuck. */
-.ap-chip.m-working {
-  color: var(--accent);
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-.ap-chip.m-working svg {
-  animation: ap-spin 1.6s linear infinite;
-}
-@keyframes ap-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-.ap-chip.m-paused {
-  color: var(--fg-3);
-}
-/* Stopped and waiting on a human — the one state that should catch the eye. */
-.ap-chip.m-stuck {
-  color: var(--warn, #d08770);
-  border-color: currentColor;
+  flex-shrink: 0;
 }
 .ap-attempt {
   opacity: 0.7;

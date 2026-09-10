@@ -26,7 +26,7 @@ export function AutopilotSection({ projectId }: { projectId: string }) {
         <p className="ps-section-lead text-sm">
           When on, every agent in this project keeps its own PR moving: it fixes failing checks,
           resolves conflicts, updates the branch and answers review comments without being asked,
-          and hands back when it gets stuck. On by default. Pause a single PR from its Git panel.
+          and hands back when it gets stuck. On by default.
         </p>
       </header>
 

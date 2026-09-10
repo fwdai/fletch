@@ -1,24 +1,33 @@
 import type { KeyboardEvent } from "react";
 import { AgentIdentityChip } from "@/components/AgentIdentityChip";
 import { Icon } from "@/components/Icon";
+import { stuckLabel } from "@/helpers/autopilotCopy";
 import { EvidenceChips } from "./EvidenceChips";
 import type { ReviewItem, ReviewReason } from "./queue";
 
 /** The "what" line — a short phrase per reason, joined when a card carries
  *  several (an agent with unseen results AND a failing PR). */
-const REASON_LABEL: Record<ReviewReason, string> = {
+const REASON_LABEL: Record<Exclude<ReviewReason, "autopilot-stuck">, string> = {
   "workflow-approval": "Awaiting approval",
   "workflow-conflict": "Merge conflict",
   "unseen-results": "New results to review",
   "checks-failing": "Checks failing",
   "unresolved-comments": "Unresolved comments",
-  // Phrased as what happened, not as an error: autopilot tried and handed it
-  // back, so the next move is the user's.
-  "autopilot-stuck": "Autopilot stopped",
 };
 
+function reasonLabel(reason: ReviewReason, item: ReviewItem): string {
+  // Autopilot gave up: say why, as a fact about the PR, in the same words the
+  // Git panel uses. "Needs you" is what the whole queue already means.
+  if (reason === "autopilot-stuck") {
+    return item.autopilotStuck
+      ? stuckLabel(item.autopilotStuck.reason, item.autopilotStuck.rung)
+      : "Needs you";
+  }
+  return REASON_LABEL[reason];
+}
+
 function reasonLine(item: ReviewItem): string {
-  return item.reasons.map((r) => REASON_LABEL[r]).join(" · ");
+  return item.reasons.map((r) => reasonLabel(r, item)).join(" · ");
 }
 
 interface Props {
