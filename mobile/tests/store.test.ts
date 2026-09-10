@@ -284,3 +284,25 @@ describe("spawn flow", () => {
     send.mockRestore();
   });
 });
+
+/** A pairing code is single use and lasts five minutes, so a second delivery
+ *  of the same link — the launch URL read from the plugin, and the event it
+ *  also emits — must not tear down the attempt already spending it. */
+describe("pairing from a link", () => {
+  const LINK = { host: "192.168.1.24", port: 47285, hostKey: "k", pairingToken: "K7PQ2M9X" };
+
+  it("ignores a repeat of the link whose pairing is still running", () => {
+    const restore = { pairStep: state().pairStep, pairTarget: state().pairTarget };
+    useStore.setState({ pairStep: "relay", pairTarget: LINK });
+    try {
+      // The same link, with its pairing in flight: the attempt already
+      // spending the code keeps it, rather than being restarted from
+      // `connecting`.
+      state().pairFromLink({ ...LINK });
+      expect(state().pairTarget).toEqual(LINK);
+      expect(state().pairStep).toBe("relay");
+    } finally {
+      useStore.setState(restore);
+    }
+  });
+});

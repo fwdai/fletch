@@ -109,8 +109,20 @@ export const DEFAULT_PORT = 47285;
 /** Largest frame the host accepts (close code 1009 above it). */
 export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 
+/** How far the attempt in flight has got. `connecting` is the moment before
+ *  the first candidate; `lan` and `relay` name the one being dialled, and the
+ *  rest are the frames after the socket opens.
+ *
+ *  Reported because the waits here are long and silent: a phone off the Mac's
+ *  network still dials the LAN address first and has to wait out
+ *  `LAN_OPEN_TIMEOUT_MS` before the relay is tried, and the workspace that
+ *  follows a `pair` crosses the relay too. A screen with nothing but a state
+ *  name cannot tell any of that apart from a hang. */
+export type PairStep = "connecting" | "lan" | "relay" | "registering" | "greeting" | "workspace";
+
 export type EventHandler = (payload: unknown) => void;
 export type StateHandler = (state: ConnectionState, error?: string) => void;
+export type StepHandler = (step: PairStep) => void;
 
 export interface RemoteClient {
   /** Open a connection and complete `pair` or `hello`. Rejects if the
@@ -125,6 +137,9 @@ export interface RemoteClient {
   on(event: string, cb: EventHandler): () => void;
   /** Subscribe to connection-state changes; fires immediately with current. */
   onState(cb: StateHandler): () => void;
+  /** Subscribe to the progress of the attempt in flight. Unlike `onState` it
+   *  does not fire on subscribe: there is no current step between attempts. */
+  onStep(cb: StepHandler): () => void;
   /** Fires with the workspace snapshot after every successful handshake,
    *  including reconnects. */
   onSnapshot(cb: (result: HelloResult) => void): () => void;

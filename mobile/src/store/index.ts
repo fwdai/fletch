@@ -15,6 +15,7 @@ import {
   type HostInfo,
   type HostTarget,
   mockEnabled,
+  type PairStep,
   type Via,
 } from "../remote";
 import type { PushFletch } from "../remote/push";
@@ -47,6 +48,19 @@ export interface MobileState {
   ready: boolean;
   connection: ConnectionState;
   connectionError: string | null;
+  /** How far the `connect` in flight has got, and null when none is.
+   *
+   *  Deliberately wider than the client's `connected`, which arrives as soon
+   *  as `pair` is answered with the workspace still to fetch: a Pair screen
+   *  that goes idle there has told the user it gave up while it is in fact
+   *  most of the way through. It is also the whole progress display — the
+   *  waits are long enough (a LAN dial timing out, then a relay) that a
+   *  screen showing nothing reads as a hung app. */
+  pairStep: PairStep | null;
+  /** The `fletch://pair` link the app was opened with, so the Pair screen can
+   *  show which Mac it is pairing with rather than an empty form — and keep
+   *  the details for a one-tap retry if it fails. */
+  pairTarget: HostTarget | null;
   hostInfo: HostInfo | null;
   /** The paired host's public key — pinned on first contact, and what makes
    *  the app paired at all. */
@@ -80,6 +94,9 @@ export interface MobileState {
 
   init(): Promise<void>;
   connect(target: HostTarget): Promise<void>;
+  /** Pair from a `fletch://pair` deep link: show it on the Pair screen and
+   *  connect. Ignores a repeat of the link already being paired. */
+  pairFromLink(target: HostTarget): void;
   reconnect(): Promise<void>;
   unpair(): Promise<void>;
   /** Add or change the relay for the paired host without re-pairing. */
@@ -150,6 +167,18 @@ let initialized = false;
  *  read off disk. */
 let queuedPush: PushFletch | null = null;
 
+/** A pairing link that arrived before `init` finished — the usual case, in
+ *  fact: `registerDeepLinks` and `init` start together, and the link has only
+ *  two plugin calls to wait on where `init` has the push registration and the
+ *  settings read.
+ *
+ *  It cannot be acted on yet either, for two reasons. `init` finishes by
+ *  reconnecting the saved host, which would tear this pairing down mid-flight
+ *  and spend a code that is single use; and it publishes the settings it read
+ *  before that, which on a fresh install means a null host key written over
+ *  the one a pairing that got in first had just pinned. */
+let queuedLink: HostTarget | null = null;
+
 const homeItem = (): NavItem => ({ key: Date.now(), screen: "home", props: {}, phase: "idle" });
 
 const newId = () =>
@@ -169,6 +198,42 @@ async function guard<T>(set: Setter, fn: () => Promise<T>): Promise<T> {
     set({ lastError: message(e) });
     throw e;
   }
+}
+
+/** Everything that makes the app paired with the host it has just greeted: the
+ *  pinned key, the path the link came in on, and the durable record of both.
+ *
+ *  Shared by `connect` and the snapshot subscription because a first
+ *  connection can complete through either. A pairing that is answered and then
+ *  loses the socket before the workspace arrives has already spent its code,
+ *  and the client retries it on its own with the key it pinned — that retry
+ *  has no `connect` above it, and without this the app would sit on the Pair
+ *  screen holding a working connection. */
+async function adopt(set: Setter, get: () => MobileState, host: HostInfo): Promise<void> {
+  // The client owns the target: the spent pairing token is gone from it and
+  // the host key the handshake authenticated is pinned in.
+  const target = client.target;
+  const hostKey = client.hostKey ?? get().hostKey;
+  const relay = target?.relay ?? null;
+  set({
+    hostInfo: host,
+    hostKey,
+    relay,
+    via: client.via,
+    // The remembered clone destination is per host, so it can only be
+    // resolved once the handshake says which host this is.
+    lastDestParent: await loadDestParent(hostKey),
+    nav: [homeItem()],
+  });
+  // Mock mode must not leave a "mock" host behind for the next real run.
+  if (mockEnabled() || !target) return;
+  await saveSettings({
+    host: target.host,
+    port: target.port,
+    hostName: host.name,
+    relay: relay ?? undefined,
+    ...(hostKey ? { hostKey } : {}),
+  });
 }
 
 export const agentOf = (ws: Workspace | null, id: string): AgentRecord | undefined =>
@@ -198,6 +263,8 @@ export const useStore = create<MobileState>()((set, get) => ({
   ready: false,
   connection: "disconnected",
   connectionError: null,
+  pairStep: null,
+  pairTarget: null,
   hostInfo: null,
   hostKey: null,
   relay: null,
@@ -239,6 +306,12 @@ export const useStore = create<MobileState>()((set, get) => ({
         via: client.via,
       }),
     );
+    // Only while a `connect` owns the flow: a background reconnect is the
+    // connection banner's business, and moving the Pair screen's progress on
+    // behalf of one would be describing a connection the user did not ask for.
+    client.onStep((step) => {
+      if (get().pairStep) set({ pairStep: step });
+    });
     // The log of an open thread is kept current by live events, which a
     // dropped socket or a backgrounded webview silently misses — so every
     // reconnect and every return to the foreground re-reads it from the host.
@@ -254,6 +327,11 @@ export const useStore = create<MobileState>()((set, get) => ({
       // Every handshake — the first pairing and every reconnect — is when the
       // host is told the APNs token again.
       void syncPush().catch(ignore);
+      // A handshake that lands while the app still has no host key is the one
+      // that pairs it: `connect` does this itself, so this is for the retry
+      // that completes a pairing whose first attempt died after the code was
+      // spent. Guarded on `pairStep` so the two never race.
+      if (!get().hostKey && !get().pairStep) void adopt(set, get, snapshot.host).catch(ignore);
     });
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
@@ -273,6 +351,16 @@ export const useStore = create<MobileState>()((set, get) => ({
       queuedPush = null;
       get().openFromPush(fletch);
     }
+    // Before the saved host, and instead of it: a scanned link says to pair
+    // with *this* Mac, which is an instruction, where reconnecting the last
+    // one is only a default. Racing them would supersede the pairing and burn
+    // its code.
+    if (queuedLink) {
+      const target = queuedLink;
+      queuedLink = null;
+      await get().connect(target).catch(ignore);
+      return;
+    }
     if (mockEnabled()) {
       // The mock host has no pairing step worth clicking through every reload;
       // its fixed key is pinned by `connect` like any other.
@@ -280,8 +368,11 @@ export const useStore = create<MobileState>()((set, get) => ({
       return;
     }
     // A saved host key is the whole credential: `hello` authenticates with the
-    // device key the Rust layer holds.
-    if (saved.host && hostKey) {
+    // device key the Rust layer holds. Stood down while a pairing is running,
+    // for the same reason the queued link goes first: a link that arrived in
+    // the moment between `ready` and here is already connecting, and this
+    // would replace it.
+    if (saved.host && hostKey && !get().pairStep) {
       set({ lastDestParent: saved.destParents?.[hostKey] ?? null });
       await get()
         .connect({
@@ -299,38 +390,46 @@ export const useStore = create<MobileState>()((set, get) => ({
   async connect(target) {
     // The client owns the target from here: it strips the spent pairing token
     // and pins the host key the handshake authenticated.
-    set({ connectionError: null });
+    set({ connectionError: null, pairStep: "connecting" });
     try {
       const snapshot = await client.connect(target);
-      // Either the key the target carried, or the one just pinned.
-      const hostKey = client.hostKey ?? target.hostKey ?? get().hostKey;
-      const relay = client.target?.relay ?? null;
-      set({
-        hostInfo: snapshot.host,
-        workspace: snapshot.workspace,
-        hostKey,
-        relay,
-        via: client.via,
-        // The remembered clone destination is per host, so it can only be
-        // resolved once the handshake says which host this is.
-        lastDestParent: await loadDestParent(hostKey),
-        nav: [homeItem()],
-      });
-      // Mock mode must not leave a "mock" host behind for the next real run.
-      if (!mockEnabled()) {
-        await saveSettings({
-          host: target.host,
-          port: target.port,
-          hostName: snapshot.host.name,
-          relay: relay ?? undefined,
-          ...(hostKey ? { hostKey } : {}),
-        });
-      }
+      await adopt(set, get, snapshot.host);
+      set({ workspace: snapshot.workspace });
       if (!snapshot.workspace) await get().refreshWorkspace();
     } catch (e) {
       set({ connectionError: message(e) });
       throw e;
+    } finally {
+      // Cleared here and nowhere else: everything the user is waiting for has
+      // either happened or failed, which is not true at any earlier point the
+      // client reports.
+      set({ pairStep: null });
     }
+  },
+
+  pairFromLink(target) {
+    // The same link can arrive twice — read once from the plugin as the URL
+    // the app was launched with, and delivered again by the event it also
+    // emits. A second `connect` would tear down the attempt in flight and
+    // spend a code that is single use, so the one already running wins.
+    // Compared on the whole link, not just the code: a link may carry none,
+    // and two of those are not the same pairing.
+    const running = get().pairTarget;
+    const same =
+      running?.pairingToken === target.pairingToken &&
+      running?.host === target.host &&
+      running?.port === target.port;
+    if (get().pairStep && same) return;
+    set({ pairTarget: target, connectionError: null });
+    if (!get().ready) {
+      // Held until `init` has read what is on disk — see `queuedLink`. The
+      // step is set anyway: the screen is already showing this link, and a
+      // button offering to start a second pairing is the same race by hand.
+      queuedLink = target;
+      set({ pairStep: "connecting" });
+      return;
+    }
+    void get().connect(target).catch(ignore);
   },
 
   /** Retry the link the client already holds — the store no longer keeps a
@@ -358,6 +457,9 @@ export const useStore = create<MobileState>()((set, get) => ({
       logs: {},
       sheet: null,
       nav: [homeItem()],
+      // The link that paired this host carried a code that is long spent;
+      // leaving it on the Pair screen would offer the user a dead retry.
+      pairTarget: null,
     });
   },
 

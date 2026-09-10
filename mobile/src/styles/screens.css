@@ -739,6 +739,16 @@
   color: var(--fg-3);
   line-height: 1.5;
 }
+/* Sits where the error line does, and for the same reason: whatever the last
+   thing to happen was, it is readable next to the button that started it. */
+.pair-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  color: var(--fg-2);
+  line-height: 1.45;
+}
 
 /* connection banner */
 .conn {
