@@ -151,7 +151,7 @@ export function AgentScreen({ agentId }: { agentId: string }) {
           >
             {tab === "chat" && <ChatTab agent={agent} pinRef={pinnedToBottom} />}
             {tab === "code" && <CodeTab agent={agent} />}
-            {tab === "changes" && <ChangesTab agent={agent} />}
+            {tab === "changes" && <ChangesTab agent={agent} onDelegated={() => go("chat")} />}
           </div>
         )}
       </div>

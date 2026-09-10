@@ -1,17 +1,47 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "../../components/Icon";
 import { PrPill } from "../../components/ui";
-import { branchOf } from "../../lib/agents";
+import { baseOf, branchOf, isBusy } from "../../lib/agents";
 import { STATUS_LETTER } from "../../lib/diff";
 import { useStore } from "../../store";
 import { PrCard } from "./PrCard";
 
-export function ChangesTab({ agent }: { agent: AgentRecord }) {
+export function ChangesTab({
+  agent,
+  onDelegated,
+}: {
+  agent: AgentRecord;
+  /** Called once a git action has been handed to the agent, so the screen can
+   *  show the chat where the agent's turn plays out. */
+  onDelegated?: () => void;
+}) {
   const git = useStore((s) => s.gitStates[agent.id]);
   const pr = useStore((s) => s.prStates[agent.id]);
   const push = useStore((s) => s.push);
   const openSheet = useStore((s) => s.openSheet);
+  const delegateGit = useStore((s) => s.delegateGit);
+  const sending = useStore((s) => !!s.busy[agent.id]);
   const files = git?.files ?? [];
+  // A trigger sent mid-turn folds into the running turn instead of running as
+  // its own (the desktop queues it until idle); v1 on the phone simply waits.
+  const busy = sending || isBusy(agent);
+
+  // Mirrors the desktop's default. The commit-* playbooks start with a commit,
+  // so a clean tree (only unpushed commits) gets the plain push / open-pr
+  // playbook instead; with a PR already open, "open PR" degrades to push,
+  // since that's what updates it.
+  const action = pr
+    ? files.length
+      ? { name: "commit-push", label: `Commit & push to #${pr.number}` }
+      : { name: "push", label: `Push to #${pr.number}` }
+    : files.length
+      ? { name: "commit-pr", label: "Commit & open PR" }
+      : { name: "open-pr", label: "Open PR" };
+
+  const delegate = async () => {
+    await delegateGit(agent.id, action.name, { base: baseOf(agent) });
+    onDelegated?.();
+  };
 
   return (
     <>
@@ -91,10 +121,18 @@ export function ChangesTab({ agent }: { agent: AgentRecord }) {
           <button
             type="button"
             className="btn primary"
-            onClick={() => openSheet("pr", { agentId: agent.id })}
+            onClick={() => void delegate()}
+            disabled={busy}
           >
             <Icon name="pr" size={17} />
-            {pr ? `Commit & push to #${pr.number}` : "Commit & open PR"}
+            {busy ? "Agent is busy…" : `${action.label} with agent`}
+          </button>
+          <button
+            type="button"
+            className="alt"
+            onClick={() => openSheet("pr", { agentId: agent.id })}
+          >
+            Write the message yourself
           </button>
         </div>
       )}
