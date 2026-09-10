@@ -732,6 +732,43 @@ pub async fn copy_checkout_file(
     Ok(())
 }
 
+/// Persist a file the user pasted into the composer (a screenshot from the
+/// clipboard, or a file copied in Finder) so it can be attached by path like a
+/// dropped or browsed file. The webview only sees the pasted bytes, never a
+/// path, so the copy lands under `<data_dir>/attachments/<uuid>/<name>` — a
+/// per-paste directory keeps the original name intact without collisions.
+/// Returns the absolute path.
+///
+/// The bytes travel as the raw IPC body (no JSON-encoding a screenshot byte by
+/// byte); the name rides in the `name` header, sanitized by the frontend to a
+/// plain ASCII basename.
+#[tauri::command]
+pub fn save_pasted_attachment(request: tauri::ipc::Request<'_>) -> Result<String> {
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes,
+        _ => return Err(Error::Other("expected raw attachment bytes".into())),
+    };
+    let name = request
+        .headers()
+        .get("name")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            Path::new(s)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(s)
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or("pasted");
+    let dir = crate::data_dir()
+        .join("attachments")
+        .join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(name);
+    std::fs::write(&path, bytes)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod split_repo_path_tests {
     use super::split_repo_path;
