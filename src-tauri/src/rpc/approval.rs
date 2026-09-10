@@ -151,10 +151,7 @@ pub async fn refuse_unless_approved(
         }
         Err(_) => {
             forget(&id);
-            Some(refusal(
-                detail,
-                &format!("nobody answered within {wait}s"),
-            ))
+            Some(refusal(detail, &format!("nobody answered within {wait}s")))
         }
     }
 }

@@ -469,7 +469,11 @@ mod tests {
             Some(spoke_at),
             spoke_at + SILENCE_STOP / 2
         ));
-        assert!(should_auto_stop(true, Some(spoke_at), spoke_at + SILENCE_STOP));
+        assert!(should_auto_stop(
+            true,
+            Some(spoke_at),
+            spoke_at + SILENCE_STOP
+        ));
         // Speech that started after a long wait counts from when it was heard,
         // not from the start of the session.
         assert!(!should_auto_stop(true, Some(long), long + SILENCE_STOP / 2));

@@ -95,7 +95,10 @@ mod tests {
         assert_eq!(validate_branch_prefix("  alex/ ").unwrap(), "alex/");
         assert_eq!(validate_branch_prefix("   ").unwrap(), "");
         for bad in ["-x/", "/x/", "a b/", "a..b/", "a//b", "a~b", "a@{b", "a:b"] {
-            assert!(validate_branch_prefix(bad).is_err(), "{bad:?} should be rejected");
+            assert!(
+                validate_branch_prefix(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
         }
     }
 }

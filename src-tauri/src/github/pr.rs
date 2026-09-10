@@ -252,7 +252,11 @@ pub async fn pr_create_head(
             "title": title, "body": body, "head": head, "base": base, "draft": draft,
         });
         let (client, path) = (&client, &path);
-        async move { client.rest(reqwest::Method::POST, path, Some(&payload)).await }
+        async move {
+            client
+                .rest(reqwest::Method::POST, path, Some(&payload))
+                .await
+        }
     };
     // Drafts are a user preference (Settings › Git), not something the caller
     // decides per PR. Repos on plans without draft PRs refuse them with a 422;
