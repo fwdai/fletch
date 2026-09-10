@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
-import type { DirListing, PrSummary } from "@/api";
+import { api, type DirListing, type PrSummary } from "@/api";
 import type { LocalCommandAction } from "@/data/slashCommands";
 import { useAppStore } from "@/store";
 import { useCommandSource } from "./autocomplete/sources/commands";
@@ -102,6 +102,24 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     const sel = await open({ multiple: true });
     if (!sel) return;
     addPaths(Array.isArray(sel) ? sel : [sel]);
+  }
+
+  /** Files on the clipboard — a screenshot's image data, or files copied in
+   *  Finder — arrive as bytes with no path, so each is written out by the
+   *  backend and staged by the returned path. Plain text falls through to the
+   *  browser's default paste. */
+  async function pasteFiles(files: FileList) {
+    // Copied image data has no real name (WebKit labels it "image.png"), so
+    // stamp one; a Finder copy keeps its own.
+    const paths = await Promise.all(
+      Array.from(files).map(async (f, i) => {
+        const ext = f.type.split("/")[1] || "bin";
+        const generic = !f.name || f.name === "image.png";
+        const name = generic ? `pasted-${Date.now()}-${i}.${ext}` : f.name;
+        return api.savePastedAttachment(name, new Uint8Array(await f.arrayBuffer()));
+      }),
+    );
+    addPaths(paths);
   }
 
   // Autocompletions share one menu + keyboard mechanics (useAutocomplete);
@@ -209,6 +227,12 @@ export function useComposerInput(cfg: ComposerInputConfig) {
       },
       onSelect: (e: React.SyntheticEvent<HTMLTextAreaElement>) =>
         setCaret(e.currentTarget.selectionStart ?? 0),
+      onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+        const files = e.clipboardData.files;
+        if (files.length === 0) return;
+        e.preventDefault();
+        void pasteFiles(files);
+      },
       onKeyDown: (e: React.KeyboardEvent) => {
         if (autocomplete.onKeyDown(e)) return;
         if (onKeyDown?.(e)) return;

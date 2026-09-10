@@ -28,4 +28,11 @@ export const filesApi = {
     invoke<void>("create_checkout_dir", { agentId, path }),
   copyCheckoutFile: (agentId: string, from: string, to: string) =>
     invoke<void>("copy_checkout_file", { agentId, from, to }),
+  /** Write pasted clipboard bytes to the app's attachments dir; resolves to the
+   *  absolute path so it can be staged like a dropped file. The name goes in a
+   *  header (raw-body IPC), so it's reduced to a plain ASCII basename here. */
+  savePastedAttachment: (name: string, bytes: Uint8Array) =>
+    invoke<string>("save_pasted_attachment", bytes, {
+      headers: { name: name.replace(/[^A-Za-z0-9._-]/g, "_") },
+    }),
 };
