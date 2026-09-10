@@ -49,6 +49,27 @@ pub async fn remote_set_enabled(
     Ok(remote.status())
 }
 
+/// Change the listen port. Applied live first (`RemoteState::set_port`: a
+/// running listener moves, an idle one just records it) and persisted only
+/// once that succeeded, so a port that cannot be bound is refused with the old
+/// listener still up and nothing stored — the same order as `remote_set_enabled`.
+#[tauri::command]
+pub async fn remote_set_port(
+    remote: State<'_, Arc<RemoteState>>,
+    db: State<'_, DbState>,
+    port: u16,
+) -> Result<RemoteStatus> {
+    if port == 0 {
+        return Err(Error::Other("Choose a port between 1 and 65535.".into()));
+    }
+    remote.inner().set_port(port)?;
+    {
+        let conn = db.lock();
+        database::set_setting(&conn, crate::remote::PORT_SETTING, &port.to_string())?;
+    }
+    Ok(remote.status())
+}
+
 /// Set or clear the relay base URL: the host link comes up (or goes away)
 /// immediately, and the setting is persisted so the next launch agrees.
 ///

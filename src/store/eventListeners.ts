@@ -56,6 +56,7 @@ import {
   parsePaneWidth,
   parseProviderFlags,
   parseProviderPathOverrides,
+  parsePublishApprovalWait,
   parseReviewDismissed,
   parseRoadmapBoardWidth,
   parseSandboxEngine,
@@ -130,6 +131,10 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       soundEnabled: s.soundEnabled !== "false",
       // Opt-out native notifications: only an explicit "false" disables them.
       notifyEnabled: s.notifyEnabled !== "false",
+      // Opt-out, backend-owned (snake_case, written by `set_notify_turn_complete`;
+      // the phone push reads the same key): only an explicit "false" silences
+      // turn-complete alerts.
+      notifyTurnComplete: s.notify_turn_complete !== "false",
       providerFlags: parseProviderFlags(s.providers),
       providerPathOverrides: parseProviderPathOverrides(s),
       newDraftProvider,
@@ -156,6 +161,8 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       // `set_dictation_engine`): only an explicit "whisper" selects it, which
       // matches Rust's `whisper::parse_enabled`.
       dictationEngineEnabled: s.dictation_engine === "whisper",
+      // Opt-out, backend-owned (`set_dictation_auto_stop`): only "false" disables.
+      dictationAutoStop: s.dictation_auto_stop !== "false",
       // Backend-owned like telemetry_enabled (snake_case, written by the
       // `set_sandbox_engine` Rust command) — read it, never setSetting it.
       sandboxEngine: parseSandboxEngine(s.sandbox_engine),
@@ -164,6 +171,11 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       // the decision timeout. Backend-owned (`set_publish_confirmation`), so only
       // an explicit "true" enables — matching `rpc::approval::parse_enabled`.
       publishConfirmation: s.publish_confirmation === "true",
+      // Publishing preferences, all backend-owned (snake_case, written by
+      // `set_publish_approval_wait` / `set_branch_prefix` / `set_draft_prs`).
+      publishApprovalWait: parsePublishApprovalWait(s.publish_approval_wait),
+      branchPrefix: s.git_branch_prefix || "",
+      draftPrs: s.github_draft_prs === "true",
       // Advanced per-runtime launch knobs — backend-owned (snake_case, written
       // by `set_docker_launch_settings` / `set_podman_launch_settings`), so read
       // them here and never setSetting. Blank = unset (launch defaults apply).
@@ -284,8 +296,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       // a genuine completion (a manual stop is neither).
       if (!interruptedAgents.delete(e.agent_id)) {
         // Notify (chime + native) when you're NOT watching this agent —
-        // skipped when you already are, see signalAway.
-        signalAway(get, e.agent_id, "Turn complete");
+        // skipped when you already are, see signalAway. "Needs your input"
+        // always signals; a finished turn only if the user kept that alert on.
+        if (get().notifyTurnComplete) signalAway(get, e.agent_id, "Turn complete");
         // Flag results for review on any agent the user isn't currently
         // looking at — this is the only signal for research-only turns that
         // leave no diff behind. Cleared when the agent is selected. Never set

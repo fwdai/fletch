@@ -1,3 +1,4 @@
+import { api } from "@/api";
 import { DEFAULT_FEATURES, type FeatureFlags, type ThemeMode } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
 import type { SliceCreator } from "./types";
@@ -17,6 +18,10 @@ export interface AppearanceSlice {
   /** Send a native OS notification when an agent turn finishes or needs input
    *  while you're not watching that chat. Opt-out. */
   notifyEnabled: boolean;
+  /** Whether a finished turn alerts at all — chime, banner and phone push
+   *  alike; needing input always does. Opt-out. Mirrors the backend-owned
+   *  `notify_turn_complete` setting, which the phone push reads too. */
+  notifyTurnComplete: boolean;
 
   // appearance
   setTheme: (t: ThemeMode) => void;
@@ -25,6 +30,7 @@ export interface AppearanceSlice {
   setFeature: <K extends keyof FeatureFlags>(k: K, v: FeatureFlags[K]) => void;
   setSoundEnabled: (on: boolean) => void;
   setNotifyEnabled: (on: boolean) => void;
+  setNotifyTurnComplete: (on: boolean) => void;
 }
 
 export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
@@ -34,6 +40,7 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   features: DEFAULT_FEATURES,
   soundEnabled: true,
   notifyEnabled: true,
+  notifyTurnComplete: true,
 
   // ── appearance ──────────────────────────────────────────────────────────────
   setTheme: (t) => {
@@ -61,5 +68,11 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   setNotifyEnabled: (on) => {
     set({ notifyEnabled: on });
     setSetting("notifyEnabled", String(on));
+  },
+  setNotifyTurnComplete: (on) => {
+    set({ notifyTurnComplete: on });
+    // The backend command persists `notify_turn_complete` and updates the phone
+    // push's mirror, so no setSetting here.
+    void api.setNotifyTurnComplete(on);
   },
 });

@@ -6,6 +6,7 @@ import { useAppStore } from "@/store";
 import { accountInitials } from "@/util/format";
 import { DevToolsStatus } from "./DevToolsStatus";
 import { GithubConnection } from "./GithubConnection";
+import { LinearConnection } from "./LinearConnection";
 import { SetGroup, SetHead } from "./primitives";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -125,6 +126,10 @@ export function AccountPane() {
 
       <SetGroup label="GitHub">
         <GithubConnection />
+      </SetGroup>
+
+      <SetGroup label="Linear">
+        <LinearConnection />
       </SetGroup>
 
       <SetGroup label="Developer tools" last>

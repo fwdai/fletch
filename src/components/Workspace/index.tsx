@@ -179,13 +179,13 @@ function CrashBanner({ agent }: { agent: AgentRecord }) {
         <CopyButton text={PODMAN_START_COMMAND} tip="Copy command" />
       )}
       {dockerKind === "image" && (
-        <Button variant="outline" onClick={() => openSettingsScreen("experimental")}>
+        <Button variant="outline" onClick={() => openSettingsScreen("sandbox")}>
           <Icon name="settings" size={12} />
           Sandbox settings
         </Button>
       )}
       {dockerKind === "auth" && (
-        <Button variant="outline" onClick={() => openSettingsScreen("general")}>
+        <Button variant="outline" onClick={() => openSettingsScreen("sandbox")}>
           <Icon name="cube" size={12} />
           Connect Claude for containers
         </Button>

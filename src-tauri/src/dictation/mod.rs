@@ -292,6 +292,44 @@ pub fn dictation_model_status(state: tauri::State<'_, DbState>) -> ModelStatus {
 /// snake_case key, so the renderer reads it as `s.dictation_engine`) and, when
 /// enabling without the weights on disk, kicks the download off in the
 /// background — the toggle can't await half a gigabyte. Same persist-then-act
+/// Settings key: end a local-engine session on its own after a pause. Opt-out
+/// — only `"false"` turns it off. Whisper only: Apple's recognizer decides for
+/// itself when an utterance ended, and there is no PCM to measure (see
+/// `apple::watch_for_silence`). Mirrored in memory because the silence monitor
+/// polls it off the audio thread, where there is no DB handle.
+pub const AUTO_STOP_SETTING: &str = "dictation_auto_stop";
+static AUTO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn parse_auto_stop(raw: Option<&str>) -> bool {
+    raw != Some("false")
+}
+
+pub fn set_auto_stop(enabled: bool) {
+    AUTO_STOP.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read by the silence monitor, which only exists on macOS.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn auto_stop() -> bool {
+    AUTO_STOP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether a dictation session ends itself after a pause (Settings ›
+/// Dictation). Persist-then-mirror, like `set_dictation_engine`.
+#[tauri::command]
+pub fn set_dictation_auto_stop(enabled: bool, state: tauri::State<'_, DbState>) -> Result<()> {
+    {
+        let conn = state.lock();
+        database::set_setting(
+            &conn,
+            AUTO_STOP_SETTING,
+            if enabled { "true" } else { "false" },
+        )?;
+    }
+    set_auto_stop(enabled);
+    Ok(())
+}
+
 /// shape as `set_code_indexing_enabled`.
 ///
 /// Turning it off leaves the weights alone; removing them is a separate,

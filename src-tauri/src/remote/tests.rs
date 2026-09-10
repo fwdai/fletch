@@ -978,6 +978,49 @@ async fn disabling_remote_access_closes_live_connections_4004() {
     assert!(!host.state.status().listening);
 }
 
+/// Moving the port is not a stop: live devices get the retryable 1012, not
+/// 4004, the new port answers a fresh handshake, and the status reports it.
+#[tokio::test]
+async fn changing_the_port_moves_the_listener_and_closes_1012() {
+    let host = boot();
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public)
+        .unwrap();
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("1", "hello", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+
+    // A free port, found the same way `boot` finds one.
+    let spare = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let next = spare.local_addr().unwrap().port();
+    drop(spare);
+
+    let bound = host.state.set_port(next).unwrap();
+    assert_eq!(bound, next);
+    assert_eq!(ws.close_code().await, 1012);
+    let status = host.state.status();
+    assert!(status.listening);
+    assert_eq!(status.port, next);
+
+    let mut again = secure_connect(next, &phone).await;
+    again.request("2", "hello", json!({})).await;
+    assert_eq!(again.next_json().await["ok"], true);
+}
+
+/// Off, a port change only moves the recorded value — which is what the pane
+/// shows, and what the next start binds.
+#[tokio::test]
+async fn changing_the_port_while_off_is_recorded_for_the_next_start() {
+    let host = boot();
+    host.state.stop();
+    assert_eq!(host.state.set_port(4242).unwrap(), 4242);
+    let status = host.state.status();
+    assert!(!status.listening);
+    assert_eq!(status.port, 4242);
+}
+
 #[tokio::test]
 async fn revoking_a_device_closes_its_live_connection_4003() {
     let host = boot();

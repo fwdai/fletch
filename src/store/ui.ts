@@ -40,7 +40,7 @@ export interface UiSlice {
   feedbackOpen: boolean;
   /** First-run onboarding overlay. `onboardingComplete` is persisted (DB
    *  settings); the overlay auto-opens for new users on init and is
-   *  re-openable any time from Settings › General. */
+   *  re-openable from Settings › Developer (dev builds and admins). */
   onboardingOpen: boolean;
   onboardingComplete: boolean;
   /** When true the workspace pane shows archived-session history instead

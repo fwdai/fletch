@@ -246,13 +246,27 @@ pub async fn pr_create_head(
     };
 
     let client = client::Client::new()?;
-    let (status, resp) = client
-        .rest(
-            reqwest::Method::POST,
-            &format!("/repos/{owner}/{repo}/pulls"),
-            Some(&json!({ "title": title, "body": body, "head": head, "base": base })),
-        )
-        .await?;
+    let path = format!("/repos/{owner}/{repo}/pulls");
+    let post = |draft: bool| {
+        let payload = json!({
+            "title": title, "body": body, "head": head, "base": base, "draft": draft,
+        });
+        let (client, path) = (&client, &path);
+        async move {
+            client
+                .rest(reqwest::Method::POST, path, Some(&payload))
+                .await
+        }
+    };
+    // Drafts are a user preference (Settings › Git), not something the caller
+    // decides per PR. Repos on plans without draft PRs refuse them with a 422;
+    // a ready-for-review PR beats no PR, so that one refusal retries plain.
+    let mut draft = crate::publish_prefs::draft_prs();
+    let (mut status, mut resp) = post(draft).await?;
+    if !status.is_success() && draft && draft_unsupported(&detailed_rest_error(&resp)) {
+        draft = false;
+        (status, resp) = post(draft).await?;
+    }
 
     if !status.is_success() {
         let message = detailed_rest_error(&resp);
@@ -276,6 +290,14 @@ pub async fn pr_create_head(
         Some(pr) => Ok(pr),
         None => Err(Error::Gh("PR was created but could not be fetched".into())),
     }
+}
+
+/// GitHub's 422 for a draft PR on a repo whose plan doesn't include them:
+/// "Draft pull requests are not supported in this repository."
+fn draft_unsupported(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("draft pull requests are not supported")
 }
 
 /// REST error bodies often carry the actionable detail in `errors[]`, not

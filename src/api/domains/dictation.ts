@@ -41,6 +41,9 @@ export const dictationApi = {
    *  resolves immediately either way, with progress arriving via
    *  `onDictationModelProgress`. Backend-owned, like `setCodeIndexingEnabled`. */
   setDictationEngine: (enabled: boolean) => invoke<void>("set_dictation_engine", { enabled }),
+  /** Whether a session ends itself after a pause. Backend-owned
+   *  (`dictation_auto_stop`): the silence monitor reads it off the audio thread. */
+  setDictationAutoStop: (enabled: boolean) => invoke<void>("set_dictation_auto_stop", { enabled }),
   /** Pick which catalog model the local engine uses. Persists
    *  `dictation_model` and, when the engine is on and the choice isn't
    *  downloaded, starts fetching it in the background. Rejects an id the

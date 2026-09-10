@@ -1,129 +1,39 @@
-import { useEffect } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
-import { ACCENTS, mcpCapableLabels } from "@/data/providers";
-import type { SandboxEngine, ThemeMode } from "@/storage/preferences";
+import { CODE_THEMES } from "@/data/codeThemes";
+import { ACCENTS } from "@/data/providers";
+import type { ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
-import { IS_MAC } from "@/util/platform";
-import { ContainerAuth } from "./ContainerAuth";
-import { DictationSection } from "./DictationSection";
-import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
+import { SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
-// A container runtime can start or stop while this pane stays open, so we
-// re-probe on a steady interval (plus immediately on mount and on window focus)
-// rather than once. Polling both ways keeps each engine option AND the
-// "selected but unavailable" warning tracking the live runtime: a one-shot or
-// stop-when-available probe would latch a stale state and, e.g., leave the
-// warning hidden after the daemon stops. The backend caches each probe for a
-// few seconds, so a tight interval mostly hits that cache.
-const PROBE_INTERVAL_MS = 3_000;
+const CODE_THEME_OPTIONS = CODE_THEMES.map((t) => ({ value: t.id, label: t.label }));
 
-const SIDE_PANELS: FeatureItem[] = [
-  { key: "git", title: "Git", sub: "Branch, file changes, and smart commit / push / PR actions." },
-  {
-    key: "code",
-    title: "Code",
-    sub: "Browse & edit checkout files, plus a Live feed of the agent's diffs.",
-  },
-  { key: "run", title: "Run", sub: "Dev server with an auto-detected, overrideable config." },
-  { key: "terminal", title: "Terminal", sub: "Interactive shell scoped to the checkout." },
-];
-
-const COMPOSER: FeatureItem[] = [
-  {
-    key: "thinkingBudget",
-    title: "Thinking budget",
-    sub: "Show a low / medium / high reasoning cap in the composer.",
-  },
-  {
-    key: "tokenUsage",
-    title: "Token usage",
-    sub: "Show the context-window % meter in the composer.",
-  },
-];
-
+/** App-wide basics only. Anything scoped to a feature (workspace panels, git,
+ *  sandboxing, dictation) has its own section. */
 export function GeneralPane() {
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
   const accent = useAppStore((s) => s.accent);
   const setAccent = useAppStore((s) => s.setAccent);
-  const features = useAppStore((s) => s.features);
-  const setFeature = useAppStore((s) => s.setFeature);
+  const codeTheme = useAppStore((s) => s.codeTheme);
+  const setCodeTheme = useAppStore((s) => s.setCodeTheme);
   const soundEnabled = useAppStore((s) => s.soundEnabled);
   const setSoundEnabled = useAppStore((s) => s.setSoundEnabled);
   const notifyEnabled = useAppStore((s) => s.notifyEnabled);
   const setNotifyEnabled = useAppStore((s) => s.setNotifyEnabled);
+  const notifyTurnComplete = useAppStore((s) => s.notifyTurnComplete);
+  const setNotifyTurnComplete = useAppStore((s) => s.setNotifyTurnComplete);
   const telemetryEnabled = useAppStore((s) => s.telemetryEnabled);
   const setTelemetryEnabled = useAppStore((s) => s.setTelemetryEnabled);
-  const codeIndexingEnabled = useAppStore((s) => s.codeIndexingEnabled);
-  const publishConfirmation = useAppStore((s) => s.publishConfirmation);
-  const setPublishConfirmation = useAppStore((s) => s.setPublishConfirmation);
-  const setCodeIndexingEnabled = useAppStore((s) => s.setCodeIndexingEnabled);
   const revealLogs = useAppStore((s) => s.revealLogs);
-  const sandboxEngine = useAppStore((s) => s.sandboxEngine);
-  const setSandboxEngine = useAppStore((s) => s.setSandboxEngine);
-  const dockerProbe = useAppStore((s) => s.dockerProbe);
-  const refreshDockerProbe = useAppStore((s) => s.refreshDockerProbe);
-  const podmanProbe = useAppStore((s) => s.podmanProbe);
-  const refreshPodmanProbe = useAppStore((s) => s.refreshPodmanProbe);
-
-  useEffect(() => {
-    let cancelled = false;
-    const probe = () => {
-      if (cancelled) return;
-      void refreshDockerProbe();
-      void refreshPodmanProbe();
-    };
-    probe(); // immediately on mount
-    const timer = setInterval(probe, PROBE_INTERVAL_MS);
-    // Re-check right away when the window returns (e.g. the user just launched
-    // Docker Desktop from the hint) instead of waiting for the next tick.
-    const onFocus = () => probe();
-    window.addEventListener("focus", onFocus);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [refreshDockerProbe, refreshPodmanProbe]);
-
-  // Each container option is enabled only when the runtime answered the probe;
-  // otherwise it's disabled with a hint saying how to fix it. A `null` probe is
-  // still in flight, so it gates the option off but says "Checking…" rather
-  // than calling an installed runtime missing.
-  const dockerAvailable = dockerProbe?.status === "available";
-  const dockerHint = dockerAvailable
-    ? dockerProbe?.version && `v${dockerProbe.version}`
-    : !dockerProbe
-      ? "Checking…"
-      : dockerProbe.status === "daemon-down"
-        ? "Start Docker Desktop"
-        : "Install Docker Desktop";
-  const podmanAvailable = podmanProbe?.status === "available";
-  const podmanHint = podmanAvailable
-    ? podmanProbe?.version && `v${podmanProbe.version}`
-    : !podmanProbe
-      ? "Checking…"
-      : podmanProbe.status === "machine-down"
-        ? "Run podman machine start"
-        : "Install Podman";
-
-  const FeatureRow = ({ item }: { item: FeatureItem }) => (
-    <SetRow title={item.title} sub={item.sub}>
-      <SetToggle
-        on={!!features[item.key]}
-        onClick={() => setFeature(item.key, !features[item.key])}
-      />
-    </SetRow>
-  );
 
   return (
     <div className="set-pane">
       <SetHead
         eyebrow="Settings · General"
         title="General"
-        desc="Tune how Fletch looks and which surfaces appear while you work. Changes apply instantly across every agent."
+        desc="How Fletch looks, when it alerts you, and what it shares."
       />
 
       <SetGroup label="Appearance">
@@ -154,18 +64,14 @@ export function GeneralPane() {
             ))}
           </div>
         </SetRow>
-      </SetGroup>
-
-      <SetGroup label="Side panels">
-        {SIDE_PANELS.map((it) => (
-          <FeatureRow key={it.key} item={it} />
-        ))}
-      </SetGroup>
-
-      <SetGroup label="Composer">
-        {COMPOSER.map((it) => (
-          <FeatureRow key={it.key} item={it} />
-        ))}
+        <SetRow title="Code theme" sub="Syntax highlighting in the Code panel.">
+          <Select
+            value={codeTheme}
+            ariaLabel="Code theme"
+            options={CODE_THEME_OPTIONS}
+            onChange={setCodeTheme}
+          />
+        </SetRow>
       </SetGroup>
 
       <SetGroup label="Notifications">
@@ -173,91 +79,26 @@ export function GeneralPane() {
           <SetToggle on={soundEnabled} onClick={() => setSoundEnabled(!soundEnabled)} />
         </SetRow>
         <SetRow
-          title="Native notifications"
-          sub="Show a desktop notification when an agent finishes or needs your input."
+          title="Desktop notifications"
+          sub="Show a system notification when an agent finishes or needs your input."
         >
           <SetToggle on={notifyEnabled} onClick={() => setNotifyEnabled(!notifyEnabled)} />
         </SetRow>
-      </SetGroup>
-
-      <SetGroup label="Code indexing">
         <SetRow
-          title="Code indexing"
-          sub={`Let agents query symbols and call graphs instead of searching files. Stored in Fletch's data directory. Delivered over MCP, so it applies to ${mcpCapableLabels().join(", ")} — other agents are unaffected and are not indexed.`}
+          title="Turn finished"
+          sub="Also alert when an agent finishes a turn. Alerts for needed input are always sent."
         >
           <SetToggle
-            on={codeIndexingEnabled}
-            onClick={() => setCodeIndexingEnabled(!codeIndexingEnabled)}
+            on={notifyTurnComplete}
+            onClick={() => setNotifyTurnComplete(!notifyTurnComplete)}
           />
         </SetRow>
       </SetGroup>
 
-      {/* The engine this replaces is Apple's, so there is nothing to choose
-          from anywhere else. */}
-      {IS_MAC && <DictationSection />}
-
-      <SetGroup label="Sandbox">
-        <SetRow
-          title="Ask before publishing"
-          sub="Require your approval each time an agent decides to publish. What you already asked for is not re-asked: autopilot keeps running, and a Git-panel action you clicked goes straight through. Agents already can't push the branch their work is reviewed against, and your credentials never enter their sandbox."
-        >
-          <SetToggle
-            on={publishConfirmation}
-            onClick={() => setPublishConfirmation(!publishConfirmation)}
-          />
-        </SetRow>
-        <SetRow
-          title="Engine"
-          sub="Applies to new agents; existing ones keep their engine. Docker and Podman both run agents in a Linux container, so builds and tests run on Linux."
-        >
-          <Select<SandboxEngine>
-            value={sandboxEngine}
-            ariaLabel="Sandbox engine"
-            options={[
-              { value: "sandbox-exec", label: "Seatbelt (sandbox-exec)" },
-              {
-                value: "docker",
-                label: "Docker",
-                hint: dockerHint || undefined,
-                disabled: !dockerAvailable,
-              },
-              {
-                value: "podman",
-                label: "Podman",
-                hint: podmanHint || undefined,
-                disabled: !podmanAvailable,
-              },
-            ]}
-            onChange={(v) => void setSandboxEngine(v)}
-          />
-        </SetRow>
-        {sandboxEngine === "docker" && dockerProbe && !dockerAvailable && (
-          <div className="set-sandbox-warn">
-            Docker is selected but{" "}
-            {dockerProbe.status === "daemon-down" ? "the daemon isn't running" : "isn't installed"}.
-            New agents won't launch until it's available.{" "}
-            {dockerProbe.status === "daemon-down" ? "Start" : "Install"} Docker Desktop, or switch
-            back to Seatbelt.
-          </div>
-        )}
-        {sandboxEngine === "podman" && podmanProbe && !podmanAvailable && (
-          <div className="set-sandbox-warn">
-            Podman is selected but{" "}
-            {podmanProbe.status === "machine-down"
-              ? "its machine isn't running"
-              : "isn't installed"}
-            . New agents won't launch until it's available.{" "}
-            {podmanProbe.status === "machine-down" ? "Run podman machine start" : "Install Podman"},
-            or switch back to Seatbelt.
-          </div>
-        )}
-        <ContainerAuth />
-      </SetGroup>
-
-      <SetGroup label="Diagnostics" last>
+      <SetGroup label="Privacy & diagnostics" last>
         <SetRow
           title="Usage analytics"
-          sub="Share anonymous usage events to help improve Fletch. No code, file paths, repo names, or prompts are ever sent."
+          sub="Anonymous usage events that help improve Fletch. Never includes code, paths, or prompts."
         >
           <SetToggle on={telemetryEnabled} onClick={() => setTelemetryEnabled(!telemetryEnabled)} />
         </SetRow>

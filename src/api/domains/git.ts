@@ -35,4 +35,12 @@ export const gitApi = {
    *  checked out, and never a hardcoded "main" (which forks the wrong branch on
    *  a master/develop repo). Infallible backend-side; falls back to "main". */
   repoDefaultBranch: (repoPath: string) => invoke<string>("repo_default_branch", { repoPath }),
+
+  // Publishing preferences (Settings › Git). Backend-owned settings: the git
+  // RPC dispatcher and the PR path read them, so the Rust side owns the write.
+  /** Seconds a publish-approval prompt waits before denying; 0 = until answered. */
+  setPublishApprovalWait: (secs: number) => invoke<void>("set_publish_approval_wait", { secs }),
+  /** Validates and stores the prefix; resolves to the normalized form. */
+  setBranchPrefix: (prefix: string) => invoke<string>("set_branch_prefix", { prefix }),
+  setDraftPrs: (enabled: boolean) => invoke<void>("set_draft_prs", { enabled }),
 };

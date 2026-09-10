@@ -9,6 +9,9 @@ import type { PairingInvite, RemoteStatus } from "../types/remote";
 export const remoteApi = {
   remoteStatus: () => invoke<RemoteStatus>("remote_status"),
   remoteSetEnabled: (enabled: boolean) => invoke<RemoteStatus>("remote_set_enabled", { enabled }),
+  /** Change the listen port; a live listener restarts on it. Rejects a port
+   *  that can't be bound, leaving the current one running. */
+  remoteSetPort: (port: number) => invoke<RemoteStatus>("remote_set_port", { port }),
   /** Point this Mac at a relay so a phone can reach it off the local network,
    *  or `null` to stop. Rejects a URL that is not `ws://` or `wss://`. */
   remoteSetRelay: (url: string | null) => invoke<RemoteStatus>("remote_set_relay", { url }),

@@ -24,7 +24,7 @@
 //! channel — resolves to **denied**, so the gate cannot fail open.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -45,15 +45,23 @@ pub const SETTING: &str = "publish_confirmation";
 /// both, the UI would have to infer them from `detail`'s prose.
 pub const EVENT_REQUESTED: &str = "publish:approval-requested";
 
-/// How long an unanswered request waits before being denied. Generous enough for
-/// a user to read the prompt and decide, short enough that an agent whose user
-/// has walked away fails with a clear refusal instead of hanging its turn.
-const DECISION_TIMEOUT: Duration = Duration::from_secs(120);
+/// Settings key: how many seconds an unanswered request waits before being
+/// denied. `0` waits until answered (a closed window or dismissed prompt still
+/// denies). Absent or unparsable falls back to [`DEFAULT_WAIT_SECS`].
+pub const WAIT_SETTING: &str = "publish_approval_wait";
+
+/// Default wait: generous enough for a user to read the prompt and decide,
+/// short enough that an agent whose user has walked away fails with a clear
+/// refusal instead of hanging its turn.
+pub const DEFAULT_WAIT_SECS: u64 = 120;
 
 /// In-memory mirror of [`SETTING`], so the dispatcher (no DB handle) can read it.
 /// Seeded at startup and updated by the set-command — the same idiom as
 /// `sandbox::set_selected_engine_kind` and `codegraph::set_enabled`.
 static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// In-memory mirror of [`WAIT_SETTING`], same idiom.
+static WAIT_SECS: AtomicU64 = AtomicU64::new(DEFAULT_WAIT_SECS);
 
 /// Requests awaiting a human answer, by request id.
 static PENDING: Mutex<Option<HashMap<String, oneshot::Sender<bool>>>> = Mutex::new(None);
@@ -71,6 +79,22 @@ pub fn set_enabled(enabled: bool) {
 /// Whether publishing currently requires the user's approval.
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
+}
+
+/// Interpret a raw [`WAIT_SETTING`] value; anything unparsable is the default.
+pub fn parse_wait_secs(raw: Option<&str>) -> u64 {
+    raw.and_then(|s| s.trim().parse().ok())
+        .unwrap_or(DEFAULT_WAIT_SECS)
+}
+
+/// Update the in-memory wait mirror (startup seed + the set-command).
+pub fn set_wait_secs(secs: u64) {
+    WAIT_SECS.store(secs, Ordering::Relaxed);
+}
+
+/// How long a prompt waits for an answer; `0` means until answered.
+pub fn wait_secs() -> u64 {
+    WAIT_SECS.load(Ordering::Relaxed)
 }
 
 /// Ask the user to approve one publish, and wait for the answer.
@@ -110,7 +134,13 @@ pub async fn refuse_unless_approved(
         forget(&id);
         return Some(refusal(detail, "no window is available to approve it"));
     }
-    match tokio::time::timeout(DECISION_TIMEOUT, answer).await {
+    let wait = wait_secs();
+    let answered = if wait == 0 {
+        Ok(answer.await)
+    } else {
+        tokio::time::timeout(Duration::from_secs(wait), answer).await
+    };
+    match answered {
         Ok(Ok(true)) => None,
         Ok(Ok(false)) => Some(refusal(detail, "you declined it")),
         // Sender dropped (window closed mid-prompt) or the wait expired. Both are
@@ -121,10 +151,7 @@ pub async fn refuse_unless_approved(
         }
         Err(_) => {
             forget(&id);
-            Some(refusal(
-                detail,
-                &format!("nobody answered within {}s", DECISION_TIMEOUT.as_secs()),
-            ))
+            Some(refusal(detail, &format!("nobody answered within {wait}s")))
         }
     }
 }
