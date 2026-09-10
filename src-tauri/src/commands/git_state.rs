@@ -46,11 +46,7 @@ pub(crate) async fn get_git_state_impl(
     // Still cloning: no checkout to describe yet. `None` is what an unresolvable
     // agent already returns, and the panel renders it as Loading… rather than
     // as a status full of phantom deletions.
-    if supervisor
-        .workspace
-        .agent(agent_id)
-        .is_ok_and(|a| checkout_pending(&a))
-    {
+    if checkout_pending(supervisor, agent_id) {
         return Ok(None);
     }
     let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
@@ -87,7 +83,7 @@ pub async fn get_all_shortstats(
         // Omitted while provisioning for the same reason as archived agents:
         // there is nothing to count yet, and counting a half-written clone
         // would flash a phantom file count on the badge.
-        if agent.archive.is_some() || checkout_pending(&agent) {
+        if agent.archive.is_some() || checkout_pending(&supervisor, &agent.id) {
             continue;
         }
         // One shortstat per checkout; a multi-repo agent's badge shows the
@@ -144,7 +140,7 @@ pub async fn get_all_git_meta(
     };
     let mut set = tokio::task::JoinSet::new();
     for agent in workspace.agents {
-        if agent.archive.is_some() || checkout_pending(&agent) {
+        if agent.archive.is_some() || checkout_pending(&supervisor, &agent.id) {
             continue;
         }
         for (i, repo) in agent.repos.iter().enumerate() {
