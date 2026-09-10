@@ -1142,6 +1142,17 @@
   height: 50px;
   border-radius: 16px;
 }
+/* The manual alternative under the delegated primary: a quiet text link. */
+.ch-foot .alt {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 6px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--fg-2);
+  text-align: center;
+}
 .pr-card {
   background: var(--bg-1);
   border: 1px solid var(--bd-soft);

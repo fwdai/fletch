@@ -6,8 +6,10 @@ import { agentOf, useStore } from "../store";
 
 type Stage = "form" | "run" | "done" | "error";
 
-/** Commit + push + open PR, or push to an existing one. Each step is a real
- *  remote op; the progress list is just the three of them. */
+/** The manual alternative to handing the git action to the agent (Changes tab):
+ *  commit + push + open PR, or push to an existing one, with the user's own
+ *  title and description. Each step is a real remote op; the progress list is
+ *  just the three of them. */
 export function PrSheet({
   open,
   onClose,
@@ -33,8 +35,10 @@ export function PrSheet({
 
   useEffect(() => {
     if (!open || !agent) return;
-    setTitle(pr?.title ?? agent.task.split("\n")[0].slice(0, 72));
-    setBody(agent.task);
+    // The form is the user's own text, never the agent's task: seeding it from
+    // the task made the original prompt the commit message and PR body.
+    setTitle(pr?.title ?? "");
+    setBody("");
     setStage("form");
     setStep(0);
     setError(null);

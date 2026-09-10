@@ -3,6 +3,7 @@ import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
 import type { DiffStats, GitState } from "@desktop/api/types/git";
 import type { PrChecks, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
+import { appActionMessage } from "@desktop/delegation";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
 import { createApi } from "../api";
@@ -137,6 +138,12 @@ export interface MobileState {
   /** `null` clears the pinned model, leaving the provider CLI's own default. */
   setModel(agentId: string, model: string | null): Promise<void>;
   setEffort(agentId: string, effort: string): Promise<void>;
+  /** Hand a git action to the coding agent, as the desktop git panel does: the
+   *  agent writes the commit message / PR description itself. `action` is a
+   *  playbook name from `instructions/git_actions.md` (`commit-pr`, `open-pr`,
+   *  `commit-push`, …); `params` carry only what the playbook can't know. */
+  delegateGit(agentId: string, action: string, params?: Record<string, string>): Promise<void>;
+  /** Manual path: commit + push + open a PR with the user's own text. */
   publish(agentId: string, title: string, body: string): Promise<void>;
   pushToPr(agentId: string): Promise<void>;
 
@@ -726,6 +733,14 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async setEffort(agentId, effort) {
     await guard(set, () => api.setAgentEffort(agentId, effort));
+  },
+
+  async delegateGit(agentId, action, params) {
+    // Delivered as a normal user turn: the host's `send_user_message` is the
+    // same op the desktop uses, and the agent already carries the playbooks.
+    // Completion needs no tracking here — `agent:git-action` and
+    // `pr:state_changed` (events.ts) reload the git/PR state when it lands.
+    await get().send(agentId, appActionMessage(action, params));
   },
 
   async publish(agentId, title, body) {
