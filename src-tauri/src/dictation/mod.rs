@@ -306,6 +306,8 @@ pub fn set_auto_stop(enabled: bool) {
     AUTO_STOP.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Read by the silence monitor, which only exists on macOS.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn auto_stop() -> bool {
     AUTO_STOP.load(std::sync::atomic::Ordering::Relaxed)
 }
