@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::git_state::{self, FileStatus, StatusKind};
 use crate::supervisor::Supervisor;
-use crate::workspace::{AgentRecord, AgentStatus, TrackedRepo};
+use crate::workspace::{AgentStatus, TrackedRepo};
 
 /// The ref a checkout's *committed* changes are diffed against: the immutable
 /// fork-point SHA captured at spawn when known, else the parent branch name
@@ -289,11 +289,16 @@ pub(super) fn agent_repo_checkout_opt(
 /// panels would flash a thousand phantom changes before settling. Provisioning
 /// is the first phase of `Spawning`, so that status is the readiness signal.
 ///
+/// Read through [`Supervisor::status_of`], never off a stored record: runtime
+/// status lives only in the supervisor's in-memory map, and the DB-derived
+/// status on a record rests at `Idle` (`workspace::derive_status`), so a
+/// record-based check would never see `Spawning`.
+///
 /// Read-only surfaces only. The git *write* paths (commit / push / PR) resolve
 /// their checkouts through [`agent_repo_checkout`] and must keep working
 /// throughout a spawn, so they deliberately don't consult this.
-pub(super) fn checkout_pending(agent: &AgentRecord) -> bool {
-    agent.status == AgentStatus::Spawning
+pub(super) fn checkout_pending(supervisor: &Supervisor, agent_id: &str) -> bool {
+    matches!(supervisor.status_of(agent_id), Some(AgentStatus::Spawning))
 }
 
 /// The agent's branch name, or an error if the checkout has no branch yet.
@@ -431,7 +436,7 @@ pub(crate) async fn list_checkout_tree_impl(
     let record = supervisor.workspace.agent(agent_id)?;
     // Still cloning: fail rather than list a half-written tree. The explorer
     // treats a failed listing as "keep waiting" and holds its Loading… state.
-    if checkout_pending(&record) {
+    if checkout_pending(supervisor, agent_id) {
         return Err(Error::Other("workspace is still being provisioned".into()));
     }
     if record.repos.len() <= 1 {
@@ -1006,5 +1011,93 @@ mod safe_join_tests {
     fn allows_paths_that_do_not_exist_yet() {
         let (_td, checkout, _outside) = checkout_and_outside();
         assert!(safe_join(&checkout, "src/deeply/nested/new.ts").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod checkout_pending_tests {
+    use super::checkout_pending;
+    use crate::supervisor::Supervisor;
+    use crate::workspace::{
+        new_agent_record, AgentStatus, AgentView, TrackedRepo, WorkspaceManager,
+    };
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    /// A supervisor over a fresh DB holding one agent row. The stored row has no
+    /// runtime status: `workspace.agent()` derives it to `Idle` no matter what
+    /// the spawn is actually doing — that's what the guard must not rely on.
+    fn supervisor_with_agent(id: &str) -> Supervisor {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::database::init(dir.path()).unwrap();
+        {
+            let conn = db.lock();
+            let now = chrono::Utc::now().timestamp_millis();
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'r', ?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO repos (id, project_id, path, created_at) VALUES ('r1', 'p1', '/r', ?1)",
+                [now],
+            )
+            .unwrap();
+        }
+        let wm = Arc::new(WorkspaceManager::new(db));
+        let mut record = new_agent_record(
+            id.to_string(),
+            id.to_string(),
+            "claude".to_string(),
+            TrackedRepo {
+                repo_path: PathBuf::from("/r"),
+                subdir: "r".to_string(),
+                branch: None,
+                parent_branch: None,
+                base_sha: None,
+                pr_number: None,
+                pr_url: None,
+                pr_title: None,
+                pr_state: None,
+                label: None,
+                adopted_checkout: None,
+            },
+            String::new(),
+            AgentView::Custom,
+        );
+        wm.add_agent(&mut record).unwrap();
+        // Precondition of the regression: the stored record rests at Idle.
+        assert_eq!(wm.agent(id).unwrap().status, AgentStatus::Idle);
+        Supervisor::new(wm)
+    }
+
+    /// The bug this guards: the spawn path records `Spawning` only in the
+    /// supervisor's in-memory map, so a guard keyed off the DB-derived record
+    /// status never fired and the panels listed the half-written clone.
+    #[test]
+    fn pending_while_the_live_status_is_spawning() {
+        let sup = supervisor_with_agent("yosemite");
+        sup.statuses
+            .lock()
+            .insert("yosemite".to_string(), AgentStatus::Spawning);
+        assert!(checkout_pending(&sup, "yosemite"));
+    }
+
+    #[test]
+    fn not_pending_once_the_live_status_leaves_spawning() {
+        let sup = supervisor_with_agent("yosemite");
+        sup.statuses
+            .lock()
+            .insert("yosemite".to_string(), AgentStatus::Idle);
+        assert!(!checkout_pending(&sup, "yosemite"));
+    }
+
+    /// No live entry (an agent that was never spawned this launch) falls back
+    /// to the stored record, which is never `Spawning`.
+    #[test]
+    fn not_pending_with_no_live_entry_or_unknown_agent() {
+        let sup = supervisor_with_agent("yosemite");
+        assert!(!checkout_pending(&sup, "yosemite"));
+        assert!(!checkout_pending(&sup, "no-such-agent"));
     }
 }
