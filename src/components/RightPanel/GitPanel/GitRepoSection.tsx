@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import type { AgentRecord, TrackedRepo } from "@/api";
 import { delegationLabel } from "@/delegation";
+import { stuckLabel } from "@/helpers/autopilotCopy";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import { ActionBar } from "./ActionBar";
-import { AutopilotChip } from "./AutopilotChip";
 import { AutopilotHistory } from "./AutopilotHistory";
 import { ChangesList } from "./ChangesList";
 import { CommitComposer } from "./CommitComposer";
@@ -65,6 +65,15 @@ export function GitRepoSection({
   const key = checkoutKey(agent.id, subdir);
   const delegation = useAppStore((s) => s.delegations[key]);
   const delegationNotice = useAppStore((s) => s.delegationNotices[key]);
+  // Autopilot has no UI of its own here — it is how the agent behaves on this PR
+  // (switched per project in settings). The action bar's status slot carries the
+  // two things worth knowing: that the in-flight turn was started automatically,
+  // and why it stopped working on the PR by itself, when it did.
+  const autopilot = useAppStore((s) => s.autopilot[key]);
+  const autoAttempt = autopilot?.cycle?.phase === "working" ? autopilot.cycle.attempt : null;
+  const autoStuck = autopilot?.stuck
+    ? stuckLabel(autopilot.stuck.reason, autopilot.stuck.rung)
+    : null;
 
   // Selected file in the changes list — kept valid across polls (fall back to
   // the first file when the selection disappears).
@@ -215,9 +224,8 @@ export function GitRepoSection({
           />
         )}
 
-        <AutopilotChip agentId={agent.id} subdir={subdir} />
-        {/* The chip's own history, right below it — renders nothing until
-         *  autopilot has actually done something here. */}
+        {/* What the agent did on this PR by itself — renders nothing until it
+         *  has actually done something here. */}
         <AutopilotHistory agentId={agent.id} subdir={subdir} />
 
         <ActionBar
@@ -226,6 +234,8 @@ export function GitRepoSection({
           statusExtra={primary.statusExtra}
           busy={busy}
           delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
+          autoAttempt={autoAttempt}
+          autoStuck={autoStuck}
           notice={notice ?? delegationNotice ?? null}
           panelState={panelState}
           pushedLink={pushedLink}

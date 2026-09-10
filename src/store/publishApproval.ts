@@ -25,13 +25,10 @@ export interface PublishAuthorityState {
   delegations: Record<string, Delegation>;
 }
 
-/** Whether autopilot is actively driving `key`, i.e. its enrollment is the user's
- *  standing consent to publish there.
- *
- *  A *paused* enrollment is not consent: autopilot dispatches nothing while
- *  paused, so a publish arriving then did not come from it. */
+/** Whether autopilot is driving `key`, i.e. its enrollment is the user's standing
+ *  consent to publish there. */
 export function autopilotIsDriving(state: AutopilotState | undefined): boolean {
-  return state?.enrolled === true && !state.paused;
+  return state?.enrolled === true;
 }
 
 /** Whether the user already authorized this publish.

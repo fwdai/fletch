@@ -135,10 +135,9 @@ describe("autopilot refuses to act", () => {
     });
   });
 
-  it("stays paused, and stays stuck, however inviting the ladder looks", () => {
-    // Both checks sit ahead of every reason to act, so a failing PR can't talk a
-    // paused or handed-back checkout into another dispatch.
-    expect(step({ state: state({ paused: true }) })).toEqual({ do: "wait", why: "paused" });
+  it("stays stuck, however inviting the ladder looks", () => {
+    // The check sits ahead of every reason to act, so a failing PR can't talk a
+    // handed-back checkout into another dispatch.
     expect(
       step({
         state: state({
@@ -739,15 +738,6 @@ describe("autopilot stops only while it is genuinely blocked", () => {
     const escalation = step({ state: state({ attempts: { "fix-checks": 3 } }) });
     expect(escalation).toMatchObject({ do: "escalate" });
     expect(escalation).toHaveProperty("blockers", blockerFingerprint(detectBlockers(FAILING)));
-  });
-
-  it("still refuses to act while paused, whatever the world does", () => {
-    // Paused is the user's explicit instruction, so unlike `stuck` it is NOT
-    // conditional on anything.
-    expect(step({ state: state({ paused: true }), readiness: GREEN })).toEqual({
-      do: "wait",
-      why: "paused",
-    });
   });
 });
 

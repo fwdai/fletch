@@ -55,13 +55,6 @@ describe("autopilot's standing authorization", () => {
     expect(publishPreAuthorized("open_pr", KEY, s)).toBe(false);
   });
 
-  it("does not cover a paused enrollment", () => {
-    // Paused autopilot dispatches nothing, so a publish arriving then did not
-    // come from it and is not covered by the consent to run it.
-    const s = state({ autopilot: { [KEY]: enrolled({ paused: true }) } });
-    expect(publishPreAuthorized("git_push", KEY, s)).toBe(false);
-  });
-
   it("does not leak across checkouts of the same agent", () => {
     const s = state({ autopilot: { [KEY]: enrolled() } });
     expect(publishPreAuthorized("git_push", SECOND_REPO, s)).toBe(false);

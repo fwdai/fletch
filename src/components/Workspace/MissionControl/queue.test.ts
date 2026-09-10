@@ -599,7 +599,6 @@ describe("buildReviewQueue", () => {
 
   const stuckState = (over: Partial<AutopilotState> = {}): AutopilotState => ({
     enrolled: true,
-    paused: false,
     cycle: null,
     attempts: {},
     barren: [],

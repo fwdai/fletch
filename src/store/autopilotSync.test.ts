@@ -365,8 +365,8 @@ describe("autopilotKeys derives the sweep from live agents", () => {
   });
 
   it("sweeps NOTHING while the opt-outs are unknown — fail closed, not open", () => {
-    // Hydration failed or hasn't finished: even a checkout already tracked from
-    // a paused flag is left alone, because we can't tell whose project said no.
+    // Hydration failed or hasn't finished: even a checkout already tracked is
+    // left alone, because we can't tell whose project said no.
     expect(autopilotKeys([agent("a1", "p1")], { a1: state() }, null)).toEqual([]);
   });
 
@@ -415,20 +415,6 @@ describe("autopilotPass enrolls on the first tick and honours the project switch
     expect(store.getState().autopilot[key.primary]).toBeUndefined();
     expect(sendUserMessage).not.toHaveBeenCalled();
     expect(runVerification).not.toHaveBeenCalled();
-  });
-
-  it("a paused checkout stays paused across ticks — the first tick never un-pauses it", async () => {
-    // Paused is the one per-checkout intent that persists; enrolling on tick
-    // must not overwrite it with a fresh (un-paused) enrollment.
-    const { store, sendUserMessage } = makeStore({
-      autopilot: { [key.primary]: state({ paused: true }) },
-      agents: { a1: "idle" },
-    });
-
-    await autopilotPass([key.primary], new Set());
-
-    expect(store.getState().autopilot[key.primary].paused).toBe(true);
-    expect(sendUserMessage).not.toHaveBeenCalled();
   });
 });
 

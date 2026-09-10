@@ -7,11 +7,10 @@
 // turned it off. The driver enrolls every live checkout of an enabled project on
 // its own; the per-checkout entry below is runtime bookkeeping, not consent.
 //
-// The one per-checkout intent that persists is `paused`: a PR the user parked
-// should stay parked across a reload rather than quietly resuming. Cycles are NOT
-// persisted — an in-flight cycle's agent turn doesn't survive a restart either,
-// so resuming one would be judging a turn that never finished. A restart drops
-// back to "enrolled, no cycle", and the next tick re-derives from the live world.
+// Nothing per checkout is persisted. An in-flight cycle's agent turn doesn't
+// survive a restart, so resuming one would be judging a turn that never finished.
+// A restart drops back to "enrolled, no cycle", and the next tick re-derives from
+// the live world.
 
 import type { VerificationReport } from "@/api";
 import type { AutopilotState, Cycle, CyclePhase, StuckReason } from "@/autopilot";
@@ -23,20 +22,11 @@ import {
   loadAutopilotDisabledProjects,
   setProjectSetting,
 } from "@/storage/projectSettings";
-import { setSetting } from "@/storage/settings";
 import { createKeyedQueue } from "@/util/keyedQueue";
 import type { SliceCreator } from "./types";
 
-/** Settings key holding the persisted per-checkout intent (paused checkouts). */
-export const AUTOPILOT_SETTING = "autopilotEnrollment";
-
-/** The persisted shape: only the user's intent, never in-flight machinery. */
-interface PersistedEnrollment {
-  paused: boolean;
-}
-
-/** The one answer to "is autopilot on for this project?", shared by the driver,
- *  the Git panel chip and the settings toggle so they can never disagree.
+/** The one answer to "is autopilot on for this project?", shared by the driver
+ *  and the settings toggle so they can never disagree.
  *
  *  `disabled === null` means the opt-outs are unknown (not loaded, or the load
  *  failed) and the answer is NO for every project: a loop that is on by default
@@ -108,15 +98,13 @@ export interface AutopilotSlice {
   setProjectAutopilot: (projectId: string, enabled: boolean) => void;
 
   /** Start tracking a checkout (the driver does this for every live checkout of
-   *  an enabled project; the chip does it when the user acts before the first
-   *  tick). */
+   *  an enabled project). */
   enrollAutopilot: (key: string) => void;
   /** Forget a checkout's state and history — used when its agent is gone. */
   unenrollAutopilot: (key: string) => void;
-  /** Hold without losing enrollment; resuming is one click. */
-  pauseAutopilot: (key: string) => void;
-  /** Resume, clearing any `stuck` state and its spent budget — an explicit
-   *  human "try again", which is the only thing that may clear it. */
+  /** The human's "try again": clear `stuck`, its spent budget and the barren
+   *  signatures. Distinct from `reviveAutopilot`, which is autopilot noticing
+   *  the world moved on its own. */
   resumeAutopilot: (key: string) => void;
 
   // ── driver transitions (called by autopilotSync, not by the UI) ──
@@ -150,50 +138,16 @@ export interface AutopilotSlice {
   recordAutopilotVerdict: (key: string, report: VerificationReport) => void;
 }
 
-/** Parse the persisted per-checkout intent at launch (mirrors
- *  `parseReviewDismissed` in eventListeners). Rebuilds from a fresh enrollment so
- *  a hand-edited or corrupt row can never inject a cycle, a spent budget, or a
- *  `stuck` the user never saw. An unparseable value yields nothing, which is
- *  safe: the driver re-enrolls live checkouts on its first tick, and the only
- *  thing lost is a paused flag. */
-export function parseAutopilotEnrollment(raw: string | undefined): Record<string, AutopilotState> {
-  if (!raw) return {};
-  try {
-    const parsed: Record<string, PersistedEnrollment> = JSON.parse(raw);
-    const out: Record<string, AutopilotState> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      out[key] = { ...newEnrollment(), paused: Boolean(value?.paused) };
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-/** Persist just the user's intent: which checkouts are paused. Enrollment itself
- *  is not worth a row — the driver re-derives it from live agents on every tick,
- *  and writing every checkout ever seen would grow the row without bound. */
-function persist(map: Record<string, AutopilotState>) {
-  const out: Record<string, PersistedEnrollment> = {};
-  for (const [key, s] of Object.entries(map)) {
-    if (s.enrolled && s.paused) out[key] = { paused: true };
-  }
-  void setSetting(AUTOPILOT_SETTING, out);
-}
-
-/** Update one checkout's state and persist, skipping absent entries. */
+/** Update one checkout's state, skipping absent entries. */
 const patch = (
   set: Parameters<SliceCreator<AutopilotSlice>>[0],
   key: string,
   fn: (s: AutopilotState) => AutopilotState,
-  { save = false }: { save?: boolean } = {},
 ) => {
   set((store) => {
     const current = store.autopilot[key];
     if (!current) return store;
-    const autopilot = { ...store.autopilot, [key]: fn(current) };
-    if (save) persist(autopilot);
-    return { autopilot };
+    return { autopilot: { ...store.autopilot, [key]: fn(current) } };
   });
 };
 
@@ -273,34 +227,21 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
   },
 
   enrollAutopilot: (key) => {
-    set((s) => {
-      const autopilot = { ...s.autopilot, [key]: newEnrollment() };
-      persist(autopilot);
-      return { autopilot };
-    });
+    set((s) => ({ autopilot: { ...s.autopilot, [key]: newEnrollment() } }));
   },
 
   unenrollAutopilot: (key) => {
     set((s) => {
       const { [key]: _dropped, ...autopilot } = s.autopilot;
-      persist(autopilot);
       return { autopilot };
     });
   },
-
-  pauseAutopilot: (key) =>
-    // Drop any in-flight cycle: the agent's turn continues (we don't interrupt
-    // it), but autopilot stops judging it, so resuming re-derives from the world
-    // rather than from a verdict nobody was waiting for.
-    patch(set, key, (s) => ({ ...s, paused: true, cycle: null }), { save: true }),
 
   resumeAutopilot: (key) =>
     // Clearing `stuck` AND the spent attempts is the point: the human has looked
     // and wants another go. Barren signatures are cleared too — the world may
     // have changed under them.
-    patch(set, key, (s) => ({ ...s, paused: false, stuck: null, attempts: {}, barren: [] }), {
-      save: true,
-    }),
+    patch(set, key, (s) => ({ ...s, stuck: null, attempts: {}, barren: [] })),
 
   openAutopilotCycle: (key, rung, signature) => {
     patch(set, key, (s) => ({

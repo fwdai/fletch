@@ -119,13 +119,10 @@
 }
 /* autopilot mark — same weight and metrics as the a-stale cue, because it is the
  * same kind of thing: a hint on an existing row, not an announcement. Only the
- * two modes a human might act on are ever rendered (see AutopilotMark). */
+ * two situations a human might care about are ever rendered (see AutopilotMark). */
 .agent-sub .a-autopilot {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  font-size: var(--fs-xs);
-  font-family: var(--font-mono);
   flex-shrink: 0;
 }
 /* working: the accent, breathing like the row's dev-server heartbeat but without
@@ -146,10 +143,14 @@
     opacity: 1;
   }
 }
-/* stopped: warn, not danger. Nothing is broken — autopilot did what it could and
- * the next step is a person's. Danger stays reserved for the error badge. */
-.agent-sub .a-autopilot.stuck {
-  color: var(--warn);
+/* stopped: the app's plain "needs you" dot in warn, not danger. Nothing is
+ * broken — the agent did what it could and the next step is a person's. Danger
+ * stays reserved for the error badge. */
+.agent-sub .a-autopilot.stuck .d {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
 }
 @media (prefers-reduced-motion: reduce) {
   .agent-sub .a-autopilot.working svg {
