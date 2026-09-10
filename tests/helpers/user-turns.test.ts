@@ -41,6 +41,67 @@ describe("applyUserTurns", () => {
     expect(out[2]).toEqual({ kind: "user_message", text: "new", attachments: ["/tmp/x"] });
   });
 
+  it("claims a pending turn the transcript already carries instead of duplicating it", () => {
+    // The backend matcher only stamps `native_id` when the turn's needle appears
+    // verbatim in a record body; where it can't (a provider whose records don't
+    // quote the prompt that way), the turn stays pending forever even though the
+    // transcript renders it. Pushing it then showed the prompt twice on every
+    // reload — the bug this pins.
+    const items = [userMsg("delivered"), agentMsg("reply")];
+    const turns = [turn({ native_id: null, text: "delivered", started_at: 10, ended_at: 90 })];
+
+    const out = applyUserTurns(items, turns);
+
+    expect(out).toHaveLength(2);
+    expect(out[0]).toEqual({
+      kind: "user_message",
+      text: "delivered",
+      startedAt: 10,
+      endedAt: 90,
+    });
+  });
+
+  it("claims each pending turn once, so a genuinely repeated prompt still shows twice", () => {
+    // Only one "Proceed" reached the transcript; the second send never landed.
+    const items = [userMsg("Proceed"), agentMsg("done")];
+    const turns = [
+      turn({ native_id: null, text: "Proceed" }),
+      turn({ native_id: null, text: "Proceed" }),
+    ];
+
+    const out = applyUserTurns(items, turns);
+
+    expect(out.filter((it) => it.kind === "user_message")).toHaveLength(2);
+    expect(out[out.length - 1]).toEqual({ kind: "user_message", text: "Proceed" });
+  });
+
+  it("claims a pending turn by its attachment path when the prompt text is empty", () => {
+    // Attachment-only send: the transcript carries just the runner's injected
+    // reference line, which is what the matcher's needle keys off.
+    const items = [userMsg("Attached file: /tmp/shot.png")];
+    const turns = [turn({ native_id: null, text: "", attachments: ["/tmp/shot.png"] })];
+
+    const out = applyUserTurns(items, turns);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ attachments: ["/tmp/shot.png"] });
+  });
+
+  it("leaves matched turns' messages for them, so a pending turn can't steal one", () => {
+    const items = [userMsg("first"), agentMsg("a"), userMsg("second"), agentMsg("b")];
+    const turns = [
+      turn({ native_id: null, text: "second" }), // pending, but "second" is claimed below
+      turn({ native_id: "rec-2", text: "second" }),
+    ];
+
+    const out = applyUserTurns(items, turns);
+
+    // The pending turn found no unclaimed message that accounts for it, so it
+    // renders standalone rather than folding into the matched turn's bubble.
+    expect(out).toHaveLength(5);
+    expect(out[out.length - 1]).toEqual({ kind: "user_message", text: "second" });
+  });
+
   it("renders a pending (unmatched) turn standalone so a failed send survives", () => {
     const items: ChatItem[] = [userMsg("delivered"), agentMsg("reply")];
     const turns = [

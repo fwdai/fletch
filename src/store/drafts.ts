@@ -379,9 +379,13 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
           managedLogs: {
             ...state.managedLogs,
             [rec.id]: [
+              // Carries `turnId` (the one the send below uses) so the `turn:sent`
+              // mirror recognizes this bubble as ours and skips it — see
+              // `hasSentTurn`. Without it the host's announcement of our own
+              // send appends a second, identical bubble for the first prompt.
               attachments.length > 0
-                ? { kind: "user_message", text: prompt, attachments }
-                : { kind: "user_message", text: prompt },
+                ? { kind: "user_message", text: prompt, attachments, turnId }
+                : { kind: "user_message", text: prompt, turnId },
             ],
           },
           managedBusy: { ...state.managedBusy, [rec.id]: true },
