@@ -49,11 +49,10 @@ pub async fn remote_set_enabled(
     Ok(remote.status())
 }
 
-/// Change the listen port. Persisted, and applied at once when the listener is
-/// up: a live server is restarted on the new port (which also re-establishes
-/// the relay link), so the pane's "Reachable at" line is truthful right away.
-/// A port that cannot be bound is refused before anything is stored, and the
-/// old listener stays up.
+/// Change the listen port. Applied live first (`RemoteState::set_port`: a
+/// running listener moves, an idle one just records it) and persisted only
+/// once that succeeded, so a port that cannot be bound is refused with the old
+/// listener still up and nothing stored — the same order as `remote_set_enabled`.
 #[tauri::command]
 pub async fn remote_set_port(
     remote: State<'_, Arc<RemoteState>>,
@@ -63,14 +62,7 @@ pub async fn remote_set_port(
     if port == 0 {
         return Err(Error::Other("Choose a port between 1 and 65535.".into()));
     }
-    let status = remote.status();
-    if status.listening && status.port != port {
-        // Probe the new port first so a clash leaves the current listener alone.
-        std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
-            .map_err(|e| Error::Other(format!("Port {port} can't be opened: {e}")))?;
-        remote.stop();
-        remote.inner().start(port)?;
-    }
+    remote.inner().set_port(port)?;
     {
         let conn = db.lock();
         database::set_setting(&conn, crate::remote::PORT_SETTING, &port.to_string())?;

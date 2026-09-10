@@ -42,7 +42,7 @@ use serde_json::Value;
 use tokio::sync::broadcast;
 
 use self::relay::{RelayLink, RelayTiming};
-use self::session::{Sessions, CLOSE_DISABLED, CLOSE_REVOKED};
+use self::session::{Sessions, CLOSE_DISABLED, CLOSE_RESTARTING, CLOSE_REVOKED};
 use crate::error::{Error, Result};
 
 /// `settings` key mirroring whether the listener should run. Read once at
@@ -284,6 +284,50 @@ impl RemoteState {
         });
         self.spawn_relay(&mut inner);
         tracing::info!(port = bound, "remote: listening");
+        Ok(bound)
+    }
+
+    /// Move the listener to `port`. Persisting the choice is the caller's job;
+    /// this is the live half, and it never goes through `stop`: that closes
+    /// devices with `4004`, which a phone reads as "remote access is off" and
+    /// stops retrying.
+    ///
+    /// Off, only the recorded port changes, so `status().port` reports what
+    /// the next `start` will bind. On, the new port is bound *first* — a clash
+    /// leaves the old listener up and comes back as the error — then the old
+    /// accept loop stops, its connections close with `1012` (which the phone
+    /// retries), and the relay link is left alone: it routes on the host key,
+    /// not the port, so relayed devices reconnect without noticing.
+    ///
+    /// Same runtime requirement as `start`.
+    pub fn set_port(self: &Arc<Self>, port: u16) -> Result<u16> {
+        let mut inner = self.inner.lock();
+        let Some(current) = inner.server.as_ref().map(|h| h.port) else {
+            inner.port = port;
+            return Ok(port);
+        };
+        if current == port {
+            return Ok(port);
+        }
+        let std_listener = std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))
+            .map_err(|e| Error::Other(format!("remote: cannot listen on port {port}: {e}")))?;
+        std_listener.set_nonblocking(true)?;
+        let listener = tokio::net::TcpListener::from_std(std_listener)?;
+        let bound = listener.local_addr()?.port();
+
+        let (shutdown, stop) = broadcast::channel(1);
+        tokio::spawn(server::accept_loop(self.clone(), listener, stop));
+        let old = inner.server.replace(ServerHandle {
+            port: bound,
+            shutdown,
+        });
+        inner.port = port;
+        drop(inner);
+        if let Some(old) = old {
+            let _ = old.shutdown.send(());
+            tracing::info!(from = old.port, to = bound, "remote: listener moved");
+        }
+        self.sessions.close_all(CLOSE_RESTARTING);
         Ok(bound)
     }
 

@@ -30,7 +30,7 @@
         "zustand": "^5.0.14",
       },
       "devDependencies": {
-        "@biomejs/biome": "2.5.12",
+        "@biomejs/biome": "^2.5.12",
         "@tauri-apps/cli": "^2.11.3",
         "@types/node": "^22.20.0",
         "@types/react": "^18.3.31",

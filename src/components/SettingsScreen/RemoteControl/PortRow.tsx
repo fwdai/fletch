@@ -32,7 +32,7 @@ export function PortRow({
   return (
     <SetRow
       title="Port"
-      sub="Local port the phone dials on your network. Change it only if another app uses it."
+      sub="Local port the phone dials on your network. Phones without a relay must pair again after a change."
     >
       <input
         className="set-relay-url set-port mono text-sm"

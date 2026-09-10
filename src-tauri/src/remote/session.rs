@@ -43,6 +43,15 @@ pub(super) const CLOSE_DISABLED: CloseReason = CloseReason {
     reason: "remote access disabled",
 };
 
+/// The listener moved to another port under a live connection. The standard
+/// "service restart" code: unlike `4004`, the phone keeps retrying on its normal
+/// backoff, so a relayed device comes straight back and a LAN device finds the
+/// Mac again once it learns the new port.
+pub(super) const CLOSE_RESTARTING: CloseReason = CloseReason {
+    code: 1012,
+    reason: "listener restarting",
+};
+
 struct Session {
     /// `None` until `pair`/`hello` succeeds. Pre-auth connections are tracked
     /// too, so disabling remote access closes a socket that is mid-handshake

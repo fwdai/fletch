@@ -27,15 +27,6 @@ export function DictationPane() {
         desc="Speak instead of typing in the composer. Choose the engine and the model it runs."
       />
 
-      <SetGroup label="Listening">
-        <SetRow
-          title="Stop after a pause"
-          sub="Finish dictating on its own after a two-second pause. Off means you stop it manually."
-        >
-          <SetToggle on={autoStop} onClick={() => setAutoStop(!autoStop)} />
-        </SetRow>
-      </SetGroup>
-
       <SetGroup label="Speech recognition" last>
         <SetRow
           title="Local speech recognition"
@@ -44,6 +35,15 @@ export function DictationPane() {
           }`}
         >
           <SetToggle on={enabled} onClick={() => setEnabled(!enabled)} />
+        </SetRow>
+        {/* Only the local engine measures the audio it captures; Apple's
+            recognizer ends an utterance on its own terms. So the switch is
+            offered under Whisper and greyed out while Apple's engine is in use. */}
+        <SetRow
+          title="Stop after a pause"
+          sub="Local recognition ends on its own after a two-second pause. Off, you stop it with the mic button."
+        >
+          <SetToggle on={autoStop} disabled={!enabled} onClick={() => setAutoStop(!autoStop)} />
         </SetRow>
         {/* Always offered, engine on or off: the choice has to be makeable
             before the opt-in, or enabling would fetch the platform default out

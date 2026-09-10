@@ -292,9 +292,11 @@ pub fn dictation_model_status(state: tauri::State<'_, DbState>) -> ModelStatus {
 /// snake_case key, so the renderer reads it as `s.dictation_engine`) and, when
 /// enabling without the weights on disk, kicks the download off in the
 /// background — the toggle can't await half a gigabyte. Same persist-then-act
-/// Settings key: end a session on its own after a pause. Opt-out — only
-/// `"false"` turns it off. Mirrored in memory because the silence monitor polls
-/// it off the audio thread, where there is no DB handle.
+/// Settings key: end a local-engine session on its own after a pause. Opt-out
+/// — only `"false"` turns it off. Whisper only: Apple's recognizer decides for
+/// itself when an utterance ended, and there is no PCM to measure (see
+/// `apple::watch_for_silence`). Mirrored in memory because the silence monitor
+/// polls it off the audio thread, where there is no DB handle.
 pub const AUTO_STOP_SETTING: &str = "dictation_auto_stop";
 static AUTO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 

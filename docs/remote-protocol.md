@@ -554,7 +554,11 @@ handshake, text frame, or bad first frame; `4003` unauthenticated, unknown
 device key or revoked; `4004` host has remote access disabled. `4003` also arrives unprompted when the host revokes the device this
 connection is authenticated as, and `4004` when the host turns remote access
 off — in both cases the credential is gone or dormant, so the client should
-stop reconnecting until it is paired or the host is enabled again.
+stop reconnecting until it is paired or the host is enabled again. `1012`
+(service restart) arrives when the host moves its listener to another port; it
+is retryable, and a relayed device reconnects without noticing, since the relay
+routes on the host key. A LAN-only device still dials the old port until it
+learns the new one.
 
 Relay close codes reach the phone on the device link and are all retryable
 with the normal backoff — the condition is on the host's or relay's side and
@@ -570,6 +574,7 @@ a phone.
 |---|---|
 | `remote_status` | `{ enabled, listening, port, hostId, addresses: string[], devices: RemoteDevice[], relay: RelayStatus, error: string \| null }` — `hostId` is the host public key, base64url |
 | `remote_set_enabled` | `{ enabled }` start/stop the listener and the relay link; persists setting `remote.enabled`; disabling closes live connections with `4004` |
+| `remote_set_port` | `{ port }` persist setting `remote.port`; a running listener moves to it at once (its connections close with `1012`, the relay link stays up), an idle one records it for the next start; refused, with nothing stored, when the port cannot be bound; returns `RemoteStatus` |
 | `remote_set_relay` | `{ url: string \| null }` persist setting `remote.relay_url` (null/empty clears it) and connect or drop the host link accordingly; returns `RemoteStatus` |
 | `remote_begin_pairing` | `{ token, url, expiresAt }`; refused while the listener is down or `error` is set |
 | `remote_revoke_device` | `{ deviceId }`; drops the credential and closes that device's live connections with `4003` |

@@ -86,6 +86,9 @@ export const CLOSE_HOST_OFFLINE = 4404;
 export const CLOSE_TOO_MANY_DEVICES = 4429;
 export const CLOSE_RELAY_THROTTLED = 1008;
 export const CLOSE_FRAME_TOO_LARGE = 1009;
+/** The host moved its listener to another port. Retryable: over the relay the
+ *  next attempt simply succeeds; on the LAN it keeps dialling the old port. */
+export const CLOSE_LISTENER_RESTARTING = 1012;
 
 export const CLOSE_REASONS: Record<number, string> = {
   [CLOSE_BAD_FIRST_FRAME]: "Host rejected the handshake",
@@ -95,6 +98,7 @@ export const CLOSE_REASONS: Record<number, string> = {
   [CLOSE_TOO_MANY_DEVICES]: "This Mac already has its 8 remote devices connected",
   [CLOSE_RELAY_THROTTLED]: "The relay throttled this connection",
   [CLOSE_FRAME_TOO_LARGE]: "Frame too large",
+  [CLOSE_LISTENER_RESTARTING]: "Your Mac is restarting remote access",
 };
 
 /** The marker the Rust transport puts in front of a pinned-key mismatch. It

@@ -40,26 +40,47 @@ pub fn draft_prs() -> bool {
     DRAFT_PRS.load(Ordering::Relaxed)
 }
 
-/// Normalise a prefix the user typed and refuse anything git would reject as
-/// a ref component (or reinterpret as an option). Trimmed; empty means none.
+/// Normalise a prefix the user typed and refuse one that would make every
+/// branch name invalid. Trimmed; empty means none.
+///
+/// Checked as git will see it: the prefix in front of a name, against the
+/// rules of `git check-ref-format --branch`. A prefix is only ever the front
+/// of a name, so what matters is that *some* name can follow it — hence the
+/// probe against a one-character continuation rather than the prefix alone
+/// (`feature-` is fine; `alex.lock/` and `.hidden/` are not).
 pub fn validate_branch_prefix(raw: &str) -> Result<String, String> {
     let prefix = raw.trim();
     if prefix.is_empty() {
         return Ok(String::new());
     }
-    if prefix.starts_with('-') || prefix.starts_with('/') {
-        return Err("A branch prefix can't start with - or /.".into());
+    if is_valid_branch_name(&format!("{prefix}x")) {
+        Ok(prefix.to_string())
+    } else {
+        Err("Not a valid Git branch prefix: no spaces, .., .lock, or a leading dot or dash.".into())
     }
-    if prefix.contains("..") || prefix.contains("//") || prefix.contains("@{") {
-        return Err("A branch prefix can't contain .., // or @{.".into());
+}
+
+/// `git check-ref-format --branch`, in Rust, so a prefix is refused when it is
+/// typed rather than when the first push fails. Every rule git applies to a
+/// branch name: per slash-separated component, none empty (so no leading,
+/// trailing or doubled slashes), none starting with `.` or ending in `.lock`;
+/// overall, no `..`, `@{`, control characters, space or `~ ^ : ? * [ \`, not a
+/// lone `@`, no trailing `.`, and — the `--branch` extra — no leading `-`.
+fn is_valid_branch_name(name: &str) -> bool {
+    if name.is_empty() || name == "@" || name.starts_with('-') || name.ends_with('.') {
+        return false;
     }
-    if prefix
+    if name.contains("..") || name.contains("@{") {
+        return false;
+    }
+    if name
         .chars()
-        .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))
+        .any(|c| c.is_control() || c == ' ' || "~^:?*[\\".contains(c))
     {
-        return Err("A branch prefix can't contain spaces or ~ ^ : ? * [ \\.".into());
+        return false;
     }
-    Ok(prefix.to_string())
+    name.split('/')
+        .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
 }
 
 /// The name a branch is actually born under: the configured prefix in front
@@ -91,14 +112,53 @@ mod tests {
     }
 
     #[test]
-    fn validation_trims_and_rejects_unsafe_prefixes() {
+    fn validation_trims_and_accepts_what_git_accepts() {
         assert_eq!(validate_branch_prefix("  alex/ ").unwrap(), "alex/");
         assert_eq!(validate_branch_prefix("   ").unwrap(), "");
-        for bad in ["-x/", "/x/", "a b/", "a..b/", "a//b", "a~b", "a@{b", "a:b"] {
+        for ok in ["alex/", "feature-", "team/alex/", "v1.2/", "a.lock", "wip_"] {
+            assert!(
+                validate_branch_prefix(ok).is_ok(),
+                "{ok:?} should be accepted"
+            );
+        }
+    }
+
+    /// Each of these makes `git check-ref-format --branch "<prefix>x"` fail.
+    #[test]
+    fn validation_rejects_what_git_rejects() {
+        for bad in [
+            "-x/",
+            "/x/",
+            "a b/",
+            "a..b/",
+            "a//b",
+            "a~b",
+            "a@{b",
+            "a:b",
+            "a?b",
+            "a*b",
+            "a[b",
+            "a\\b",
+            "a^b",
+            ".hidden/",
+            "alex.lock/",
+            "a/.b/",
+            "a\tb",
+        ] {
             assert!(
                 validate_branch_prefix(bad).is_err(),
                 "{bad:?} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn branch_name_rules_match_git() {
+        assert!(is_valid_branch_name("fix/login"));
+        assert!(is_valid_branch_name("alex/fix/login-2"));
+        assert!(!is_valid_branch_name("@"));
+        assert!(!is_valid_branch_name("fix/login."));
+        assert!(!is_valid_branch_name("fix/"));
+        assert!(!is_valid_branch_name("fix.lock/x"));
     }
 }
