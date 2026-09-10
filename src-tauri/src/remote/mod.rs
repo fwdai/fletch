@@ -17,7 +17,7 @@
 mod auth;
 mod dispatch;
 mod events;
-mod push;
+pub mod push;
 mod relay;
 #[cfg(test)]
 mod relay_tests;

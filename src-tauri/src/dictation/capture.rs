@@ -113,9 +113,14 @@ fn track(floor: f32, rms: f32) -> (bool, f32) {
 }
 
 /// Should the session end itself now? `last_speech` is when speech was last
-/// heard, or `None` if it never was. Pure so the thresholds are testable
-/// without a microphone.
-fn should_auto_stop(last_speech: Option<Duration>, elapsed: Duration) -> bool {
+/// heard, or `None` if it never was. `auto_stop` is the user's opt-out
+/// (Settings › Dictation): off, the session runs until the mic button (or the
+/// capture cap) ends it, however long the pauses. Pure so the thresholds are
+/// testable without a microphone.
+fn should_auto_stop(auto_stop: bool, last_speech: Option<Duration>, elapsed: Duration) -> bool {
+    if !auto_stop {
+        return false;
+    }
     match last_speech {
         Some(last) => elapsed.saturating_sub(last) >= SILENCE_STOP,
         None => elapsed >= NO_SPEECH_TIMEOUT,
@@ -143,7 +148,7 @@ impl Pcm {
             .load(Ordering::Relaxed)
             .checked_sub(1)
             .map(Duration::from_millis);
-        should_auto_stop(last, self.start.elapsed())
+        should_auto_stop(super::auto_stop(), last, self.start.elapsed())
     }
 
     pub(super) fn is_closed(&self) -> bool {
@@ -460,17 +465,27 @@ mod tests {
         let long = NO_SPEECH_TIMEOUT + Duration::from_secs(1);
         let spoke_at = Duration::from_secs(1);
         assert!(!should_auto_stop(
+            true,
             Some(spoke_at),
             spoke_at + SILENCE_STOP / 2
         ));
-        assert!(should_auto_stop(Some(spoke_at), spoke_at + SILENCE_STOP));
+        assert!(should_auto_stop(true, Some(spoke_at), spoke_at + SILENCE_STOP));
         // Speech that started after a long wait counts from when it was heard,
         // not from the start of the session.
-        assert!(!should_auto_stop(Some(long), long + SILENCE_STOP / 2));
+        assert!(!should_auto_stop(true, Some(long), long + SILENCE_STOP / 2));
         // Never spoke: the pause is the whole session, and only the longer
         // deadline ends it.
-        assert!(!should_auto_stop(None, SILENCE_STOP * 2));
-        assert!(should_auto_stop(None, long));
+        assert!(!should_auto_stop(true, None, SILENCE_STOP * 2));
+        assert!(should_auto_stop(true, None, long));
+    }
+
+    /// With the opt-out off, no pause ends the session — not after speech, and
+    /// not the never-spoke deadline either.
+    #[test]
+    fn never_auto_stops_when_turned_off() {
+        let long = NO_SPEECH_TIMEOUT + Duration::from_secs(1);
+        assert!(!should_auto_stop(false, Some(Duration::from_secs(1)), long));
+        assert!(!should_auto_stop(false, None, long));
     }
 
     #[test]

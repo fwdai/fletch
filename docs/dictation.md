@@ -245,7 +245,7 @@ reruns the build script; so does a change of `SDKROOT` or
 
 ## Local Whisper engine (opt-in)
 
-Settings › General › Dictation offers a second engine: whisper.cpp running
+Settings › Dictation offers a second engine: whisper.cpp running
 locally, for people who want transcription that doesn't depend on Apple's
 locale support or on macOS 26. Apple's engine stays the default — the local
 engine costs a one-time model download, so it can only be a choice the user

@@ -699,8 +699,11 @@ fn arg_branch_named(args: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The one place an agent's branch is born, so the user's branch prefix
+/// (Settings › Git) is applied here and nowhere else.
 async fn materialize_branch(checkout: &Path, desired: &str) -> std::result::Result<String, String> {
-    crate::git::checkout_new_unique_branch(checkout, desired)
+    let desired = crate::publish_prefs::apply_branch_prefix(desired);
+    crate::git::checkout_new_unique_branch(checkout, &desired)
         .await
         .map_err(|e| e.to_string())
 }

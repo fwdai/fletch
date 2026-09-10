@@ -210,11 +210,11 @@ later policy change can't widen an agent already running (`rpc/caps.rs`):
   own `wf/`-guarded finalize; a step publishing directly would bypass that guard.
 
 **Approving the act itself** is available but **off by default**
-(`rpc/approval.rs`, Settings › General › "Ask before publishing"). Turned on,
+(`rpc/approval.rs`, Settings › Git › "Ask before publishing"). Turned on,
 every push and PR waits for you, naming the specific act ("push fix/login"), and
 anything that isn't an explicit approval — no window listening, a dismissed
-prompt, nobody answering within 120s — resolves to *denied*, so the gate cannot
-fail open.
+prompt, nobody answering within the configured wait (Settings › Git › "Approval
+wait", 120s by default) — resolves to *denied*, so the gate cannot fail open.
 
 Turning it on does not disturb what you already asked for. A push from a checkout
 enrolled in autopilot, and any publish covered by a Git-panel action you clicked,

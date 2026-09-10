@@ -28,6 +28,7 @@ mod new_project;
 mod oauth;
 mod power;
 mod pty_session;
+mod publish_prefs;
 // Paired-device remote access (Settings → Remote control). Desktop-only: the
 // host is the machine agents run on, never the phone.
 #[cfg(desktop)]
@@ -694,6 +695,68 @@ fn set_publish_confirmation(enabled: bool, state: tauri::State<'_, DbState>) -> 
 #[tauri::command]
 fn answer_publish_approval(id: String, approved: bool) {
     rpc::approval::answer(&id, approved);
+}
+
+/// Whether finishing a turn alerts at all (chime, banner, phone push); needing
+/// input always does. Backend-owned so the phone push (which runs without a
+/// DB handle) and the frontend read one key: `notify_turn_complete`.
+#[tauri::command]
+fn set_notify_turn_complete(enabled: bool, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(
+            &conn,
+            remote::push::TURN_COMPLETE_SETTING,
+            if enabled { "true" } else { "false" },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    remote::push::set_turn_complete(enabled);
+    Ok(())
+}
+
+/// How long a publish-approval prompt waits before denying; `0` waits until
+/// answered.
+#[tauri::command]
+fn set_publish_approval_wait(secs: u64, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(&conn, rpc::approval::WAIT_SETTING, &secs.to_string())
+            .map_err(|e| e.to_string())?;
+    }
+    rpc::approval::set_wait_secs(secs);
+    Ok(())
+}
+
+/// The prefix prepended to every branch an agent creates. Validated and
+/// trimmed; the stored form is returned so the UI shows exactly what applies.
+/// Empty clears it.
+#[tauri::command]
+fn set_branch_prefix(prefix: String, state: tauri::State<'_, DbState>) -> Result<String, String> {
+    let prefix = publish_prefs::validate_branch_prefix(&prefix)?;
+    {
+        let conn = state.lock();
+        database::set_setting(&conn, publish_prefs::BRANCH_PREFIX_SETTING, &prefix)
+            .map_err(|e| e.to_string())?;
+    }
+    publish_prefs::set_branch_prefix(&prefix);
+    Ok(prefix)
+}
+
+/// Whether pull requests Fletch opens start as drafts.
+#[tauri::command]
+fn set_draft_prs(enabled: bool, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(
+            &conn,
+            publish_prefs::DRAFT_PRS_SETTING,
+            if enabled { "true" } else { "false" },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    publish_prefs::set_draft_prs(enabled);
+    Ok(())
 }
 
 /// Change the sandbox engine stamped onto *new* agents. Container engines are
@@ -1421,6 +1484,26 @@ pub fn run() {
                 rpc::approval::set_enabled(rpc::approval::parse_enabled(
                     database::get_setting(&db.lock(), rpc::approval::SETTING).as_deref(),
                 ));
+                rpc::approval::set_wait_secs(rpc::approval::parse_wait_secs(
+                    database::get_setting(&db.lock(), rpc::approval::WAIT_SETTING).as_deref(),
+                ));
+                // And the publish preferences the same dispatcher (and the PR
+                // path) read: branch prefix and draft PRs.
+                publish_prefs::set_branch_prefix(
+                    &database::get_setting(&db.lock(), publish_prefs::BRANCH_PREFIX_SETTING)
+                        .unwrap_or_default(),
+                );
+                publish_prefs::set_draft_prs(publish_prefs::parse_draft_prs(
+                    database::get_setting(&db.lock(), publish_prefs::DRAFT_PRS_SETTING).as_deref(),
+                ));
+                // Alert and dictation opt-outs, read off threads with no DB handle.
+                remote::push::set_turn_complete(remote::push::parse_turn_complete(
+                    database::get_setting(&db.lock(), remote::push::TURN_COMPLETE_SETTING)
+                        .as_deref(),
+                ));
+                dictation::set_auto_stop(dictation::parse_auto_stop(
+                    database::get_setting(&db.lock(), dictation::AUTO_STOP_SETTING).as_deref(),
+                ));
             }
             {
                 let enabled = codegraph::parse_enabled(
@@ -1811,6 +1894,10 @@ pub fn run() {
             get_publish_confirmation,
             set_publish_confirmation,
             answer_publish_approval,
+            set_publish_approval_wait,
+            set_branch_prefix,
+            set_draft_prs,
+            set_notify_turn_complete,
             probe_docker_engine,
             probe_podman_engine,
             get_container_auth_status,
@@ -1985,6 +2072,7 @@ pub fn run() {
             // is the only target this app ships for.
             commands::remote_status,
             commands::remote_set_enabled,
+            commands::remote_set_port,
             commands::remote_set_relay,
             commands::remote_begin_pairing,
             commands::remote_revoke_device,
@@ -1994,6 +2082,7 @@ pub fn run() {
             dictation::dictation_model_status,
             dictation::set_dictation_engine,
             dictation::set_dictation_model,
+            dictation::set_dictation_auto_stop,
             dictation::dictation_model_download,
             dictation::dictation_model_remove,
         ])

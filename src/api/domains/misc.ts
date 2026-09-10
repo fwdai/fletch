@@ -11,6 +11,10 @@ export const miscApi = {
   // Anonymous usage telemetry. Persists the opt-out flag and toggles the live
   // pipeline (events themselves are emitted from the backend).
   setTelemetryEnabled: (enabled: boolean) => invoke<void>("set_telemetry_enabled", { enabled }),
+  // Whether a finished turn alerts at all (chime, banner, phone push). Backend-
+  // owned so the phone push reads the same `notify_turn_complete` key.
+  setNotifyTurnComplete: (enabled: boolean) =>
+    invoke<void>("set_notify_turn_complete", { enabled }),
   // Code indexing (codegraph). Persists the flag and, when enabled, warms the
   // index in the background (install + per-repo mirror). Backend-owned.
   setCodeIndexingEnabled: (enabled: boolean) =>

@@ -31,6 +31,7 @@
 //! triggers hang off event taps and this module contains no `async`.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -41,6 +42,25 @@ use tauri::{AppHandle, Listener, Manager};
 use super::RemoteState;
 use crate::supervisor::Supervisor;
 use crate::workspace::{AgentStatus, AgentView};
+
+/// Settings key: alert on `turn_complete` at all. Opt-out — only `"false"`
+/// silences it; `needs_input` is always sent. Shared with the desktop chime and
+/// banner (the frontend reads the same key), so one switch covers every alert
+/// surface. Mirrored in memory because the taps run without a DB handle.
+pub const TURN_COMPLETE_SETTING: &str = "notify_turn_complete";
+static TURN_COMPLETE: AtomicBool = AtomicBool::new(true);
+
+pub fn parse_turn_complete(raw: Option<&str>) -> bool {
+    raw != Some("false")
+}
+
+pub fn set_turn_complete(enabled: bool) {
+    TURN_COMPLETE.store(enabled, Ordering::Relaxed);
+}
+
+fn turn_complete_enabled() -> bool {
+    TURN_COMPLETE.load(Ordering::Relaxed)
+}
 
 /// The two `kind`s and their titles, verbatim from the protocol doc.
 const KIND_TURN_COMPLETE: &str = "turn_complete";
@@ -166,6 +186,9 @@ impl PushTriggers {
         if agents.is_native(agent_id) {
             // A native agent's Idle is "the terminal went quiet", which happens
             // several times in one turn; there is no turn boundary to report.
+            return;
+        }
+        if !turn_complete_enabled() {
             return;
         }
         self.alert(agents, agent_id, KIND_TURN_COMPLETE, TITLE_TURN_COMPLETE);

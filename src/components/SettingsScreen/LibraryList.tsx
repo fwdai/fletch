@@ -59,6 +59,7 @@ export function LibraryList<T extends { id: string }>({
   eyebrowAside,
   title,
   desc,
+  before,
   newLabel,
   emptyLabel,
   icon,
@@ -73,6 +74,9 @@ export function LibraryList<T extends { id: string }>({
   eyebrowAside?: ReactNode;
   title: string;
   desc: string;
+  /** Optional content between the head and the list — e.g. a settings group
+   *  for built-ins that sit alongside the user-defined items. */
+  before?: ReactNode;
   newLabel: string;
   emptyLabel: string;
   icon: IconName;
@@ -99,6 +103,8 @@ export function LibraryList<T extends { id: string }>({
           </Button>
         }
       />
+
+      {before}
 
       {items.length === 0 ? (
         <button className="ca-empty flex-center text-base" onClick={onNew}>

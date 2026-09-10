@@ -12,6 +12,7 @@ export interface Remote {
   error: string | null;
   busy: boolean;
   setEnabled: (enabled: boolean) => Promise<void>;
+  setPort: (port: number) => Promise<void>;
   setRelay: (url: string | null) => Promise<void>;
   beginPairing: () => Promise<void>;
   revoke: (deviceId: string) => Promise<void>;
@@ -63,6 +64,15 @@ export function useRemote(): Remote {
     [mutate],
   );
 
+  const setPort = useCallback(
+    async (port: number) => {
+      // A pairing code names the old port, so it is stale the moment this lands.
+      setInvite(null);
+      await mutate(() => api.remoteSetPort(port));
+    },
+    [mutate],
+  );
+
   const setRelay = useCallback(
     (url: string | null) => mutate(() => api.remoteSetRelay(url)),
     [mutate],
@@ -84,5 +94,16 @@ export function useRemote(): Remote {
 
   const clearInvite = useCallback(() => setInvite(null), []);
 
-  return { status, invite, error, busy, setEnabled, setRelay, beginPairing, revoke, clearInvite };
+  return {
+    status,
+    invite,
+    error,
+    busy,
+    setEnabled,
+    setPort,
+    setRelay,
+    beginPairing,
+    revoke,
+    clearInvite,
+  };
 }

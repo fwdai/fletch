@@ -1,11 +1,11 @@
-/** Result of probing the local Docker installation (Settings › General).
+/** Result of probing the local Docker installation (Settings › Sandbox).
  *  `version` is the daemon's server version, present only when available. */
 export interface DockerProbe {
   status: "available" | "not-installed" | "daemon-down";
   version?: string;
 }
 
-/** Result of probing the local Podman installation (Settings › General).
+/** Result of probing the local Podman installation (Settings › Sandbox).
  *  `version` is the machine's podman version, present only when available.
  *  `machine-down` is Podman's analogue of Docker's `daemon-down`, named for
  *  what the user fixes: Podman needs a running `podman machine` on macOS. */
@@ -16,7 +16,7 @@ export interface PodmanProbe {
 
 /** Which step of the container auth chain (pasted token → shell env →
  *  claude credentials file) would supply Anthropic credentials to a docker
- *  agent right now (Settings › General › Sandbox status row). */
+ *  agent right now (Settings › Sandbox status row). */
 export interface ContainerAuthStatus {
   status: "keychain" | "stored-token" | "shell-env" | "credentials-file" | "none";
 }

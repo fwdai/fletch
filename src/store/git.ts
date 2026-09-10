@@ -10,6 +10,7 @@ import {
 } from "@/api";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { actionProvesKind, type Delegation, type DelegationKind } from "@/delegation";
+import { DEFAULT_PUBLISH_APPROVAL_WAIT } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
 import { acceptPrWrite, issuePrWrite, stampPrWrite } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
@@ -65,6 +66,15 @@ export interface GitSlice {
   /** Sticky changes-state commit mode (Commit / & push / & open PR). Global
    *  across workspaces, persisted in settings until the user picks another. */
   gitCommitAction: GitCommitAction;
+  /** Seconds a publish-approval prompt waits before denying; 0 = until
+   *  answered. Mirrors the backend-owned `publish_approval_wait` setting. */
+  publishApprovalWait: number;
+  /** Prefix prepended to every branch an agent creates ("" = none). Mirrors the
+   *  backend-owned `git_branch_prefix` setting. */
+  branchPrefix: string;
+  /** Open pull requests as drafts. Mirrors the backend-owned `github_draft_prs`
+   *  setting. */
+  draftPrs: boolean;
 
   /** Fetch full git state for one agent (used by the focused panel's poll).
    *  `subdir` targets a secondary repo of a multi-repo agent (stored under
@@ -125,6 +135,10 @@ export interface GitSlice {
   /** Post a settled delegation's outcome for the panel to show, if mounted. */
   noteDelegationOutcome: (key: string, text: string) => void;
   setGitCommitAction: (action: GitCommitAction) => void;
+  setPublishApprovalWait: (secs: number) => Promise<void>;
+  /** Rejects with the backend's validation message; the store is untouched then. */
+  setBranchPrefix: (prefix: string) => Promise<void>;
+  setDraftPrs: (enabled: boolean) => Promise<void>;
   /** Resolves to "up-to-date" | "pushed" on success, null on error. */
   pushAgent: (agentId: string, subdir?: string) => Promise<string | null>;
   /** Resolves true on success, false on error. */
@@ -260,6 +274,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   delegationNotices: {},
   verificationReports: {},
   gitCommitAction: "agent-commit-pr" as GitCommitAction,
+  publishApprovalWait: DEFAULT_PUBLISH_APPROVAL_WAIT,
+  branchPrefix: "",
+  draftPrs: false,
 
   fetchGitState: async (agentId, subdir) => {
     try {
@@ -501,6 +518,22 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   setGitCommitAction: (action) => {
     set({ gitCommitAction: action });
     void setSetting("gitCommitAction", action);
+  },
+
+  setPublishApprovalWait: async (secs) => {
+    await api.setPublishApprovalWait(secs);
+    set({ publishApprovalWait: secs });
+  },
+
+  setBranchPrefix: async (prefix) => {
+    // The backend trims and validates; store what it actually kept.
+    const stored = await api.setBranchPrefix(prefix);
+    set({ branchPrefix: stored });
+  },
+
+  setDraftPrs: async (enabled) => {
+    await api.setDraftPrs(enabled);
+    set({ draftPrs: enabled });
   },
 
   pushAgent: async (agentId, subdir) => {

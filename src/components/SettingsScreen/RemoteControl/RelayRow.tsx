@@ -46,7 +46,7 @@ export function RelayRow({
     <>
       <SetRow
         title="Reach this Mac from anywhere"
-        sub="Keeps one outbound connection to a relay, so a paired phone can reach this Mac off your network. The relay only forwards bytes: every frame stays encrypted between the phone and this Mac."
+        sub="Lets your phone reach this Mac off your network via a relay. The relay only sees encrypted bytes."
       >
         <SetToggle
           on={on}

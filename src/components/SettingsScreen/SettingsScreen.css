@@ -854,6 +854,10 @@
   border-radius: var(--r-sm);
   outline: none;
 }
+.set-port {
+  width: 90px;
+  font-variant-numeric: tabular-nums;
+}
 .set-relay-url:focus {
   border-color: var(--accent);
 }

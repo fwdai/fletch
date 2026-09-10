@@ -12,6 +12,9 @@ export interface AccountSlice {
   /** Local (Whisper) dictation engine chosen over the platform recognizer.
    *  Opt-in: defaults off, since it costs a model download. */
   dictationEngineEnabled: boolean;
+  /** Dictation ends itself after a pause. Opt-out: defaults on. Mirrors the
+   *  backend-owned `dictation_auto_stop` setting. */
+  dictationAutoStop: boolean;
   /** GitHub connection: null until the first probe, then the live status.
    *  `authenticated` gates push/PR/clone affordances app-wide. */
   github: GhStatus | null;
@@ -36,6 +39,7 @@ export interface AccountSlice {
   /** Resolves `true` once the choice is persisted; `false` (with the store
    *  reverted) if the backend rejected it. */
   setDictationEngineEnabled: (enabled: boolean) => Promise<boolean>;
+  setDictationAutoStop: (enabled: boolean) => void;
 }
 
 export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
@@ -43,6 +47,7 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   telemetryEnabled: true,
   codeIndexingEnabled: true,
   dictationEngineEnabled: false,
+  dictationAutoStop: true,
   github: null,
   linear: null,
 
@@ -120,5 +125,11 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
       set({ dictationEngineEnabled: previous });
       return false;
     }
+  },
+  setDictationAutoStop: (enabled) => {
+    set({ dictationAutoStop: enabled });
+    // The backend command persists `dictation_auto_stop` and updates the
+    // silence monitor's mirror, so no setSetting here.
+    void api.setDictationAutoStop(enabled);
   },
 });

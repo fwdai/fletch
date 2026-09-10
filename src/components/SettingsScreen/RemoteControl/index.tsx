@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/Button";
 import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
 import { DeviceRow } from "./DeviceRow";
 import { PairingCard } from "./PairingCard";
+import { PortRow } from "./PortRow";
 import { RelayRow } from "./RelayRow";
 import { useRemote } from "./useRemote";
 
@@ -13,8 +14,18 @@ import { useRemote } from "./useRemote";
  *  the switch opens, and pairing that is an explicit, expiring, single-use act
  *  rather than a standing invitation. */
 export function RemoteControlPane() {
-  const { status, invite, error, busy, setEnabled, setRelay, beginPairing, revoke, clearInvite } =
-    useRemote();
+  const {
+    status,
+    invite,
+    error,
+    busy,
+    setEnabled,
+    setPort,
+    setRelay,
+    beginPairing,
+    revoke,
+    clearInvite,
+  } = useRemote();
 
   const enabled = !!status?.enabled;
   const listening = !!status?.listening;
@@ -39,8 +50,8 @@ export function RemoteControlPane() {
 
       <SetGroup label="Connection">
         <SetRow
-          title="Remote control from your phone"
-          sub="Opens a local WebSocket port so a paired phone can watch and steer your agents. Reachable on your own Wi-Fi or a Tailscale network; every frame is encrypted end to end, and only paired devices are ever answered."
+          title="Allow remote control"
+          sub="Opens a port on your network so a paired phone can watch and steer agents. End-to-end encrypted."
         >
           <SetToggle
             on={enabled}
@@ -48,6 +59,8 @@ export function RemoteControlPane() {
             onClick={() => void setEnabled(!enabled)}
           />
         </SetRow>
+
+        {status && <PortRow port={status.port} disabled={busy} onSet={(p) => void setPort(p)} />}
 
         {status && (
           <RelayRow

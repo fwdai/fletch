@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 
 /// Launch-blocking message when the container auth chain resolves nothing. One
 /// stable string — the frontend keys its Settings call-to-action on it.
-pub(crate) const NO_CONTAINER_AUTH_MSG: &str = "No Anthropic credentials for containers — open Settings → General → Sandbox and connect Claude for containers (claude setup-token).";
+pub(crate) const NO_CONTAINER_AUTH_MSG: &str = "No Anthropic credentials for containers — open Settings → Sandbox and connect Claude for containers (claude setup-token).";
 
 /// Fold the claude auth-chain outcome ([`resolve`]) into the container CLI's
 /// process env. Only the [`AuthSource`] variant is logged, never a value.

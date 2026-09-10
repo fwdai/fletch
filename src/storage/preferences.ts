@@ -11,7 +11,11 @@ export type ThemeMode = "dark" | "light";
 export type SettingsSection =
   | "general"
   | "account"
+  | "workspace"
+  | "git"
+  | "sandbox"
   | "remote"
+  | "dictation"
   | "providers"
   | "agents"
   | "skills"
@@ -241,6 +245,18 @@ export const DEFAULT_SANDBOX_ENGINE: SandboxEngine = "sandbox-exec";
  *  fall back to the seatbelt default, matching the backend's parser. */
 export function parseSandboxEngine(raw: string | undefined): SandboxEngine {
   return raw === "docker" || raw === "podman" ? raw : DEFAULT_SANDBOX_ENGINE;
+}
+
+/** Seconds a publish-approval prompt waits before denying — the backend's
+ *  `rpc::approval::DEFAULT_WAIT_SECS`. */
+export const DEFAULT_PUBLISH_APPROVAL_WAIT = 120;
+
+/** Parse the backend-owned `publish_approval_wait` setting (seconds; 0 = until
+ *  answered). Anything unparsable is the default, matching Rust's
+ *  `parse_wait_secs`. */
+export function parsePublishApprovalWait(raw: string | undefined): number {
+  const n = Number.parseInt(raw ?? "", 10);
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_PUBLISH_APPROVAL_WAIT;
 }
 
 /** Whether an engine runs the agent inside a container — mirrors the backend's

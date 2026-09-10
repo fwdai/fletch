@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { CustomizeSwitch } from "@/components/SettingsScreen/CustomizeSwitch";
 import { LibraryList } from "@/components/SettingsScreen/LibraryList";
+import { SetGroup, SetRow, SetToggle } from "@/components/SettingsScreen/primitives";
+import { mcpCapableLabels } from "@/data/providers";
 import type { McpServer, NewMcpServer } from "@/storage/mcpServers";
 import { useAppStore } from "@/store";
 import { ServerEditor } from "./ServerEditor";
@@ -9,6 +11,28 @@ import { ServerEditor } from "./ServerEditor";
 // server registry. Custom agents attach servers by id; at spawn the selection
 // is snapshotted onto the session and delivered to providers that support MCP
 // (claude, codex). All mutations go through the store slice.
+//
+// Fletch's own code index is delivered the same way (an MCP server every
+// capable agent gets), so its switch sits here as a built-in tool above the
+// user-defined servers.
+
+function BuiltInTools() {
+  const codeIndexingEnabled = useAppStore((s) => s.codeIndexingEnabled);
+  const setCodeIndexingEnabled = useAppStore((s) => s.setCodeIndexingEnabled);
+  return (
+    <SetGroup label="Built-in">
+      <SetRow
+        title="Code indexing"
+        sub={`Agents query symbols and call graphs instead of searching files. Over MCP: ${mcpCapableLabels().join(", ")} only.`}
+      >
+        <SetToggle
+          on={codeIndexingEnabled}
+          onClick={() => setCodeIndexingEnabled(!codeIndexingEnabled)}
+        />
+      </SetRow>
+    </SetGroup>
+  );
+}
 
 function blankServer(): NewMcpServer {
   return { name: "", transport: "stdio", command: "", env: "", url: "", headers: "" };
@@ -72,6 +96,7 @@ export function McpServersPane() {
       eyebrowAside={<CustomizeSwitch />}
       title="Tools (MCP)"
       desc="MCP servers your custom agents can attach as tools. Supported by Claude Code and Codex bases; other bases run without them. Running sessions keep the configuration they spawned with."
+      before={<BuiltInTools />}
       newLabel="New server"
       emptyLabel="Add your first MCP server"
       icon="zap"
