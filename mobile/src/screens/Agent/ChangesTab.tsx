@@ -26,11 +26,14 @@ export function ChangesTab({
   // its own (the desktop queues it until idle); v1 on the phone simply waits.
   const busy = sending || isBusy(agent);
 
-  // Mirrors the desktop's default: the agent commits and opens a PR; with a PR
-  // already open, "open PR" degrades to push (that's what updates it); with
-  // everything committed but no PR, the agent names the branch and opens one.
+  // Mirrors the desktop's default. The commit-* playbooks start with a commit,
+  // so a clean tree (only unpushed commits) gets the plain push / open-pr
+  // playbook instead; with a PR already open, "open PR" degrades to push,
+  // since that's what updates it.
   const action = pr
-    ? { name: "commit-push", label: `Commit & push to #${pr.number}` }
+    ? files.length
+      ? { name: "commit-push", label: `Commit & push to #${pr.number}` }
+      : { name: "push", label: `Push to #${pr.number}` }
     : files.length
       ? { name: "commit-pr", label: "Commit & open PR" }
       : { name: "open-pr", label: "Open PR" };
