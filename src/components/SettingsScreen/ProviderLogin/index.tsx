@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { loginCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
@@ -11,6 +11,10 @@ interface Props {
   /** Dismiss the terminal. Called once the sign-in PTY has actually been
    *  killed (the Close button awaits that), never before. */
   onClose: () => void;
+  /** The sign-in flow ended cleanly. The caller re-probes auth from here, so
+   *  the row's badge flips without a manual re-scan. Must be referentially
+   *  stable (a store action or a `useCallback`) — it fires once per outcome. */
+  onFinished?: () => void;
 }
 
 /** An embedded terminal running an agent CLI's own sign-in command, so the user
@@ -20,7 +24,7 @@ interface Props {
  *
  *  Only render this for a provider that has a `loginCommand`; antigravity and
  *  pi have none and show their `signIn` hint alone. */
-export function ProviderLoginTerminal({ providerId, providerLabel, onClose }: Props) {
+export function ProviderLoginTerminal({ providerId, providerLabel, onClose, onFinished }: Props) {
   const { containerRef, exit, runAgain, close } = useProviderLogin(providerId);
   const command = loginCommand(providerId);
   const hint = PROVIDER_DETAIL[providerId].signIn;
@@ -38,6 +42,13 @@ export function ProviderLoginTerminal({ providerId, providerLabel, onClose }: Pr
       onClose();
     }
   };
+
+  // `exit` is the recorded outcome object, replaced (not mutated) once per run
+  // and cleared to undefined by "Run again" — so this fires exactly once per
+  // successful flow, not on every render.
+  useEffect(() => {
+    if (exit?.success) onFinished?.();
+  }, [exit, onFinished]);
 
   return (
     <div className="prov-login">

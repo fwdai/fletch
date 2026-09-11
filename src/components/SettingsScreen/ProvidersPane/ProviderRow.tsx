@@ -18,9 +18,11 @@ import type { Provider } from "@/data/providers";
 import { useAppStore } from "@/store";
 import type { InstallState } from "@/store/types";
 import { BinaryPathRow } from "../BinaryPathRow";
+import { ProviderAuthBadge } from "../ProviderAuthBadge";
 import { SetToggle } from "../primitives";
 import { InstallLog } from "./InstallLog";
 import { InstallOptions } from "./InstallOptions";
+import { SignInSection } from "./SignInSection";
 
 type RowState = "installed" | "fresh" | "missing" | "installing" | "cancelling" | "failed";
 
@@ -31,6 +33,7 @@ export function ProviderRow({ provider }: { provider: Provider }) {
   const livePath = useAppStore((s) => s.providerPaths[id]);
   const override = useAppStore((s) => s.providerPathOverrides[id]);
   const install = useAppStore((s) => s.installs[id]);
+  const auth = useAppStore((s) => s.providerAuth[id]);
   const setProviderEnabled = useAppStore((s) => s.setProviderEnabled);
   const setProviderPathOverride = useAppStore((s) => s.setProviderPathOverride);
   const installAgent = useAppStore((s) => s.installAgent);
@@ -125,6 +128,10 @@ export function ProviderRow({ provider }: { provider: Provider }) {
             {state === "fresh" && (
               <span className="set-badge ok mono text-xs">Installed just now</span>
             )}
+            {/* A binary is not an account: only a row with a live binary can
+                say anything about sign-in, and only when the probe classified
+                it — `unknown` renders nothing rather than a guess. */}
+            {live && <ProviderAuthBadge status={auth} />}
           </div>
           <div className={`set-prov-sub flex-center truncate mono text-sm ${sub.tone}`}>
             {sub.text}
@@ -208,6 +215,7 @@ export function ProviderRow({ provider }: { provider: Provider }) {
                     : `Installed. Flip the toggle to show ${label} in the composer's model picker.`}
                 </p>
               )}
+              <SignInSection providerId={id} providerLabel={label} />
               <div className="set-prov-detail-actions flex-center">
                 <Button variant="ghost" size="sm">
                   View logs

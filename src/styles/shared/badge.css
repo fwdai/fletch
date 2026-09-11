@@ -31,10 +31,15 @@
 .ag-badge.pr-closed,
 .ag-badge.pr-pass,
 .ag-badge.pr-fail,
+.ag-badge.ok,
 .ag-badge.warn,
 .ag-badge.err {
   background: color-mix(in oklch, var(--badge-color), transparent 86%);
   color: var(--badge-color);
+}
+/* generic success tone — the peer of `warn`/`err` (e.g. "Signed in") */
+.ag-badge.ok {
+  --badge-color: var(--success);
 }
 /* paused workflow run — amber, names the reason (e.g. "needs approval") */
 .ag-badge.warn {
