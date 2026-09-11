@@ -1,6 +1,11 @@
 import type { AgentModels } from "@/data/modelCatalog/types";
 import { invoke } from "../invoke";
-import type { BinValidation, ProviderProbe, ToolStatus } from "../types/providers";
+import type {
+  BinValidation,
+  ProviderAuthProbe,
+  ProviderProbe,
+  ToolStatus,
+} from "../types/providers";
 
 export const providersApi = {
   probeProviderVersions: () => invoke<ProviderProbe[]>("probe_provider_versions"),
@@ -23,4 +28,9 @@ export const providersApi = {
   /** Per-agent supported-model discovery (raw ids + any cheap CLI metadata).
    *  The frontend enriches these against models.dev. */
   discoverSupportedModels: () => invoke<AgentModels[]>("discover_supported_models"),
+  /** Probe whether each provider's CLI is signed in — the question
+   *  `probeProviderVersions` doesn't answer. Structural checks only; no
+   *  credential value crosses IPC. Providers with no cheap check report
+   *  `"unknown"`. */
+  probeProviderAuth: () => invoke<ProviderAuthProbe[]>("probe_provider_auth"),
 };

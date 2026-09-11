@@ -2063,6 +2063,7 @@ pub fn run() {
             commands::install_agent,
             commands::validate_agent_bin,
             commands::discover_supported_models,
+            commands::probe_provider_auth,
             commands::reveal_logs,
             commands::start_docker_desktop,
             commands::detect_editors,

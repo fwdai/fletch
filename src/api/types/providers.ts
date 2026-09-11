@@ -53,3 +53,17 @@ export interface AgentInstallEvent {
   line?: string;
   error?: string;
 }
+
+/** Whether a provider's CLI has a usable login on this host. `"unknown"` means
+ *  the backend has no cheap check for that CLI's credential store — the UI shows
+ *  nothing rather than a claim it can't back up. */
+export type ProviderAuthStatus = "signed_in" | "signed_out" | "unknown";
+
+/** Result of the per-provider sign-in probe (`api.probeProviderAuth`). `detail`
+ *  is a short fixed reason for a non-`signed_in` status (null when signed in) —
+ *  never a credential value or a path containing the username. */
+export interface ProviderAuthProbe {
+  id: string;
+  status: ProviderAuthStatus;
+  detail: string | null;
+}

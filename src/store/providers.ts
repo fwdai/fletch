@@ -1,4 +1,5 @@
 import { api } from "@/api";
+import type { ProviderAuthStatus } from "@/api/types/providers";
 import {
   loadCachedCatalog,
   type ModelMeta,
@@ -31,11 +32,21 @@ export interface ProvidersSlice {
   /** Supported models grouped by agent — the `byAgent` view, for the model
    *  picker. Same provenance and refresh cadence as `modelCatalog`. */
   modelsByAgent: Record<string, ModelMeta[]>;
+  /** Whether each provider's CLI is signed in, keyed by provider id. Refreshed
+   *  alongside `providerVersions`. A provider is absent until its first probe
+   *  resolves, and `"unknown"` when the backend has no cheap check for that
+   *  CLI's credential store — both render as no claim either way. */
+  providerAuth: Record<string, ProviderAuthStatus>;
 
   setProviderEnabled: (id: string, enabled: boolean) => void;
-  /** Re-probe installed provider CLIs for versions + binary paths. Runs once
-   *  on init and again when the user re-scans from the Providers settings. */
+  /** Re-probe installed provider CLIs for versions + binary paths, then their
+   *  sign-in state. Runs once on init and again when the user re-scans from the
+   *  Providers settings. */
   refreshProviderVersions: () => Promise<void>;
+  /** Re-probe whether each provider CLI is signed in. Called at the tail of
+   *  `refreshProviderVersions`, so every existing rescan/poll refreshes both;
+   *  exposed separately for a sign-in flow that wants to re-check on its own. */
+  refreshProviderAuth: () => Promise<void>;
   /** Set (path) or clear (null) a provider's custom binary path. Persists the
    *  override, updates local state, and re-probes so the version/path refresh. */
   setProviderPathOverride: (id: string, path: string | null) => Promise<void>;
@@ -56,6 +67,7 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
   providerPathOverrides: {},
   modelCatalog: cachedCatalog.byId,
   modelsByAgent: cachedCatalog.byAgent,
+  providerAuth: {},
 
   setProviderEnabled: (id, enabled) =>
     set((s) => {
@@ -79,6 +91,22 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
       // it false and install-aware UI fails OPEN (treats install state as
       // unknown — agents stay selectable) instead of disabling every agent. A
       // prior success's results are kept as last-known-good.
+    }
+    // Sign-in state rides along with every version rescan, so the providers UI
+    // can't show a fresh version beside a stale "Not signed in". Runs even when
+    // the version probe failed — the two are independent IPC calls.
+    await get().refreshProviderAuth();
+  },
+  refreshProviderAuth: async () => {
+    try {
+      const probes = await api.probeProviderAuth();
+      const auth: Record<string, ProviderAuthStatus> = {};
+      for (const probe of probes) auth[probe.id] = probe.status;
+      set({ providerAuth: auth });
+    } catch {
+      // Non-fatal, same reasoning as `refreshProviderVersions`: a failed probe
+      // keeps the last-known-good map rather than claiming every provider is
+      // signed out. Absent/`unknown` entries render as no claim either way.
     }
   },
   setProviderPathOverride: async (id, path) => {

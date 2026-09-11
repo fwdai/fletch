@@ -142,6 +142,27 @@ fn credentials_config_dir(config_dir_env: Option<&OsStr>, home: Option<&Path>) -
 /// Walk the auth chain (first hit wins). May block on the first call: loading
 /// the login-shell env runs a shell if nothing populated `bin_resolve`'s cache.
 pub fn resolve() -> ContainerAuth {
+    let (keychain, env, credentials_file) = chain_inputs();
+    resolve_from(keychain, stored_token(), env.as_ref(), credentials_file)
+}
+
+/// Whether the *host* has a usable claude login — the same chain as [`resolve`]
+/// minus [`AuthSource::StoredToken`], which is a token pasted into Fletch's
+/// settings for containers to use and says nothing about whether the `claude`
+/// CLI on this machine is signed in. Drives the providers settings' sign-in
+/// status (see `crate::agent::auth_probe`).
+pub fn host_login_present() -> bool {
+    let (keychain, env, credentials_file) = chain_inputs();
+    !matches!(
+        resolve_from(keychain, None, env.as_ref(), credentials_file),
+        ContainerAuth::Unavailable
+    )
+}
+
+/// Read the chain's three environment inputs. Shared by [`resolve`] and
+/// [`host_login_present`] so the two can't drift on *what* they look at — only
+/// on whether the stored token counts.
+fn chain_inputs() -> (Option<String>, Option<HashMap<String, String>>, bool) {
     let keychain = keychain_token();
     // The dir claude will actually read — and the one the engine mounts (see
     // `nondefault_claude_config_dir`); hardcoding `~/.claude` would refuse a
@@ -158,7 +179,7 @@ pub fn resolve() -> ContainerAuth {
         .filter_map(|var| std::env::var(var).ok().map(|v| (var.to_string(), v)))
         .collect();
     let env = merge_auth_env(&process_env, bin_resolve::login_shell_env());
-    resolve_from(keychain, stored_token(), env.as_ref(), credentials_file)
+    (keychain, env, credentials_file)
 }
 
 /// The live host login token from the macOS Keychain, read fresh on every
