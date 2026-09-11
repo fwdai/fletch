@@ -15,9 +15,25 @@ use tokio::sync::Notify;
 
 use super::drainer::{self, QueueNote};
 use super::events::{EventActor, EventKind, TrailEntry};
+use super::store;
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
 use super::{brakes, Db};
 use crate::github::PrStatus;
+
+/// Fail closed: user merge must not bypass an item/project hold.
+pub(super) fn merge_hold_gate(db: &Db, item_id: &str) -> Result<(), String> {
+    let conn = db.lock();
+    let Some(item) = store::get(&conn, item_id).map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    match brakes::gate(&conn, &item) {
+        Some(reason) => Err(format!(
+            "{} is held — {reason}. Release the hold before merging its pull request.",
+            item.code
+        )),
+        None => Ok(()),
+    }
+}
 
 const SWEEP: Duration = Duration::from_secs(120);
 

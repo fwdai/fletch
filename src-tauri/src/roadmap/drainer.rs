@@ -542,101 +542,30 @@ fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
     let done = done_codes(&items);
     let known: HashSet<String> = items.iter().map(|i| i.code.clone()).collect();
     let queued = dispatchable(&items);
-
     let live = live_run_count(conn, project_id);
+
     let item = match pick_next(&queued, live, cap, &done, &known) {
         Decision::Dispatch(i) => queued[i].clone(),
         Decision::Blocked {
             item_id,
             waiting_on,
-        } => {
-            let Some(item) = queued.into_iter().find(|i| i.id == item_id) else {
-                return Claim::Nothing;
-            };
-            return match deps::find_cycle(&deps::graph_of(&items), &item.code) {
-                Some(cycle) => Claim::wedge(
-                    conn,
-                    item,
-                    format!("Stuck in a dependency loop: {}", deps::loop_path(&cycle)),
-                ),
-                None => {
-                    let rejected: Vec<&str> = waiting_on
-                        .iter()
-                        .filter(|code| {
-                            items
-                                .iter()
-                                .any(|i| &i.code == *code && i.status == ItemStatus::Rejected)
-                        })
-                        .map(String::as_str)
-                        .collect();
-                    match rejected.as_slice() {
-                        [] => Claim::note(item, format!("Waiting on {}", waiting_on.join(", "))),
-                        [code] => Claim::wedge(
-                            conn,
-                            item,
-                            format!(
-                                "Waiting on {code}, which was rejected — remove or replace \
-                                 that dependency."
-                            ),
-                        ),
-                        many => Claim::wedge(
-                            conn,
-                            item,
-                            format!(
-                                "Waiting on {}, which were rejected — remove or replace \
-                                 those dependencies.",
-                                many.join(", ")
-                            ),
-                        ),
-                    }
-                }
-            };
-        }
+        } => return claim_when_blocked(conn, &items, queued, item_id, waiting_on),
         Decision::Empty | Decision::AtCapacity => return Claim::Nothing,
     };
 
-    let project_default = project_setting(conn, project_id, DEFAULT_WORKFLOW_KEY);
-    let Some(definition_id) = resolve_workflow(&item, project_default.as_deref()) else {
-        return Claim::wedge(
-            conn,
-            item,
-            "No workflow to run it under. Pick one on this item, or set the project's \
-             default workflow."
-                .to_string(),
-        );
-    };
-    let Some(spec) = definition_spec(conn, &definition_id) else {
-        return Claim::wedge(
-            conn,
-            item,
-            "Its workflow is missing or no longer valid — pick another.".to_string(),
-        );
-    };
-    let Some(repo_path) = primary_repo_path(conn, project_id) else {
-        return Claim::wedge(
-            conn,
-            item,
-            "This project has no repo to run in.".to_string(),
-        );
+    let prep = match resolve_for_dispatch(conn, project_id, &item, &items) {
+        Ok(prep) => prep,
+        Err(msg) => return Claim::wedge(conn, item, msg),
     };
 
-    let dep_rows: Vec<&RoadmapItem> = item
-        .deps
-        .iter()
-        .filter_map(|code| items.iter().find(|i| &i.code == code))
-        .collect();
-    let brief = build_brief(&item, &dep_rows);
-
-    let workflow_name = definition_name(conn, &definition_id);
-
-    match claim_item(conn, &item.id, &definition_id, workflow_name.as_deref()) {
+    match claim_item(conn, &item.id, &prep.definition_id, prep.workflow_name.as_deref()) {
         Ok(Some((claimed, event))) => Claim::Claimed(
             Box::new(Plan {
                 item: claimed,
-                definition_id,
-                spec,
-                repo_path,
-                brief,
+                definition_id: prep.definition_id,
+                spec: prep.spec,
+                repo_path: prep.repo_path,
+                brief: prep.brief,
             }),
             event,
         ),
@@ -646,6 +575,101 @@ fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
             Claim::Nothing
         }
     }
+}
+
+fn claim_when_blocked(
+    conn: &Connection,
+    items: &[RoadmapItem],
+    queued: Vec<RoadmapItem>,
+    item_id: String,
+    waiting_on: Vec<String>,
+) -> Claim {
+    let Some(item) = queued.into_iter().find(|i| i.id == item_id) else {
+        return Claim::Nothing;
+    };
+    match deps::find_cycle(&deps::graph_of(items), &item.code) {
+        Some(cycle) => Claim::wedge(
+            conn,
+            item,
+            format!("Stuck in a dependency loop: {}", deps::loop_path(&cycle)),
+        ),
+        None => {
+            let rejected: Vec<&str> = waiting_on
+                .iter()
+                .filter(|code| {
+                    items
+                        .iter()
+                        .any(|i| &i.code == *code && i.status == ItemStatus::Rejected)
+                })
+                .map(String::as_str)
+                .collect();
+            match rejected.as_slice() {
+                [] => Claim::note(item, format!("Waiting on {}", waiting_on.join(", "))),
+                [code] => Claim::wedge(
+                    conn,
+                    item,
+                    format!(
+                        "Waiting on {code}, which was rejected — remove or replace \
+                         that dependency."
+                    ),
+                ),
+                many => Claim::wedge(
+                    conn,
+                    item,
+                    format!(
+                        "Waiting on {}, which were rejected — remove or replace \
+                         those dependencies.",
+                        many.join(", ")
+                    ),
+                ),
+            }
+        }
+    }
+}
+
+struct DispatchPrep {
+    definition_id: String,
+    spec: Spec,
+    repo_path: String,
+    brief: String,
+    workflow_name: Option<String>,
+}
+
+/// Workflow / repo / brief for a dispatchable item, or a wedge message.
+fn resolve_for_dispatch(
+    conn: &Connection,
+    project_id: &str,
+    item: &RoadmapItem,
+    items: &[RoadmapItem],
+) -> Result<DispatchPrep, String> {
+    let project_default = project_setting(conn, project_id, DEFAULT_WORKFLOW_KEY);
+    let Some(definition_id) = resolve_workflow(item, project_default.as_deref()) else {
+        return Err(
+            "No workflow to run it under. Pick one on this item, or set the project's \
+             default workflow."
+                .to_string(),
+        );
+    };
+    let Some(spec) = definition_spec(conn, &definition_id) else {
+        return Err("Its workflow is missing or no longer valid — pick another.".to_string());
+    };
+    let Some(repo_path) = primary_repo_path(conn, project_id) else {
+        return Err("This project has no repo to run in.".to_string());
+    };
+    let dep_rows: Vec<&RoadmapItem> = item
+        .deps
+        .iter()
+        .filter_map(|code| items.iter().find(|i| &i.code == code))
+        .collect();
+    let brief = build_brief(item, &dep_rows);
+    let workflow_name = definition_name(conn, &definition_id);
+    Ok(DispatchPrep {
+        definition_id,
+        spec,
+        repo_path,
+        brief,
+        workflow_name,
+    })
 }
 
 pub(crate) fn record_wedge(
