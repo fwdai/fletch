@@ -2,7 +2,6 @@
 //!
 //! Distinct from [`super::events`] (durable history). Best-effort after the lock drops.
 
-
 use tauri::{AppHandle, Emitter};
 
 use super::brakes::ProjectHold;
@@ -59,4 +58,3 @@ pub(crate) fn emit_brief_proposal(app: &AppHandle, proposal: &BriefProposal) {
 pub(super) fn emit_brief_proposal_deleted(app: &AppHandle, project_id: &str) {
     let _ = app.emit("roadmap:brief-proposal-deleted", project_id);
 }
-

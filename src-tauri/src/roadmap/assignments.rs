@@ -32,7 +32,10 @@ pub(super) fn hand_off(
 }
 
 /// Clear agent stamp only; status unchanged.
-pub(super) fn reclaim(conn: &Connection, item_id: &str) -> Result<(RoadmapItem, ItemEvent), String> {
+pub(super) fn reclaim(
+    conn: &Connection,
+    item_id: &str,
+) -> Result<(RoadmapItem, ItemEvent), String> {
     stamp(
         conn,
         item_id,

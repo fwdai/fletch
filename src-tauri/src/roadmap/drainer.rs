@@ -9,7 +9,6 @@
 //! (`queued → active`) is atomic under that lock. `in_review` leaves this module —
 //! [`super::merge_sweep`] owns it from there.
 
-
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -23,7 +22,7 @@ use tokio::sync::Notify;
 use super::events::{self, EventActor, EventKind, ItemEvent, TrailEntry};
 use super::review;
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
-use super::{deps, emit_item, emit_item_event, brakes, store, Db};
+use super::{brakes, deps, emit_item, emit_item_event, store, Db};
 use crate::workflow::spec::{self, Spec};
 use crate::workflow::types::RunStatus;
 
@@ -558,7 +557,12 @@ fn plan_and_claim(conn: &Connection, project_id: &str, cap: usize) -> Claim {
         Err(msg) => return Claim::wedge(conn, item, msg),
     };
 
-    match claim_item(conn, &item.id, &prep.definition_id, prep.workflow_name.as_deref()) {
+    match claim_item(
+        conn,
+        &item.id,
+        &prep.definition_id,
+        prep.workflow_name.as_deref(),
+    ) {
         Ok(Some((claimed, event))) => Claim::Claimed(
             Box::new(Plan {
                 item: claimed,

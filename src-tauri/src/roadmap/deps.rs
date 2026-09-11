@@ -2,7 +2,6 @@
 //!
 //! Unknown/rejected codes and cycles must fail before write — a loop wedges the queue.
 
-
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::types::{ItemStatus, RoadmapItem};

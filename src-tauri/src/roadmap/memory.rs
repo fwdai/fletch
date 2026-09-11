@@ -3,7 +3,6 @@
 //! PM may propose only; [`accept`] / [`save`] are the user-gated writers.
 //! Behind this seam is replaceable; the three surfaces above are the contract.
 
-
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 

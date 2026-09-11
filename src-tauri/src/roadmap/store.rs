@@ -3,7 +3,6 @@
 //! Hold/close columns stay off [`super::types::ItemPatch`] so generic edits
 //! cannot stop the queue or reject without a ruling.
 
-
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::types::{strings_to_col, ItemPatch, ItemSource, ItemStatus, NewItem};

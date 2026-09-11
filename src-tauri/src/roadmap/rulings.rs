@@ -1,6 +1,5 @@
 //! User rulings: reject/reopen items, and accept/reject PM asks (item, order, brief).
 
-
 use rusqlite::Connection;
 
 use super::brakes;
@@ -129,7 +128,9 @@ pub(super) enum Ruling {
         item: Box<RoadmapItem>,
         event: Box<ItemEvent>,
     },
-    Stale { message: String },
+    Stale {
+        message: String,
+    },
 }
 
 /// Same rulable set as `rpc::roadmap::proposable` — keep in sync.
@@ -276,4 +277,3 @@ pub(super) fn accept_order(conn: &Connection, project_id: &str) -> Result<OrderR
         }
     }
 }
-

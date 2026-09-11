@@ -3,7 +3,6 @@
 //! PM may place a hold; only typed user commands can release (invariant 2).
 //! Item holds live on the row; project holds are their own table.
 
-
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 

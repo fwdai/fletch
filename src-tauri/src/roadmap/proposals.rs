@@ -2,7 +2,6 @@
 //!
 //! One pending ask per item; newer replaces (same id). Shape only — never lifecycle.
 
-
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

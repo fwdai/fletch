@@ -2,7 +2,6 @@
 //!
 //! Stored codes are the full orderable set; re-validate on accept — the board moves.
 
-
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension, Row};

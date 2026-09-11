@@ -3,7 +3,6 @@
 //! Standing conditions persist; self-resolving wait-on-dep stays on transient
 //! `roadmap:queue-note` only. Write in the same lock scope as the item mutation.
 
-
 use std::collections::HashMap;
 
 use rusqlite::{params, Connection, OptionalExtension, Row};

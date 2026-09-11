@@ -2,7 +2,6 @@
 //!
 //! Drop the DB lock before network; merge still goes through hold gates on the command path.
 
-
 use std::path::PathBuf;
 
 use serde::Serialize;

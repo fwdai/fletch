@@ -2,7 +2,6 @@
 //!
 //! Holds trump autoqueue (invariant 2).
 
-
 use rusqlite::Connection;
 
 use super::brakes;

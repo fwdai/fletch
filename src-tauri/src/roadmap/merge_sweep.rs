@@ -3,7 +3,6 @@
 //! Host-side so the queue keeps draining with the window shut. Respects
 //! [`super::brakes::gate`] — a held item/board must not be auto-shipped.
 
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};

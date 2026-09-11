@@ -68,9 +68,9 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
+use crate::roadmap::brakes::{self, ProjectHold};
 use crate::roadmap::deps;
 use crate::roadmap::events::{self, EventActor, EventKind, ItemEvent};
-use crate::roadmap::brakes::{self, ProjectHold};
 use crate::roadmap::memory::{self, BriefProposal};
 use crate::roadmap::order_proposals::{self, OrderProposal};
 use crate::roadmap::proposals::{self, Proposal, ProposalKind, ProposalPatch};

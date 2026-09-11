@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::roadmap::types::{Horizon, ItemSource};
 
@@ -215,13 +214,7 @@ fn an_in_review_dependency_still_blocks() {
     it.deps = vec!["FLT-100".into()];
 
     assert_eq!(
-        pick_next(
-            &[it],
-            0,
-            1,
-            &codes(&[]),
-            &codes(&["FLT-100", "FLT-101"])
-        ),
+        pick_next(&[it], 0, 1, &codes(&[]), &codes(&["FLT-100", "FLT-101"])),
         Decision::Blocked {
             item_id: "id-FLT-101".into(),
             waiting_on: vec!["FLT-100".into()],

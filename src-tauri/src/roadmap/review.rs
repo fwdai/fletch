@@ -3,7 +3,6 @@
 //! Delivery goes through the workspace manager; do not hold the roadmap DB lock
 //! across those awaits. Framing is data for the PM, not a user-authored message.
 
-
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension};

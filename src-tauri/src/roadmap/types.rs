@@ -3,7 +3,6 @@
 //! Enums use [`crate::db_enum`] so on-disk and on-wire spellings match.
 //! `*_json` TEXT columns are marshalled here — [`RoadmapItem`] exposes real vecs.
 
-
 use rusqlite::types::Type;
 use rusqlite::Row;
 use serde::{Deserialize, Serialize};
