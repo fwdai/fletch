@@ -36,7 +36,8 @@ mod apple;
 // The local engine's sink for the shared mic tap.
 #[cfg(target_os = "macos")]
 mod capture;
-// The mic's loudness, for the composer's level bars.
+// The mic's loudness, for the composer's level bars and for the pause that
+// ends a session.
 #[cfg(target_os = "macos")]
 mod level;
 // The default engine's `SpeechAnalyzer` bridge (Rust side of
@@ -288,13 +289,9 @@ pub fn dictation_model_status(state: tauri::State<'_, DbState>) -> ModelStatus {
     model_status(enabled, model, whisper::install::status(model))
 }
 
-/// Choose the dictation engine. Persists `dictation_engine` (backend-owned
-/// snake_case key, so the renderer reads it as `s.dictation_engine`) and, when
-/// enabling without the weights on disk, kicks the download off in the
-/// background — the toggle can't await half a gigabyte. Same persist-then-act
-/// Settings key: end a local-engine session on its own after a pause. Opt-out
-/// — only `"false"` turns it off. Whisper only: Apple's recognizer decides for
-/// itself when an utterance ended, and there is no PCM to measure (see
+/// Settings key: end a session on its own after a pause. Opt-out — only
+/// `"false"` turns it off. Both engines, because the pause is measured off the
+/// shared level meter rather than off either recognizer (see
 /// `apple::watch_for_silence`). Mirrored in memory because the silence monitor
 /// polls it off the audio thread, where there is no DB handle.
 pub const AUTO_STOP_SETTING: &str = "dictation_auto_stop";
@@ -308,8 +305,9 @@ pub fn set_auto_stop(enabled: bool) {
     AUTO_STOP.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Read by the silence monitor, which only exists on macOS.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Read by the silence monitor on macOS, and on every platform by
+/// [`remote::status`] — the phone hears its own pause, so it has to be told
+/// what this Mac wants done about one.
 pub(crate) fn auto_stop() -> bool {
     AUTO_STOP.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -330,6 +328,10 @@ pub fn set_dictation_auto_stop(enabled: bool, state: tauri::State<'_, DbState>) 
     Ok(())
 }
 
+/// Choose the dictation engine. Persists `dictation_engine` (backend-owned
+/// snake_case key, so the renderer reads it as `s.dictation_engine`) and, when
+/// enabling without the weights on disk, kicks the download off in the
+/// background — the toggle can't await half a gigabyte. Same persist-then-act
 /// shape as `set_code_indexing_enabled`.
 ///
 /// Turning it off leaves the weights alone; removing them is a separate,
