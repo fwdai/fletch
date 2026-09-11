@@ -29,7 +29,7 @@ pub mod approval;
 pub mod caps;
 #[path = "rpc/git.rs"]
 pub mod git;
-#[path = "rpc/roadmap.rs"]
+#[path = "rpc/roadmap/mod.rs"]
 pub mod roadmap;
 
 /// One request from the agent. The `id` is carried in the filename (the pairing

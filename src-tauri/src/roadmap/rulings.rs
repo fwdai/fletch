@@ -133,7 +133,7 @@ pub(super) enum Ruling {
     },
 }
 
-/// Same rulable set as `rpc::roadmap::proposable` — keep in sync.
+/// Same rulable set as `rpc::roadmap::deltas::proposable` — keep in sync.
 pub(crate) fn proposal_gate(item: &RoadmapItem) -> Result<(), String> {
     if item.status.is_rulable() {
         return Ok(());
