@@ -33,7 +33,9 @@
   white-space: nowrap;
 }
 
-/* The hint takes the slack so the Close button sits hard right. */
+/* The per-provider sign-in hint, in the terminal's head and in the offer row
+   that precedes it (ProvidersPane/SignInSection). Takes the slack either way,
+   so the trailing button sits hard right. */
 .prov-login-hint {
   flex: 1;
   min-width: 0;

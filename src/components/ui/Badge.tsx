@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 export type BadgeVariant =
   | "neutral"
   | "new"
+  | "ok"
   | "err"
   | "warn"
   | "docker"

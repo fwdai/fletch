@@ -1,11 +1,11 @@
 import type { ProviderAuthStatus } from "@/api/types/providers";
-import { Badge } from "@/components/ui";
+import { Badge, type BadgeVariant } from "@/components/ui";
 
 /** Tone and label per sign-in state. `signed_out` is a warning, not an error:
  *  the CLI is installed and one `Sign in` away from working, so it shouldn't
  *  read like something broke. */
-const LABELS: Record<"signed_in" | "signed_out", { text: string; variant: "neutral" | "warn" }> = {
-  signed_in: { text: "Signed in", variant: "neutral" },
+const LABELS: Record<"signed_in" | "signed_out", { text: string; variant: BadgeVariant }> = {
+  signed_in: { text: "Signed in", variant: "ok" },
   signed_out: { text: "Not signed in", variant: "warn" },
 };
 
