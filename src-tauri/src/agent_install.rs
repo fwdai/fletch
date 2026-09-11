@@ -10,11 +10,12 @@
 //! `~/.codex/bin`, …), all of which `bin_resolve` already scans, so a
 //! post-install re-probe picks the new agent up with no extra wiring.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use tokio::sync::Notify;
 
 /// Ceiling on a single installer run. The scripts download ~50–150 MB and
 /// finish in well under a minute on a normal connection; this only exists so
@@ -43,16 +44,17 @@ pub fn install_command(id: &str) -> Option<&'static str> {
     }
 }
 
-/// Agents with an installer currently running — a second click on the same
-/// tile (or the same agent from two windows) errors instead of racing two
-/// installers over the same install dir.
-fn in_flight() -> &'static Mutex<HashSet<String>> {
-    static SET: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    SET.get_or_init(|| Mutex::new(HashSet::new()))
+/// Agents with an installer currently running, each mapped to its cancel
+/// signal. Double duty: a second click on the same tile (or the same agent
+/// from two windows) errors instead of racing two installers over the same
+/// install dir, and `cancel` reaches a live run through the same entry.
+fn in_flight() -> &'static Mutex<HashMap<String, Arc<Notify>>> {
+    static MAP: OnceLock<Mutex<HashMap<String, Arc<Notify>>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Removes the agent from the in-flight set on drop, so the error and timeout
-/// paths can't leak a stuck "already installing" state.
+/// Removes the agent from the in-flight map on drop, so the error, timeout and
+/// cancel paths can't leak a stuck "already installing" state.
 struct InFlightGuard(String);
 
 impl Drop for InFlightGuard {
@@ -61,19 +63,39 @@ impl Drop for InFlightGuard {
     }
 }
 
+/// Stop the installer running for `id`: the run's own future is dropped, which
+/// kills the child through `kill_on_drop` and emits `{id, phase: "cancelled"}`.
+/// Returns whether an install was actually in flight — cancelling an idle agent
+/// is a no-op, not an error.
+pub fn cancel(id: &str) -> bool {
+    let Some(signal) = in_flight().lock().unwrap().get(id).cloned() else {
+        return false;
+    };
+    // `notify_one`, not `notify_waiters`: it stores a permit when nothing is
+    // waiting yet, so a cancel landing between registration and the first poll
+    // of the select below still takes effect.
+    signal.notify_one();
+    true
+}
+
 /// Run the pinned installer for `id`, streaming its output through `emit` as
 /// `agent-install:state` payloads: `{id, phase: "running", line}` per output
-/// line, then a final `{id, phase: "done"}` or `{id, phase: "failed", error}`.
-/// Resolves when the installer exits; the caller re-probes to confirm the
-/// binary actually appeared.
+/// line, then a final `{id, phase: "done"}`, `{id, phase: "failed", error}` or
+/// `{id, phase: "cancelled"}`. Resolves when the installer exits; the caller
+/// re-probes to confirm the binary actually appeared.
 pub async fn install(
     id: String,
     emit: impl Fn(Value) + Send + Sync + 'static,
 ) -> Result<(), String> {
     let cmd = install_command(&id)
         .ok_or_else(|| format!("no scripted installer for `{id}` on this platform"))?;
-    if !in_flight().lock().unwrap().insert(id.clone()) {
-        return Err(format!("`{id}` installation is already in progress"));
+    let cancelled = Arc::new(Notify::new());
+    {
+        let mut running = in_flight().lock().unwrap();
+        if running.contains_key(&id) {
+            return Err(format!("`{id}` installation is already in progress"));
+        }
+        running.insert(id.clone(), cancelled.clone());
     }
     let _guard = InFlightGuard(id.clone());
     let emit: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(emit);
@@ -81,17 +103,29 @@ pub async fn install(
     emit(json!({ "id": id, "phase": "running", "line": format!("$ {cmd}") }));
     tracing::info!(agent = %id, %cmd, "running agent installer");
 
-    let result = tokio::time::timeout(INSTALL_TIMEOUT, run_streamed(&id, cmd, emit.clone())).await;
-    match result {
-        Ok(Ok(())) => {
+    // A cancel drops the `run_streamed` future, and with it the child (spawned
+    // `kill_on_drop`) and its reader tasks — the same teardown the timeout gets.
+    let run = async {
+        tokio::select! {
+            result = run_streamed(&id, cmd, emit.clone()) => Some(result),
+            _ = cancelled.notified() => None,
+        }
+    };
+    match tokio::time::timeout(INSTALL_TIMEOUT, run).await {
+        Ok(Some(Ok(()))) => {
             emit(json!({ "id": id, "phase": "done" }));
             tracing::info!(agent = %id, "agent installer finished");
             Ok(())
         }
-        Ok(Err(e)) => {
+        Ok(Some(Err(e))) => {
             tracing::warn!(agent = %id, error = %e, "agent installer failed");
             emit(json!({ "id": id, "phase": "failed", "error": e.clone() }));
             Err(e)
+        }
+        Ok(None) => {
+            tracing::info!(agent = %id, "agent installer cancelled");
+            emit(json!({ "id": id, "phase": "cancelled" }));
+            Ok(())
         }
         Err(_) => {
             let e = "installer timed out".to_string();

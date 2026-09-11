@@ -133,6 +133,16 @@ pub async fn install_agent(app: AppHandle, id: String) -> Result<()> {
     .map_err(Error::Other)
 }
 
+/// Stop the installer running for an agent CLI. The run emits a final
+/// `{id, phase: "cancelled"}` on its `agent-install:state` stream and releases
+/// the per-agent in-flight guard, so the UI can go straight back to offering
+/// Install. Returns whether an install was in flight — cancelling an idle
+/// agent is a no-op, not an error.
+#[tauri::command]
+pub async fn cancel_agent_install(id: String) -> bool {
+    crate::agent_install::cancel(&id)
+}
+
 /// Validate a candidate custom agent binary path: is it an executable file,
 /// and what `--version` does it report? The providers settings UI calls this
 /// before saving a path override so it can show immediate inline feedback

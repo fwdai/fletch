@@ -2062,6 +2062,7 @@ pub fn run() {
             commands::check_cli,
             commands::git_dist_install,
             commands::install_agent,
+            commands::cancel_agent_install,
             commands::validate_agent_bin,
             commands::discover_supported_models,
             commands::probe_provider_auth,
