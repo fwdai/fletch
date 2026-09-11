@@ -36,7 +36,8 @@ mod apple;
 // The local engine's sink for the shared mic tap.
 #[cfg(target_os = "macos")]
 mod capture;
-// The mic's loudness, for the composer's level bars.
+// The mic's loudness, for the composer's level bars and for the pause that
+// ends a session.
 #[cfg(target_os = "macos")]
 mod level;
 // The default engine's `SpeechAnalyzer` bridge (Rust side of
@@ -288,13 +289,9 @@ pub fn dictation_model_status(state: tauri::State<'_, DbState>) -> ModelStatus {
     model_status(enabled, model, whisper::install::status(model))
 }
 
-/// Choose the dictation engine. Persists `dictation_engine` (backend-owned
-/// snake_case key, so the renderer reads it as `s.dictation_engine`) and, when
-/// enabling without the weights on disk, kicks the download off in the
-/// background — the toggle can't await half a gigabyte. Same persist-then-act
-/// Settings key: end a local-engine session on its own after a pause. Opt-out
-/// — only `"false"` turns it off. Whisper only: Apple's recognizer decides for
-/// itself when an utterance ended, and there is no PCM to measure (see
+/// Settings key: end a session on its own after a pause. Opt-out — only
+/// `"false"` turns it off. Both engines, because the pause is measured off the
+/// shared level meter rather than off either recognizer (see
 /// `apple::watch_for_silence`). Mirrored in memory because the silence monitor
 /// polls it off the audio thread, where there is no DB handle.
 pub const AUTO_STOP_SETTING: &str = "dictation_auto_stop";
@@ -330,6 +327,10 @@ pub fn set_dictation_auto_stop(enabled: bool, state: tauri::State<'_, DbState>) 
     Ok(())
 }
 
+/// Choose the dictation engine. Persists `dictation_engine` (backend-owned
+/// snake_case key, so the renderer reads it as `s.dictation_engine`) and, when
+/// enabling without the weights on disk, kicks the download off in the
+/// background — the toggle can't await half a gigabyte. Same persist-then-act
 /// shape as `set_code_indexing_enabled`.
 ///
 /// Turning it off leaves the weights alone; removing them is a separate,

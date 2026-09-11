@@ -101,12 +101,14 @@ enum Sink {
 
 impl Sink {
     /// Drop the sink's work without waiting for a result — for a session that
-    /// failed to come up, or one being torn down. The local engine's buffer is
-    /// simply dropped; marking it closed is what retires its silence monitor.
+    /// failed to come up, or one being torn down. Only the analyzer has
+    /// anything to call off; the local engine's buffer is simply dropped, and
+    /// what retires both engines' silence monitors is the meter closing
+    /// alongside this.
     fn cancel(&self) {
         match self {
             Sink::Speech(session) => session.cancel(),
-            Sink::Pcm(pcm) => pcm.close(),
+            Sink::Pcm(_) => {}
         }
     }
 }
@@ -121,8 +123,9 @@ struct Session {
     audio: Retained<AVAudioEngine>,
     input: Retained<AVAudioInputNode>,
     sink: Sink,
-    /// The mic's loudness, fed by the tap whichever sink it has, and read by
-    /// the `dictation:level` emitter until the mic closes.
+    /// The mic's loudness, fed by the tap whichever sink it has, and read
+    /// until the mic closes by the `dictation:level` emitter and the silence
+    /// monitor alike — which is what makes hands-free stop engine-agnostic.
     meter: Arc<Meter>,
     /// Kept alive for the tap's lifetime. `installTapOnBus` is documented to
     /// take ownership, but holding our own reference costs nothing and takes
@@ -174,19 +177,6 @@ fn spawn_main(app: &AppHandle, f: impl FnOnce() + Send + 'static) {
 /// Is the session that `generation` belongs to still the live one?
 fn is_live(generation: u64) -> bool {
     SESSION.with_borrow(|s| s.as_ref().is_some_and(|s| s.generation == generation))
-}
-
-/// The live session's capture buffer, if `generation` is still it and it is a
-/// local-engine session. Main thread, like every read of `SESSION`; the buffer
-/// itself is then readable from anywhere.
-fn captured(generation: u64) -> Option<std::sync::Arc<super::capture::Pcm>> {
-    SESSION.with_borrow(|slot| {
-        let session = slot.as_ref().filter(|s| s.generation == generation)?;
-        match &session.sink {
-            Sink::Pcm(pcm) => Some(pcm.clone()),
-            Sink::Speech(_) => None,
-        }
-    })
 }
 
 /// Claim the live session, but only if it is still `generation`. Returning
@@ -356,36 +346,38 @@ pub async fn start(app: AppHandle, engine: Engine) -> Result<Option<u64>> {
     let Some((generation, meter)) = started else {
         return Ok(None);
     };
-    // The level bars run for every session; the meter closes with the mic.
-    level::watch(app.clone(), generation, meter);
-    // Hands-free stop is the local engine's alone: Apple's analyzer decides
-    // for itself when an utterance has ended, and we have no PCM to measure.
-    if engine == Engine::Whisper {
-        watch_for_silence(app, generation);
-    }
+    // Both tasks read the one meter the tap feeds, whichever sink is behind
+    // it, and both retire when it closes with the mic.
+    level::watch(app.clone(), generation, meter.clone());
+    watch_for_silence(app, generation, meter);
     Ok(Some(generation))
 }
 
-/// Poll a local-engine session's speech tracker and stop it once the user has
-/// spoken and then gone quiet — the whole of hands-free dictation. Stops
-/// through the same path a second click takes, so `transcribing`, the
-/// transcript and `stopped` follow in the usual order.
+/// Poll the session's speech tracker and stop it once the user has spoken and
+/// then gone quiet — the whole of hands-free dictation. Stops through the same
+/// path a second click takes, so the terminal events follow in the usual order:
+/// the analyzer gets its `finish` and answers with a final result, and the
+/// local engine gets `transcribing`, the transcript and `stopped`.
+///
+/// Runs for both engines. Apple's analyzer does decide for itself where one
+/// utterance ends, but it has no opinion about when the user is finished with
+/// the microphone — that question is the same on both paths, and so is the
+/// answer, because both taps feed the same [`Meter`]. What it cannot answer is
+/// a session whose format the meter can't read; `Meter::done_talking` refuses
+/// to end those rather than hang up on a user it simply never heard.
 ///
 /// Everything here is keyed on `generation`: the task exits as soon as the
-/// buffer it was given is closed (any teardown does that), and the stop it
+/// meter it was given is closed (any teardown does that), and the stop it
 /// finally issues names its own session, so a monitor that outlives its
 /// session cannot cut a later one short.
-fn watch_for_silence(app: AppHandle, generation: u64) {
+fn watch_for_silence(app: AppHandle, generation: u64, meter: Arc<Meter>) {
     tokio::spawn(async move {
-        let Ok(Some(pcm)) = on_main(&app, move || captured(generation)).await else {
-            return;
-        };
         loop {
-            tokio::time::sleep(super::capture::SILENCE_POLL).await;
-            if pcm.is_closed() {
+            tokio::time::sleep(level::SILENCE_POLL).await;
+            if meter.is_closed() {
                 return;
             }
-            if pcm.done_talking() {
+            if meter.done_talking() {
                 break;
             }
         }
@@ -396,8 +388,9 @@ fn watch_for_silence(app: AppHandle, generation: u64) {
 }
 
 /// `Some((generation, meter))` for a session that came up: its id, and the
-/// level meter its tap feeds, handed out so the emitter can be started off the
-/// main thread.
+/// meter its tap feeds, handed out so the level emitter and the silence
+/// monitor can be started off the main thread rather than hopping back onto it
+/// to find the session again.
 fn begin(app: AppHandle, engine: Engine) -> Result<Option<(u64, Arc<Meter>)>> {
     // The user asked to stop while the permission prompt was up. Honour it
     // instead of opening the mic behind their back. No state event: the
