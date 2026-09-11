@@ -13,6 +13,7 @@ import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/Button";
 import { DocsLink } from "@/components/ui/DocsLink";
+import { modelSummary } from "@/data/modelCatalog";
 import { installCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import type { Provider } from "@/data/providers";
 import { useAppStore } from "@/store";
@@ -34,6 +35,7 @@ export function ProviderRow({ provider }: { provider: Provider }) {
   const override = useAppStore((s) => s.providerPathOverrides[id]);
   const install = useAppStore((s) => s.installs[id]);
   const auth = useAppStore((s) => s.providerAuth[id]);
+  const liveModels = useAppStore((s) => s.modelsByAgent[id]);
   const setProviderEnabled = useAppStore((s) => s.setProviderEnabled);
   const setProviderPathOverride = useAppStore((s) => s.setProviderPathOverride);
   const installAgent = useAppStore((s) => s.installAgent);
@@ -207,7 +209,10 @@ export function ProviderRow({ provider }: { provider: Provider }) {
           {live && (
             <>
               {locate}
-              <ProvDetailRow k="Models" v={d.models} />
+              {/* Live-discovered models (same curated list as the composer's
+                  picker), falling back to the static description until the
+                  catalog has data for this agent. */}
+              <ProvDetailRow k="Models" v={modelSummary(liveModels) ?? d.models} />
               {state === "fresh" && (
                 <p className="set-prov-hint ok text-sm">
                   {enabled
@@ -216,11 +221,6 @@ export function ProviderRow({ provider }: { provider: Provider }) {
                 </p>
               )}
               <SignInSection providerId={id} providerLabel={label} />
-              <div className="set-prov-detail-actions flex-center">
-                <Button variant="ghost" size="sm">
-                  View logs
-                </Button>
-              </div>
             </>
           )}
         </div>

@@ -80,6 +80,18 @@ export function capPerGroup<G extends string>(
   });
 }
 
+/** Compact one-line summary of an agent's models for settings rows: the first
+ *  `max` names joined with " · ", plus a count of the rest. Null when the
+ *  catalog has nothing for this agent (offline first run, discovery failed, or
+ *  an agent with no list command) — callers fall back to their static
+ *  description. Expects the curated `byAgent` list, which is newest-first. */
+export function modelSummary(models: ModelMeta[] | undefined, max = 3): string | null {
+  if (!models?.length) return null;
+  const names = models.slice(0, max).map((m) => m.name);
+  const rest = models.length - names.length;
+  return rest > 0 ? `${names.join(" · ")} +${rest} more` : names.join(" · ");
+}
+
 function cleanModelName(name: string): string {
   return name.replace(/(?:\s*\((?:default|latest)\))*\s*$/gi, "").trim();
 }
