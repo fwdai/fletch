@@ -118,7 +118,7 @@ export function createApi(client: RemoteClient) {
      *  16-bit little-endian mono samples at `rate` Hz; the transcript is the
      *  reply to `dictationEnd`. */
     dictationStatus: () => call<DictationStatus>("dictation_status"),
-    dictationBegin: () => call<{ session: string }>("dictation_begin"),
+    dictationBegin: () => call<DictationBegun>("dictation_begin"),
     dictationAudio: (session: string, rate: number, pcm: string) =>
       call<null>("dictation_audio", { session, rate, pcm }),
     dictationEnd: (session: string) => call<{ text: string }>("dictation_end", { session }),
@@ -131,11 +131,21 @@ export function createApi(client: RemoteClient) {
 export interface DictationStatus {
   available: boolean;
   reason: string | null;
-  /** Settings › Dictation's "Stop after a pause", as the Mac has it. The pause
-   *  is heard here — the Mac only ever sees the chunks this phone chose to send
-   *  — so honouring the setting is the phone's job; see `useDictation`. Absent
-   *  from a host too old to report it, which is why the reading is
-   *  `!== false`: the behaviour those hosts have always had is auto-stop on. */
+}
+
+/** A session the Mac has opened for us. */
+export interface DictationBegun {
+  session: string;
+  /** Settings › Dictation's "Stop after a pause", as the Mac had it the moment
+   *  this session opened. The pause is heard here — the Mac only ever sees the
+   *  chunks this phone chose to send — so honouring the setting is the phone's
+   *  job; see `DictationSession.start`.
+   *
+   *  It arrives per session rather than with the availability probe because the
+   *  probe only runs on mount and reconnect: a phone left connected would
+   *  answer every session from one stale read. Absent from a host too old to
+   *  report it, which is why the reading is `!== false` — auto-stop on is what
+   *  those hosts have always done. */
   auto_stop?: boolean;
 }
 

@@ -38,18 +38,23 @@ export class DictationSession {
    *
    *  `onAutoStop` fires when the mic hears the pause that ends a session. It is
    *  the caller's job to run the same `stop` a tap on the button runs, so that
-   *  hands-free and by-hand take one code path. `onLevel` reports the mic's
+   *  hands-free and by-hand take one code path. Whether it fires at all is the
+   *  Mac's to say — `begin` answers with "Stop after a pause" as it stands
+   *  right now, and withholding `onDoneTalking` is the whole of the opt-out:
+   *  `watchForSilence` starts no timer without it, so neither the pause nor the
+   *  never-spoke deadline is ever consulted. `onLevel` reports the mic's
    *  loudness for the waveform while it is open. */
   async start(onAutoStop?: () => void, onLevel?: (level: number) => void): Promise<void> {
-    const { session } = await this.api.dictationBegin();
+    const { session, auto_stop } = await this.api.dictationBegin();
     this.session = session;
     // A pause that lands while the session is already ending — the user tapped
     // stop at the same moment — is nobody's to act on: `done` says so.
-    const onDoneTalking = onAutoStop
-      ? () => {
-          if (!this.done) onAutoStop();
-        }
-      : undefined;
+    const onDoneTalking =
+      onAutoStop && auto_stop !== false
+        ? () => {
+            if (!this.done) onAutoStop();
+          }
+        : undefined;
     try {
       this.capture = await this.startCapture((pcm, rate) => this.send(pcm, rate), {
         onDoneTalking,

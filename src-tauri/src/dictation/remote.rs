@@ -7,10 +7,13 @@
 //! the user talks, `dictation_end` transcribes and answers with the text, and
 //! `dictation_cancel` throws the audio away. `dictation_status` beside them
 //! says whether any of that would work, so the phone can hide its mic button
-//! the way the desktop composer hides its own, and carries the "Stop after a
-//! pause" setting: the pause lives in frames that never cross the wire, so the
-//! phone's own capture is the only thing that can honour a setting this Mac
-//! owns.
+//! the way the desktop composer hides its own.
+//!
+//! `dictation_begin` also answers with the "Stop after a pause" setting. The
+//! pause lives in frames that never cross the wire — this Mac sees only the
+//! chunks the phone chose to send — so the phone's own capture is the only
+//! thing that can honour a setting this Mac owns. Per session rather than on
+//! the status probe, which the phone only makes on mount and reconnect.
 //!
 //! No events, no partials: whisper.cpp has nothing to say until the whole clip
 //! is in, so the transcript is simply the reply to `dictation_end`, and the
@@ -57,30 +60,14 @@ pub struct Status {
     pub available: bool,
     /// Why not, in words the phone shows as-is. `None` when available.
     pub reason: Option<String>,
-    /// Settings › Dictation's "Stop after a pause", as this Mac has it. The
-    /// phone arms its silence monitor only when this is true; with it off
-    /// nothing but a tap ends the session, which is what the desktop does
-    /// (`capture::should_auto_stop` refuses both the pause and the never-spoke
-    /// deadline). What the host bounds by itself is the *memory*, through the
-    /// capture cap — not the session: `SESSION_IDLE` is refreshed by every
-    /// chunk, and a phone with the setting off keeps sending one a second, so
-    /// an abandoned session holds its mic until the user taps, leaves, or the
-    /// link drops. That is the desktop's behaviour too.
-    pub auto_stop: bool,
 }
 
 impl Status {
-    /// Split from [`status`] so the tests can build one without an
-    /// `AppHandle`. `auto_stop` comes from the in-memory mirror, not the DB:
-    /// `set_dictation_auto_stop` keeps it current and boot restores it. It is
-    /// answered whether or not this Mac is ready to transcribe — the two say
-    /// different things, and a phone that asks while the model is still
-    /// downloading should still learn how the session will end once it isn't.
+    /// Split from [`status`] so the tests can build one without an `AppHandle`.
     fn new(readiness: Result<()>) -> Self {
         Self {
             available: readiness.is_ok(),
             reason: readiness.err().map(|e| e.to_string()),
-            auto_stop: super::auto_stop(),
         }
     }
 }
@@ -88,6 +75,23 @@ impl Status {
 #[derive(Serialize)]
 pub struct Begun {
     pub session: String,
+    /// Settings › Dictation's "Stop after a pause", as this Mac has it at the
+    /// moment the session opens. The phone arms its silence monitor only when
+    /// this is true; with it off nothing but a tap ends the session, which is
+    /// what the desktop does (`capture::should_auto_stop` refuses both the
+    /// pause and the never-spoke deadline).
+    ///
+    /// It rides on `begin` rather than `dictation_status` because the phone
+    /// probes status on mount and reconnect only. A phone that stays connected
+    /// for a day would answer every session from that one stale read, so a
+    /// setting flipped on the Mac would go unheard indefinitely — not for one
+    /// session, as an earlier draft of this claimed. Answering it per session,
+    /// on the call the phone already makes before opening its mic, costs no
+    /// extra round trip and leaves nothing to cache.
+    ///
+    /// Same instinct as the desktop reading its model at stop: the value a
+    /// session acts on is the one Settings showed while it was live.
+    pub auto_stop: bool,
 }
 
 #[derive(Serialize)]
@@ -238,9 +242,8 @@ fn decode(pcm_base64: &str) -> Result<Vec<u8>> {
 // ---------------------------------------------------------------------------
 // The ops, as the dispatcher calls them.
 
-/// Whether a phone can dictate through this Mac right now, if not what the user
-/// has to do about it, and how a session is meant to end. Cheap — two settings
-/// reads, an atomic load and a metadata stat.
+/// Whether a phone can dictate through this Mac right now, and if not, what the
+/// user has to do about it. Cheap — two settings reads and a metadata stat.
 pub fn status(app: &AppHandle) -> Status {
     Status::new(readiness(app))
 }
@@ -251,6 +254,10 @@ pub fn begin(app: &AppHandle) -> Result<Begun> {
     readiness(app)?;
     Ok(Begun {
         session: store().begin(Instant::now())?,
+        // The mirror, not the DB: `set_dictation_auto_stop` keeps it current
+        // and boot restores it, and this runs off a request thread with no
+        // handle to the connection.
+        auto_stop: super::auto_stop(),
     })
 }
 
@@ -420,19 +427,25 @@ mod tests {
     }
 
     /// The phone cannot read the Mac's settings any other way, so a stale or
-    /// hardcoded value here is the opt-out silently not working.
+    /// hardcoded value here is the opt-out silently not working. Answered per
+    /// session precisely so that flipping the setting takes effect on the next
+    /// one rather than on the next reconnect.
     #[test]
-    fn status_reports_the_auto_stop_setting_as_it_stands() {
+    fn each_session_begins_with_the_setting_as_it_stands() {
         super::super::set_auto_stop(false);
-        assert!(!Status::new(Ok(())).auto_stop);
-        // Not ready to transcribe is a separate fact: the setting is still the
-        // honest answer, and the phone that reconnects later depends on it.
-        assert!(!Status::new(Err(Error::Other("model missing".into()))).auto_stop);
+        assert!(!begun(store().begin(Instant::now()).unwrap()).auto_stop);
 
         super::super::set_auto_stop(true);
-        let status = Status::new(Ok(()));
-        assert!(status.auto_stop);
-        assert!(status.available && status.reason.is_none());
+        assert!(begun(store().begin(Instant::now()).unwrap()).auto_stop);
+    }
+
+    /// The shape `begin` builds, minus the readiness check an `AppHandle` would
+    /// be needed for.
+    fn begun(session: String) -> Begun {
+        Begun {
+            session,
+            auto_stop: super::super::auto_stop(),
+        }
     }
 
     #[test]

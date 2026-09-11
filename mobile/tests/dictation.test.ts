@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { DictationStatus } from "../src/api";
 import type { Capture, CaptureOptions, ChunkSink } from "../src/dictation/capture";
 import {
   bytesToBase64,
@@ -9,7 +8,6 @@ import {
   pcm16ToBytes,
 } from "../src/dictation/encode";
 import { type DictationApi, DictationSession } from "../src/dictation/session";
-import { autoStopWanted } from "../src/dictation/useDictation";
 
 describe("chunk encoding", () => {
   it("scales and clamps float samples to 16-bit", () => {
@@ -37,14 +35,15 @@ describe("chunk encoding", () => {
 });
 
 /** A host that records every op, and a mic the test drives by hand. */
-function harness(opts: { failAudioAt?: number; beginFails?: boolean } = {}) {
+function harness(opts: { failAudioAt?: number; beginFails?: boolean; autoStop?: boolean } = {}) {
   const ops: { op: string; args: unknown[] }[] = [];
   let audioCalls = 0;
   const api: DictationApi = {
     async dictationBegin() {
       ops.push({ op: "begin", args: [] });
       if (opts.beginFails) throw new Error("Local dictation is off on your Mac.");
-      return { session: "s1" };
+      // `autoStop: undefined` is a host too old to report the field.
+      return "autoStop" in opts ? { session: "s1", auto_stop: opts.autoStop } : { session: "s1" };
     },
     async dictationAudio(session, rate, pcm) {
       audioCalls += 1;
@@ -192,26 +191,21 @@ describe("DictationSession", () => {
     expect(h.mic.stopped).toBe(1);
   });
 
-  /** The Mac owns "Stop after a pause" and reports it with the availability
-   *  probe; the phone is the only side that can act on it. Started here exactly
-   *  as `useDictation` starts one, so what is under test is the wiring from the
-   *  host's answer to the callback, not a restatement of it. */
-  async function startAsTheHookWould(status: DictationStatus) {
-    const h = harness();
+  /** The Mac owns "Stop after a pause" and answers it on `begin`, per session;
+   *  the phone is the only side that can act on it. Started here exactly as
+   *  `useDictation` starts one — which now means always offering the callback
+   *  and letting the host's answer decide — so what is under test is the wiring
+   *  from that answer to the mic, not a restatement of it. */
+  async function startAsTheHookWould(opts: { autoStop?: boolean } | Record<string, never>) {
+    const h = harness(opts);
     const s = new DictationSession(h.api, h.startCapture);
     const stops: Promise<string>[] = [];
-    await s.start(autoStopWanted(status) ? () => stops.push(s.stop()) : undefined);
+    await s.start(() => stops.push(s.stop()));
     return { h, s, stops };
   }
 
-  const probe = (auto_stop?: boolean): DictationStatus => ({
-    available: true,
-    reason: null,
-    auto_stop,
-  });
-
-  it("a phone told auto_stop: false never arms the silence watcher", async () => {
-    const { h, s, stops } = await startAsTheHookWould(probe(false));
+  it("a session begun with auto_stop: false never arms the silence watcher", async () => {
+    const { h, s, stops } = await startAsTheHookWould({ autoStop: false });
     expect(h.mic.armed).toBe(false);
 
     h.mic.speak([1]);
@@ -227,9 +221,9 @@ describe("DictationSession", () => {
     expect(h.mic.stopped).toBe(1);
   });
 
-  it("a phone told auto_stop: true stops itself, and so does one whose host never said", async () => {
-    for (const status of [probe(true), probe(undefined)]) {
-      const { h, stops } = await startAsTheHookWould(status);
+  it("a session begun with auto_stop: true stops itself, and so does one whose host never said", async () => {
+    for (const opts of [{ autoStop: true }, {}]) {
+      const { h, stops } = await startAsTheHookWould(opts);
       expect(h.mic.armed).toBe(true);
       h.mic.speak([1]);
       h.mic.pause();
