@@ -311,50 +311,9 @@ struct Settled {
 }
 
 fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) {
-    let settled: Vec<Settled> = {
-        let conn = db.lock();
-        let items = match store::list(&conn, project_id) {
-            Ok(items) => items,
-            Err(e) => {
-                tracing::warn!(project_id, error = %e, "roadmap drainer: cannot read board");
-                return;
-            }
-        };
-        items
-            .into_iter()
-            .filter(|i| i.status == ItemStatus::Active)
-            .filter(|i| i.run_id.is_some() || i.agent_id.is_none())
-            .map(|item| {
-                let adopted_run_id = match &item.run_id {
-                    Some(_) => None,
-                    None => dispatched_run_id(&conn, &item.id),
-                };
-                let run_id = item.run_id.clone().or_else(|| adopted_run_id.clone());
-                let status = match &run_id {
-                    Some(id) => run_status(&conn, id),
-                    None => None,
-                };
-                let pr = match status {
-                    Some(RunStatus::Done) => {
-                        run_id.as_deref().and_then(|id| finalized_pr(&conn, id))
-                    }
-                    _ => None,
-                };
-                let outcome = match run_id {
-                    None => Settlement::Released(RUN_NEVER_STARTED),
-                    Some(_) => settle(status, pr.as_ref()),
-                };
-                Settled {
-                    item,
-                    outcome,
-                    pr,
-                    adopted_run_id,
-                }
-            })
-            .filter(|s| s.outcome != Settlement::Running || s.adopted_run_id.is_some())
-            .collect()
+    let Some(settled) = collect_settlements(db, project_id) else {
+        return;
     };
-
     for Settled {
         item,
         outcome,
@@ -392,6 +351,52 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
             _ => forget(said, &item.id),
         }
     }
+}
+
+fn collect_settlements(db: &Db, project_id: &str) -> Option<Vec<Settled>> {
+    let conn = db.lock();
+    let items = match store::list(&conn, project_id) {
+        Ok(items) => items,
+        Err(e) => {
+            tracing::warn!(project_id, error = %e, "roadmap drainer: cannot read board");
+            return None;
+        }
+    };
+    Some(
+        items
+            .into_iter()
+            .filter(|i| i.status == ItemStatus::Active)
+            .filter(|i| i.run_id.is_some() || i.agent_id.is_none())
+            .map(|item| {
+                let adopted_run_id = match &item.run_id {
+                    Some(_) => None,
+                    None => dispatched_run_id(&conn, &item.id),
+                };
+                let run_id = item.run_id.clone().or_else(|| adopted_run_id.clone());
+                let status = match &run_id {
+                    Some(id) => run_status(&conn, id),
+                    None => None,
+                };
+                let pr = match status {
+                    Some(RunStatus::Done) => {
+                        run_id.as_deref().and_then(|id| finalized_pr(&conn, id))
+                    }
+                    _ => None,
+                };
+                let outcome = match run_id {
+                    None => Settlement::Released(RUN_NEVER_STARTED),
+                    Some(_) => settle(status, pr.as_ref()),
+                };
+                Settled {
+                    item,
+                    outcome,
+                    pr,
+                    adopted_run_id,
+                }
+            })
+            .filter(|s| s.outcome != Settlement::Running || s.adopted_run_id.is_some())
+            .collect(),
+    )
 }
 
 fn conclude(
@@ -899,17 +904,9 @@ fn write_item_with_event(
         let conn = db.lock();
         apply_and_record(&conn, id, None, &patch, EventActor::Drainer, kind, detail)
     };
-    match updated {
-        Ok(Some((row, event))) => {
-            emit_item(app, &row);
-            emit_item_event(app, &event);
-            true
-        }
-        Ok(None) => false,
-        Err(e) => {
-            tracing::warn!(id, error = %e, "roadmap drainer: item write failed");
-            false
-        }
+    match emit_write(app, id, updated, "roadmap drainer: item write failed") {
+        WriteEmit::Wrote => true,
+        WriteEmit::Missed | WriteEmit::Failed => false,
     }
 }
 
@@ -933,16 +930,38 @@ pub(crate) fn write_item_where(
             entry.detail,
         )
     };
+    match emit_write(app, id, updated, "roadmap: item write failed") {
+        WriteEmit::Wrote | WriteEmit::Failed => {}
+        WriteEmit::Missed => tracing::debug!(
+            id,
+            "roadmap: row moved before a verdict landed — left alone"
+        ),
+    }
+}
+
+enum WriteEmit {
+    Wrote,
+    Missed,
+    Failed,
+}
+
+fn emit_write(
+    app: &AppHandle,
+    id: &str,
+    updated: rusqlite::Result<Option<(RoadmapItem, ItemEvent)>>,
+    fail_msg: &str,
+) -> WriteEmit {
     match updated {
         Ok(Some((row, event))) => {
             emit_item(app, &row);
             emit_item_event(app, &event);
+            WriteEmit::Wrote
         }
-        Ok(None) => tracing::debug!(
-            id,
-            "roadmap: row moved before a verdict landed — left alone"
-        ),
-        Err(e) => tracing::warn!(id, error = %e, "roadmap: item write failed"),
+        Ok(None) => WriteEmit::Missed,
+        Err(e) => {
+            tracing::warn!(id, error = %e, "{fail_msg}");
+            WriteEmit::Failed
+        }
     }
 }
 

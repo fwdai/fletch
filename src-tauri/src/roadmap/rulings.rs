@@ -183,20 +183,14 @@ pub(super) fn accept_proposal(conn: &Connection, proposal_id: &str) -> Result<Ru
             let updated = store::update(conn, &item.id, &patch.to_item_patch())
                 .map_err(|e| e.to_string())?
                 .ok_or("the item this proposal targets no longer exists")?;
-            let event = events::record(
+            finish_accept(
                 conn,
-                &updated.id,
-                &updated.project_id,
-                EventActor::User,
+                updated,
                 EventKind::Edited,
-                Some(&ruling_detail("Accepted", proposal.note.as_deref())),
+                "Accepted",
+                proposal.note.as_deref(),
+                proposal_id,
             )
-            .map_err(|e| e.to_string())?;
-            proposals::delete(conn, proposal_id).map_err(|e| e.to_string())?;
-            Ok(Ruling::Updated {
-                item: Box::new(updated),
-                event: Box::new(event),
-            })
         }
         ProposalKind::Discard => {
             let reason = proposal
@@ -206,22 +200,40 @@ pub(super) fn accept_proposal(conn: &Connection, proposal_id: &str) -> Result<Ru
             let rejected = store::reject(conn, &item.id, reason)
                 .map_err(|e| e.to_string())?
                 .ok_or("the item this proposal targets no longer exists")?;
-            let event = events::record(
+            finish_accept(
                 conn,
-                &rejected.id,
-                &rejected.project_id,
-                EventActor::User,
+                rejected,
                 EventKind::Rejected,
-                Some(&ruling_detail("Rejected", proposal.note.as_deref())),
+                "Rejected",
+                proposal.note.as_deref(),
+                proposal_id,
             )
-            .map_err(|e| e.to_string())?;
-            proposals::delete(conn, proposal_id).map_err(|e| e.to_string())?;
-            Ok(Ruling::Updated {
-                item: Box::new(rejected),
-                event: Box::new(event),
-            })
         }
     }
+}
+
+fn finish_accept(
+    conn: &Connection,
+    item: RoadmapItem,
+    kind: EventKind,
+    verb: &str,
+    note: Option<&str>,
+    proposal_id: &str,
+) -> Result<Ruling, String> {
+    let event = events::record(
+        conn,
+        &item.id,
+        &item.project_id,
+        EventActor::User,
+        kind,
+        Some(&ruling_detail(verb, note)),
+    )
+    .map_err(|e| e.to_string())?;
+    proposals::delete(conn, proposal_id).map_err(|e| e.to_string())?;
+    Ok(Ruling::Updated {
+        item: Box::new(item),
+        event: Box::new(event),
+    })
 }
 
 pub(super) fn reject_proposal(conn: &Connection, proposal_id: &str) -> Result<ItemEvent, String> {
