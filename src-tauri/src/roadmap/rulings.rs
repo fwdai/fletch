@@ -16,25 +16,8 @@ pub(super) fn reject_item(
     item_id: &str,
     reason: &str,
 ) -> Result<(RoadmapItem, ItemEvent, Option<Proposal>), String> {
-    let reason = reason.trim();
-    if reason.is_empty() {
-        return Err(
-            "`reason` is required — the rejected row is the decision log, and the reason \
-             is the decision"
-                .into(),
-        );
-    }
-    let length = reason.chars().count();
-    if length > brakes::MAX_REASON {
-        return Err(format!(
-            "`reason` is {length} characters — keep it under {}. Say the ruling; the \
-             argument for it belongs in the conversation",
-            brakes::MAX_REASON
-        ));
-    }
-    let current = store::get(conn, item_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let reason = brakes::clean_reason_for(reason, brakes::ReasonKind::Reject)?;
+    let current = store::require(conn, item_id)?;
     match current.status {
         ItemStatus::Proposed | ItemStatus::Open | ItemStatus::Queued => {}
         ItemStatus::Active | ItemStatus::InReview => {
@@ -59,16 +42,16 @@ pub(super) fn reject_item(
     if let Some(p) = &pending {
         proposals::delete(conn, &p.id).map_err(|e| e.to_string())?;
     }
-    let item = store::reject(conn, item_id, reason)
+    let item = store::reject(conn, item_id, &reason)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+        .ok_or_else(|| store::missing(item_id))?;
     let event = events::record(
         conn,
         &item.id,
         &item.project_id,
         EventActor::User,
         EventKind::Rejected,
-        Some(reason),
+        Some(&reason),
     )
     .map_err(|e| e.to_string())?;
     Ok((item, event, pending))
@@ -80,7 +63,7 @@ pub(super) fn reopen_item(
 ) -> Result<(RoadmapItem, Option<ItemEvent>, Vec<ItemEvent>), String> {
     let current = store::get(conn, item_id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+        .ok_or_else(|| store::missing(item_id))?;
     let Some(item) = store::reopen(conn, item_id).map_err(|e| e.to_string())? else {
         return Ok((current, None, Vec::new()));
     };
@@ -190,7 +173,7 @@ pub(super) fn accept_proposal(conn: &Connection, proposal_id: &str) -> Result<Ru
                 serde_json::from_value(proposal.patch.clone().ok_or("proposal carries no patch")?)
                     .map_err(|e| e.to_string())?;
             if let Some(new_deps) = &patch.deps {
-                if let Err(why) = super::check_dep_edit(conn, &item, new_deps) {
+                if let Err(why) = deps::check_edit(conn, &item, new_deps) {
                     proposals::delete(conn, proposal_id).map_err(|e| e.to_string())?;
                     return Ok(Ruling::Stale {
                         message: format!("the board changed since the PM asked — {why}"),

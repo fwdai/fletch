@@ -7,25 +7,52 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
-use super::events::EventActor;
+use super::events::{self, EventActor, EventKind, ItemEvent};
 use super::types::{enum_col, RoadmapItem};
 use crate::database::now_millis;
 
-/// Max hold reason length (chars, not bytes).
+/// Max reason length for holds and reject rulings (chars, not bytes).
 pub const MAX_REASON: usize = 300;
 
-/// Non-empty trimmed reason under [`MAX_REASON`].
+/// Which user-facing copy [`clean_reason_for`] should use.
+#[derive(Debug, Clone, Copy)]
+pub enum ReasonKind {
+    Hold,
+    Reject,
+}
+
+/// Non-empty trimmed reason under [`MAX_REASON`] (hold wording).
 pub fn clean_reason(reason: &str) -> Result<String, String> {
+    clean_reason_for(reason, ReasonKind::Hold)
+}
+
+/// Shared trim / empty / length gate; messages depend on [`ReasonKind`].
+pub fn clean_reason_for(reason: &str, kind: ReasonKind) -> Result<String, String> {
     let reason = reason.trim();
     if reason.is_empty() {
-        return Err("`reason` is required — say what has to be agreed before this moves".into());
+        return Err(match kind {
+            ReasonKind::Hold => {
+                "`reason` is required — say what has to be agreed before this moves".into()
+            }
+            ReasonKind::Reject => {
+                "`reason` is required — the rejected row is the decision log, and the reason \
+                 is the decision"
+                    .into()
+            }
+        });
     }
     let length = reason.chars().count();
     if length > MAX_REASON {
-        return Err(format!(
-            "`reason` is {length} characters — keep it under {MAX_REASON}. Say what has to be \
-             agreed; the argument for it belongs in the conversation"
-        ));
+        return Err(match kind {
+            ReasonKind::Hold => format!(
+                "`reason` is {length} characters — keep it under {MAX_REASON}. Say what has to be \
+                 agreed; the argument for it belongs in the conversation"
+            ),
+            ReasonKind::Reject => format!(
+                "`reason` is {length} characters — keep it under {MAX_REASON}. Say the ruling; the \
+                 argument for it belongs in the conversation"
+            ),
+        });
     }
     Ok(reason.to_string())
 }
@@ -64,6 +91,51 @@ pub fn release_item(
         params![now_millis(), item_id],
     )?;
     Ok(super::store::get(conn, item_id)?.map(|row| (row, lifted)))
+}
+
+/// Place hold and record `held` under the caller's lock.
+pub(crate) fn hold_with_event(
+    conn: &Connection,
+    item_id: &str,
+    reason: &str,
+    by: EventActor,
+) -> Result<(RoadmapItem, ItemEvent), String> {
+    let item = hold_item(conn, item_id, reason, by)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| super::store::missing(item_id))?;
+    let event = events::record(
+        conn,
+        &item.id,
+        &item.project_id,
+        by,
+        EventKind::Held,
+        Some(reason),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((item, event))
+}
+
+/// Clear hold and record `released` when something was lifted.
+pub(crate) fn release_with_event(
+    conn: &Connection,
+    item_id: &str,
+) -> Result<(RoadmapItem, Option<ItemEvent>), String> {
+    let (item, lifted) = release_item(conn, item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| super::store::missing(item_id))?;
+    let Some(lifted) = lifted else {
+        return Ok((item, None));
+    };
+    let event = events::record(
+        conn,
+        &item.id,
+        &item.project_id,
+        EventActor::User,
+        EventKind::Released,
+        Some(&lifted),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((item, Some(event)))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

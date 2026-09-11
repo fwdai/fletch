@@ -28,6 +28,24 @@ pub fn rejected_of(items: &[RoadmapItem]) -> BTreeSet<String> {
         .collect()
 }
 
+/// Unknown/rejected deps and cycles must fail before write.
+pub fn check_edit(
+    conn: &rusqlite::Connection,
+    item: &RoadmapItem,
+    new_deps: &[String],
+) -> Result<(), String> {
+    if item.deps == new_deps {
+        return Ok(());
+    }
+    let board = super::store::list(conn, &item.project_id).map_err(|e| e.to_string())?;
+    validate_edit(
+        &graph_of(&board),
+        &rejected_of(&board),
+        &item.code,
+        new_deps,
+    )
+}
+
 fn placeholder(index: usize) -> String {
     format!("{BATCH_PREFIX}{}", index + 1)
 }

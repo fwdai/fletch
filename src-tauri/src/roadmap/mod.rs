@@ -48,6 +48,7 @@ pub(crate) use client_events::{
 };
 
 pub(crate) use autonomy::{accept_landing, Landing};
+pub(crate) use brakes::{hold_with_event as hold_item, release_with_event as release_item};
 pub(crate) use rulings::proposal_gate;
 
 
@@ -131,7 +132,7 @@ pub async fn roadmap_update_item(
         let conn = db.lock();
         update_and_record(&conn, &id, &patch, expect_status, queue.unwrap_or(false))?
     };
-    let outcome = outcome.ok_or_else(|| format!("roadmap item {id} no longer exists"))?;
+    let outcome = outcome.ok_or_else(|| store::missing(&id))?;
     if outcome.applied {
         emit_item(&app, &outcome.item);
         if let Some(event) = &event {
@@ -160,9 +161,9 @@ fn update_and_record(
                 .into(),
         );
     }
-    if let Some(new_deps) = &patch.deps {
+            if let Some(new_deps) = &patch.deps {
         if let Some(current) = store::get(conn, id).map_err(|e| e.to_string())? {
-            check_dep_edit(conn, &current, new_deps)?;
+            deps::check_edit(conn, &current, new_deps)?;
         }
     }
     let landing = autonomy::is_accept(expect_status, patch)
@@ -213,23 +214,7 @@ fn update_and_record(
 }
 
 
-/// Unknown/rejected deps and cycles must fail before write.
-pub(super) fn check_dep_edit(
-    conn: &Connection,
-    item: &RoadmapItem,
-    new_deps: &[String],
-) -> Result<(), String> {
-    if item.deps == new_deps {
-        return Ok(());
-    }
-    let board = store::list(conn, &item.project_id).map_err(|e| e.to_string())?;
-    deps::validate_edit(
-        &deps::graph_of(&board),
-        &deps::rejected_of(&board),
-        &item.code,
-        new_deps,
-    )
-}
+
 
 #[tauri::command]
 // Rank-only write: deliberately no history event (migration 0032).
@@ -251,7 +236,7 @@ pub async fn roadmap_set_rank(
         )
         .map_err(|e| e.to_string())?
     };
-    let item = item.ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let item = item.ok_or_else(|| store::missing(&item_id))?;
     emit_item(&app, &item);
     drainer::nudge();
     Ok(item)
@@ -329,7 +314,7 @@ pub async fn roadmap_note_review_feedback(
         let conn = db.lock();
         let item = store::get(&conn, &item_id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+            .ok_or_else(|| store::missing(&item_id))?;
         if item.status != ItemStatus::InReview {
             return Err(format!(
                 "{} is {} — only an item under review has feedback to send",
@@ -361,32 +346,11 @@ pub async fn roadmap_hold_item(
     let reason = brakes::clean_reason(&reason)?;
     let (item, event) = {
         let conn = db.lock();
-        hold_item(&conn, &item_id, &reason, EventActor::User)?
+        brakes::hold_with_event(&conn, &item_id, &reason, EventActor::User)?
     };
     emit_item(&app, &item);
     emit_item_event(&app, &event);
     Ok(item)
-}
-
-pub(crate) fn hold_item(
-    conn: &Connection,
-    item_id: &str,
-    reason: &str,
-    by: EventActor,
-) -> Result<(RoadmapItem, ItemEvent), String> {
-    let item = brakes::hold_item(conn, item_id, reason, by)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
-    let event = events::record(
-        conn,
-        &item.id,
-        &item.project_id,
-        by,
-        EventKind::Held,
-        Some(reason),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok((item, event))
 }
 
 #[tauri::command]
@@ -397,7 +361,7 @@ pub async fn roadmap_release_item(
 ) -> Result<RoadmapItem, String> {
     let (item, event) = {
         let conn = db.lock();
-        release_item(&conn, &item_id)?
+        brakes::release_with_event(&conn, &item_id)?
     };
     emit_item(&app, &item);
     if let Some(event) = &event {
@@ -405,29 +369,6 @@ pub async fn roadmap_release_item(
         drainer::nudge();
     }
     Ok(item)
-}
-
-// No `released` event if the row was not held.
-fn release_item(
-    conn: &Connection,
-    item_id: &str,
-) -> Result<(RoadmapItem, Option<ItemEvent>), String> {
-    let (item, lifted) = brakes::release_item(conn, item_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
-    let Some(lifted) = lifted else {
-        return Ok((item, None));
-    };
-    let event = events::record(
-        conn,
-        &item.id,
-        &item.project_id,
-        EventActor::User,
-        EventKind::Released,
-        Some(&lifted),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok((item, Some(event)))
 }
 
 #[tauri::command]

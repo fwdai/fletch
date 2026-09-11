@@ -13,9 +13,7 @@ pub(super) fn hand_off(
     item_id: &str,
     agent_id: &str,
 ) -> Result<(RoadmapItem, ItemEvent), String> {
-    let current = store::get(conn, item_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let current = store::require(conn, item_id)?;
     match current.status {
         ItemStatus::Proposed | ItemStatus::Open => {}
         status => {
@@ -40,7 +38,7 @@ pub(super) fn hand_off(
     };
     let item = store::update(conn, item_id, &patch)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+        .ok_or_else(|| store::missing(item_id))?;
     let detail = match &name {
         Some(name) => format!("Handed to agent {name}"),
         None => "Handed to an agent".to_string(),
@@ -59,9 +57,7 @@ pub(super) fn hand_off(
 
 /// Clear agent stamp only; status unchanged.
 pub(super) fn reclaim(conn: &Connection, item_id: &str) -> Result<(RoadmapItem, ItemEvent), String> {
-    let current = store::get(conn, item_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    let current = store::require(conn, item_id)?;
     let Some(agent_id) = current.agent_id.clone() else {
         return Err(format!("{} isn't with an agent", current.code));
     };
@@ -91,7 +87,7 @@ pub(super) fn reclaim(conn: &Connection, item_id: &str) -> Result<(RoadmapItem, 
         },
     )
     .map_err(|e| e.to_string())?
-    .ok_or_else(|| format!("roadmap item {item_id} no longer exists"))?;
+    .ok_or_else(|| store::missing(item_id))?;
     let detail = match &name {
         Some(name) => format!("Taken back from agent {name}"),
         None => "Taken back from an agent".to_string(),

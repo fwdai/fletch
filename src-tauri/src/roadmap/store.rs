@@ -36,6 +36,16 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<RoadmapItem>>
     .optional()
 }
 
+pub fn missing(id: &str) -> String {
+    format!("roadmap item {id} no longer exists")
+}
+
+pub fn require(conn: &Connection, id: &str) -> Result<RoadmapItem, String> {
+    get(conn, id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| missing(id))
+}
+
 pub fn create(conn: &Connection, project_id: &str, new: &NewItem) -> rusqlite::Result<RoadmapItem> {
     let id = uuid::Uuid::new_v4().to_string();
     let code = next_code(conn, project_id)?;
