@@ -42,14 +42,17 @@ pub(crate) use client_events::{
     emit_proposal,
 };
 
-pub(crate) use autonomy::Landing;
-pub(crate) use brakes::{hold_with_event as hold_item, release_with_event as release_item};
+pub(crate) use brakes::hold_with_event as hold_item;
 
 #[cfg(test)]
 #[path = "tests/commands.rs"]
 mod tests;
 
 // Names the command tests pull via `use super::*` (formerly parent imports).
+#[cfg(test)]
+use autonomy::Landing;
+#[cfg(test)]
+use brakes::release_with_event as release_item;
 #[cfg(test)]
 use events::EventActor;
 #[cfg(test)]
@@ -59,4 +62,4 @@ use mutations::{create_checked, update_and_record};
 #[cfg(test)]
 use proposals::{Proposal, ProposalKind, ProposalPatch};
 #[cfg(test)]
-use types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
+use types::{ItemPatch, ItemStatus, RoadmapItem};

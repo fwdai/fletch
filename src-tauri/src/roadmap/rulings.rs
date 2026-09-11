@@ -8,7 +8,7 @@ use super::events::{self, EventActor, EventKind, ItemEvent};
 use super::order_proposals;
 use super::proposals::{self, Proposal, ProposalKind, ProposalPatch};
 use super::store;
-use super::types::{ItemPatch, ItemStatus, ItemUpdate, RoadmapItem};
+use super::types::{ItemStatus, RoadmapItem};
 
 pub(super) fn reject_item(
     conn: &Connection,
