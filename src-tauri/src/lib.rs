@@ -29,6 +29,7 @@ mod native_input;
 mod new_project;
 mod oauth;
 mod power;
+mod provider_login;
 mod pty_session;
 mod publish_prefs;
 // Paired-device remote access (Settings → Remote control). Desktop-only: the
@@ -1753,6 +1754,9 @@ pub fn run() {
             // At most one `claude setup-token` capture runs at a time; the
             // code-submit / cancel commands reach it through this slot.
             app.manage(ClaudeSetupState::default());
+            // Live provider sign-in PTYs (Settings → Providers), one per
+            // provider. Empty until the user starts one.
+            app.manage(provider_login::ProviderLoginSessions::default());
 
             // Paired-device remote access. The event taps go in unconditionally
             // (with nothing connected, forwarding short-circuits before it
@@ -2025,6 +2029,10 @@ pub fn run() {
             commands::close_agent_shell,
             commands::write_to_shell,
             commands::resize_shell,
+            commands::open_provider_login,
+            commands::close_provider_login,
+            commands::write_provider_login,
+            commands::resize_provider_login,
             commands::run_start,
             commands::run_stop,
             commands::run_state,
@@ -2141,6 +2149,11 @@ pub fn run() {
                 // quitting mid-run orphans the processes.
                 if let Some(supervisor) = app.try_state::<Arc<Supervisor>>() {
                     supervisor.shutdown();
+                }
+                // Same reasoning for a sign-in left open in Settings: clearing
+                // the map drops each session, which kills its PTY.
+                if let Some(logins) = app.try_state::<provider_login::ProviderLoginSessions>() {
+                    logins.lock().clear();
                 }
                 // Give in-flight telemetry sends a brief, bounded chance to
                 // finish before the runtime tears down, rather than dropping

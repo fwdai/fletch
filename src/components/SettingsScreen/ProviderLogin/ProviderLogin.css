@@ -1,0 +1,63 @@
+/* In-row sign-in terminal (Settings → Providers). A framed strip inside the
+   provider's detail: the command being run, then the live PTY, then its
+   outcome. Composes on the shared `.xterm-slot` / `.xterm-host` pair
+   (styles/shared/terminal.css) for the terminal itself. */
+.prov-login {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+  border: 0.5px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+
+.prov-login-head,
+.prov-login-foot {
+  gap: 10px;
+  padding: 6px 8px;
+  background: var(--bg-2);
+  flex-shrink: 0;
+}
+.prov-login-head {
+  border-bottom: 1px solid var(--bd-soft);
+}
+.prov-login-foot {
+  border-top: 1px solid var(--bd-soft);
+}
+
+.prov-login-cmd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--fg-1);
+  white-space: nowrap;
+}
+
+/* The hint takes the slack so the Close button sits hard right. */
+.prov-login-hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-3);
+}
+
+.prov-login-exit {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prov-login-exit.ok {
+  color: var(--fg-2);
+}
+.prov-login-exit.bad {
+  color: var(--danger);
+}
+
+/* A login flow is a handful of lines; a fixed height keeps the provider row
+   from jumping as output arrives. `.xterm-slot` is `flex: 1`, which would
+   otherwise collapse it inside this auto-height column. */
+.prov-login-term {
+  flex: none;
+  height: 220px;
+}

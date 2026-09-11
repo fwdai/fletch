@@ -49,6 +49,18 @@ pub struct PtyExit {
     pub message: String,
 }
 
+/// Serialize raw PTY bytes as a base64 string rather than serde's default JSON
+/// number array (`[27,91,...]`), which inflates the payload ~3.5×. Shared by
+/// every event that carries PTY output; the frontend decodes back to the
+/// identical byte stream (`src/pty/decode.ts`).
+pub(crate) fn serialize_bytes_b64<S: serde::Serializer>(
+    bytes: &[u8],
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    use base64::Engine;
+    s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 impl PtySession {
     pub fn spawn<F, G>(spec: PtySpawn<'_>, on_output: F, on_exit: G) -> Result<Self>
     where

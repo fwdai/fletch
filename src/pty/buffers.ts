@@ -4,23 +4,20 @@
 //
 // Two parallel channels — the agent's own PTY and its side shell — each pair a
 // ring buffer (replayed when a view mounts for the first time) with an optional
-// live sink (the view's writer).
+// live sink (the view's writer). Both are plain ./channel instances; what lives
+// here is the per-agent lifecycle layered over them.
 //
 // This module also owns the lifecycle of the live-terminal cache in
 // ./terminals, because "an agent's PTY state" is one thing: the ring buffer and
 // the terminal rendering it are cleared, reset and released together.
 
-export type OutputHandler = (bytes: Uint8Array) => void;
-
-const MAX_BUFFER_BYTES = 256 * 1024;
+import { createPtyChannel, type OutputHandler } from "./channel";
 
 // ---- Agent PTY ----------------------------------------------------------------
-const outputSinks = new Map<string, OutputHandler>();
-const outputBuffers = new Map<string, Uint8Array>();
+const agentPty = createPtyChannel();
 
 // ---- Side shell PTY -----------------------------------------------------------
-const shellSinks = new Map<string, OutputHandler>();
-const shellBuffers = new Map<string, Uint8Array>();
+const shellPty = createPtyChannel();
 
 // ---- Live terminal cache ------------------------------------------------------
 
@@ -43,32 +40,13 @@ export function setTerminalCacheHooks(hooks: TerminalCacheHooks) {
   terminalCache = hooks;
 }
 
-/** Append a chunk to an agent's ring buffer, trimming the oldest bytes once it
- *  grows past the cap so a long-lived session can't grow without bound. */
-function appendToRing(buffers: Map<string, Uint8Array>, agentId: string, chunk: Uint8Array) {
-  const existing = buffers.get(agentId);
-  let next: Uint8Array;
-  if (!existing) {
-    next = chunk;
-  } else {
-    next = new Uint8Array(existing.length + chunk.length);
-    next.set(existing, 0);
-    next.set(chunk, existing.length);
-  }
-  if (next.length > MAX_BUFFER_BYTES) {
-    next = next.slice(next.length - MAX_BUFFER_BYTES);
-  }
-  buffers.set(agentId, next);
-}
-
 /** Buffer an agent-output chunk and forward it to the live view sink (if any). */
 export function pushAgentOutput(agentId: string, chunk: Uint8Array) {
-  appendToRing(outputBuffers, agentId, chunk);
-  outputSinks.get(agentId)?.(chunk);
+  agentPty.push(agentId, chunk);
 }
 
 export function getOutputBuffer(agentId: string): Uint8Array | undefined {
-  return outputBuffers.get(agentId);
+  return agentPty.get(agentId);
 }
 
 /** Drop an agent's replay history because its PTY restarted (view switch,
@@ -76,18 +54,16 @@ export function getOutputBuffer(agentId: string): Uint8Array | undefined {
  *  dropped, so wipe its screen too — otherwise the next mount would re-attach a
  *  dead session's frame instead of the blank one a restart used to produce. */
 export function clearOutputBuffer(agentId: string) {
-  outputBuffers.delete(agentId);
+  agentPty.clear(agentId);
   terminalCache?.reset(agentId);
 }
 
 /** Release everything held for an agent that is gone (discarded, archived).
- *  Nothing else clears `shellBuffers` or the terminal cache, so without this
+ *  Nothing else clears the shell buffer or the terminal cache, so without this
  *  both grow for the life of the app session. */
 export function dropAgentPty(agentId: string) {
-  outputBuffers.delete(agentId);
-  shellBuffers.delete(agentId);
-  outputSinks.delete(agentId);
-  shellSinks.delete(agentId);
+  agentPty.drop(agentId);
+  shellPty.drop(agentId);
   terminalCache?.evict(agentId);
 }
 
@@ -98,25 +74,18 @@ export function dropAgentPty(agentId: string) {
  *  native view keeps feeding its cached screen in the background and no second
  *  view can ever be contending for the same slot. */
 export function registerOutputSink(agentId: string, handler: OutputHandler): () => void {
-  outputSinks.set(agentId, handler);
-  return () => {
-    if (outputSinks.get(agentId) === handler) outputSinks.delete(agentId);
-  };
+  return agentPty.registerSink(agentId, handler);
 }
 
 /** Buffer a shell-output chunk and forward it to the live TermPanel sink. */
 export function pushShellOutput(agentId: string, chunk: Uint8Array) {
-  appendToRing(shellBuffers, agentId, chunk);
-  shellSinks.get(agentId)?.(chunk);
+  shellPty.push(agentId, chunk);
 }
 
 export function getShellBuffer(agentId: string): Uint8Array | undefined {
-  return shellBuffers.get(agentId);
+  return shellPty.get(agentId);
 }
 
 export function registerShellSink(agentId: string, handler: OutputHandler): () => void {
-  shellSinks.set(agentId, handler);
-  return () => {
-    if (shellSinks.get(agentId) === handler) shellSinks.delete(agentId);
-  };
+  return shellPty.registerSink(agentId, handler);
 }

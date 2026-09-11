@@ -33,4 +33,19 @@ export const providersApi = {
    *  credential value crosses IPC. Providers with no cheap check report
    *  `"unknown"`. */
   probeProviderAuth: () => invoke<ProviderAuthProbe[]>("probe_provider_auth"),
+  /** Run an agent CLI's pinned sign-in command under a PTY so the user can
+   *  complete it in an embedded terminal. Output arrives as
+   *  `provider-login:output`, the end of the flow as `provider-login:exit`.
+   *  Idempotent while one is live: re-opening attaches to it. */
+  openProviderLogin: (id: string, cols: number, rows: number) =>
+    invoke<void>("open_provider_login", { id, cols, rows }),
+  /** Send keystrokes to a live sign-in PTY. */
+  writeProviderLogin: (id: string, data: string) =>
+    invoke<void>("write_provider_login", { id, data }),
+  /** Match a live sign-in PTY to its terminal's size. */
+  resizeProviderLogin: (id: string, cols: number, rows: number) =>
+    invoke<void>("resize_provider_login", { id, cols, rows }),
+  /** Kill a provider's sign-in PTY. Only for an explicit Close — unmounting the
+   *  terminal must not abort a login in progress. */
+  closeProviderLogin: (id: string) => invoke<void>("close_provider_login", { id }),
 };

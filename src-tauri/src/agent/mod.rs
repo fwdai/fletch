@@ -30,15 +30,16 @@ use crate::managed_session::ManagedSession;
 use crate::pty_session::PtySession;
 
 pub use auth_probe::{probe_all_provider_auth, ProviderAuthProbe};
+pub(crate) use capabilities::provider_bin_label;
 pub use capabilities::{
     capabilities, injection_mode, mcp_delivery, per_turn_descriptor, transcript_reader,
     PerTurnDescriptor,
 };
-pub(crate) use probe::parse_semver;
 pub use probe::{
     cached_provider_version, check_cli, probe_all_providers, validate_bin, BinValidation,
     ProviderProbe, ToolStatus,
 };
+pub(crate) use probe::{parse_semver, resolve_agent_bin};
 pub use spawn::{PerTurnSpec, SpawnSpec};
 pub use transcript::{read_jsonl_tail, ReadDiagnostics};
 

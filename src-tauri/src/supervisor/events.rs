@@ -7,6 +7,9 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 use crate::github::PrState;
+// Shared with the other PTY-carrying events (see `provider_login` commands),
+// so the base64 wire format is defined once next to the sessions producing it.
+use crate::pty_session::serialize_bytes_b64;
 use crate::run_session::RunPhase;
 use crate::workspace::{AgentStatus, AgentView, TrackedRepo};
 
@@ -16,17 +19,6 @@ fn emit<T: serde::Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
     if let Err(e) = app.emit(event, payload) {
         tracing::warn!(error = %e, event, "emit failed");
     }
-}
-
-/// Serialize raw PTY bytes as a base64 string rather than serde's default
-/// JSON number array (`[27,91,...]`), which inflates the payload ~3.5×. The
-/// frontend base64-decodes back to the identical byte stream.
-fn serialize_bytes_b64<S: serde::Serializer>(
-    bytes: &[u8],
-    s: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    use base64::Engine;
-    s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 #[derive(Clone, serde::Serialize)]

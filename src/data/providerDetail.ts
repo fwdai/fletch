@@ -38,6 +38,12 @@ export interface ProviderDetail {
   /** One-line hint for signing in after install. We detect the binary, not
    *  auth (which varies per CLI), so this nudges the user to complete it. */
   signIn?: string;
+  /** The CLI's own sign-in command, shown above the embedded terminal that
+   *  runs it. Omit when the CLI has no login command (antigravity, pi) — those
+   *  rows offer the `signIn` hint and the docs link only. Read through
+   *  `loginCommand()`; must mirror the pinned argv the backend runs
+   *  (src-tauri/src/provider_login.rs). */
+  login?: string;
   /** Thinking/reasoning effort levels supported by this provider's CLI.
    *  Empty means the provider has no effort flag — the picker hides. */
   thinkingLevels: ThinkingLevel[];
@@ -61,6 +67,13 @@ export function installCommand(id: ProviderId): string | undefined {
   return IS_WINDOWS ? d.installWindows : d.install;
 }
 
+/** The sign-in command for a provider, or undefined when its CLI has none — the
+ *  gate for offering in-app sign-in at all. Mirrors the backend's pinned table
+ *  (`login_args` in src-tauri/src/provider_login.rs). */
+export function loginCommand(id: ProviderId): string | undefined {
+  return PROVIDER_DETAIL[id].login;
+}
+
 export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
   claude: {
     path: "/opt/homebrew/bin/claude",
@@ -69,7 +82,8 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     install: "curl -fsSL https://claude.ai/install.sh | bash",
     installWindows: "irm https://claude.ai/install.ps1 | iex",
     docs: "https://docs.anthropic.com/en/docs/claude-code",
-    signIn: "Run `claude` once in a terminal to sign in.",
+    signIn: "Run `claude auth login` to sign in.",
+    login: "claude auth login",
     // `claude --effort <level>` is a session-level spawn flag (not per-message):
     // persisted on the session record and re-applied on every spawn. Changing it
     // mid-session restarts the process (--resume) to re-apply the flag, so it's
@@ -91,7 +105,8 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     install: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
     installWindows: "irm https://chatgpt.com/codex/install.ps1 | iex",
     docs: "https://github.com/openai/codex",
-    signIn: "Run `codex` once in a terminal to sign in.",
+    signIn: "Run `codex login` to sign in.",
+    login: "codex login",
     // `codex exec -c reasoning_effort="<value>"`
     thinkingLevels: [
       { label: "Low", value: "low" },
@@ -106,6 +121,7 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     install: "curl -fsSL https://cursor.com/install | bash",
     docs: "https://cursor.com",
     signIn: "Run `cursor-agent login` to sign in.",
+    login: "cursor-agent login",
     // Cursor encodes effort in model names — no standalone flag.
     thinkingLevels: [],
   },
@@ -123,6 +139,7 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     install: "curl -fsSL https://opencode.ai/install | bash",
     docs: "https://opencode.ai",
     signIn: "Run `opencode auth login` to connect a provider.",
+    login: "opencode auth login",
     // `opencode run --variant <value>`
     thinkingLevels: [
       { label: "Low", value: "minimal" },
