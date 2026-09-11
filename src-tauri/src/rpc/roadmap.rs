@@ -107,8 +107,6 @@ fn is_roadmap_op(op: &str) -> bool {
     op.starts_with("roadmap_")
 }
 
-// ───────────────────────────── arg shapes ───────────────────────────────
-
 /// `roadmap_list` args. Everything optional: no args at all is the common call.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -270,8 +268,6 @@ fn one_of(values: &[&str]) -> String {
     values.join(" | ")
 }
 
-// ───────────────────────────── roadmap_list ─────────────────────────────
-
 /// One row as the agent sees it: the fields it reasons about, with the empties
 /// omitted. Not [`RoadmapItem`]'s full serialization — ids, timestamps and run
 /// back-links are the app's business, and the agent addresses items by `code`.
@@ -337,11 +333,7 @@ fn compact(
     {
         o.insert("pr".into(), json!({ "url": url }));
     }
-    // The brake, if it is on. Projected for the same reason `pending_proposal`
-    // is: the PM has to be able to see the state of a thing it can set, or it
-    // would re-hold an item that is already held (and quote a stale reason back
-    // to the user). `by` matters because only one of the two answers is the PM's
-    // own doing.
+    // `by` matters: only one of the two answers is the PM's own doing.
     if let Some(reason) = &item.hold_reason {
         let mut h = Map::new();
         h.insert("reason".into(), json!(reason));
@@ -350,19 +342,15 @@ fn compact(
         }
         o.insert("held".into(), Value::Object(h));
     }
-    // No `close_reason` here: a rejected row never rides this projection —
-    // `list_op` filters it out of `items`, and [`compact_rejected`] is the
-    // decision log's own shape, which is where the reason lives.
     // Quoted only while the item can still be ruled: an ask whose item has
     // advanced past the gate has no card to rule it from, and quoting it
     // forever would read as "still waiting on the user" when nothing is.
-    if let Some(p) = pending.filter(|_| rulable(item.status)) {
+    if let Some(p) = pending.filter(|_| item.status.is_rulable()) {
         let mut pp = Map::new();
         pp.insert("kind".into(), json!(p.kind.as_str()));
         if let Some(note) = &p.note {
             pp.insert("note".into(), json!(note));
         }
-        // The changed fields, for an update; a discard carries none.
         let fields = p.fields();
         if !fields.is_empty() {
             pp.insert("fields".into(), json!(fields));
@@ -471,9 +459,7 @@ fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Respo
     };
     let by_item: HashMap<&str, &Proposal> =
         pending.iter().map(|p| (p.item_id.as_str(), p)).collect();
-    // One statement for the whole board rather than a query per row: the PM
-    // reads this listing constantly, and it is the only thing between it and
-    // knowing what the runs did.
+    // One query for the whole board, not one per row.
     let last = match events::latest_by_item(conn, project_id) {
         Ok(map) => map,
         Err(e) => return Response::err(id, format!("roadmap_list: {e}")),
@@ -500,7 +486,6 @@ fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Respo
                 .map(|i| compact_rejected(i))
                 .collect::<Vec<_>>()),
         );
-        // The clip, stated — the JSON spelling of the digest's "…and n more".
         if omitted > 0 {
             payload.insert("not_doing_omitted".into(), json!(omitted));
         }
@@ -510,8 +495,6 @@ fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Respo
         Err(e) => Response::err(id, format!("roadmap_list: {e}")),
     }
 }
-
-// ─────────────────────────── roadmap_propose ────────────────────────────
 
 /// Turn the agent's items into validated [`NewItem`]s, or explain what's wrong
 /// with the batch. `existing` is the project's board: `deps` may name a code
@@ -560,28 +543,19 @@ fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewI
             title: title.to_string(),
             why: it.why.trim().to_string(),
             horizon: Some(horizon),
-            // What makes this a proposal rather than a roadmap item: it lands
-            // as a ghost the user has to accept.
             status: Some(ItemStatus::Proposed),
             area: clean(it.area.as_deref()),
             source: Some(ItemSource::Pm),
             accept: clean_list(&it.accept),
             deps: clean_list(&it.deps),
-            // Which workflow builds it is the user's call, not the PM's — a
-            // proposal isn't work anyone has agreed to do yet.
+            // Which workflow builds it is the user's call, not the PM's.
             workflow_def_id: None,
-            // Where a row came from is a fact about its provenance, and the only
-            // producer of one is the issue funnel's own create call. `source: pm`
-            // above is already this item's honest origin; letting the agent name a
-            // tracker URL here would let it dress an invention up as somebody's
-            // filed issue — and would collide with the funnel's dedup key.
-            // `ProposedItem` has no such field, so this is the whole exclusion.
+            // Only the issue funnel's create call sets `issue_url`: a PM-supplied
+            // tracker URL would fake provenance and collide with the funnel's dedup key.
             issue_url: None,
         });
     }
-    // The deps of the whole batch at once, because that is the only scope an
-    // intra-batch loop is visible in. Refused per item, with the item's own
-    // number and title — the PM fixes one ticket, not a graph.
+    // Whole batch at once: an intra-batch loop is only visible at that scope.
     let lists: Vec<Vec<String>> = out.iter().map(|n| n.deps.clone()).collect();
     deps::validate_batch(
         &deps::graph_of(existing),
@@ -591,8 +565,6 @@ fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewI
     .map_err(|r| format!("item {} ({:?}): {}", r.at + 1, out[r.at].title, r.message))?;
     Ok(out)
 }
-
-// ────────────────────── near-duplicate warnings ─────────────────────────
 
 /// Words that carry no signal about what a ticket is for. Deliberately tiny:
 /// this list exists so "Add the queue drainer" and "Add a queue drainer" read
@@ -712,12 +684,8 @@ fn propose_op(
     // insert — a batch must not warn about itself.
     let warnings = duplicate_warnings(&news, &existing);
 
-    // All or nothing: a failure half-way through must not leave the user
-    // staring at three of the five tickets they were promised. Each row's
-    // `proposed` history event rides the same transaction, so a ghost can never
-    // exist without the record of who suggested it. The `"#n"` rewrite rides it
-    // too — a batch whose internal ordering half-applied would be a plan nobody
-    // proposed.
+    // All or nothing. The `proposed` events and the `"#n"` rewrite ride the same
+    // transaction: a ghost never exists without its record, a plan never half-applies.
     let created = (|| -> rusqlite::Result<(Vec<RoadmapItem>, Vec<ItemEvent>)> {
         let tx = conn.unchecked_transaction()?;
         let mut created = Vec::with_capacity(news.len());
@@ -734,9 +702,7 @@ fn propose_op(
             )?);
             created.push(item);
         }
-        // Second pass, now that every ticket has a code: turn the batch
-        // references into real deps. Only the rows that used one are rewritten,
-        // so an ordinary batch costs no extra write.
+        // Second pass: every ticket has a code now, so `"#n"` can resolve.
         for (n, new) in news.iter().enumerate() {
             if !new.deps.iter().any(|d| d.starts_with(deps::BATCH_PREFIX)) {
                 continue;
@@ -769,8 +735,7 @@ fn propose_op(
             .map(|i| json!({ "code": i.code, "title": i.title }))
             .collect::<Vec<_>>()),
     );
-    // Advisory only, and only when there is something to say: the rows above
-    // exist regardless, so this key must never read as a partial failure.
+    // Absent rather than empty, so it can't read as a partial failure.
     if !warnings.is_empty() {
         payload.insert("warnings".into(), json!(warnings));
     }
@@ -781,8 +746,7 @@ fn propose_op(
             created,
             recorded,
         ),
-        // The rows exist either way — say so rather than implying nothing
-        // happened, and still emit them.
+        // The rows exist either way: say so, and still emit them.
         Err(e) => (
             Response::err(id, format!("roadmap_propose: created, but {e}")),
             created,
@@ -791,18 +755,20 @@ fn propose_op(
     }
 }
 
-// ──────────────── roadmap_propose_update / _discard ─────────────────────
-
 /// Find the item an ask targets and check it may still be reshaped. Anything
 /// from `active` on belongs to its run: a proposal against it would be ruled
 /// on against work that no longer matches the diff. A `rejected` item is out
 /// for the opposite reason — the user ruled it off the board, and an ask
 /// against it would be lobbying against a decision already made.
+///
+/// The set is [`ItemStatus::is_rulable`], shared with `roadmap::rulings::proposal_gate`
+/// which re-checks at ruling time (the board moves in between). Each side keeps
+/// its own message: one is read by the agent, one by the user.
 fn proposable<'a>(items: &'a [RoadmapItem], code: &str) -> Result<&'a RoadmapItem, String> {
     let item = items.iter().find(|i| i.code == code).ok_or_else(|| {
         format!("no item {code:?} on this board — `roadmap_list` shows what exists")
     })?;
-    if rulable(item.status) {
+    if item.status.is_rulable() {
         Ok(item)
     } else {
         // Name the actual objection: telling the PM a rejected item is "being
@@ -819,20 +785,6 @@ fn proposable<'a>(items: &'a [RoadmapItem], code: &str) -> Result<&'a RoadmapIte
             item.status.as_str()
         ))
     }
-}
-
-/// May an ask against an item with this status still be ruled on?
-///
-/// One predicate for both gates: this side refuses to *park* an ask the user
-/// could never rule, and `roadmap::proposal_gate` re-checks at ruling time
-/// (the board moves in between). The set lives on the status
-/// ([`ItemStatus::is_rulable`]) so the two can't drift; each keeps its own
-/// message, because one is read by the agent and one by the user.
-///
-/// Also read by the `compact` projection, so the PM is never quoted an ask the
-/// user has no card to rule.
-fn rulable(status: ItemStatus) -> bool {
-    status.is_rulable()
 }
 
 /// Normalize and validate an update's patch against the board, or say exactly
@@ -990,8 +942,6 @@ fn propose_discard_op(
     }
 }
 
-// ───────────────────────────── roadmap_note ─────────────────────────────
-
 /// Longest note this op will store. A note is a line on a card and a line in the
 /// PM's next listing — past a couple of sentences it stops being an observation
 /// and starts being an essay nobody reads, and the thing it should have been is
@@ -1045,7 +995,6 @@ fn note_op(
         Err(e) => return err(e.to_string()),
     };
     let code = args.code.trim();
-    // Any status: see the doc comment. Only "no such item" is refused.
     let Some(item) = items.iter().find(|i| i.code == code) else {
         return err(format!(
             "no item {code:?} on this board — `roadmap_list` shows what exists"
@@ -1067,16 +1016,13 @@ fn note_op(
     let payload = json!({ "noted": { "code": item.code } });
     match serde_json::to_string(&payload) {
         Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(event)),
-        // The note is on the card either way — say so rather than implying
-        // nothing happened, and still announce it.
+        // The note is on the card either way: say so, and still announce it.
         Err(e) => (
             Response::err(id, format!("roadmap_note: recorded, but {e}")),
             Some(event),
         ),
     }
 }
-
-// ───────────────────────────── roadmap_hold ─────────────────────────────
 
 /// What a hold stopped, so the dispatcher can announce the right thing once the
 /// lock drops: an item's hold rides its row (which carries the trio) plus the
@@ -1142,8 +1088,7 @@ fn hold_op(
                 Response::ok(id, 0, stdout, String::new()),
                 Some(Held::Project(stored)),
             ),
-            // The board is stopped either way — say so rather than implying
-            // nothing happened, and still announce it.
+            // The board is stopped either way: say so, and still announce it.
             Err(e) => (
                 Response::err(id, format!("roadmap_hold: held, but {e}")),
                 Some(Held::Project(stored)),
@@ -1161,10 +1106,8 @@ fn hold_op(
              {PROJECT_SCOPE:?} to hold the whole board"
         ));
     };
-    // The one status a hold may not land on: a rejected item has no queue to
-    // stop and no card rendering a Release button, so the hold would be both
-    // pointless and invisible — and it would ambush the user by surviving into
-    // a reopen. (Every *working* status stays holdable; see the op doc.)
+    // A rejected item has no queue to stop and no card with a Release button:
+    // the hold would be invisible, and would ambush the user on reopen.
     if item.status == ItemStatus::Rejected {
         return err(format!(
             "{} was rejected — a ruled-off item has nothing to pause; ask the user to \
@@ -1190,8 +1133,6 @@ fn hold_op(
         ),
     }
 }
-
-// ───────────────────────── roadmap_propose_order ────────────────────────
 
 /// `roadmap_propose_order`: park a whole-board order ask, replacing any the
 /// project already has.
@@ -1240,8 +1181,6 @@ fn propose_order_op(
         Err(e) => err(e.to_string()),
     }
 }
-
-// ──────────────── roadmap_brief / _propose_brief_update ─────────────────
 
 /// `roadmap_brief`: read the project's product brief.
 ///
@@ -1311,8 +1250,6 @@ fn propose_brief_op(
         Ok(a) => a,
         Err(e) => return err(e),
     };
-    // One validator for this op and any future writer, so "what is a usable
-    // brief" is answered in the module that owns the document.
     let content = match memory::clean_content(&args.content) {
         Ok(content) => content,
         Err(e) => return err(e),
@@ -1329,8 +1266,6 @@ fn propose_brief_op(
         Err(e) => err(e.to_string()),
     }
 }
-
-// ───────────────────────────── dispatcher ───────────────────────────────
 
 /// Adds the roadmap ops to a project-manager chat, over the standard git
 /// dispatcher. Constructed in `supervisor::lifecycle` when a workspace's
@@ -1367,19 +1302,16 @@ impl RpcDispatcher for RoadmapDispatcher {
     ) -> RpcFuture<'a, (Response, Vec<RpcEvent>)> {
         Box::pin(async move {
             if !is_roadmap_op(op) {
-                // Everything else is the ordinary agent surface (echo, ping,
-                // git_status, the credentialed git ops the advisory caps still
-                // refuse). One git dispatcher, one refusal path.
                 return self.git.dispatch(id, op, args).await;
             }
+            // Every write op validates and stores under the lock, and announces
+            // to the window only after the guard drops.
             match op {
                 "roadmap_list" => {
                     let conn = self.db.lock();
                     (list_op(&conn, &self.project_id, id, args), Vec::new())
                 }
                 "roadmap_propose" => {
-                    // Lock held only for the validate+insert; the emits happen
-                    // after it is dropped.
                     let (resp, created, recorded) = {
                         let conn = self.db.lock();
                         propose_op(&conn, &self.project_id, id, args)
@@ -1395,9 +1327,6 @@ impl RpcDispatcher for RoadmapDispatcher {
                     (resp, Vec::new())
                 }
                 "roadmap_propose_update" | "roadmap_propose_discard" => {
-                    // Same lock discipline as the batch propose: validate and
-                    // store under the lock, announce after it drops. No item
-                    // event here — the user's ruling writes the history.
                     let (resp, stored) = {
                         let conn = self.db.lock();
                         if op == "roadmap_propose_update" {
@@ -1412,8 +1341,6 @@ impl RpcDispatcher for RoadmapDispatcher {
                     (resp, Vec::new())
                 }
                 "roadmap_propose_order" => {
-                    // Same lock discipline again; the ask is board-scoped, so
-                    // what is announced is one row keyed by project.
                     let (resp, stored) = {
                         let conn = self.db.lock();
                         propose_order_op(&conn, &self.project_id, id, args)
@@ -1424,9 +1351,6 @@ impl RpcDispatcher for RoadmapDispatcher {
                     (resp, Vec::new())
                 }
                 "roadmap_note" => {
-                    // The one op that writes directly. Same lock discipline all
-                    // the same: the event lands under the lock, and the card
-                    // hears about it after the guard drops.
                     let (resp, recorded) = {
                         let conn = self.db.lock();
                         note_op(&conn, &self.project_id, id, args)
@@ -1437,9 +1361,6 @@ impl RpcDispatcher for RoadmapDispatcher {
                     (resp, Vec::new())
                 }
                 "roadmap_hold" => {
-                    // The second direct write, same lock discipline: the hold and
-                    // its `held` line land under the lock, and the board hears
-                    // about them after the guard drops.
                     let (resp, held) = {
                         let conn = self.db.lock();
                         hold_op(&conn, &self.project_id, id, args)
@@ -1447,8 +1368,6 @@ impl RpcDispatcher for RoadmapDispatcher {
                     if let (Some(app), Some(held)) = (&self.app, &held) {
                         match held {
                             Held::Item(item, event) => {
-                                // The row carries the hold trio, so the card's
-                                // chip appears on the ordinary item stream.
                                 crate::roadmap::emit_item(app, item);
                                 crate::roadmap::emit_item_event(app, event);
                             }
@@ -1462,10 +1381,6 @@ impl RpcDispatcher for RoadmapDispatcher {
                     (brief_op(&conn, &self.project_id, id, args), Vec::new())
                 }
                 "roadmap_propose_brief_update" => {
-                    // Same lock discipline as the order ask, and the same shape:
-                    // one board-scoped row announced after the guard drops, so
-                    // the Product brief tab grows its decision bar while the PM
-                    // is still talking.
                     let (resp, stored) = {
                         let conn = self.db.lock();
                         propose_brief_op(&conn, &self.project_id, id, args)
@@ -1475,9 +1390,6 @@ impl RpcDispatcher for RoadmapDispatcher {
                     }
                     (resp, Vec::new())
                 }
-                // Every other `roadmap_*` name, including the release op the PM
-                // does not have: the refusal names the ops it does, so a wrong
-                // guess costs one round trip rather than a silent no-op.
                 other => (
                     Response::err(
                         id,
