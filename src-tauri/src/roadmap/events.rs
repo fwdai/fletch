@@ -1,33 +1,8 @@
-//! Durable item history: the `roadmap_item_events` DAO (migration 0030).
+//! Durable item history (`roadmap_item_events`, migration 0030).
 //!
-//! Why this exists: everything else that explains an item's movement
-//! evaporates. The queue note is re-derived every tick and never stored, a
-//! toast dies with the render, and a chat line is buried in a transcript no
-//! surface re-reads. But "why did this run fail", "when did this ship"
-//! (`done_at` is the `shipped` event's timestamp) and "who ruled on this" are
-//! facts the decision cards, PM oversight digests, and standup all hang off —
-//! so every status transition writes exactly one row here, in the same
-//! connection-lock scope as the item write it describes, and the frontend
-//! follows along on `roadmap:item-event`.
-//!
-//! What deliberately does *not* land here is decided by one question — does the
-//! condition resolve itself? **Self-resolving** conditions stay on the transient
-//! `roadmap:queue-note` channel, and there is exactly one: waiting on a dependency
-//! that is still being built, which ends the moment that work lands. Persisting
-//! one of those per tick would bury the transitions in noise.
-//!
-//! Everything **standing** persists, as a `blocked` line written once
-//! ([`super::drainer::record_wedge`]): a dependency loop, a queued item with no
-//! workflow to run it under, an invalid stored spec, a project with no repo, a
-//! watched pull request that stopped answering. None of those ends without a human
-//! doing something, and a transient note is emitted at most once per row version
-//! *per process lifetime* — so before this partition existed, a queued item in a
-//! repo-less project wedged silently and forever (invariant 3 in
-//! .context/roadmap-pm-plan.md, review finding S1).
-//!
-//! Like `roadmap_items`, the table is absent from the generic CRUD allow-list:
-//! an event that didn't ride a typed write path could disagree with the
-//! transition it claims to record.
+//! Standing conditions persist; self-resolving wait-on-dep stays on transient
+//! `roadmap:queue-note` only. Write in the same lock scope as the item mutation.
+
 
 use std::collections::HashMap;
 
@@ -38,9 +13,6 @@ use super::types::{enum_col, ItemStatus};
 use crate::database::now_millis;
 
 crate::db_enum! {
-    /// Who moved the item. The four writers of `roadmap_items`, by surface:
-    /// the typed commands (`user`), the propose RPC (`pm`), the queue drainer
-    /// (`drainer`), and the merge sweep (`sweep`).
     EventActor {
         User    => "user",
         Pm      => "pm",
@@ -50,38 +22,6 @@ crate::db_enum! {
 }
 
 crate::db_enum! {
-    /// What happened. One kind per transition, so a history line never has to
-    /// re-derive meaning from a status pair.
-    ///
-    /// **A kind names a fact, never a category of facts.** That rule is load-
-    /// bearing rather than tidy, because two readers act on these: the card, where
-    /// a wrong label is a wrong story, and the PM, which is instructed to hold an
-    /// item when it sees a failing pattern across runs. A user who cancels three
-    /// runs deliberately must not manufacture that pattern — so `run_canceled` and
-    /// `run_deleted` are their own kinds rather than three flavours of
-    /// `run_failed`, and a pull request closed unmerged is `pr_closed` (the fact)
-    /// rather than `abandoned` (a verdict on an item that is back on the board and
-    /// perfectly alive). See [`super::drainer::release_kind`] for the mapping and
-    /// .context/roadmap-pm-plan.md (review finding S1) for the argument.
-    ///
-    /// No variant without a writer: an early `discarded` kind was declared and
-    /// never written, so it was removed rather than left as a kind the frontend
-    /// must label and nothing produces; `abandoned` went the same way when its
-    /// one writer started naming its fact. `rejected` is not that kind reborn —
-    /// it has two writers from the day it exists (the typed reject command and
-    /// the PM discard ruling), because ruling an item off the board now keeps
-    /// the row as the decision log instead of deleting it. Only the *hard*
-    /// delete (`roadmap_delete_item`, typo cleanup) still removes rows, and it
-    /// still records nothing — its trail cascades away with the row.
-    ///
-    /// `held`/`released` are the odd pair: they name no status move at all (a
-    /// hold stops autonomous progress and leaves the row exactly where it is —
-    /// see [`super::holds`]), so they are the two kinds where the *detail* is the
-    /// whole record. `held` carries the reason, `released` carries the reason it
-    /// lifts, and the pair read together is "why we stopped, and that we
-    /// resumed". A re-hold writes a second `held` rather than editing the first,
-    /// which is what keeps the trail able to answer "what has this been held for"
-    /// when the row itself only ever carries the current reason.
     EventKind {
         Created     => "created",
         Proposed    => "proposed",
@@ -105,26 +45,19 @@ crate::db_enum! {
     }
 }
 
-/// One history row, as the frontend sees it (`roadmap:item-event` and
-/// `roadmap_list_item_events` carry the same shape).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ItemEvent {
     pub id: String,
     pub item_id: String,
-    /// Denormalized off the item so board-scoped listeners filter without a join.
     pub project_id: String,
     pub actor: EventActor,
     pub kind: EventKind,
-    /// Human-readable payload: a failure reason, a PR url, a workflow id.
     pub detail: Option<String>,
     pub created_at: i64,
 }
 
 const COLUMNS: &str = "id, item_id, project_id, actor, kind, detail, created_at";
 
-/// What one transition writes to the trail: who moved the item, what happened,
-/// and the human-readable payload. Travels as one value so a write helper's
-/// signature names the transition rather than three loose fields.
 pub(crate) struct TrailEntry {
     pub actor: EventActor,
     pub kind: EventKind,
@@ -145,10 +78,6 @@ impl ItemEvent {
     }
 }
 
-/// Append one event and return the stored row, so the caller can emit it after
-/// the connection lock drops. Must be called with the lock held, in the same
-/// guard scope as the item write it records — that is what keeps the history
-/// and the row it describes from ever disagreeing.
 pub fn record(
     conn: &Connection,
     item_id: &str,
@@ -182,8 +111,6 @@ pub fn record(
     })
 }
 
-/// One item's history, newest first — the order the card's disclosure renders.
-/// `rowid` breaks ties so two events in the same millisecond keep write order.
 pub fn list_for_item(conn: &Connection, item_id: &str) -> rusqlite::Result<Vec<ItemEvent>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLUMNS} FROM roadmap_item_events WHERE item_id = ?1
@@ -193,24 +120,7 @@ pub fn list_for_item(conn: &Connection, item_id: &str) -> rusqlite::Result<Vec<I
     rows.collect()
 }
 
-/// The newest event of every item on one project's board, newest first — one
-/// read for a board-wide question, where [`list_for_item`] would be one query
-/// per card (and the board only ever loads the trails of cards someone
-/// expanded).
-///
-/// Two consumers, one query: the board's "Needs you" strip asks "is this item's
-/// *latest* word `blocked`?" (a `blocked` event a later transition superseded is
-/// history, not a decision), and the PM's `roadmap_list` projection quotes the
-/// last line of every item's trail ([`latest_by_item`] is this keyed by item).
-///
-/// A window function rather than `MAX(created_at)` so the tiebreak is the same
-/// `created_at DESC, rowid DESC` [`list_for_item`] uses: two events written in
-/// the same millisecond must resolve to the one written last, not to either.
 pub fn latest_per_item(conn: &Connection, project_id: &str) -> rusqlite::Result<Vec<ItemEvent>> {
-    // `rowid` rides along so the outer ordering can tie-break same-millisecond
-    // writes by write order too — the head of this list is "the newest event
-    // anywhere on the board" (the standup digest reads it), and that must be
-    // one row, not whichever item id sorts first.
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLUMNS} FROM (
            SELECT {COLUMNS}, rowid AS rid,
@@ -227,7 +137,6 @@ pub fn latest_per_item(conn: &Connection, project_id: &str) -> rusqlite::Result<
     rows.collect()
 }
 
-/// [`latest_per_item`], keyed by `item_id` — the shape a per-row lookup wants.
 pub fn latest_by_item(
     conn: &Connection,
     project_id: &str,
@@ -238,13 +147,6 @@ pub fn latest_by_item(
         .collect())
 }
 
-/// The item's newest event, or `None` for an item with no history yet.
-///
-/// One row rather than the whole trail because of the one caller that needs it:
-/// the drainer's wedged-queue check, which writes a `blocked` line only when the
-/// last thing said about the item isn't already that same line (see
-/// [`super::drainer::record_wedge`]). Same ordering as [`list_for_item`], so
-/// "newest" means one thing in both.
 pub fn latest_for_item(conn: &Connection, item_id: &str) -> rusqlite::Result<Option<ItemEvent>> {
     conn.query_row(
         &format!(
@@ -257,13 +159,6 @@ pub fn latest_for_item(conn: &Connection, item_id: &str) -> rusqlite::Result<Opt
     .optional()
 }
 
-/// The history kind a user patch implies, from the transition it performs.
-///
-/// The typed commands express a transition as `expect_status` (where the row
-/// must still be) plus `patch.status` (where it goes), so the four named
-/// transitions the frontend performs are recognized from exactly those two —
-/// and every other applied patch is an `edited`, including an unconditional one
-/// that happens to move status (no UI does that today).
 pub(crate) fn transition_kind(expected: Option<ItemStatus>, to: Option<ItemStatus>) -> EventKind {
     match (expected, to) {
         (Some(ItemStatus::Proposed), Some(ItemStatus::Open)) => EventKind::Accepted,
@@ -275,346 +170,5 @@ pub(crate) fn transition_kind(expected: Option<ItemStatus>, to: Option<ItemStatu
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::database::get_migrations;
-    use crate::roadmap::store;
-    use crate::roadmap::types::NewItem;
-
-    fn test_conn() -> Connection {
-        let mut conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        get_migrations().to_latest(&mut conn).unwrap();
-        conn.execute(
-            "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'fletch', 0)",
-            [],
-        )
-        .unwrap();
-        conn
-    }
-
-    fn item(conn: &Connection) -> crate::roadmap::types::RoadmapItem {
-        store::create(
-            conn,
-            "p1",
-            &NewItem {
-                title: "one".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn events_round_trip_and_list_newest_first() {
-        let conn = test_conn();
-        let it = item(&conn);
-
-        let first = record(
-            &conn,
-            &it.id,
-            "p1",
-            EventActor::Pm,
-            EventKind::Proposed,
-            None,
-        )
-        .unwrap();
-        let second = record(
-            &conn,
-            &it.id,
-            "p1",
-            EventActor::Drainer,
-            EventKind::RunFailed,
-            Some("its run failed"),
-        )
-        .unwrap();
-
-        let listed = list_for_item(&conn, &it.id).unwrap();
-        // Newest first: the card's inline line is `listed[0]`.
-        assert_eq!(listed, vec![second.clone(), first]);
-        assert_eq!(listed[0].detail.as_deref(), Some("its run failed"));
-        assert_eq!(second.actor, EventActor::Drainer);
-        assert_eq!(second.kind, EventKind::RunFailed);
-    }
-
-    /// Both "newest" reads agree with the head of the trail: the per-item map
-    /// `roadmap_list` projects from, and the board-wide one the standup compares
-    /// against. Same-millisecond writes tie-break on write order, which is what
-    /// keeps the PM's `last_event` and the card's top line the same row.
-    #[test]
-    fn the_newest_reads_agree_with_the_head_of_the_trail() {
-        let conn = test_conn();
-        let a = item(&conn);
-        let b = item(&conn);
-        assert!(latest_per_item(&conn, "p1").unwrap().is_empty());
-        assert!(latest_by_item(&conn, "p1").unwrap().is_empty());
-
-        for kind in [EventKind::Created, EventKind::Queued, EventKind::Dispatched] {
-            record(&conn, &a.id, "p1", EventActor::User, kind, None).unwrap();
-        }
-        let b_note = record(
-            &conn,
-            &b.id,
-            "p1",
-            EventActor::Pm,
-            EventKind::Note,
-            Some("watch this one"),
-        )
-        .unwrap();
-
-        let a_head = list_for_item(&conn, &a.id).unwrap()[0].clone();
-        assert_eq!(a_head.kind, EventKind::Dispatched);
-        // Board-wide: the list is newest-first, so its head is the newest write
-        // anywhere — the fact the standup digest reads off element zero.
-        assert_eq!(latest_per_item(&conn, "p1").unwrap().first(), Some(&b_note));
-
-        let by_item = latest_by_item(&conn, "p1").unwrap();
-        assert_eq!(by_item.len(), 2);
-        assert_eq!(by_item.get(&a.id), Some(&a_head));
-        assert_eq!(by_item.get(&b.id), Some(&b_note));
-
-        // Another project's history is invisible to both board-scoped reads.
-        conn.execute(
-            "INSERT INTO projects (id, name, created_at) VALUES ('p2', 'other', 0)",
-            [],
-        )
-        .unwrap();
-        assert!(latest_per_item(&conn, "p2").unwrap().is_empty());
-        assert!(latest_by_item(&conn, "p2").unwrap().is_empty());
-    }
-
-    #[test]
-    fn latest_per_item_returns_the_newest_row_for_every_item() {
-        // The strip's question is "what does this item's trail say *now*": an
-        // item whose `blocked` was superseded by a dispatch is not blocked, and
-        // an item whose last word is `blocked` is.
-        let conn = test_conn();
-        let one = item(&conn);
-        let two = item(&conn);
-
-        for (id, kind, detail) in [
-            (&one.id, EventKind::Queued, None),
-            (
-                &one.id,
-                EventKind::Blocked,
-                Some("MCA-100 → MCA-101 → MCA-100"),
-            ),
-            // Supersedes the block: same millisecond, so only the rowid
-            // tiebreak makes this the newest.
-            (&one.id, EventKind::Dispatched, Some("build")),
-            (&two.id, EventKind::Queued, None),
-            (
-                &two.id,
-                EventKind::Blocked,
-                Some("MCA-101 → MCA-100 → MCA-101"),
-            ),
-        ] {
-            record(&conn, id, "p1", EventActor::Drainer, kind, detail).unwrap();
-        }
-
-        let latest = latest_per_item(&conn, "p1").unwrap();
-        assert_eq!(latest.len(), 2, "one row per item, not one per event");
-        let by: std::collections::HashMap<&str, &ItemEvent> =
-            latest.iter().map(|e| (e.item_id.as_str(), e)).collect();
-        assert_eq!(by[one.id.as_str()].kind, EventKind::Dispatched);
-        assert_eq!(by[two.id.as_str()].kind, EventKind::Blocked);
-        assert_eq!(
-            by[two.id.as_str()].detail.as_deref(),
-            Some("MCA-101 → MCA-100 → MCA-101")
-        );
-    }
-
-    #[test]
-    fn latest_per_item_is_scoped_to_one_board() {
-        // The strip is per project; another project's wedge is not this board's
-        // decision (and the item id wouldn't resolve to a row here anyway).
-        let conn = test_conn();
-        conn.execute(
-            "INSERT INTO projects (id, name, created_at) VALUES ('p2', 'other', 0)",
-            [],
-        )
-        .unwrap();
-        let mine = item(&conn);
-        let theirs = store::create(
-            &conn,
-            "p2",
-            &NewItem {
-                title: "theirs".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        record(
-            &conn,
-            &mine.id,
-            "p1",
-            EventActor::User,
-            EventKind::Queued,
-            None,
-        )
-        .unwrap();
-        record(
-            &conn,
-            &theirs.id,
-            "p2",
-            EventActor::Drainer,
-            EventKind::Blocked,
-            None,
-        )
-        .unwrap();
-
-        let latest = latest_per_item(&conn, "p1").unwrap();
-        assert_eq!(latest.len(), 1);
-        assert_eq!(latest[0].item_id, mine.id);
-    }
-
-    #[test]
-    fn deleting_an_item_takes_its_history() {
-        // Deletion writes no event on purpose: a deleted item was ruled off the
-        // board, and history for a row nothing can render is a leak, not a record.
-        let conn = test_conn();
-        let it = item(&conn);
-        record(
-            &conn,
-            &it.id,
-            "p1",
-            EventActor::User,
-            EventKind::Queued,
-            None,
-        )
-        .unwrap();
-        assert!(store::delete(&conn, &it.id).unwrap());
-        assert!(list_for_item(&conn, &it.id).unwrap().is_empty());
-    }
-
-    /// Every kind the Rust side can write must exist in the frontend's union, and
-    /// vice versa. Without this pin a new kind reaches a card as `undefined` —
-    /// `EVENT_LABEL` is a `Record<RoadmapEventKind, string>`, so TypeScript
-    /// guarantees a label for every *declared* kind and nothing guarantees the
-    /// union itself keeps up with this enum (see .context/roadmap-pm-plan.md,
-    /// filed against B5). Both directions, because a union entry with no writer is
-    /// a label nobody will ever see and a lie about what the board can say.
-    #[test]
-    fn every_kind_is_declared_on_both_sides_of_the_wire() {
-        const TS: &str = include_str!("../../../src/api/types/roadmap.ts");
-        // The union's own block, so an unrelated string literal elsewhere in the
-        // file can't stand in for a missing member.
-        let union = TS
-            .split("export type RoadmapEventKind =")
-            .nth(1)
-            .and_then(|rest| rest.split_once(';'))
-            .map(|(block, _)| block)
-            .expect("the frontend declares RoadmapEventKind");
-
-        let declared: Vec<&str> = union
-            .split('"')
-            .skip(1)
-            .step_by(2)
-            .filter(|s| !s.is_empty())
-            .collect();
-        for kind in ALL_KINDS {
-            assert!(
-                declared.contains(&kind.as_str()),
-                "the frontend union is missing {:?} — it would render as `undefined`",
-                kind.as_str()
-            );
-        }
-        for spelling in &declared {
-            assert!(
-                EventKind::from_db(spelling).is_some(),
-                "the frontend declares {spelling:?}, which no writer can produce"
-            );
-        }
-        assert_eq!(declared.len(), ALL_KINDS.len());
-    }
-
-    /// The pin's third leg: the PM's own instructions.
-    ///
-    /// `instructions/roadmap.md` enumerates the kinds a `last_event` can carry,
-    /// which is the PM's entire model of what a trail can say — and nothing read
-    /// it, so it drifted: it advertised `discarded` long after that variant was
-    /// deleted (review finding S3). A kind the doc omits is a line the PM cannot
-    /// interpret; a kind the doc invents is one it will look for and never see.
-    /// Both directions, same as the frontend leg.
-    #[test]
-    fn every_kind_is_declared_in_the_pms_instructions() {
-        const DOC: &str = include_str!("../instructions/roadmap.md");
-        // The `last_event` bullet's own parenthesised list, which wraps across
-        // lines — so each spelling is rejoined before it is compared.
-        let list = DOC
-            .split("`kind` (`")
-            .nth(1)
-            .and_then(|rest| rest.split_once("`)"))
-            .map(|(block, _)| block)
-            .expect("the instructions enumerate the kinds a last_event carries");
-        let documented: Vec<String> = list
-            .split('|')
-            .map(|s| s.split_whitespace().collect::<String>())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        for kind in ALL_KINDS {
-            assert!(
-                documented.iter().any(|d| d == kind.as_str()),
-                "instructions/roadmap.md never mentions {:?} — the PM cannot read a line it \
-                 doesn't know exists",
-                kind.as_str()
-            );
-        }
-        for spelling in &documented {
-            assert!(
-                EventKind::from_db(spelling).is_some(),
-                "instructions/roadmap.md advertises {spelling:?}, which no writer can produce"
-            );
-        }
-        assert_eq!(documented.len(), ALL_KINDS.len());
-    }
-
-    /// Every variant, listed once so the pins above can walk them. The `db_enum!`
-    /// macro produces no iterator, and a missing entry here would quietly weaken
-    /// them — so the count is asserted against both the frontend's union and the
-    /// instructions' list.
-    const ALL_KINDS: [EventKind; 19] = [
-        EventKind::Created,
-        EventKind::Proposed,
-        EventKind::Accepted,
-        EventKind::Edited,
-        EventKind::Queued,
-        EventKind::Unqueued,
-        EventKind::Dispatched,
-        EventKind::PrOpened,
-        EventKind::RunFailed,
-        EventKind::RunCanceled,
-        EventKind::RunDeleted,
-        EventKind::Shipped,
-        EventKind::PrClosed,
-        EventKind::Blocked,
-        EventKind::Held,
-        EventKind::Released,
-        EventKind::Rejected,
-        EventKind::Reopened,
-        EventKind::Note,
-    ];
-
-    #[test]
-    fn the_user_transitions_map_to_their_kinds() {
-        use ItemStatus::{Done, InReview, Open, Proposed, Queued};
-        let cases = [
-            (Some(Proposed), Some(Open), EventKind::Accepted),
-            (Some(Open), Some(Queued), EventKind::Queued),
-            (Some(Queued), Some(Open), EventKind::Unqueued),
-            (Some(InReview), Some(Done), EventKind::Shipped),
-            // A form edit: no precondition, no status move.
-            (None, None, EventKind::Edited),
-            // A conditional edit that isn't one of the four transitions.
-            (Some(Open), None, EventKind::Edited),
-        ];
-        for (expected, to, kind) in cases {
-            assert_eq!(
-                transition_kind(expected, to),
-                kind,
-                "{expected:?} -> {to:?}"
-            );
-        }
-    }
-}
+#[path = "tests/events.rs"]
+mod tests;
