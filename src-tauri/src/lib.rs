@@ -2,6 +2,7 @@ mod activity;
 mod agent;
 mod agent_install;
 mod agent_profile;
+mod attachments;
 mod bin_resolve;
 mod child_io;
 mod codegraph;

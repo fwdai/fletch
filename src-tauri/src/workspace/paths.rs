@@ -11,10 +11,13 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("repo")
         .to_string();
-    // `.fletch-profile` is reserved for Fletch-generated per-agent artifacts
-    // (skill files, MCP config — see `agent_profile::PROFILE_DIR`); a repo with
-    // that basename gets a numbered subdir instead of colliding with it.
-    let reserved = base == crate::agent_profile::PROFILE_DIR;
+    // `.fletch-profile` (per-agent artifacts: skill files, MCP config — see
+    // `agent_profile::PROFILE_DIR`) and `.fletch-attachments` (pasted files
+    // adopted into the workspace — see `attachments::WORKSPACE_ATTACHMENTS_DIR`)
+    // are Fletch-owned; a repo with either basename gets a numbered subdir
+    // instead of colliding with it.
+    let reserved = base == crate::agent_profile::PROFILE_DIR
+        || base == crate::attachments::WORKSPACE_ATTACHMENTS_DIR;
     if !reserved && !used.iter().any(|u| u == &base) {
         return base;
     }
