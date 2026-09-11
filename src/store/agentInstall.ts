@@ -8,15 +8,23 @@
 // The terminal `done` event is deliberately NOT applied by the reducer: an
 // installer exiting 0 doesn't prove a binary landed on PATH, so `installAgent`
 // re-probes first and only then decides "fresh" vs "failed".
+//
+// Cancelling is a phase of its own rather than an instant return to idle. The
+// backend's cancel resolves only once the installer's process group is dead
+// and the agent's slot is free, so the row holds at "cancelling" until then —
+// otherwise it would offer Retry over a still-dying install, which either
+// bounces off "already in progress" or overlaps the installer being torn down.
 
 import { type AgentInstallEvent, api } from "@/api";
 import { track } from "@/util/track";
 import type { SliceCreator } from "./types";
 
 /** Per-agent install progress. Absent = idle (nothing running, nothing to
- *  report) — which is also where a cancelled run lands. */
+ *  report) — which is also where a cancelled run lands, once its teardown has
+ *  actually finished. */
 export type InstallState =
   | { phase: "running"; line?: string; log: string[] }
+  | { phase: "cancelling"; log: string[] }
   | { phase: "failed"; error: string; log: string[] }
   | { phase: "fresh" };
 
@@ -32,9 +40,10 @@ export interface AgentInstallSlice {
   /** Live install state keyed by provider id; absent means idle. */
   installs: Record<string, InstallState>;
   /** Run the pinned installer for an agent, then re-probe and settle the row.
-   *  No-op while that agent is already installing. */
+   *  No-op while that agent is already installing or cancelling. */
   installAgent: (id: string) => Promise<void>;
-  /** Stop a running installer and put the row back to idle. */
+  /** Stop a running installer, holding the row at "cancelling" until the
+   *  backend confirms the install is torn down, then put it back to idle. */
   cancelAgentInstall: (id: string) => Promise<void>;
   /** Drop an agent's install state — dismissing a failure, or clearing the
    *  "Installed just now" flag once the user has seen it. */
@@ -66,9 +75,13 @@ const without = (
 
 /** Fold one `agent-install:state` event into the install map.
  *
- *  Only a run this client started (phase "running") can be transitioned: a
- *  stray line or a late terminal event from a run the user already cancelled
- *  must not resurrect its row. `done` is a no-op here — see the module note. */
+ *  Only a live run (phase "running") can be transitioned: a stray line or a
+ *  late terminal event from a run the user already cancelled must not
+ *  resurrect its row, and a run being torn down must not be dragged back to
+ *  "running" or reported as "failed" — the user asked for it to stop. The one
+ *  exception is `cancelled` itself, which clears the row whatever it holds:
+ *  harmlessly idempotent with the awaited cancel that is about to do the same.
+ *  `done` is a no-op here — see the module note. */
 export function reduceInstallEvent(
   installs: Record<string, InstallState>,
   e: AgentInstallEvent,
@@ -116,7 +129,11 @@ export const createAgentInstallSlice: SliceCreator<AgentInstallSlice> = (set, ge
   installs: {},
 
   installAgent: async (id) => {
-    if (get().installs[id]?.phase === "running") return;
+    // Cancelling counts as busy: the backend still holds the agent's slot
+    // until its teardown finishes, so starting here would only earn an
+    // "already in progress" error.
+    const phase = get().installs[id]?.phase;
+    if (phase === "running" || phase === "cancelling") return;
     const run = startRun(id);
     set((s) => ({ installs: { ...s.installs, [id]: { phase: "running", log: [] } } }));
     // Provider id only — the installer's error text is a raw shell message and
@@ -146,13 +163,24 @@ export const createAgentInstallSlice: SliceCreator<AgentInstallSlice> = (set, ge
   },
 
   cancelAgentInstall: async (id) => {
-    if (get().installs[id]?.phase !== "running") return;
-    // Retire the run before anything can resolve onto the row, then go back to
-    // idle immediately: the killed installer's own `cancelled` event lands
-    // later (and is a no-op by then), but the click shouldn't wait for it.
+    const prev = get().installs[id];
+    if (prev?.phase !== "running") return;
+    // Retire the run so nothing it still has in flight can land on the row,
+    // then hold at "cancelling" — keeping the log, which is the only place the
+    // user can see what the installer got up to — until the backend confirms
+    // the process group is gone. Only then is the row safe to offer again.
     startRun(id);
+    const { log } = prev;
+    set((s) => ({ installs: { ...s.installs, [id]: { phase: "cancelling", log } } }));
+    try {
+      await api.cancelAgentInstall(id);
+    } catch (err) {
+      // The backend frees the agent's slot on every exit path, so a failed
+      // round trip is a lost answer, not a live installer: clear anyway rather
+      // than strand the row at "cancelling" with no way out.
+      console.error("cancel agent install failed", err);
+    }
     get().clearInstallState(id);
-    await api.cancelAgentInstall(id).catch(() => {});
   },
 
   clearInstallState: (id) =>

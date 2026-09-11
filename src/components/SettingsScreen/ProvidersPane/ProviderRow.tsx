@@ -1,7 +1,12 @@
-// One provider row. Six states — installed+enabled, installed+disabled,
-// missing, installing, installed-just-now ("fresh") and failed — all sharing
-// the same geometry: only the dot, the sub-line, the chips and the right-hand
-// action change, so a row never moves under the cursor while it changes state.
+// One provider row. Seven states — installed+enabled, installed+disabled,
+// missing, installing, cancelling, installed-just-now ("fresh") and failed —
+// all sharing the same geometry: only the dot, the sub-line, the chips and the
+// right-hand action change, so a row never moves under the cursor while it
+// changes state.
+//
+// `cancelling` wears the installing look on purpose: the install is still
+// being torn down, and offering Install or Retry before the backend says it is
+// gone would race the installer the user just stopped.
 
 import { type ReactNode, useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
@@ -17,7 +22,7 @@ import { SetToggle } from "../primitives";
 import { InstallLog } from "./InstallLog";
 import { InstallOptions } from "./InstallOptions";
 
-type RowState = "installed" | "fresh" | "missing" | "installing" | "failed";
+type RowState = "installed" | "fresh" | "missing" | "installing" | "cancelling" | "failed";
 
 export function ProviderRow({ provider }: { provider: Provider }) {
   const { id, label } = provider;
@@ -35,10 +40,11 @@ export function ProviderRow({ provider }: { provider: Provider }) {
   const [open, setOpen] = useState(false);
   const phase = install?.phase;
 
-  // The live log is the point of the row while an installer runs, so open the
-  // detail for it. Not forced: the user can still collapse it.
+  // The live log is the point of the row while an installer runs (or is being
+  // stopped), so open the detail for it. Not forced: the user can still
+  // collapse it.
   useEffect(() => {
-    if (phase === "running") setOpen(true);
+    if (phase === "running" || phase === "cancelling") setOpen(true);
   }, [phase]);
 
   const d = PROVIDER_DETAIL[id];
@@ -51,14 +57,18 @@ export function ProviderRow({ provider }: { provider: Provider }) {
   const state: RowState =
     phase === "running"
       ? "installing"
-      : livePath
-        ? phase === "fresh"
-          ? "fresh"
-          : "installed"
-        : phase === "failed"
-          ? "failed"
-          : "missing";
+      : phase === "cancelling"
+        ? "cancelling"
+        : livePath
+          ? phase === "fresh"
+            ? "fresh"
+            : "installed"
+          : phase === "failed"
+            ? "failed"
+            : "missing";
   const live = state === "installed" || state === "fresh";
+  // A run in flight, one way or the other — and the two look alike.
+  const busy = state === "installing" || state === "cancelling";
 
   // Platform-aware, and the same source the backend installs from: no command
   // here means there's no one-click install to offer (antigravity, pi).
@@ -92,10 +102,11 @@ export function ProviderRow({ provider }: { provider: Provider }) {
 
   return (
     <div
-      // `installed` is the row's default look and carries no class of its own.
-      className={`set-prov ${live && !enabled ? "off" : ""} ${state === "installed" ? "" : state} ${
-        open ? "open" : ""
-      }`}
+      // `installed` is the row's default look and carries no class of its own;
+      // `cancelling` borrows `installing`'s, being the same run winding down.
+      className={`set-prov ${live && !enabled ? "off" : ""} ${
+        state === "installed" ? "" : busy ? "installing" : state
+      } ${open ? "open" : ""}`}
     >
       <div className="set-prov-main flex-center">
         <span className={`set-prov-status ${DOT[state].cls}`} title={DOT[state].title} />
@@ -134,6 +145,13 @@ export function ProviderRow({ provider }: { provider: Provider }) {
             Cancel
           </Button>
         )}
+        {/* Still the same button, just not clickable twice: the teardown is
+            already under way and there is nothing else to ask for. */}
+        {state === "cancelling" && (
+          <Button variant="ghost" size="sm" disabled>
+            Cancelling…
+          </Button>
+        )}
         {state === "failed" && (
           <Button variant="outline" size="sm" onClick={() => void installAgent(id)}>
             <Icon name="refresh" size={12} />
@@ -152,17 +170,12 @@ export function ProviderRow({ provider }: { provider: Provider }) {
         {/* Providers are enabled by default, so the toggle shows its stored
             value even while the agent is missing — just not editable, since
             enabling something that can't run is a lie. */}
-        <SetToggle
-          on={enabled}
-          onClick={toggle}
-          disabled={!live}
-          tip={state === "installing" ? "Installing…" : "Install first"}
-        />
+        <SetToggle on={enabled} onClick={toggle} disabled={!live} tip={TOGGLE_TIP[state]} />
       </div>
 
       {/* Vendor installers report no percentages, so the hairline is
           indeterminate rather than a faked progress bar. */}
-      {state === "installing" && <div className="set-prov-bar" />}
+      {busy && <div className="set-prov-bar" />}
 
       {open && (
         <div className="set-prov-detail">
@@ -175,7 +188,7 @@ export function ProviderRow({ provider }: { provider: Provider }) {
               locate={locate}
             />
           )}
-          {(state === "installing" || state === "failed") && (
+          {(busy || state === "failed") && (
             <InstallLog
               command={cmd}
               log={install && "log" in install ? install.log : []}
@@ -214,7 +227,18 @@ const DOT: Record<RowState, { cls: string; title: string }> = {
   fresh: { cls: "", title: "Detected on this system" },
   missing: { cls: "none", title: "Not installed" },
   installing: { cls: "busy", title: "Installing" },
+  cancelling: { cls: "busy", title: "Cancelling" },
   failed: { cls: "bad", title: "Install failed" },
+};
+
+/** Why the enable toggle is locked. Only ever shown while it is disabled. */
+const TOGGLE_TIP: Record<RowState, string> = {
+  installed: "Install first",
+  fresh: "Install first",
+  missing: "Install first",
+  installing: "Installing…",
+  cancelling: "Cancelling…",
+  failed: "Install first",
 };
 
 /** The one line under the name: the binary path when there is one, and
@@ -232,6 +256,9 @@ function subLine(
   if (state === "installing") {
     const line = install?.phase === "running" ? install.line : undefined;
     return { text: line ?? "starting installer…", tone: "" };
+  }
+  if (state === "cancelling") {
+    return { text: "Cancelling…", tone: "" };
   }
   if (state === "failed") {
     const error = install?.phase === "failed" ? install.error : undefined;

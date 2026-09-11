@@ -8,26 +8,44 @@
 //      event (and the trailing output lines its pipes were still draining)
 //      arrive *after* the row went back to idle, and must not resurrect it.
 //   3. Installer output is unbounded; the retained log is not.
+//   4. A cancel is not done when the click lands — it is done when the
+//      backend has torn the installer's process group down. Until then the row
+//      must not offer Install or Retry, or the "retry" races the install it is
+//      replacing.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { create } from "zustand";
 
-// The slice's actions talk to the backend; its transitions — all this file
-// exercises — are pure.
-vi.mock("@/api", () => ({ api: {} }));
+const { cancelAgentInstall, installAgent } = vi.hoisted(() => ({
+  cancelAgentInstall: vi.fn(),
+  installAgent: vi.fn(),
+}));
+vi.mock("@/api", () => ({ api: { cancelAgentInstall, installAgent } }));
+vi.mock("@/util/track", () => ({ track: vi.fn() }));
 
 import {
   applyInstallDone,
+  createAgentInstallSlice,
   INSTALL_LOG_CAP,
   type InstallState,
   NOT_ON_PATH_ERROR,
   reduceInstallEvent,
 } from "./agentInstall";
+import type { AppState } from "./types";
 
 const running = (log: string[] = [], line?: string): InstallState => ({
   phase: "running",
   line,
   log,
 });
+
+const cancelling = (log: string[] = []): InstallState => ({ phase: "cancelling", log });
+
+const makeStore = (installs: Record<string, InstallState>) => {
+  const store = create<AppState>()((...a) => ({ ...createAgentInstallSlice(...a) }) as AppState);
+  store.setState({ installs });
+  return store;
+};
 
 describe("reduceInstallEvent", () => {
   it("appends output lines to the live run", () => {
@@ -125,5 +143,73 @@ describe("applyInstallDone", () => {
 
   it("ignores a run the user already cancelled", () => {
     expect(applyInstallDone({}, "claude", true)).toEqual({});
+  });
+
+  it("ignores a run that is still being torn down", () => {
+    const stopping = { claude: cancelling(["a"]) };
+    expect(applyInstallDone(stopping, "claude", true)).toBe(stopping);
+  });
+});
+
+describe("a run that is being cancelled", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("ignores everything the dying installer still emits", () => {
+    const stopping = { claude: cancelling(["$ curl … | bash"]) };
+    // Output the killed child's pipes were still draining, and the "failed"
+    // its non-zero exit produces — neither is news to a user who asked it to
+    // stop, and neither may put Retry back on the row.
+    for (const event of [
+      { id: "claude", phase: "running", line: "still downloading" },
+      { id: "claude", phase: "failed", error: "installer exited with signal: 1" },
+    ] as const) {
+      expect(reduceInstallEvent(stopping, event)).toBe(stopping);
+    }
+    // Its own terminal event is the same answer the awaited cancel gives, so
+    // whichever lands first the row ends up idle.
+    expect(reduceInstallEvent(stopping, { id: "claude", phase: "cancelled" })).toEqual({});
+  });
+
+  it("stays on the row until the backend confirms the teardown", async () => {
+    let confirm!: (torn: boolean) => void;
+    cancelAgentInstall.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        confirm = resolve;
+      }),
+    );
+    const store = makeStore({ claude: running(["$ curl … | bash", "downloading"]) });
+
+    const cancelled = store.getState().cancelAgentInstall("claude");
+    // The installer's process group is still dying: the log stays up, and the
+    // row is emphatically not back to "missing" with an Install button.
+    expect(store.getState().installs.claude).toEqual(
+      cancelling(["$ curl … | bash", "downloading"]),
+    );
+
+    confirm(true);
+    await cancelled;
+    expect(store.getState().installs).toEqual({});
+  });
+
+  it("refuses to start a second install before the first is gone", async () => {
+    const store = makeStore({ claude: cancelling(["a"]) });
+    await store.getState().installAgent("claude");
+    // The backend still holds the agent's slot, so this could only have earned
+    // an "already in progress" error.
+    expect(installAgent).not.toHaveBeenCalled();
+    expect(store.getState().installs.claude).toEqual(cancelling(["a"]));
+  });
+
+  it("clears the row even when the cancel round trip fails", async () => {
+    cancelAgentInstall.mockRejectedValueOnce(new Error("ipc exploded"));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = makeStore({ claude: running(["a"]) });
+
+    // The backend frees the slot on every exit path, so a lost answer must not
+    // strand the row at "cancelling" with no way out.
+    await store.getState().cancelAgentInstall("claude");
+    expect(store.getState().installs).toEqual({});
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
   });
 });

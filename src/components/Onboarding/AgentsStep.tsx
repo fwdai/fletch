@@ -60,10 +60,14 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
                 // Platform-aware: also gates the one-click button, mirroring
                 // which agents the backend can actually script-install here.
                 const cmd = installCommand(p.id);
+                // A run stopped from Settings is still winding down here, so it
+                // keeps the spinner rather than flashing Install back up.
+                const busy = inst?.phase === "running" || inst?.phase === "cancelling";
                 const cls = ok ? "ok" : inst?.phase === "failed" ? "failed" : "";
                 let sub: React.ReactNode;
                 if (ok) sub = d.signIn ?? d.models;
                 else if (inst?.phase === "running") sub = inst.line ?? "installing…";
+                else if (inst?.phase === "cancelling") sub = "cancelling…";
                 else if (inst?.phase === "failed") sub = <span className="err">{inst.error}</span>;
                 else sub = cmd ?? "install via the setup guide";
                 return (
@@ -79,7 +83,7 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
                           <Icon name="check" size={11} strokeWidth={2} />
                           {providerVersions[p.id] ?? "installed"}
                         </span>
-                      ) : inst?.phase === "running" ? (
+                      ) : busy ? (
                         <span className="ob-spinner" />
                       ) : inst?.phase === "failed" ? (
                         <>
