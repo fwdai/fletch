@@ -23,7 +23,6 @@ const OAUTH_TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
 /// macOS Keychain service Claude Code stores its login under; the password
 /// payload is the same JSON as `~/.claude/.credentials.json`.
-#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
 /// Shell vars that constitute a chain hit on their own — the gateway bearer
@@ -141,8 +140,53 @@ fn credentials_config_dir(config_dir_env: Option<&OsStr>, home: Option<&Path>) -
 
 /// Walk the auth chain (first hit wins). May block on the first call: loading
 /// the login-shell env runs a shell if nothing populated `bin_resolve`'s cache.
+///
+/// This is the container *launch* path, so it does read the Keychain password:
+/// the token has to be handed to the CLI inside the container. Status/probe
+/// callers must use [`host_login_present`] instead.
 pub fn resolve() -> ContainerAuth {
-    let keychain = keychain_token();
+    let (env, credentials_file) = chain_inputs();
+    resolve_from(
+        keychain_token(),
+        stored_token(),
+        env.as_ref(),
+        credentials_file,
+    )
+}
+
+/// Whether the *host* has a usable claude login. Drives the providers settings'
+/// sign-in status (see `crate::agent::auth_probe`), which polls while the pane
+/// is open, so this differs from [`resolve`] in two ways:
+///
+/// - The Keychain step is **presence-only**: [`crate::keychain::item_present`]
+///   runs `security find-generic-password` without `-w`, so the credential is
+///   never read and macOS never prompts. An item under [`KEYCHAIN_SERVICE`] is
+///   taken as a login; deciding otherwise would mean reading the payload, which
+///   is exactly what this path must not do.
+/// - [`AuthSource::StoredToken`] is excluded: that token is pasted into Fletch's
+///   settings for containers to use and says nothing about whether the `claude`
+///   CLI on this machine is signed in.
+///
+/// The remaining steps — a usable `.credentials.json` and the shell/process auth
+/// vars — are evaluated by the same [`resolve_from`] chain [`resolve`] uses, so
+/// the two can't drift on what counts as a login.
+pub fn host_login_present() -> bool {
+    if crate::keychain::item_present(KEYCHAIN_SERVICE, None) {
+        return true;
+    }
+    let (env, credentials_file) = chain_inputs();
+    !matches!(
+        resolve_from(None, None, env.as_ref(), credentials_file),
+        ContainerAuth::Unavailable
+    )
+}
+
+/// Read the chain's non-Keychain inputs. Shared by [`resolve`] and
+/// [`host_login_present`] so the two can't drift on *what* they look at. The
+/// Keychain is deliberately not one of them: it is the one input the two read
+/// differently (secret vs. presence), and folding it in here is what previously
+/// made the probe path call [`keychain_token`].
+fn chain_inputs() -> (Option<HashMap<String, String>>, bool) {
     // The dir claude will actually read — and the one the engine mounts (see
     // `nondefault_claude_config_dir`); hardcoding `~/.claude` would refuse a
     // container whose only credential lives in a custom config dir.
@@ -158,12 +202,17 @@ pub fn resolve() -> ContainerAuth {
         .filter_map(|var| std::env::var(var).ok().map(|v| (var.to_string(), v)))
         .collect();
     let env = merge_auth_env(&process_env, bin_resolve::login_shell_env());
-    resolve_from(keychain, stored_token(), env.as_ref(), credentials_file)
+    (env, credentials_file)
 }
 
 /// The live host login token from the macOS Keychain, read fresh on every
 /// [`resolve`] so a `claude` re-login lands on the next spawn. `None` when
 /// there's no readable/usable login (Keychain locked or empty, non-macOS host).
+///
+/// `-w` is what makes this *read the password*, which can raise a Keychain
+/// access prompt — acceptable once per container launch, not on a polling
+/// probe. Call this only from [`resolve`]; presence questions go to
+/// [`crate::keychain::item_present`].
 #[cfg(target_os = "macos")]
 fn keychain_token() -> Option<String> {
     let out = std::process::Command::new("security")
@@ -619,6 +668,43 @@ mod tests {
         ));
         assert!(matches!(
             resolve_from(None, None, Some(&shell_env(&[("PATH", "/usr/bin")])), false),
+            ContainerAuth::Unavailable
+        ));
+    }
+
+    #[test]
+    fn host_login_chain_excludes_stored_token_but_honors_file_and_shell() {
+        // Models what `host_login_present` evaluates once its Keychain presence
+        // check misses. The Keychain half itself is a `security` subprocess and
+        // so isn't unit-testable — passing `None` for the keychain slot is
+        // exactly the "no Keychain item" case, and the probe never supplies a
+        // token there.
+        //
+        // A pasted container token is not a host login…
+        assert!(matches!(
+            resolve_from(None, None, None, false),
+            ContainerAuth::Unavailable
+        ));
+        // …even though `resolve` still accepts it for container launches.
+        assert!(!matches!(
+            resolve_from(None, Some("sk-ant-oat-stored".into()), None, false),
+            ContainerAuth::Unavailable
+        ));
+        // A usable credentials file alone is a host login.
+        assert!(!matches!(
+            resolve_from(None, None, None, true),
+            ContainerAuth::Unavailable
+        ));
+        // So is a key in the shell/process env.
+        let shell = shell_env(&[("ANTHROPIC_API_KEY", "sk-ant-api-key")]);
+        assert!(!matches!(
+            resolve_from(None, None, Some(&shell), false),
+            ContainerAuth::Unavailable
+        ));
+        // A proxy endpoint on its own can't authenticate anything.
+        let proxy_only = shell_env(&[("ANTHROPIC_BASE_URL", "https://proxy.example.com")]);
+        assert!(matches!(
+            resolve_from(None, None, Some(&proxy_only), false),
             ContainerAuth::Unavailable
         ));
     }

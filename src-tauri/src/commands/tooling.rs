@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
-use crate::agent::{BinValidation, ProviderProbe, ToolStatus};
+use crate::agent::{BinValidation, ProviderAuthProbe, ProviderProbe, ToolStatus};
 use crate::error::{Error, Result};
 use crate::supervisor::Supervisor;
 
@@ -154,4 +154,14 @@ pub async fn validate_agent_bin(path: String) -> BinValidation {
 #[tauri::command]
 pub async fn discover_supported_models() -> Vec<crate::model_catalog::AgentModels> {
     crate::model_catalog::discover_supported_models().await
+}
+
+/// Probe whether each provider's CLI is *signed in* — the question
+/// [`probe_provider_versions`] doesn't answer. Structural checks only (file
+/// presence, JSON shape, Keychain item presence); no credential value is read
+/// out or returned. Providers whose credential store can't be classified
+/// cheaply report `unknown`, which the UI renders as nothing.
+#[tauri::command]
+pub async fn probe_provider_auth() -> Vec<ProviderAuthProbe> {
+    crate::agent::probe_all_provider_auth().await
 }
