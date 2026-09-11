@@ -6,10 +6,13 @@
 //! time.
 //!
 //! Every check is derived from **structure only**: a file's existence and
-//! non-emptiness, a JSON blob's shape, or a Keychain item's presence (looked up
-//! *without* `-w`, so the password is never read and macOS never prompts). No
-//! credential value is returned, logged, or stored in a [`ProviderAuthProbe`] —
-//! `detail` is always one of the `&'static str` reasons in this file.
+//! non-emptiness, a JSON blob's shape, or a Keychain item's presence. Keychain
+//! lookups all go through [`crate::keychain::item_present`], which never passes
+//! `-w` — the password is never read and macOS never prompts, which matters
+//! because the providers pane re-runs these probes on a timer while it is open.
+//! No credential value is returned, logged, or stored in a
+//! [`ProviderAuthProbe`] — `detail` is always one of the `&'static str` reasons
+//! in this file.
 //!
 //! The layouts are the ones the container launch path already depends on (see
 //! [`crate::sandbox::container::launch_auth`]), so the two can't drift. Where a
@@ -96,7 +99,8 @@ fn probe_one(id: &'static str) -> ProviderAuthProbe {
 
 /// claude reuses the host half of the container auth chain (Keychain login,
 /// `~/.claude/.credentials.json`, or an Anthropic key in the login shell). The
-/// container-only pasted setup token is excluded there — see
+/// container-only pasted setup token is excluded there, and the Keychain step is
+/// a presence check that never reads the credential — see
 /// [`crate::sandbox::container::auth::host_login_present`].
 fn claude_probe() -> ProviderAuthProbe {
     if crate::sandbox::container::auth::host_login_present() {
@@ -160,7 +164,7 @@ fn cursor_probe() -> ProviderAuthProbe {
 
 #[cfg(target_os = "macos")]
 fn cursor_keychain_probe() -> ProviderAuthProbe {
-    if cursor_keychain_login() {
+    if crate::keychain::item_present(CURSOR_KEYCHAIN_SERVICE, Some(CURSOR_KEYCHAIN_ACCOUNT)) {
         entry_ok("cursor")
     } else {
         entry(
@@ -198,24 +202,6 @@ fn antigravity_probe(home: &Path) -> ProviderAuthProbe {
             "no antigravity-cli OAuth token file; other login paths unverified",
         )
     }
-}
-
-#[cfg(target_os = "macos")]
-fn cursor_keychain_login() -> bool {
-    // No `-w`: we ask whether the item exists, never for its password, so this
-    // neither reads a secret nor triggers a Keychain access prompt.
-    std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            CURSOR_KEYCHAIN_SERVICE,
-            "-a",
-            CURSOR_KEYCHAIN_ACCOUNT,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
 }
 
 // ── Classifiers (pure, so the shapes are unit-testable) ───────────────────────

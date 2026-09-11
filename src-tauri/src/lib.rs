@@ -19,6 +19,7 @@ mod git_state;
 mod github;
 mod instructions;
 mod issues;
+mod keychain;
 mod linear;
 mod managed_session;
 mod message_queue;
