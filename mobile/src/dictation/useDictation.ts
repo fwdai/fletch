@@ -14,6 +14,28 @@ export const ERROR_TTL_MS = 2600;
 
 const IDLE_LEVELS: number[] = Array(LEVEL_BARS).fill(0);
 
+/** Should a session end itself after a pause? The Mac owns the setting (Settings
+ *  › Dictation, "Stop after a pause") and reports it with the availability
+ *  probe; only the phone can act on it, because the silence is in frames that
+ *  never leave the device.
+ *
+ *  Withholding `onAutoStop` is the whole of the opt-out, and deliberately so:
+ *  `capture.ts`'s `watchForSilence` no-ops without the callback, so neither the
+ *  pause nor the never-spoke deadline (`NO_SPEECH_TIMEOUT_MS`) is ever
+ *  consulted — exactly what `should_auto_stop(false, …)` does on the desktop,
+ *  where turning it off means nothing but a tap ends a session. What that costs
+ *  is a mic that stays open: the host caps the audio it will hold, but
+ *  `SESSION_IDLE` only sweeps a phone that has stopped sending, and this one
+ *  keeps streaming a chunk a second. So an abandoned session runs until the
+ *  user taps, leaves the screen, or the link drops — the same deal the desktop
+ *  offers with the setting off.
+ *
+ *  A host too old to report the field leaves it undefined, which reads as on —
+ *  the behaviour every phone had before the field existed. */
+export function autoStopWanted(status: DictationStatus | null): boolean {
+  return status?.auto_stop !== false;
+}
+
 /** Voice dictation for one composer. Owns the session and reports its phase,
  *  the mic's loudness and when it opened; the transcript is handed to `onText`
  *  once, when the host answers.
@@ -23,8 +45,10 @@ const IDLE_LEVELS: number[] = Array(LEVEL_BARS).fill(0);
  *
  *  A session usually ends itself: the mic reports the pause after the user
  *  stops talking (`silence.ts`), and that runs the same stop a tap would, so
- *  dictating is one tap. Failures are the composer's to show (`error`), in a
- *  banner above the footer, and clear on their own. */
+ *  dictating is one tap. Unless the Mac says otherwise — see
+ *  [`autoStopWanted`], which is what the host's `auto_stop` buys us. Failures
+ *  are the composer's to show (`error`), in a banner above the footer, and
+ *  clear on their own. */
 export function useDictation(onText: (text: string) => void) {
   const connection = useStore((s) => s.connection);
   // null while the probe is in flight; `available: false` with no reason is a
@@ -64,6 +88,13 @@ export function useDictation(onText: (text: string) => void) {
 
   // Probe on mount and on every reconnect: the answer depends on the Mac's
   // settings, which can change between one connection and the next.
+  //
+  // Mount and reconnect are the only two moments, by choice: a setting flipped
+  // on the Mac while this phone stays connected is not seen until it comes back
+  // (the app is backgrounded, the link drops, the screen is re-entered). That
+  // window is known, not an oversight — nothing here is worth a push channel
+  // and a subscription, since the stale answer only ever costs one session that
+  // ended the old way.
   useEffect(() => {
     if (connection !== "connected") return;
     let cancelled = false;
@@ -141,9 +172,8 @@ export function useDictation(onText: (text: string) => void) {
     const session = new DictationSession(api, startCapture);
     sessionRef.current = session;
     try {
-      await session.start(
-        () => void finish(),
-        (level) => setLevels((prev) => [...prev.slice(1), level]),
+      await session.start(autoStopWanted(status) ? () => void finish() : undefined, (level) =>
+        setLevels((prev) => [...prev.slice(1), level]),
       );
       // A cancel while the mic was opening already let go of the session.
       if (sessionRef.current !== session) return;

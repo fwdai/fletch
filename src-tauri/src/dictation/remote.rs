@@ -7,7 +7,10 @@
 //! the user talks, `dictation_end` transcribes and answers with the text, and
 //! `dictation_cancel` throws the audio away. `dictation_status` beside them
 //! says whether any of that would work, so the phone can hide its mic button
-//! the way the desktop composer hides its own.
+//! the way the desktop composer hides its own, and carries the "Stop after a
+//! pause" setting: the pause lives in frames that never cross the wire, so the
+//! phone's own capture is the only thing that can honour a setting this Mac
+//! owns.
 //!
 //! No events, no partials: whisper.cpp has nothing to say until the whole clip
 //! is in, so the transcript is simply the reply to `dictation_end`, and the
@@ -54,6 +57,32 @@ pub struct Status {
     pub available: bool,
     /// Why not, in words the phone shows as-is. `None` when available.
     pub reason: Option<String>,
+    /// Settings › Dictation's "Stop after a pause", as this Mac has it. The
+    /// phone arms its silence monitor only when this is true; with it off
+    /// nothing but a tap ends the session, which is what the desktop does
+    /// (`capture::should_auto_stop` refuses both the pause and the never-spoke
+    /// deadline). What the host bounds by itself is the *memory*, through the
+    /// capture cap — not the session: `SESSION_IDLE` is refreshed by every
+    /// chunk, and a phone with the setting off keeps sending one a second, so
+    /// an abandoned session holds its mic until the user taps, leaves, or the
+    /// link drops. That is the desktop's behaviour too.
+    pub auto_stop: bool,
+}
+
+impl Status {
+    /// Split from [`status`] so the tests can build one without an
+    /// `AppHandle`. `auto_stop` comes from the in-memory mirror, not the DB:
+    /// `set_dictation_auto_stop` keeps it current and boot restores it. It is
+    /// answered whether or not this Mac is ready to transcribe — the two say
+    /// different things, and a phone that asks while the model is still
+    /// downloading should still learn how the session will end once it isn't.
+    fn new(readiness: Result<()>) -> Self {
+        Self {
+            available: readiness.is_ok(),
+            reason: readiness.err().map(|e| e.to_string()),
+            auto_stop: super::auto_stop(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -209,19 +238,11 @@ fn decode(pcm_base64: &str) -> Result<Vec<u8>> {
 // ---------------------------------------------------------------------------
 // The ops, as the dispatcher calls them.
 
-/// Whether a phone can dictate through this Mac right now, and if not, what the
-/// user has to do about it. Cheap — two settings reads and a metadata stat.
+/// Whether a phone can dictate through this Mac right now, if not what the user
+/// has to do about it, and how a session is meant to end. Cheap — two settings
+/// reads, an atomic load and a metadata stat.
 pub fn status(app: &AppHandle) -> Status {
-    match readiness(app) {
-        Ok(()) => Status {
-            available: true,
-            reason: None,
-        },
-        Err(e) => Status {
-            available: false,
-            reason: Some(e.to_string()),
-        },
-    }
+    Status::new(readiness(app))
 }
 
 pub fn begin(app: &AppHandle) -> Result<Begun> {
@@ -396,6 +417,22 @@ mod tests {
         store.cancel(&id);
         store.cancel(&id);
         assert!(store.take(&id).is_err());
+    }
+
+    /// The phone cannot read the Mac's settings any other way, so a stale or
+    /// hardcoded value here is the opt-out silently not working.
+    #[test]
+    fn status_reports_the_auto_stop_setting_as_it_stands() {
+        super::super::set_auto_stop(false);
+        assert!(!Status::new(Ok(())).auto_stop);
+        // Not ready to transcribe is a separate fact: the setting is still the
+        // honest answer, and the phone that reconnects later depends on it.
+        assert!(!Status::new(Err(Error::Other("model missing".into()))).auto_stop);
+
+        super::super::set_auto_stop(true);
+        let status = Status::new(Ok(()));
+        assert!(status.auto_stop);
+        assert!(status.available && status.reason.is_none());
     }
 
     #[test]

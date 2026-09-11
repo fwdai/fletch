@@ -435,8 +435,11 @@ export class MockHost {
       // mock counts chunks and answers a fixed sentence for any session that
       // sent audio — enough to exercise the composer's listening → transcribing
       // → text path.
+      // `auto_stop` mirrors the Mac's default (Settings › Dictation ships it
+      // on), so the browser gets the hands-free path the phone normally has;
+      // flip it here to try the tap-to-stop one.
       case "dictation_status":
-        return { available: true, reason: null };
+        return { available: true, reason: null, auto_stop: true };
       case "dictation_begin": {
         const session = `dict-${this.dictation.size + 1}`;
         this.dictation.set(session, 0);

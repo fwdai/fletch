@@ -131,6 +131,12 @@ export function createApi(client: RemoteClient) {
 export interface DictationStatus {
   available: boolean;
   reason: string | null;
+  /** Settings › Dictation's "Stop after a pause", as the Mac has it. The pause
+   *  is heard here — the Mac only ever sees the chunks this phone chose to send
+   *  — so honouring the setting is the phone's job; see `useDictation`. Absent
+   *  from a host too old to report it, which is why the reading is
+   *  `!== false`: the behaviour those hosts have always had is auto-stop on. */
+  auto_stop?: boolean;
 }
 
 export type Api = ReturnType<typeof createApi>;

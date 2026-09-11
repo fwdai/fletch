@@ -434,7 +434,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `clone_repo` | `{ spec, destParent }` | `Workspace` |
 | `gh_status` | `{}` | `GhStatus` |
 | `gh_repo_list` | `{}` | `GhRepoSummary[]` |
-| `dictation_status` | `{}` (remote-only, see "Dictation") | `{ available: boolean, reason: string \| null }` |
+| `dictation_status` | `{}` (remote-only, see "Dictation") | `{ available: boolean, reason: string \| null, auto_stop: boolean }` |
 | `dictation_begin` | `{}` (remote-only) | `{ session: string }` |
 | `dictation_audio` | `{ session, rate: number, pcm: string }` — base64 of 16-bit little-endian mono PCM at `rate` Hz (remote-only) | `null` |
 | `dictation_end` | `{ session }` (remote-only) | `{ text: string }` |
@@ -484,6 +484,17 @@ device is asking.
   false ("Local dictation is off on your Mac. Turn on the Whisper engine in
   Settings › Dictation."). There is no fallback to Apple's recognizer on this
   path: it needs a microphone the Mac does not have.
+- **Ending a session.** `dictation_status` also carries `auto_stop`, the Mac's
+  "Stop after a pause" setting (Settings › Dictation). The pause is heard in
+  frames that never cross the wire — the host only ever sees the chunks the
+  phone chose to send — so the phone is the only side that can honour it: with
+  `auto_stop: false` it never arms its silence monitor, and nothing but a tap
+  ends the session, matching what the setting does to a desktop session
+  (neither the pause nor the never-spoke deadline fires). The host is not
+  relying on the phone to be well-behaved about it: an abandoned session is
+  still swept after 60 s and its audio still capped (see "Bounds"). The phone
+  reads the field when it connects, so a setting flipped mid-connection reaches
+  it on the next reconnect; there is no push for it.
 - **Flow.** `dictation_begin` re-checks the preconditions (so the phone learns
   before its mic opens) and answers with a host-minted `session` id. While the
   user talks, the phone sends `dictation_audio` about once a second with the
