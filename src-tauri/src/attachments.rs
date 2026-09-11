@@ -94,16 +94,26 @@ fn adopt_into(staging: &Path, dest_base: &Path, paths: &[String]) -> Vec<String>
 }
 
 /// Move `path` into `dest_base` and return the rewritten path, but only if it
-/// genuinely resolves to a file **under** the already-canonical staging root.
-/// `None` leaves the caller's original string in place — for a dragged/browsed
-/// file kept at its own location, but also for a `..` or symlink path that
-/// escapes staging: moving such a path would drag an app-data file (e.g.
-/// `fletch.db`) into agent-readable space, whereas leaving it is safe (the
-/// sandbox still denies the agent that path). A lexical `starts_with` would miss
-/// both escapes — `.../attachments/../fletch.db` "starts with" the staging root.
+/// resolves to a **regular file at the exact shape [`save_pasted`] writes**:
+/// `<staging>/<uuid>/<filename>`. `None` leaves the caller's original string in
+/// place, which is the safe outcome for every reject:
+/// - a dragged/browsed file kept at its own location;
+/// - a `..` or symlink path that escapes staging — moving it would drag an
+///   app-data file (e.g. `fletch.db`) into agent-readable space, whereas
+///   leaving it is safe (the sandbox still denies the agent that path);
+/// - the staging root itself or any directory beneath it — `starts_with` is
+///   reflexive, so a plain prefix test would accept the root and `rename` the
+///   whole staging tree (every unsent attachment) into one agent's workspace.
+///
+/// The strict `<staging>/<uuid>/<filename>` shape (a regular file exactly one
+/// dir below the canonical staging root) rejects all three at once, without a
+/// separate `starts_with`.
 fn adopt_one(staging: &Path, dest_base: &Path, path: &Path) -> Option<String> {
     let canonical = path.canonicalize().ok()?;
-    if !canonical.starts_with(staging) {
+    if !canonical.is_file() {
+        return None;
+    }
+    if canonical.parent().and_then(Path::parent) != Some(staging) {
         return None;
     }
     match move_into(dest_base, &canonical) {
@@ -235,6 +245,37 @@ mod tests {
 
         assert!(!Path::new(&out[0]).starts_with(workspace.path()));
         assert!(secret.exists(), "the symlink target must stay put");
+    }
+
+    /// Neither the staging root nor a directory beneath it is adopted: moving
+    /// the root would drag every other unsent attachment into this agent's
+    /// workspace, and `starts_with` treats the root as a prefix of itself, so
+    /// only the regular-file + strict-shape check refuses them.
+    #[test]
+    fn a_directory_under_staging_is_never_adopted() {
+        let staging = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        // Another paste's staged file, sitting under the root, unsent.
+        let uuid_dir = staging.path().join("someuuid");
+        let other = uuid_dir.join("secret.png");
+        std::fs::create_dir_all(&uuid_dir).unwrap();
+        std::fs::write(&other, b"other").unwrap();
+
+        let dirs = [
+            staging.path().to_string_lossy().into_owned(), // the root itself
+            uuid_dir.to_string_lossy().into_owned(),       // a dir beneath it
+        ];
+        let out = adopt_into(staging.path(), workspace.path(), &dirs);
+
+        assert_eq!(out, dirs.to_vec(), "directories pass through, unmoved");
+        assert!(other.exists(), "no other staged file is relocated");
+        assert!(
+            std::fs::read_dir(workspace.path())
+                .unwrap()
+                .next()
+                .is_none(),
+            "nothing lands in the workspace"
+        );
     }
 
     /// A mixed list keeps order: staged files move, non-staged pass through.
