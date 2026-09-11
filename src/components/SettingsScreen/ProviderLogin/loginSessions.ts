@@ -62,16 +62,28 @@ function setExit(id: string, exit?: ProviderLoginExitEvent) {
   for (const listener of exitListeners.get(id) ?? []) listener(exit);
 }
 
-let taps: Promise<unknown> | undefined;
+let taps: Promise<void> | undefined;
 
-function ensureTaps() {
+/** Attach the output and exit taps, once, shared by every caller. Resolves only
+ *  after *both* listeners are live: a sign-in that prints or exits the moment
+ *  it spawns (an unusable binary, or a CLI that is already signed in) would
+ *  otherwise emit before anything is listening, leaving the terminal blank or
+ *  the session running forever. A failed registration clears the memo so the
+ *  next sign-in retries instead of inheriting the rejected promise. */
+function ensureTaps(): Promise<void> {
   taps ??= Promise.all([
     onProviderLoginOutput((e) => output.push(e.id, decodeBase64(e.bytes))),
     onProviderLoginExit((e) => {
       live.delete(e.id);
       setExit(e.id, e);
     }),
-  ]);
+  ]).then(
+    () => undefined,
+    (err) => {
+      taps = undefined;
+      throw err;
+    },
+  );
   return taps;
 }
 
@@ -85,19 +97,32 @@ const opening = new Map<string, Promise<void>>();
  *  that hasn't been signed in during this session, and "Run again" after one
  *  finished. */
 export function runLogin(id: string, cols: number, rows: number): Promise<void> {
-  ensureTaps();
   output.drop(id);
   setExit(id, undefined);
   started.add(id);
   live.add(id);
-  const open = api.openProviderLogin(id, cols, rows).catch((err) => {
-    // The open failed, so there is nothing to attach to: report it through the
-    // same channel an exit uses and let the row offer "Run again".
-    live.delete(id);
-    setExit(id, { id, success: false, message: String(err) });
-  });
+  const open = openPty(id, cols, rows);
+  // Recorded synchronously, so keystrokes and the first resize queue behind the
+  // *whole* open — tap registration included — and not just behind the spawn.
   opening.set(id, open);
   return open;
+}
+
+/** The open itself: taps first, PTY second, so nothing the flow emits can be
+ *  missed. A failure of either step becomes the session's outcome — the row
+ *  shows it and offers "Run again" rather than sitting in a running state — so
+ *  the returned promise always resolves and callers can await it safely. */
+async function openPty(id: string, cols: number, rows: number): Promise<void> {
+  try {
+    await ensureTaps();
+    await api.openProviderLogin(id, cols, rows);
+  } catch (err) {
+    // Nothing is attached, so report it through the same channel an exit uses.
+    live.delete(id);
+    // Unless a Close landed while this was in flight: that session is gone and
+    // must not be resurrected by a stale failure.
+    if (started.has(id)) setExit(id, { id, success: false, message: String(err) });
+  }
 }
 
 /** The mount-time call: pick up a sign-in this session already opened, or start
@@ -125,11 +150,15 @@ export async function resizeLogin(id: string, cols: number, rows: number) {
 /** Kill a provider's sign-in and forget it — the explicit Close only. The next
  *  "Sign in" then starts a fresh flow rather than re-attaching to this one. */
 export async function closeLogin(id: string) {
+  const open = opening.get(id);
   started.delete(id);
   live.delete(id);
   output.drop(id);
   setExit(id, undefined);
   opening.delete(id);
+  // Let an in-flight open land first: a close that overtakes it would be a
+  // no-op on the backend and leave the PTY it then spawns running unattended.
+  await open;
   await api.closeProviderLogin(id).catch((err) => {
     console.error("closeProviderLogin failed", err);
   });
