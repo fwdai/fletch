@@ -7,9 +7,10 @@
 import type { CSSProperties } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
+import { DocsLink } from "@/components/ui/DocsLink";
 import { IS_MAC } from "@/util/platform";
 import { ExhibitParallel } from "./exhibits";
-import { CopyCmd, DocsLink, SetupStep } from "./SetupBits";
+import { CopyCmd, SetupStep } from "./SetupBits";
 import type { OnboardingSetup } from "./useSetup";
 
 const GIT_DOCS = "https://git-scm.com/downloads";

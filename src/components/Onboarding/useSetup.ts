@@ -9,6 +9,7 @@ import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
 import type { GitDistState } from "@/util/useGitDist";
 import { useGitInstall } from "@/util/useGitInstall";
+import { useProviderPoll } from "@/util/useProviderPoll";
 
 export interface OnboardingSetup {
   /** Result of the git probe; null until the first check resolves. */
@@ -67,11 +68,7 @@ export function useOnboardingSetup(pollAgents: boolean): OnboardingSetup {
     recheck();
   }, [recheck]);
 
-  useEffect(() => {
-    if (!pollAgents) return;
-    const t = window.setInterval(() => void refreshProviders(), 4000);
-    return () => window.clearInterval(t);
-  }, [pollAgents, refreshProviders]);
+  useProviderPoll(pollAgents);
 
   const { gitDist, gitDownloading, gitInstallError, installingGit, installGit } = useGitInstall(
     git,

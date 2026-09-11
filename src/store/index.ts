@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AgentRecord } from "@/api"; // for EMPTY_AGENTS
 import { createAccountSlice } from "./account";
+import { createAgentInstallSlice } from "./agentInstall";
 import { createAppSlice } from "./app";
 import { createAppearanceSlice } from "./appearance";
 import { createAutopilotSlice } from "./autopilot";
@@ -34,6 +35,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createAutopilotSlice(...a),
   ...createAutopilotLogSlice(...a),
   ...createProvidersSlice(...a),
+  ...createAgentInstallSlice(...a),
   ...createCustomAgentsSlice(...a),
   ...createSkillsSlice(...a),
   ...createMcpServersSlice(...a),

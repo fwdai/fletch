@@ -9,6 +9,7 @@ export { Button } from "./Button";
 export { Chip } from "./Chip";
 export { CopyButton } from "./CopyButton";
 export { DeviceCode } from "./DeviceCode";
+export { DocsLink } from "./DocsLink";
 export { DropdownItem, DropdownMenu, DropdownSection, DropdownSeparator } from "./Dropdown";
 export { IconButton } from "./IconButton";
 export type { LoaderSize, LoaderVariant } from "./Loader";

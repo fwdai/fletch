@@ -7,6 +7,7 @@
 
 import type { StateCreator } from "zustand";
 import type { AccountSlice } from "./account";
+import type { AgentInstallSlice, InstallState } from "./agentInstall";
 import type { AppSlice } from "./app";
 import type { AppearanceSlice } from "./appearance";
 import type { AutopilotSlice } from "./autopilot";
@@ -26,6 +27,7 @@ import type { PromoteSeed, SyncHealthInfo, WorkspaceSlice } from "./workspace";
 
 export type {
   AccountSlice,
+  AgentInstallSlice,
   AppearanceSlice,
   AppSlice,
   AutopilotLogSlice,
@@ -35,6 +37,7 @@ export type {
   DockerBuildProgress,
   DraftsSlice,
   GitSlice,
+  InstallState,
   LocalCommandsSlice,
   McpServersSlice,
   PromoteSeed,
@@ -60,6 +63,7 @@ export type AppState = AppSlice &
   AutopilotSlice &
   AutopilotLogSlice &
   ProvidersSlice &
+  AgentInstallSlice &
   CustomAgentsSlice &
   SkillsSlice &
   McpServersSlice &
