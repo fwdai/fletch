@@ -4,6 +4,9 @@
 //! as a `plaintext` per-turn agent: the runner drains stdout, the turn's process
 //! exit ends the turn, and history comes entirely from its on-disk transcript.
 //! The conversation id (== session id) lives in agy's filesystem, not its output.
+//! Because the process exit *is* the turn end, agy's own print-mode deadline
+//! (`--print-timeout`) must be raised past any real turn — see
+//! [`ANTIGRAVITY_PRINT_TIMEOUT`].
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +16,15 @@ use crate::agent::args::push_opt;
 use crate::agent::transcript::{RawRecord, ReadDiagnostics};
 use crate::agent::TurnArgs;
 use crate::instructions;
+
+/// How long agy may spend on one `--print` turn before it aborts the turn
+/// itself (`Error: timeout waiting for response`, exit 1). agy's default is
+/// 5m, which an agentic turn routinely exceeds; the abort then surfaces as
+/// "Agent stopped unexpectedly" while the agent was mid-task (#636). The other
+/// per-turn agents have no turn cap at all, so this is set far past any real
+/// turn — it exists only so a truly hung process still exits. Go
+/// `time.Duration` syntax.
+pub(crate) const ANTIGRAVITY_PRINT_TIMEOUT: &str = "24h";
 
 // `_model` is intentionally unused: agy's `--print` runner ignores model
 // selection (the `--model` flag is inert in print mode), so the picker offers
@@ -27,7 +39,11 @@ pub(crate) fn antigravity_build_args(turn: &TurnArgs) -> Vec<String> {
     // `--print` takes the prompt as its *value* (i.e. `--print <prompt>`), so the
     // prompt must come last, directly after `--print`. Putting another flag
     // between them makes that flag the prompt (agy then "answers" the flag name).
-    let mut args = vec!["--dangerously-skip-permissions".to_string()];
+    let mut args = vec![
+        "--dangerously-skip-permissions".to_string(),
+        "--print-timeout".to_string(),
+        ANTIGRAVITY_PRINT_TIMEOUT.to_string(),
+    ];
     push_opt(&mut args, "--conversation", session_id);
     args.push("--print".into());
     args.push(instructions::prepend_to_prompt(prompt, session_id, extra));
