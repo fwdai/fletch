@@ -14,7 +14,7 @@ import type { OnboardingSetup } from "./useSetup";
 
 const GIT_DOCS = "https://git-scm.com/downloads";
 
-export function GitStep({ setup }: { setup: OnboardingSetup }) {
+export function GitStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: () => void }) {
   const { git, gitDist, gitReady, gitDownloading, gitInstallError, installingGit, installGit } =
     setup;
 
@@ -110,6 +110,16 @@ export function GitStep({ setup }: { setup: OnboardingSetup }) {
           </div>
         )}
       </div>
+      {showInstall && (
+        <button
+          type="button"
+          className="ob-skiplink ob-reveal"
+          style={{ "--d": ".6s" } as CSSProperties}
+          onClick={onSkip}
+        >
+          I'll install Git myself — skip for now
+        </button>
+      )}
     </SetupStep>
   );
 }
