@@ -36,14 +36,14 @@ export function DictationPane() {
         >
           <SetToggle on={enabled} onClick={() => setEnabled(!enabled)} />
         </SetRow>
-        {/* Only the local engine measures the audio it captures; Apple's
-            recognizer ends an utterance on its own terms. So the switch is
-            offered under Whisper and greyed out while Apple's engine is in use. */}
+        {/* Both engines now end an utterance on the same measured pause, so this
+            is a property of dictation rather than of the choice above it — it
+            stays live whether or not the local engine is switched on. */}
         <SetRow
           title="Stop after a pause"
-          sub="Local recognition ends on its own after a two-second pause. Off, you stop it with the mic button."
+          sub="Dictation ends on its own after a two-second pause. Off, you stop it with the mic button."
         >
-          <SetToggle on={autoStop} disabled={!enabled} onClick={() => setAutoStop(!autoStop)} />
+          <SetToggle on={autoStop} onClick={() => setAutoStop(!autoStop)} />
         </SetRow>
         {/* Always offered, engine on or off: the choice has to be makeable
             before the opt-in, or enabling would fetch the platform default out

@@ -24,9 +24,10 @@ interface Props {
    *  local engine) or the composer has no dictation at all: the mic is never
    *  offered, and the empty pill degrades to a plain send arrow. */
   dictationAvailable: boolean;
-  /** The local engine ends the session itself once the user pauses, and the
-   *  tooltip has to say so — a mic that stops on its own otherwise reads as a
-   *  bug. */
+  /** The "Stop after a pause" setting: dictation ends the session itself once
+   *  the user pauses, and the tooltip has to say so — a mic that stops on its
+   *  own otherwise reads as a bug, and one that doesn't leaves the user waiting
+   *  on it. */
   autoStops?: boolean;
   /** Recent microphone levels, oldest first, each 0–1. */
   levels?: number[];
@@ -226,7 +227,9 @@ function SegButton({
   );
 }
 
-function tipFor(
+/** Exported for its tests: the tooltip is the only place the auto-stop setting
+ *  reaches the user mid-session, so both of its branches are worth pinning. */
+export function tipFor(
   state: PrimaryState,
   o: {
     dictationAvailable: boolean;
