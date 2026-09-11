@@ -67,3 +67,20 @@ export interface ProviderAuthProbe {
   status: ProviderAuthStatus;
   detail: string | null;
 }
+
+/** Payload of `provider-login:output`: raw PTY bytes from a provider's in-app
+ *  sign-in, base64-encoded (decode with `decodeBase64`, as for every PTY
+ *  stream — see src/pty/decode.ts). */
+export interface ProviderLoginOutputEvent {
+  id: string;
+  bytes: string;
+}
+
+/** Payload of `provider-login:exit`: a provider's sign-in process ended.
+ *  `success` is a clean exit; `message` describes a non-zero exit or signal
+ *  (including the kill that an explicit Close causes). */
+export interface ProviderLoginExitEvent {
+  id: string;
+  success: boolean;
+  message: string;
+}

@@ -62,3 +62,5 @@
 @import "./components/ui/DeviceCode.css";
 @import "./components/ReviewSurface/ReviewSurface.css";
 @import "./components/Feedback/Feedback.css";
+/* After terminal.css, whose `.xterm-slot` sizing the login terminal overrides. */
+@import "./components/SettingsScreen/ProviderLogin/ProviderLogin.css";

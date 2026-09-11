@@ -19,7 +19,11 @@ import type {
   DictationTranscriptEvent,
 } from "./types/dictation";
 import type { PrStateChangedEvent } from "./types/pr";
-import type { AgentInstallEvent } from "./types/providers";
+import type {
+  AgentInstallEvent,
+  ProviderLoginExitEvent,
+  ProviderLoginOutputEvent,
+} from "./types/providers";
 import type {
   RoadmapBrief,
   RoadmapBriefProposal,
@@ -321,4 +325,17 @@ export function onPublishApprovalRequested(cb: (e: PublishApproval) => void): Pr
  *  image builds on a cold first spawn — feeds the build progress toast. */
 export function onDockerBuildProgress(cb: (e: DockerBuildEvent) => void): Promise<UnlistenFn> {
   return listen<DockerBuildEvent>("docker:build-progress", (event) => cb(event.payload));
+}
+
+/** Raw PTY bytes from a provider's in-app sign-in (Settings → Providers). */
+export function onProviderLoginOutput(
+  cb: (e: ProviderLoginOutputEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ProviderLoginOutputEvent>("provider-login:output", (event) => cb(event.payload));
+}
+
+/** A provider's sign-in process ended — cleanly, with an error, or because it
+ *  was closed. */
+export function onProviderLoginExit(cb: (e: ProviderLoginExitEvent) => void): Promise<UnlistenFn> {
+  return listen<ProviderLoginExitEvent>("provider-login:exit", (event) => cb(event.payload));
 }
