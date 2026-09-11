@@ -157,7 +157,11 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let original = "/Users/someone/pictures/cat.png".to_string();
 
-        let out = adopt_into(staging.path(), workspace.path(), &[original.clone()]);
+        let out = adopt_into(
+            staging.path(),
+            workspace.path(),
+            std::slice::from_ref(&original),
+        );
 
         assert_eq!(out, vec![original]);
     }
