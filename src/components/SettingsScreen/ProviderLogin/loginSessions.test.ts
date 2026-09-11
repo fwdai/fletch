@@ -94,8 +94,74 @@ describe("loginSessions", () => {
       calls.push("write");
       return Promise.resolve();
     });
-    closeProviderLogin.mockResolvedValue(undefined);
+    closeProviderLogin.mockImplementation(() => {
+      calls.push("close");
+      return Promise.resolve();
+    });
     sessions = await import("./loginSessions");
+  });
+
+  it("a Close still waiting on the open it closes runs before a quick re-open", async () => {
+    // Sign in, then Close while the open is still waiting on the taps, then
+    // "Sign in" again straight away — the sequence a fast double-click makes.
+    sessions.runLogin(ID, 80, 24);
+    const close = sessions.closeLogin(ID);
+    const reopen = sessions.runLogin(ID, 80, 24);
+    await flush();
+    expect(calls).toEqual([]);
+
+    registerTaps();
+    // The first open lands and the close is issued against it…
+    await vi.waitFor(() => expect(calls).toEqual(["open", "close"]));
+    // …then its kill's exit arrives, which releases the close and only then
+    // the re-open.
+    emitExit?.({ id: ID, success: false, message: "killed (SIGHUP)" });
+    await Promise.all([close, reopen]);
+
+    // The stale close lands between the two opens, never after the second one,
+    // so the session the user is now looking at is the one that survives.
+    expect(calls).toEqual(["open", "close", "open"]);
+    expect(sessions.getLoginExit(ID)).toBeUndefined();
+  });
+
+  it("a Close waits for the kill's exit and keeps it off the next sign-in", async () => {
+    registerTaps();
+    await sessions.runLogin(ID, 80, 24);
+    const seen: (ProviderLoginExitEvent | undefined)[] = [];
+    sessions.subscribeLoginExit(ID, (e) => seen.push(e));
+
+    let closed = false;
+    const close = sessions.closeLogin(ID).then(() => {
+      closed = true;
+    });
+    await flush();
+    // The backend has been told to kill, but the exit hasn't arrived yet.
+    expect(calls).toEqual(["open", "close"]);
+    expect(closed).toBe(false);
+
+    // The kill lands: it belongs to the closed flow, so it is not an outcome.
+    emitExit?.({ id: ID, success: false, message: "killed (SIGHUP)" });
+    await close;
+    expect(closed).toBe(true);
+    expect(sessions.getLoginExit(ID)).toBeUndefined();
+    expect(seen.filter(Boolean)).toEqual([]);
+
+    // A fresh sign-in afterwards starts clean and its own exit is recorded.
+    await sessions.runLogin(ID, 80, 24);
+    emitExit?.({ id: ID, success: true, message: "" });
+    expect(sessions.getLoginExit(ID)).toEqual({ id: ID, success: true, message: "" });
+  });
+
+  it("closing settles even when the open it waited on failed", async () => {
+    openProviderLogin.mockRejectedValue(new Error("spawn failed"));
+    registerTaps();
+    sessions.runLogin(ID, 80, 24);
+    await sessions.closeLogin(ID);
+
+    expect(calls).toEqual(["close"]);
+    // The close discarded the session, so the open's failure must not
+    // resurrect it as an outcome the row would then display.
+    expect(sessions.getLoginExit(ID)).toBeUndefined();
   });
 
   it("does not open the PTY until both event taps are registered", async () => {

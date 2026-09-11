@@ -74,7 +74,16 @@ function ensureTaps(): Promise<void> {
   taps ??= Promise.all([
     onProviderLoginOutput((e) => output.push(e.id, decodeBase64(e.bytes))),
     onProviderLoginExit((e) => {
+      // An exit during a Close is the flow being torn down — the kill landing,
+      // or a natural exit racing it. It is not an outcome to show, and it must
+      // not reach whatever sign-in the user starts next; it only tells the
+      // Close that the PTY is gone.
+      if (closing.has(e.id)) {
+        closeWaiters.get(e.id)?.();
+        return;
+      }
       live.delete(e.id);
+      spawned.delete(e.id);
       setExit(e.id, e);
     }),
   ]).then(
@@ -91,6 +100,27 @@ function ensureTaps(): Promise<void> {
  *  fires as soon as it fits its host) wait for the PTY to exist instead of
  *  racing it and being dropped. */
 const opening = new Map<string, Promise<void>>();
+
+/** Per-provider close in flight. A close waits for the open it is closing, so a
+ *  "Sign in" clicked right after Close would otherwise reach the backend first,
+ *  attach to the PTY the close is about to kill, and then lose it. The next
+ *  open waits here instead, so Close always means "this flow is gone" and a
+ *  reopen always starts fresh. */
+const closing = new Map<string, Promise<void>>();
+
+/** Providers whose PTY we believe exists on the backend: added when an open
+ *  lands, removed by its exit or by the Close that kills it. Tells a Close
+ *  whether an exit event is still owed. */
+const spawned = new Set<string>();
+
+/** Per-provider resolver a Close parks to learn that its kill has landed (see
+ *  the exit tap). */
+const closeWaiters = new Map<string, () => void>();
+
+/** How long a Close waits for the killed flow's exit event before giving up.
+ *  The kill escalates HUP → TERM → KILL over well under a second; this is only
+ *  a ceiling so a lost event can't wedge the button. */
+const CLOSE_EXIT_GRACE_MS = 3000;
 
 /** Run a provider's sign-in from the top: clears what the last run printed and
  *  its outcome, so the terminal starts blank. This is "Sign in" on a provider
@@ -114,10 +144,18 @@ export function runLogin(id: string, cols: number, rows: number): Promise<void> 
  *  the returned promise always resolves and callers can await it safely. */
 async function openPty(id: string, cols: number, rows: number): Promise<void> {
   try {
+    // A Close still tearing down the previous flow goes first (see `closing`).
+    await closing.get(id);
     await ensureTaps();
+    // Marked before the call, not after: a CLI that exits the instant it
+    // spawns delivers its exit while the open is still resolving, and that
+    // exit must find the mark to clear it — or a later Close would wait for an
+    // exit that already came.
+    spawned.add(id);
     await api.openProviderLogin(id, cols, rows);
   } catch (err) {
     // Nothing is attached, so report it through the same channel an exit uses.
+    spawned.delete(id);
     live.delete(id);
     // Unless a Close landed while this was in flight: that session is gone and
     // must not be resurrected by a stale failure.
@@ -148,18 +186,46 @@ export async function resizeLogin(id: string, cols: number, rows: number) {
 }
 
 /** Kill a provider's sign-in and forget it — the explicit Close only. The next
- *  "Sign in" then starts a fresh flow rather than re-attaching to this one. */
-export async function closeLogin(id: string) {
+ *  "Sign in" then starts a fresh flow rather than re-attaching to this one.
+ *
+ *  Resolves once the flow is truly gone: the open it may still be waiting on
+ *  has landed, the backend has killed the PTY, and the exit that kill produces
+ *  has been received (or given up on after a grace period). Callers dismiss
+ *  the terminal only after this, and the next open queues behind it, so no
+ *  later sign-in can attach to, or inherit the outcome of, the flow closed here. */
+export function closeLogin(id: string): Promise<void> {
   const open = opening.get(id);
   started.delete(id);
   live.delete(id);
   output.drop(id);
   setExit(id, undefined);
   opening.delete(id);
-  // Let an in-flight open land first: a close that overtakes it would be a
-  // no-op on the backend and leave the PTY it then spawns running unattended.
-  await open;
-  await api.closeProviderLogin(id).catch((err) => {
-    console.error("closeProviderLogin failed", err);
+  // Parked before anything is awaited, so an exit that races the close is
+  // still caught (the tap only signals a waiter while `closing` has the id).
+  let exited!: () => void;
+  const exit = new Promise<void>((resolve) => {
+    exited = resolve;
+  });
+  closeWaiters.set(id, exited);
+  const done = (async () => {
+    // Let an in-flight open land first: a close that overtakes it would be a
+    // no-op on the backend and leave the PTY it then spawns running unattended.
+    await open;
+    // Only a PTY that actually came up owes us an exit event.
+    const expectExit = spawned.delete(id);
+    await api.closeProviderLogin(id).catch((err) => {
+      console.error("closeProviderLogin failed", err);
+    });
+    if (expectExit) {
+      await Promise.race([exit, new Promise((r) => setTimeout(r, CLOSE_EXIT_GRACE_MS))]);
+    }
+  })();
+  // Recorded synchronously so an open issued before this settles queues behind
+  // it (see `openPty`). A later close for the same id replaces the entry, so
+  // only the newest one is ever awaited.
+  closing.set(id, done);
+  return done.finally(() => {
+    if (closing.get(id) === done) closing.delete(id);
+    if (closeWaiters.get(id) === exited) closeWaiters.delete(id);
   });
 }

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { loginCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
@@ -7,7 +8,8 @@ interface Props {
   providerId: ProviderId;
   /** Product name, for the terminal's label ("Signing in to Codex CLI"). */
   providerLabel: string;
-  /** Dismiss the terminal. Called after the sign-in PTY has been killed. */
+  /** Dismiss the terminal. Called once the sign-in PTY has actually been
+   *  killed (the Close button awaits that), never before. */
   onClose: () => void;
 }
 
@@ -22,21 +24,28 @@ export function ProviderLoginTerminal({ providerId, providerLabel, onClose }: Pr
   const { containerRef, exit, runAgain, close } = useProviderLogin(providerId);
   const command = loginCommand(providerId);
   const hint = PROVIDER_DETAIL[providerId].signIn;
+  // Close is awaited before the row collapses: dismissing first would let a
+  // quick re-open attach to the PTY this close is still about to kill. The
+  // controls lock meanwhile so nothing else can act on the dying session.
+  const [closing, setClosing] = useState(false);
+
+  const closeAndDismiss = async () => {
+    if (closing) return;
+    setClosing(true);
+    try {
+      await close();
+    } finally {
+      onClose();
+    }
+  };
 
   return (
     <div className="prov-login">
       <div className="prov-login-head flex-center">
         <code className="prov-login-cmd">$ {command}</code>
         {hint && <span className="prov-login-hint text-sm">{hint}</span>}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            close();
-            onClose();
-          }}
-        >
-          Close
+        <Button variant="ghost" size="sm" disabled={closing} onClick={() => void closeAndDismiss()}>
+          {closing ? "Closing…" : "Close"}
         </Button>
       </div>
 
@@ -54,7 +63,7 @@ export function ProviderLoginTerminal({ providerId, providerLabel, onClose }: Pr
           <span className={`prov-login-exit text-sm ${exit.success ? "ok" : "bad"}`}>
             {exit.success ? "Finished" : exit.message}
           </span>
-          <Button variant="outline" size="sm" onClick={runAgain}>
+          <Button variant="outline" size="sm" disabled={closing} onClick={runAgain}>
             Run again
           </Button>
         </div>
