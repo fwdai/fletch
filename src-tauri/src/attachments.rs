@@ -141,7 +141,10 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         let moved = Path::new(&out[0]);
-        assert!(moved.starts_with(workspace.path()), "moved under workspace: {out:?}");
+        assert!(
+            moved.starts_with(workspace.path()),
+            "moved under workspace: {out:?}"
+        );
         assert_eq!(moved.file_name().unwrap(), "shot.png");
         assert_eq!(std::fs::read(moved).unwrap(), b"pixels");
         assert!(!staged.exists(), "the staged copy is gone");
