@@ -2300,6 +2300,22 @@ fn allocate_subdir_handles_collision() {
 }
 
 #[test]
+fn allocate_subdir_never_claims_a_reserved_name() {
+    // A repo whose basename matches a Fletch-owned workspace subdir gets a
+    // numbered subdir rather than colliding with it, even with nothing else
+    // present.
+    for reserved in [
+        crate::agent_profile::PROFILE_DIR,
+        crate::attachments::WORKSPACE_ATTACHMENTS_DIR,
+    ] {
+        assert_eq!(
+            allocate_repo_subdir(Path::new(&format!("/foo/{reserved}")), &[]),
+            format!("{reserved}-2"),
+        );
+    }
+}
+
+#[test]
 fn override_base_still_gets_the_build_split() {
     // A redirected base (`$FLETCH_WORKSPACES_ROOT`, nested-Fletch Run) must not
     // bypass the per-build split: without it, two different builds sharing the

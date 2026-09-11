@@ -765,12 +765,11 @@ pub fn save_pasted_attachment(request: tauri::ipc::Request<'_>) -> Result<String
         })
         .filter(|s| !s.is_empty())
         .unwrap_or("pasted");
-    let dir = crate::data_dir()
-        .join("attachments")
-        .join(uuid::Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(name);
-    std::fs::write(&path, bytes)?;
+    // Stage under the app-data dir; the file is moved into the target agent's
+    // workspace at send time (`attachments::adopt`), since a confined agent
+    // can't read the app-data dir. Dragged/browsed files skip this path
+    // entirely — they keep their original, already-readable location.
+    let path = crate::attachments::save_pasted(name, bytes)?;
     Ok(path.to_string_lossy().into_owned())
 }
 

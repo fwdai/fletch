@@ -34,7 +34,21 @@ impl Supervisor {
         text: &str,
         attachments: &[String],
     ) -> Result<bool> {
+        // Resolve the agent up front — this is the existence check. Do it before
+        // adopting attachments: adoption writes into the agent's workspace dir
+        // (derived by id), so a stale/invalid id would otherwise move the file
+        // into an orphan dir nothing sweeps and then fail the send, losing it.
         let mode = injection_mode(&self.workspace.agent(agent_id)?.provider);
+
+        // Move any pasted attachments out of the app-data staging area into
+        // this agent's workspace before the paths are persisted or handed to the
+        // agent — a confined agent can't read the staging dir. Dragged/browsed
+        // paths pass through unchanged. Runs exactly once per user message: the
+        // re-queue/flush paths carry the already-rewritten `PendingMsg`, and a
+        // rehydrated pending message was persisted with the workspace path.
+        let attachments = crate::attachments::adopt(agent_id, attachments);
+        let attachments = attachments.as_slice();
+
         let busy = self.is_busy(agent_id);
         let tool_gated = self
             .agents
