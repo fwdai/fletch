@@ -4,7 +4,10 @@ use serde_json::json;
 
 use super::args::effort_args;
 use super::capabilities::{provider_bin_label, PER_TURN_AGENTS};
-use super::providers::antigravity::{antigravity_conv_id_from_map, antigravity_read};
+use super::providers::antigravity::{
+    antigravity_build_args, antigravity_conv_id_from_map, antigravity_read,
+    ANTIGRAVITY_PRINT_TIMEOUT,
+};
 use super::providers::codex::{codex_build_args, codex_pty_args, codex_session_id};
 use super::providers::cursor::{cursor_build_args, cursor_pty_args, cursor_session_id};
 use super::providers::opencode::{opencode_build_args, opencode_pty_args, opencode_session_id};
@@ -270,6 +273,42 @@ fn transcript_reader_dispatch() {
     assert!(transcript_reader("antigravity").is_some());
     // Unknown providers have none.
     assert!(transcript_reader("nope").is_none());
+}
+
+#[test]
+fn antigravity_args_raise_print_timeout_and_keep_prompt_last() {
+    // agy aborts a `--print` turn after its own 5m default (#636), so every
+    // turn must carry a longer `--print-timeout`. It has to sit *before*
+    // `--print`: `--print` takes the prompt as its value, so anything placed
+    // between them would become the prompt.
+    let args = antigravity_build_args(&TurnArgs {
+        prompt: "hi",
+        session_id: Some("conv-1"),
+        ..Default::default()
+    });
+    let timeout = args
+        .iter()
+        .position(|a| a == "--print-timeout")
+        .expect("--print-timeout flag");
+    assert_eq!(
+        args.get(timeout + 1).map(String::as_str),
+        Some(ANTIGRAVITY_PRINT_TIMEOUT)
+    );
+    let print = args
+        .iter()
+        .position(|a| a == "--print")
+        .expect("--print flag");
+    assert!(
+        timeout < print,
+        "timeout flag must precede --print: {args:?}"
+    );
+    assert_eq!(print + 2, args.len(), "prompt is the last arg: {args:?}");
+    assert!(args.last().unwrap().ends_with("hi"));
+    let conv = args
+        .iter()
+        .position(|a| a == "--conversation")
+        .expect("--conversation flag");
+    assert_eq!(args.get(conv + 1).map(String::as_str), Some("conv-1"));
 }
 
 #[test]
