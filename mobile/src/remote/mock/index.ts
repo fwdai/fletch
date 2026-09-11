@@ -440,7 +440,8 @@ export class MockHost {
       case "dictation_begin": {
         const session = `dict-${this.dictation.size + 1}`;
         this.dictation.set(session, 0);
-        return { session };
+        // The Mac's default. Flip it to exercise the tap-to-stop path.
+        return { session, auto_stop: true };
       }
       case "dictation_audio": {
         const session = String(args.session ?? "");

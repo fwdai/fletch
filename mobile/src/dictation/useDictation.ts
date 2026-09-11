@@ -23,8 +23,11 @@ const IDLE_LEVELS: number[] = Array(LEVEL_BARS).fill(0);
  *
  *  A session usually ends itself: the mic reports the pause after the user
  *  stops talking (`silence.ts`), and that runs the same stop a tap would, so
- *  dictating is one tap. Failures are the composer's to show (`error`), in a
- *  banner above the footer, and clear on their own. */
+ *  dictating is one tap — unless the Mac's "Stop after a pause" is off, which
+ *  `dictationBegin` reports per session and `DictationSession` acts on, so a
+ *  setting flipped on the Mac takes hold on the very next session rather than
+ *  waiting for this phone to reconnect. Failures are the composer's to show
+ *  (`error`), in a banner above the footer, and clear on their own. */
 export function useDictation(onText: (text: string) => void) {
   const connection = useStore((s) => s.connection);
   // null while the probe is in flight; `available: false` with no reason is a
@@ -62,8 +65,11 @@ export function useDictation(onText: (text: string) => void) {
     setError(null);
   }, []);
 
-  // Probe on mount and on every reconnect: the answer depends on the Mac's
-  // settings, which can change between one connection and the next.
+  // Probe on mount and on every reconnect: whether the Mac can transcribe at
+  // all depends on its settings, which can change between one connection and
+  // the next. Only what the mic button should look like rides on this — how a
+  // session ends comes back from `dictationBegin`, per session, precisely so
+  // that nothing about it is cached here between one and the next.
   useEffect(() => {
     if (connection !== "connected") return;
     let cancelled = false;

@@ -35,14 +35,15 @@ describe("chunk encoding", () => {
 });
 
 /** A host that records every op, and a mic the test drives by hand. */
-function harness(opts: { failAudioAt?: number; beginFails?: boolean } = {}) {
+function harness(opts: { failAudioAt?: number; beginFails?: boolean; autoStop?: boolean } = {}) {
   const ops: { op: string; args: unknown[] }[] = [];
   let audioCalls = 0;
   const api: DictationApi = {
     async dictationBegin() {
       ops.push({ op: "begin", args: [] });
       if (opts.beginFails) throw new Error("Local dictation is off on your Mac.");
-      return { session: "s1" };
+      // `autoStop: undefined` is a host too old to report the field.
+      return "autoStop" in opts ? { session: "s1", auto_stop: opts.autoStop } : { session: "s1" };
     },
     async dictationAudio(session, rate, pcm) {
       audioCalls += 1;
@@ -73,6 +74,11 @@ function harness(opts: { failAudioAt?: number; beginFails?: boolean } = {}) {
     /** Report the pause, as the capture's silence monitor would. */
     pause() {
       doneTalking?.();
+    },
+    /** Whether `capture.ts` would have armed its silence watcher at all: it
+     *  no-ops without a callback, which is the auto-stop opt-out. */
+    get armed() {
+      return doneTalking !== undefined;
     },
     get stopped() {
       return stopped;
@@ -183,6 +189,47 @@ describe("DictationSession", () => {
     expect(stops).toEqual([]);
     expect(h.ops.filter((o) => o.op === "end")).toHaveLength(1);
     expect(h.mic.stopped).toBe(1);
+  });
+
+  /** The Mac owns "Stop after a pause" and answers it on `begin`, per session;
+   *  the phone is the only side that can act on it. Started here exactly as
+   *  `useDictation` starts one — which now means always offering the callback
+   *  and letting the host's answer decide — so what is under test is the wiring
+   *  from that answer to the mic, not a restatement of it. */
+  async function startAsTheHookWould(opts: { autoStop?: boolean } | Record<string, never>) {
+    const h = harness(opts);
+    const s = new DictationSession(h.api, h.startCapture);
+    const stops: Promise<string>[] = [];
+    await s.start(() => stops.push(s.stop()));
+    return { h, s, stops };
+  }
+
+  it("a session begun with auto_stop: false never arms the silence watcher", async () => {
+    const { h, s, stops } = await startAsTheHookWould({ autoStop: false });
+    expect(h.mic.armed).toBe(false);
+
+    h.mic.speak([1]);
+    // Nothing the mic could ever report ends this session: without the callback
+    // `watchForSilence` never starts a timer, so the pause and the never-spoke
+    // deadline alike go unasked — the desktop's `should_auto_stop(false, …)`.
+    h.mic.pause();
+    expect(stops).toEqual([]);
+    expect(h.mic.stopped).toBe(0);
+
+    // A tap still ends it, which is the only way left.
+    expect(await s.stop()).toBe("hello world");
+    expect(h.mic.stopped).toBe(1);
+  });
+
+  it("a session begun with auto_stop: true stops itself, and so does one whose host never said", async () => {
+    for (const opts of [{ autoStop: true }, {}]) {
+      const { h, stops } = await startAsTheHookWould(opts);
+      expect(h.mic.armed).toBe(true);
+      h.mic.speak([1]);
+      h.mic.pause();
+      expect(await Promise.all(stops)).toEqual(["hello world"]);
+      expect(h.ops.map((o) => o.op)).toEqual(["begin", "audio", "audio", "end"]);
+    }
   });
 
   it("cancel releases the mic and the host session, and is idempotent", async () => {

@@ -435,7 +435,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `gh_status` | `{}` | `GhStatus` |
 | `gh_repo_list` | `{}` | `GhRepoSummary[]` |
 | `dictation_status` | `{}` (remote-only, see "Dictation") | `{ available: boolean, reason: string \| null }` |
-| `dictation_begin` | `{}` (remote-only) | `{ session: string }` |
+| `dictation_begin` | `{}` (remote-only) | `{ session: string, auto_stop: boolean }` |
 | `dictation_audio` | `{ session, rate: number, pcm: string }` — base64 of 16-bit little-endian mono PCM at `rate` Hz (remote-only) | `null` |
 | `dictation_end` | `{ session }` (remote-only) | `{ text: string }` |
 | `dictation_cancel` | `{ session }` (remote-only) | `null` |
@@ -484,6 +484,26 @@ device is asking.
   false ("Local dictation is off on your Mac. Turn on the Whisper engine in
   Settings › Dictation."). There is no fallback to Apple's recognizer on this
   path: it needs a microphone the Mac does not have.
+- **Ending a session.** `dictation_begin` answers with `auto_stop`, the Mac's
+  "Stop after a pause" setting (Settings › Dictation) as it stands at that
+  moment. The pause is heard in frames that never cross the wire — the host
+  only ever sees the chunks the phone chose to send — so the phone is the only
+  side that can honour it: with `auto_stop: false` it never arms its silence
+  monitor, and nothing but a tap ends the session, matching what the setting
+  does to a desktop session (neither the pause nor the never-spoke deadline
+  fires).
+
+  It rides on `begin` rather than `dictation_status` because the phone probes
+  status on mount and reconnect only; answering it per session means a setting
+  flipped on the Mac takes hold on the phone's next session instead of waiting
+  for it to reconnect, and costs no extra round trip.
+
+  With `auto_stop` off, nothing on the host ends the session either. The idle
+  sweep does not apply to a phone that is still streaming — every chunk
+  refreshes it — so what stays bounded is the audio, not the session: an
+  abandoned one holds the phone's mic until the user taps, leaves the screen,
+  or the link drops. That is the same deal the desktop offers with the setting
+  off.
 - **Flow.** `dictation_begin` re-checks the preconditions (so the phone learns
   before its mic opens) and answers with a host-minted `session` id. While the
   user talks, the phone sends `dictation_audio` about once a second with the
