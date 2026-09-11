@@ -79,26 +79,45 @@ pub fn adopt(agent_id: &str, paths: &[String]) -> Vec<String> {
 /// Core of [`adopt`], with both roots passed explicitly so it's testable without
 /// the process-global app-data / workspaces roots.
 fn adopt_into(staging: &Path, dest_base: &Path, paths: &[String]) -> Vec<String> {
+    // Resolve the staging root once, so the per-path containment check below
+    // compares real, `..`-and-symlink-free paths. If it can't be resolved
+    // (nothing was ever staged), nothing is a staged file — pass everything
+    // through untouched.
+    let staging = match staging.canonicalize() {
+        Ok(root) => root,
+        Err(_) => return paths.to_vec(),
+    };
     paths
         .iter()
-        .map(|p| {
-            let path = Path::new(p);
-            if !path.starts_with(staging) {
-                return p.clone();
-            }
-            match move_into(dest_base, path) {
-                Ok(dest) => dest.to_string_lossy().into_owned(),
-                Err(e) => {
-                    tracing::warn!(path = %p, error = %e, "failed to adopt attachment; leaving staged path");
-                    p.clone()
-                }
-            }
-        })
+        .map(|p| adopt_one(&staging, dest_base, Path::new(p)).unwrap_or_else(|| p.clone()))
         .collect()
 }
 
+/// Move `path` into `dest_base` and return the rewritten path, but only if it
+/// genuinely resolves to a file **under** the already-canonical staging root.
+/// `None` leaves the caller's original string in place — for a dragged/browsed
+/// file kept at its own location, but also for a `..` or symlink path that
+/// escapes staging: moving such a path would drag an app-data file (e.g.
+/// `fletch.db`) into agent-readable space, whereas leaving it is safe (the
+/// sandbox still denies the agent that path). A lexical `starts_with` would miss
+/// both escapes — `.../attachments/../fletch.db` "starts with" the staging root.
+fn adopt_one(staging: &Path, dest_base: &Path, path: &Path) -> Option<String> {
+    let canonical = path.canonicalize().ok()?;
+    if !canonical.starts_with(staging) {
+        return None;
+    }
+    match move_into(dest_base, &canonical) {
+        Ok(dest) => Some(dest.to_string_lossy().into_owned()),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to adopt attachment; leaving staged path");
+            None
+        }
+    }
+}
+
 /// Move one staged file to a fresh UUID dir under `dest_base` and return the new
-/// path. The empty staging dir it leaves behind is removed best-effort.
+/// path. `path` is the canonicalized, verified-under-staging source. The empty
+/// staging dir it leaves behind is removed best-effort.
 fn move_into(dest_base: &Path, path: &Path) -> Result<PathBuf> {
     let name = path
         .file_name()
@@ -164,6 +183,58 @@ mod tests {
         );
 
         assert_eq!(out, vec![original]);
+    }
+
+    /// A `..` path that escapes the staging root is never moved: it lexically
+    /// "starts with" the staging root (the flaw a plain `starts_with` would
+    /// miss), but its canonical form resolves to a sibling of staging — e.g.
+    /// `fletch.db` — which must stay put, out of agent-readable space.
+    #[test]
+    fn a_traversal_path_out_of_staging_is_not_adopted() {
+        let staging = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let secret = staging.path().parent().unwrap().join("fletch.db");
+        std::fs::write(&secret, b"secrets").unwrap();
+        let escape = staging.path().join("..").join("fletch.db");
+        // The old, component-wise check would have accepted this.
+        assert!(escape.starts_with(staging.path()));
+        let escape_str = escape.to_string_lossy().into_owned();
+
+        let out = adopt_into(
+            staging.path(),
+            workspace.path(),
+            std::slice::from_ref(&escape_str),
+        );
+
+        assert_eq!(out.len(), 1);
+        assert!(
+            !Path::new(&out[0]).starts_with(workspace.path()),
+            "escaped path must not be moved into the workspace: {out:?}"
+        );
+        assert!(secret.exists(), "the escaped file must stay put");
+    }
+
+    /// A symlink inside staging pointing at a file outside it is not followed
+    /// into the workspace — canonicalization resolves the link before the
+    /// containment check, so the real target stays where it is.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_escaping_staging_is_not_adopted() {
+        let staging = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let secret = staging.path().parent().unwrap().join("fletch.db");
+        std::fs::write(&secret, b"secrets").unwrap();
+        let link = staging.path().join("innocent.png");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let out = adopt_into(
+            staging.path(),
+            workspace.path(),
+            std::slice::from_ref(&link.to_string_lossy().into_owned()),
+        );
+
+        assert!(!Path::new(&out[0]).starts_with(workspace.path()));
+        assert!(secret.exists(), "the symlink target must stay put");
     }
 
     /// A mixed list keeps order: staged files move, non-staged pass through.
