@@ -9,6 +9,14 @@
 //! Installers drop binaries into the usual per-user dirs (`~/.local/bin`,
 //! `~/.codex/bin`, …), all of which `bin_resolve` already scans, so a
 //! post-install re-probe picks the new agent up with no extra wiring.
+//!
+//! Cancel and timeout both tear a run down by dropping its future. On Unix
+//! that has to reach more than the process we spawned: `curl … | bash` runs
+//! the download and the shell that executes it as *children* of our `bash -c`,
+//! so killing only the leader would leave the install to finish behind a UI
+//! that already said "cancelled". The installer is therefore spawned as its
+//! own process-group leader and the whole group is signalled on teardown (see
+//! `spawn_installer_group` / `GroupKill`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -64,7 +72,8 @@ impl Drop for InFlightGuard {
 }
 
 /// Stop the installer running for `id`: the run's own future is dropped, which
-/// kills the child through `kill_on_drop` and emits `{id, phase: "cancelled"}`.
+/// kills the installer's whole process group — the `bash -c` leader *and* the
+/// `curl … | bash` pipeline it spawned — and emits `{id, phase: "cancelled"}`.
 /// Returns whether an install was actually in flight — cancelling an idle agent
 /// is a no-op, not an error.
 pub fn cancel(id: &str) -> bool {
@@ -83,6 +92,10 @@ pub fn cancel(id: &str) -> bool {
 /// line, then a final `{id, phase: "done"}`, `{id, phase: "failed", error}` or
 /// `{id, phase: "cancelled"}`. Resolves when the installer exits; the caller
 /// re-probes to confirm the binary actually appeared.
+///
+/// A cancel or a timeout resolves early and takes the installer's whole
+/// process group with it, so nothing keeps installing behind the terminal
+/// event.
 pub async fn install(
     id: String,
     emit: impl Fn(Value) + Send + Sync + 'static,
@@ -103,8 +116,9 @@ pub async fn install(
     emit(json!({ "id": id, "phase": "running", "line": format!("$ {cmd}") }));
     tracing::info!(agent = %id, %cmd, "running agent installer");
 
-    // A cancel drops the `run_streamed` future, and with it the child (spawned
-    // `kill_on_drop`) and its reader tasks — the same teardown the timeout gets.
+    // A cancel drops the `run_streamed` future, and with it the reader tasks,
+    // the process-group guard that reaps the installer's whole pipeline and the
+    // child itself — the same teardown the timeout below gets for free.
     let run = async {
         tokio::select! {
             result = run_streamed(&id, cmd, emit.clone()) => Some(result),
@@ -168,9 +182,11 @@ async fn run_streamed(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("spawn installer: {e}"))?;
+    // Bindings drop in reverse, so a cancel/timeout unwinds this as readers
+    // (declared below — they stop emitting), then the guard (signals the whole
+    // pipeline while the leader is still ours, i.e. unreaped), then the child.
+    let (mut child, mut group) =
+        spawn_installer_group(command).map_err(|e| format!("spawn installer: {e}"))?;
 
     let last_line = Arc::new(Mutex::new(String::new()));
     let streams: [Option<Box<dyn AsyncRead + Send + Unpin>>; 2] = [
@@ -207,6 +223,10 @@ async fn run_streamed(
         .wait()
         .await
         .map_err(|e| format!("wait installer: {e}"))?;
+    // The installer is reaped, so the kernel may hand its pid — which is the
+    // pgid — to someone else at any moment: stand the guard down. A `wait`
+    // that errors instead leaves it armed, since then nothing was reaped.
+    group.disarm();
     if status.success() {
         return Ok(());
     }
@@ -216,4 +236,154 @@ async fn run_streamed(
     } else {
         format!("installer exited with {status}: {last}")
     })
+}
+
+/// Spawn `command` together with the guard that reaps everything it starts.
+///
+/// Unix: `process_group(0)` makes the child `setpgid(0, 0)` itself, so its pid
+/// *is* the pgid and every descendant — the `curl`, the `bash` on the far end
+/// of the pipe — inherits it. One `killpg` then reaches the whole install.
+/// `kill_on_drop` stays on as belt-and-braces for the leader.
+///
+/// Windows: the pinned installers are `irm … | iex`, which runs the downloaded
+/// script *inside* the PowerShell process, so killing that one process is
+/// killing the install and `kill_on_drop` already does it. Job objects would
+/// only be needed for an installer that forks, and none of the pinned ones do.
+///
+/// Split out of `run_streamed` so a test can drive the exact spawn/teardown
+/// pair production uses against a harmless command.
+#[cfg(unix)]
+fn spawn_installer_group(
+    mut command: tokio::process::Command,
+) -> std::io::Result<(tokio::process::Child, GroupKill)> {
+    use std::os::unix::process::CommandExt;
+
+    command.as_std_mut().process_group(0);
+    let child = command.spawn()?;
+    let pid = child
+        .id()
+        .ok_or_else(|| std::io::Error::other("installer had no pid right after spawn"))?;
+    let guard = GroupKill {
+        pgid: nix::unistd::Pid::from_raw(pid as i32),
+        armed: true,
+    };
+    Ok((child, guard))
+}
+
+#[cfg(not(unix))]
+fn spawn_installer_group(
+    mut command: tokio::process::Command,
+) -> std::io::Result<(tokio::process::Child, GroupKill)> {
+    Ok((command.spawn()?, GroupKill))
+}
+
+/// Kills the installer's process group when dropped — which is what makes
+/// cancel and timeout honest, since both tear the run down by dropping its
+/// future and `kill_on_drop` alone would only reach the `bash -c` leader.
+///
+/// Armed at spawn and disarmed once the child has been waited for, so a pgid
+/// the kernel later recycles can never be signalled by a stale guard.
+#[cfg(unix)]
+struct GroupKill {
+    pgid: nix::unistd::Pid,
+    armed: bool,
+}
+
+#[cfg(unix)]
+impl GroupKill {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let pgid = self.pgid;
+        // `kill_process_group` escalates HUP → TERM → KILL and sleeps between
+        // the steps while it polls, so it runs on its own thread: this drop
+        // happens on a runtime worker (the cancelled future's), and blocking it
+        // would stall the runtime — and stop tokio from reaping the leader we
+        // just killed, which is what the poll is waiting to see.
+        std::thread::spawn(move || {
+            if let Err(e) = crate::pty_session::kill_process_group(pgid) {
+                // Signals were delivered; only the confirming probe failed —
+                // typically because our own leader is still an unreaped zombie,
+                // which keeps the group "alive" for a moment longer.
+                tracing::debug!(pgid = pgid.as_raw(), error = %e, "installer group teardown unconfirmed");
+            }
+        });
+    }
+}
+
+/// See `spawn_installer_group`: on Windows the installer has no descendants to
+/// reap, so the guard is an inert placeholder that keeps `run_streamed` common.
+#[cfg(not(unix))]
+struct GroupKill;
+
+#[cfg(not(unix))]
+impl GroupKill {
+    fn disarm(&mut self) {}
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// The installer stand-in: a shell that backgrounds a `sleep` (same process
+    /// group — non-interactive bash has no job control) and blocks on `wait`,
+    /// mirroring how `curl … | bash` leaves work running under the leader.
+    /// `kill_on_drop` alone would leave the `sleep` behind, exactly the way a
+    /// cancelled install used to keep installing, so its death proves the whole
+    /// group was signalled.
+    #[tokio::test]
+    async fn dropping_the_guard_kills_descendants_not_just_the_leader() {
+        use nix::errno::Errno;
+        use std::time::Instant;
+
+        let td = tempfile::tempdir().unwrap();
+        let pidfile = td.path().join("descendant.pid");
+        let script = format!("sleep 30 & echo $! > '{}'; wait", pidfile.display());
+
+        let mut command = tokio::process::Command::new("bash");
+        command
+            .args(["-c", &script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let (child, group) = spawn_installer_group(command).unwrap();
+
+        let start = Instant::now();
+        let descendant = loop {
+            if let Ok(pid) = std::fs::read_to_string(&pidfile)
+                .unwrap_or_default()
+                .trim()
+                .parse::<i32>()
+            {
+                break nix::unistd::Pid::from_raw(pid);
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "backgrounded child never started"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+
+        // The teardown a cancel or a timeout performs, in the same order.
+        drop(group);
+        drop(child);
+
+        let start = Instant::now();
+        while !matches!(nix::sys::signal::kill(descendant, None), Err(Errno::ESRCH)) {
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "descendant {descendant} outlived the cancelled installer"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
 }

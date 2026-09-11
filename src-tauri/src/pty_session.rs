@@ -252,10 +252,14 @@ impl PtySession {
 ///
 /// Returns `Ok` only with positive evidence the group is gone (a probe or a
 /// send seeing `ESRCH`). `EPERM` (can't signal — e.g. a reused pgid now owned
-/// by another user) or a group that outlives `SIGKILL` yields `Err`, so we
-/// never report a reap we couldn't confirm.
+/// by another user, or a member that is still an unreaped zombie) or a group
+/// that outlives `SIGKILL` yields `Err`, so we never report a reap we couldn't
+/// confirm.
+///
+/// Shared with `agent_install`, which reaps a cancelled installer's
+/// `curl … | bash` pipeline through the same escalation.
 #[cfg(unix)]
-fn kill_process_group(pgid: nix::unistd::Pid) -> Result<()> {
+pub(crate) fn kill_process_group(pgid: nix::unistd::Pid) -> Result<()> {
     use nix::errno::Errno;
     use nix::sys::signal::Signal::{SIGHUP, SIGKILL, SIGTERM};
 
