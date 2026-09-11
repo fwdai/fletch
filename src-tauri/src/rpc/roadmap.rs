@@ -37,7 +37,7 @@
 //!   replacing it) that only the user's ruling applies. The PM can reshape the
 //!   board it argued for without ever holding the pen.
 //! - `roadmap_propose_order` — the same contract for the board's *order*: a
-//!   whole-board ask ([`crate::roadmap::order`]) naming every orderable item in
+//!   whole-board ask ([`crate::roadmap::order_proposals`]) naming every orderable item in
 //!   the sequence the PM argues for. Board scoped rather than item scoped, and
 //!   refused unless it covers the orderable set exactly, so what the user rules
 //!   on is unambiguous.
@@ -68,11 +68,11 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
+use crate::roadmap::brakes::{self, ProjectHold};
 use crate::roadmap::deps;
 use crate::roadmap::events::{self, EventActor, EventKind, ItemEvent};
-use crate::roadmap::holds::{self, ProjectHold};
 use crate::roadmap::memory::{self, BriefProposal};
-use crate::roadmap::order::{self, OrderProposal};
+use crate::roadmap::order_proposals::{self, OrderProposal};
 use crate::roadmap::proposals::{self, Proposal, ProposalKind, ProposalPatch};
 use crate::roadmap::store;
 use crate::roadmap::types::{Horizon, ItemPatch, ItemSource, ItemStatus, NewItem, RoadmapItem};
@@ -173,7 +173,7 @@ struct ProposeDiscardArgs {
 
 /// `roadmap_propose_order` args: the whole new sequence, and why. `codes` must
 /// name every orderable item on the board — the refusal says which are missing
-/// or don't belong (see [`order::validate_order`]).
+/// or don't belong (see [`order_proposals::validate_order`]).
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProposeOrderArgs {
@@ -1118,7 +1118,7 @@ fn hold_op(
         Ok(a) => a,
         Err(e) => return err(e),
     };
-    let reason = match holds::clean_reason(&args.reason) {
+    let reason = match brakes::clean_reason(&args.reason) {
         Ok(reason) => reason,
         Err(e) => return err(e),
     };
@@ -1132,7 +1132,7 @@ fn hold_op(
     if scope == PROJECT_SCOPE {
         // No item event: a board-wide stop belongs to no row (see
         // `roadmap::roadmap_hold_project`). The hold row is the durable record.
-        let stored = match holds::hold_project(conn, project_id, &reason, EventActor::Pm) {
+        let stored = match brakes::hold_project(conn, project_id, &reason, EventActor::Pm) {
             Ok(hold) => hold,
             Err(e) => return err(e.to_string()),
         };
@@ -1225,11 +1225,11 @@ fn propose_order_op(
     // Validated here *and* at ruling time, against the same function: the board
     // moves while an ask is pending, and the user's click must not apply a
     // sequence that no longer covers it.
-    if let Err(e) = order::validate_order(&codes, &items) {
+    if let Err(e) = order_proposals::validate_order(&codes, &items) {
         return err(e);
     }
     let note = clean(args.note.as_deref());
-    let stored = match order::upsert(conn, project_id, &codes, note.as_deref()) {
+    let stored = match order_proposals::upsert(conn, project_id, &codes, note.as_deref()) {
         Ok(p) => p,
         Err(e) => return err(e.to_string()),
     };
@@ -2263,7 +2263,7 @@ mod tests {
             "the same workflow has failed the same way twice"
         );
         assert_eq!(stored.held_by, EventActor::Pm);
-        assert_eq!(holds::get_project(&db.lock(), "p1").unwrap(), Some(stored));
+        assert_eq!(brakes::get_project(&db.lock(), "p1").unwrap(), Some(stored));
 
         // No item was touched, and no item history invented.
         let rows = store::list(&db.lock(), "p1").unwrap();
@@ -2277,7 +2277,7 @@ mod tests {
     fn hold_rejects_bad_asks_precisely() {
         let db = test_db("p1");
         assert!(propose(&db, one_item("target")).ok); // MCA-100
-        let long = "x".repeat(holds::MAX_REASON + 1);
+        let long = "x".repeat(brakes::MAX_REASON + 1);
 
         for (args, needle) in [
             (json!({"scope": "MCA-777", "reason": "why"}), "no item"),
@@ -2314,12 +2314,12 @@ mod tests {
         assert!(!hold(&db, Value::Null).0.ok);
         let rows = store::list(&db.lock(), "p1").unwrap();
         assert!(rows.iter().all(|i| !i.is_held()));
-        assert!(holds::get_project(&db.lock(), "p1").unwrap().is_none());
+        assert!(brakes::get_project(&db.lock(), "p1").unwrap().is_none());
 
         // Exactly at the cap is fine — the refusal is for going over it.
         let (resp, _) = hold(
             &db,
-            json!({"scope": "MCA-100", "reason": "y".repeat(holds::MAX_REASON)}),
+            json!({"scope": "MCA-100", "reason": "y".repeat(brakes::MAX_REASON)}),
         );
         assert!(resp.ok, "{resp:?}");
     }
@@ -2376,7 +2376,7 @@ mod tests {
 
         assert!(hold(&db, json!({"scope": "project", "reason": "one"})).0.ok);
         assert!(hold(&db, json!({"scope": "project", "reason": "two"})).0.ok);
-        let stored = holds::get_project(&db.lock(), "p1").unwrap().unwrap();
+        let stored = brakes::get_project(&db.lock(), "p1").unwrap().unwrap();
         assert_eq!(stored.reason, "two", "one hold per board");
     }
 
@@ -2689,7 +2689,7 @@ mod tests {
         }
         // Args at all are required, and nothing above parked an ask.
         assert!(!propose_order(&db, Value::Null).0.ok);
-        assert!(order::get(&db.lock(), "p1").unwrap().is_none());
+        assert!(order_proposals::get(&db.lock(), "p1").unwrap().is_none());
     }
 
     #[test]
@@ -2709,7 +2709,7 @@ mod tests {
         );
         assert!(resp.ok, "{resp:?}");
         // One pending ask per board — the user rules on the current position.
-        assert_eq!(order::get(&db.lock(), "p1").unwrap(), stored);
+        assert_eq!(order_proposals::get(&db.lock(), "p1").unwrap(), stored);
         assert_eq!(stored.unwrap().codes, vec!["MCA-101", "MCA-100"]);
     }
 
