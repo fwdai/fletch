@@ -205,6 +205,10 @@ export function Composer({
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const customAgents = useAppStore((s) => s.customAgents);
   const sandboxEngine = useAppStore((s) => s.sandboxEngine);
+  // The listening tooltip promises one of two things — "stops when you pause"
+  // or "stop it yourself" — and which is true is the user's setting, not the
+  // engine's doing: both engines honour it.
+  const dictationAutoStop = useAppStore((s) => s.dictationAutoStop);
 
   // Hide the thinking-effort picker for a model the catalog knows can't reason.
   // When the model is unknown (a new session before the first turn, or one the
@@ -495,7 +499,7 @@ export function Composer({
           <PrimaryControl
             state={state}
             dictationAvailable={dictationAvailable}
-            autoStops={dictation.availability?.engine === "whisper"}
+            autoStops={dictationAutoStop}
             levels={dictation.levels}
             startedAt={dictation.startedAt}
             sendBlocked={sendBlocked}
