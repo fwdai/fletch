@@ -543,6 +543,41 @@
   border-color: var(--bd);
 }
 
+/* Install states. The row keeps the same geometry in all of them — only the
+   dot, the sub-line, the chips and the right-hand action change — so nothing
+   moves under the cursor as an install progresses. `installed` is the default
+   look and has no class of its own. */
+.set-prov.missing {
+  background: color-mix(in oklch, var(--bg-2), var(--bg-1) 55%);
+  border-style: dashed;
+}
+.set-prov.missing:hover {
+  border-style: solid;
+}
+/* Desaturate the brand mark: the agent isn't here yet. */
+.set-prov.missing .chip-mono {
+  filter: saturate(0) brightness(0.9);
+  opacity: 0.6;
+}
+.set-prov.installing {
+  border-color: var(--accent-line);
+}
+.set-prov.failed {
+  border-color: color-mix(in oklch, var(--danger), transparent 60%);
+}
+.set-prov.fresh {
+  border-color: color-mix(in oklch, var(--success), transparent 55%);
+  animation: set-prov-fresh 1.6s var(--ease) both;
+}
+@keyframes set-prov-fresh {
+  from {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--success), transparent 60%);
+  }
+  to {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
 .set-prov-main {
   gap: 13px;
   padding: 13px 15px;
@@ -562,6 +597,23 @@
 .set-prov-status.none {
   background: var(--fg-3);
   box-shadow: none;
+}
+.set-prov-status.busy {
+  background: var(--accent);
+  animation: set-prov-pulse 1.1s var(--ease) infinite;
+}
+.set-prov-status.bad {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--danger), transparent 84%);
+}
+@keyframes set-prov-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 84%);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in oklch, var(--accent), transparent 92%);
+  }
 }
 
 .chip-mono {
@@ -619,6 +671,11 @@
   font-weight: 400;
   white-space: nowrap;
 }
+/* Version of something we just installed — the confirmation, in the success
+   colour, next to the "Installed just now" chip. */
+.set-prov-ver.new {
+  color: var(--success);
+}
 .set-prov-sub {
   gap: 6px;
   color: var(--fg-2);
@@ -626,6 +683,66 @@
 }
 .set-prov-sub.muted {
   color: var(--fg-3);
+}
+.set-prov-sub.bad {
+  color: var(--danger);
+}
+
+/* Row chips: a pill in the name line that replaces the version when there
+   isn't one to show. */
+.set-badge {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--bd-soft);
+  color: var(--fg-2);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.set-badge.none {
+  background: var(--bg-1);
+}
+.set-badge.ok {
+  color: var(--success);
+  border-color: color-mix(in oklch, var(--success), transparent 60%);
+  background: color-mix(in oklch, var(--success), transparent 90%);
+}
+
+/* The toggle's tooltip wrapper: a disabled button gets no pointer events, so
+   "Install first" has to hang off a span around it. */
+.set-toggle-tip {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* Indeterminate hairline under an installing row. Vendor installers report no
+   percentages, so this sweeps rather than fills — never a faked percent. */
+.set-prov-bar {
+  position: relative;
+  top: -1px;
+  height: 2px;
+  margin: 0 15px 0 71px;
+  border-radius: 1px;
+  background: var(--bd-soft);
+  overflow: hidden;
+}
+.set-prov-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: set-prov-sweep 1.4s var(--ease) infinite;
+}
+@keyframes set-prov-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(290%);
+  }
 }
 
 .set-prov-chev {
@@ -748,6 +865,90 @@
 }
 .set-prov-detail-actions .grow {
   flex: 1;
+}
+
+/* One-line explanation above an install action (or a confirmation under one). */
+.set-prov-hint {
+  margin: 0 0 10px;
+  color: var(--fg-2);
+  line-height: var(--lh-normal);
+}
+.set-prov-hint.ok {
+  color: var(--success);
+  margin: 10px 0 0;
+}
+
+/* The install offer: icon, name + exact command, copy + Install. */
+.set-prov-opt {
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+.set-prov-opt-ic {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  justify-content: center;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.set-prov-opt-t {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.set-prov-opt-n {
+  font-weight: 500;
+  color: var(--fg-0);
+}
+.set-prov-opt-s {
+  margin-top: 2px;
+  color: var(--fg-2);
+}
+.set-prov-opt-a {
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* The installer's own output. Scrolls, pinned to the tail while it streams. */
+.set-prov-log {
+  margin-top: 10px;
+  max-height: 132px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--bg-0);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  color: var(--fg-2);
+  line-height: var(--lh-relaxed);
+}
+.set-prov-log pre {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.set-prov-log pre.err {
+  color: var(--danger);
+}
+
+/* The pulse, the fresh ring and the sweep are all decoration — the dot colour,
+   the border and the log carry the same information without them. */
+@media (prefers-reduced-motion: reduce) {
+  .set-prov.fresh,
+  .set-prov-status.busy {
+    animation: none;
+  }
+  .set-prov-bar::after {
+    width: 100%;
+    opacity: 0.55;
+    animation: none;
+  }
 }
 /* Button/IconButton variant rules now live together in
    styles/shared/icon-button.css. */

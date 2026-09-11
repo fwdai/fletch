@@ -88,12 +88,16 @@ export function SetToggle({
   on,
   onClick,
   disabled,
+  tip,
 }: {
   on: boolean;
   onClick: () => void;
   disabled?: boolean;
+  /** Why the toggle can't be flipped. Only shown while `disabled` — that's the
+   *  state that needs explaining. */
+  tip?: string;
 }) {
-  return (
+  const toggle = (
     <button
       type="button"
       className="set-toggle"
@@ -106,6 +110,15 @@ export function SetToggle({
     >
       <i />
     </button>
+  );
+  // A disabled button receives no pointer events, so the CSS-only tooltip has
+  // to hang off a wrapper or it would never show.
+  return disabled && tip ? (
+    <span className="tip set-toggle-tip" data-tip={tip}>
+      {toggle}
+    </span>
+  ) : (
+    toggle
   );
 }
 

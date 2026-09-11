@@ -5,68 +5,24 @@
 // command shown for transparency; while this step is on screen the shared
 // setup hook re-probes every few seconds, so an install finishing — ours or
 // one the user ran in their own terminal — lights the tile up by itself.
+//
+// The install state machine itself lives in the store (store/agentInstall.ts),
+// shared with Settings › Providers: this step only renders it.
 
-import { type CSSProperties, useEffect, useRef, useState } from "react";
-import { type AgentInstallEvent, api, onAgentInstallState } from "@/api";
+import type { CSSProperties } from "react";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { DocsLink } from "@/components/ui/DocsLink";
 import { installCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
-import type { ProviderId } from "@/data/providers";
-import { track } from "@/util/track";
+import { useAppStore } from "@/store";
 import { ExBar } from "./exhibits";
-import { CopyCmd, DocsLink, SetupStep } from "./SetupBits";
+import { CopyCmd, SetupStep } from "./SetupBits";
 import type { OnboardingSetup } from "./useSetup";
-
-type InstallState = { phase: "running"; line?: string } | { phase: "failed"; error: string };
 
 export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: () => void }) {
   const { agents, detected, hasAgent, providersProbed, providerVersions, providerPaths } = setup;
-  const [installs, setInstalls] = useState<Partial<Record<ProviderId, InstallState>>>({});
-  const installsRef = useRef(installs);
-  installsRef.current = installs;
-
-  // Stream installer output into the running tile's status line.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void onAgentInstallState((e: AgentInstallEvent) => {
-      const id = e.id as ProviderId;
-      if (e.phase !== "running" || installsRef.current[id]?.phase !== "running") return;
-      setInstalls((m) => ({ ...m, [id]: { phase: "running", line: e.line } }));
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  const install = (id: ProviderId) => {
-    setInstalls((m) => ({ ...m, [id]: { phase: "running" } }));
-    // At least one agent CLI is the hard gate on this step, so a failing
-    // one-click install is a dead stop. Provider id only — the installer's
-    // error text is a raw shell message and never leaves the machine.
-    track("agent_cli_install_started", { provider: id });
-    void api.installAgent(id).then(
-      async () => {
-        track("agent_cli_install_succeeded", { provider: id });
-        // The install itself succeeded — the probe refresh is best-effort.
-        // If it throws, clear the tile anyway rather than masking a good
-        // install as "failed"; the 4s auto-poll picks the binary up.
-        await setup.refreshProviders().catch(() => {});
-        setInstalls((m) => {
-          const { [id]: _done, ...rest } = m;
-          return rest;
-        });
-      },
-      (err) => {
-        track("agent_cli_install_failed", { provider: id });
-        setInstalls((m) => ({ ...m, [id]: { phase: "failed", error: String(err) } }));
-      },
-    );
-  };
+  const installs = useAppStore((s) => s.installs);
+  const installAgent = useAppStore((s) => s.installAgent);
 
   return (
     <SetupStep
@@ -104,10 +60,14 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
                 // Platform-aware: also gates the one-click button, mirroring
                 // which agents the backend can actually script-install here.
                 const cmd = installCommand(p.id);
+                // A run stopped from Settings is still winding down here, so it
+                // keeps the spinner rather than flashing Install back up.
+                const busy = inst?.phase === "running" || inst?.phase === "cancelling";
                 const cls = ok ? "ok" : inst?.phase === "failed" ? "failed" : "";
                 let sub: React.ReactNode;
                 if (ok) sub = d.signIn ?? d.models;
                 else if (inst?.phase === "running") sub = inst.line ?? "installing…";
+                else if (inst?.phase === "cancelling") sub = "cancelling…";
                 else if (inst?.phase === "failed") sub = <span className="err">{inst.error}</span>;
                 else sub = cmd ?? "install via the setup guide";
                 return (
@@ -123,7 +83,7 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
                           <Icon name="check" size={11} strokeWidth={2} />
                           {providerVersions[p.id] ?? "installed"}
                         </span>
-                      ) : inst?.phase === "running" ? (
+                      ) : busy ? (
                         <span className="ob-spinner" />
                       ) : inst?.phase === "failed" ? (
                         <>
@@ -131,7 +91,7 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
                           <button
                             type="button"
                             className="ob-ag-install"
-                            onClick={() => install(p.id)}
+                            onClick={() => void installAgent(p.id)}
                           >
                             Retry
                           </button>
@@ -140,7 +100,7 @@ export function AgentsStep({ setup, onSkip }: { setup: OnboardingSetup; onSkip: 
                         <button
                           type="button"
                           className="ob-ag-install"
-                          onClick={() => install(p.id)}
+                          onClick={() => void installAgent(p.id)}
                         >
                           Install
                         </button>

@@ -19,6 +19,10 @@ export const providersApi = {
    *  `agent-install:state` events; resolves when the installer exits. Callers
    *  re-probe providers afterwards to confirm detection. */
   installAgent: (id: string) => invoke<void>("install_agent", { id }),
+  /** Stop a running agent installer. The run emits a final `cancelled`
+   *  `agent-install:state` event; resolves to false when nothing was in
+   *  flight (the install had already finished). */
+  cancelAgentInstall: (id: string) => invoke<boolean>("cancel_agent_install", { id }),
   /** Check a candidate custom binary path before saving it as an override. */
   validateAgentBin: (path: string) => invoke<BinValidation>("validate_agent_bin", { path }),
   /** Set (or clear, with a null/blank path) a per-agent custom binary path.

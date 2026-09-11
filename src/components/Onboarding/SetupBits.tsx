@@ -1,9 +1,8 @@
 // Shared atoms for the functional onboarding steps: the editorial left
 // column (eyebrow / title / lede / points — the Beat layout, kept from the
-// tour), plus the small copy-command and docs-link affordances the status
-// cards use.
+// tour), plus the small copy-command affordance the status cards use. The
+// docs link is shared app-wide — see `components/ui/DocsLink`.
 
-import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { type CSSProperties, type ReactNode, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 
@@ -87,19 +86,6 @@ export function CopyCmd({ cmd }: { cmd: string }) {
     >
       <code>{cmd}</code>
       <Icon name={copied ? "check" : "copy"} size={10} />
-    </button>
-  );
-}
-
-export function DocsLink({ url, label = "Setup guide" }: { url: string; label?: string }) {
-  return (
-    <button
-      type="button"
-      className="rdy-docs iflex-center text-sm"
-      onClick={() => void openExternal(url)}
-    >
-      {label}
-      <Icon name="external" size={10} />
     </button>
   );
 }

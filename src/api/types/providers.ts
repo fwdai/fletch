@@ -46,10 +46,11 @@ export interface DetectedEditor {
 
 /** Payload of the `agent-install:state` event: progress of a one-click agent
  *  CLI install (`api.installAgent`). `line` carries installer output while
- *  running; `error` is set on the final `failed` payload. */
+ *  running; `error` is set on the final `failed` payload. `cancelled` is the
+ *  terminal phase of a run the user stopped (`api.cancelAgentInstall`). */
 export interface AgentInstallEvent {
   id: string;
-  phase: "running" | "done" | "failed";
+  phase: "running" | "done" | "failed" | "cancelled";
   line?: string;
   error?: string;
 }

@@ -12,6 +12,7 @@ import {
   onAgentEffort,
   onAgentEvent,
   onAgentGitAction,
+  onAgentInstallState,
   onAgentModel,
   onAgentOutput,
   onAgentRepoAdded,
@@ -66,6 +67,7 @@ import { getAllSettings } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { notify } from "@/util/notify";
 import { playAgentDone } from "@/util/sound";
+import { reduceInstallEvent } from "./agentInstall";
 import { interruptedAgents } from "./interrupted";
 import { stampPrWrite } from "./prWriteOrder";
 import { refreshWorkspace } from "./refreshWorkspace";
@@ -530,6 +532,13 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // build toast; `applyBuildEvent` (store/sandbox) owns the per-runtime routing.
   await onDockerBuildProgress((e) => {
     set((s) => ({ containerBuilds: applyBuildEvent(s.containerBuilds, e) }));
+  });
+
+  // One-click agent CLI install progress. Registered app-wide (not per
+  // surface) so onboarding's agents step and Settings › Providers read the
+  // same run — and so a pane unmounting mid-install doesn't lose its output.
+  await onAgentInstallState((e) => {
+    set((s) => ({ installs: reduceInstallEvent(s.installs, e) }));
   });
 };
 
