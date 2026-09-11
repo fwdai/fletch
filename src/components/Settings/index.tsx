@@ -1,6 +1,7 @@
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { Scrim } from "@/components/ui/Scrim";
+import { modelSummary } from "@/data/modelCatalog";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { ACCENTS, PROVIDERS } from "@/data/providers";
 import type { FeatureFlags, ThemeMode } from "@/storage/preferences";
@@ -56,6 +57,7 @@ function Popover({ onClose }: { onClose: () => void }) {
   const accent = useAppStore((s) => s.accent);
   const setAccent = useAppStore((s) => s.setAccent);
   const providerVersions = useAppStore((s) => s.providerVersions);
+  const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
 
   return (
@@ -107,11 +109,11 @@ function Popover({ onClose }: { onClose: () => void }) {
 
       <SettingsSection title="Providers">
         {PROVIDERS.map((p) => {
-          // Honest, non-user-specific model routing, plus the live-probed
-          // version when the backend has resolved it — never a fabricated plan
-          // name or version string.
+          // Live-discovered models (static description until the catalog has
+          // data), plus the live-probed version when the backend has resolved
+          // it — never a fabricated plan name or version string.
           const version = providerVersions[p.id];
-          const models = PROVIDER_DETAIL[p.id].models;
+          const models = modelSummary(modelsByAgent[p.id]) ?? PROVIDER_DETAIL[p.id].models;
           const description = [models, version].filter(Boolean).join(" · ");
           return (
             <SettingsRow key={p.id} label={p.label} description={description}>

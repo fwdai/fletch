@@ -10,6 +10,7 @@ import { buildCatalog } from "./build";
 import { fetchModelsDevIndex } from "./modelsDev";
 import type { AgentModels, UnifiedCatalog } from "./types";
 
+export { modelSummary } from "./build";
 export { lookupModel, lookupModelInList } from "./normalize";
 export type { ModelMeta, SlimCatalog } from "./types";
 

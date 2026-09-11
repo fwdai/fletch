@@ -17,7 +17,10 @@ export interface ThinkingLevel {
 export interface ProviderDetail {
   /** Fallback binary path, shown before the live probe resolves. */
   path: string;
-  /** Models exposed by this agent. */
+  /** Fallback one-line model description. Settings surfaces prefer the live
+   *  catalog (`modelsByAgent` + `modelSummary`); this shows until discovery has
+   *  produced data for the agent, and in onboarding, which runs before any
+   *  catalog exists. */
   models: string;
   /** Detected & configured on this machine — drives the "Installed" list. */
   installed: boolean;

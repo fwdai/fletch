@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCatalog, capPerGroup, dedupeBest } from "@/data/modelCatalog/build";
+import { buildCatalog, capPerGroup, dedupeBest, modelSummary } from "@/data/modelCatalog/build";
 import { indexModelsDev } from "@/data/modelCatalog/modelsDev";
 import { lookupModel, lookupModelInList, modelIdCandidates } from "@/data/modelCatalog/normalize";
 import type { AgentModels, ModelMeta, SlimCatalog } from "@/data/modelCatalog/types";
@@ -717,5 +717,18 @@ describe("capPerGroup", () => {
   it("drops every model in a group capped at zero", () => {
     const out = capPerGroup([model("a-1"), model("b-1")], byPrefix, { a: 0, b: 1 });
     expect(out.map((m) => m.id)).toEqual(["b-1"]);
+  });
+});
+
+describe("modelSummary", () => {
+  it("joins up to three names and counts the rest", () => {
+    const models = [model("a", "A"), model("b", "B"), model("c", "C"), model("d", "D")];
+    expect(modelSummary(models)).toBe("A · B · C +1 more");
+    expect(modelSummary(models.slice(0, 2))).toBe("A · B");
+  });
+
+  it("is null for an empty or absent list, so callers fall back", () => {
+    expect(modelSummary(undefined)).toBeNull();
+    expect(modelSummary([])).toBeNull();
   });
 });
