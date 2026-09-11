@@ -1,4 +1,3 @@
-
 use rusqlite_migration::{Migrations, M};
 
 use super::*;

@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn graph(edges: &[(&str, &[&str])]) -> Graph {
