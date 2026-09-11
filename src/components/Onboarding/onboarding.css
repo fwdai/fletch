@@ -73,19 +73,6 @@
   color: var(--fg-1);
   font-weight: 500;
 }
-.ob-skip {
-  color: var(--fg-3);
-  padding: 4px 8px;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  transition:
-    color 0.12s,
-    background 0.12s;
-}
-.ob-skip:hover {
-  color: var(--fg-1);
-  background: var(--hover);
-}
 .ob-close {
   display: grid;
   place-items: center;

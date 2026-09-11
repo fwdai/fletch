@@ -65,7 +65,7 @@ export function Onboarding() {
   }, [firstRun]);
 
   // The funnel. One event per step reveal gives the whole drop-off curve;
-  // the skip/abandon/complete events below say *how* each user left.
+  // the abandon/complete events below say *how* each user left.
   useEffect(() => {
     track("onboarding_step_viewed", { step: STEPS[idx], index: idx, first_run: firstRun });
   }, [idx, firstRun]);
@@ -105,10 +105,11 @@ export function Onboarding() {
   const showNext = step === "git" || step === "github" || step === "agents";
 
   // Exactly one terminal event per onboarding session, whichever exit the user
-  // takes: Esc, ✕, and "Enter Fletch" all funnel through `leave`. A ref (not
+  // takes: the ✕ and "Enter Fletch" both funnel through `leave`. A ref (not
   // state) guards it, so a second call during the closing render can't
   // double-count. `completed` carries what the user actually finished with —
-  // the handoff is reachable with gaps via Skip, so the flags are the point.
+  // the handoff is reachable with gaps via the per-step skips, so the flags
+  // are the point.
   const leftRef = useRef(false);
   const leave = useCallback(
     (reason: "completed" | "abandoned") => {
@@ -151,8 +152,9 @@ export function Onboarding() {
   // add their first repo from the sidebar — no auto-picker.
   const onEnter = useCallback(() => leave("completed"), [leave]);
 
-  // A step's own opt-out ("I use GitLab…", "Set up later"), distinct from the
-  // title-bar Skip: it declines one requirement rather than the whole flow.
+  // A step's own opt-out ("I use GitLab…", "Set up later"). The only way to
+  // decline a requirement: it skips one step, not the whole flow, so the user
+  // still reaches the handoff and sees what's left unmet.
   const skipStep = useCallback(() => {
     track("onboarding_step_skipped", { step, first_run: firstRun });
     next();
@@ -163,9 +165,10 @@ export function Onboarding() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       const inField = tag === "TEXTAREA" || tag === "INPUT";
-      if (e.key === "Escape") {
-        leave(step === "ready" ? "completed" : "abandoned");
-      } else if (e.key === "Enter" && step === "welcome" && !busy) {
+      // Deliberately no Escape binding: closing is a one-way door (it persists
+      // `onboardingComplete`, and only Settings › Developer can reopen it), so
+      // a stray Esc must not end first-run setup. The ✕ is always visible.
+      if (e.key === "Enter" && step === "welcome" && !busy) {
         onAuth("github");
       } else if ((e.key === "ArrowRight" || e.key === "Enter") && showNext && !inField) {
         if (!canContinue) return;
@@ -178,7 +181,7 @@ export function Onboarding() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, busy, step, showNext, canContinue, next, back, leave]);
+  }, [idx, busy, step, showNext, canContinue, next, back]);
 
   let content = null;
   if (step === "welcome")
@@ -191,7 +194,7 @@ export function Onboarding() {
       ) : (
         <WelcomeStep onAuth={onAuth} busy={busy} />
       );
-  else if (step === "git") content = <GitStep setup={setup} />;
+  else if (step === "git") content = <GitStep setup={setup} onSkip={skipStep} />;
   else if (step === "github") content = <GithubStep setup={setup} onSkip={skipStep} />;
   else if (step === "agents") content = <AgentsStep setup={setup} onSkip={skipStep} />;
   else if (step === "ready") content = <ReadyStep setup={setup} onEnter={onEnter} />;
@@ -212,20 +215,9 @@ export function Onboarding() {
               <b>{Math.min(idx + 1, RAIL_LEN)}</b> / {RAIL_LEN}
             </span>
           )}
-          {step !== "ready" && (
-            <button
-              className="ob-skip text-sm"
-              onClick={() => {
-                track("onboarding_skipped", { step, first_run: firstRun });
-                go(STEPS.length - 1);
-              }}
-            >
-              Skip
-            </button>
-          )}
           <button
             className="ob-close"
-            title="Close (Esc)"
+            title="Close onboarding"
             aria-label="Close onboarding"
             onClick={() => leave(step === "ready" ? "completed" : "abandoned")}
           >

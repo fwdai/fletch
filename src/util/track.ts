@@ -54,14 +54,14 @@ interface EventMap {
   // ── onboarding funnel ────────────────────────────────────────────────────
   /** A step came on screen. The whole drop-off curve is derivable from this. */
   onboarding_step_viewed: OnboardingCommon & { step: OnboardingStep; index: number };
-  /** A per-step opt-out ("I use GitLab…", "Set up later"). */
+  /** A per-step opt-out ("I use GitLab…", "Set up later") — the only way to
+   *  decline a requirement, and the sole skip signal now that the title-bar
+   *  Skip is gone. */
   onboarding_step_skipped: OnboardingCommon & { step: OnboardingStep };
-  /** The title-bar Skip, which jumps straight to the handoff. */
-  onboarding_skipped: OnboardingCommon & { step: OnboardingStep };
-  /** Esc / ✕ before reaching the handoff — the "gave up here" signal. */
+  /** The ✕ before reaching the handoff — the "gave up here" signal. */
   onboarding_abandoned: OnboardingCommon & { step: OnboardingStep };
   /** "Enter Fletch", with what the user actually finished with. Reachable with
-   *  gaps via Skip, so the flags matter. */
+   *  gaps via the per-step skips, so the flags matter. */
   onboarding_completed: OnboardingCommon & {
     git_ready: boolean;
     gh_connected: boolean;
