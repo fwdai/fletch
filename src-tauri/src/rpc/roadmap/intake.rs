@@ -10,6 +10,8 @@ use crate::rpc::Response;
 use super::args::{clean, clean_list, one_of, parse_args, ProposeArgs, ProposedItem};
 use super::duplicates::duplicate_warnings;
 
+pub(super) type Proposed = (Vec<RoadmapItem>, Vec<ItemEvent>);
+
 /// Most items one `roadmap_propose` call may carry. A proposal is a thing a
 /// human reads and accepts; past a score of rows that stops being true, and the
 /// PM should be slicing rather than dumping a backlog.
@@ -117,14 +119,8 @@ pub(super) fn propose_op(
     project_id: &str,
     id: &str,
     args: &Value,
-) -> (Response, Vec<RoadmapItem>, Vec<ItemEvent>) {
-    let err = |msg: String| {
-        (
-            Response::err(id, format!("roadmap_propose: {msg}")),
-            Vec::new(),
-            Vec::new(),
-        )
-    };
+) -> (Response, Option<Proposed>) {
+    let err = |msg: String| (Response::err(id, format!("roadmap_propose: {msg}")), None);
 
     let args: ProposeArgs = match parse_args(args) {
         Ok(a) => a,
@@ -201,14 +197,12 @@ pub(super) fn propose_op(
     match serde_json::to_string(&payload) {
         Ok(stdout) => (
             Response::ok(id, 0, stdout, String::new()),
-            created,
-            recorded,
+            Some((created, recorded)),
         ),
         // The rows exist either way: say so, and still emit them.
         Err(e) => (
             Response::err(id, format!("roadmap_propose: created, but {e}")),
-            created,
-            recorded,
+            Some((created, recorded)),
         ),
     }
 }

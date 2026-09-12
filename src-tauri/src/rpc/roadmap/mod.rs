@@ -75,10 +75,15 @@ mod ordering;
 #[path = "tests/support.rs"]
 mod test_support;
 
+use rusqlite::Connection;
 use serde_json::Value;
 use tauri::AppHandle;
 
 use crate::roadmap::Db;
+use crate::roadmap::{
+    emit_brief_proposal, emit_item, emit_item_event, emit_order_proposal, emit_project_hold,
+    emit_proposal,
+};
 use crate::rpc::git::GitDispatcher;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
@@ -136,6 +141,23 @@ impl RoadmapDispatcher {
             git,
         }
     }
+
+    /// Run a write op under the lock and announce what it stored only after the
+    /// guard has dropped.
+    fn announce<T>(
+        &self,
+        op: impl FnOnce(&Connection, &str) -> (Response, Option<T>),
+        emit: impl FnOnce(&AppHandle, &T),
+    ) -> (Response, Vec<RpcEvent>) {
+        let (resp, stored) = {
+            let conn = self.db.lock();
+            op(&conn, &self.project_id)
+        };
+        if let (Some(app), Some(stored)) = (&self.app, &stored) {
+            emit(app, stored);
+        }
+        (resp, Vec::new())
+    }
 }
 
 impl RpcDispatcher for RoadmapDispatcher {
@@ -149,92 +171,56 @@ impl RpcDispatcher for RoadmapDispatcher {
             if !is_roadmap_op(op) {
                 return self.git.dispatch(id, op, args).await;
             }
-            // Every write op validates and stores under the lock, and announces
-            // to the window only after the guard drops.
             match op {
                 "roadmap_list" => {
                     let conn = self.db.lock();
                     (list_op(&conn, &self.project_id, id, args), Vec::new())
                 }
-                "roadmap_propose" => {
-                    let (resp, created, recorded) = {
-                        let conn = self.db.lock();
-                        propose_op(&conn, &self.project_id, id, args)
-                    };
-                    if let Some(app) = &self.app {
-                        for item in &created {
-                            crate::roadmap::emit_item(app, item);
+                "roadmap_propose" => self.announce(
+                    |conn, project| propose_op(conn, project, id, args),
+                    |app, (created, recorded)| {
+                        for item in created {
+                            emit_item(app, item);
                         }
-                        for event in &recorded {
-                            crate::roadmap::emit_item_event(app, event);
+                        for event in recorded {
+                            emit_item_event(app, event);
                         }
-                    }
-                    (resp, Vec::new())
-                }
-                "roadmap_propose_update" | "roadmap_propose_discard" => {
-                    let (resp, stored) = {
-                        let conn = self.db.lock();
-                        if op == "roadmap_propose_update" {
-                            propose_update_op(&conn, &self.project_id, id, args)
-                        } else {
-                            propose_discard_op(&conn, &self.project_id, id, args)
+                    },
+                ),
+                "roadmap_propose_update" => self.announce(
+                    |conn, project| propose_update_op(conn, project, id, args),
+                    emit_proposal,
+                ),
+                "roadmap_propose_discard" => self.announce(
+                    |conn, project| propose_discard_op(conn, project, id, args),
+                    emit_proposal,
+                ),
+                "roadmap_propose_order" => self.announce(
+                    |conn, project| propose_order_op(conn, project, id, args),
+                    emit_order_proposal,
+                ),
+                "roadmap_note" => self.announce(
+                    |conn, project| note_op(conn, project, id, args),
+                    emit_item_event,
+                ),
+                "roadmap_hold" => self.announce(
+                    |conn, project| hold_op(conn, project, id, args),
+                    |app, held| match held {
+                        Held::Item(item, event) => {
+                            emit_item(app, item);
+                            emit_item_event(app, event);
                         }
-                    };
-                    if let (Some(app), Some(p)) = (&self.app, &stored) {
-                        crate::roadmap::emit_proposal(app, p);
-                    }
-                    (resp, Vec::new())
-                }
-                "roadmap_propose_order" => {
-                    let (resp, stored) = {
-                        let conn = self.db.lock();
-                        propose_order_op(&conn, &self.project_id, id, args)
-                    };
-                    if let (Some(app), Some(p)) = (&self.app, &stored) {
-                        crate::roadmap::emit_order_proposal(app, p);
-                    }
-                    (resp, Vec::new())
-                }
-                "roadmap_note" => {
-                    let (resp, recorded) = {
-                        let conn = self.db.lock();
-                        note_op(&conn, &self.project_id, id, args)
-                    };
-                    if let (Some(app), Some(event)) = (&self.app, &recorded) {
-                        crate::roadmap::emit_item_event(app, event);
-                    }
-                    (resp, Vec::new())
-                }
-                "roadmap_hold" => {
-                    let (resp, held) = {
-                        let conn = self.db.lock();
-                        hold_op(&conn, &self.project_id, id, args)
-                    };
-                    if let (Some(app), Some(held)) = (&self.app, &held) {
-                        match held {
-                            Held::Item(item, event) => {
-                                crate::roadmap::emit_item(app, item);
-                                crate::roadmap::emit_item_event(app, event);
-                            }
-                            Held::Project(hold) => crate::roadmap::emit_project_hold(app, hold),
-                        }
-                    }
-                    (resp, Vec::new())
-                }
+                        Held::Project(hold) => emit_project_hold(app, hold),
+                    },
+                ),
                 "roadmap_brief" => {
                     let conn = self.db.lock();
                     (brief_op(&conn, &self.project_id, id, args), Vec::new())
                 }
-                "roadmap_propose_brief_update" => {
-                    let (resp, stored) = {
-                        let conn = self.db.lock();
-                        propose_brief_op(&conn, &self.project_id, id, args)
-                    };
-                    if let (Some(app), Some(p)) = (&self.app, &stored) {
-                        crate::roadmap::emit_brief_proposal(app, p);
-                    }
-                    (resp, Vec::new())
-                }
+                "roadmap_propose_brief_update" => self.announce(
+                    |conn, project| propose_brief_op(conn, project, id, args),
+                    emit_brief_proposal,
+                ),
                 other => (
                     Response::err(
                         id,
