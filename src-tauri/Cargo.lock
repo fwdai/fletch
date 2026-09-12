@@ -1351,7 +1351,7 @@ dependencies = [
 
 [[package]]
 name = "fletch"
-version = "0.7.29"
+version = "0.7.30"
 dependencies = [
  "base64 0.22.1",
  "block2",
