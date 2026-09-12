@@ -21,7 +21,7 @@ const STALE_REQUEST_AGE: Duration = Duration::from_secs(5);
 pub mod approval;
 #[path = "rpc/caps.rs"]
 pub mod caps;
-#[path = "rpc/git.rs"]
+#[path = "rpc/git/mod.rs"]
 pub mod git;
 #[path = "rpc/roadmap/mod.rs"]
 pub mod roadmap;
