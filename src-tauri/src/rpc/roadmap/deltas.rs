@@ -7,7 +7,9 @@ use crate::roadmap::store;
 use crate::roadmap::types::{ItemStatus, RoadmapItem};
 use crate::rpc::Response;
 
-use super::args::{clean, clean_list, parse_required, ProposeDiscardArgs, ProposeUpdateArgs};
+use super::args::{
+    clean, clean_list, parked, parse_required, ProposeDiscardArgs, ProposeUpdateArgs,
+};
 
 /// Find the item an ask targets and check it may still be reshaped. Anything
 /// from `active` on belongs to its run: a proposal against it would be ruled
@@ -107,46 +109,34 @@ pub(super) fn propose_update_op(
     id: &str,
     args: &Value,
 ) -> (Response, Option<Proposal>) {
-    let err = |msg: String| {
-        (
-            Response::err(id, format!("roadmap_propose_update: {msg}")),
-            None,
-        )
-    };
-    let args: ProposeUpdateArgs = match parse_required(args) {
-        Ok(a) => a,
-        Err(e) => return err(e),
-    };
-    let items = match store::list(conn, project_id) {
-        Ok(items) => items,
-        Err(e) => return err(e.to_string()),
-    };
-    let item = match proposable(&items, args.code.trim()) {
-        Ok(item) => item,
-        Err(e) => return err(e),
-    };
-    let patch = match validate_patch(&args.patch, item, &items) {
-        Ok(patch) => patch,
-        Err(e) => return err(e),
-    };
+    parked(
+        id,
+        "roadmap_propose_update",
+        park_update(conn, project_id, args),
+    )
+}
+
+fn park_update(
+    conn: &Connection,
+    project_id: &str,
+    args: &Value,
+) -> Result<(Value, Proposal), String> {
+    let args: ProposeUpdateArgs = parse_required(args)?;
+    let items = store::list(conn, project_id).map_err(|e| e.to_string())?;
+    let item = proposable(&items, args.code.trim())?;
+    let patch = validate_patch(&args.patch, item, &items)?;
     let note = clean(args.note.as_deref());
-    let stored = match proposals::upsert(
+    let stored = proposals::upsert(
         conn,
         project_id,
         &item.id,
         ProposalKind::Update,
         Some(&patch),
         note.as_deref(),
-    ) {
-        Ok(p) => p,
-        Err(e) => return err(e.to_string()),
-    };
-
+    )
+    .map_err(|e| e.to_string())?;
     let payload = json!({ "proposed": { "code": item.code, "fields": patch.fields() } });
-    match serde_json::to_string(&payload) {
-        Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(stored)),
-        Err(e) => err(e.to_string()),
-    }
+    Ok((payload, stored))
 }
 
 /// `roadmap_propose_discard`: park a removal ask as the item's pending delta.
@@ -157,45 +147,38 @@ pub(super) fn propose_discard_op(
     id: &str,
     args: &Value,
 ) -> (Response, Option<Proposal>) {
-    let err = |msg: String| {
-        (
-            Response::err(id, format!("roadmap_propose_discard: {msg}")),
-            None,
-        )
-    };
-    let args: ProposeDiscardArgs = match parse_required(args) {
-        Ok(a) => a,
-        Err(e) => return err(e),
-    };
+    parked(
+        id,
+        "roadmap_propose_discard",
+        park_discard(conn, project_id, args),
+    )
+}
+
+fn park_discard(
+    conn: &Connection,
+    project_id: &str,
+    args: &Value,
+) -> Result<(Value, Proposal), String> {
+    let args: ProposeDiscardArgs = parse_required(args)?;
     let reason = args.reason.trim();
     if reason.is_empty() {
-        return err("`reason` is required — say why this should leave the board".into());
+        return Err("`reason` is required — say why this should leave the board".into());
     }
-    let items = match store::list(conn, project_id) {
-        Ok(items) => items,
-        Err(e) => return err(e.to_string()),
-    };
-    let item = match proposable(&items, args.code.trim()) {
-        Ok(item) => item,
-        Err(e) => return err(e),
-    };
-    let stored = match proposals::upsert(
+    let items = store::list(conn, project_id).map_err(|e| e.to_string())?;
+    let item = proposable(&items, args.code.trim())?;
+    let stored = proposals::upsert(
         conn,
         project_id,
         &item.id,
         ProposalKind::Discard,
         None,
         Some(reason),
-    ) {
-        Ok(p) => p,
-        Err(e) => return err(e.to_string()),
-    };
-
-    let payload = json!({ "proposed": { "code": item.code, "kind": "discard" } });
-    match serde_json::to_string(&payload) {
-        Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(stored)),
-        Err(e) => err(e.to_string()),
-    }
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((
+        json!({ "proposed": { "code": item.code, "kind": "discard" } }),
+        stored,
+    ))
 }
 
 #[cfg(test)]

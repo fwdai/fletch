@@ -4,7 +4,7 @@ use serde_json::{json, Map, Value};
 use crate::roadmap::memory::{self, BriefProposal};
 use crate::rpc::Response;
 
-use super::args::{clean, parse_args, parse_required, read, BriefArgs, ProposeBriefArgs};
+use super::args::{clean, parked, parse_args, parse_required, read, BriefArgs, ProposeBriefArgs};
 use super::listing::age;
 
 /// `roadmap_brief`: read the project's product brief.
@@ -60,31 +60,27 @@ pub(super) fn propose_brief_op(
     id: &str,
     args: &Value,
 ) -> (Response, Option<BriefProposal>) {
-    let err = |msg: String| {
-        (
-            Response::err(id, format!("roadmap_propose_brief_update: {msg}")),
-            None,
-        )
-    };
-    let args: ProposeBriefArgs = match parse_required(args) {
-        Ok(a) => a,
-        Err(e) => return err(e),
-    };
-    let content = match memory::clean_content(&args.content) {
-        Ok(content) => content,
-        Err(e) => return err(e),
-    };
-    let note = clean(args.note.as_deref());
-    let stored = match memory::propose(conn, project_id, &content, note.as_deref()) {
-        Ok(p) => p,
-        Err(e) => return err(e.to_string()),
-    };
+    parked(
+        id,
+        "roadmap_propose_brief_update",
+        park_brief(conn, project_id, args),
+    )
+}
 
-    let payload = json!({ "proposed": { "brief": { "bytes": content.len() } } });
-    match serde_json::to_string(&payload) {
-        Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(stored)),
-        Err(e) => err(e.to_string()),
-    }
+fn park_brief(
+    conn: &Connection,
+    project_id: &str,
+    args: &Value,
+) -> Result<(Value, BriefProposal), String> {
+    let args: ProposeBriefArgs = parse_required(args)?;
+    let content = memory::clean_content(&args.content)?;
+    let note = clean(args.note.as_deref());
+    let stored =
+        memory::propose(conn, project_id, &content, note.as_deref()).map_err(|e| e.to_string())?;
+    Ok((
+        json!({ "proposed": { "brief": { "bytes": content.len() } } }),
+        stored,
+    ))
 }
 
 #[cfg(test)]

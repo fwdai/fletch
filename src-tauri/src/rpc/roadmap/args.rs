@@ -179,3 +179,19 @@ pub(super) fn read(id: &str, op: &str, result: Result<Value, String>) -> Respons
         Err(msg) => refuse(id, op, msg),
     }
 }
+
+/// A parked ask's reply. If the payload won't serialize the stored ask is not
+/// announced, as these ops always behaved.
+pub(super) fn parked<T>(
+    id: &str,
+    op: &str,
+    result: Result<(Value, T), String>,
+) -> (Response, Option<T>) {
+    match result {
+        Ok((payload, stored)) => match serde_json::to_string(&payload) {
+            Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(stored)),
+            Err(e) => (refuse(id, op, e.to_string()), None),
+        },
+        Err(msg) => (refuse(id, op, msg), None),
+    }
+}
