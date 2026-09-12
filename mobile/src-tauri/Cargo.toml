@@ -38,7 +38,8 @@ tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 # cmake. `run()` also installs it explicitly, so a future dependency that
 # drags in aws-lc-rs cannot reintroduce the ambiguity.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-tokio = { version = "1", features = ["sync", "time"] }
+# `net`: the relay dial resolves and races addresses itself (src/remote/dial.rs).
+tokio = { version = "1", features = ["sync", "time", "net"] }
 futures-util = "0.3"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
