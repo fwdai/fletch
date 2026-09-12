@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use super::args::{arg_bool, arg_branch, arg_branch_named, refuse_option_like};
-use super::targets::{approval_repo, with_repo};
+use super::targets::{approval_repo, with_repo, Target};
 use super::{GitDispatcher, EVENT_BRANCH_CREATED, EVENT_PR_OPENED};
 use crate::rpc::{approval, Response, RpcEvent};
 
@@ -85,26 +85,14 @@ impl GitDispatcher {
         let branch = match (current, requested) {
             (Some(cur), None) => cur,
             (Some(cur), Some(req)) if req == cur => cur,
-            (Some(_), Some(req)) => match materialize_branch(&t.cwd, &req).await {
-                Ok(name) => {
-                    effects.push(RpcEvent::named(
-                        EVENT_BRANCH_CREATED,
-                        with_repo(json!({ "branch": name }), &t.subdir),
-                    ));
-                    name
-                }
+            (Some(_), Some(req)) => match create_branch(&t, &req, &mut effects).await {
+                Ok(name) => name,
                 Err(e) => return (Response::err(id, format!("open_pr: {e}")), effects),
             },
             (None, req) => {
                 let desired = req.unwrap_or_else(|| fallback_branch(title));
-                match materialize_branch(&t.cwd, &desired).await {
-                    Ok(name) => {
-                        effects.push(RpcEvent::named(
-                            EVENT_BRANCH_CREATED,
-                            with_repo(json!({ "branch": name }), &t.subdir),
-                        ));
-                        name
-                    }
+                match create_branch(&t, &desired, &mut effects).await {
+                    Ok(name) => name,
                     Err(e) => return (Response::err(id, format!("open_pr: {e}")), effects),
                 }
             }
@@ -152,8 +140,7 @@ impl GitDispatcher {
             Ok(t) => t,
             Err(resp) => return (resp, Vec::new()),
         };
-        let cwd = t.cwd;
-        let current = match crate::git::current_branch(&cwd).await {
+        let current = match crate::git::current_branch(&t.cwd).await {
             Ok(b) => b,
             Err(e) => return (Response::err(id, format!("git_push: {e}")), Vec::new()),
         };
@@ -162,14 +149,8 @@ impl GitDispatcher {
         let branch = match current {
             Some(cur) => cur,
             None => match arg_branch(args) {
-                Some(req) => match materialize_branch(&cwd, &req).await {
-                    Ok(name) => {
-                        effects.push(RpcEvent::named(
-                            EVENT_BRANCH_CREATED,
-                            with_repo(json!({ "branch": name }), &t.subdir),
-                        ));
-                        name
-                    }
+                Some(req) => match create_branch(&t, &req, &mut effects).await {
+                    Ok(name) => name,
                     Err(e) => return (Response::err(id, format!("git_push: {e}")), effects),
                 },
                 None => {
@@ -213,11 +194,24 @@ impl GitDispatcher {
                 return (Response::err(id, why), effects);
             }
         }
-        match crate::git::push(&cwd, &branch, force).await {
+        match crate::git::push(&t.cwd, &branch, force).await {
             Ok(summary) => (Response::ok(id, 0, summary, String::new()), effects),
             Err(e) => (Response::err(id, e.to_string()), effects),
         }
     }
+}
+
+async fn create_branch(
+    t: &Target,
+    desired: &str,
+    effects: &mut Vec<RpcEvent>,
+) -> std::result::Result<String, String> {
+    let name = materialize_branch(&t.cwd, desired).await?;
+    effects.push(RpcEvent::named(
+        EVENT_BRANCH_CREATED,
+        with_repo(json!({ "branch": name }), &t.subdir),
+    ));
+    Ok(name)
 }
 
 /// The one place an agent's branch is born, so the user's branch prefix is
