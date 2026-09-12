@@ -4,8 +4,9 @@
 
 import type { AgentStatus, ProjectRef } from "@desktop/api/types/agent";
 import type { PrState } from "@desktop/api/types/pr";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { hueColor, projectHue, providerHue, providerShort } from "../../lib/agents";
+import { useSwipe } from "../../lib/swipe";
 import { useProviderIcon } from "../../lib/useProviderIcon";
 import { Icon, type IconName } from "../Icon";
 
@@ -66,6 +67,22 @@ export function Sheet({
 }) {
   const [mounted, setMounted] = useState(open);
   const [shown, setShown] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  useSwipe(
+    panel,
+    {
+      axis: "y",
+      enabled: shown && !!onClose,
+      // `shown` drops here, not in the `open` effect: same frame as the drag
+      // lets go, so the close transition continues from under the finger.
+      onCommit: () => {
+        setShown(false);
+        onClose?.();
+      },
+    },
+    root,
+  );
   useEffect(() => {
     if (open) {
       setMounted(true);
@@ -85,9 +102,9 @@ export function Sheet({
   }, [open]);
   if (!mounted) return null;
   return (
-    <div className={`sheet-root${shown ? " open" : ""}`}>
+    <div ref={root} className={`sheet-root${shown ? " open" : ""}`}>
       <button type="button" className="sheet-bg" onClick={onClose} aria-label="Close" />
-      <div className={`sheet${full ? " full" : ""}${stacked ? " stacked" : ""}`}>
+      <div ref={panel} className={`sheet${full ? " full" : ""}${stacked ? " stacked" : ""}`}>
         <div className="grab" />
         {(title || left || right) && (
           <div className="sheet-head">

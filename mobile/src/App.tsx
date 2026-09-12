@@ -1,4 +1,5 @@
 import { useCallback, useEffect } from "react";
+import { Stack } from "./components/Stack";
 import { useSystemTheme } from "./lib/hooks";
 import { AgentScreen } from "./screens/Agent";
 import { DiffScreen } from "./screens/Diff";
@@ -43,7 +44,6 @@ export function App() {
   const theme = useStore((s) => s.theme);
   const systemTheme = useStore((s) => s.systemTheme);
   const setSystemTheme = useStore((s) => s.setSystemTheme);
-  const nav = useStore((s) => s.nav);
   const sheet = useStore((s) => s.sheet);
   const closeSheet = useStore((s) => s.closeSheet);
   // Paired means "we hold the host's key": there is no other credential.
@@ -55,8 +55,6 @@ export function App() {
   useSystemTheme(useCallback((t) => setSystemTheme(t), [setSystemTheme]));
 
   const resolved = theme === "system" ? systemTheme : theme;
-  const live = nav.filter((i) => i.phase !== "leave");
-  const topKey = live[live.length - 1]?.key;
   const props = (name: string) => (sheet?.name === name ? sheet.props : {});
   const isOpen = (name: string) => !!(sheet?.name === name && sheet.open);
   const dimmed = !!sheet?.open && FULL_SHEETS.has(sheet.name);
@@ -65,24 +63,7 @@ export function App() {
     <div className={`m-app theme-${resolved}`}>
       {!ready ? null : hostKey ? (
         <>
-          <div className={`stack${dimmed ? " dimmed" : ""}`}>
-            {nav.map((item) => {
-              const cls =
-                item.phase === "enter"
-                  ? "enter"
-                  : item.phase === "leave"
-                    ? "leave"
-                    : item.key === topKey
-                      ? "top"
-                      : "under";
-              return (
-                <div key={item.key} className={`scr ${cls}`}>
-                  <Screen item={item} />
-                  <div className="scrim" />
-                </div>
-              );
-            })}
-          </div>
+          <Stack dimmed={dimmed} render={(item) => <Screen item={item} />} />
           <HostSheet open={isOpen("host")} onClose={closeSheet} />
           <NewAgentSheet open={isOpen("newAgent")} onClose={closeSheet} {...props("newAgent")} />
           <AddProjectSheet open={isOpen("addProject")} onClose={closeSheet} />

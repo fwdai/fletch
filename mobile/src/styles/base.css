@@ -163,12 +163,20 @@ a {
 .scr.leave {
   transform: translateX(100%);
 }
+/* `--swipe` (0..1, set on `.stack` by lib/swipe.ts while a finger drags the
+   top screen back) parks every layer part-way along its own transition, so a
+   release just lets the transition finish from there. */
 .scr.under {
-  transform: translateX(-26%);
+  transform: translateX(calc(-26% * (1 - var(--swipe, 0))));
   pointer-events: none;
 }
 .scr.top {
+  transform: translateX(calc(100% * var(--swipe, 0)));
   box-shadow: -10px 0 34px rgba(0, 0, 0, 0.45);
+}
+.stack.dragging .scr,
+.stack.dragging .scr .scrim {
+  transition: none;
 }
 .scr.enter,
 .scr.top,
@@ -185,10 +193,10 @@ a {
   z-index: 30;
 }
 .scr.under .scrim {
-  opacity: 0.45;
+  opacity: calc(0.45 * (1 - var(--swipe, 0)));
 }
 .theme-light .scr.under .scrim {
-  opacity: 0.12;
+  opacity: calc(0.12 * (1 - var(--swipe, 0)));
 }
 
 /* nav bar */
@@ -323,11 +331,17 @@ a {
 .sheet.stacked {
   max-height: calc(100% - var(--safe-top) - 60px);
 }
+/* Same `--swipe` scheme as `.stack`: a pull on the sheet drags it down and
+   thins the scrim in step. */
 .sheet-root.open .sheet-bg {
-  opacity: 1;
+  opacity: calc(1 - var(--swipe, 0));
 }
 .sheet-root.open .sheet {
-  transform: none;
+  transform: translateY(calc(100% * var(--swipe, 0)));
+}
+.sheet-root.dragging .sheet,
+.sheet-root.dragging .sheet-bg {
+  transition: none;
 }
 .grab {
   width: 36px;
