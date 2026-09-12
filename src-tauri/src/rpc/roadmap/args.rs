@@ -2,6 +2,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::roadmap::proposals::ProposalPatch;
+use crate::rpc::Response;
 
 /// `roadmap_list` args. Everything optional: no args at all is the common call.
 #[derive(Debug, Default, Deserialize)]
@@ -164,4 +165,17 @@ pub(super) fn clean_list(v: &[String]) -> Vec<String> {
 /// The valid spellings of an enum, for an error message the agent can act on.
 pub(super) fn one_of(values: &[&str]) -> String {
     values.join(" | ")
+}
+
+fn refuse(id: &str, op: &str, msg: String) -> Response {
+    Response::err(id, format!("{op}: {msg}"))
+}
+
+pub(super) fn read(id: &str, op: &str, result: Result<Value, String>) -> Response {
+    let stdout =
+        result.and_then(|payload| serde_json::to_string(&payload).map_err(|e| e.to_string()));
+    match stdout {
+        Ok(stdout) => Response::ok(id, 0, stdout, String::new()),
+        Err(msg) => refuse(id, op, msg),
+    }
 }

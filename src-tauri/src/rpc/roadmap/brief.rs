@@ -4,7 +4,7 @@ use serde_json::{json, Map, Value};
 use crate::roadmap::memory::{self, BriefProposal};
 use crate::rpc::Response;
 
-use super::args::{clean, parse_args, parse_required, BriefArgs, ProposeBriefArgs};
+use super::args::{clean, parse_args, parse_required, read, BriefArgs, ProposeBriefArgs};
 use super::listing::age;
 
 /// `roadmap_brief`: read the project's product brief.
@@ -21,14 +21,13 @@ use super::listing::age;
 /// spoke", and a timestamp it has to diff itself is arithmetic waiting to go
 /// wrong. Absent when the brief was written in the last minute.
 pub(super) fn brief_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Response {
-    if let Err(e) = parse_args::<BriefArgs>(args) {
-        return Response::err(id, format!("roadmap_brief: takes no args — {e}"));
-    }
-    let brief = match memory::load(conn, project_id) {
-        Ok(brief) => brief,
-        Err(e) => return Response::err(id, format!("roadmap_brief: {e}")),
-    };
-    let payload = match brief {
+    read(id, "roadmap_brief", read_brief(conn, project_id, args))
+}
+
+fn read_brief(conn: &Connection, project_id: &str, args: &Value) -> Result<Value, String> {
+    parse_args::<BriefArgs>(args).map_err(|e| format!("takes no args — {e}"))?;
+    let brief = memory::load(conn, project_id).map_err(|e| e.to_string())?;
+    Ok(match brief {
         // The empty marker: this project has no product memory yet. Explicit
         // rather than an absent key, so "nothing written yet" can't be misread as
         // a failed read.
@@ -41,11 +40,7 @@ pub(super) fn brief_op(conn: &Connection, project_id: &str, id: &str, args: &Val
             }
             json!({ "brief": Value::Object(o) })
         }
-    };
-    match serde_json::to_string(&payload) {
-        Ok(stdout) => Response::ok(id, 0, stdout, String::new()),
-        Err(e) => Response::err(id, format!("roadmap_brief: {e}")),
-    }
+    })
 }
 
 /// `roadmap_propose_brief_update`: park an ask to replace the product brief,

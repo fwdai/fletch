@@ -10,7 +10,7 @@ use crate::roadmap::store;
 use crate::roadmap::types::{ItemStatus, RoadmapItem};
 use crate::rpc::Response;
 
-use super::args::{one_of, parse_args, ListArgs};
+use super::args::{one_of, parse_args, read, ListArgs};
 
 /// One row as the agent sees it: the fields it reasons about, with the empties
 /// omitted. Not [`RoadmapItem`]'s full serialization — ids, timestamps and run
@@ -147,10 +147,11 @@ fn compact_rejected(item: &RoadmapItem) -> Value {
 /// Pure over the connection so it is testable without an app handle; the
 /// dispatcher holds the lock around it.
 pub(super) fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Response {
-    let args: ListArgs = match parse_args(args) {
-        Ok(a) => a,
-        Err(e) => return Response::err(id, format!("roadmap_list: {e}")),
-    };
+    read(id, "roadmap_list", board(conn, project_id, args))
+}
+
+fn board(conn: &Connection, project_id: &str, args: &Value) -> Result<Value, String> {
+    let args: ListArgs = parse_args(args)?;
     let filter = match &args.status {
         None => None,
         Some(raw) => {
@@ -161,31 +162,18 @@ pub(super) fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Valu
                     // live status, and a filter that always matched nothing
                     // would read as "the decision log is empty".
                     Some(ItemStatus::Rejected) => {
-                        return Response::err(
-                            id,
-                            "roadmap_list: `status` filters the live board — rejected items \
-                             always arrive under `not_doing`, so there is nothing to filter for"
-                                .to_string(),
-                        )
+                        return Err("`status` filters the live board — rejected items always \
+                                    arrive under `not_doing`, so there is nothing to filter for"
+                            .into())
                     }
                     Some(st) => {
                         set.insert(st.as_str());
                     }
                     None => {
-                        return Response::err(
-                            id,
-                            format!(
-                                "roadmap_list: unknown status {s:?} — expected {}",
-                                one_of(&[
-                                    "proposed",
-                                    "open",
-                                    "queued",
-                                    "active",
-                                    "in_review",
-                                    "done"
-                                ])
-                            ),
-                        )
+                        return Err(format!(
+                            "unknown status {s:?} — expected {}",
+                            one_of(&["proposed", "open", "queued", "active", "in_review", "done"])
+                        ))
                     }
                 }
             }
@@ -193,21 +181,12 @@ pub(super) fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Valu
         }
     };
 
-    let items = match store::list(conn, project_id) {
-        Ok(items) => items,
-        Err(e) => return Response::err(id, format!("roadmap_list: {e}")),
-    };
-    let pending = match proposals::list_for_project(conn, project_id) {
-        Ok(list) => list,
-        Err(e) => return Response::err(id, format!("roadmap_list: {e}")),
-    };
+    let items = store::list(conn, project_id).map_err(|e| e.to_string())?;
+    let pending = proposals::list_for_project(conn, project_id).map_err(|e| e.to_string())?;
     let by_item: HashMap<&str, &Proposal> =
         pending.iter().map(|p| (p.item_id.as_str(), p)).collect();
     // One query for the whole board, not one per row.
-    let last = match events::latest_by_item(conn, project_id) {
-        Ok(map) => map,
-        Err(e) => return Response::err(id, format!("roadmap_list: {e}")),
-    };
+    let last = events::latest_by_item(conn, project_id).map_err(|e| e.to_string())?;
     let now = crate::database::now_millis();
     let keep = |i: &RoadmapItem| match &filter {
         None => true,
@@ -234,10 +213,7 @@ pub(super) fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Valu
             payload.insert("not_doing_omitted".into(), json!(omitted));
         }
     }
-    match serde_json::to_string(&Value::Object(payload)) {
-        Ok(stdout) => Response::ok(id, 0, stdout, String::new()),
-        Err(e) => Response::err(id, format!("roadmap_list: {e}")),
-    }
+    Ok(Value::Object(payload))
 }
 
 #[cfg(test)]
