@@ -7,9 +7,6 @@ use crate::roadmap::proposals::{self, ProposalKind};
 use crate::roadmap::store;
 use crate::roadmap::types::{ItemStatus, NewItem};
 
-/// The urgent one (see .context/roadmap-pm-plan.md, A4): a dep patch that
-/// closes a loop is refused at propose time, so the user is never offered a
-/// diff whose acceptance would wedge the queue.
 #[test]
 fn propose_update_refuses_a_dep_patch_that_closes_a_loop() {
     let db = test_db("p1");
@@ -49,24 +46,19 @@ fn propose_update_parks_a_delta_and_the_listing_shows_it() {
     );
     assert!(resp.ok, "{resp:?}");
     let out: Value = serde_json::from_str(&resp.stdout.unwrap()).unwrap();
-    // The response quotes what was asked, so the PM can say it in the chat.
     assert_eq!(out["proposed"]["code"], "MCA-100");
     assert_eq!(out["proposed"]["fields"], json!(["title", "deps"]));
 
-    // Parked, not applied: the row is untouched until the user rules.
     let rows = store::list(&db.lock(), "p1").unwrap();
     assert_eq!(rows[0].title, "target");
     let p = stored.unwrap();
     assert_eq!(p.kind, ProposalKind::Update);
     assert_eq!(p.note.as_deref(), Some("scope grew"));
-    // And no history either — the ruling writes history, not the ask.
     assert!(events::list_for_item(&db.lock(), &rows[0].id)
         .unwrap()
         .iter()
         .all(|e| e.kind == EventKind::Proposed));
 
-    // The compact listing carries the pending ask, so the PM never
-    // re-proposes blind.
     let resp = list(&db, Value::Null);
     let listed: Vec<Value> = board_rows(&resp);
     let pp = &listed[0]["pending_proposal"];
@@ -81,7 +73,6 @@ fn propose_update_rejects_bad_asks_precisely() {
     let db = test_db("p1");
     assert!(propose(&db, one_item("target")).ok); // MCA-100
     {
-        // An item already being built — not reshapeable by proposal.
         let conn = db.lock();
         store::create(
             &conn,
@@ -96,7 +87,6 @@ fn propose_update_rejects_bad_asks_precisely() {
     }
 
     for (args, needle) in [
-        // The lifecycle is not the PM's to move, even by proposal.
         (
             json!({"code": "MCA-100", "patch": {"status": "open"}}),
             "unknown field",
@@ -129,7 +119,6 @@ fn propose_update_rejects_bad_asks_precisely() {
             json!({"code": "MCA-777", "patch": {"title": "x"}}),
             "no item",
         ),
-        // The refusal names the status, so the PM knows why and when.
         (
             json!({"code": "MCA-101", "patch": {"title": "x"}}),
             "MCA-101 is active",
@@ -141,7 +130,6 @@ fn propose_update_rejects_bad_asks_precisely() {
         assert!(e.contains(needle), "expected {needle:?} in {e:?}");
         assert!(stored.is_none());
     }
-    // None of the above parked anything.
     assert!(proposals::list_for_project(&db.lock(), "p1")
         .unwrap()
         .is_empty());
@@ -160,7 +148,6 @@ fn a_newer_ask_replaces_the_pending_one() {
     );
     assert!(second.ok, "{second:?}");
 
-    // One pending ask per item: the discard replaced the retitle.
     let pending = proposals::list_for_project(&db.lock(), "p1").unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0], stored.unwrap());
@@ -178,7 +165,6 @@ fn propose_discard_requires_a_reason() {
     assert!(resp.error.unwrap().contains("`reason` is required"));
     assert!(stored.is_none());
 
-    // And args at all, for both ops.
     assert!(!propose_discard(&db, Value::Null).0.ok);
     assert!(!propose_update(&db, Value::Null).0.ok);
 }

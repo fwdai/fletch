@@ -10,9 +10,6 @@ use crate::roadmap::events::{self, EventActor, EventKind};
 use crate::roadmap::store;
 use crate::roadmap::types::{ItemStatus, NewItem};
 
-/// The PM's brake on one item: the trio lands on the row, a `held` line lands
-/// on the trail attributed to the PM, and nothing about the item *advances* —
-/// which is the whole reason this direct write is licensed (invariant 2).
 #[test]
 fn hold_stops_one_item_and_advances_nothing() {
     let db = test_db("p1");
@@ -35,7 +32,6 @@ fn hold_stops_one_item_and_advances_nothing() {
         Some("the run is building the case this ticket scoped out")
     );
     assert_eq!(item.held_by, Some(EventActor::Pm));
-    // Status, rank, title: byte-for-byte what they were.
     assert_eq!(item.status, before[0].status);
     assert_eq!(item.rank, before[0].rank);
     assert_eq!(item.title, before[0].title);
@@ -43,7 +39,6 @@ fn hold_stops_one_item_and_advances_nothing() {
     assert_eq!(event.actor, EventActor::Pm);
     assert_eq!(event.detail.as_deref(), item.hold_reason.as_deref());
 
-    // And the listing shows the brake back, so the PM never re-holds blind.
     let resp = list(&db, Value::Null);
     let rows: Vec<Value> = board_rows(&resp);
     assert_eq!(
@@ -54,7 +49,6 @@ fn hold_stops_one_item_and_advances_nothing() {
     assert_eq!(rows[0]["last_event"]["kind"], "held");
 }
 
-/// The board-scope hold: one row per project, no item touched.
 #[test]
 fn hold_project_stops_the_whole_board() {
     let db = test_db("p1");
@@ -78,14 +72,12 @@ fn hold_project_stops_the_whole_board() {
     assert_eq!(stored.held_by, EventActor::Pm);
     assert_eq!(brakes::get_project(&db.lock(), "p1").unwrap(), Some(stored));
 
-    // No item was touched, and no item history invented.
     let rows = store::list(&db.lock(), "p1").unwrap();
     assert!(rows.iter().all(|i| !i.is_held()));
     let trail = events::list_for_item(&db.lock(), &rows[0].id).unwrap();
     assert!(trail.iter().all(|e| e.kind == EventKind::Proposed));
 }
 
-/// Every way a hold can be wrong, named precisely, stopping nothing.
 #[test]
 fn hold_rejects_bad_asks_precisely() {
     let db = test_db("p1");
@@ -94,8 +86,6 @@ fn hold_rejects_bad_asks_precisely() {
 
     for (args, needle) in [
         (json!({"scope": "MCA-777", "reason": "why"}), "no item"),
-        // The refusal points at the other legal spelling, since a PM that
-        // meant the whole board would otherwise guess.
         (json!({"scope": "MCA-777", "reason": "why"}), "\"project\""),
         (
             json!({"scope": "MCA-100", "reason": "  "}),
@@ -110,7 +100,6 @@ fn hold_rejects_bad_asks_precisely() {
             json!({"scope": "MCA-100", "reason": long.clone()}),
             "keep it under",
         ),
-        // A hold is not a back door to the fields the propose ops gate.
         (
             json!({"scope": "MCA-100", "reason": "why", "status": "done"}),
             "unknown field",
@@ -123,13 +112,11 @@ fn hold_rejects_bad_asks_precisely() {
         assert!(e.contains(needle), "expected {needle:?} in {e:?}");
         assert!(held.is_none());
     }
-    // Args at all are required, and nothing above stopped anything.
     assert!(!hold(&db, Value::Null).0.ok);
     let rows = store::list(&db.lock(), "p1").unwrap();
     assert!(rows.iter().all(|i| !i.is_held()));
     assert!(brakes::get_project(&db.lock(), "p1").unwrap().is_none());
 
-    // Exactly at the cap is fine — the refusal is for going over it.
     let (resp, _) = hold(
         &db,
         json!({"scope": "MCA-100", "reason": "y".repeat(brakes::MAX_REASON)}),
@@ -137,9 +124,6 @@ fn hold_rejects_bad_asks_precisely() {
     assert!(resp.ok, "{resp:?}");
 }
 
-/// A rejected item can't be held: there's no queue to stop, no card
-/// rendering a Release button, and the hold would ambush the user by
-/// surviving into a reopen. The refusal points at the way out.
 #[test]
 fn a_rejected_item_cannot_be_held() {
     let db = test_db("p1");
@@ -160,9 +144,6 @@ fn a_rejected_item_cannot_be_held() {
     assert!(!rows[0].is_held(), "nothing written");
 }
 
-/// Holding an already-held scope replaces the reason, at both scopes. The
-/// user rules on the PM's current position, not a backlog of superseded ones —
-/// and the item's trail keeps the line that was replaced.
 #[test]
 fn holding_an_already_held_scope_replaces_the_reason() {
     let db = test_db("p1");
@@ -193,9 +174,6 @@ fn holding_an_already_held_scope_replaces_the_reason() {
     assert_eq!(stored.reason, "two", "one hold per board");
 }
 
-/// A hold lands where a proposal is refused — `active`, `in_review`, `done`.
-/// Mid-run is exactly when the brake is worth pulling, and that is exactly
-/// the item the propose ops turn away.
 #[test]
 fn hold_lands_on_items_no_proposal_could_touch() {
     let db = test_db("p1");
@@ -226,16 +204,11 @@ fn hold_lands_on_items_no_proposal_could_touch() {
             panic!("expected an item hold");
         };
         assert!(item.is_held());
-        // The proposal path still refuses it — the two gates say different
-        // things on purpose.
         let items = store::list(&db.lock(), "p1").unwrap();
         assert!(proposable(&items, &it.code).is_err());
     }
 }
 
-/// The brake reaches the board through the dispatcher, which is the only path
-/// the PM actually has — and the release the PM does *not* have gets the
-/// precise unknown-op refusal naming the real ops.
 #[tokio::test]
 async fn hold_routes_through_the_dispatcher_and_release_does_not_exist() {
     let db = test_db("p1");
@@ -257,8 +230,6 @@ async fn hold_routes_through_the_dispatcher_and_release_does_not_exist() {
         Some("confirm the direction first")
     );
 
-    // Releasing is the user's alone: there is no op, and the plausible guess
-    // is refused with the list of ops that do exist.
     let resp = d
         .dispatch("r2", "roadmap_release", &json!({"scope": "MCA-100"}))
         .await
@@ -268,7 +239,6 @@ async fn hold_routes_through_the_dispatcher_and_release_does_not_exist() {
     assert!(e.contains("unknown roadmap op"), "{e}");
     assert!(e.contains("roadmap_hold"), "{e}");
     assert!(!e.contains("roadmap_release,"), "{e}");
-    // And nothing was lifted.
     let rows = store::list(&db.lock(), "p1").unwrap();
     assert!(rows[0].is_held());
 }

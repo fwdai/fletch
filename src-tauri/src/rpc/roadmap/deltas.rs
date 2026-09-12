@@ -11,14 +11,8 @@ use super::args::{
     clean, clean_list, parked, parse_required, ProposeDiscardArgs, ProposeUpdateArgs,
 };
 
-/// Find the item an ask targets and check it may still be reshaped. Anything
-/// from `active` on belongs to its run: a proposal against it would be ruled
-/// on against work that no longer matches the diff. A `rejected` item is out
-/// for the opposite reason — the user ruled it off the board, and an ask
-/// against it would be lobbying against a decision already made.
-///
-/// `roadmap::rulings::proposal_gate` re-checks the same [`ItemStatus::is_rulable`]
-/// set at ruling time, with its own user-facing message.
+/// `active` onward belongs to its run; `rejected` was ruled off the board.
+/// `roadmap::rulings::proposal_gate` re-checks the same set at ruling time.
 pub(super) fn proposable<'a>(
     items: &'a [RoadmapItem],
     code: &str,
@@ -29,8 +23,8 @@ pub(super) fn proposable<'a>(
     if item.status.is_rulable() {
         Ok(item)
     } else {
-        // Name the actual objection: telling the PM a rejected item is "being
-        // built" would invite it to wait for a run that is never coming.
+        // Telling the PM a rejected item is "being built" would invite waiting for a
+        // run that never comes.
         let why = match item.status {
             ItemStatus::Done => "shipped work can't be reshaped by proposal",
             ItemStatus::Rejected => "the user ruled it off the board; only the user can reopen it",
@@ -45,13 +39,8 @@ pub(super) fn proposable<'a>(
     }
 }
 
-/// Normalize and validate an update's patch against the board, or say exactly
-/// what's wrong: same rules the batch propose applies, plus the two a patch can
-/// break that a new ticket can't — depending on yourself, and closing a loop
-/// with an item that already depends on you ([`deps::validate_edit`]).
-///
-/// Checked here *and* again when the user rules on the ask: the board moves in
-/// between, and an accepted loop is a permanently wedged queue.
+/// Also re-checked at ruling time: the board moves in between, and an accepted
+/// loop wedges the queue.
 fn validate_patch(
     patch: &ProposalPatch,
     item: &RoadmapItem,
@@ -96,13 +85,7 @@ fn validate_patch(
     Ok(out)
 }
 
-/// `roadmap_propose_update`: park a validated patch as the item's pending
-/// delta, replacing any it already has. Nothing is applied here — the user's
-/// ruling does that — so there is no history event either: the ruling writes
-/// history, not the ask.
-///
-/// Returns the stored proposal alongside the response so the dispatcher can
-/// announce it (`roadmap:proposal`) after the lock drops.
+/// No history event: the ruling writes history, not the ask.
 pub(super) fn propose_update_op(
     conn: &Connection,
     project_id: &str,
@@ -139,8 +122,6 @@ fn park_update(
     Ok((payload, stored))
 }
 
-/// `roadmap_propose_discard`: park a removal ask as the item's pending delta.
-/// Same shape as the update — nothing is deleted until the user rules.
 pub(super) fn propose_discard_op(
     conn: &Connection,
     project_id: &str,

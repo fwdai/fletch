@@ -2,13 +2,8 @@ use std::collections::HashSet;
 
 use crate::roadmap::types::{ItemStatus, NewItem, RoadmapItem};
 
-/// Words that carry no signal about what a ticket is for. Deliberately tiny:
-/// this list exists so "Add the queue drainer" and "Add a queue drainer" read
-/// as the same idea, not to do linguistics.
 const STOPWORDS: [&str; 9] = ["a", "an", "the", "of", "for", "to", "in", "on", "and"];
 
-/// A title as a bag of meaningful words: lowercased, split on anything that
-/// isn't alphanumeric, stopwords dropped.
 fn title_words(title: &str) -> HashSet<String> {
     title
         .to_lowercase()
@@ -18,14 +13,8 @@ fn title_words(title: &str) -> HashSet<String> {
         .collect()
 }
 
-/// Do two titles look like the same idea? True when the smaller title's word
-/// set is substantially contained in the other's: at least two shared words,
-/// covering at least 60% of the smaller set.
-///
-/// Deliberately dumb and dependency-free — no stemming, no embeddings, no
-/// dials. It only has to catch the PM re-typing an idea in slightly different
-/// words; a miss costs nothing (the user still rules), and a false hit costs
-/// one advisory line.
+/// At least two shared words covering 60% of the smaller set. Deliberately dumb:
+/// a miss costs nothing, a false hit one advisory line.
 fn similar_titles(a: &str, b: &str) -> bool {
     let (a, b) = (title_words(a), title_words(b));
     let shared = a.intersection(&b).count();
@@ -34,10 +23,8 @@ fn similar_titles(a: &str, b: &str) -> bool {
     shared >= 2 && 10 * shared >= 6 * smaller
 }
 
-/// Advisory lines for a batch whose titles look like items already on the
-/// board — every item, `rejected` included, because the killed idea is exactly
-/// the one worth flagging. Never a refusal: the proposal lands either way, the
-/// user's ruling is the real gate, and each line is worded for the PM to relay.
+/// `rejected` items included: the killed idea is exactly the one worth flagging.
+/// Never a refusal.
 pub(super) fn duplicate_warnings(news: &[NewItem], board: &[RoadmapItem]) -> Vec<String> {
     let mut warnings = Vec::new();
     for (n, new) in news.iter().enumerate() {

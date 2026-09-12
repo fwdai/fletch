@@ -23,8 +23,6 @@ use crate::rpc::caps::AgentCaps;
 use crate::rpc::git::GitDispatcher;
 use crate::rpc::Response;
 
-/// A migrated in-memory DB with one project, matching how the store's own
-/// tests set up (the FK to `projects` is real).
 pub(super) fn test_db(project_id: &str) -> Db {
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -37,7 +35,6 @@ pub(super) fn test_db(project_id: &str) -> Db {
     Arc::new(Mutex::new(conn))
 }
 
-/// A dispatcher with no window to emit into — everything but the events.
 pub(super) fn dispatcher(db: &Db, project_id: &str) -> RoadmapDispatcher {
     RoadmapDispatcher {
         app: None,
@@ -51,8 +48,6 @@ pub(super) fn dispatcher(db: &Db, project_id: &str) -> RoadmapDispatcher {
     }
 }
 
-/// The ops are synchronous under the lock, so most tests exercise them
-/// directly and only the routing tests go through `dispatch`.
 pub(super) fn propose(db: &Db, args: Value) -> Response {
     let conn = db.lock();
     propose_op(&conn, "p1", "r1", &args).0
@@ -63,8 +58,6 @@ pub(super) fn list(db: &Db, args: Value) -> Response {
     list_op(&conn, "p1", "r1", &args)
 }
 
-/// The live rows of a `roadmap_list` response — the payload's `items`.
-/// Most tests read only the board half; `not_doing` has its own tests.
 pub(super) fn board_rows(resp: &Response) -> Vec<Value> {
     let payload: Value = serde_json::from_str(resp.stdout.as_ref().unwrap()).unwrap();
     payload["items"].as_array().unwrap().clone()

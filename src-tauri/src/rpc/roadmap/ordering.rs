@@ -7,14 +7,8 @@ use crate::rpc::Response;
 
 use super::args::{clean, clean_list, parked, parse_required, ProposeOrderArgs};
 
-/// `roadmap_propose_order`: park a whole-board order ask, replacing any the
-/// project already has.
-///
-/// The sequence must be *exactly* the board's orderable set — refused otherwise,
-/// naming what's missing or what doesn't belong. That is what makes the ask mean
-/// one thing: it IS the new backlog order, not a hint about part of one, so the
-/// user can rule on it without reconstructing where the unnamed items went.
-/// Nothing is applied here; the ruling rewrites the ranks.
+/// Refused unless `codes` is exactly the orderable set, so the ask is
+/// unambiguous. Nothing is applied here.
 pub(super) fn propose_order_op(
     conn: &Connection,
     project_id: &str,
@@ -36,9 +30,7 @@ fn park_order(
     let args: ProposeOrderArgs = parse_required(args)?;
     let items = store::list(conn, project_id).map_err(|e| e.to_string())?;
     let codes = clean_list(&args.codes);
-    // Validated here *and* at ruling time, against the same function: the board
-    // moves while an ask is pending, and the user's click must not apply a
-    // sequence that no longer covers it.
+    // Also validated at ruling time: the board moves while an ask is pending.
     order_proposals::validate_order(&codes, &items)?;
     let note = clean(args.note.as_deref());
     let stored = order_proposals::upsert(conn, project_id, &codes, note.as_deref())

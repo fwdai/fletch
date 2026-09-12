@@ -1,5 +1,3 @@
-//! Git-specific RPC dispatcher layered on top of the generic mailbox transport.
-
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -10,28 +8,18 @@ use super::approval;
 use super::caps::AgentCaps;
 use super::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
-/// App-side ceiling on a single op. A hung command surfaces as an error
-/// response rather than blocking the watcher forever. The agent runs its own
-/// (shorter) poll timeout independently — see the instruction block.
+/// A hung command surfaces as an error instead of blocking the watcher; the
+/// agent's own poll timeout is shorter.
 const OP_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub const EVENT_BRANCH_CREATED: &str = "git.branch_created";
 pub const EVENT_PR_OPENED: &str = "git.pr_opened";
-/// Emitted whenever a *mutating* git op completes successfully. This is the
-/// authoritative "the agent actually performed a git action this turn" signal:
-/// the UI's delegation tracking uses it to attribute a git/PR state change to
-/// the agent's turn instead of inferring causality from a polled snapshot
-/// (which can't tell agent work from a manual action or a pre-existing match).
+/// Emitted when a mutating op succeeds, so the UI attributes the git/PR state
+/// change to the agent's turn instead of inferring it from a polled snapshot.
 pub const EVENT_ACTION_DONE: &str = "git.action_done";
 
-/// Host-brokered ops that change remote state — the ones that must run on the
-/// host because they need GitHub credentials that never enter the sandbox, and
-/// whose success means the agent did the delegated work. Local mutations
-/// (commit, merge, conflict-resolve) now run as native in-container git and are
-/// *not* here — their delegation signal arrives out-of-band via the clone's
-/// `post-commit`/`post-merge` hooks (see `signal_git_action`). Read-only ops
-/// (status, fetch) and the test ops (echo/ping) are excluded so they never read
-/// as a completed delegation.
+/// Host-brokered ops whose success means the agent did the delegated work. Local
+/// mutations signal out-of-band via the clone's hooks (`signal_git_action`).
 fn is_mutating_op(op: &str) -> bool {
     matches!(
         op,
@@ -39,75 +27,44 @@ fn is_mutating_op(op: &str) -> bool {
     )
 }
 
-/// The local-git action names a delegation hook may report. Kept to a closed
-/// set so a compromised hook can't fabricate an arbitrary op string into the
-/// UI's delegation attribution. These mirror the op names the frontend's
-/// `gitActionProvesKind` still recognizes for backward compatibility.
+/// A closed set, so a compromised hook can't fabricate an op string into the
+/// UI's delegation attribution.
 fn is_signalable_action(action: &str) -> bool {
     matches!(action, "git_commit" | "git_update_branch")
 }
 
-/// The checkout an op resolved to: the subdir identifies the tracked repo in
-/// emitted events so the supervisor records branch/PR state on the *targeted*
-/// repo, never blindly on the primary. `None` only for dispatchers built
-/// without `with_repos` (tests, legacy call sites) — consumers then fall back
-/// to the primary, matching the single-repo behavior.
+/// `subdir` is `None` for dispatchers built without `with_repos`; consumers then
+/// fall back to the primary.
 struct Target {
     subdir: Option<String>,
     cwd: PathBuf,
     base_branch: String,
-    /// The agent's own work branch for this checkout, as the host recorded it
-    /// when the branch was materialized (`AgentRecord.repos[].branch`). The
-    /// spawn-stable anchor [`AgentCaps::refuses_force`] authorizes a force push
-    /// against — `None` until a branch has been recorded and the dispatcher
-    /// rebuilt (resume / next turn), which fails a force closed.
+    /// The force-push anchor. `None` until the host has recorded the branch and the
+    /// dispatcher was rebuilt, which fails a force closed.
     own_branch: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct GitDispatcher {
-    /// Default checkout (the agent's primary repo) — used when an op carries
-    /// no `args.repo`, which keeps single-repo agents byte-identical.
     cwd: PathBuf,
     base_branch: String,
-    /// The default checkout's subdir, resolved from `repos` by matching `cwd`.
-    /// Stamped into events for defaulted ops.
     default_subdir: Option<String>,
-    /// The agent's own work branch on the *default* checkout, threaded from the
-    /// record at spawn (`AgentRecord.repos[].branch`) exactly as `base_branch` is
-    /// — the spawn-stable anchor the force-push gate authorizes against. `None`
-    /// until the host has recorded a materialized branch and this dispatcher has
-    /// been rebuilt to carry it, which fails a force closed (see
-    /// [`crate::rpc::caps::AgentCaps::refuses_force`]).
+    /// Force-push anchor for the default checkout; `None` fails a force closed.
     own_branch: Option<String>,
-    /// Sibling checkouts by subdir (directory name under the workspace root),
-    /// each with its own base branch and own recorded work branch. Includes the
-    /// primary. Empty for dispatchers built without `with_repos` (tests, old call
-    /// sites) — then `args.repo` is rejected as unknown.
+    /// Primary included. Empty without `with_repos`, so `args.repo` is then rejected.
     repos: std::collections::HashMap<String, (PathBuf, String, Option<String>)>,
-    /// Agent whose *live* issue ref (`crate::issues::live_issue_ref`) drives
-    /// `open_pr`'s closing trailer — `"123"` for a GitHub issue, `"ENG-123"`
-    /// for a Linear ticket. Resolved at open_pr time, not construction, so a
-    /// mid-session pick in the composer reaches the trailer even though this
-    /// dispatcher is built once per session. When a ref resolves, the
-    /// matching trailer (`Closes #123` / `Fixes ENG-123`) is appended to the
-    /// PR body for the *primary* checkout, so merging the PR closes the
-    /// issue. `None` for dispatchers built without `with_close_issue`.
+    /// Resolved at open_pr time, not construction, so a mid-session issue pick
+    /// reaches the closing trailer.
     issue_agent: Option<String>,
-    /// What this agent may ask the host to publish. Stamped at construction —
-    /// i.e. at spawn — and never re-read, so a later policy change cannot widen
-    /// a running agent (see [`crate::rpc::caps`]).
+    /// Stamped at spawn and never re-read, so a later policy change cannot widen a
+    /// running agent.
     caps: AgentCaps,
-    /// Handle + agent id used to ask the user to approve a publish. `None` for
-    /// dispatchers built without [`GitDispatcher::with_approval`] (tests), where
-    /// the gate being enabled is a refusal rather than a silent pass — see
-    /// `refuse_unless_publish_approved`.
+    /// `None` (tests) makes an enabled gate refuse rather than pass.
     approval: Option<(tauri::AppHandle, String)>,
 }
 
 impl GitDispatcher {
-    /// `caps` is required rather than defaulted: it is the only argument whose
-    /// wrong value is a security bug, so a new call site must state it.
+    /// `caps` is required rather than defaulted: its wrong value is a security bug.
     pub fn new(cwd: PathBuf, base_branch: String, caps: AgentCaps) -> Self {
         Self {
             cwd,
@@ -121,30 +78,18 @@ impl GitDispatcher {
         }
     }
 
-    /// Record the agent's own work branch for the *primary* checkout, the anchor
-    /// the force-push gate authorizes against. `with_repos` already derives this
-    /// for the primary from its entry, which is the production path; this exists
-    /// for single-checkout test call sites that don't build a repo table.
     #[cfg(test)]
     pub fn with_own_branch(mut self, branch: Option<String>) -> Self {
         self.own_branch = branch;
         self
     }
 
-    /// Bind this dispatcher to the window it can ask for publish approval through.
-    /// Separate from `with_close_issue` even though both carry the agent id: that
-    /// one seeds an issue ref, this one is the human-in-the-loop channel, and
-    /// coupling them would make either hard to change alone.
     pub fn with_approval(mut self, app: tauri::AppHandle, agent_id: &str) -> Self {
         self.approval = Some((app, agent_id.to_string()));
         self
     }
 
-    /// Why this publish may not proceed unapproved, if so.
-    ///
-    /// Fails **closed** when the gate is on but this dispatcher has no window to
-    /// ask through: publishing unasked is exactly what the gate exists to prevent,
-    /// so an unaskable session refuses instead.
+    /// Fails closed when the gate is on but there is no window to ask through.
     async fn refuse_unless_publish_approved(
         &self,
         op: &str,
@@ -160,30 +105,18 @@ impl GitDispatcher {
                  session has no window to ask through"
             ));
         };
-        // Normalised to the form the UI keys by: `None` for the primary checkout.
-        // The frontend leaves the primary unsuffixed (`checkoutKey(agent, undefined)`),
-        // so sending the primary's own subdir name would build a key that no
-        // autopilot enrollment matches — and a missed match means an unattended push
-        // waits on a prompt nobody answers.
+        // `None` for the primary: the frontend keys it unsuffixed, and a mismatched
+        // key strands an unattended push on a prompt nobody answers.
         let repo = approval_repo(repo, self.default_subdir.as_deref());
         approval::refuse_unless_approved(app, agent_id, op, repo, detail).await
     }
 
-    /// Seed the agent's live issue ref (the one it was spawned from, if any)
-    /// and bind this dispatcher to the agent so `open_pr` reads the ref
-    /// *current at PR time* — a later composer pick replaces the seed via
-    /// `set_agent_issue_ref`.
     pub fn with_close_issue(mut self, agent_id: &str, issue_ref: Option<String>) -> Self {
         crate::issues::set_live_issue_ref(agent_id, issue_ref);
         self.issue_agent = Some(agent_id.to_string());
         self
     }
 
-    /// Register the agent's tracked checkouts as `(subdir, cwd, base_branch,
-    /// own_branch)` so ops can be pointed at any of them via `args.repo`.
-    /// `own_branch` is the record's recorded work branch for that checkout, the
-    /// force-push anchor; the primary's is lifted onto `self.own_branch` here so
-    /// a defaulted op (no `args.repo`) resolves it too.
     pub fn with_repos(mut self, repos: Vec<(String, PathBuf, String, Option<String>)>) -> Self {
         self.repos = repos
             .into_iter()
@@ -195,10 +128,6 @@ impl GitDispatcher {
         self
     }
 
-    /// Resolve the checkout an op targets: `args.repo` (a tracked subdir) when
-    /// present, the primary checkout otherwise. An unknown repo is an error
-    /// response listing the tracked names, so a typo can't silently operate on
-    /// the wrong repo.
     fn target(&self, id: &str, args: &Value) -> std::result::Result<Target, Response> {
         let requested = args
             .get("repo")
@@ -235,8 +164,6 @@ impl GitDispatcher {
     }
 }
 
-/// Build an event payload carrying the resolved repo (when known), so the
-/// supervisor can attribute branch/PR state to the targeted checkout.
 fn with_repo(mut payload: Value, subdir: &Option<String>) -> Value {
     if let Some(s) = subdir {
         payload["repo"] = json!(s);
@@ -257,29 +184,14 @@ impl RpcDispatcher for GitDispatcher {
 
 impl GitDispatcher {
     async fn dispatch_inner(&self, id: &str, op: &str, args: &Value) -> (Response, Vec<RpcEvent>) {
-        // The op-level gate, before any work: a grant that forbids publishing
-        // stops here rather than part-way through a push.
         if let Some(why) = self.caps.refuses(op) {
             return (Response::err(id, why), Vec::new());
         }
         let (resp, mut effects) = match op {
             "open_pr" => self.open_pr(id, args).await,
             "git_push" => self.git_push(id, args).await,
-            // Credentialed fetch of the base branch for the native in-container
-            // merge in `update-branch`: the token stays host-side, so the agent
-            // can't fetch a private remote itself.
             "git_fetch" => (self.git_fetch(id, args).await, Vec::new()),
-            // Out-of-band delegation signal from the clone's local git hooks
-            // (post-commit / post-merge). Not a mutation the host performs —
-            // it only relays that the agent's native git action ran.
             "signal_git_action" => self.signal_git_action(id, args),
-            // Review-thread actions. Both need the host's token, so the agent
-            // can't call GitHub itself. Kept as two ops rather than one
-            // "address this thread" because the outcomes genuinely differ: a
-            // fix or an answer replies AND resolves, while a push-back replies
-            // and deliberately leaves the thread open for the human to settle.
-            // Read side: the agent needs each thread's node id (and who wrote
-            // it) before it can reply to or resolve anything.
             "pr_threads" => (self.pr_threads(id, args).await, Vec::new()),
             "reply_thread" => (self.reply_thread(id, args).await, Vec::new()),
             "resolve_thread" => (self.resolve_thread(id, args).await, Vec::new()),
@@ -301,9 +213,6 @@ impl GitDispatcher {
                 Vec::new(),
             ),
         };
-        // A successful mutating op is ground truth that the agent performed the
-        // git action this turn — surface it so the UI doesn't have to guess from
-        // a snapshot. Emitted alongside the op-specific branch/PR events.
         if resp.ok && is_mutating_op(op) {
             effects.push(RpcEvent::named(
                 EVENT_ACTION_DONE,
@@ -313,9 +222,6 @@ impl GitDispatcher {
         (resp, effects)
     }
 
-    /// The open review threads on this checkout's pull request, as JSON. Two
-    /// round trips (resolve the PR by branch, then read its threads) — fine for a
-    /// once-per-turn agent read, unlike the panel's poll which is given a number.
     async fn pr_threads(&self, id: &str, args: &Value) -> Response {
         let t = match self.target(id, args) {
             Ok(t) => t,
@@ -336,9 +242,6 @@ impl GitDispatcher {
         }
     }
 
-    /// Post a reply on a review thread. Every outcome carries one — a fix says
-    /// what changed, an answer answers, a push-back gives its reasoning — so this
-    /// is the audit trail for work nobody watched happen.
     async fn reply_thread(&self, id: &str, args: &Value) -> Response {
         let (Some(thread), Some(body)) = (
             args.get("thread").and_then(|v| v.as_str()),
@@ -352,9 +255,7 @@ impl GitDispatcher {
         }
     }
 
-    /// Mark a review thread resolved. Only ever a claim that the thread is
-    /// discharged; a disagreement must be left open, which is why this is
-    /// separate from `reply_thread` instead of a flag on it.
+    /// Separate from `reply_thread` so a disagreement can be left open.
     async fn resolve_thread(&self, id: &str, args: &Value) -> Response {
         let Some(thread) = args.get("thread").and_then(|v| v.as_str()) else {
             return Response::err(id, "resolve_thread requires `thread`");
@@ -373,11 +274,8 @@ impl GitDispatcher {
         Response::ok(id, 0, message.to_string(), String::new())
     }
 
-    /// Relay a native-git delegation signal from a clone-installed hook. The
-    /// hook can't emit an app event itself, so it pings this op; we translate it
-    /// into the same `EVENT_ACTION_DONE` a host-side mutation would emit, so the
-    /// UI attributes the agent's in-container commit/merge to its turn exactly as
-    /// before. Synchronous: no git runs, we only validate and emit.
+    /// The clone's hook can't emit an app event itself; this relays it as
+    /// `EVENT_ACTION_DONE`. No git runs.
     fn signal_git_action(&self, id: &str, args: &Value) -> (Response, Vec<RpcEvent>) {
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
         if !is_signalable_action(action) {
@@ -400,12 +298,8 @@ impl GitDispatcher {
         };
         let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
         let body_arg = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
-        // Compose the final body: when this workspace is tied to an issue
-        // (at spawn or via a later composer pick — hence the live lookup, not
-        // a spawn-time snapshot) and the PR targets the issue's (primary)
-        // repo, ensure a closing trailer (`Closes #123` / `Fixes ENG-123`) so
-        // merging the PR closes the issue — reliably, without relying on the
-        // agent to remember. Idempotent (skips if already referenced).
+        // Live issue lookup, not a spawn-time snapshot: a later composer pick must
+        // reach the trailer. Idempotent.
         let live_ref = self
             .issue_agent
             .as_deref()
@@ -416,15 +310,9 @@ impl GitDispatcher {
         let body_owned = crate::github::with_closes_trailer(body_arg, closes);
         let body = body_owned.as_str();
         let requested = arg_branch(args);
-        // The branch this PR targets. Defaults to the base the checkout was
-        // spawned against; `args.base` overrides it, because the user can tell
-        // the agent mid-session to build on a feature branch and the spawn-time
-        // record has no way to know that. Resolved *before* the head branch is
-        // materialized so a malformed base fails without leaving a stray branch
-        // behind. The effective base is reported back on `EVENT_PR_OPENED`, which
-        // rewrites the checkout's recorded base — otherwise ahead/behind, "rebase
-        // onto", and the `update-branch` fetch would keep measuring against a
-        // base this PR isn't stacked on.
+        // Resolved before the head branch is materialized so a malformed base fails
+        // without a stray branch. The effective base is reported on `EVENT_PR_OPENED`,
+        // which rewrites the checkout's recorded base.
         let requested_base = arg_branch_named(args, "base");
         let base = requested_base
             .clone()
@@ -432,14 +320,8 @@ impl GitDispatcher {
         if let Some(resp) = refuse_option_like(id, "open_pr", "base", &base) {
             return (resp, Vec::new());
         }
-        // A base the *request* supplied is confirmed to exist on origin before
-        // anything is created or pushed. Otherwise a typo (`mainn`) costs a
-        // materialized branch and a push, and only then fails in `pr_create` —
-        // leaving a pushed branch with no PR. Only the requested base is checked:
-        // the recorded one was resolved at spawn, and putting a network round
-        // trip (and a new way to fail) in front of every default PR is not this
-        // op's business. `None` from the probe means "couldn't ask", which must
-        // not block — only a definitive "no such ref" refuses.
+        // Only the requested base is probed, so a typo can't leave a pushed branch
+        // with no PR. `None` means "couldn't ask" and must not block.
         if requested_base.is_some()
             && crate::git::remote_branch_exists(&t.cwd, &base).await == Some(false)
         {
@@ -492,11 +374,8 @@ impl GitDispatcher {
         if let Some(resp) = refuse_option_like(id, "open_pr", "branch", &branch) {
             return (resp, effects);
         }
-        // Deliberately the *recorded* base, never `base`: this gate fences the
-        // head branch off the branch the work is reviewed against, and reading it
-        // from the request would let an agent name a decoy base and thereby
-        // publish over the real one (`PROTECTED_TRUNKS` covers only main/master,
-        // so a repo reviewed against `release/2.0` would open up).
+        // Deliberately the *recorded* base, never `base`: reading it from the request
+        // would let an agent name a decoy base and publish over the real one.
         if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
             return (Response::err(id, why), effects);
         }
@@ -504,8 +383,6 @@ impl GitDispatcher {
             .refuse_unless_publish_approved(
                 "open_pr",
                 t.subdir.as_deref(),
-                // The *effective* base, so the confirmation names the PR the user
-                // is actually approving rather than the spawn-time default.
                 &format!("open a pull request from {branch} into {base}"),
             )
             .await
@@ -582,25 +459,16 @@ impl GitDispatcher {
             return (Response::err(id, why), effects);
         }
 
-        // The branch-level gate: `branch` may have come from the checkout's HEAD
-        // rather than the request, so this is the earliest point it is known —
-        // and it must precede the push, force or not.
+        // Earliest point `branch` is known; must precede the push.
         if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
             return (Response::err(id, why), effects);
         }
 
-        // `args.force` opts into `--force-with-lease` for pushing a rewritten
-        // history (e.g. after the agent rebased its branch). Lease-based so a
-        // stale local view can't clobber remote work it hasn't seen.
+        // Lease-based, so a stale local view can't clobber remote work it hasn't seen.
         let force = arg_bool(args, "force");
-        // SECURITY: the lease alone is not enough. It passes for any branch the
-        // agent just fetched, so an agent can fetch a shared branch (`develop`, a
-        // teammate's), `checkout -B` its HEAD onto it, and force-overwrite it —
-        // `refuses_branch` fences only the review base and the trunks. `branch`
-        // here came from that mutable HEAD, so a force is authorized against the
-        // spawn-stable *own* branch (`t.own_branch`) instead, failing closed when
-        // none is recorded yet. A non-force push is untouched (it can still create
-        // a branch); this only gates the destructive rewrite.
+        // SECURITY: the lease passes for any branch the agent just fetched, so a force
+        // is authorized against the spawn-stable own branch and fails closed when none
+        // is recorded. Non-force pushes are untouched.
         if force {
             if let Some(why) = self.caps.refuses_force(&branch, t.own_branch.as_deref()) {
                 return (Response::err(id, why), effects);
@@ -612,14 +480,9 @@ impl GitDispatcher {
         }
     }
 
-    /// Fetch a base branch from `origin` with the host-held GitHub token, so the
-    /// agent can then run a native in-container `git merge origin/<base>` without
-    /// the token ever entering the sandbox. Read-only on the local repo (updates
-    /// only the `origin/<base>` remote-tracking ref); the merge, conflict
-    /// resolution, and merge commit are the agent's native git. `args.ref`
-    /// selects the branch (the `update-branch` playbook passes its `base`);
-    /// absent, the spawn parent branch is used. Hooks are disabled on this
-    /// host-side invocation for the same reason as push (agent-writable `.git`).
+    /// Fetches with the host-held token so the agent can merge `origin/<base>`
+    /// natively without the token entering the sandbox. Hooks are disabled for the
+    /// same reason as push.
     async fn git_fetch(&self, id: &str, args: &Value) -> Response {
         let t = match self.target(id, args) {
             Ok(t) => t,
@@ -635,13 +498,8 @@ impl GitDispatcher {
         }
         let auth = crate::github::git_auth_env();
         let resp = run_git_command(id, &cwd, &["fetch", "origin", &branch], &auth).await;
-        // `run_git_command` reports `ok: true` for any git that *ran*, carrying a
-        // non-zero result only in `exit_code`. For fetch that's a trap: a missing
-        // ref or a transient remote failure would leave `origin/<branch>` stale
-        // while the agent merges it anyway. Convert a non-zero fetch into a hard
-        // error so the `update-branch` flow stops here instead of merging old
-        // state. A response that's already an error (spawn/timeout) passes through
-        // unchanged, keeping its original message.
+        // `run_git_command` reports `ok` for any git that ran; a non-zero fetch must be
+        // a hard error or the agent merges a stale `origin/<branch>`.
         if !resp.ok || resp.exit_code == Some(0) {
             return resp;
         }
@@ -657,9 +515,6 @@ impl GitDispatcher {
     }
 }
 
-/// A target's subdir as the UI keys it: `None` when it *is* the primary, which the
-/// frontend addresses without a suffix. Pure so the mapping is testable — getting
-/// it wrong strands an unattended publish rather than failing loudly.
 fn approval_repo<'a>(subdir: Option<&'a str>, primary: Option<&str>) -> Option<&'a str> {
     subdir.filter(|s| Some(*s) != primary)
 }
@@ -668,29 +523,19 @@ fn arg_branch(args: &Value) -> Option<String> {
     arg_branch_named(args, "branch")
 }
 
-/// Refuse a ref name git could reinterpret as an option (leading `-`), naming
-/// which one (`branch`, `base`, `ref`) in the error. Every ref an op resolves
-/// goes through this: a branch comes from the agent-writable `.git/HEAD`, and a
-/// base or fetch ref comes straight from the request. The `git::push` primitive
-/// already neutralises injection by pushing a fully-qualified refspec, but the
-/// same strings also flow into `pr_create` (the PR head and base), the fetch
-/// argv, and event payloads — so reject them up front so an agent that planted
-/// an option-named HEAD or passed an option-named base fails loudly instead of
-/// silently creating a junk remote branch or PR.
+/// A leading `-` could be read by git as an option. `git::push` uses a
+/// fully-qualified refspec, but the same strings reach `pr_create`, the fetch
+/// argv and event payloads.
 fn refuse_option_like(id: &str, op: &str, kind: &str, value: &str) -> Option<Response> {
     value
         .starts_with('-')
         .then(|| Response::err(id, format!("{op}: refusing option-like {kind} {value:?}")))
 }
 
-/// Read a boolean flag arg by key, defaulting to `false` when absent or not a
-/// bool. Used for `git_push`'s `force` opt-in.
 fn arg_bool(args: &Value, key: &str) -> bool {
     args.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
-/// Read a trimmed, non-empty string arg by key. Used for `branch` (push/PR) and
-/// `ref` (fetch).
 fn arg_branch_named(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(|v| v.as_str())
@@ -699,8 +544,8 @@ fn arg_branch_named(args: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The one place an agent's branch is born, so the user's branch prefix
-/// (Settings › Git) is applied here and nowhere else.
+/// The one place an agent's branch is born, so the user's branch prefix is
+/// applied here and nowhere else.
 async fn materialize_branch(checkout: &Path, desired: &str) -> std::result::Result<String, String> {
     let desired = crate::publish_prefs::apply_branch_prefix(desired);
     crate::git::checkout_new_unique_branch(checkout, &desired)
@@ -734,9 +579,8 @@ async fn run_git_command(
     args: &[&str],
     env: &[(String, String)],
 ) -> Response {
-    // Built directly rather than through `git::cmd`, so the config guard has to be
-    // applied here: `git_status` runs clean filters to decide whether a file
-    // changed, which would execute a planted one.
+    // Built directly rather than via `git::cmd`, so the config guard is applied
+    // here: `git_status` runs clean filters, which would execute a planted one.
     if let Err(e) = crate::git::hardening::refuse_steerable_config(cwd).await {
         return Response::err(id, e.to_string());
     }
@@ -896,9 +740,8 @@ mod tests {
         run_git(&repo, &["add", "-A"]);
         run_git(&repo, &["commit", "-q", "-m", "init"]);
 
-        // Plant an option-named branch and repoint HEAD at it directly, as an
-        // agent with full control of its own `.git` would. `current_branch` then
-        // resolves the injected option string.
+        // Repoint HEAD at an option-named branch, as an agent controlling its own
+        // `.git` could.
         let head = std::process::Command::new("git")
             .current_dir(&repo)
             .args(["rev-parse", "HEAD"])
@@ -910,8 +753,6 @@ mod tests {
 
         let disp = dispatcher(&repo);
         let (resp, fx) = disp.dispatch_inner("p", "git_push", &Value::Null).await;
-        // Refused at the broker (parity with git_fetch) before any git runs, so
-        // the option-named string never reaches a push at all.
         assert!(
             !resp.ok,
             "an option-named HEAD must be refused before any push: {resp:?}"
@@ -927,10 +768,6 @@ mod tests {
         assert!(fx.is_empty(), "a refused push must emit nothing: {fx:?}");
     }
 
-    /// An option-named base is refused before the head branch is materialized,
-    /// so a malformed `args.base` can't leave a stray branch behind in the
-    /// checkout (the head-branch guard, by contrast, necessarily runs after
-    /// HEAD is resolved).
     #[tokio::test]
     async fn open_pr_refuses_option_like_base() {
         let td = tempfile::tempdir().unwrap();
@@ -958,10 +795,6 @@ mod tests {
         assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
     }
 
-    /// A requested base that origin doesn't have is refused before the head
-    /// branch is materialized or pushed, so a typo can't leave a pushed branch
-    /// with no PR behind it. Uses a local bare repo as `origin`, so the probe is
-    /// a real `ls-remote` over the local transport with no network.
     #[tokio::test]
     async fn open_pr_refuses_a_base_missing_from_origin() {
         let td = tempfile::tempdir().unwrap();
@@ -1007,7 +840,6 @@ mod tests {
             fx.is_empty(),
             "nothing may be created before the base is known good: {fx:?}"
         );
-        // And the refusal is a pre-flight, not a side effect: no branch was cut.
         let branches = std::process::Command::new("git")
             .current_dir(&repo)
             .args(["branch", "--list", "fix/typo-base"])
@@ -1019,10 +851,8 @@ mod tests {
         );
     }
 
-    /// `ls-remote`'s ref argument is a pattern, so a glob base matches a real
-    /// branch and exits 0 — but GitHub rejects it as a literal base, which would
-    /// reopen exactly the pushed-branch-without-a-PR hole the probe closes. The
-    /// probe compares the returned ref verbatim, so a glob reads as absent.
+    /// `ls-remote`'s ref argument is a pattern: a glob base matches a real branch
+    /// and exits 0, but GitHub rejects it as a literal base.
     #[tokio::test]
     async fn open_pr_refuses_a_glob_base_that_matches_a_real_branch() {
         let td = tempfile::tempdir().unwrap();
@@ -1043,7 +873,6 @@ mod tests {
         run_git(&repo, &["add", "-A"]);
         run_git(&repo, &["commit", "-q", "-m", "init"]);
         run_git(&repo, &["push", "-q", "origin", "main"]);
-        // A branch the glob genuinely matches, so the probe's `ls-remote` exits 0.
         run_git(&repo, &["push", "-q", "origin", "main:refs/heads/feat/x"]);
 
         let disp = dispatcher(&repo);
@@ -1069,10 +898,6 @@ mod tests {
         assert!(fx.is_empty(), "nothing may be created: {fx:?}");
     }
 
-    /// The probe distinguishes "absent" from "couldn't ask". With no origin at
-    /// all, `ls-remote` fails to *ask* — that must not read as absence, or every
-    /// PR in a local-only repo would be refused on base grounds instead of
-    /// failing honestly at the push.
     #[tokio::test]
     async fn open_pr_does_not_refuse_a_base_it_could_not_verify() {
         let td = tempfile::tempdir().unwrap();
@@ -1099,11 +924,6 @@ mod tests {
         assert!(err.contains("push failed"), "got: {err}");
     }
 
-    /// SECURITY: `args.base` redirects the PR target only. The gate that keeps an
-    /// agent from publishing over the branch its work is reviewed against still
-    /// reads the *recorded* base, so naming a decoy base can't unlock a push to
-    /// the real one. `release/2.0` rather than `main` because the trunk list would
-    /// catch `main` regardless — this is the case only the recorded base covers.
     #[tokio::test]
     async fn open_pr_base_override_does_not_unlock_the_recorded_base() {
         let td = tempfile::tempdir().unwrap();
@@ -1145,9 +965,6 @@ mod tests {
         let (resp, effects) = disp
             .dispatch_inner("f1", "git_fetch", &json!({"ref": "main"}))
             .await;
-        // No origin remote → git exits non-zero. This must surface as a hard
-        // error, not an ok response, so the agent stops instead of merging a
-        // stale `origin/<base>`. And it's never a completed mutation.
         assert!(
             !resp.ok,
             "a failed fetch must be an error response, got: {resp:?}"
@@ -1190,8 +1007,8 @@ mod tests {
         std::fs::write(repo.join("a.txt"), b"x").unwrap();
         run_git(&repo, &["add", "-A"]);
         run_git(&repo, &["commit", "-q", "-m", "init"]);
-        // An agent's own branch — pushing the review base is refused outright
-        // now (`rpc::caps`), which would mask the missing-remote error under test.
+        // Own branch: pushing the review base is refused outright, which would mask
+        // the missing-remote error under test.
         run_git(&repo, &["checkout", "-q", "-b", "fix/no-remote"]);
 
         let rpc_dir = td.path().join("rpc");
@@ -1213,22 +1030,13 @@ mod tests {
         assert!(err.contains("push failed"), "got: {err}");
     }
 
-    /// The primary checkout must go over the wire as `None`, because the UI keys
-    /// the primary without a suffix. A regression here builds a key no autopilot
-    /// enrollment matches, so an unattended push would wait on a prompt.
     #[test]
     fn the_primary_checkout_is_reported_as_no_repo() {
         assert_eq!(approval_repo(Some("app"), Some("app")), None);
-        // A secondary repo keeps its name — that is how the UI scopes to it.
         assert_eq!(approval_repo(Some("web"), Some("app")), Some("web"));
-        // No repos registered (tests, legacy call sites): nothing to normalise.
         assert_eq!(approval_repo(None, None), None);
     }
 
-    /// The hole `rpc::caps` closes, at the layer that used to have it: an agent
-    /// sitting on the review base pushed straight onto it, because `git_push`
-    /// validated nothing. A real remote is attached, so a regression here would
-    /// actually publish — the refusal must come *before* the push.
     #[tokio::test]
     async fn git_push_refuses_the_review_base() {
         let td = tempfile::tempdir().unwrap();
@@ -1268,8 +1076,6 @@ mod tests {
             "pushing the review base must be refused: {v}"
         );
         assert!(v["error"].as_str().unwrap().contains("refusing to publish"));
-        // Nothing reached the remote: the refusal precedes the push, so `force`
-        // could not have rewritten anything.
         let refs = std::process::Command::new("git")
             .args(["--git-dir", remote.to_str().unwrap(), "for-each-ref"])
             .output()
@@ -1374,18 +1180,14 @@ mod tests {
         std::fs::write(repo.join("a.txt"), b"x").unwrap();
         run_git(&repo, &["add", "-A"]);
         run_git(&repo, &["commit", "-q", "-m", "init"]);
-        // An agent's own branch: the force-push behaviour under test is only
-        // reachable on a branch that isn't the review base.
+        // Own branch: force-push is only reachable off the review base.
         run_git(&repo, &["checkout", "-q", "-b", "fix/diverged"]);
 
         let rpc_dir = td.path().join("rpc");
         ensure_mailbox(&rpc_dir).unwrap();
         let requests = rpc_dir.join("requests");
-        // `fix/diverged` is this agent's own recorded branch, so the force-push
-        // gate authorizes rewriting it after the rebase below.
         let dispatcher = dispatcher(&repo).with_own_branch(Some("fix/diverged".to_string()));
 
-        // First push seeds the remote branch.
         write_request(&requests, "p1.json", r#"{"id":"p1","op":"git_push"}"#);
         process_pending(&rpc_dir, &dispatcher).await;
         let v: Value = serde_json::from_str(
@@ -1394,10 +1196,8 @@ mod tests {
         .unwrap();
         assert_eq!(v["ok"], true, "seed push should succeed: {v}");
 
-        // Rewrite local history so the branch diverges from the remote.
         run_git(&repo, &["commit", "-q", "--amend", "-m", "rewritten"]);
 
-        // A normal push is rejected as non-fast-forward.
         write_request(&requests, "p2.json", r#"{"id":"p2","op":"git_push"}"#);
         process_pending(&rpc_dir, &dispatcher).await;
         let v: Value = serde_json::from_str(
@@ -1406,7 +1206,6 @@ mod tests {
         .unwrap();
         assert_eq!(v["ok"], false, "diverged push must be rejected: {v}");
 
-        // Force (lease-guarded) push rewrites the remote branch.
         write_request(
             &requests,
             "p3.json",
@@ -1419,7 +1218,6 @@ mod tests {
         .unwrap();
         assert_eq!(v["ok"], true, "force push should succeed: {v}");
 
-        // Remote now points at the rewritten commit.
         let local = std::process::Command::new("git")
             .current_dir(&repo)
             .args(["rev-parse", "HEAD"])
@@ -1437,10 +1235,6 @@ mod tests {
         );
     }
 
-    /// The gap this closes: an agent owns `fix/mine`, but fetches a shared branch
-    /// and `checkout -B`s its HEAD onto it, then force-pushes. `refuses_branch`
-    /// waves `develop` through (not the review base), so only the force gate stops
-    /// the destructive overwrite — before any git runs, like the option-name gate.
     #[tokio::test]
     async fn git_push_force_refuses_a_branch_the_agent_does_not_own() {
         let td = tempfile::tempdir().unwrap();
@@ -1452,7 +1246,6 @@ mod tests {
         std::fs::write(repo.join("a.txt"), b"x").unwrap();
         run_git(&repo, &["add", "-A"]);
         run_git(&repo, &["commit", "-q", "-m", "init"]);
-        // The fetch + repoint an attacker would do: HEAD now names a shared branch.
         run_git(&repo, &["checkout", "-q", "-b", "develop"]);
 
         let disp = dispatcher(&repo).with_own_branch(Some("fix/mine".to_string()));
@@ -1473,9 +1266,6 @@ mod tests {
             "a refused force push must emit nothing: {fx:?}"
         );
 
-        // The very same branch WITHOUT force is not the force gate's business — it
-        // only fails later for lack of a remote, proving the gate is force-specific
-        // and a non-force push can still target another branch.
         let (resp, _fx) = disp.dispatch_inner("p2", "git_push", &Value::Null).await;
         let err = resp.error.as_deref().unwrap_or_default();
         assert!(
@@ -1484,11 +1274,6 @@ mod tests {
         );
     }
 
-    /// Fail closed: until the host has recorded the agent's branch (and this
-    /// dispatcher been rebuilt to carry it), a force cannot be authorized — so a
-    /// fresh session can't force-overwrite anything. The cost is the documented
-    /// residual: a same-session rebase force is deferred until the branch is
-    /// tracked. Non-force stays available throughout.
     #[tokio::test]
     async fn git_push_force_is_refused_until_the_own_branch_is_recorded() {
         let td = tempfile::tempdir().unwrap();
@@ -1502,7 +1287,6 @@ mod tests {
         run_git(&repo, &["commit", "-q", "-m", "init"]);
         run_git(&repo, &["checkout", "-q", "-b", "fix/fresh"]);
 
-        // A `new`-built dispatcher, as at first spawn: no own branch threaded yet.
         let disp = dispatcher(&repo);
         let (resp, fx) = disp
             .dispatch_inner("p", "git_push", &json!({ "force": true }))
@@ -1531,7 +1315,6 @@ mod tests {
             &["init", "-q", "--bare", remote.to_str().unwrap()],
         );
 
-        // Repo A seeds the remote and records origin/main = c1.
         let a = td.path().join("a");
         std::fs::create_dir_all(&a).unwrap();
         run_git(&a, &["init", "-q", "-b", "main"]);
@@ -1543,9 +1326,8 @@ mod tests {
         run_git(&a, &["commit", "-q", "-m", "c1"]);
         run_git(&a, &["push", "-u", "-q", "origin", "main"]);
 
-        // Repo B advances the remote with a commit A never fetches. Clone with
-        // an explicit `-b main` so the checkout doesn't depend on the bare
-        // repo's default HEAD (which follows the host's `init.defaultBranch`).
+        // Explicit `-b main`: the bare repo's default HEAD follows the host's
+        // `init.defaultBranch`.
         let b = td.path().join("b");
         run_git(
             td.path(),
@@ -1565,8 +1347,6 @@ mod tests {
         run_git(&b, &["commit", "-q", "-m", "c2"]);
         run_git(&b, &["push", "-q", "origin", "main"]);
 
-        // A rewrites its own history WITHOUT integrating B's commit, then tries
-        // to force-push. A's origin/main tracking ref is stale (still c1).
         run_git(&a, &["commit", "-q", "--amend", "-m", "c1-rewritten"]);
 
         let rpc_dir = td.path().join("rpc");
@@ -1582,14 +1362,11 @@ mod tests {
             &std::fs::read_to_string(rpc_dir.join("responses/p.json")).unwrap(),
         )
         .unwrap();
-        // `--force-if-includes` must catch this even though the stale tracking
-        // ref would have passed a bare `--force-with-lease`.
         assert_eq!(
             v["ok"], false,
             "force push must be refused when the remote advanced with a commit we never integrated: {v}"
         );
 
-        // The remote still points at B's commit — nothing was clobbered.
         let remote_head = std::process::Command::new("git")
             .current_dir(&remote)
             .args(["rev-parse", "refs/heads/main"])
@@ -1616,7 +1393,6 @@ mod tests {
             std::fs::create_dir_all(repo).unwrap();
             run_git(repo, &["init", "-q", "-b", "main"]);
         }
-        // A dirty file only in `b`, so the two checkouts are distinguishable.
         std::fs::write(b.join("x.txt"), b"x").unwrap();
 
         let disp = GitDispatcher::new(a.clone(), "main".into(), AgentCaps::interactive())
@@ -1634,7 +1410,6 @@ mod tests {
             "targeting `b` must see its dirty file: {resp:?}"
         );
 
-        // No `repo` arg → the primary checkout, exactly as before.
         let (resp, _fx) = disp.dispatch_inner("s2", "git_status", &Value::Null).await;
         assert!(
             !resp.stdout.as_deref().unwrap_or_default().contains("x.txt"),
@@ -1664,10 +1439,6 @@ mod tests {
                 ("b".into(), b.clone(), "main".into(), None),
             ]);
 
-        // Targeting the sibling: the branch event must name `b`, so the
-        // supervisor records the branch on b's worktree row, not the primary's.
-        // (The push itself fails — no remote — but the branch was materialized
-        // and its event emitted before the push attempt.)
         let (_resp, fx) = disp
             .dispatch_inner(
                 "p1",
@@ -1686,7 +1457,6 @@ mod tests {
             "branch event must carry the targeted repo, got: {fx:?}"
         );
 
-        // Defaulted op: the event carries the primary's subdir.
         let (_resp, fx) = disp
             .dispatch_inner("p2", "git_push", &json!({"branch": "feat/front"}))
             .await;
@@ -1753,15 +1523,12 @@ mod tests {
         run_git(&repo, &["commit", "-q", "-m", "init"]);
         let disp = dispatcher(&repo);
 
-        // Read-only op: never an action-done signal.
         let (_r, status_fx) = disp.dispatch_inner("s", "git_status", &Value::Null).await;
         assert!(
             !has_action_done(&status_fx, "git_status"),
             "git_status is read-only and must not signal an action"
         );
 
-        // A failed mutating op (push with no remote) must NOT signal success:
-        // `is_mutating_op` gates the emit on `resp.ok`.
         let (resp, push_fx) = disp.dispatch_inner("p", "git_push", &Value::Null).await;
         assert!(!resp.ok);
         assert!(

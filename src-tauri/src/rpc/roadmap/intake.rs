@@ -12,21 +12,11 @@ use super::duplicates::duplicate_warnings;
 
 pub(super) type Proposed = (Vec<RoadmapItem>, Vec<ItemEvent>);
 
-/// Most items one `roadmap_propose` call may carry. A proposal is a thing a
-/// human reads and accepts; past a score of rows that stops being true, and the
-/// PM should be slicing rather than dumping a backlog.
 const MAX_BATCH: usize = 20;
 
-/// Turn the agent's items into validated [`NewItem`]s, or explain what's wrong
-/// with the batch. `existing` is the project's board: `deps` may name a code
-/// already on it, or another item in *this* batch as `"#n"` (1-based), which is
-/// what lets one call express an ordered plan. The whole merged graph — the
-/// batch's own edges plus the board's — has to stay acyclic
-/// ([`deps::validate_batch`]).
-///
-/// The `"#n"` entries survive into the returned [`NewItem`]s untouched; only the
-/// insert transaction can resolve them, because that is where codes are
-/// allocated (see [`resolve_batch_deps`]).
+/// `deps` may name a board code or another batch item as `"#n"` (1-based); the
+/// merged graph must stay acyclic. `"#n"` survives untouched — only the insert
+/// transaction knows the codes.
 fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewItem>, String> {
     if items.is_empty() {
         return Err("`items` must be a non-empty array of tickets".into());
@@ -69,10 +59,8 @@ fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewI
             source: Some(ItemSource::Pm),
             accept: clean_list(&it.accept),
             deps: clean_list(&it.deps),
-            // Which workflow builds it is the user's call, not the PM's.
             workflow_def_id: None,
-            // Only the issue funnel's create call sets `issue_url`: a PM-supplied
-            // tracker URL would fake provenance and collide with the funnel's dedup key.
+            // Only the issue funnel sets `issue_url`; a PM-supplied one would fake provenance.
             issue_url: None,
         });
     }
@@ -87,15 +75,8 @@ fn validate(items: &[ProposedItem], existing: &[RoadmapItem]) -> Result<Vec<NewI
     Ok(out)
 }
 
-/// Rewrite a batch item's `"#n"` references into the codes the insert allocated.
-///
-/// Called *inside* the insert transaction, once every row exists: `"#2"` means
-/// "the second ticket in this call", and only the transaction knows what code
-/// that ticket got. Forward references work for the same reason — the rewrite
-/// happens after all the inserts, not during them.
-///
-/// A dep that isn't a batch reference is left exactly as written; validation has
-/// already established it is a code on the board.
+/// Runs inside the insert transaction after every row exists, so forward
+/// references resolve.
 fn resolve_batch_deps(raw: &[String], created: &[RoadmapItem]) -> Vec<String> {
     raw.iter()
         .map(|d| match deps::batch_index(d, created.len()) {
@@ -105,15 +86,6 @@ fn resolve_batch_deps(raw: &[String], created: &[RoadmapItem]) -> Vec<String> {
         .collect()
 }
 
-/// `roadmap_propose`: validate the batch, insert it as `proposed` rows in one
-/// transaction, and hand back the allocated codes — plus a `warnings` array
-/// when a title looks like an item already on the board
-/// ([`duplicate_warnings`]), so the PM learns about the near-duplicate in the
-/// same breath as the codes and can raise it instead of ignoring it.
-///
-/// Returns the created rows — and the `proposed` history events recorded with
-/// them — alongside the response so the caller can announce both to the
-/// frontend: the board grows ghost rows live, mid-conversation.
 pub(super) fn propose_op(
     conn: &Connection,
     project_id: &str,
@@ -136,8 +108,7 @@ fn insert_batch(
     let args: ProposeArgs = parse_args(args)?;
     let existing = store::list(conn, project_id).map_err(|e| e.to_string())?;
     let news = validate(&args.items, &existing)?;
-    // Computed against the board the batch was validated against, before the
-    // insert — a batch must not warn about itself.
+    // Against the pre-insert board, so a batch never warns about itself.
     let warnings = duplicate_warnings(&news, &existing);
 
     // All or nothing. The `proposed` events and the `"#n"` rewrite ride the same

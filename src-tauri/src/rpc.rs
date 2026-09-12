@@ -1,8 +1,4 @@
 //! File-mailbox RPC between a sandboxed agent and the app.
-//!
-//! This module owns the transport: mailbox layout, atomic request/response
-//! handling, and the dispatcher trait. Feature-specific behavior lives behind
-//! dispatchers such as `rpc::git::GitDispatcher`.
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -17,10 +13,8 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 
-/// How old an unparseable request must be before we give up on it. A compliant
-/// agent writes atomically (tmp + rename), so a renamed file is always complete;
-/// this grace window only tolerates a non-compliant agent caught mid-write.
-/// Past it, the file is treated as malformed: answered with an error and removed.
+/// Grace window for a non-compliant agent caught mid-write; a compliant one
+/// renames atomically. Past it the file is answered with an error and removed.
 const STALE_REQUEST_AGE: Duration = Duration::from_secs(5);
 
 #[path = "rpc/approval.rs"]
@@ -32,9 +26,7 @@ pub mod git;
 #[path = "rpc/roadmap/mod.rs"]
 pub mod roadmap;
 
-/// One request from the agent. The `id` is carried in the filename (the pairing
-/// key), so it's not parsed from the body here; `args` defaults to null when
-/// omitted. Unknown body fields (including a redundant `id`) are ignored.
+/// `id` comes from the filename, not the body; unknown body fields are ignored.
 #[derive(Debug, Deserialize)]
 pub struct Request {
     pub op: String,
@@ -42,9 +34,6 @@ pub struct Request {
     pub args: Value,
 }
 
-/// One response written back to the agent. `exit_code`/`stdout`/`stderr` are
-/// present on success; `error` on failure. Serialized fields are omitted when
-/// `None` so the two shapes stay clean on disk.
 #[derive(Debug, Serialize)]
 pub struct Response {
     pub id: String,
@@ -59,9 +48,6 @@ pub struct Response {
     pub error: Option<String>,
 }
 
-/// A structured side effect emitted by a dispatcher. The transport keeps this
-/// generic so feature handlers can report whatever state the supervisor needs
-/// to persist or forward.
 #[derive(Debug, Clone)]
 pub enum RpcEvent {
     Named { name: String, payload: Value },
@@ -78,8 +64,6 @@ impl RpcEvent {
 
 pub type RpcFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Feature-specific RPC dispatcher. The transport knows how to read and write
-/// mailbox files; the dispatcher knows what operations the app supports.
 pub trait RpcDispatcher: Send + Sync {
     fn dispatch<'a>(
         &'a self,
@@ -113,15 +97,11 @@ impl Response {
     }
 }
 
-/// Env var overriding the mailbox root (default `~/.fletch/rpc`). The Run
-/// sandbox forbids writes to the host's `~/.fletch/rpc`, so a nested Fletch
-/// launched as a Run process (dogfooding: Fletch running Fletch) is pointed at
-/// a sandbox-writable root instead — see `sandbox::nested_rpc_root`.
+/// A nested Fletch launched as a Run process can't write the host's
+/// `~/.fletch/rpc` — see `sandbox::nested_rpc_root`.
 pub const RPC_ROOT_ENV: &str = "FLETCH_RPC_ROOT";
 
-/// `<root>/<agent-id>/` — the agent's private mailbox root. `<root>` is this
-/// build's mailbox root under `~/.fletch` (or under `$FLETCH_RPC_ROOT` when set
-/// and non-empty): `rpc/` for release, `dev/rpc/` for debug.
+/// `<root>/<agent-id>/`; root is `rpc/` for release, `dev/rpc/` for debug.
 pub fn mailbox_dir(agent_id: &str) -> Result<PathBuf> {
     Ok(rpc_root()?.join(agent_id))
 }
@@ -136,21 +116,12 @@ fn rpc_root() -> Result<PathBuf> {
     Ok(rpc_root_in(&base))
 }
 
-/// Apply the per-build split (see [`crate::build_state_subpath`]) to a mailbox
-/// base. The exact mirror of `workspace::paths::checkouts_root_in`, split out
-/// for the same reasons: testable without mutating the process-global override,
-/// and the override and default paths share one "append the build subpath" step
-/// so neither can drift into bypassing the split.
-///
-/// Nothing migrates on upgrade — a mailbox is per-spawn state, so a pre-split
-/// dir is just an orphan the release build sweeps.
+/// Override and default paths share this step so neither can bypass the
+/// per-build split.
 fn rpc_root_in(base: &Path) -> PathBuf {
     base.join(crate::build_state_subpath("rpc"))
 }
 
-/// Create the mailbox and its `requests/`/`responses/` subdirs. Idempotent;
-/// called at spawn. The agent's dir is locked down to 0700 — it's a private
-/// control channel, not shared.
 pub fn ensure_mailbox(dir: &Path) -> Result<()> {
     let requests = dir.join("requests");
     let responses = dir.join("responses");
@@ -161,8 +132,7 @@ pub fn ensure_mailbox(dir: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        // 0700 on the root *and* both subdirs — the responses can carry
-        // sensitive tool output, so don't rely on umask for the children.
+        // 0700 on the root and both subdirs: responses can carry sensitive tool output.
         for p in [dir, requests.as_path(), responses.as_path()] {
             std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))
                 .map_err(|e| Error::Other(format!("chmod rpc mailbox {}: {e}", p.display())))?;
@@ -171,12 +141,8 @@ pub fn ensure_mailbox(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove one agent's mailbox. Called from teardown (archive / discard)
-/// alongside the checkout removal, so a mailbox's lifetime matches the agent's
-/// rather than accumulating one dead dir per agent ever spawned. Best-effort
-/// and idempotent: an already-absent dir is success, and any other error is the
-/// caller's to log — a surviving mailbox is wasted disk, never a correctness
-/// problem (`ensure_mailbox` recreates and re-chmods at the next spawn).
+/// Best-effort: an absent dir is success, and a surviving mailbox is wasted
+/// disk, never a correctness problem.
 pub fn remove_mailbox(agent_id: &str) -> Result<()> {
     let dir = mailbox_dir(agent_id)?;
     match std::fs::remove_dir_all(&dir) {
@@ -189,22 +155,9 @@ pub fn remove_mailbox(agent_id: &str) -> Result<()> {
     }
 }
 
-/// Startup sweep: drop every mailbox that doesn't belong to a live agent.
-///
-/// Teardown removes an agent's mailbox from now on, but installs predating that
-/// carry one leaked dir per agent ever spawned, and a crash between spawn and
-/// teardown can still leak one. `live` is this build's non-archived agent ids
-/// (see `WorkspaceManager::live_agent_ids`) — the same set the name allocator
-/// treats as reserved, so the two never disagree about who's alive.
-///
-/// "Doesn't belong to a live agent" is only sound because the root is
-/// per-build (`rpc_root_in`): every mailbox under it was created by an agent in
-/// the DB `live` came from. Sharing a root with another build would put that
-/// build's live agents outside `live` and delete their mailboxes mid-turn.
-///
-/// Skipped when `RPC_ROOT_ENV` is set: that's the nested-Fletch redirect, whose
-/// pid-keyed roots are reclaimed by `sandbox::cleanup_nested_rpc_roots`, and
-/// whose live agents belong to a different build's DB than `live`.
+/// Sound only because the root is per-build: every mailbox under it belongs to
+/// the DB `live` came from. Skipped when `RPC_ROOT_ENV` is set; nested-Fletch
+/// roots are reclaimed by `sandbox::cleanup_nested_rpc_roots`.
 pub fn sweep_orphan_mailboxes(live: &HashSet<String>) {
     if std::env::var_os(RPC_ROOT_ENV)
         .filter(|v| !v.is_empty())
@@ -216,11 +169,7 @@ pub fn sweep_orphan_mailboxes(live: &HashSet<String>) {
     sweep_orphan_mailboxes_in(&root, live);
 }
 
-/// Testable core of [`sweep_orphan_mailboxes`]: within `root`, remove every
-/// subdir whose name isn't in `live`. Split out so tests don't have to mutate
-/// the process-global `RPC_ROOT_ENV` (which the public fn treats as "skip"),
-/// mirroring `workspace::paths::migrate_checkouts_root_in`. A missing root, a
-/// non-dir entry, and a per-entry failure are all skipped rather than fatal.
+/// Split out so tests don't mutate the process-global `RPC_ROOT_ENV`.
 pub(crate) fn sweep_orphan_mailboxes_in(root: &Path, live: &HashSet<String>) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
@@ -245,10 +194,7 @@ pub(crate) fn sweep_orphan_mailboxes_in(root: &Path, live: &HashSet<String>) {
     }
 }
 
-/// Process every pending request file once: parse -> dispatch -> write
-/// response -> delete the request. Driven on a fixed tick by the per-agent
-/// watcher. Errors on a single request are logged and isolated — one bad file
-/// can't stall the rest.
+/// One bad request file is logged and isolated, never stalls the rest.
 pub async fn process_pending(rpc_dir: &Path, dispatcher: &dyn RpcDispatcher) -> Vec<RpcEvent> {
     let requests = rpc_dir.join("requests");
     let responses = rpc_dir.join("responses");
@@ -282,22 +228,16 @@ async fn handle_request_file(
         return Vec::new();
     }
 
-    // Claim the request for this trigger. The response-file check below only
-    // covers *answered* requests; without the claim, two concurrent triggers
-    // (an overlapping watcher generation still draining a slow op, or a future
-    // FS-event trigger racing the poll tick) could both scan the request
-    // before either writes its response and dispatch it twice. In-memory is
-    // enough: every trigger for a mailbox lives in this process, and after a
-    // crash the request file survives for the next start to retry.
+    // Claim before the response-file check: two concurrent triggers could
+    // otherwise both dispatch. In-memory suffices; after a crash the request file
+    // survives for retry.
     let Some(_claim) = InFlightClaim::acquire(path) else {
         tracing::debug!(file = %path.display(), "rpc: request already in flight, skipping");
         return Vec::new();
     };
 
-    // A response for this id already exists: a previous tick answered the
-    // request but failed to remove its file, or two triggers raced on the same
-    // scan. Never re-dispatch — ops can have side effects (e.g. a git push).
-    // Just finish the cleanup.
+    // Already answered by a tick that failed to remove the file, or a racing
+    // trigger: never re-dispatch a side-effectful op.
     if responses.join(format!("{stem}.json")).exists() {
         remove_request_file(path);
         return Vec::new();
@@ -306,8 +246,6 @@ async fn handle_request_file(
     let raw = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // A concurrent trigger consumed the file between the directory
-            // scan and this read — already handled, nothing to do.
             tracing::debug!(file = %path.display(), "rpc: request vanished before read");
             return Vec::new();
         }
@@ -335,12 +273,8 @@ async fn handle_request_file(
 
     let (resp, effects) = dispatcher.dispatch(stem, &req.op, &req.args).await;
 
-    // The op has now run and may have had side effects (e.g. a git push). Even
-    // if writing the response fails, we must remove the request file so the
-    // next poll tick can't re-acquire and re-dispatch it — a lost response (the
-    // caller times out waiting) is strictly safer than executing a
-    // side-effectful op twice. The request stays only if the process crashes
-    // before this point, which preserves at-least-once for un-dispatched ops.
+    // The op ran; remove the request even if writing the response fails, so it
+    // can't be re-dispatched. A lost response is safer than a doubled push.
     if let Err(e) = write_response_atomic(responses, stem, &resp) {
         tracing::error!(error = %e, id = %stem, "rpc: write response failed after dispatch; dropping request to avoid re-execution");
     }
@@ -350,16 +284,11 @@ async fn handle_request_file(
     effects
 }
 
-/// Request files currently being processed somewhere in this process. Guards
-/// the dispatch of side-effectful ops against concurrent triggers; see the
-/// claim site in `handle_request_file`.
 fn in_flight() -> &'static Mutex<HashSet<PathBuf>> {
     static IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
     IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-/// RAII entry in `in_flight()`: released on drop, so every early return in
-/// `handle_request_file` unclaims automatically.
 struct InFlightClaim(PathBuf);
 
 impl InFlightClaim {
@@ -377,8 +306,7 @@ impl Drop for InFlightClaim {
     }
 }
 
-/// Delete a handled request file. NotFound is a no-op — a concurrent trigger
-/// beat us to the cleanup, which is fine now that the request is answered.
+/// NotFound is a no-op: a concurrent trigger beat us to it.
 fn remove_request_file(path: &Path) {
     if let Err(e) = std::fs::remove_file(path) {
         if e.kind() != std::io::ErrorKind::NotFound {
@@ -424,19 +352,12 @@ mod tests {
 
     #[test]
     fn mailbox_root_is_split_per_build() {
-        // A shared base — `~/.fletch`, or one `$FLETCH_RPC_ROOT` redirect two
-        // builds are both pointed at — must not bypass the split. Tests compile
-        // with debug_assertions on.
         let base = Path::new("/tmp/shared-base");
         assert_eq!(rpc_root_in(base), base.join("dev").join("rpc"));
     }
 
     #[test]
     fn sweep_cannot_reach_another_builds_live_mailboxes() {
-        // The regression: a debug instance's startup sweep ran over the one flat
-        // `~/.fletch/rpc`, so every release-build agent — absent from the debug
-        // DB's `live` set — lost its mailbox, including agents with a turn in
-        // flight. Per-build roots put them out of reach.
         let td = tempfile::tempdir().unwrap();
         let ours = rpc_root_in(td.path());
         let theirs = td.path().join("rpc"); // the release install's, same base
@@ -469,8 +390,6 @@ mod tests {
 
     #[test]
     fn sweep_removes_a_mailbox_with_pending_traffic_in_it() {
-        // A crashed agent leaves request/response files behind; the sweep must
-        // still clear the dir rather than trip on a non-empty removal.
         let td = tempfile::tempdir().unwrap();
         let root = td.path();
         let dir = root.join("gobi");
@@ -511,8 +430,6 @@ mod tests {
 
     struct MockDispatcher;
 
-    /// Like `MockDispatcher`, but counts dispatch calls so tests can assert an
-    /// already-answered request is never re-executed.
     struct CountingDispatcher(std::sync::atomic::AtomicUsize);
 
     impl RpcDispatcher for CountingDispatcher {
@@ -532,8 +449,6 @@ mod tests {
         }
     }
 
-    /// Counts dispatch entries and then parks until the test hands it a
-    /// permit, so a test can hold a request in flight deterministically.
     struct BlockingDispatcher {
         calls: std::sync::atomic::AtomicUsize,
         release: tokio::sync::Semaphore,
@@ -672,8 +587,6 @@ mod tests {
         let rpc_dir = td.path().join(".fletch-rpc");
         ensure_mailbox(&rpc_dir).unwrap();
 
-        // A previous tick answered req-4 but its request file lingered
-        // (remove failed or two triggers raced on the same scan).
         std::fs::write(
             rpc_dir.join("responses/req-4.json"),
             r#"{"id":"req-4","ok":true,"exit_code":0,"stdout":"first","stderr":""}"#,
@@ -699,10 +612,6 @@ mod tests {
         assert_eq!(v["stdout"], "first", "original response must be preserved");
     }
 
-    /// A request that is being dispatched (no response written yet) must not
-    /// be dispatched again by a concurrent trigger — e.g. an old watcher
-    /// generation still draining a slow `git_push` while the respawned
-    /// generation starts ticking, or an FS-event trigger racing the poll tick.
     #[tokio::test]
     async fn in_flight_request_is_not_redispatched_by_a_concurrent_trigger() {
         let td = tempfile::tempdir().unwrap();
@@ -723,13 +632,10 @@ mod tests {
         let d = dispatcher.clone();
         let first = tokio::spawn(async move { process_pending(&dir, d.as_ref()).await });
 
-        // Wait until the first trigger is inside dispatch: claim held, no
-        // response written yet — exactly the window the exists() check misses.
         while dispatcher.calls.load(std::sync::atomic::Ordering::SeqCst) == 0 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
 
-        // A second trigger scans the same request mid-flight.
         process_pending(&rpc_dir, dispatcher.as_ref()).await;
         assert_eq!(
             dispatcher.calls.load(std::sync::atomic::Ordering::SeqCst),
@@ -750,10 +656,6 @@ mod tests {
         assert_eq!(v["ok"], true);
     }
 
-    /// A response-write failure *after* dispatch must not leave the request
-    /// eligible for a second dispatch: the op already ran (possibly with side
-    /// effects like a git push), so the request file is dropped even though no
-    /// response was written. A later tick then finds nothing to re-execute.
     #[tokio::test]
     async fn write_failure_after_dispatch_does_not_redispatch() {
         let td = tempfile::tempdir().unwrap();
@@ -765,9 +667,8 @@ mod tests {
             r#"{"id":"req-8","op":"ping"}"#,
         );
 
-        // Force write_response_atomic to fail deterministically: it writes to
-        // `responses/req-8.json.tmp` first, so a directory in that spot makes
-        // the write error out on every platform.
+        // A directory at `responses/req-8.json.tmp` makes the tmp write fail on every
+        // platform.
         std::fs::create_dir(rpc_dir.join("responses/req-8.json.tmp")).unwrap();
 
         let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
@@ -784,7 +685,6 @@ mod tests {
         );
         assert!(!rpc_dir.join("responses/req-8.json").exists());
 
-        // A subsequent tick must not re-run the (side-effectful) op.
         process_pending(&rpc_dir, &dispatcher).await;
         assert_eq!(
             dispatcher.0.load(std::sync::atomic::Ordering::SeqCst),
@@ -799,7 +699,6 @@ mod tests {
         let rpc_dir = td.path().join(".fletch-rpc");
         ensure_mailbox(&rpc_dir).unwrap();
 
-        // The file vanished between the directory scan and the read.
         let gone = rpc_dir.join("requests/req-5.json");
         let effects = handle_request_file(&gone, &rpc_dir.join("responses"), &MockDispatcher).await;
 
@@ -807,10 +706,6 @@ mod tests {
         assert!(!rpc_dir.join("responses/req-5.json").exists());
     }
 
-    /// With no FS-event mechanism anywhere (this transport has none — the
-    /// watcher is a bare interval tick), a dropped request file is answered
-    /// within 1s by the poll path alone. The tick here mirrors the 500ms
-    /// fallback; production polls even faster (`RPC_TICK`).
     #[tokio::test]
     async fn poll_tick_answers_request_within_a_second_without_fs_events() {
         let td = tempfile::tempdir().unwrap();

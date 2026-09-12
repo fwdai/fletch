@@ -24,8 +24,6 @@ fn propose_order_parks_the_whole_sequence() {
         json!(["MCA-102", "MCA-100", "MCA-101"])
     );
 
-    // Parked, not applied: the board's order is untouched until the user
-    // rules on it.
     let p = stored.unwrap();
     assert_eq!(p.codes, vec!["MCA-102", "MCA-100", "MCA-101"]);
     assert_eq!(p.note.as_deref(), Some("the dep goes first"));
@@ -42,7 +40,6 @@ fn propose_order_rejects_anything_but_the_exact_orderable_set() {
     assert!(propose(&db, one_item("first")).ok); // MCA-100
     assert!(propose(&db, one_item("second")).ok); // MCA-101
     {
-        // An item already being built: its place in the queue is settled.
         let conn = db.lock();
         store::create(
             &conn,
@@ -58,7 +55,6 @@ fn propose_order_rejects_anything_but_the_exact_orderable_set() {
 
     for (args, needle) in [
         (json!({"codes": []}), "must list every orderable item"),
-        // Blank entries are trimmed away, which makes this an empty ask.
         (json!({"codes": ["  "]}), "must list every orderable item"),
         (json!({"codes": ["MCA-100"]}), "MCA-101"),
         (
@@ -73,7 +69,6 @@ fn propose_order_rejects_anything_but_the_exact_orderable_set() {
             json!({"codes": ["MCA-100", "MCA-100", "MCA-101"]}),
             "appears twice",
         ),
-        // A misspelled field would otherwise be silently dropped.
         (
             json!({"codes": ["MCA-100", "MCA-101"], "notes": "why"}),
             "unknown field",
@@ -85,7 +80,6 @@ fn propose_order_rejects_anything_but_the_exact_orderable_set() {
         assert!(e.contains(needle), "expected {needle:?} in {e:?}");
         assert!(stored.is_none());
     }
-    // Args at all are required, and nothing above parked an ask.
     assert!(!propose_order(&db, Value::Null).0.ok);
     assert!(order_proposals::get(&db.lock(), "p1").unwrap().is_none());
 }
@@ -106,7 +100,6 @@ fn a_newer_order_ask_replaces_the_pending_one() {
         json!({"codes": ["MCA-101", "MCA-100"], "note": "changed my mind"}),
     );
     assert!(resp.ok, "{resp:?}");
-    // One pending ask per board — the user rules on the current position.
     assert_eq!(order_proposals::get(&db.lock(), "p1").unwrap(), stored);
     assert_eq!(stored.unwrap().codes, vec!["MCA-101", "MCA-100"]);
 }

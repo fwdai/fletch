@@ -9,9 +9,6 @@ use crate::roadmap::events::{self, EventActor, EventKind};
 use crate::roadmap::store;
 use crate::roadmap::types::{ItemStatus, NewItem};
 
-/// `roadmap_note` writes one durable `note` event attributed to the PM, and
-/// changes nothing else about the item — the whole of the direct-write
-/// licence.
 #[test]
 fn note_records_an_observation_and_advances_nothing() {
     let db = test_db("p1");
@@ -36,18 +33,12 @@ fn note_records_an_observation_and_advances_nothing() {
     assert_eq!(event.item_id, before[0].id);
     assert_eq!(event.project_id, "p1");
 
-    // The row itself is byte-for-byte what it was: a note is attention, not
-    // action.
     assert_eq!(store::list(&db.lock(), "p1").unwrap(), before);
-    // And it is on the trail, on top of the `proposed` that opened it.
     let trail = events::list_for_item(&db.lock(), &before[0].id).unwrap();
     assert_eq!(trail.len(), 2);
     assert_eq!(trail[0], event);
 }
 
-/// A note is the one PM write allowed on an item a proposal is refused on —
-/// `active`, `in_review`, `done`. That item is usually the whole reason the
-/// op exists.
 #[test]
 fn note_lands_on_items_no_proposal_could_touch() {
     let db = test_db("p1");
@@ -75,14 +66,11 @@ fn note_lands_on_items_no_proposal_could_touch() {
             status.as_str()
         );
         assert_eq!(event.unwrap().item_id, it.id);
-        // The proposal path still refuses it — the two gates say different
-        // things on purpose.
         let items = store::list(&db.lock(), "p1").unwrap();
         assert!(proposable(&items, &it.code).is_err());
     }
 }
 
-/// Every way a note can be wrong, named precisely, writing nothing.
 #[test]
 fn note_rejects_bad_asks_precisely() {
     let db = test_db("p1");
@@ -100,7 +88,6 @@ fn note_rejects_bad_asks_precisely() {
             json!({"code": "MCA-100", "note": long.clone()}),
             "keep it under",
         ),
-        // The note is not a back door to the fields the propose ops gate.
         (
             json!({"code": "MCA-100", "note": "hi", "status": "done"}),
             "unknown field",
@@ -113,7 +100,6 @@ fn note_rejects_bad_asks_precisely() {
         assert!(e.contains(needle), "expected {needle:?} in {e:?}");
         assert!(event.is_none());
     }
-    // Args at all are required, and nothing above wrote a line.
     assert!(!note(&db, Value::Null).0.ok);
     let items = store::list(&db.lock(), "p1").unwrap();
     let trail = events::list_for_item(&db.lock(), &items[0].id).unwrap();
@@ -122,7 +108,6 @@ fn note_rejects_bad_asks_precisely() {
         "{trail:?}"
     );
 
-    // Exactly at the cap is fine — the refusal is for going over it.
     let (resp, _) = note(
         &db,
         json!({"code": "MCA-100", "note": "y".repeat(MAX_NOTE)}),
@@ -130,8 +115,6 @@ fn note_rejects_bad_asks_precisely() {
     assert!(resp.ok, "{resp:?}");
 }
 
-/// The note reaches the board through the dispatcher, which is the only path
-/// the PM actually has.
 #[tokio::test]
 async fn note_routes_through_the_dispatcher() {
     let db = test_db("p1");
@@ -151,7 +134,6 @@ async fn note_routes_through_the_dispatcher() {
     let trail = events::list_for_item(&db.lock(), &items[0].id).unwrap();
     assert_eq!(trail[0].kind, EventKind::Note);
     assert_eq!(trail[0].actor, EventActor::Pm);
-    // And the listing shows it back, so the PM can see its own note landed.
     let resp = list(&db, Value::Null);
     let rows: Vec<Value> = board_rows(&resp);
     assert_eq!(rows[0]["last_event"]["kind"], "note");
@@ -160,5 +142,3 @@ async fn note_routes_through_the_dispatcher() {
         "watch the migration on this one"
     );
 }
-
-// ───────────────────────────── roadmap_hold ─────────────────────────

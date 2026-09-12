@@ -9,35 +9,14 @@ use crate::rpc::Response;
 
 use super::args::{parse_required, wrote, HoldArgs, PROJECT_SCOPE};
 
-/// What a hold stopped, so the dispatcher can announce the right thing once the
-/// lock drops: an item's hold rides its row (which carries the trio) plus the
-/// `held` line, a project's is the table row itself.
 pub(super) enum Held {
     Item(Box<RoadmapItem>, Box<ItemEvent>),
     Project(ProjectHold),
 }
 
-/// `roadmap_hold`: stop autonomous progress on one item, or on the whole board,
-/// until the user signs off.
-///
-/// The PM's second (and last) direct write, and it is allowed for the same reason
-/// the first is — the conservative direction of **invariant 2** (see
-/// .context/roadmap-pm-plan.md): a hold can only ever *reduce* autonomy. It
-/// dispatches nothing, queues nothing, edits nothing; it takes something the app
-/// would have done on its own and makes it wait for a human. Every ask that would
-/// *advance* state stays a proposal the user rules on.
-///
-/// The asymmetry is the safety property: there is **no release op**. Only the
-/// typed commands (`roadmap_release_item` / `roadmap_release_project`) lift a
-/// hold, so every release is a user action by construction and an agent can never
-/// undo its own brake.
-///
-/// Like `roadmap_note`, the target may be at any *working* status: the moment a
-/// hold is most worth placing is usually mid-run, on the `active` item whose PR
-/// is about to answer the wrong question — exactly the item a proposal is
-/// refused on. Only `rejected` is refused (see the gate below).
-/// Holding an already-held scope replaces the reason and records another `held`,
-/// so the trail keeps what was superseded.
+/// Only ever reduces autonomy, and there is no release op, so an agent can never
+/// undo its own brake. Any working status may be held; only `rejected` is
+/// refused. Re-holding replaces the reason and records another `held`.
 pub(super) fn hold_op(
     conn: &Connection,
     project_id: &str,
@@ -63,8 +42,7 @@ fn place_hold(conn: &Connection, project_id: &str, args: &Value) -> Result<(Valu
     }
 
     if scope == PROJECT_SCOPE {
-        // No item event: a board-wide stop belongs to no row (see
-        // `roadmap::roadmap_hold_project`). The hold row is the durable record.
+        // A board-wide stop belongs to no row; the hold row is the record.
         let stored = brakes::hold_project(conn, project_id, &reason, EventActor::Pm)
             .map_err(|e| e.to_string())?;
         return Ok((
@@ -89,9 +67,8 @@ fn place_hold(conn: &Connection, project_id: &str, args: &Value) -> Result<(Valu
             item.code
         ));
     }
-    // One write path for both doors: the command layer's `hold_item` places the
-    // hold and records the `held` line in this same guard, so a held row can
-    // never exist without the line saying who stopped it.
+    // `hold_item` records the `held` line in the same guard, so a held row never
+    // exists without it.
     let (item, event) = crate::roadmap::hold_item(conn, &item.id, &reason, EventActor::Pm)?;
     Ok((
         json!({ "held": { "scope": item.code } }),

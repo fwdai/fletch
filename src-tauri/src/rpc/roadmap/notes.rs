@@ -7,29 +7,11 @@ use crate::rpc::Response;
 
 use super::args::{parse_required, wrote, NoteArgs};
 
-/// Longest note this op will store. A note is a line on a card and a line in the
-/// PM's next listing — past a couple of sentences it stops being an observation
-/// and starts being an essay nobody reads, and the thing it should have been is
-/// a proposal.
 const MAX_NOTE: usize = 500;
 
-/// `roadmap_note`: record one durable observation on an item.
-///
-/// The PM's only direct write, and it is allowed precisely because it advances
-/// nothing: no status moves, no field changes, no queue is touched. It raises
-/// attention — the conservative direction of invariant 2 — where every ask that
-/// would *do* something stays a proposal the user rules on.
-///
-/// Unlike the propose ops, the target may be at **any** status. The observation
-/// worth recording most often concerns an item that is already `active`,
-/// `in_review` or `done` ("this shipped, but it solved a narrower problem than
-/// MCA-104 asked for"), and that is exactly the item a proposal is refused on.
-/// Refusing the note too would leave the PM with nowhere to put the one thing it
-/// is uniquely positioned to notice.
-///
-/// Returns the recorded event alongside the response so the dispatcher can
-/// announce it (`roadmap:item-event`) once the lock drops — the card's trail
-/// grows mid-conversation.
+/// Allowed at any status: the observation most worth recording is on an
+/// `active`/`in_review`/`done` item, exactly where a proposal is refused. It
+/// advances nothing.
 pub(super) fn note_op(
     conn: &Connection,
     project_id: &str,
@@ -54,9 +36,7 @@ fn record_note(
     if note.is_empty() {
         return Err("`note` is required — say what you observed, in one honest sentence".into());
     }
-    // Counted in characters, not bytes: the cap is about how much a human will
-    // read, and a byte limit would refuse a shorter note for containing an
-    // em-dash.
+    // Characters, not bytes: a byte cap would refuse a shorter note for an em-dash.
     let length = note.chars().count();
     if length > MAX_NOTE {
         return Err(format!(

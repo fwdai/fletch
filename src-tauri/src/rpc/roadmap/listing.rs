@@ -12,29 +12,9 @@ use crate::rpc::Response;
 
 use super::args::{one_of, parse_args, read, ListArgs};
 
-/// One row as the agent sees it: the fields it reasons about, with the empties
-/// omitted. Not [`RoadmapItem`]'s full serialization — ids, timestamps and run
-/// back-links are the app's business, and the agent addresses items by `code`.
-///
-/// `pending` is the item's outstanding delta, if any, summarized as
-/// `pending_proposal` — so the PM knows what it has already asked for and
-/// never re-proposes blind (or mistakes "not applied yet" for "declined").
-/// A hold projects the same way, as `held`: the brake is a state the PM can set
-/// and cannot lift, so it has to be able to read it.
-///
-/// `last` is the item's newest history row, projected as `last_event`. This is
-/// what turns the listing from an intake queue into an execution report: the
-/// status says *where* an item is, the last event says *what happened* — a
-/// failure reason, a workflow, a note somebody left. `age` is relative on
-/// purpose, computed against `now`: an absolute epoch means nothing to an agent
-/// reasoning about "since we last spoke", and a wall-clock timestamp it would
-/// have to diff itself is a round trip and a mistake waiting to happen.
-///
-/// The PR link rides along as `pr` for the same reason — the diff is where a
-/// review actually happens, and the item's own `status` already says whether
-/// that PR is still open (`in_review`) or landed (`done`), so no polled state is
-/// invented here. Raw ids stay hidden throughout: run ids, item ids and PR
-/// numbers are the app's handles, not the PM's vocabulary.
+/// The fields the agent reasons about, empties omitted; ids, timestamps and run
+/// back-links stay hidden. `age` is relative: an epoch means nothing to
+/// "since we last spoke".
 fn compact(
     item: &RoadmapItem,
     pending: Option<&Proposal>,
@@ -86,9 +66,8 @@ fn compact(
         }
         o.insert("held".into(), Value::Object(h));
     }
-    // Quoted only while the item can still be ruled: an ask whose item has
-    // advanced past the gate has no card to rule it from, and quoting it
-    // forever would read as "still waiting on the user" when nothing is.
+    // Quoted only while the item can still be ruled; a stale ask would read as
+    // "still waiting on the user".
     if let Some(p) = pending.filter(|_| item.status.is_rulable()) {
         let mut pp = Map::new();
         pp.insert("kind".into(), json!(p.kind.as_str()));
@@ -104,13 +83,7 @@ fn compact(
     Value::Object(o)
 }
 
-/// How long ago something happened, in the coarsest unit that is still true:
-/// `"4m"`, `"2h"`, `"3d"`. `None` for anything under a minute (and for a clock
-/// that ran backwards) — "just now" is what the absence means, and inventing
-/// `"0m"` would read as staler than it is.
-///
-/// Coarse deliberately: the PM reasons in "since we last spoke", and a precise
-/// duration would invite arithmetic it has no reason to do.
+/// Coarsest true unit; `None` under a minute or for a clock that ran backwards.
 pub(super) fn age(now: i64, then: i64) -> Option<String> {
     let ms = now.checked_sub(then).filter(|d| *d > 0)?;
     let minutes = ms / 60_000;
@@ -122,9 +95,6 @@ pub(super) fn age(now: i64, then: i64) -> Option<String> {
     }
 }
 
-/// One rejected row, as the archive shows it: the decision and its reason,
-/// stripped of everything that would make it look workable — no horizon, no
-/// deps, no status the PM could try to advance.
 fn compact_rejected(item: &RoadmapItem) -> Value {
     let mut o = Map::new();
     o.insert("code".into(), json!(item.code));
@@ -135,17 +105,8 @@ fn compact_rejected(item: &RoadmapItem) -> Value {
     Value::Object(o)
 }
 
-/// `roadmap_list`: the project's board on stdout — the live rows under
-/// `items`, and the decision log under `not_doing`.
-///
-/// Rejected rows are deliberately *not* in `items`: an archive entry that
-/// renders like a live row is how the PM comes to treat a killed idea as a
-/// workable one. They arrive as their own key, in [`memory::not_doing`]'s
-/// order and under its cap — the same selection the spawn-time digest makes,
-/// so the two surfaces can't tell different stories.
-///
-/// Pure over the connection so it is testable without an app handle; the
-/// dispatcher holds the lock around it.
+/// Rejected rows never ride `items`; they arrive under `not_doing` in
+/// [`memory::not_doing`]'s order and cap.
 pub(super) fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Response {
     read(id, "roadmap_list", board(conn, project_id, args))
 }
@@ -158,9 +119,8 @@ fn board(conn: &Connection, project_id: &str, args: &Value) -> Result<Value, Str
             let mut set = HashSet::new();
             for s in raw {
                 match ItemStatus::from_db(s.trim()) {
-                    // `rejected` parses, and is refused anyway: it is not a
-                    // live status, and a filter that always matched nothing
-                    // would read as "the decision log is empty".
+                    // `rejected` parses but is refused: a filter that always matched nothing
+                    // would read as an empty decision log.
                     Some(ItemStatus::Rejected) => {
                         return Err("`status` filters the live board — rejected items always \
                                     arrive under `not_doing`, so there is nothing to filter for"
