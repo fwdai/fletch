@@ -7,7 +7,7 @@ use crate::roadmap::store;
 use crate::roadmap::types::{Horizon, ItemPatch, ItemSource, ItemStatus, NewItem, RoadmapItem};
 use crate::rpc::Response;
 
-use super::args::{clean, clean_list, one_of, parse_args, ProposeArgs, ProposedItem};
+use super::args::{clean, clean_list, one_of, parse_args, wrote, ProposeArgs, ProposedItem};
 use super::duplicates::duplicate_warnings;
 
 pub(super) type Proposed = (Vec<RoadmapItem>, Vec<ItemEvent>);
@@ -120,27 +120,29 @@ pub(super) fn propose_op(
     id: &str,
     args: &Value,
 ) -> (Response, Option<Proposed>) {
-    let err = |msg: String| (Response::err(id, format!("roadmap_propose: {msg}")), None);
+    wrote(
+        id,
+        "roadmap_propose",
+        "created",
+        insert_batch(conn, project_id, args),
+    )
+}
 
-    let args: ProposeArgs = match parse_args(args) {
-        Ok(a) => a,
-        Err(e) => return err(e),
-    };
-    let existing = match store::list(conn, project_id) {
-        Ok(items) => items,
-        Err(e) => return err(e.to_string()),
-    };
-    let news = match validate(&args.items, &existing) {
-        Ok(news) => news,
-        Err(msg) => return err(msg),
-    };
+fn insert_batch(
+    conn: &Connection,
+    project_id: &str,
+    args: &Value,
+) -> Result<(Value, Proposed), String> {
+    let args: ProposeArgs = parse_args(args)?;
+    let existing = store::list(conn, project_id).map_err(|e| e.to_string())?;
+    let news = validate(&args.items, &existing)?;
     // Computed against the board the batch was validated against, before the
     // insert — a batch must not warn about itself.
     let warnings = duplicate_warnings(&news, &existing);
 
     // All or nothing. The `proposed` events and the `"#n"` rewrite ride the same
     // transaction: a ghost never exists without its record, a plan never half-applies.
-    let created = (|| -> rusqlite::Result<(Vec<RoadmapItem>, Vec<ItemEvent>)> {
+    let (created, recorded) = (|| -> rusqlite::Result<Proposed> {
         let tx = conn.unchecked_transaction()?;
         let mut created = Vec::with_capacity(news.len());
         let mut recorded = Vec::with_capacity(news.len());
@@ -175,11 +177,8 @@ pub(super) fn propose_op(
         }
         tx.commit()?;
         Ok((created, recorded))
-    })();
-    let (created, recorded) = match created {
-        Ok(created) => created,
-        Err(e) => return err(e.to_string()),
-    };
+    })()
+    .map_err(|e| e.to_string())?;
 
     let mut payload = Map::new();
     payload.insert(
@@ -193,18 +192,7 @@ pub(super) fn propose_op(
     if !warnings.is_empty() {
         payload.insert("warnings".into(), json!(warnings));
     }
-    let payload = Value::Object(payload);
-    match serde_json::to_string(&payload) {
-        Ok(stdout) => (
-            Response::ok(id, 0, stdout, String::new()),
-            Some((created, recorded)),
-        ),
-        // The rows exist either way: say so, and still emit them.
-        Err(e) => (
-            Response::err(id, format!("roadmap_propose: created, but {e}")),
-            Some((created, recorded)),
-        ),
-    }
+    Ok((Value::Object(payload), (created, recorded)))
 }
 
 #[cfg(test)]

@@ -195,3 +195,21 @@ pub(super) fn parked<T>(
         Err(msg) => (refuse(id, op, msg), None),
     }
 }
+
+/// A direct write's reply. The write happened even if the payload won't
+/// serialize: the refusal says so ("{did}, but …") and the value is still
+/// announced.
+pub(super) fn wrote<T>(
+    id: &str,
+    op: &str,
+    did: &str,
+    result: Result<(Value, T), String>,
+) -> (Response, Option<T>) {
+    match result {
+        Ok((payload, stored)) => match serde_json::to_string(&payload) {
+            Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(stored)),
+            Err(e) => (refuse(id, op, format!("{did}, but {e}")), Some(stored)),
+        },
+        Err(msg) => (refuse(id, op, msg), None),
+    }
+}

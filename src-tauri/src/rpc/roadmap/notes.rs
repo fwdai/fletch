@@ -5,7 +5,7 @@ use crate::roadmap::events::{self, EventActor, EventKind, ItemEvent};
 use crate::roadmap::store;
 use crate::rpc::Response;
 
-use super::args::{parse_required, NoteArgs};
+use super::args::{parse_required, wrote, NoteArgs};
 
 /// Longest note this op will store. A note is a line on a card and a line in the
 /// PM's next listing — past a couple of sentences it stops being an observation
@@ -36,57 +36,49 @@ pub(super) fn note_op(
     id: &str,
     args: &Value,
 ) -> (Response, Option<ItemEvent>) {
-    let err = |msg: String| (Response::err(id, format!("roadmap_note: {msg}")), None);
-    let args: NoteArgs = match parse_required(args) {
-        Ok(a) => a,
-        Err(e) => return err(e),
-    };
+    wrote(
+        id,
+        "roadmap_note",
+        "recorded",
+        record_note(conn, project_id, args),
+    )
+}
+
+fn record_note(
+    conn: &Connection,
+    project_id: &str,
+    args: &Value,
+) -> Result<(Value, ItemEvent), String> {
+    let args: NoteArgs = parse_required(args)?;
     let note = args.note.trim();
     if note.is_empty() {
-        return err("`note` is required — say what you observed, in one honest sentence".into());
+        return Err("`note` is required — say what you observed, in one honest sentence".into());
     }
     // Counted in characters, not bytes: the cap is about how much a human will
     // read, and a byte limit would refuse a shorter note for containing an
     // em-dash.
     let length = note.chars().count();
     if length > MAX_NOTE {
-        return err(format!(
+        return Err(format!(
             "`note` is {length} characters — keep it under {MAX_NOTE}. A note is one observation; \
              if it needs more than that, it is a proposal"
         ));
     }
-    let items = match store::list(conn, project_id) {
-        Ok(items) => items,
-        Err(e) => return err(e.to_string()),
-    };
+    let items = store::list(conn, project_id).map_err(|e| e.to_string())?;
     let code = args.code.trim();
-    let Some(item) = items.iter().find(|i| i.code == code) else {
-        return err(format!(
-            "no item {code:?} on this board — `roadmap_list` shows what exists"
-        ));
-    };
-    let recorded = events::record(
+    let item = items.iter().find(|i| i.code == code).ok_or_else(|| {
+        format!("no item {code:?} on this board — `roadmap_list` shows what exists")
+    })?;
+    let event = events::record(
         conn,
         &item.id,
         project_id,
         EventActor::Pm,
         EventKind::Note,
         Some(note),
-    );
-    let event = match recorded {
-        Ok(event) => event,
-        Err(e) => return err(e.to_string()),
-    };
-
-    let payload = json!({ "noted": { "code": item.code } });
-    match serde_json::to_string(&payload) {
-        Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), Some(event)),
-        // The note is on the card either way: say so, and still announce it.
-        Err(e) => (
-            Response::err(id, format!("roadmap_note: recorded, but {e}")),
-            Some(event),
-        ),
-    }
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((json!({ "noted": { "code": item.code } }), event))
 }
 
 #[cfg(test)]

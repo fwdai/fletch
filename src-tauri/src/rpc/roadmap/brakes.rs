@@ -7,7 +7,7 @@ use crate::roadmap::store;
 use crate::roadmap::types::{ItemStatus, RoadmapItem};
 use crate::rpc::Response;
 
-use super::args::{parse_required, HoldArgs, PROJECT_SCOPE};
+use super::args::{parse_required, wrote, HoldArgs, PROJECT_SCOPE};
 
 /// What a hold stopped, so the dispatcher can announce the right thing once the
 /// lock drops: an item's hold rides its row (which carries the trio) plus the
@@ -44,18 +44,20 @@ pub(super) fn hold_op(
     id: &str,
     args: &Value,
 ) -> (Response, Option<Held>) {
-    let err = |msg: String| (Response::err(id, format!("roadmap_hold: {msg}")), None);
-    let args: HoldArgs = match parse_required(args) {
-        Ok(a) => a,
-        Err(e) => return err(e),
-    };
-    let reason = match brakes::clean_reason(&args.reason) {
-        Ok(reason) => reason,
-        Err(e) => return err(e),
-    };
+    wrote(
+        id,
+        "roadmap_hold",
+        "held",
+        place_hold(conn, project_id, args),
+    )
+}
+
+fn place_hold(conn: &Connection, project_id: &str, args: &Value) -> Result<(Value, Held), String> {
+    let args: HoldArgs = parse_required(args)?;
+    let reason = brakes::clean_reason(&args.reason)?;
     let scope = args.scope.trim();
     if scope.is_empty() {
-        return err(format!(
+        return Err(format!(
             "`scope` is required — an item code, or {PROJECT_SCOPE:?} for the whole board"
         ));
     }
@@ -63,38 +65,25 @@ pub(super) fn hold_op(
     if scope == PROJECT_SCOPE {
         // No item event: a board-wide stop belongs to no row (see
         // `roadmap::roadmap_hold_project`). The hold row is the durable record.
-        let stored = match brakes::hold_project(conn, project_id, &reason, EventActor::Pm) {
-            Ok(hold) => hold,
-            Err(e) => return err(e.to_string()),
-        };
-        let payload = json!({ "held": { "scope": PROJECT_SCOPE } });
-        return match serde_json::to_string(&payload) {
-            Ok(stdout) => (
-                Response::ok(id, 0, stdout, String::new()),
-                Some(Held::Project(stored)),
-            ),
-            // The board is stopped either way: say so, and still announce it.
-            Err(e) => (
-                Response::err(id, format!("roadmap_hold: held, but {e}")),
-                Some(Held::Project(stored)),
-            ),
-        };
+        let stored = brakes::hold_project(conn, project_id, &reason, EventActor::Pm)
+            .map_err(|e| e.to_string())?;
+        return Ok((
+            json!({ "held": { "scope": PROJECT_SCOPE } }),
+            Held::Project(stored),
+        ));
     }
 
-    let items = match store::list(conn, project_id) {
-        Ok(items) => items,
-        Err(e) => return err(e.to_string()),
-    };
-    let Some(item) = items.iter().find(|i| i.code == scope) else {
-        return err(format!(
+    let items = store::list(conn, project_id).map_err(|e| e.to_string())?;
+    let item = items.iter().find(|i| i.code == scope).ok_or_else(|| {
+        format!(
             "no item {scope:?} on this board — `roadmap_list` shows what exists, or use \
              {PROJECT_SCOPE:?} to hold the whole board"
-        ));
-    };
+        )
+    })?;
     // A rejected item has no queue to stop and no card with a Release button:
     // the hold would be invisible, and would ambush the user on reopen.
     if item.status == ItemStatus::Rejected {
-        return err(format!(
+        return Err(format!(
             "{} was rejected — a ruled-off item has nothing to pause; ask the user to \
              reopen it first",
             item.code
@@ -103,20 +92,11 @@ pub(super) fn hold_op(
     // One write path for both doors: the command layer's `hold_item` places the
     // hold and records the `held` line in this same guard, so a held row can
     // never exist without the line saying who stopped it.
-    let (item, event) = match crate::roadmap::hold_item(conn, &item.id, &reason, EventActor::Pm) {
-        Ok(pair) => pair,
-        Err(e) => return err(e),
-    };
-
-    let payload = json!({ "held": { "scope": item.code } });
-    let held = Some(Held::Item(Box::new(item), Box::new(event)));
-    match serde_json::to_string(&payload) {
-        Ok(stdout) => (Response::ok(id, 0, stdout, String::new()), held),
-        Err(e) => (
-            Response::err(id, format!("roadmap_hold: held, but {e}")),
-            held,
-        ),
-    }
+    let (item, event) = crate::roadmap::hold_item(conn, &item.id, &reason, EventActor::Pm)?;
+    Ok((
+        json!({ "held": { "scope": item.code } }),
+        Held::Item(Box::new(item), Box::new(event)),
+    ))
 }
 
 #[cfg(test)]
