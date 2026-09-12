@@ -9,8 +9,10 @@
 // is connected right now": a wrapper that was superseded while its handshake
 // was in flight cannot close its successor, send on it, or hear its events.
 
+mod dial;
 mod secure;
 
+use dial::Ws;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use secure::{Channel, DeviceKey, Handshake, HOST_KEY_MISMATCH};
@@ -19,15 +21,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type Writer = SplitSink<Ws, Message>;
 type Reader = SplitStream<Ws>;
 type Slot = Arc<Mutex<Option<Connection>>>;
@@ -134,10 +133,12 @@ pub async fn remote_connect(
     close_current(&state.slot).await;
     let key = device_key(&app, &state)?;
     let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
-    let dialled = within(deadline, connect_async(&url))
+    // Both address families race inside `dial::connect` (see dial.rs), so one
+    // that blackholes cannot spend the budget on behalf of the other.
+    let dialled = within(deadline, dial::connect(&url))
         .await
         .ok_or_else(|| timed_out(&url, timeout_ms))?;
-    let (mut ws, _) = dialled.map_err(|e| format!("cannot reach {url}: {e}"))?;
+    let mut ws = dialled.map_err(|e| format!("cannot reach {url}: {e}"))?;
     // The borrow of `ws` ends with the statement, so the socket is ours again
     // whether the handshake finished, failed or ran out of time.
     let handshaken = within(deadline, handshake(&mut ws, &key, host_key.as_deref())).await;

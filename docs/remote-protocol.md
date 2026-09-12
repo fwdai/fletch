@@ -168,6 +168,9 @@ repo); anyone can run their own and point both apps at it.
   connections, as on the LAN.
 - **Phone side.** Connection candidates in order: `addr` over `ws://` with a
   3 s open timeout, then `wss://<relay>/v1/device/<hostId>` with a 15 s one.
+  A dial races the host's IPv6 and IPv4 addresses, interleaved by family and
+  started 300 ms apart (RFC 8305), so a cellular network whose IPv6 path to
+  the relay blackholes cannot spend the whole budget before IPv4 is tried.
   Both budgets cover the dial and the Noise handshake together; the first
   frame after the handshake (`pair` or `hello`, and the snapshot request that
   follows a `pair`) has its own 15 s bound, so a relay that accepted the
