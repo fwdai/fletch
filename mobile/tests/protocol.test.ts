@@ -385,6 +385,33 @@ describe("connection lifecycle", () => {
     expect(timers).toHaveLength(0);
   });
 
+  it("rewords the transport's dial failure without the URL it tried", async () => {
+    // The Rust side says `cannot reach {url}: {cause}`; over the relay that
+    // URL carries the device id and is far too long for a phone screen.
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const seen: (string | undefined)[] = [];
+    const client = new ProtocolClient({
+      openSocket: async () => {
+        throw new Error(
+          "cannot reach wss://relay.fletch.sh/v1/device/LghO3fgzM6vKCWWJKadM7WarKCoNLSFa2Q: " +
+            "failed to resolve relay.fletch.sh: failed to lookup address information",
+        );
+      },
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    client.onState((_, error) => seen.push(error));
+    await expect(client.connect({ host: "h", port: 1, hostKey: HOST_KEY })).rejects.toThrow(
+      "Check this phone's internet connection",
+    );
+    const shown = seen.at(-1) ?? "";
+    expect(shown).toContain("look up the server address");
+    expect(shown).not.toContain("relay.fletch.sh/v1");
+    // Still a network failure, so still retried.
+    expect(timers.map((t) => t.ms)).toEqual([1000]);
+  });
+
   it("gives up on a pairing the host never answers, instead of waiting for ever", async () => {
     // The relay accepts a device link whenever it believes a host link is up,
     // and a Mac that went to sleep leaves it believing that: the socket opens,

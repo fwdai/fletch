@@ -813,20 +813,27 @@
 }
 .blank h2 {
   margin: 0;
+  max-width: 100%;
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.25;
   color: var(--fg-0);
   text-wrap: balance;
+  overflow-wrap: anywhere;
 }
+/* `width: 100%` matters: centred in a column flex, the body would otherwise
+   shrink to fit its content, and one unbreakable token (a URL in an error) is
+   content wider than the screen. Given the full width it wraps inside it. */
 .blank .body {
   margin-top: 8px;
+  width: 100%;
   max-width: 300px;
   font-size: 14px;
   line-height: 1.5;
   color: var(--fg-2);
   text-wrap: pretty;
+  overflow-wrap: anywhere;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -834,6 +841,7 @@
 }
 .blank .body p {
   margin: 0;
+  max-width: 100%;
 }
 /* Dots above the line rather than beside it: a step label long enough to
    wrap (the relay one) would otherwise leave them stranded at the left edge. */

@@ -61,10 +61,30 @@ export interface ClientOptions {
   openTimeout?: number;
 }
 
-/** The transport's mismatch marker carries the two keys, which is right for a
- *  log and wrong for a user. */
-const reportable = (message: string) =>
-  message.includes(HOST_KEY_MISMATCH) ? HOST_KEY_MISMATCH_REASON : message;
+/** The transport words a dial failure as `cannot reach {url}: {cause}`. */
+const DIAL_FAILED = /^cannot reach \S+: (.+)$/s;
+
+/** What the transport says, reworded for a phone screen. Its mismatch marker
+ *  carries the two keys and its dial failures name the URL they tried — a
+ *  relay URL holds the device id and runs to a hundred characters — which is
+ *  right for a log and wrong for a user. The cause is kept, in plain words
+ *  where it is one of the usual three. */
+function reportable(message: string): string {
+  if (message.includes(HOST_KEY_MISMATCH)) return HOST_KEY_MISMATCH_REASON;
+  const dial = DIAL_FAILED.exec(message);
+  if (!dial) return message;
+  const cause = dial[1];
+  if (/lookup address|resolve/i.test(cause)) {
+    return "Couldn't look up the server address. Check this phone's internet connection.";
+  }
+  if (/timed out/i.test(cause)) {
+    return "No answer from your Mac. Check that it is awake and both devices are online.";
+  }
+  if (/refused/i.test(cause)) {
+    return "Your Mac refused the connection. Check that remote access is switched on.";
+  }
+  return `Couldn't connect: ${cause}`;
+}
 
 const randomId = () =>
   globalThis.crypto?.randomUUID?.() ??
