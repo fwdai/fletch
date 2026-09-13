@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { attachSwipe, shouldCommit } from "../src/lib/swipe";
+import { attachSwipe, EDGE_SLOP, shouldCommit } from "../src/lib/swipe";
 
 describe("shouldCommit", () => {
   it("commits a slow drag once it has covered enough of the element", () => {
@@ -81,16 +81,50 @@ describe("attachSwipe", () => {
     expect(onCommit).not.toHaveBeenCalled();
   });
 
-  it("yields to a scroll: the first move decides the axis", () => {
+  it("owns an edge touch from its first, noisy move and swipes once it travels", () => {
+    const { target, inner } = mount();
+    const onCommit = vi.fn();
+    let t = 0;
+    attachSwipe(target, target, () => ({ axis: "x", edge: 28, onCommit, now: () => t }));
+    touch("touchstart", 10, 300, inner);
+    // A thumb's first sample: a point or two, mostly the wrong way.
+    const first = touch("touchmove", 9, 302, inner);
+    expect(first.defaultPrevented).toBe(true);
+    expect(target.classList.contains("dragging")).toBe(false);
+    t = 30;
+    const second = touch("touchmove", 15, 303, inner);
+    expect(second.defaultPrevented).toBe(true);
+    expect(target.classList.contains("dragging")).toBe(false);
+    t = 60;
+    touch("touchmove", 10 + EDGE_SLOP, 303, inner);
+    expect(target.classList.contains("dragging")).toBe(true);
+    t = 300;
+    touch("touchmove", 250, 310, inner);
+    touch("touchend", 250, 310, inner);
+    expect(onCommit).toHaveBeenCalledOnce();
+  });
+
+  it("holds an edge touch that turns into a scroll without dragging", () => {
     const { target, inner } = mount();
     const onCommit = vi.fn();
     attachSwipe(target, target, () => ({ axis: "x", edge: 28, onCommit }));
     touch("touchstart", 10, 300, inner);
-    const move = touch("touchmove", 14, 330, inner);
+    for (const y of [310, 340, 400]) touch("touchmove", 12, y, inner);
+    expect(target.classList.contains("dragging")).toBe(false);
+    touch("touchend", 12, 400, inner);
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("yields to a scroll away from an edge: the first move decides the axis", () => {
+    const { target, inner } = mount();
+    const onCommit = vi.fn();
+    attachSwipe(target, target, () => ({ axis: "y", onCommit }));
+    touch("touchstart", 100, 100, inner);
+    const move = touch("touchmove", 130, 104, inner);
     expect(move.defaultPrevented).toBe(false);
-    // Later horizontal movement in the same touch no longer counts.
-    touch("touchmove", 300, 330, inner);
-    touch("touchend", 300, 330, inner);
+    // Later movement along the axis in the same touch no longer counts.
+    touch("touchmove", 130, 500, inner);
+    touch("touchend", 130, 500, inner);
     expect(onCommit).not.toHaveBeenCalled();
     expect(target.classList.contains("dragging")).toBe(false);
   });
