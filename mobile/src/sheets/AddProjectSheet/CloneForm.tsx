@@ -2,6 +2,7 @@ import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import { Icon } from "@desktop/components/Icon";
 import { parseRepoSpec } from "@desktop/util/repoSpec";
 import { useEffect, useState } from "react";
+import { Notice } from "../../components/ui/Notice";
 import { childPath } from "../../lib/paths";
 import { useStore } from "../../store";
 import { FolderPickerSheet } from "./FolderPicker";
@@ -17,7 +18,7 @@ export function CloneForm({
 }: {
   busy: boolean;
   error: string | null;
-  setError: (text: string) => void;
+  setError: (text: string | null) => void;
   run: RunAddProject;
 }) {
   const ghStatus = useStore((s) => s.ghStatus);
@@ -147,7 +148,11 @@ export function CloneForm({
           <Icon name="chevR" size={16} className="chev" />
         </button>
       </div>
-      {error && <div className="err ap-err">{error}</div>}
+      {error && (
+        <Notice tone="error" className="ap-err" onDismiss={() => setError(null)}>
+          {error}
+        </Notice>
+      )}
       <button
         type="button"
         className="btn primary block ap-use"

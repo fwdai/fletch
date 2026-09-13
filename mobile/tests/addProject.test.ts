@@ -172,6 +172,7 @@ describe("the sheet", () => {
       createElement(OpenFolderForm, {
         busy: false,
         error: "a folder already exists at /Users/alex/Code/relay",
+        setError: () => {},
         run: noop,
       }),
     );

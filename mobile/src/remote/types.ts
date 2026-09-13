@@ -148,6 +148,10 @@ export interface RemoteClient {
    *  including reconnects. */
   onSnapshot(cb: (result: HelloResult) => void): () => void;
   readonly state: ConnectionState;
+  /** True while a retry is scheduled after a failure. False in `error` means
+   *  the failure is one only the user can clear (unpaired, remote access off,
+   *  a changed host key) — the difference between "reconnecting" and "stuck". */
+  readonly retrying: boolean;
   readonly host: HostInfo | null;
   /** The host key in use: the one the target carried, or the one pinned on
    *  first contact. */

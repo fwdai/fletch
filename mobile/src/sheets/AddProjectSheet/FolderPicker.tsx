@@ -2,6 +2,7 @@ import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
 import { Icon } from "@desktop/components/Icon";
 import { type ReactNode, useEffect, useState } from "react";
 import { Sheet } from "../../components/ui";
+import { Notice } from "../../components/ui/Notice";
 import { childPath, parentPath } from "../../lib/paths";
 import { useStore } from "../../store";
 
@@ -18,6 +19,7 @@ export function FolderPicker({
   onUse,
   busy,
   error,
+  onDismissError,
 }: {
   start?: string;
   actionLabel: string;
@@ -27,6 +29,9 @@ export function FolderPicker({
   /** An error from whatever the caller did with the picked folder; shown in
    *  the same place as a failed listing. */
   error?: string | null;
+  /** Lets the user put the caller's error away. A failed listing has no
+   *  dismiss: it stands until they browse somewhere that reads. */
+  onDismissError?: () => void;
 }) {
   const listDir = useStore((s) => s.listDir);
   const [path, setPath] = useState(start);
@@ -110,7 +115,11 @@ export function FolderPicker({
           </button>
         </div>
       )}
-      {shownError && <div className="err ap-err">{shownError}</div>}
+      {shownError && (
+        <Notice tone="error" className="ap-err" onDismiss={error ? onDismissError : undefined}>
+          {shownError}
+        </Notice>
+      )}
       <button
         type="button"
         className="btn primary block ap-use"

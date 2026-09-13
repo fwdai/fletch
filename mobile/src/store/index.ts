@@ -49,6 +49,9 @@ export interface MobileState {
   ready: boolean;
   connection: ConnectionState;
   connectionError: string | null;
+  /** Mirrors the client: an `error` with a retry scheduled behind it reads as
+   *  "reconnecting", one without as something the user has to fix. */
+  retrying: boolean;
   /** How far the `connect` in flight has got, and null when none is.
    *
    *  Deliberately wider than the client's `connected`, which arrives as soon
@@ -305,6 +308,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   ready: false,
   connection: "disconnected",
   connectionError: null,
+  retrying: false,
   pairStep: null,
   pairTarget: null,
   hostInfo: null,
@@ -344,6 +348,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       set({
         connection: state,
         connectionError: error ?? null,
+        retrying: client.retrying,
         hostInfo: client.host,
         via: client.via,
       }),

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { PairStep } from "../../remote";
 
 /** What each step of a connection attempt means to someone holding the phone.
@@ -7,7 +8,7 @@ import type { PairStep } from "../../remote";
  *  tried, so a phone away from its Mac spends its first seconds on an address
  *  that cannot answer. Saying so is the difference between a wait and a hang.
  */
-const LABELS: Record<PairStep, string> = {
+export const STEP_LABELS: Record<PairStep, string> = {
   connecting: "Starting…",
   lan: "Looking for your Mac on this network…",
   relay: "Not on this network — reaching your Mac through the relay…",
@@ -16,7 +17,9 @@ const LABELS: Record<PairStep, string> = {
   workspace: "Loading your workspace…",
 };
 
-export function Progress({ step }: { step: PairStep }) {
+/** A line of text with the working dots in front of it: something is
+ *  happening, and this is what. */
+export function Working({ children }: { children: ReactNode }) {
   return (
     <div className="pair-step">
       <span className="working-dots">
@@ -24,7 +27,11 @@ export function Progress({ step }: { step: PairStep }) {
         <i />
         <i />
       </span>
-      {LABELS[step]}
+      {children}
     </div>
   );
+}
+
+export function Progress({ step }: { step: PairStep }) {
+  return <Working>{STEP_LABELS[step]}</Working>;
 }
