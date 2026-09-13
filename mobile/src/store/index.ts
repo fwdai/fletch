@@ -251,6 +251,41 @@ export const projectOf = (ws: Workspace | null, agentId: string) => {
   return ws?.projects.find((p) => p.project_id === agent?.project_id);
 };
 
+/** Agents with a send in flight from this device. Their optimistic `busy` flag
+ *  is younger than any snapshot the host can answer with, so `reconcileBusy`
+ *  has to leave it alone. */
+const sending = new Set<string>();
+
+/** Run a send with its agent marked in-flight, so a snapshot landing in the
+ *  optimistic window can't clear the flag the send just set. */
+async function whileSending<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
+  sending.add(agentId);
+  try {
+    return await fn();
+  } finally {
+    sending.delete(agentId);
+  }
+}
+
+/** Drop optimistic `busy` flags a fresh host snapshot contradicts.
+ *
+ *  The flag covers the gap between tapping send and the host's `running`
+ *  status; past that it is only ever cleared by a live event (a turn end, or a
+ *  status that isn't `running`). A backgrounded webview or a dropped socket
+ *  misses those silently — which used to strand the flag on `true` for the rest
+ *  of the session, leaving the Changes tab (the one surface that reads it) on
+ *  "Agent is busy…" for an agent the chat showed as finished. A snapshot saying
+ *  the agent isn't running is the authority that the gap is over. */
+function reconcileBusy(busy: Record<string, boolean>, ws: Workspace): Record<string, boolean> {
+  let next = busy;
+  for (const a of ws.agents) {
+    if (!busy[a.id] || isBusy(a) || sending.has(a.id)) continue;
+    if (next === busy) next = { ...busy };
+    next[a.id] = false;
+  }
+  return next;
+}
+
 /** Wait for a freshly spawned agent to leave `spawning` before the first
  *  message is sent — the spawn flow in docs/remote-protocol.md. */
 function waitForSpawn(get: () => MobileState, agentId: string, timeoutMs = 30_000) {
@@ -328,7 +363,11 @@ export const useStore = create<MobileState>()((set, get) => ({
     };
     client.onSnapshot((snapshot) => {
       set({ hostInfo: snapshot.host });
-      if (snapshot.workspace) set({ workspace: snapshot.workspace });
+      const ws = snapshot.workspace;
+      // The handshake's snapshot is as authoritative as `refreshWorkspace`'s
+      // read, so it reconciles the optimistic busy flags the same way — this is
+      // the path that clears them after a reconnect.
+      if (ws) set((s) => ({ workspace: ws, busy: reconcileBusy(s.busy, ws) }));
       else void get().refreshWorkspace();
       refreshOpenAgent();
       // Every handshake — the first pairing and every reconnect — is when the
@@ -544,7 +583,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   async refreshWorkspace() {
     try {
       const workspace = await api.getWorkspace();
-      if (workspace) set({ workspace });
+      if (workspace) set((s) => ({ workspace, busy: reconcileBusy(s.busy, workspace) }));
     } catch {
       // Best effort; the next event or resync recovers.
     }
@@ -639,7 +678,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     }));
     return guard(set, async () => {
       try {
-        await api.sendUserMessage(agentId, turnId, trimmed);
+        await whileSending(agentId, () => api.sendUserMessage(agentId, turnId, trimmed));
       } catch (e) {
         set((s) => ({ busy: { ...s.busy, [agentId]: false } }));
         throw e;
@@ -664,8 +703,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       get().closeSheet();
       get().push("agent", { agentId: record.id });
       try {
-        await waitForSpawn(get, record.id);
-        await api.sendUserMessage(record.id, turnId, prompt);
+        await whileSending(record.id, async () => {
+          await waitForSpawn(get, record.id);
+          await api.sendUserMessage(record.id, turnId, prompt);
+        });
       } catch (e) {
         // The agent exists on the host but never got the prompt: drop the
         // optimistic turn and the busy flag, and let the refreshed workspace
