@@ -11,8 +11,20 @@ const TABS = [
 /** The two ways a project reaches the host from the phone (docs/remote-protocol.md,
  *  "Adding a project from the phone"). Creating a brand-new repo is not one of
  *  them yet. */
-export function AddProjectSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { tab, switchTab, busy, error, setError, run } = useAddProject(open);
+export function AddProjectSheet({
+  open,
+  onClose,
+  tab: initialTab,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Which tab to open on; the folder browser unless the caller says `clone`. */
+  tab?: string;
+}) {
+  const { tab, switchTab, busy, error, setError, run } = useAddProject(
+    open,
+    initialTab === "clone" ? "clone" : "folder",
+  );
 
   return (
     <Sheet
@@ -30,7 +42,7 @@ export function AddProjectSheet({ open, onClose }: { open: boolean; onClose: () 
         <Segmented items={TABS} value={tab} onChange={switchTab} />
       </div>
       {tab === "folder" ? (
-        <OpenFolderForm busy={busy} error={error} run={run} />
+        <OpenFolderForm busy={busy} error={error} setError={setError} run={run} />
       ) : (
         <CloneForm busy={busy} error={error} setError={setError} run={run} />
       )}

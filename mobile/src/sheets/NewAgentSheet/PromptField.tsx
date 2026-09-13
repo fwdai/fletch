@@ -2,6 +2,7 @@ import { spliceTranscript } from "@desktop/components/Composer/dictation/spliceT
 import { primaryState } from "@desktop/components/Composer/PrimaryControl/primaryState";
 import { Icon } from "@desktop/components/Icon";
 import { type ReactNode, useEffect, useRef } from "react";
+import { Notice } from "../../components/ui/Notice";
 import { useDictation, VoiceRow } from "../../dictation";
 import { autosize } from "../../lib/autosize";
 
@@ -113,7 +114,11 @@ export function PromptField({
           )}
         </div>
       </div>
-      {dictation.error && <div className="err na-err">{dictation.error}</div>}
+      {dictation.error && (
+        <Notice tone="error" className="na-err">
+          {dictation.error}
+        </Notice>
+      )}
     </>
   );
 }

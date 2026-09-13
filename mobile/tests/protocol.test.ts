@@ -487,7 +487,11 @@ describe("reconnect", () => {
       clearTimer,
     });
     const reported: (string | undefined)[] = [];
-    client.onState((_state, error) => reported.push(error));
+    const retryingSeen: boolean[] = [];
+    client.onState((_state, error) => {
+      reported.push(error);
+      retryingSeen.push(client.retrying);
+    });
     const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
     await vi.waitFor(() => expect(fake.sent.length).toBe(1));
     fake.reply(helloOk(fake.sent[0].id as string));
@@ -499,6 +503,10 @@ describe("reconnect", () => {
     expect(client.state).toBe("error");
     expect(reported.at(-1)).toBe("Your Mac is offline");
     expect(timers.map((t) => t.ms)).toEqual([1000]);
+    // The retry is scheduled before the error is announced, so a listener
+    // mirroring `retrying` into UI state sees "reconnecting", not "stuck".
+    expect(client.retrying).toBe(true);
+    expect(retryingSeen.at(-1)).toBe(true);
     // The relay's other device-link closes are readable too, not bare codes.
     expect(CLOSE_REASONS[CLOSE_TOO_MANY_DEVICES]).toContain("8 remote devices");
     expect(CLOSE_REASONS[CLOSE_RELAY_THROTTLED]).toContain("throttled");
@@ -520,6 +528,8 @@ describe("reconnect", () => {
     fake.hangup(CLOSE_UNAUTHENTICATED);
     expect(timers).toHaveLength(0);
     expect(client.state).toBe("error");
+    // Not retrying: the failure is one only the user can clear.
+    expect(client.retrying).toBe(false);
   });
 
   it("rejects in-flight calls when the socket drops", async () => {

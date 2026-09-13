@@ -724,15 +724,10 @@
   grid-template-columns: 1fr 96px;
   gap: 10px;
 }
-/* Shared inline error line: pairing, the new-agent sheet, anywhere a failed
-   action has to be readable next to the control that caused it. */
-.err {
-  font-size: 13px;
-  color: var(--danger);
-  line-height: 1.45;
-}
+/* Inline errors (the shared Notice) sit under the control that caused them:
+   the new-agent prompt, the add-project forms. */
 .na-err {
-  padding: 12px 2px 0;
+  margin-top: 12px;
 }
 .pair .hint {
   font-size: 12.5px;
@@ -750,31 +745,154 @@
   line-height: 1.45;
 }
 
-/* connection banner */
-.conn {
+/* Connection status line over a cached list (Home/ConnectionBanner): the
+   shared Notice, placed. */
+.notice-bar.conn {
+  margin: 0 16px 10px;
+  flex-shrink: 0;
+}
+
+/* Blank-slate body (Home/HostState, Home/EmptyProjects): glyph, title, a line
+   or two, then the actions. Optically centred — pulled up from the true
+   middle, which reads as low on a tall phone — and laid out with `margin:
+   auto` rather than justify-content so nothing is clipped if it ever
+   overflows the scroller. */
+.home-body.is-blank {
   display: flex;
+  flex-direction: column;
+}
+.blank {
+  margin: auto 0;
+  padding: 24px 12px 14vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+.blank .glyph {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  border-radius: 24px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-1);
+  background: var(--bg-1);
+  border: 1px solid var(--bd-soft);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.05) inset,
+    0 14px 34px rgba(0, 0, 0, 0.28);
+  margin-bottom: 22px;
+}
+.theme-light .blank .glyph {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 10px 28px rgba(0, 0, 0, 0.08);
+}
+.blank .glyph.accent {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+/* Connection state, worn on the glyph's shoulder in the same dot the host
+   pill and the agent rows use. */
+.blank .glyph .badge {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-0);
+  display: grid;
+  place-items: center;
+}
+.blank .glyph .badge .dot {
+  width: 10px;
+  height: 10px;
+}
+.blank h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--fg-0);
+  text-wrap: balance;
+}
+.blank .body {
+  margin-top: 8px;
+  max-width: 300px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg-2);
+  text-wrap: pretty;
+  display: flex;
+  flex-direction: column;
   align-items: center;
   gap: 8px;
-  margin: 0 16px 10px;
-  padding: 9px 12px;
-  border-radius: 12px;
+}
+.blank .body p {
+  margin: 0;
+}
+/* Dots above the line rather than beside it: a step label long enough to
+   wrap (the relay one) would otherwise leave them stranded at the left edge. */
+.blank .body .pair-step {
+  flex-direction: column;
+  gap: 10px;
+  color: var(--fg-3);
+  font-size: 13px;
+}
+.blank .acts {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  max-width: 260px;
+}
+.blank .acts .btn {
+  width: 100%;
+}
+.blank .acts .lnk {
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 11px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-2);
+}
+.blank .acts .lnk:active {
+  background: var(--bg-2);
+}
+/* The two ways in, as rows: each is the action, not a description of one. */
+.blank .ways {
+  margin-top: 24px;
+  width: 100%;
+  max-width: 340px;
+  text-align: left;
+}
+.blank .ways .ic {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-2);
+  color: var(--fg-1);
+  flex-shrink: 0;
+}
+.blank .ways .lbl {
+  font-weight: 500;
+}
+.blank .hint {
+  margin-top: 18px;
+  max-width: 280px;
   font-size: 12.5px;
-  background: color-mix(in oklch, var(--warn), transparent 88%);
-  color: var(--warn);
-  border: 1px solid color-mix(in oklch, var(--warn), transparent 62%);
-}
-.conn.err {
-  background: color-mix(in oklch, var(--danger), transparent 88%);
-  color: var(--danger);
-  border-color: color-mix(in oklch, var(--danger), transparent 62%);
-}
-.conn .grow {
-  flex: 1;
-}
-.conn button {
-  color: inherit;
-  font-weight: 600;
-  text-decoration: underline;
+  line-height: 1.5;
+  color: var(--fg-3);
 }
 
 /* Add project: the section-header affordance on Home, and the sheet's own
@@ -794,9 +912,6 @@
 }
 .sect-add:active {
   background: var(--bg-3);
-}
-.empty .ap-empty {
-  margin-top: 16px;
 }
 .ap-seg {
   margin: 4px 0 14px;
@@ -833,7 +948,7 @@
   margin-top: 20px;
 }
 .ap-err {
-  padding: 14px 2px 0;
+  margin-top: 14px;
 }
 .ap-use {
   margin-top: 16px;

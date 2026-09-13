@@ -1,5 +1,6 @@
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
+import { Notice } from "../../components/ui/Notice";
 import { parseAddress, parsePairUrl } from "../../remote";
 import { useStore } from "../../store";
 import { Wordmark } from "../Home/Wordmark";
@@ -101,7 +102,7 @@ export function PairScreen() {
           onChange={(e) => absorb(e.target.value, (v) => setToken(v.toUpperCase()))}
         />
       </div>
-      {step ? <Progress step={step} /> : error && <div className="err">{error}</div>}
+      {step ? <Progress step={step} /> : error && <Notice tone="error">{error}</Notice>}
       <button
         type="button"
         className="btn primary block"

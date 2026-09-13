@@ -103,6 +103,10 @@ export class ProtocolClient implements RemoteClient {
     return this._state;
   }
 
+  get retrying(): boolean {
+    return this.retryHandle !== null;
+  }
+
   get host(): HostInfo | null {
     return this._host;
   }
@@ -374,8 +378,10 @@ export class ProtocolClient implements RemoteClient {
   /** The single failure path: report it, and schedule a retry unless the
    *  failure is one only the user can clear. */
   private fail(message: string, retryable: boolean) {
-    this.setState("error", message);
+    // Scheduled before the state is announced, so a listener reading
+    // `retrying` in its callback sees the retry that goes with this error.
     if (retryable && !this.closedByUs) this.scheduleRetry();
+    this.setState("error", message);
   }
 
   /** Every successful handshake — the first and every reconnect — hands its
