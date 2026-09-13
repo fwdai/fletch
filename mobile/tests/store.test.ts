@@ -285,6 +285,41 @@ describe("spawn flow", () => {
   });
 });
 
+/** The optimistic `busy` flag is set on send and cleared by live events. A
+ *  backgrounded webview or a dropped socket misses those, so every fresh
+ *  snapshot reconciles it — otherwise the Changes tab sits on "Agent is busy…"
+ *  for an agent that finished while the phone was away. */
+describe("optimistic busy flag", () => {
+  it("clears against a fresh snapshot when the turn ended off-socket", async () => {
+    useStore.setState((s) => ({ busy: { ...s.busy, caspian: true } }));
+    await state().refreshWorkspace();
+    expect(agentOf(state().workspace, "caspian")?.status).not.toBe("running");
+    expect(state().busy.caspian).toBe(false);
+  });
+
+  it("leaves a send that is still in flight alone", async () => {
+    let release = () => {};
+    const send = vi.spyOn(api, "sendUserMessage").mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          release = () => resolve(false);
+        }),
+    );
+    try {
+      const pending = state().send("caspian", "hold this one open");
+      expect(state().busy.caspian).toBe(true);
+      // The host cannot have flipped the agent to running yet — the snapshot
+      // is older than the tap, so it must not clear the flag.
+      await state().refreshWorkspace();
+      expect(state().busy.caspian).toBe(true);
+      release();
+      await pending;
+    } finally {
+      send.mockRestore();
+    }
+  });
+});
+
 /** A pairing code is single use and lasts five minutes, so a second delivery
  *  of the same link — the launch URL read from the plugin, and the event it
  *  also emits — must not tear down the attempt already spending it. */
