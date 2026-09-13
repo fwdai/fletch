@@ -66,7 +66,11 @@ export function App() {
           <Stack dimmed={dimmed} render={(item) => <Screen item={item} />} />
           <HostSheet open={isOpen("host")} onClose={closeSheet} />
           <NewAgentSheet open={isOpen("newAgent")} onClose={closeSheet} {...props("newAgent")} />
-          <AddProjectSheet open={isOpen("addProject")} onClose={closeSheet} />
+          <AddProjectSheet
+            open={isOpen("addProject")}
+            onClose={closeSheet}
+            {...props("addProject")}
+          />
           <AgentMoreSheet open={isOpen("agentMore")} onClose={closeSheet} {...props("agentMore")} />
           <ModelPickerSheet
             open={isOpen("modelPicker")}

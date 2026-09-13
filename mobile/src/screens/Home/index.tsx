@@ -5,6 +5,8 @@ import { Swatch } from "../../components/ui";
 import { agentsOfProject, baseOf, isActive, isBusy, repoLabel } from "../../lib/agents";
 import { useStore } from "../../store";
 import { ConnectionBanner } from "./ConnectionBanner";
+import { EmptyProjects } from "./EmptyProjects";
+import { HostState } from "./HostState";
 import { Wordmark } from "./Wordmark";
 
 function ProjectCard({ project }: { project: ProjectRef }) {
@@ -97,74 +99,79 @@ export function HomeScreen() {
   const errored = agents.filter((a) => a.status === "error").length;
   const running = agents.filter(isBusy).length;
   const attention = pendingTotal + errored;
+  const connected = connection === "connected";
+  const settling = connection === "connecting" || connection === "pairing";
+  // What the body is: the list when there is one to show, the host's
+  // connection state when there is nothing behind it. A cached list survives a
+  // dropped link (read-only, with the status line over it); an empty one does
+  // not — "no projects" is only true of a host that has answered.
+  const showList = workspace !== null && (projects.length > 0 || connected);
+  const body = !showList ? (
+    <HostState />
+  ) : projects.length === 0 ? (
+    <EmptyProjects />
+  ) : (
+    projects.map((p) => <ProjectCard key={p.project_id} project={p} />)
+  );
 
   return (
     <>
       <div className="home-head">
         <Wordmark />
         <button type="button" className="host" onClick={() => openSheet("host")}>
-          <span className={`dot ${connection === "connected" ? "running" : "error"}`} />
+          <span className={`dot ${connected ? "running" : settling ? "waiting" : "error"}`} />
           {hostName ?? "Host"}
         </button>
       </div>
-      <ConnectionBanner />
-      <div className="scroll home-body">
-        <div className="sect">
-          Projects <span className="n">{projects.length}</span>
-          <button type="button" className="sect-add" onClick={() => openSheet("addProject")}>
-            <Icon name="plus" size={12} strokeWidth={2.2} />
-            Add
-          </button>
-          <span className="grow" />
-          {attention > 0 && (
-            <span
-              className="n"
-              style={{
-                color: "var(--warn)",
-                textTransform: "none",
-                letterSpacing: 0,
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 4,
-              }}
-            >
-              <Icon name="hand" size={11} strokeWidth={1.8} />
-              {attention}
-            </span>
-          )}
-          {running > 0 && (
-            <span
-              className="n"
-              style={{ color: "var(--success)", textTransform: "none", letterSpacing: 0 }}
-            >
-              {running} running
-            </span>
-          )}
-        </div>
-        {projects.map((p) => (
-          <ProjectCard key={p.project_id} project={p} />
-        ))}
-        {projects.length === 0 && (
-          <div className="empty">
-            <b>No projects on the host</b>
-            Open a folder on your Mac, or clone one from GitHub.
-            <button
-              type="button"
-              className="btn ghost ap-empty"
-              onClick={() => openSheet("addProject")}
-            >
-              <Icon name="plus" size={16} strokeWidth={2.2} />
-              Add project
-            </button>
+      {showList && <ConnectionBanner />}
+      <div className={`scroll home-body${showList && projects.length > 0 ? "" : " is-blank"}`}>
+        {showList && projects.length > 0 && (
+          <div className="sect">
+            Projects <span className="n">{projects.length}</span>
+            {connected && (
+              <button type="button" className="sect-add" onClick={() => openSheet("addProject")}>
+                <Icon name="plus" size={12} strokeWidth={2.2} />
+                Add
+              </button>
+            )}
+            <span className="grow" />
+            {attention > 0 && (
+              <span
+                className="n"
+                style={{
+                  color: "var(--warn)",
+                  textTransform: "none",
+                  letterSpacing: 0,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                <Icon name="hand" size={11} strokeWidth={1.8} />
+                {attention}
+              </span>
+            )}
+            {running > 0 && (
+              <span
+                className="n"
+                style={{ color: "var(--success)", textTransform: "none", letterSpacing: 0 }}
+              >
+                {running} running
+              </span>
+            )}
           </div>
         )}
+        {body}
       </div>
-      <div className="fab-wrap">
-        <button type="button" className="btn primary" onClick={() => openSheet("newAgent")}>
-          <Icon name="plus" size={18} strokeWidth={2.2} />
-          New agent
-        </button>
-      </div>
+      {/* Starting an agent needs a live host and a project to put it in. */}
+      {showList && projects.length > 0 && connected && (
+        <div className="fab-wrap">
+          <button type="button" className="btn primary" onClick={() => openSheet("newAgent")}>
+            <Icon name="plus" size={18} strokeWidth={2.2} />
+            New agent
+          </button>
+        </div>
+      )}
     </>
   );
 }

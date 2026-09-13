@@ -1,6 +1,7 @@
 import { Icon } from "@desktop/components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { PickerSheet, ProviderMark, Sheet, Swatch } from "../../components/ui";
+import { Notice } from "../../components/ui/Notice";
 import { modelLabel, providerLabel } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";
 import { modelsFor, useModels } from "../../lib/models";
@@ -173,7 +174,11 @@ export function NewAgentSheet({
             <Icon name="chevD" size={11} style={{ color: "var(--fg-3)" }} />
           </button>
         </PromptField>
-        {lastError && <div className="err na-err">{lastError}</div>}
+        {lastError && (
+          <Notice tone="error" className="na-err" onDismiss={clearError}>
+            {lastError}
+          </Notice>
+        )}
         <div className="na-ctx">
           <button type="button" className="chip" onClick={() => setPicker("project")}>
             <Swatch project={project} size={14} />

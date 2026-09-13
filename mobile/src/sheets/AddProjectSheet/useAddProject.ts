@@ -9,8 +9,8 @@ export type RunAddProject = (op: () => Promise<unknown>) => Promise<void>;
 
 /** State the two forms share: which one is showing, whether an op is in
  *  flight, and the error text the last one failed with. */
-export function useAddProject(open: boolean) {
-  const [tab, setTab] = useState<AddProjectTab>("folder");
+export function useAddProject(open: boolean, initialTab: AddProjectTab = "folder") {
+  const [tab, setTab] = useState<AddProjectTab>(initialTab);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const clearError = useStore((s) => s.clearError);
@@ -20,11 +20,11 @@ export function useAddProject(open: boolean) {
   // recorded this error there as well.
   useEffect(() => {
     if (!open) return;
-    setTab("folder");
+    setTab(initialTab);
     setBusy(false);
     setError(null);
     clearError();
-  }, [open, clearError]);
+  }, [open, initialTab, clearError]);
 
   const switchTab = useCallback((next: string) => {
     setTab(next as AddProjectTab);

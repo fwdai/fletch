@@ -886,6 +886,82 @@ a {
   font-weight: 600;
   margin-bottom: 4px;
 }
+
+/* Inline message (components/ui/Notice). One neutral surface; the tone lives
+   in the leading glyph and the action, so a warning and an error read as
+   messages on the page rather than as boxes shouting from it. */
+.notice-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 6px 8px 12px;
+  border-radius: 13px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd-soft);
+  color: var(--fg-1);
+  font-size: 13.5px;
+  line-height: 1.4;
+  text-align: left;
+  --tone: var(--info);
+}
+.notice-bar.warn {
+  --tone: var(--warn);
+}
+.notice-bar.error {
+  --tone: var(--danger);
+  color: var(--fg-0);
+}
+.notice-bar .lead {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  flex-shrink: 0;
+  color: var(--tone);
+}
+.notice-bar .lead .working-dots i {
+  background: var(--tone);
+}
+.notice-bar .txt {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  /* A message with no action keeps the full right padding. */
+  padding-right: 6px;
+}
+.notice-bar .act {
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--tone);
+  background: color-mix(in oklch, var(--tone), transparent 86%);
+  transition: background 0.15s;
+}
+.notice-bar .act:active {
+  background: color-mix(in oklch, var(--tone), transparent 72%);
+}
+.notice-bar .act:disabled {
+  opacity: 0.5;
+}
+.notice-bar .x {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-3);
+  transition: background 0.15s;
+}
+.notice-bar .x:active {
+  background: var(--bg-3);
+  color: var(--fg-1);
+}
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.01ms !important;
