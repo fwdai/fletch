@@ -67,22 +67,6 @@ export function Sheet({
 }) {
   const [mounted, setMounted] = useState(open);
   const [shown, setShown] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  const panel = useRef<HTMLDivElement>(null);
-  useSwipe(
-    panel,
-    {
-      axis: "y",
-      enabled: shown && !!onClose,
-      // `shown` drops here, not in the `open` effect: same frame as the drag
-      // lets go, so the close transition continues from under the finger.
-      onCommit: () => {
-        setShown(false);
-        onClose?.();
-      },
-    },
-    root,
-  );
   useEffect(() => {
     if (open) {
       setMounted(true);
@@ -101,6 +85,68 @@ export function Sheet({
     return () => clearTimeout(t);
   }, [open]);
   if (!mounted) return null;
+  return (
+    <SheetFrame
+      shown={shown}
+      // `shown` drops here, not in the `open` effect: same frame as the drag
+      // lets go, so the close transition continues from under the finger.
+      onSwipeClose={
+        onClose &&
+        (() => {
+          setShown(false);
+          onClose();
+        })
+      }
+      onClose={onClose}
+      full={full}
+      stacked={stacked}
+      title={title}
+      left={left}
+      right={right}
+      foot={foot}
+    >
+      {children}
+    </SheetFrame>
+  );
+}
+
+/** The mounted sheet. Its own component so the pull-down swipe attaches to
+ *  elements that exist: `Sheet` renders nothing until mounted, and a swipe
+ *  hooked there would bind to empty refs and never retry. */
+function SheetFrame({
+  shown,
+  onSwipeClose,
+  onClose,
+  full,
+  stacked,
+  title,
+  left,
+  right,
+  children,
+  foot,
+}: {
+  shown: boolean;
+  onSwipeClose?: () => void;
+  onClose?: () => void;
+  full?: boolean;
+  stacked?: boolean;
+  title?: ReactNode;
+  left?: ReactNode;
+  right?: ReactNode;
+  children?: ReactNode;
+  foot?: ReactNode;
+}) {
+  const root = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  useSwipe(
+    panel,
+    {
+      axis: "y",
+      enabled: shown && !!onSwipeClose,
+      onCommit: () => onSwipeClose?.(),
+    },
+    root,
+  );
   return (
     <div ref={root} className={`sheet-root${shown ? " open" : ""}`}>
       <button type="button" className="sheet-bg" onClick={onClose} aria-label="Close" />

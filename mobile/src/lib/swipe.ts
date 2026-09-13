@@ -10,7 +10,10 @@ export interface SwipeOptions {
   /** `x` dismisses by dragging right, `y` by dragging down. */
   axis: "x" | "y";
   /** Only begin when the touch lands within this many px of the leading edge
-   *  (left for `x`, top for `y`). Omit to begin anywhere on the target. */
+   *  (left for `x`, top for `y`), and own such a touch outright like the iOS
+   *  edge pan: nothing underneath scrolls while it lasts. Omit to begin
+   *  anywhere on the target, in which case the first move decides between a
+   *  swipe and a scroll. */
   edge?: number;
   enabled?: boolean;
   onCommit: () => void;
@@ -22,6 +25,11 @@ export interface SwipeOptions {
  *  being flung back. Velocity is px/ms along the axis. */
 export const shouldCommit = (delta: number, size: number, velocity: number) =>
   velocity > 0.4 || (delta > size * 0.3 && velocity > -0.2);
+
+/** How far an edge touch travels along the axis before it counts as a swipe.
+ *  A finger's first reported move is a point or so of noise in any direction,
+ *  so an edge gesture waits this long rather than reading the first sample. */
+export const EDGE_SLOP = 10;
 
 /** Anything between `target` and `root` that is scrolled along `axis` owns the
  *  gesture: a pulled-down sheet body must scroll back to top before it drags
@@ -66,13 +74,21 @@ export function attachSwipe(target: HTMLElement, stage: HTMLElement, opts: () =>
     const along = o.axis === "x" ? dx : dy;
     const across = o.axis === "x" ? dy : dx;
     if (!active) {
-      if (along === 0 && across === 0) return;
-      // The first real movement decides: the wrong way or mostly across the
-      // axis, and this is a scroll, not a swipe. Deciding on the very first
-      // move is what keeps a vertical scroll that starts at the edge working.
-      if (along <= 0 || Math.abs(across) > Math.abs(along)) {
-        start = null;
-        return;
+      // WebKit lets only the first touchmove of a touch veto native scrolling,
+      // so whatever is decided here is final for the whole touch.
+      if (o.edge !== undefined) {
+        // An edge touch is ours from its first move, scroll or not; it starts
+        // dragging once it has clearly travelled the right way.
+        e.preventDefault();
+        if (along < EDGE_SLOP) return;
+      } else {
+        if (along === 0 && across === 0) return;
+        // Anywhere else the first real movement decides: the wrong way or
+        // mostly across the axis, and this is a scroll, not a swipe.
+        if (along <= 0 || Math.abs(across) > Math.abs(along)) {
+          start = null;
+          return;
+        }
       }
       active = true;
       stage.classList.add("dragging");
