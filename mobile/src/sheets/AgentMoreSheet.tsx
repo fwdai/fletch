@@ -1,4 +1,4 @@
-import { Icon } from "../components/Icon";
+import { Icon } from "@desktop/components/Icon";
 import { Sheet } from "../components/ui";
 import { isBusy } from "../lib/agents";
 import { ignore } from "../lib/ignore";

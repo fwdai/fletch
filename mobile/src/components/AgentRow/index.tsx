@@ -1,9 +1,9 @@
 import type { AgentRecord, ProjectRef } from "@desktop/api/types/agent";
+import { Icon } from "@desktop/components/Icon";
 import type { MouseEvent } from "react";
 import { isBusy, STATUS_LABEL } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { useStore } from "../../store";
-import { Icon } from "../Icon";
 import { ProviderMark, PrPill, StatusDot } from "../ui";
 
 /** One agent line: status, name, what needs attention, live timer and diff. */
@@ -30,12 +30,12 @@ export function AgentRow({
   const badge =
     agent.status === "error" ? (
       <span className="hand err">
-        <Icon name="alert" size={11} sw={1.8} />
+        <Icon name="alert" size={11} strokeWidth={1.8} />
         error
       </span>
     ) : pending > 0 ? (
       <span className="hand">
-        <Icon name="hand" size={11} sw={1.8} />
+        <Icon name="hand" size={11} strokeWidth={1.8} />
         needs you
       </span>
     ) : null;

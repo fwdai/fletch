@@ -1,7 +1,7 @@
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
+import { Icon } from "@desktop/components/Icon";
 import { parseRepoSpec } from "@desktop/util/repoSpec";
 import { useEffect, useState } from "react";
-import { Icon } from "../../components/Icon";
 import { childPath } from "../../lib/paths";
 import { useStore } from "../../store";
 import { FolderPickerSheet } from "./FolderPicker";
@@ -100,7 +100,7 @@ export function CloneForm({
                 </div>
                 {repo.is_private && <span className="val mono">private</span>}
                 {selected === repo.name_with_owner && !typed.trim() ? (
-                  <Icon name="check" size={18} sw={2} className="check-ic" />
+                  <Icon name="check" size={18} strokeWidth={2} className="check-ic" />
                 ) : (
                   <span style={{ width: 18 }} />
                 )}

@@ -5,8 +5,8 @@ import {
 } from "@desktop/components/Composer/dictation/spliceTranscript";
 import { InterimGhost } from "@desktop/components/Composer/InterimGhost";
 import { primaryState } from "@desktop/components/Composer/PrimaryControl/primaryState";
+import { Icon } from "@desktop/components/Icon";
 import { useEffect, useRef, useState } from "react";
-import { Icon } from "../../../components/Icon";
 import { ProviderMark } from "../../../components/ui";
 import { useDictation, VoiceRow } from "../../../dictation";
 import { isBusy, modelLabel } from "../../../lib/agents";

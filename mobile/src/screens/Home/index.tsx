@@ -1,6 +1,6 @@
 import type { ProjectRef } from "@desktop/api/types/agent";
+import { Icon } from "@desktop/components/Icon";
 import { AgentRow } from "../../components/AgentRow";
-import { Icon } from "../../components/Icon";
 import { Swatch } from "../../components/ui";
 import { agentsOfProject, baseOf, isActive, isBusy, repoLabel } from "../../lib/agents";
 import { useStore } from "../../store";
@@ -112,7 +112,7 @@ export function HomeScreen() {
         <div className="sect">
           Projects <span className="n">{projects.length}</span>
           <button type="button" className="sect-add" onClick={() => openSheet("addProject")}>
-            <Icon name="plus" size={12} sw={2.2} />
+            <Icon name="plus" size={12} strokeWidth={2.2} />
             Add
           </button>
           <span className="grow" />
@@ -128,7 +128,7 @@ export function HomeScreen() {
                 gap: 4,
               }}
             >
-              <Icon name="hand" size={11} sw={1.8} />
+              <Icon name="hand" size={11} strokeWidth={1.8} />
               {attention}
             </span>
           )}
@@ -153,7 +153,7 @@ export function HomeScreen() {
               className="btn ghost ap-empty"
               onClick={() => openSheet("addProject")}
             >
-              <Icon name="plus" size={16} sw={2.2} />
+              <Icon name="plus" size={16} strokeWidth={2.2} />
               Add project
             </button>
           </div>
@@ -161,7 +161,7 @@ export function HomeScreen() {
       </div>
       <div className="fab-wrap">
         <button type="button" className="btn primary" onClick={() => openSheet("newAgent")}>
-          <Icon name="plus" size={18} sw={2.2} />
+          <Icon name="plus" size={18} strokeWidth={2.2} />
           New agent
         </button>
       </div>

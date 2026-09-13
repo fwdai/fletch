@@ -1,6 +1,6 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
+import { Icon } from "@desktop/components/Icon";
 import { useEffect, useMemo, useState } from "react";
-import { Icon } from "../../components/Icon";
 import { branchOf } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";
 import { buildTree, defaultOpen, flattenTree } from "../../lib/tree";

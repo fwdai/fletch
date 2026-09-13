@@ -1,5 +1,5 @@
+import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
-import { Icon } from "../../components/Icon";
 import { parseAddress, parsePairUrl } from "../../remote";
 import { useStore } from "../../store";
 import { Wordmark } from "../Home/Wordmark";

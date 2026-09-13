@@ -1,4 +1,4 @@
-import { Icon } from "../../components/Icon";
+import { Icon } from "@desktop/components/Icon";
 import { ignore } from "../../lib/ignore";
 import { useStore } from "../../store";
 

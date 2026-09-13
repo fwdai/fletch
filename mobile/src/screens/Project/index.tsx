@@ -1,6 +1,6 @@
+import { Icon } from "@desktop/components/Icon";
 import { useState } from "react";
 import { AgentRow } from "../../components/AgentRow";
-import { Icon } from "../../components/Icon";
 import { Nav, Segmented, Swatch } from "../../components/ui";
 import { agentsOfProject, baseOf, isActive, isBusy, repoLabel } from "../../lib/agents";
 import { useStore } from "../../store";
@@ -47,7 +47,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
             onClick={() => openSheet("newAgent", { projectId })}
             aria-label="New agent"
           >
-            <Icon name="plus" size={20} sw={1.8} />
+            <Icon name="plus" size={20} strokeWidth={1.8} />
           </button>
         }
       />
@@ -102,7 +102,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
           className="btn primary"
           onClick={() => openSheet("newAgent", { projectId })}
         >
-          <Icon name="plus" size={18} sw={2.2} />
+          <Icon name="plus" size={18} strokeWidth={2.2} />
           New agent in {project.name}
         </button>
       </div>

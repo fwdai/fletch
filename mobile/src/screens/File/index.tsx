@@ -1,6 +1,6 @@
 import type { CheckoutFileContents } from "@desktop/api/types/checkout";
+import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
-import { Icon } from "../../components/Icon";
 import { CodeLine, Nav } from "../../components/ui";
 import { api, useStore } from "../../store";
 

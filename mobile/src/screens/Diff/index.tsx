@@ -1,5 +1,5 @@
+import { Icon } from "@desktop/components/Icon";
 import { useEffect, useMemo, useState } from "react";
-import { Icon } from "../../components/Icon";
 import { CodeLine, Nav } from "../../components/ui";
 import { parseUnifiedDiff, STATUS_LETTER } from "../../lib/diff";
 import { api, useStore } from "../../store";

@@ -1,5 +1,5 @@
+import { Icon } from "@desktop/components/Icon";
 import type { ChatItem } from "../../adapters";
-import { Icon } from "../../components/Icon";
 import { providerLabel } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";
 import { toolArg } from "../../lib/tools";
@@ -40,7 +40,7 @@ export function ApprovalCard({
           Deny
         </button>
         <button type="button" className="btn primary" onClick={() => answer("allow")}>
-          <Icon name="check" size={15} sw={2.2} />
+          <Icon name="check" size={15} strokeWidth={2.2} />
           Allow once
         </button>
       </div>

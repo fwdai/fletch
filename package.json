@@ -31,7 +31,7 @@
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^5.5.0",
     "highlight.js": "^11.11.1",
-    "lucide-react": "^1.21.0",
+    "lucide-react": "1.21.0",
     "material-icon-theme": "^5.36.0",
     "partial-json": "^0.1.7",
     "qrcode.react": "^4",

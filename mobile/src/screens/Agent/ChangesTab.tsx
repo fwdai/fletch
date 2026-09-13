@@ -1,5 +1,5 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
-import { Icon } from "../../components/Icon";
+import { Icon } from "@desktop/components/Icon";
 import { PrPill } from "../../components/ui";
 import { baseOf, branchOf, isBusy } from "../../lib/agents";
 import { STATUS_LETTER } from "../../lib/diff";

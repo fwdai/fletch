@@ -1,7 +1,7 @@
 import { spliceTranscript } from "@desktop/components/Composer/dictation/spliceTranscript";
 import { primaryState } from "@desktop/components/Composer/PrimaryControl/primaryState";
+import { Icon } from "@desktop/components/Icon";
 import { type ReactNode, useEffect, useRef } from "react";
-import { Icon } from "../../components/Icon";
 import { useDictation, VoiceRow } from "../../dictation";
 import { autosize } from "../../lib/autosize";
 
@@ -105,7 +105,7 @@ export function PromptField({
               onClick={() => void dictation.toggle()}
             >
               {listening ? (
-                <Icon name="check" size={16} sw={2.2} />
+                <Icon name="check" size={16} strokeWidth={2.2} />
               ) : (
                 <Icon name={dictation.blocked ? "micOff" : "mic"} size={16} />
               )}
