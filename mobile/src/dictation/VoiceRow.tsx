@@ -3,7 +3,7 @@ import {
   type PrimaryState,
 } from "@desktop/components/Composer/PrimaryControl/primaryState";
 import { useElapsed } from "@desktop/components/Composer/PrimaryControl/useElapsed";
-import { Icon } from "../components/Icon";
+import { Icon } from "@desktop/components/Icon";
 
 /** Bar height range, in px: silence sits at the floor, loud speech fills. */
 const MIN_PX = 3;

@@ -15,7 +15,8 @@
     "paths": {
       "@desktop/*": ["../src/*"],
       "@/*": ["../src/*"],
-      "partial-json": ["./node_modules/partial-json/dist/index.d.ts"]
+      "partial-json": ["./node_modules/partial-json/dist/index.d.ts"],
+      "lucide-react": ["./node_modules/lucide-react/dist/lucide-react.d.ts"]
     },
     "strict": true,
     "noUnusedLocals": true,

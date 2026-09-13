@@ -4,11 +4,11 @@
 
 import type { AgentStatus, ProjectRef } from "@desktop/api/types/agent";
 import type { PrState } from "@desktop/api/types/pr";
+import { Icon, type IconName } from "@desktop/components/Icon";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { hueColor, projectHue, providerHue, providerShort } from "../../lib/agents";
 import { useSwipe } from "../../lib/swipe";
 import { useProviderIcon } from "../../lib/useProviderIcon";
-import { Icon, type IconName } from "../Icon";
 
 export function Nav({
   onBack,
@@ -30,7 +30,7 @@ export function Nav({
       <div>
         {onBack && (
           <button type="button" className="back" onClick={onBack}>
-            <Icon name="chevL" size={22} sw={1.8} />
+            <Icon name="chevL" size={22} strokeWidth={1.8} />
             <span>{backLabel}</span>
           </button>
         )}
@@ -199,7 +199,7 @@ export function PickerSheet({
             </div>
             {it.right && <span className="val mono">{it.right}</span>}
             {it.id === value ? (
-              <Icon name="check" size={18} sw={2} className="check-ic" />
+              <Icon name="check" size={18} strokeWidth={2} className="check-ic" />
             ) : (
               <span style={{ width: 18 }} />
             )}

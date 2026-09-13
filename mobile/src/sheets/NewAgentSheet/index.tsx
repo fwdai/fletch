@@ -1,5 +1,5 @@
+import { Icon } from "@desktop/components/Icon";
 import { useCallback, useEffect, useState } from "react";
-import { Icon } from "../../components/Icon";
 import { PickerSheet, ProviderMark, Sheet, Swatch } from "../../components/ui";
 import { modelLabel, providerLabel } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";

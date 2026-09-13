@@ -1,5 +1,5 @@
+import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
-import { Icon } from "../components/Icon";
 import { Sheet } from "../components/ui";
 import { baseOf, branchOf } from "../lib/agents";
 import { agentOf, useStore } from "../store";
@@ -132,7 +132,7 @@ export function PrSheet({
             {steps.map((s, i) => (
               <div key={s} className={`step ${step > i + 1 ? "ok" : step === i + 1 ? "on" : ""}`}>
                 <span className="ck">
-                  <Icon name="check" size={11} sw={2.5} />
+                  <Icon name="check" size={11} strokeWidth={2.5} />
                 </span>
                 {s}
               </div>

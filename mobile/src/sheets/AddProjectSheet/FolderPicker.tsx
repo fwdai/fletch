@@ -1,6 +1,6 @@
 import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
+import { Icon } from "@desktop/components/Icon";
 import { type ReactNode, useEffect, useState } from "react";
-import { Icon } from "../../components/Icon";
 import { Sheet } from "../../components/ui";
 import { childPath, parentPath } from "../../lib/paths";
 import { useStore } from "../../store";
@@ -76,7 +76,7 @@ export function FolderPicker({
             onClick={() => setPath(up)}
             aria-label="Up one folder"
           >
-            <Icon name="chevL" size={18} sw={1.8} />
+            <Icon name="chevL" size={18} strokeWidth={1.8} />
           </button>
         )}
         <span className="p mono">{base}</span>
@@ -105,7 +105,7 @@ export function FolderPicker({
       {hiddenCount > 0 && (
         <div className="ap-hid">
           <button type="button" className="chip" onClick={() => setShowHidden(!showHidden)}>
-            <Icon name={showHidden ? "minus" : "plus"} size={11} sw={2.2} />
+            <Icon name={showHidden ? "minus" : "plus"} size={11} strokeWidth={2.2} />
             {showHidden ? "Hide" : "Show"} {hiddenCount} hidden
           </button>
         </div>

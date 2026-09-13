@@ -17,13 +17,18 @@ export default defineConfig({
     // reused desktop files (../src/**) are written against the desktop's own
     // `@/*` alias — so map both prefixes here. `partial-json` needs an alias
     // too: Node resolution from ../src/adapters never reaches
-    // mobile/node_modules.
+    // mobile/node_modules. `lucide-react` is the same story for the shared
+    // `@desktop/components/Icon`.
     alias: [
       { find: /^@desktop\//, replacement: `${fileURLToPath(new URL("../src/", import.meta.url))}` },
       { find: /^@\//, replacement: `${fileURLToPath(new URL("../src/", import.meta.url))}` },
       {
         find: "partial-json",
         replacement: fileURLToPath(new URL("./node_modules/partial-json", import.meta.url)),
+      },
+      {
+        find: "lucide-react",
+        replacement: fileURLToPath(new URL("./node_modules/lucide-react", import.meta.url)),
       },
     ],
   },

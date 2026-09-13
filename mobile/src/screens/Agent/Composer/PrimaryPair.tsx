@@ -1,7 +1,7 @@
 import { ContourTrace } from "@desktop/components/Composer/PrimaryControl/ContourTrace";
 import type { PrimaryState } from "@desktop/components/Composer/PrimaryControl/primaryState";
+import { Icon } from "@desktop/components/Icon";
 import type { ReactNode } from "react";
-import { Icon } from "../../../components/Icon";
 
 /** The disc, in px: 40 visual inside a 44 hit area, r20 — a circle. */
 const DISC = 40;
@@ -70,10 +70,10 @@ export function PrimaryPair({
           <Icon name="mic" size={20} />
         </Glyph>
         <Glyph on={is("draft") || noMicEmpty}>
-          <Icon name="arrowUp" size={20} sw={2} />
+          <Icon name="arrowUp" size={20} strokeWidth={2} />
         </Glyph>
         <Glyph on={is("listening")}>
-          <Icon name="check" size={20} sw={2.2} />
+          <Icon name="check" size={20} strokeWidth={2.2} />
         </Glyph>
         <Glyph on={is("transcribing")}>
           <span className="mpc-spin" />

@@ -1,5 +1,5 @@
 import type { PrState } from "@desktop/api/types/pr";
-import { Icon } from "../../components/Icon";
+import { Icon } from "@desktop/components/Icon";
 import { PrPill } from "../../components/ui";
 import { useStore } from "../../store";
 

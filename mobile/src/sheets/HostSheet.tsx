@@ -1,5 +1,5 @@
+import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
-import { Icon } from "../components/Icon";
 import { Segmented, Sheet } from "../components/ui";
 import { ignore } from "../lib/ignore";
 import { client, useStore } from "../store";

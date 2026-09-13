@@ -2,19 +2,26 @@
 // summary. Keyed by the tool names the agents actually emit, with a neutral
 // fallback so an unknown tool still renders.
 
-import type { IconName } from "../components/Icon";
+import type { IconName } from "@desktop/components/Icon";
 
+/** Glyphs match the desktop's per-tool presenters
+ *  (`@desktop/components/Workspace/messages/presenters`) so the same tool reads
+ *  the same on both surfaces. Mobile keeps its own flat map rather than calling
+ *  `getPresenter`: that registry's entries are full desktop renderers, and
+ *  importing it would drag the whole presenter tree into the phone bundle for
+ *  one field. */
 export const TOOL_ICON: Record<string, IconName> = {
   Bash: "terminal",
   BashOutput: "terminal",
   Edit: "edit",
-  Write: "file",
+  MultiEdit: "edit",
+  Write: "notebookPen",
   Read: "file",
   Grep: "search",
   Glob: "search",
   WebFetch: "fetch",
   WebSearch: "fetch",
-  Task: "task",
+  Task: "zap",
   TodoWrite: "task",
   exec_command: "terminal",
   shell: "terminal",
@@ -24,6 +31,7 @@ export const TOOL_ICON: Record<string, IconName> = {
 export const TOOL_HUE: Record<string, string> = {
   Bash: "var(--accent)",
   Edit: "var(--accent)",
+  MultiEdit: "var(--accent)",
   Write: "var(--success)",
   Read: "var(--fg-2)",
   Grep: "var(--info)",

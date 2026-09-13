@@ -1,6 +1,6 @@
+import { Icon } from "@desktop/components/Icon";
 import { useState } from "react";
 import type { ChatItem } from "../../adapters";
-import { Icon } from "../../components/Icon";
 import { resultSummary, resultText, TOOL_HUE, TOOL_ICON, toolArg } from "../../lib/tools";
 
 type ToolCall = Extract<ChatItem, { kind: "tool_call" }>;

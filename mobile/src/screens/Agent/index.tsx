@@ -1,5 +1,5 @@
+import { Icon } from "@desktop/components/Icon";
 import { useRef, useState } from "react";
-import { Icon } from "../../components/Icon";
 import { Nav, ProviderMark, Segmented } from "../../components/ui";
 import { baseOf, branchOf, isBusy, STATUS_LABEL } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
