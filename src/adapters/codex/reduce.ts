@@ -64,6 +64,40 @@ function toolResult(item: Record<string, unknown>): unknown {
 
 const TOOL_TYPES = new Set(["command_execution", "mcp_tool_call"]);
 
+/** The human-readable message of an `error` / `turn.failed` event. Codex
+ *  relays API failures as the raw response body serialized into `message`
+ *  (`{"type":"error","status":400,"error":{"message":"…"}}`); unwrap that to
+ *  the inner message so the notice reads as prose, not JSON. */
+function errorMessage(ev: RawEvent): string {
+  const raw =
+    typeof ev.message === "string"
+      ? ev.message
+      : typeof asRecord(ev.error).message === "string"
+        ? String(asRecord(ev.error).message)
+        : "";
+  if (!raw) return "Codex reported an error.";
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const body = asRecord(JSON.parse(trimmed));
+      const inner = asRecord(body.error).message;
+      if (typeof inner === "string" && inner) return inner;
+      if (typeof body.message === "string" && body.message) return body.message;
+    } catch {
+      // Not JSON after all — show it as-is.
+    }
+  }
+  return raw;
+}
+
+/** Append an error notice unless the log already ends with this exact one:
+ *  `error` and the following `turn.failed` carry the same message. */
+function appendErrorNotice(items: ChatItem[], text: string): ChatItem[] {
+  const last = items[items.length - 1];
+  if (last?.kind === "notice" && last.subtype === "error" && last.text === text) return items;
+  return [...items, { kind: "notice", subtype: "error", text, is_error: true }];
+}
+
 export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const type = typeof ev.type === "string" ? ev.type : undefined;
 
@@ -150,17 +184,16 @@ export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       return endTurn(finalizeStreamingItems(prev));
     }
 
-    // `turn.failed` / `error` surface as a visible error notice.
-    case "turn.failed":
-    case "error": {
-      const items = finalizeStreamingItems(prev);
-      const message =
-        typeof ev.message === "string"
-          ? ev.message
-          : typeof (asRecord(ev.error) as { message?: unknown }).message === "string"
-            ? String((asRecord(ev.error) as { message: string }).message)
-            : "Codex reported an error.";
-      return [...items, { kind: "notice", subtype: "error", text: message, is_error: true }];
+    // A failed model call (usage limit, auth, 4xx) arrives as `error` then
+    // `turn.failed` with the same message, after which the process exits 1.
+    // Show the message once and close the turn as an error — the same shape
+    // claude's failed `result` produces — so the chat says why it stopped.
+    case "error":
+      return appendErrorNotice(finalizeStreamingItems(prev), errorMessage(ev));
+
+    case "turn.failed": {
+      const items = appendErrorNotice(finalizeStreamingItems(prev), errorMessage(ev));
+      return [...items, { kind: "notice", subtype: "turn_end", text: "error" }];
     }
 
     default:

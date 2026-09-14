@@ -240,6 +240,87 @@ describe("codexAdapter", () => {
     });
   });
 
+  it("closes a failed live turn with one readable error notice", () => {
+    // Real codex 0.153 output for an API failure: `error` then `turn.failed`
+    // carry the same message — the raw response body serialized to a string.
+    const body = JSON.stringify({
+      type: "error",
+      status: 429,
+      error: { type: "usage_limit_reached", message: "You've hit your usage limit." },
+    });
+    const items = run([
+      { type: "turn.started" },
+      { type: "error", message: body },
+      { type: "turn.failed", error: { message: body } },
+    ] as RawEvent[]);
+    expect(items).toEqual([
+      {
+        kind: "notice",
+        subtype: "error",
+        text: "You've hit your usage limit.",
+        is_error: true,
+      },
+      { kind: "notice", subtype: "turn_end", text: "error" },
+    ]);
+  });
+
+  it("shows a plain-text turn.failed message as-is", () => {
+    const items = run([
+      { type: "turn.failed", error: { message: "Please log out and sign in again." } },
+    ] as RawEvent[]);
+    expect(items[0]).toMatchObject({
+      kind: "notice",
+      subtype: "error",
+      text: "Please log out and sign in again.",
+    });
+  });
+
+  it("replays a failed turn from the rollout's task_complete error", () => {
+    const events = codexAdapter.normalizeTranscript([
+      { type: "event_msg", payload: { type: "user_message", message: "review this" } },
+      {
+        type: "event_msg",
+        payload: {
+          type: "task_complete",
+          last_agent_message: null,
+          error: {
+            message: "You've hit your usage limit. Try again at 4:49 AM.",
+            codex_error_info: "usage_limit_exceeded",
+          },
+        },
+      },
+    ]);
+    const items = run(events as RawEvent[]);
+    expect(items).toEqual([
+      { kind: "user_message", text: "review this" },
+      {
+        kind: "notice",
+        subtype: "error",
+        text: "You've hit your usage limit. Try again at 4:49 AM.",
+        is_error: true,
+      },
+      { kind: "notice", subtype: "turn_end", text: "error" },
+    ]);
+  });
+
+  it("replays a legacy rollout error event_msg as an error notice", () => {
+    const events = codexAdapter.normalizeTranscript([
+      {
+        type: "event_msg",
+        payload: { type: "error", message: "Your access token could not be refreshed." },
+      },
+    ]);
+    const items = run(events as RawEvent[]);
+    expect(items).toEqual([
+      {
+        kind: "notice",
+        subtype: "error",
+        text: "Your access token could not be refreshed.",
+        is_error: true,
+      },
+    ]);
+  });
+
   it("replays a failed shell command as an error, not a success", () => {
     const events = codexAdapter.normalizeTranscript([
       {

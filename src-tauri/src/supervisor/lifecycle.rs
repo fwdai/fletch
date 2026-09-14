@@ -1703,9 +1703,19 @@ fn spawn_per_turn_agent(
             return;
         }
         // End the turn. Idempotent with the in-band turn-end watchdog path.
-        // User Stop is an expected non-zero exit; a non-interrupted failure
-        // before the CLI emits JSON is a real crash and must be surfaced.
-        if exit.success || exit.interrupted {
+        // User Stop is an expected non-zero exit, and so is a turn the CLI
+        // already reported as failed in-band (codex emits `turn.failed` for a
+        // usage limit / auth / API error, then exits 1): the error is in the
+        // transcript, and the agent is resumable like claude after a failed
+        // `result`. Only a non-interrupted failure with no turn-end event —
+        // the CLI died before saying anything — is a real crash.
+        let turn_ended_in_band = sup_for_exit
+            .activities
+            .lock()
+            .get(&id_for_exit)
+            .map(|a| a.turn_ended())
+            .unwrap_or(false);
+        if exit.success || exit.interrupted || turn_ended_in_band {
             transition_active(
                 &sup_for_exit,
                 &app_for_exit,

@@ -63,11 +63,19 @@ impl ManagedActivity {
         Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("result"))
     }
 
-    /// Codex (`codex exec --json`) ends a turn with `turn.completed`. (The
+    /// Codex (`codex exec --json`) ends a turn with `turn.completed`, or with
+    /// `turn.failed` when the model call errored (usage limit, auth, 4xx) —
+    /// after which the process exits non-zero. Both are the turn's explicit
+    /// end; the supervisor uses that to tell a failed turn from a crash. (The
     /// per-turn process exit is handled separately and does not feed this
     /// detector.)
     pub fn codex() -> Self {
-        Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("turn.completed"))
+        Self::new(|event| {
+            matches!(
+                event.get("type").and_then(|v| v.as_str()),
+                Some("turn.completed") | Some("turn.failed")
+            )
+        })
     }
 
     /// OpenCode (`opencode run --format json`) emits one or more `step_finish`
@@ -249,6 +257,16 @@ mod tests {
         a.observe_event(&serde_json::json!({"type": "item.completed"}));
         assert!(!a.turn_ended());
         a.observe_event(&serde_json::json!({"type": "turn.completed", "usage": {}}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn codex_ends_on_turn_failed_event() {
+        let mut a = ManagedActivity::codex();
+        a.observe_event(&serde_json::json!({"type": "turn.started"}));
+        a.observe_event(&serde_json::json!({"type": "error", "message": "usage limit"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "turn.failed", "error": {"message": "x"}}));
         assert!(a.turn_ended());
     }
 
