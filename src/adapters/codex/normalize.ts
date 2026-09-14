@@ -125,7 +125,20 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
           });
         }
       } else if (ptype === "task_complete") {
-        out.push({ type: "turn.completed" });
+        // A failed turn (usage limit, auth, API error) is recorded as
+        // `task_complete` with an `error` — replay it as `turn.failed` so the
+        // reason survives the post-turn rebuild from this file.
+        const err = asRecord(p.error);
+        if (typeof err.message === "string" && err.message) {
+          out.push({ type: "turn.failed", error: { message: err.message } });
+        } else {
+          out.push({ type: "turn.completed" });
+        }
+      } else if (ptype === "error") {
+        // Pre-0.153 rollouts record the failure as its own event_msg (no
+        // `task_complete` follows); same live shape, so the reducer handles it.
+        const text = typeof p.message === "string" ? p.message : "";
+        if (text) out.push({ type: "error", message: text });
       } else if (ptype === "item_completed") {
         const item = asRecord(p.item);
         if (item.type === "UserMessage") {
