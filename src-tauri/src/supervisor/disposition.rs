@@ -340,15 +340,14 @@ async fn capture_repo_snapshots(
             Some(wt) => git::rev_parse(wt, "HEAD").await.ok(),
             None => None,
         };
-        // Prefer the immutable fork point; only fall back to resolving the
-        // parent branch name (which may have drifted) for pre-migration
-        // agents that never captured a base_sha.
-        let parent_branch_sha = match &repo.base_sha {
-            Some(sha) => Some(sha.clone()),
-            None => match &repo.parent_branch {
-                Some(b) => git::rev_parse(&repo.repo_path, b).await.ok(),
-                None => None,
-            },
+        // Where this checkout actually diverged from its base — the merge-base
+        // with the base's current tip, since the base can move (or be
+        // redirected) after spawn, with the recorded `base_sha` as the fallback
+        // (`git::resolve_base`). Without a checkout there is nothing to take a
+        // merge-base against, so the recorded SHA is all there is.
+        let parent_branch_sha = match &checkout {
+            Some(wt) => repo.resolve_base(wt).await.fork_point,
+            None => repo.base_sha.clone(),
         };
 
         let mut adds = 0u32;

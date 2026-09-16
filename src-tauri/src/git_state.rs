@@ -92,8 +92,9 @@ pub enum StatusKind {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Query the read-only git state for a checkout.
-pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState> {
+/// Query the read-only git state for a checkout, measured against an
+/// already-resolved base (`git::ResolvedBase` — see `TrackedRepo::resolve_base`).
+pub async fn query(checkout_path: &Path, base: &crate::git::ResolvedBase) -> Result<GitState> {
     // These reads build commands directly rather than through `git::cmd`, so they
     // don't inherit its config guard — `git diff`/`git status` here would run a
     // planted textconv or clean filter. Guarded at the module's public surface, so
@@ -107,7 +108,7 @@ pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState
         Err(_) => {
             return Ok(GitState {
                 branch: String::new(),
-                parent_branch: parent_branch.to_string(),
+                parent_branch: base.name.clone(),
                 ahead: 0,
                 behind: 0,
                 unpushed: 0,
@@ -121,8 +122,13 @@ pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState
         }
     };
 
-    // 2. Ahead / behind (vs base), and unpushed (vs origin)
-    let (ahead, behind) = query_ahead_behind(checkout_path, parent_branch).await;
+    // 2. Ahead / behind (vs the base's tip), and unpushed (vs origin). An
+    // unresolvable tip counts nothing rather than guessing at a ref: the panel
+    // already renders 0/0 as "nothing to show".
+    let (ahead, behind) = match &base.tip {
+        Some(tip) => rev_list_counts(checkout_path, tip).await.unwrap_or((0, 0)),
+        None => (0, 0),
+    };
     let unpushed = query_unpushed(checkout_path).await;
 
     // 3. File list from `git status --porcelain=v1`
@@ -174,7 +180,7 @@ pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState
 
     Ok(GitState {
         branch,
-        parent_branch: parent_branch.to_string(),
+        parent_branch: base.name.clone(),
         ahead,
         behind,
         unpushed,
@@ -277,20 +283,19 @@ const MAX_META_FILES: usize = 500;
 /// Base-staleness + changed-file paths for one checkout — the advisory bulk
 /// poll behind the "base moved" chips and cross-agent overlap hints.
 ///
-/// `base_sha` is the *fresh* base tip resolved from the SOURCE repo's
-/// `refs/remotes/origin/<base>` (see `commands::get_all_git_meta`). A `--shared`
-/// agent clone borrows the source's object store via alternates, so the new
-/// base commits are reachable by SHA in the clone even though the clone never
-/// fetched — counting `HEAD..<base_sha>` there yields a true "behind" without a
-/// per-clone network round-trip. `None` → the base couldn't be resolved (no
-/// origin / no fetch yet), so staleness degrades to unknown rather than a fake
-/// zero. File paths always come straight from the checkout's `git status`.
-pub async fn git_meta(checkout_path: &Path, base: &str, base_sha: Option<&str>) -> GitMeta {
+/// `base.tip` is the freshest base commit this checkout can actually read (see
+/// `git::resolve_base`): the SOURCE repo's `refs/remotes/origin/<base>` when the
+/// clone shares its objects — one background fetch there makes a moved base
+/// measurable from every checkout, with no per-clone network round-trip — else
+/// the clone's own refs. `None` → the base couldn't be resolved (no origin / no
+/// fetch yet), so staleness degrades to unknown rather than a fake zero. File
+/// paths always come straight from the checkout's `git status`.
+pub async fn git_meta(checkout_path: &Path, base: &crate::git::ResolvedBase) -> GitMeta {
     // Same reason as `shortstats`. `files` is already documented as empty when the
     // tree is unreadable, so this needs no new state to express itself.
     if !crate::git::hardening::config_is_safe(checkout_path).await {
         return GitMeta {
-            base: base.to_string(),
+            base: base.name.clone(),
             behind: None,
             files: Vec::new(),
         };
@@ -303,12 +308,12 @@ pub async fn git_meta(checkout_path: &Path, base: &str, base_sha: Option<&str>) 
         .map(|f| f.path)
         .take(MAX_META_FILES)
         .collect();
-    let behind = match base_sha {
-        Some(sha) => rev_list_count(checkout_path, &[&format!("HEAD..{sha}")]).await,
+    let behind = match &base.tip {
+        Some(tip) => rev_list_count(checkout_path, &[&format!("HEAD..{tip}")]).await,
         None => None,
     };
     GitMeta {
-        base: base.to_string(),
+        base: base.name.clone(),
         behind,
         files,
     }
@@ -514,25 +519,8 @@ async fn query_unpushed(checkout_path: &Path) -> u32 {
         .unwrap_or(0)
 }
 
-async fn query_ahead_behind(checkout_path: &Path, parent_branch: &str) -> (u32, u32) {
-    if let Some(counts) = rev_list_counts(checkout_path, parent_branch).await {
-        return counts;
-    }
-    // In a clone workspace the parent branch may exist only as a remote-
-    // tracking ref: `git clone` creates a local branch for the source's HEAD
-    // alone, and bare branch names don't resolve through `refs/remotes/origin/`.
-    if !parent_branch.starts_with("origin/") {
-        if let Some(counts) =
-            rev_list_counts(checkout_path, &format!("origin/{parent_branch}")).await
-        {
-            return counts;
-        }
-    }
-    (0, 0)
-}
-
 /// `git rev-list --left-right --count HEAD...<base>`, or `None` when the base
-/// doesn't resolve — so the caller can try an alternate ref spelling.
+/// commit isn't in this checkout's object store.
 async fn rev_list_counts(checkout_path: &Path, base: &str) -> Option<(u32, u32)> {
     let out = read_command(checkout_path)
         .args([
@@ -921,12 +909,14 @@ mod tests {
         assert_eq!(parse_ahead_behind("abc\txyz"), (0, 0));
     }
 
-    // --- query_ahead_behind ---
+    // --- ahead / behind ---
 
     #[tokio::test]
-    async fn ahead_behind_falls_back_to_remote_tracking_ref() {
-        // A clone workspace only gets a local branch for the source's HEAD,
-        // so a parent branch like `main` may resolve only as `origin/main`.
+    async fn ahead_behind_ignores_a_stale_local_base_branch() {
+        // The phantom-commit bug: an agent checkout sits exactly on the fetched
+        // `origin/main`, while the `refs/heads/main` it inherited from the clone
+        // is a snapshot from clone time. Measuring against the local ref would
+        // report the checkout as ahead of a base it is identical to.
         let td = tempfile::tempdir().unwrap();
         let run = |dir: &Path, args: &[&str]| {
             let out = std::process::Command::new("git")
@@ -940,6 +930,15 @@ mod tests {
                 String::from_utf8_lossy(&out.stderr)
             );
         };
+        let capture = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
         let source = td.path().join("source");
         std::fs::create_dir_all(&source).unwrap();
         run(&source, &["init", "-q", "-b", "main"]);
@@ -948,14 +947,7 @@ mod tests {
         std::fs::write(source.join("a.txt"), b"one").unwrap();
         run(&source, &["add", "-A"]);
         run(&source, &["commit", "-q", "-m", "first"]);
-        // `dev` stays at the first commit; `main` advances past it.
-        run(&source, &["branch", "dev"]);
-        std::fs::write(source.join("b.txt"), b"two").unwrap();
-        run(&source, &["add", "-A"]);
-        run(&source, &["commit", "-q", "-m", "second"]);
-        run(&source, &["checkout", "-q", "dev"]);
 
-        // Clone while `dev` is HEAD: the clone has no local `main`.
         let clone = td.path().join("clone");
         run(
             td.path(),
@@ -967,8 +959,20 @@ mod tests {
             ],
         );
 
-        // Bare `main` fails in the clone; the fallback resolves origin/main.
-        assert_eq!(query_ahead_behind(&clone, "main").await, (0, 1));
+        // The base moves; the checkout fetches and detaches onto the new tip.
+        // Its local `main` never moves again.
+        std::fs::write(source.join("b.txt"), b"two").unwrap();
+        run(&source, &["add", "-A"]);
+        run(&source, &["commit", "-q", "-m", "second"]);
+        run(&clone, &["fetch", "-q", "origin", "main"]);
+        let moved = capture(&clone, &["rev-parse", "refs/remotes/origin/main"]);
+        run(&clone, &["checkout", "-q", "--detach", &moved]);
+        assert_ne!(moved, capture(&clone, &["rev-parse", "refs/heads/main"]));
+
+        let base = crate::git::resolve_base(&clone, &source, "main", None).await;
+        let state = query(&clone, &base).await.unwrap();
+        assert_eq!(state.parent_branch, "main");
+        assert_eq!((state.ahead, state.behind), (0, 0));
     }
 
     // --- query_unpushed ---
@@ -1053,7 +1057,7 @@ mod tests {
     // --- git_meta ---
 
     #[tokio::test]
-    async fn git_meta_counts_behind_against_shared_base_sha() {
+    async fn git_meta_counts_behind_against_the_source_tracking_ref() {
         // Mirror the live topology: a `--shared` clone borrows the source's
         // objects, so a base SHA that only exists in the source (a moved
         // base the clone never fetched) is still countable in the clone.
@@ -1116,17 +1120,26 @@ mod tests {
         run(&source, &["add", "-A"]);
         run(&source, &["commit", "-q", "-m", "third"]);
         let moved_base = capture(&source, &["rev-parse", "main"]);
+        // What the background freshness fetch leaves behind on the source.
+        run(
+            &source,
+            &["update-ref", "refs/remotes/origin/main", &moved_base],
+        );
 
         // A staged-but-uncommitted edit in the clone shows up as a changed file.
         std::fs::write(clone.join("dirty.txt"), b"x").unwrap();
 
-        let meta = git_meta(&clone, "main", Some(&moved_base)).await;
+        let base = crate::git::resolve_base(&clone, &source, "main", None).await;
+        assert_eq!(base.tip.as_deref(), Some(moved_base.as_str()));
+        let meta = git_meta(&clone, &base).await;
         assert_eq!(meta.base, "main");
         assert_eq!(meta.behind, Some(2), "base moved two commits ahead");
         assert!(meta.files.iter().any(|p| p == "dirty.txt"));
 
-        // No base SHA → unknown behind, files still resolve.
-        let meta_none = git_meta(&clone, "main", None).await;
+        // Unresolvable base → unknown behind, files still resolve.
+        let unknown = crate::git::resolve_base(&clone, &source, "no-such-base", None).await;
+        assert_eq!(unknown.tip, None);
+        let meta_none = git_meta(&clone, &unknown).await;
         assert_eq!(meta_none.behind, None);
         assert!(meta_none.files.iter().any(|p| p == "dirty.txt"));
     }

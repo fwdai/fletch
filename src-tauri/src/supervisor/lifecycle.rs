@@ -799,20 +799,14 @@ impl Supervisor {
         rpc::ensure_mailbox(&rpc_dir)?;
         // Base branch for the git dispatcher — the branch the agent was
         // forked from, same default the manual PR action uses.
-        let base_branch = primary
-            .parent_branch
-            .clone()
-            .unwrap_or_else(|| "main".to_string());
+        let base_branch = primary.base_branch().await;
         // Every tracked checkout is addressable by its subdir via `args.repo`;
         // the primary stays the default when the arg is absent, so single-repo
         // agents (and old prompts) behave exactly as before.
         let mut repo_targets = Vec::new();
         for r in &record.repos {
             let checkout = r.checkout_path(agent_id)?;
-            let base = r
-                .parent_branch
-                .clone()
-                .unwrap_or_else(|| "main".to_string());
+            let base = r.base_branch().await;
             // `r.branch` is the agent's own work branch on this checkout, recorded
             // when the host materialized it. Threaded here so a force push is
             // fenced to it; `None` until the branch exists and this dispatcher is
@@ -896,21 +890,23 @@ impl Supervisor {
             build_activity(&record, effective_fresh),
         );
 
-        let agent = self.spawn_agent_process(
-            app,
-            &agent_id_str,
-            &record,
-            ProcessLaunch {
-                cwd,
-                sandbox_root,
-                rpc_dir: rpc_dir.clone(),
-                session_id,
-                per_turn,
-                effective_fresh,
-                my_gen,
-                blackboard,
-            },
-        )?;
+        let agent = self
+            .spawn_agent_process(
+                app,
+                &agent_id_str,
+                &record,
+                ProcessLaunch {
+                    cwd,
+                    sandbox_root,
+                    rpc_dir: rpc_dir.clone(),
+                    session_id,
+                    per_turn,
+                    effective_fresh,
+                    my_gen,
+                    blackboard,
+                },
+            )
+            .await?;
 
         self.agents
             .lock()
@@ -987,7 +983,7 @@ impl Supervisor {
     /// Spawn the agent's child process, dispatching on provider class
     /// (per-turn vs. claude) and view (Native PTY vs. Custom managed/exec).
     /// Returns the live `Agent` handle for the supervisor to track.
-    fn spawn_agent_process(
+    async fn spawn_agent_process(
         self: &Arc<Self>,
         app: &AppHandle,
         agent_id: &str,
@@ -1038,18 +1034,18 @@ impl Supervisor {
         // heads-up so the agent can warn the user its starting point may be
         // behind (see `spawn_agent`). Keyed on the primary repo's base — the one
         // the user picked and the one the flag was set for.
-        let stale_note = self
+        let stale_primary = self
             .stale_base
             .lock()
             .contains(agent_id)
-            .then(|| {
-                record
-                    .repos
-                    .first()
-                    .and_then(|r| r.parent_branch.as_deref())
-            })
-            .flatten()
-            .map(crate::instructions::stale_base_note);
+            .then(|| record.repos.first())
+            .flatten();
+        let stale_note = match stale_primary {
+            Some(primary) => Some(crate::instructions::stale_base_note(
+                &primary.base_branch().await,
+            )),
+            None => None,
+        };
         // Which env keys reach app-run processes vs. exist but were withheld —
         // key names only, never values (see `run_env`; a value in the
         // instructions would defeat the membrane). Keyed on the primary repo,

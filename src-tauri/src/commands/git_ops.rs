@@ -144,12 +144,8 @@ pub async fn rebase_agent(
     subdir: Option<String>,
 ) -> Result<()> {
     let (repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    // `parent_branch` is always recorded at spawn now; the fallback only covers
-    // rows written before that, and resolves the repo's real default rather than
-    // assuming `"main"`.
-    let base = match repo.parent_branch.as_deref() {
-        Some(b) => b.to_string(),
-        None => git::default_branch(&repo.repo_path).await,
-    };
+    // Onto the base's resolved tip, not its name: the clone's local
+    // `refs/heads/<base>` is a stale snapshot from clone time.
+    let base = repo.resolve_base(&checkout).await;
     git::rebase_onto(&checkout, &base).await
 }

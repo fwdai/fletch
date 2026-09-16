@@ -132,8 +132,8 @@ pub(crate) async fn create_pr_impl(
     subdir: Option<&str>,
 ) -> Result<PrState> {
     let (repo, checkout) = agent_repo_checkout(supervisor, &agent_id, subdir)?;
-    let base = repo.parent_branch.as_deref().unwrap_or("main");
-    let pr = gh::pr_create(&checkout, title, body, base).await?;
+    let base = repo.base_branch().await;
+    let pr = gh::pr_create(&checkout, title, body, &base).await?;
     crate::telemetry::track("pr_opened", serde_json::json!({ "source": "manual" }));
     // Bind the PR to this agent (number + state snapshot) so later lookups
     // don't rely on the (recyclable) branch name. A failure here isn't fatal —

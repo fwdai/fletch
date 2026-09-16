@@ -3,6 +3,7 @@
 //! Kept deliberately minimal — the v1 supervisor only needs to add a
 //! worktree on a fresh branch and remove it later.
 
+mod base;
 mod branch;
 mod cmd;
 mod diff;
@@ -11,6 +12,7 @@ pub(crate) mod hardening;
 mod transport;
 mod worktree;
 
+pub use base::*;
 pub use branch::*;
 pub(crate) use cmd::*;
 pub use diff::*;
