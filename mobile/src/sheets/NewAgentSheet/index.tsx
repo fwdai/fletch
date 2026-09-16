@@ -1,5 +1,6 @@
 import { Icon } from "@desktop/components/Icon";
 import { useCallback, useEffect, useState } from "react";
+import { useAttachments } from "../../attachments";
 import { PickerSheet, ProviderMark, Sheet, Swatch } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { modelLabel, providerLabel } from "../../lib/agents";
@@ -42,8 +43,10 @@ export function NewAgentSheet({
   const [picker, setPicker] = useState<Picker>(null);
   const [starting, setStarting] = useState(false);
   // A live mic holds the Start button: the words are still on their way into
-  // the draft, and spawning now would send it without them.
+  // the draft, and spawning now would send it without them. A file still
+  // uploading holds it for the same reason.
   const [dictating, setDictating] = useState(false);
+  const attachments = useAttachments();
 
   const project = projects.find((p) => p.project_id === pid) ?? projects[0];
 
@@ -91,8 +94,11 @@ export function NewAgentSheet({
 
   const chosenBase = base ?? defaultBase;
   const providerModels = modelsFor(models, provider);
+  // Text or a file, not necessarily both: a screenshot can be the whole brief.
+  const hasDraft = prompt.trim().length > 0 || attachments.paths.length > 0;
+  const held = starting || dictating || attachments.uploading;
   const start = () => {
-    if (!prompt.trim() || starting || dictating) return;
+    if (!hasDraft || held) return;
     setStarting(true);
     clearError();
     void spawn({
@@ -102,11 +108,15 @@ export function NewAgentSheet({
       effort,
       base: chosenBase,
       prompt: prompt.trim(),
+      attachments: attachments.paths,
       name,
     })
       // Only a spawn that actually started the agent has consumed the prompt.
       // A failed one keeps it, so the button below can just be pressed again.
-      .then(() => setPrompt(""), ignore)
+      .then(() => {
+        setPrompt("");
+        attachments.clear();
+      }, ignore)
       .finally(() => setStarting(false));
   };
 
@@ -126,7 +136,7 @@ export function NewAgentSheet({
           <button
             type="button"
             className="btn primary block"
-            disabled={!prompt.trim() || starting || dictating}
+            disabled={!hasDraft || held}
             onClick={start}
           >
             <Icon name="play" size={15} />
@@ -163,7 +173,12 @@ export function NewAgentSheet({
           </button>
           .
         </p>
-        <PromptField value={prompt} onChange={setPrompt} onDictating={setDictating}>
+        <PromptField
+          value={prompt}
+          onChange={setPrompt}
+          onDictating={setDictating}
+          attachments={attachments}
+        >
           <button type="button" className="chip runner" onClick={() => setPicker("runner")}>
             <ProviderMark id={provider} />
             <span>{providerLabel(provider)}</span>

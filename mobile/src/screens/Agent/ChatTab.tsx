@@ -2,6 +2,7 @@ import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { type MutableRefObject, useMemo } from "react";
 import { applyPolicy, type ChatItem, getAdapter } from "../../adapters";
+import { SentChips } from "../../attachments";
 import { Md } from "../../components/Md";
 import { isBusy, providerLabel } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
@@ -44,9 +45,19 @@ function toBlocks(items: ChatItem[]): Block[] {
 function Item({ item }: { item: ChatItem }) {
   switch (item.kind) {
     case "user_message":
-      return <div className="msg-user rise">{item.text}</div>;
+      return (
+        <div className="msg-user rise">
+          {item.text}
+          <SentChips paths={item.attachments} />
+        </div>
+      );
     case "queued_message":
-      return <div className="msg-user queued rise">{item.text}</div>;
+      return (
+        <div className="msg-user queued rise">
+          {item.text}
+          <SentChips paths={item.attachments} />
+        </div>
+      );
     case "agent_message":
       return (
         <div className="msg-text rise">

@@ -492,6 +492,72 @@
     box-shadow: none;
   }
 }
+/* Staged attachments: one chip per file between the field and the footer,
+   spinning while its upload is still on the way to the Mac. */
+.cmp-atts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 6px;
+}
+.att {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  max-width: 200px;
+  padding: 0 6px 0 9px;
+  border-radius: 9px;
+  background: var(--bg-3);
+  border: 1px solid var(--bd-soft);
+  color: var(--fg-1);
+  font-size: 12.5px;
+}
+.att > svg {
+  flex-shrink: 0;
+  color: var(--fg-2);
+}
+.att.up {
+  opacity: 0.72;
+}
+.att.up > svg:first-child {
+  animation: spin 1s linear infinite;
+}
+.att .nm {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.att .rm {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.att .rm:active {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+/* Read-only chips on a sent bubble. No padding of their own — the bubble's. */
+.msg-user .atts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.msg-user .atts:first-child {
+  margin-top: 0;
+}
+.msg-user .att {
+  height: 26px;
+  padding-right: 9px;
+  background: var(--bg-3);
+}
 /* Error banner: one line that expands above the footer, and collapses. */
 .cmp-banner {
   display: grid;
@@ -576,6 +642,22 @@
 }
 .cmp-row .mdl .sep {
   color: var(--fg-3);
+}
+/* Insert actions beside the model chip: the attach control, a neutral disc
+   the size of the chip's height. */
+.cmp-row .act {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--bg-3);
+  color: var(--fg-1);
+}
+.cmp-row .act:active {
+  background: oklch(from var(--bg-3) calc(l + 0.04) c h);
 }
 /* Voice row: ✕ cancel, the waveform + clock, or the transcribing label. */
 .m-cancel {

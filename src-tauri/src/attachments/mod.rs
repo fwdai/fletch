@@ -17,6 +17,13 @@
 //! root) and is swept when the workspace is torn down
 //! (`remove_agent_dir` → `remove_dir_all`), so a sent attachment's lifetime is
 //! the workspace's. Non-staged paths pass through untouched.
+//!
+//! A paired phone stages the same way, in chunks over the remote protocol
+//! ([`remote`]): its files have no path on this Mac at all, so they are written
+//! into the staging area as they arrive and reach the agent through the very
+//! same `adopt` at send time.
+
+pub mod remote;
 
 use std::path::{Path, PathBuf};
 
@@ -36,8 +43,21 @@ const STAGING_SUBDIR: &str = "attachments";
 pub const WORKSPACE_ATTACHMENTS_DIR: &str = ".fletch-attachments";
 
 /// Root under the app-data dir where the composer stages pasted attachments.
-fn staging_root() -> PathBuf {
+pub(crate) fn staging_root() -> PathBuf {
     crate::data_dir().join(STAGING_SUBDIR)
+}
+
+/// The display filename a caller supplied, reduced to its last component so a
+/// path-shaped name (`../fletch.db`, `/etc/passwd`) can only ever name a file
+/// inside the staging dir it is written to. Empty or all-separator input falls
+/// back to `fallback`.
+pub(crate) fn sanitize_name(name: &str, fallback: &str) -> String {
+    Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 /// Where adopted attachments live for one agent:

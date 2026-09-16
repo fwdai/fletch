@@ -123,6 +123,15 @@ export function createApi(client: RemoteClient) {
       call<null>("dictation_audio", { session, rate, pcm }),
     dictationEnd: (session: string) => call<{ text: string }>("dictation_end", { session }),
     dictationCancel: (session: string) => call<null>("dictation_cancel", { session }),
+
+    /** Remote-only (docs/remote-protocol.md, "Attachments"): a file's bytes,
+     *  in base64 slices, staged on the Mac where a desktop paste lands. The
+     *  `path` from `attachmentEnd` goes in `sendUserMessage`'s attachments. */
+    attachmentBegin: (name: string) => call<{ upload: string }>("attachment_begin", { name }),
+    attachmentChunk: (upload: string, data: string) =>
+      call<null>("attachment_chunk", { upload, data }),
+    attachmentEnd: (upload: string) => call<{ path: string }>("attachment_end", { upload }),
+    attachmentCancel: (upload: string) => call<null>("attachment_cancel", { upload }),
   };
 }
 

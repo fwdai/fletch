@@ -5,7 +5,7 @@
 
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
-import type { SessionRecord } from "@desktop/api/types/session";
+import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import { parseRepoSpec } from "@desktop/util/repoSpec";
 import { baseName, childPath, parentPath } from "../../lib/paths";
 import type { Socket, SocketFactory } from "../socket";
@@ -33,6 +33,10 @@ export interface MockOptions {
 interface MockState {
   workspace: Workspace;
   records: Record<string, SessionRecord[]>;
+  /** Fletch-origin metadata per sent turn (`session_user_turns`), which the
+   *  phone overlays on the rebuilt transcript — it is where a rebuilt bubble
+   *  gets its attachments and typed text back from. */
+  turns: Record<string, UserTurn[]>;
   pendingToolUse: Record<string, string>;
   nextPrNumber: number;
   /** Mutable, because cloning creates a directory the next clone must trip
@@ -61,6 +65,8 @@ export class MockHost {
   private seq = 1000;
   /** Open dictation sessions → chunks received. */
   private dictation = new Map<string, number>();
+  /** Open attachment uploads → the name they will be staged under. */
+  private uploads = new Map<string, string>();
 
   constructor(
     private readonly emit: (frame: ResponseFrame | EventFrame) => void,
@@ -69,6 +75,7 @@ export class MockHost {
     this.state = {
       workspace: structuredClone(fx.workspace),
       records: structuredClone(fx.records),
+      turns: structuredClone(fx.userTurns),
       pendingToolUse: { pamukkale: fx.PENDING_REQUEST_ID },
       nextPrNumber: 649,
       filesystem: structuredClone(fx.filesystem),
@@ -293,25 +300,47 @@ export class MockHost {
           agents: [record, ...this.state.workspace.agents],
         };
         this.state.records[name] = [];
+        this.state.turns[name] = [];
         // The phone waits for `spawning` to clear before sending the prompt.
         this.later(() => this.setStatus(name, "idle"), 900);
         return record;
       }
       case "send_user_message": {
         const text = String(args.text ?? "");
+        const attachments = Array.isArray(args.attachments) ? (args.attachments as string[]) : [];
         // Echoed to every client before delivery, as the host does; the sender
         // recognizes its own turn id and does not draw the bubble twice.
         this.event("turn:sent", {
           agent_id: id,
           turn_id: String(args.turnId ?? ""),
           text,
-          attachments: [],
+          attachments,
           follow_up: this.agent(id).status === "running",
         });
+        // The transcript holds what the runner sent: the text, padded with a
+        // reference line per attachment.
+        const sent = [text, ...attachments.map((p) => `Attached file: ${p}`)]
+          .filter(Boolean)
+          .join("\n");
         this.appendRecord(id, this.agent(id).provider, {
           type: "user",
-          message: { role: "user", content: [{ type: "text", text }] },
+          message: { role: "user", content: [{ type: "text", text: sent }] },
         });
+        // The turn row, matched to the record it just wrote — as the host's
+        // turn-end ingest stamps it — so the rebuilt bubble reads like the
+        // optimistic one: the typed text, with the attachments hung on it.
+        this.state.turns[id] = [
+          ...(this.state.turns[id] ?? []),
+          {
+            turn_id: String(args.turnId ?? ""),
+            seq: this.seq,
+            text,
+            attachments,
+            native_id: `n${this.seq}`,
+            started_at: Date.now(),
+            ended_at: null,
+          },
+        ];
         this.patchAgent(id, { task: this.agent(id).task || text });
         this.event("session:records-appended", { agent_id: id });
         this.later(() => this.runTurn(id, text), 500);
@@ -367,7 +396,7 @@ export class MockHost {
       case "read_session_records":
         return this.state.records[id] ?? [];
       case "read_user_turns":
-        return fx.userTurns[id] ?? [];
+        return this.state.turns[id] ?? [];
       case "sync_session":
         return null;
       case "get_git_state":
@@ -459,6 +488,32 @@ export class MockHost {
       }
       case "dictation_cancel":
         this.dictation.delete(String(args.session ?? ""));
+        return null;
+      // Attachments: no disk behind a browser, so the mock only keeps the
+      // name and hands back the path the real host would stage it at —
+      // enough to exercise pick → chips → send with paths on the message.
+      case "attachment_begin": {
+        const upload = `up-${this.uploads.size + 1}`;
+        this.uploads.set(upload, baseName(String(args.name ?? "attachment")));
+        return { upload };
+      }
+      case "attachment_chunk": {
+        if (!this.uploads.has(String(args.upload ?? ""))) {
+          throw new Error("attachment: unknown upload");
+        }
+        return null;
+      }
+      case "attachment_end": {
+        const upload = String(args.upload ?? "");
+        const name = this.uploads.get(upload);
+        if (name === undefined) throw new Error("attachment: unknown upload");
+        this.uploads.delete(upload);
+        return {
+          path: `${fx.HOME}/Library/Application Support/sh.fletch.app/attachments/${upload}/${name}`,
+        };
+      }
+      case "attachment_cancel":
+        this.uploads.delete(String(args.upload ?? ""));
         return null;
       case "list_dir":
         return this.listDir(String(args.path ?? "~"));

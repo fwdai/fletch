@@ -109,6 +109,35 @@ describe("event folding", () => {
     expect(mine).toHaveLength(1);
     expect((state().logs.kamakura ?? []).length).toBe(before + 1);
   });
+
+  it("sends attachments alone, carries them on the bubble, and the echo still draws once", async () => {
+    await state().rebuildLog("kamakura");
+    const before = (state().logs.kamakura ?? []).length;
+    const send = vi.spyOn(api, "sendUserMessage");
+    const path = "/Users/alex/Library/Application Support/sh.fletch.app/attachments/up-1/shot.png";
+    try {
+      await state().send("kamakura", "", [path]);
+      expect(send).toHaveBeenCalledWith("kamakura", expect.any(String), "", [path]);
+    } finally {
+      send.mockRestore();
+    }
+    const mine = (state().logs.kamakura ?? []).filter(
+      (i) =>
+        (i.kind === "queued_message" || i.kind === "user_message") && i.attachments?.includes(path),
+    );
+    expect(mine).toHaveLength(1);
+    expect((state().logs.kamakura ?? []).length).toBe(before + 1);
+  });
+
+  it("a send with neither text nor attachments is a no-op", async () => {
+    const send = vi.spyOn(api, "sendUserMessage");
+    try {
+      await state().send("kamakura", "   ", []);
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      send.mockRestore();
+    }
+  });
 });
 
 describe("transcripts through the desktop adapters", () => {
@@ -194,6 +223,32 @@ describe("spawn flow", () => {
         ).toBe(true),
       { timeout: 5000 },
     );
+  });
+
+  it("carries the sheet's attachments on the first message", async () => {
+    const send = vi.spyOn(api, "sendUserMessage");
+    const path = "/Users/alex/Library/Application Support/sh.fletch.app/attachments/up-2/spec.pdf";
+    try {
+      await state().spawn({
+        repoPath: state().workspace?.projects[0].path ?? "",
+        provider: "claude",
+        model: "claude-opus-5",
+        effort: "high",
+        base: "main",
+        prompt: "Implement what the attached spec describes",
+        attachments: [path],
+        name: "skye",
+      });
+      expect(send).toHaveBeenCalledWith(
+        "skye",
+        expect.any(String),
+        "Implement what the attached spec describes",
+        [path],
+      );
+    } finally {
+      send.mockRestore();
+    }
+    expect(state().logs.skye?.[0]).toMatchObject({ kind: "user_message", attachments: [path] });
   });
 
   it("allocates a name itself only when the sheet had none", async () => {
