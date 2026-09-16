@@ -17,19 +17,6 @@ pub async fn diff_shortstat(repo: &Path, from_sha: &str, to_sha: &str) -> Result
     Ok(parse_shortstat(&line))
 }
 
-/// Run `git diff --shortstat <base>` from a live checkout. This compares the
-/// current working tree, including uncommitted changes, against the base ref.
-pub async fn checkout_diff_shortstat(checkout: &Path, base_ref: &str) -> Result<(u32, u32)> {
-    let out = run_git(
-        checkout,
-        &["diff", "--shortstat", base_ref],
-        &format!("diff --shortstat {base_ref}"),
-    )
-    .await?;
-    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok(parse_shortstat(&line))
-}
-
 /// Per-file additions/deletions for `git diff --numstat <from>..<to>` in `repo`.
 /// Binary files (numstat prints `-`/`-`) report zero counts. Lists the files a
 /// ferried ref changed versus the run base for the review surface's file list.

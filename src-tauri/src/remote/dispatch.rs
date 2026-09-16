@@ -66,7 +66,7 @@ pub const OPS: &[&str] = &[
     "read_user_turns",
     "sync_session",
     "get_git_state",
-    "get_agent_diff_stats",
+    "get_all_shortstats",
     "list_checkout_tree",
     "read_checkout_file",
     "get_file_diff",
@@ -252,10 +252,7 @@ impl Dispatch for SupervisorDispatch {
                     )
                 }
 
-                "get_agent_diff_stats" => {
-                    let a: AgentArgs = parse(args)?;
-                    res(crate::commands::get_agent_diff_stats_impl(sup, a.agent_id).await)
-                }
+                "get_all_shortstats" => res(crate::commands::get_all_shortstats_impl(sup).await),
 
                 "list_checkout_tree" => {
                     let a: AgentArgs = parse(args)?;

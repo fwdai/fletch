@@ -161,14 +161,29 @@ describe("transcripts through the desktop adapters", () => {
 });
 
 describe("git and PR state", () => {
-  it("loads git, diff stats and the PR lazily per agent", async () => {
+  it("loads git state and the PR lazily per agent", async () => {
     await state().loadGit("kamakura");
     expect(state().gitStates.kamakura?.branch).toBe("fix/dictation-followups");
     expect(state().prStates.kamakura?.number).toBe(642);
     expect(state().prChecks.kamakura?.passed).toBe(14);
     await state().loadGit("arabia");
     expect(state().gitStates.arabia?.files).toHaveLength(3);
-    expect(state().diffStats.arabia?.additions).toBe(136);
+  });
+
+  it("polls working-tree stats for the whole fleet, and replaces them wholesale", async () => {
+    await state().loadShortstats();
+    expect(state().shortstats.arabia?.additions).toBe(136);
+    // kamakura's tree is clean, so the host never names it.
+    expect(state().shortstats.kamakura).toBeUndefined();
+    // A later poll that drops an agent drops its numbers with it, rather than
+    // leaving a stale count on a row whose work has been committed away.
+    const spy = vi
+      .spyOn(api, "getAllShortstats")
+      .mockResolvedValue({ pamukkale: { additions: 42, deletions: 17, file_count: 1 } });
+    await state().loadShortstats();
+    expect(state().shortstats.arabia).toBeUndefined();
+    expect(state().shortstats.pamukkale?.additions).toBe(42);
+    spy.mockRestore();
   });
 
   it("reads the checkout tree", async () => {

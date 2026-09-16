@@ -74,6 +74,13 @@ pub(crate) async fn get_git_state_impl(
 pub async fn get_all_shortstats(
     supervisor: State<'_, Arc<Supervisor>>,
 ) -> Result<std::collections::HashMap<String, ShortStats>> {
+    get_all_shortstats_impl(&supervisor).await
+}
+
+/// Shared with the remote dispatcher.
+pub(crate) async fn get_all_shortstats_impl(
+    supervisor: &Supervisor,
+) -> Result<std::collections::HashMap<String, ShortStats>> {
     let workspace = match supervisor.workspace.current() {
         Some(w) => w,
         None => return Ok(Default::default()),
@@ -83,7 +90,7 @@ pub async fn get_all_shortstats(
         // Omitted while provisioning for the same reason as archived agents:
         // there is nothing to count yet, and counting a half-written clone
         // would flash a phantom file count on the badge.
-        if agent.archive.is_some() || checkout_pending(&supervisor, &agent.id) {
+        if agent.archive.is_some() || checkout_pending(supervisor, &agent.id) {
             continue;
         }
         // One shortstat per checkout; a multi-repo agent's badge shows the

@@ -1,6 +1,6 @@
 import { useCallback, useEffect } from "react";
 import { Stack } from "./components/Stack";
-import { useSystemTheme } from "./lib/hooks";
+import { usePoll, useSystemTheme } from "./lib/hooks";
 import { AgentScreen } from "./screens/Agent";
 import { DiffScreen } from "./screens/Diff";
 import { FileScreen } from "./screens/File";
@@ -48,11 +48,16 @@ export function App() {
   const closeSheet = useStore((s) => s.closeSheet);
   // Paired means "we hold the host's key": there is no other credential.
   const hostKey = useStore((s) => s.hostKey);
+  const connected = useStore((s) => s.connection === "connected");
+  const loadShortstats = useStore((s) => s.loadShortstats);
 
   useEffect(() => {
     void init();
   }, [init]);
   useSystemTheme(useCallback((t) => setSystemTheme(t), [setSystemTheme]));
+  // One fleet-wide poll for the whole app, like the desktop's — every agent row
+  // on every screen reads the map it fills, so no row polls for itself.
+  usePoll(loadShortstats, 10_000, connected);
 
   const resolved = theme === "system" ? systemTheme : theme;
   const props = (name: string) => (sheet?.name === name ? sheet.props : {});

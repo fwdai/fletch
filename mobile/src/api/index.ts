@@ -10,7 +10,7 @@ import type {
   DiffBaseMode,
   DirListing,
 } from "@desktop/api/types/checkout";
-import type { DiffStats, GitState } from "@desktop/api/types/git";
+import type { GitState, ShortStats } from "@desktop/api/types/git";
 import type { PrChecks, PrLive, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
@@ -76,7 +76,9 @@ export function createApi(client: RemoteClient) {
     syncSession: (agentId: string) => call<null>("sync_session", { agentId }),
     getGitState: (agentId: string, subdir?: string) =>
       call<GitState | null>("get_git_state", { agentId, subdir }),
-    getAgentDiffStats: (agentId: string) => call<DiffStats>("get_agent_diff_stats", { agentId }),
+    /** Uncommitted working-tree stats for the whole fleet, keyed by agent id —
+     *  the same fleet-wide poll the desktop sidebar reads. */
+    getAllShortstats: () => call<Record<string, ShortStats>>("get_all_shortstats"),
     listCheckoutTree: (agentId: string) => call<CheckoutFile[]>("list_checkout_tree", { agentId }),
     readCheckoutFile: (agentId: string, path: string, baseMode?: DiffBaseMode) =>
       call<CheckoutFileContents>("read_checkout_file", { agentId, path, baseMode }),

@@ -401,10 +401,22 @@ export class MockHost {
         return null;
       case "get_git_state":
         return fx.gitStates[id] ?? null;
-      case "get_agent_diff_stats": {
-        const git = fx.gitStates[id];
-        return { additions: git?.additions ?? 0, deletions: git?.deletions ?? 0 };
-      }
+      // Working-tree stats for the whole fleet, as the host reports them: an
+      // agent whose tree is clean contributes nothing to count, so it is simply
+      // absent from the map.
+      case "get_all_shortstats":
+        return Object.fromEntries(
+          Object.entries(fx.gitStates)
+            .filter(([, git]) => git.files.length > 0)
+            .map(([agentId, git]) => [
+              agentId,
+              {
+                additions: git.additions,
+                deletions: git.deletions,
+                file_count: git.files.length,
+              },
+            ]),
+        );
       case "list_checkout_tree":
         return fx.checkoutTree;
       case "read_checkout_file":
