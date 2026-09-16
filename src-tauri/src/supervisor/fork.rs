@@ -142,7 +142,7 @@ impl Supervisor {
         // parent's own base branch (so the fork starts where the parent did);
         // `Carry` additionally overlays the parent's current working tree after
         // provisioning, so its uncommitted work reads as the fork's diff.
-        let fork_base = primary.parent_branch.clone();
+        let fork_base = Some(primary.base_branch().await);
         let carry_from = match code {
             ForkCode::Clean => None,
             ForkCode::Carry => Some(primary.checkout_path(parent_id)?),

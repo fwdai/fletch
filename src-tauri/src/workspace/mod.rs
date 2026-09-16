@@ -138,6 +138,33 @@ impl TrackedRepo {
     pub fn is_adopted(&self) -> bool {
         self.adopted_checkout.is_some()
     }
+
+    /// The name of the branch this checkout is based on — the only way to spell
+    /// it. `parent_branch` is recorded at spawn for every repo tracked since the
+    /// spawn path started resolving a default; the fallback covers older rows,
+    /// and asks the repo what its default actually is rather than assuming
+    /// `"main"` (guessing wrong there reports a `master` repo as unmeasurably
+    /// behind, and opens PRs against a branch that doesn't exist).
+    pub async fn base_branch(&self) -> String {
+        match &self.parent_branch {
+            Some(base) => base.clone(),
+            None => crate::git::default_branch(&self.repo_path).await,
+        }
+    }
+
+    /// This checkout's base, resolved into commits — see
+    /// [`crate::git::resolve_base`]. Everything that measures a checkout (ahead
+    /// /behind, diffs, tree status, archive stats) goes through here, so the
+    /// remote-tracking-first ladder lives in exactly one place.
+    pub async fn resolve_base(&self, checkout: &Path) -> crate::git::ResolvedBase {
+        crate::git::resolve_base(
+            checkout,
+            &self.repo_path,
+            &self.base_branch().await,
+            self.base_sha.as_deref(),
+        )
+        .await
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

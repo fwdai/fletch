@@ -14,26 +14,33 @@ use crate::git_state::{self, FileStatus, StatusKind};
 use crate::supervisor::Supervisor;
 use crate::workspace::{AgentStatus, TrackedRepo};
 
-/// The ref a checkout's *committed* changes are diffed against: the immutable
-/// fork-point SHA captured at spawn when known, else the parent branch name
-/// (pre-migration agents), which may have drifted from the actual fork point.
-/// PR/merge/rebase bases and ahead/behind use `parent_branch` directly instead,
-/// since those need a live branch name, not a commit.
-pub(super) fn diff_base(repo: &TrackedRepo) -> Option<String> {
-    repo.base_sha.clone().or_else(|| repo.parent_branch.clone())
-}
-
 /// Which ref the Code panel's diff surfaces measure against — the user's
 /// persisted base switch. `Fork` is everything the agent changed in this
-/// workspace (vs [`diff_base`]); `Head` is only uncommitted work (vs the
-/// checkout's latest commit), matching the base the file lists already use
-/// (`git_state::query` reads status/numstat vs HEAD).
+/// workspace (vs the checkout's fork point — see [`git::resolve_base`]); `Head`
+/// is only uncommitted work (vs the checkout's latest commit), matching the base
+/// the file lists already use (`git_state::query` reads status/numstat vs HEAD).
 #[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiffBaseMode {
     #[default]
     Fork,
     Head,
+}
+
+impl DiffBaseMode {
+    /// The ref the per-file diff surfaces read against. `Fork` degrades to
+    /// `Head` when the fork point can't be resolved in this checkout: showing
+    /// only uncommitted work is a true, if partial, answer, where falling back
+    /// to a branch name would invent changes the agent never made.
+    fn diff_ref(self, base: &git::ResolvedBase) -> String {
+        match self {
+            DiffBaseMode::Head => "HEAD".to_string(),
+            DiffBaseMode::Fork => base
+                .fork_point
+                .clone()
+                .unwrap_or_else(|| "HEAD".to_string()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -308,13 +315,15 @@ pub(super) fn repo_branch(repo: &TrackedRepo) -> Result<&str> {
         .ok_or_else(|| Error::Other("agent has no branch yet".into()))
 }
 
-/// Resolve the agent's primary checkout and its parent ref (the fork point
-/// used for file-tree / per-file diffs).
-fn primary_checkout(supervisor: &Supervisor, agent_id: &str) -> Result<(PathBuf, String)> {
+/// Resolve the agent's primary checkout and its base (the fork point used for
+/// file-tree / per-file diffs).
+async fn primary_checkout(
+    supervisor: &Supervisor,
+    agent_id: &str,
+) -> Result<(PathBuf, git::ResolvedBase)> {
     let (repo, checkout) = primary_repo_checkout(supervisor, agent_id)?;
-    // File tree / per-file diffs compare committed work against the fork point.
-    let parent = diff_base(&repo).unwrap_or_else(|| "main".to_string());
-    Ok((checkout, parent))
+    let base = repo.resolve_base(&checkout).await;
+    Ok((checkout, base))
 }
 
 /// Split a repo-prefixed Code-tab path (`"<subdir>/<rel>"`) into its tracked
@@ -340,35 +349,35 @@ fn split_repo_path<'a>(repos: &'a [TrackedRepo], path: &str) -> Result<(&'a Trac
 }
 
 /// Resolve a Code-tab path to the checkout it lives in: `(checkout root,
-/// parent ref, checkout-relative path)`. Single-repo agents use the primary
+/// resolved base, checkout-relative path)`. Single-repo agents use the primary
 /// checkout with the path unchanged — the exact legacy behavior. For a
 /// multi-repo agent every tree path is prefixed with the repo's `subdir`
 /// (see `list_checkout_tree`), so the first segment picks the checkout.
-fn checkout_scope_for_path(
+async fn checkout_scope_for_path(
     supervisor: &Supervisor,
     agent_id: &str,
     path: &str,
-) -> Result<(PathBuf, String, String)> {
+) -> Result<(PathBuf, git::ResolvedBase, String)> {
     let record = supervisor.workspace.agent(agent_id)?;
     if record.repos.len() <= 1 {
-        let (checkout, parent) = primary_checkout(supervisor, agent_id)?;
-        return Ok((checkout, parent, path.to_string()));
+        let (checkout, base) = primary_checkout(supervisor, agent_id).await?;
+        return Ok((checkout, base, path.to_string()));
     }
     let (repo, rel) = split_repo_path(&record.repos, path)?;
     let checkout = repo.checkout_path(agent_id)?;
-    let parent = diff_base(repo).unwrap_or_else(|| "main".to_string());
-    Ok((checkout, parent, rel))
+    let base = repo.resolve_base(&checkout).await;
+    Ok((checkout, base, rel))
 }
 
 /// One checkout's file list (tracked + untracked, deleted dropped), each
-/// tagged with its git status vs `parent`. `prefix` (a repo's subdir) is
+/// tagged with its git status vs `base`. `prefix` (a repo's subdir) is
 /// prepended to every path for multi-repo agents' virtual roots.
 async fn checkout_tree_files(
     checkout: &Path,
-    parent: &str,
+    base: &git::ResolvedBase,
     prefix: Option<&str>,
 ) -> Vec<CheckoutFile> {
-    let state = git_state::query(checkout, parent).await.ok();
+    let state = git_state::query(checkout, base).await.ok();
     let status_for = |path: &str| -> Option<&FileStatus> {
         state.as_ref()?.files.iter().find(|f| f.path == path)
     };
@@ -440,8 +449,8 @@ pub(crate) async fn list_checkout_tree_impl(
         return Err(Error::Other("workspace is still being provisioned".into()));
     }
     if record.repos.len() <= 1 {
-        let (checkout, parent) = primary_checkout(supervisor, agent_id)?;
-        return Ok(checkout_tree_files(&checkout, &parent, None).await);
+        let (checkout, base) = primary_checkout(supervisor, agent_id).await?;
+        return Ok(checkout_tree_files(&checkout, &base, None).await);
     }
     let mut out = Vec::new();
     for repo in &record.repos {
@@ -450,8 +459,8 @@ pub(crate) async fn list_checkout_tree_impl(
         let Ok(checkout) = repo.checkout_path(agent_id) else {
             continue;
         };
-        let parent = diff_base(repo).unwrap_or_else(|| "main".to_string());
-        out.extend(checkout_tree_files(&checkout, &parent, Some(&repo.subdir)).await);
+        let base = repo.resolve_base(&checkout).await;
+        out.extend(checkout_tree_files(&checkout, &base, Some(&repo.subdir)).await);
     }
     Ok(out)
 }
@@ -530,15 +539,12 @@ pub(crate) async fn read_checkout_file_impl(
     path: &str,
     base_mode: Option<DiffBaseMode>,
 ) -> Result<CheckoutFileContents> {
-    let (checkout, parent, path) = checkout_scope_for_path(supervisor, agent_id, path)?;
-    let parent = match base_mode.unwrap_or_default() {
-        DiffBaseMode::Head => "HEAD".to_string(),
-        DiffBaseMode::Fork => parent,
-    };
+    let (checkout, base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let diff_ref = base_mode.unwrap_or_default().diff_ref(&base);
     let abs = safe_join(&checkout, &path)?;
     let lang = lang_for(&path);
 
-    let state = git_state::query(&checkout, &parent).await.ok();
+    let state = git_state::query(&checkout, &base).await.ok();
     let status = state
         .as_ref()
         .and_then(|s| s.files.iter().find(|f| f.path == path))
@@ -557,7 +563,7 @@ pub(crate) async fn read_checkout_file_impl(
     // Deleted by the agent: the file is gone from disk, so show its prior
     // contents from the parent ref (the design lets you re-create it).
     if status.as_deref() == Some("D") {
-        let text = git::show_file(&checkout, &parent, &path)
+        let text = git::show_file(&checkout, &diff_ref, &path)
             .await
             .unwrap_or_default();
         return Ok(empty(text, false, false));
@@ -576,7 +582,7 @@ pub(crate) async fn read_checkout_file_impl(
     let text = String::from_utf8_lossy(&bytes).into_owned();
 
     let (chg_add, chg_mod) = if matches!(status.as_deref(), Some("M") | Some("R")) {
-        git::file_changed_lines(&checkout, &parent, &path)
+        git::file_changed_lines(&checkout, &diff_ref, &path)
             .await
             .unwrap_or_default()
     } else {
@@ -614,12 +620,9 @@ pub(crate) async fn get_file_diff_impl(
     path: &str,
     base_mode: Option<DiffBaseMode>,
 ) -> Result<String> {
-    let (checkout, parent, path) = checkout_scope_for_path(supervisor, agent_id, path)?;
-    let parent = match base_mode.unwrap_or_default() {
-        DiffBaseMode::Head => "HEAD".to_string(),
-        DiffBaseMode::Fork => parent,
-    };
-    git::file_diff(&checkout, &parent, &path).await
+    let (checkout, base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let diff_ref = base_mode.unwrap_or_default().diff_ref(&base);
+    git::file_diff(&checkout, &diff_ref, &path).await
 }
 
 /// Overwrite a checkout file with new contents (the editor's Save / Revert).
@@ -630,7 +633,7 @@ pub async fn write_checkout_file(
     path: String,
     contents: String,
 ) -> Result<()> {
-    let (checkout, _parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
+    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
     let abs = safe_join(&checkout, &path)?;
     if let Some(dir) = abs.parent() {
         std::fs::create_dir_all(dir)?;
@@ -666,8 +669,9 @@ pub async fn rename_checkout_path(
     from: String,
     to: String,
 ) -> Result<()> {
-    let (checkout_from, _parent, from) = checkout_scope_for_path(&supervisor, &agent_id, &from)?;
-    let (checkout_to, _parent, to) = checkout_scope_for_path(&supervisor, &agent_id, &to)?;
+    let (checkout_from, _base, from) =
+        checkout_scope_for_path(&supervisor, &agent_id, &from).await?;
+    let (checkout_to, _base, to) = checkout_scope_for_path(&supervisor, &agent_id, &to).await?;
     let src = safe_join(&checkout_from, &from)?;
     let dst = resolve_new_path(&checkout_to, &to)?;
     std::fs::rename(&src, &dst)?;
@@ -683,7 +687,7 @@ pub async fn delete_checkout_path(
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (checkout, _parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
+    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
     let abs = safe_join(&checkout, &path)?;
     if abs.is_dir() {
         std::fs::remove_dir_all(&abs)?;
@@ -701,7 +705,7 @@ pub async fn create_checkout_file(
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (checkout, _parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
+    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
     let abs = resolve_new_path(&checkout, &path)?;
     std::fs::write(&abs, "")?;
     Ok(())
@@ -714,7 +718,7 @@ pub async fn create_checkout_dir(
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (checkout, _parent, path) = checkout_scope_for_path(&supervisor, &agent_id, &path)?;
+    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
     let abs = resolve_new_path(&checkout, &path)?;
     std::fs::create_dir_all(&abs)?;
     Ok(())
@@ -729,8 +733,9 @@ pub async fn copy_checkout_file(
     from: String,
     to: String,
 ) -> Result<()> {
-    let (checkout_from, _parent, from) = checkout_scope_for_path(&supervisor, &agent_id, &from)?;
-    let (checkout_to, _parent, to) = checkout_scope_for_path(&supervisor, &agent_id, &to)?;
+    let (checkout_from, _base, from) =
+        checkout_scope_for_path(&supervisor, &agent_id, &from).await?;
+    let (checkout_to, _base, to) = checkout_scope_for_path(&supervisor, &agent_id, &to).await?;
     let src = safe_join(&checkout_from, &from)?;
     let dst = resolve_new_path(&checkout_to, &to)?;
     std::fs::copy(&src, &dst)?;

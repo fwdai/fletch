@@ -161,29 +161,6 @@ pub async fn fetch_base(source_repo: &Path, base: &str) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a source repo's remote-tracking base tip
-/// (`refs/remotes/origin/<base>`) — the freshest base a `--shared` clone can
-/// measure staleness against, since the clone shares this repo's objects but
-/// not its refs. `None` when the ref is absent (no origin, or never fetched).
-pub async fn remote_base_sha(source_repo: &Path, base: &str) -> Option<String> {
-    let out = git_output(
-        source_repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/origin/{base}"),
-        ],
-    )
-    .await
-    .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!sha.is_empty()).then_some(sha)
-}
-
 /// Whether a branch named exactly `branch` exists on `origin` *right now*, asked
 /// over the wire with the app's token. `Some(false)` when no such branch is
 /// there; `None` when the question couldn't be answered at all (no remote,
@@ -193,10 +170,10 @@ pub async fn remote_base_sha(source_repo: &Path, base: &str) -> Option<String> {
 /// Exact, not pattern: a glob (`feat/*`) is reported absent even though git
 /// happily matches it, because the caller is validating a literal branch name.
 ///
-/// Deliberately not [`remote_base_sha`]: that reads the clone's own
-/// `refs/remotes/origin/<base>`, which reports any branch created since the last
-/// fetch as missing — fine for measuring staleness, wrong for a pre-flight check
-/// on a branch name a request just supplied.
+/// Deliberately not a ref lookup: reading `refs/remotes/origin/<branch>` (as
+/// [`super::resolve_base`] does) reports any branch created since the last fetch
+/// as missing — fine for measuring staleness, wrong for a pre-flight check on a
+/// branch name a request just supplied.
 pub async fn remote_branch_exists(checkout: &Path, branch: &str) -> Option<bool> {
     // Same reasoning as `push_head_to_branch`: this runs the transport, so a
     // steerable config in an agent-writable checkout is refused before git does.
@@ -243,11 +220,21 @@ pub async fn remote_branch_exists(checkout: &Path, branch: &str) -> Option<bool>
 /// panel action to bring the checkout up to date with its base branch when the
 /// base has moved ahead. Aborts the rebase on conflict so the checkout is never
 /// left mid-rebase — the caller surfaces the error.
-pub async fn rebase_onto(checkout: &Path, base: &str) -> Result<()> {
+pub async fn rebase_onto(checkout: &Path, base: &super::ResolvedBase) -> Result<()> {
+    // Onto the resolved tip commit, never the branch name: a clone's
+    // `refs/heads/<base>` is a stale snapshot, and rebasing onto it would replay
+    // the agent's work onto a commit the base left behind long ago.
+    let Some(tip) = base.tip.as_deref() else {
+        return Err(Error::Git(format!(
+            "base branch `{}` could not be resolved in this checkout — \
+             nothing to rebase onto",
+            base.name
+        )));
+    };
     // Rebasing rewrites commits, which needs a committer identity. Its
     // `pre-rebase`/`post-rewrite` hooks are neutralised at the spawn seam.
     let env = identity_env(checkout).await;
-    let out = git_output_env(checkout, &["rebase", base], &env).await?;
+    let out = git_output_env(checkout, &["rebase", tip], &env).await?;
     if !out.status.success() {
         let conflict = String::from_utf8_lossy(&out.stderr).trim().to_string();
         // Don't leave the checkout mid-rebase. `rebase --abort` checks out the
@@ -258,12 +245,16 @@ pub async fn rebase_onto(checkout: &Path, base: &str) -> Result<()> {
         // and reporting only the conflict.
         if let Err(abort_err) = run_git(checkout, &["rebase", "--abort"], "rebase --abort").await {
             return Err(Error::Git(format!(
-                "rebase onto {base} failed: {conflict}; the checkout is left \
+                "rebase onto {} failed: {conflict}; the checkout is left \
                  mid-rebase because cleanup also failed ({abort_err}) — run \
-                 `git rebase --abort` manually"
+                 `git rebase --abort` manually",
+                base.name
             )));
         }
-        return Err(Error::Git(format!("rebase onto {base} failed: {conflict}")));
+        return Err(Error::Git(format!(
+            "rebase onto {} failed: {conflict}",
+            base.name
+        )));
     }
     Ok(())
 }
@@ -543,7 +534,12 @@ mod tests {
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         // Rebase conflicts on a.txt → rebase_onto aborts internally and errs.
-        let err = rebase_onto(repo, &base).await.unwrap_err();
+        let resolved = super::super::ResolvedBase {
+            name: base.clone(),
+            tip: super::super::rev_parse(repo, &base).await.ok(),
+            fork_point: None,
+        };
+        let err = rebase_onto(repo, &resolved).await.unwrap_err();
         assert!(err.to_string().contains("rebase onto"), "got: {err}");
 
         // No workspace hook ran during any host-side step of the rebase.

@@ -14,18 +14,6 @@ use crate::supervisor::Supervisor;
 
 use super::files::{agent_repo_checkout_opt, checkout_pending};
 
-/// The base branch a checkout is measured against. Every repo tracked since the
-/// spawn path started resolving a default has one recorded; the fallback only
-/// covers older rows, and asks the repo what its default actually is rather than
-/// assuming `"main"` — guessing wrong there silently reports a `master` repo as
-/// unmeasurably behind.
-async fn base_branch(repo: &crate::workspace::TrackedRepo) -> String {
-    match &repo.parent_branch {
-        Some(base) => base.clone(),
-        None => git::default_branch(&repo.repo_path).await,
-    }
-}
-
 /// Returns git state for one of the agent's checkouts — the repo whose
 /// `subdir` matches, or the primary when none is given.
 #[tauri::command]
@@ -52,8 +40,8 @@ pub(crate) async fn get_git_state_impl(
     let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
         return Ok(None);
     };
-    let parent = base_branch(&repo).await;
-    let state = git_state::query(&checkout, &parent).await?;
+    let base = repo.resolve_base(&checkout).await;
+    let state = git_state::query(&checkout, &base).await?;
     Ok(Some(state))
 }
 
@@ -127,12 +115,11 @@ pub(crate) async fn get_all_shortstats_impl(
 /// hints.
 ///
 /// Purely local git — no network. Each checkout's `behind` is measured against
-/// the base tip resolved from its SOURCE repo's `refs/remotes/origin/<base>`,
-/// which the slow `refresh_base_freshness` poll advances; the clone shares the
-/// source's object store, so the moved base is reachable there without the clone
-/// fetching (see `git_state::git_meta`). Without a GitHub connection the source
-/// ref never advances, so `behind` stays unknown/zero and no chip shows — the
-/// intended silent degrade. File paths always resolve (local status), so overlap
+/// its resolved base tip (`git::resolve_base`), preferring the SOURCE repo's
+/// `refs/remotes/origin/<base>` that the slow `refresh_base_freshness` poll
+/// advances, whenever that commit is readable from the checkout. Without a
+/// GitHub connection the source ref never advances, so `behind` stays
+/// unknown/zero and no chip shows — the intended silent degrade. File paths always resolve (local status), so overlap
 /// hints work with or without GitHub.
 ///
 /// Queried in parallel; a git error degrades that checkout to a bare
@@ -155,15 +142,13 @@ pub async fn get_all_git_meta(
                 continue;
             };
             let key = crate::supervisor::pr_map_key(&agent.id, &repo.subdir, i == 0);
-            let source = repo.repo_path.clone();
-            // Resolved inside the task, not in this loop: the legacy-row branch
-            // shells out to git, and doing that serially would make the poll's
-            // latency scale with the fleet size instead of the slowest checkout.
+            // Resolved inside the task, not in this loop: resolving a base shells
+            // out to git, and doing that serially would make the poll's latency
+            // scale with the fleet size instead of the slowest checkout.
             let repo = repo.clone();
             set.spawn(async move {
-                let base = base_branch(&repo).await;
-                let base_sha = git::remote_base_sha(&source, &base).await;
-                let meta = git_state::git_meta(&checkout, &base, base_sha.as_deref()).await;
+                let base = repo.resolve_base(&checkout).await;
+                let meta = git_state::git_meta(&checkout, &base).await;
                 (key, meta)
             });
         }
@@ -204,7 +189,7 @@ pub async fn refresh_base_freshness(supervisor: State<'_, Arc<Supervisor>>) -> R
             continue;
         }
         for repo in &agent.repos {
-            seen.insert((repo.repo_path.clone(), base_branch(repo).await));
+            seen.insert((repo.repo_path.clone(), repo.base_branch().await));
         }
     }
     for (source, base) in seen {
