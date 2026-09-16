@@ -1,5 +1,5 @@
 //! Misc app-level handlers: workspace snapshot, log/Docker/editor launchers,
-//! and per-agent diff / HEAD stats.
+//! and an agent's HEAD sha.
 
 use std::sync::Arc;
 use tauri::State;
@@ -7,9 +7,9 @@ use tauri::State;
 use crate::error::{Error, Result};
 use crate::git;
 use crate::supervisor::Supervisor;
-use crate::workspace::{AgentRecord, DiffStats, Workspace};
+use crate::workspace::{AgentRecord, Workspace};
 
-use super::files::{agent_repo_checkout, diff_base, primary_repo_checkout};
+use super::files::{agent_repo_checkout, primary_repo_checkout};
 
 #[tauri::command]
 pub fn get_workspace(supervisor: State<'_, Arc<Supervisor>>) -> Option<Workspace> {
@@ -97,47 +97,6 @@ pub fn open_in_editor(
 ) -> Result<()> {
     let (_, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     crate::editors::open(&editor_id, &checkout)
-}
-
-#[tauri::command]
-pub async fn get_agent_diff_stats(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<DiffStats> {
-    get_agent_diff_stats_impl(&supervisor, agent_id).await
-}
-
-/// Shared with the remote dispatcher.
-pub(crate) async fn get_agent_diff_stats_impl(
-    supervisor: &Supervisor,
-    agent_id: String,
-) -> Result<DiffStats> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let mut stats = DiffStats::default();
-
-    for repo in &record.repos {
-        let checkout = repo.checkout_path(&agent_id)?;
-        let base = diff_base(repo);
-        let base_ref = base.as_deref().unwrap_or("HEAD");
-        let diff = match git::checkout_diff_shortstat(&checkout, base_ref).await {
-            Ok(diff) => diff,
-            Err(err) if base_ref != "HEAD" => {
-                tracing::warn!(
-                    error = %err,
-                    agent_id = %agent_id,
-                    subdir = %repo.subdir,
-                    base_ref = %base_ref,
-                    "agent diff: falling back to HEAD"
-                );
-                git::checkout_diff_shortstat(&checkout, "HEAD").await?
-            }
-            Err(err) => return Err(err),
-        };
-        stats.additions = stats.additions.saturating_add(diff.0);
-        stats.deletions = stats.deletions.saturating_add(diff.1);
-    }
-
-    Ok(stats)
 }
 
 /// The current HEAD commit SHA of an agent's checkout (primary repo when

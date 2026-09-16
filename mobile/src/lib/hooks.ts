@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** Re-render on an interval — for live elapsed timers. */
 export function useTick(ms = 1000, active = true) {
@@ -6,6 +6,19 @@ export function useTick(ms = 1000, active = true) {
   useEffect(() => {
     if (!active) return;
     const id = setInterval(() => bump((n) => n + 1), ms);
+    return () => clearInterval(id);
+  }, [ms, active]);
+}
+
+/** Run `fn` now and every `ms` while `active` — for background refreshes.
+ *  `fn` is called through a ref, so a caller needn't memoize it. */
+export function usePoll(fn: () => void, ms: number, active = true) {
+  const latest = useRef(fn);
+  latest.current = fn;
+  useEffect(() => {
+    if (!active) return;
+    latest.current();
+    const id = setInterval(() => latest.current(), ms);
     return () => clearInterval(id);
   }, [ms, active]);
 }

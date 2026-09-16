@@ -22,7 +22,7 @@ export function AgentRow({
 }) {
   const pending = useStore((s) => Object.keys(s.pendingToolUse[agent.id] ?? {}).length);
   const startedAt = useStore((s) => s.turnStartedAt[agent.id]);
-  const diff = useStore((s) => s.diffStats[agent.id]);
+  const diff = useStore((s) => s.shortstats[agent.id]);
   const pr = useStore((s) => s.prStates[agent.id]);
   const busy = isBusy(agent);
   const elapsed = useElapsed(startedAt, busy);

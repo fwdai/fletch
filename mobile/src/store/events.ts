@@ -159,6 +159,9 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // state rather than guessing what changed.
   on<AgentGitActionEvent>("agent:git-action", (e) => {
     void get().loadGit(e.agent_id);
+    // A commit or discard empties the working tree, which is what the rows
+    // show — don't make them wait out the poll interval to catch up.
+    void get().loadShortstats();
   });
 
   on<PrStateChangedEvent>("pr:state_changed", (e) => {

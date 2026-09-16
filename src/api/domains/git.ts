@@ -1,8 +1,7 @@
 import { invoke } from "../invoke";
-import type { DiffStats, GitMeta, GitState, ShortStats } from "../types/git";
+import type { GitMeta, GitState, ShortStats } from "../types/git";
 
 export const gitApi = {
-  getAgentDiffStats: (agentId: string) => invoke<DiffStats>("get_agent_diff_stats", { agentId }),
   /** The current HEAD commit SHA of an agent's checkout (primary repo). The
    *  fork point for "promote to workflow". */
   agentHeadSha: (agentId: string) => invoke<string>("agent_head_sha", { agentId }),

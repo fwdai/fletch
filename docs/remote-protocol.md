@@ -419,7 +419,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `read_user_turns` | `{ agentId }` | `UserTurn[]` |
 | `sync_session` | `{ agentId }` | `null` |
 | `get_git_state` | `{ agentId }` | `GitState \| null` |
-| `get_agent_diff_stats` | `{ agentId }` | `DiffStats` |
+| `get_all_shortstats` | `{}` — uncommitted working-tree stats for every live agent; archived and still-cloning agents are omitted | `Record<agentId, ShortStats>` |
 | `list_checkout_tree` | as command | `CheckoutFile[]` |
 | `read_checkout_file` | `{ agentId, path, baseMode? }` | `CheckoutFileContents` |
 | `get_file_diff` | as command | `string` |

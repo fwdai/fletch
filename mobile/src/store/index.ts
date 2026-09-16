@@ -1,6 +1,6 @@
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
-import type { DiffStats, GitState } from "@desktop/api/types/git";
+import type { GitState, ShortStats } from "@desktop/api/types/git";
 import type { PrChecks, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import { appActionMessage } from "@desktop/delegation";
@@ -85,7 +85,9 @@ export interface MobileState {
   pendingToolUse: Record<string, Record<string, string>>;
   turnStartedAt: Record<string, number>;
   gitStates: Record<string, GitState | null>;
-  diffStats: Record<string, DiffStats>;
+  /** Uncommitted working-tree stats for the whole fleet, from the app-wide
+   *  poll — the same numbers the desktop sidebar shows. */
+  shortstats: Record<string, ShortStats>;
   prStates: Record<string, PrState | null>;
   prChecks: Record<string, PrChecks | null>;
   trees: Record<string, CheckoutFile[]>;
@@ -125,6 +127,8 @@ export interface MobileState {
   loadAgent(agentId: string): Promise<void>;
   rebuildLog(agentId: string): Promise<void>;
   loadGit(agentId: string): Promise<void>;
+  /** Refresh the fleet-wide working-tree stats behind the agent rows. */
+  loadShortstats(): Promise<void>;
   loadTree(agentId: string): Promise<void>;
 
   /** `attachments` are host paths staged through the `attachment_*` ops; a
@@ -331,7 +335,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   pendingToolUse: {},
   turnStartedAt: {},
   gitStates: {},
-  diffStats: {},
+  shortstats: {},
   prStates: {},
   prChecks: {},
   trees: {},
@@ -382,6 +386,9 @@ export const useStore = create<MobileState>()((set, get) => ({
       // the path that clears them after a reconnect.
       if (ws) set((s) => ({ workspace: ws, busy: reconcileBusy(s.busy, ws) }));
       else void get().refreshWorkspace();
+      // The snapshot carries no stats, so the rows get their numbers from the
+      // first poll of every handshake rather than waiting out its interval.
+      void get().loadShortstats();
       refreshOpenAgent();
       // Every handshake — the first pairing and every reconnect — is when the
       // host is told the APNs token again.
@@ -396,6 +403,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       document.addEventListener("visibilitychange", () => {
         if (document.hidden || client.state !== "connected") return;
         void get().refreshWorkspace();
+        void get().loadShortstats();
         refreshOpenAgent();
       });
     }
@@ -649,14 +657,9 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async loadGit(agentId) {
     try {
-      const [git, diff, pr] = await Promise.all([
-        api.getGitState(agentId),
-        api.getAgentDiffStats(agentId),
-        api.getPrState(agentId),
-      ]);
+      const [git, pr] = await Promise.all([api.getGitState(agentId), api.getPrState(agentId)]);
       set((s) => ({
         gitStates: { ...s.gitStates, [agentId]: git },
-        diffStats: { ...s.diffStats, [agentId]: diff },
         prStates: { ...s.prStates, [agentId]: pr },
       }));
       if (pr) {
@@ -665,6 +668,18 @@ export const useStore = create<MobileState>()((set, get) => ({
       }
     } catch {
       // Git/PR reads are advisory; leave the last-known values alone.
+    }
+  },
+
+  async loadShortstats() {
+    try {
+      // Replaced wholesale, mirroring the desktop's `fetchAllShortstats`: the
+      // host answers for the whole fleet, so an agent that has gone clean (or
+      // been archived) falls out instead of keeping its last number.
+      const shortstats = await api.getAllShortstats();
+      set({ shortstats });
+    } catch {
+      // Advisory, like the rest of the git reads: keep the last numbers.
     }
   },
 
