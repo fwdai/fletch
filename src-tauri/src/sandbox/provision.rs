@@ -443,7 +443,11 @@ where
         rewrite_origin(spec).await?;
         seed_identity(spec).await?;
         install_delegation_hooks(spec.dest).await?;
+        // Snapshot before the checkout so the cleanup below can tell the heads
+        // `git clone` handed us from any branch the checkout step creates.
+        let inherited = local_heads(spec.dest).await;
         let checked_out = checkout(spec.dest.to_path_buf()).await?;
+        prune_inherited_heads(spec.dest, &inherited).await;
         rewrite_origin_head(spec).await;
         Ok(checked_out)
     }
@@ -545,6 +549,82 @@ async fn rewrite_origin_head(spec: &CheckoutSpec<'_>) {
         "remote set-head origin --delete",
     )
     .await;
+}
+
+/// Every `refs/heads/*` the clone currently has, full refnames.
+async fn local_heads(repo: &Path) -> Vec<String> {
+    match git::git_output(
+        repo,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+    )
+    .await
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Reconcile the local heads `git clone` inherited from the source repo with
+/// what the clone actually fetched, once the checkout step has run.
+///
+/// A local clone gets exactly one inherited head — whatever branch the *source*
+/// repo had checked out, at the source's possibly-stale local tip. The
+/// remote-base path then fetches `origin/<base>` and detaches HEAD at the fresh
+/// tip, but that inherited `refs/heads/<base>` is left behind pointing at the
+/// old commit. Everything inside the workspace that later resolves the bare
+/// name — ahead/behind counts, diffs, `git rebase main` — reads the stale ref
+/// and reports commits the agent never made (observed: HEAD at `origin/main`,
+/// `refs/heads/main` six commits behind, "6 ahead, +5639 −524" for an agent
+/// that changed nothing).
+///
+/// So each inherited head is re-pointed at its `origin/<name>` counterpart when
+/// the clone has one (the name keeps working, now meaning the fetched tip), and
+/// deleted when it does not. Two heads are deliberately spared:
+///
+///   * the branch HEAD is on — [`recover_and_checkout`] creates the agent's own
+///     branch with `checkout -b`, and that is the point of the restore;
+///   * every head in a clone with no `origin` — [`rewrite_origin`] removes the
+///     remote when the source has none, and the inherited head is then the
+///     base's only source of truth, not a stale copy of one.
+///
+/// Best-effort: a clone that is otherwise fine must not be torn down over ref
+/// bookkeeping, so failures are logged and stepped over.
+async fn prune_inherited_heads(dest: &Path, inherited: &[String]) {
+    if inherited.is_empty() || !has_origin(dest).await {
+        return;
+    }
+    let head = git::git_output(dest, &["symbolic-ref", "-q", "HEAD"])
+        .await
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+    for refname in inherited {
+        if head.as_deref() == Some(refname.as_str()) {
+            continue;
+        }
+        let Some(short) = refname.strip_prefix("refs/heads/") else {
+            continue;
+        };
+        let tracking = format!("refs/remotes/origin/{short}");
+        let args = if commit_present(dest, &tracking).await {
+            vec!["update-ref", refname.as_str(), tracking.as_str()]
+        } else {
+            vec!["update-ref", "-d", refname.as_str()]
+        };
+        if let Err(e) = git::run_git(dest, &args, "update-ref").await {
+            tracing::warn!(
+                dest = %dest.display(),
+                refname,
+                error = %e,
+                "could not reconcile the clone's inherited local head; \
+                 it may report stale ahead/behind counts"
+            );
+        }
+    }
 }
 
 /// Install Fletch's delegation-signal git hooks into the clone's `.git/hooks`.
@@ -863,6 +943,10 @@ mod tests {
         // The tracking ref matters as much as HEAD: every later ahead/behind,
         // rebase and PR base in this workspace reads `origin/main`.
         assert_eq!(run(&dest, &["rev-parse", "origin/main"]), fresh);
+        // And so does the *local* head the clone inherited from the source: it
+        // starts at the source's stale tip, and anything resolving the bare
+        // name `main` afterwards reads it.
+        assert_eq!(run(&dest, &["rev-parse", "refs/heads/main"]), fresh);
         // Still detached — the fetch must not put the workspace on a branch.
         let out = std::process::Command::new("git")
             .current_dir(&dest)
@@ -870,6 +954,74 @@ mod tests {
             .output()
             .unwrap();
         assert!(!out.status.success(), "clone HEAD should be detached");
+    }
+
+    /// Does `refname` resolve in `repo`? (`show-ref --verify` exits 1 when not.)
+    fn ref_exists(repo: &Path, refname: &str) -> bool {
+        std::process::Command::new("git")
+            .current_dir(repo)
+            .args(["show-ref", "--verify", "--quiet", refname])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+
+    #[tokio::test]
+    async fn provision_at_remote_base_reconciles_the_sources_checked_out_branch() {
+        // The clone inherits exactly one local head — whichever branch the
+        // *source* had checked out, at the source's own tip. When that is the
+        // user's feature branch it has nothing to do with this workspace, so it
+        // must not be left free-floating at a commit no ref in the clone agrees
+        // with; it is re-pointed at its `origin/` counterpart.
+        let td = tempfile::tempdir().unwrap();
+        let (source, stale, fresh) = fixture_with_stale_source(td.path());
+        run(&source, &["checkout", "-q", "-b", "feat/x"]);
+        std::fs::write(source.join("s.txt"), b"side").unwrap();
+        run(&source, &["add", "-A"]);
+        run(&source, &["commit", "-q", "-m", "side work"]);
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &source,
+            base_ref: &stale,
+            dest: &dest,
+        };
+
+        provision_at_remote_base(&spec, "main", true).await.unwrap();
+
+        assert_eq!(
+            run(&dest, &["rev-parse", "refs/heads/feat/x"]),
+            run(&dest, &["rev-parse", "refs/remotes/origin/feat/x"]),
+            "an inherited head must not outlive its tracking ref's value"
+        );
+        // The source kept no local `main` here, so the clone has none either —
+        // and if it does, it agrees with what the base fetch brought.
+        if ref_exists(&dest, "refs/heads/main") {
+            assert_eq!(run(&dest, &["rev-parse", "refs/heads/main"]), fresh);
+        }
+    }
+
+    #[tokio::test]
+    async fn prune_inherited_heads_deletes_a_head_origin_has_no_counterpart_for() {
+        // The other arm of the cleanup: nothing to reconcile the inherited head
+        // against, so it is dropped rather than left naming a commit the
+        // workspace has no remote record of.
+        let td = tempfile::tempdir().unwrap();
+        let (source, stale, _fresh) = fixture_with_stale_source(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &source,
+            base_ref: &stale,
+            dest: &dest,
+        };
+        provision_at_remote_base(&spec, "main", true).await.unwrap();
+
+        // A local head with no `refs/remotes/origin/orphan` beside it.
+        run(&dest, &["branch", "-q", "orphan", "HEAD"]);
+        prune_inherited_heads(&dest, &["refs/heads/orphan".to_string()]).await;
+
+        assert!(!ref_exists(&dest, "refs/heads/orphan"));
     }
 
     #[tokio::test]
@@ -949,6 +1101,9 @@ mod tests {
 
         assert_eq!(freshness, BaseFreshness::NoRemote);
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
+        // With origin removed there is nothing to reconcile the inherited head
+        // against — it *is* the base's only record, so it must survive intact.
+        assert_eq!(run(&dest, &["rev-parse", "refs/heads/main"]), head);
     }
 
     #[tokio::test]
@@ -1509,6 +1664,9 @@ mod tests {
             .unwrap();
         assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat");
         assert_eq!(run(&dest, &["rev-parse", "HEAD"]), tip);
+        // The inherited-head cleanup runs after the restore checkout, so the
+        // branch it just created — the one HEAD is on — must be exempt.
+        assert!(ref_exists(&dest, "refs/heads/feat"));
 
         // Restore under a collision-renamed local branch: the fetch must still
         // target the name the remote knows (`feat`), while the local branch is
@@ -1527,6 +1685,7 @@ mod tests {
             "feat-restored"
         );
         assert_eq!(run(&dest2, &["rev-parse", "HEAD"]), tip);
+        assert!(ref_exists(&dest2, "refs/heads/feat-restored"));
     }
 
     #[tokio::test]
