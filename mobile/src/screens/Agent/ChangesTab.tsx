@@ -1,7 +1,7 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { PrPill } from "../../components/ui";
-import { baseOf, branchOf, isBusy } from "../../lib/agents";
+import { baseOf, isBusy, refLabel } from "../../lib/agents";
 import { STATUS_LETTER } from "../../lib/diff";
 import { useStore } from "../../store";
 import { PrCard } from "./PrCard";
@@ -54,7 +54,7 @@ export function ChangesTab({
             </span>
             <span className="pill mono">
               <Icon name="branch" size={11} />
-              {branchOf(agent)}
+              {refLabel(git)}
             </span>
             {git && git.unpushed > 0 && (
               <span className="pill mono">
@@ -108,7 +108,7 @@ export function ChangesTab({
                   Everything is on PR <PrPill pr={pr} />.
                 </>
               ) : git?.unpushed ? (
-                `${git.unpushed} commit(s) on ${branchOf(agent)}, nothing pending.`
+                `${git.unpushed} commit(s) on ${refLabel(git)}, nothing pending.`
               ) : (
                 "No changes yet."
               )}

@@ -2,6 +2,7 @@
 // row's status word is, the primary checkout, and colour for a project chip.
 
 import type { AgentRecord, AgentStatus, ProjectRef, Workspace } from "@desktop/api/types/agent";
+import type { GitState } from "@desktop/api/types/git";
 import { PROVIDERS } from "@desktop/data/providers";
 
 export const STATUS_LABEL: Record<AgentStatus, string> = {
@@ -24,6 +25,14 @@ export const isBusy = (a: AgentRecord) => a.status === "running" || a.status ===
 export const primaryRepo = (a: AgentRecord) => a.repos[0];
 
 export const branchOf = (a: AgentRecord) => primaryRepo(a)?.branch ?? "—";
+
+/** Label for the ref a checkout is actually sitting on, from its live git
+ *  state: the branch name, or the short SHA when HEAD is detached — which is
+ *  how an agent workspace starts out. Prefer this over `branchOf` wherever the
+ *  git state is at hand: the record's `branch` column stays null until a push
+ *  names a branch, so it renders an em dash for most of an agent's life. */
+export const refLabel = (git: GitState | undefined | null) =>
+  git?.branch || git?.head_sha?.slice(0, 7) || "—";
 
 export const baseOf = (a: AgentRecord) => primaryRepo(a)?.parent_branch ?? "main";
 
