@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { fitWithin, jpegName, shouldReencode } from "../src/attachments/prepare";
+import { describe, expect, it, vi } from "vitest";
+import {
+  fitWithin,
+  jpegName,
+  MAX_UPLOAD_BYTES,
+  prepareFile,
+  shouldReencode,
+} from "../src/attachments/prepare";
 import {
   type AttachmentApi,
   CHUNK_BYTES,
@@ -119,6 +125,32 @@ describe("prepareFile decisions", () => {
     );
     expect(jpegName("noext")).toBe("noext.jpg");
     expect(jpegName(".heic")).toBe("photo.jpg");
+  });
+
+  /** A picked file, with the read instrumented: the whole point of the cap is
+   *  that an oversized file is refused before `arrayBuffer` is ever called. */
+  function picked(name: string, type: string, size: number) {
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(Math.min(size, 16)));
+    return { file: { name, type, size, arrayBuffer } as unknown as File, arrayBuffer };
+  }
+
+  it("refuses a file over the host's cap before reading a byte of it", async () => {
+    for (const [name, type] of [
+      ["clip.mov", "video/quicktime"],
+      ["repo.zip", "application/zip"],
+      ["spec.pdf", "application/pdf"],
+    ]) {
+      const { file, arrayBuffer } = picked(name, type, 300 * 1024 * 1024);
+      await expect(prepareFile(file)).rejects.toThrow(`${name} is 300 MB — the limit is 32 MB`);
+      expect(arrayBuffer).not.toHaveBeenCalled();
+    }
+  });
+
+  it("reads a file at the cap, and any smaller one, as it is", async () => {
+    const { file, arrayBuffer } = picked("spec.pdf", "application/pdf", MAX_UPLOAD_BYTES);
+    const out = await prepareFile(file);
+    expect(out.name).toBe("spec.pdf");
+    expect(arrayBuffer).toHaveBeenCalledTimes(1);
   });
 
   it("fits inside the longest edge without scaling up", () => {

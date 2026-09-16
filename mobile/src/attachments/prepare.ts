@@ -13,6 +13,23 @@ export const REENCODE_OVER_BYTES = 1.5 * 1024 * 1024;
  *  stays legible; the size win over a raw PNG is still several-fold. */
 const JPEG_QUALITY = 0.9;
 
+/** The host's per-file cap (`attachments::remote::MAX_UPLOAD_BYTES`), applied
+ *  here before a byte is read: a video or archive picked by mistake would
+ *  otherwise be pulled whole into the webview's memory — hundreds of MB on a
+ *  phone — and then uploaded up to the cap before the host refused it. */
+export const MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
+
+const mb = (bytes: number) => `${Math.round(bytes / (1024 * 1024))} MB`;
+
+/** Refuse a file the host would refuse, before touching its bytes. */
+function assertWithinCap(file: { name: string; size: number }): void {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    throw new Error(
+      `${file.name || "file"} is ${mb(file.size)} — the limit is ${mb(MAX_UPLOAD_BYTES)}`,
+    );
+  }
+}
+
 export interface PreparedFile {
   name: string;
   bytes: Uint8Array;
@@ -83,7 +100,11 @@ async function reencode(file: File): Promise<PreparedFile> {
 
 /** The bytes to upload for `file`, and the name to stage them under. A
  *  re-encode that fails (an image WebKit cannot decode after all) falls back
- *  to the original bytes rather than losing the attachment. */
+ *  to the original bytes rather than losing the attachment — but only if
+ *  those bytes are within the cap; the check runs before any read, on both
+ *  paths, so an oversized pick costs nothing but the error. A re-encoded
+ *  image is exempt from the check on its way in: its output is what uploads,
+ *  and that is small by construction. */
 export async function prepareFile(file: File): Promise<PreparedFile> {
   if (shouldReencode(file)) {
     try {
@@ -92,5 +113,6 @@ export async function prepareFile(file: File): Promise<PreparedFile> {
       // Fall through: send what we have.
     }
   }
+  assertWithinCap(file);
   return { name: file.name || "attachment", bytes: await readBytes(file) };
 }

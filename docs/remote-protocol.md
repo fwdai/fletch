@@ -562,7 +562,9 @@ answer through the generic dispatcher.
 - **Bounds.** Chunks are written to disk as they arrive, not buffered — a
   photo is tens of megabytes. An upload over 32 MiB is refused and removed
   (a truncated file is a corrupt one, not a shorter one, so unlike dictation
-  nothing is silently dropped). At most 8 uploads are open at once across
+  nothing is silently dropped). The phone applies the same cap before it reads
+  a picked file, so a video or archive chosen by mistake never enters the
+  webview's memory or the wire. At most 8 uploads are open at once across
   every phone; one that has received no chunk for 120 s is swept with its
   partial file, after which its id is unknown.
 - **Images.** The phone re-encodes large or HEIC images to JPEG before
