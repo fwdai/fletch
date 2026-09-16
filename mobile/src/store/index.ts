@@ -127,7 +127,9 @@ export interface MobileState {
   loadGit(agentId: string): Promise<void>;
   loadTree(agentId: string): Promise<void>;
 
-  send(agentId: string, text: string): Promise<void>;
+  /** `attachments` are host paths staged through the `attachment_*` ops; a
+   *  message may be attachments alone. */
+  send(agentId: string, text: string, attachments?: string[]): Promise<void>;
   spawn(input: SpawnInput): Promise<void>;
   answerToolUse(
     agentId: string,
@@ -164,6 +166,8 @@ export interface SpawnInput {
   effort: string | null;
   base: string;
   prompt: string;
+  /** Staged host paths to go with the first message, if any. */
+  attachments?: string[];
   /** The workspace name the New Agent sheet showed. Empty when the sheet
    *  never got one (its allocation failed), in which case one is allocated
    *  here so the spawn still goes through. */
@@ -195,6 +199,10 @@ const newId = () =>
   globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36)}`;
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** The `attachments` field for an optimistic bubble — present only when there
+ *  are any, matching what the desktop's `mirrorSentTurn` draws for the echo. */
+const withAttachments = (attachments: string[]) => (attachments.length > 0 ? { attachments } : {});
 
 type Setter = (partial: Partial<MobileState>) => void;
 
@@ -667,9 +675,9 @@ export const useStore = create<MobileState>()((set, get) => ({
     });
   },
 
-  async send(agentId, text) {
+  async send(agentId, text, attachments = []) {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed && attachments.length === 0) return;
     // Optimistic bubble, reconciled away when the canonical records land. It
     // carries the turn id so the host's `turn:sent` echo (which every device
     // mirrors, see events.ts) is recognized as ours and not drawn twice.
@@ -677,13 +685,18 @@ export const useStore = create<MobileState>()((set, get) => ({
     set((s) => ({
       logs: {
         ...s.logs,
-        [agentId]: [...(s.logs[agentId] ?? []), { kind: "queued_message", text: trimmed, turnId }],
+        [agentId]: [
+          ...(s.logs[agentId] ?? []),
+          { kind: "queued_message", text: trimmed, turnId, ...withAttachments(attachments) },
+        ],
       },
       busy: { ...s.busy, [agentId]: true },
     }));
     return guard(set, async () => {
       try {
-        await whileSending(agentId, () => api.sendUserMessage(agentId, turnId, trimmed));
+        await whileSending(agentId, () =>
+          api.sendUserMessage(agentId, turnId, trimmed, attachments),
+        );
       } catch (e) {
         set((s) => ({ busy: { ...s.busy, [agentId]: false } }));
         throw e;
@@ -691,7 +704,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     });
   },
 
-  async spawn({ repoPath, provider, model, effort, base, prompt, name: shown }) {
+  async spawn({ repoPath, provider, model, effort, base, prompt, attachments = [], name: shown }) {
     return guard(set, async () => {
       // The user has been looking at (and possibly rerolled) this name; the
       // agent must launch under it, not a fresh draw.
@@ -702,7 +715,12 @@ export const useStore = create<MobileState>()((set, get) => ({
         workspace: s.workspace
           ? { ...s.workspace, agents: [record, ...s.workspace.agents] }
           : s.workspace,
-        logs: { ...s.logs, [record.id]: [{ kind: "user_message", text: prompt, turnId }] },
+        logs: {
+          ...s.logs,
+          [record.id]: [
+            { kind: "user_message", text: prompt, turnId, ...withAttachments(attachments) },
+          ],
+        },
         busy: { ...s.busy, [record.id]: true },
       }));
       get().closeSheet();
@@ -710,7 +728,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       try {
         await whileSending(record.id, async () => {
           await waitForSpawn(get, record.id);
-          await api.sendUserMessage(record.id, turnId, prompt);
+          await api.sendUserMessage(record.id, turnId, prompt, attachments);
         });
       } catch (e) {
         // The agent exists on the host but never got the prompt: drop the

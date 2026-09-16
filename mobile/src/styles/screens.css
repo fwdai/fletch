@@ -502,7 +502,8 @@
   border-color: var(--accent-line);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.na-mic {
+.na-mic,
+.na-tool {
   width: 30px;
   height: 30px;
   border-radius: 50%;
@@ -512,6 +513,17 @@
   flex-shrink: 0;
   background: var(--bg-3);
   color: var(--fg-1);
+}
+.na-tool:active {
+  background: oklch(from var(--bg-3) calc(l + 0.04) c h);
+}
+/* Files staged for the first message, under the box. Chip styles are the
+   chat composer's (agent.css). */
+.na-atts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 2px 0;
 }
 .na-mic.on {
   background: var(--accent);

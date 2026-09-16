@@ -31,9 +31,13 @@ export function reduceRecords(provider: string | undefined, records: SessionReco
   return items;
 }
 
-/** Overlay run timing from `session_user_turns` onto the rendered user
- *  messages, end-aligned so turns predating the timing rows keep none.
- *  Attachments are out of scope for v1, so only timing is carried. */
+/** Overlay a turn's Fletch-origin metadata — run timing and attachments — from
+ *  `session_user_turns` onto the rendered user messages, end-aligned so turns
+ *  predating the rows keep none. A turn with attachments also restores the text
+ *  the user actually typed: the transcript's copy is what the runner sent,
+ *  padded with `Attached file: <path>` lines, so the rebuilt bubble would
+ *  otherwise differ from the one the send drew. Prefix-guarded, as on the
+ *  desktop, so a mis-aligned row cannot rewrite an unrelated message. */
 export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[] {
   if (turns.length === 0) return items;
   const matched = turns.filter((t) => t.native_id);
@@ -46,6 +50,10 @@ export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
     if (item.kind !== "user_message") continue;
     if (turn.started_at != null) item.startedAt = turn.started_at;
     if (turn.ended_at != null) item.endedAt = turn.ended_at;
+    if (turn.attachments.length > 0) {
+      item.attachments = turn.attachments;
+      if (item.text.startsWith(turn.text)) item.text = turn.text;
+    }
   }
   return result;
 }

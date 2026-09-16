@@ -7,6 +7,7 @@ import { InterimGhost } from "@desktop/components/Composer/InterimGhost";
 import { primaryState } from "@desktop/components/Composer/PrimaryControl/primaryState";
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useRef, useState } from "react";
+import { AttachButton, StagedChips, useAttachments } from "../../../attachments";
 import { ProviderMark } from "../../../components/ui";
 import { useDictation, VoiceRow } from "../../../dictation";
 import { isBusy, modelLabel } from "../../../lib/agents";
@@ -34,7 +35,11 @@ const fieldCap = () => Math.round(window.innerHeight * 0.4);
  *  stepping aside as a smaller neutral disc once there is a draft. Same state
  *  machine as the desktop pill (`primaryState`), different physics: no split
  *  segments a thumb could miss, every live state has a visible exit, and the
- *  return key inserts a newline — send is only ever a deliberate tap. */
+ *  return key inserts a newline — send is only ever a deliberate tap.
+ *
+ *  Files attach through the system picker (Photos, Camera, Files) and upload
+ *  to the Mac as they are picked; their chips sit between the field and the
+ *  footer, and a draft of attachments alone is sendable. */
 export function Composer({
   agent,
   onSend,
@@ -57,6 +62,7 @@ export function Composer({
   const [armed, setArmed] = useState(true);
   const armTimer = useRef<number | null>(null);
   const busy = isBusy(agent);
+  const attachments = useAttachments();
 
   // The transcript lands once, appended to whatever was typed — the same join
   // rule as the desktop, so a dictated list item keeps its newline. The new
@@ -86,23 +92,29 @@ export function Composer({
     sttError: dictation.error !== null,
     dictation: dictation.phase,
     agentRunning: busy,
-    hasDraft: text.trim().length > 0,
+    hasDraft: text.trim().length > 0 || attachments.items.length > 0,
     micDenied: dictation.blocked,
   });
   const listening = state === "listening";
   const voice = listening || state === "transcribing";
 
   // The banner keeps its last line while it collapses, so the text doesn't
-  // vanish a frame before the space does.
+  // vanish a frame before the space does. Dictation and attachments share it;
+  // whichever failed last is what it says.
+  const error = dictation.error ?? attachments.error;
   const lastError = useRef("");
-  if (dictation.error) lastError.current = dictation.error;
+  if (error) lastError.current = error;
 
   /** Send the draft. Only from `draft`: while the agent works the draft waits,
-   *  and nothing is sent by voice alone. */
+   *  nothing is sent by voice alone, and a file still on its way up holds the
+   *  send until it has landed — its chip shows the wait. */
   const submit = () => {
     const value = text.trim();
-    if (!value || busy || dictation.phase !== "idle") return;
+    const paths = attachments.paths;
+    if ((!value && paths.length === 0) || busy || dictation.phase !== "idle") return;
+    if (attachments.uploading) return;
     setText("");
+    attachments.clear();
     requestAnimationFrame(() => autosize(ta.current, 0, fieldCap()));
     setArmed(false);
     if (armTimer.current !== null) window.clearTimeout(armTimer.current);
@@ -111,7 +123,7 @@ export function Composer({
       setArmed(true);
     }, SEND_ARM_MS);
     onSend?.();
-    void send(agent.id, value).catch(ignore);
+    void send(agent.id, value, paths).catch(ignore);
   };
 
   /** A tap on the disc — what it does is what the disc shows. */
@@ -150,9 +162,7 @@ export function Composer({
 
   return (
     <div className="composer">
-      <div
-        className={`cmp${listening ? " is-listening" : ""}${dictation.error ? " is-error" : ""}`}
-      >
+      <div className={`cmp${listening ? " is-listening" : ""}${error ? " is-error" : ""}`}>
         <div className="cmp-field">
           <textarea
             ref={ta}
@@ -176,7 +186,8 @@ export function Composer({
             </div>
           )}
         </div>
-        <div className={`cmp-banner${dictation.error ? " on" : ""}`} role="alert">
+        <StagedChips className="cmp-atts" items={attachments.items} onRemove={attachments.remove} />
+        <div className={`cmp-banner${error ? " on" : ""}`} role="alert">
           <div>
             <p>
               <Icon name="refresh" size={12} />
@@ -199,6 +210,9 @@ export function Composer({
                 <span>{agent.effort ?? "default"}</span>
                 <Icon name="chevD" size={12} style={{ color: "var(--fg-3)" }} />
               </button>
+              <AttachButton className="act" onPick={attachments.add} disabled={voice}>
+                <Icon name="attach" size={17} />
+              </AttachButton>
               <span className="grow" />
             </div>
             <VoiceRow

@@ -89,6 +89,10 @@ pub const OPS: &[&str] = &[
     "dictation_audio",
     "dictation_end",
     "dictation_cancel",
+    "attachment_begin",
+    "attachment_chunk",
+    "attachment_end",
+    "attachment_cancel",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -376,6 +380,28 @@ impl Dispatch for SupervisorDispatch {
                     Ok(Value::Null)
                 }
 
+                // Remote-only: the phone streams a file's bytes, this Mac stages
+                // it where a desktop paste lands (`attachments::remote`). The
+                // path `attachment_end` answers with goes in `send_user_message`'s
+                // `attachments`, and adoption at send time is the same code.
+                "attachment_begin" => {
+                    let a: AttachmentBeginArgs = parse(args)?;
+                    res(crate::attachments::remote::begin(&a.name))
+                }
+                "attachment_chunk" => {
+                    let a: AttachmentChunkArgs = parse(args)?;
+                    res(crate::attachments::remote::append(&a.upload, &a.data))
+                }
+                "attachment_end" => {
+                    let a: AttachmentUploadArgs = parse(args)?;
+                    res(crate::attachments::remote::end(&a.upload))
+                }
+                "attachment_cancel" => {
+                    let a: AttachmentUploadArgs = parse(args)?;
+                    crate::attachments::remote::cancel(&a.upload);
+                    Ok(Value::Null)
+                }
+
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.
                 _ => Err(UNKNOWN_OP.to_string()),
@@ -574,6 +600,25 @@ struct DictationAudioArgs {
     pcm: String,
 }
 
+/// Opens a phone upload; `name` is the display filename (path components are
+/// stripped on the host). See `attachments::remote`.
+#[derive(Deserialize)]
+struct AttachmentBeginArgs {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct AttachmentUploadArgs {
+    upload: String,
+}
+
+/// One chunk of a phone upload: the file's next bytes, base64.
+#[derive(Deserialize)]
+struct AttachmentChunkArgs {
+    upload: String,
+    data: String,
+}
+
 #[cfg(test)]
 mod arg_tests {
     use super::*;
@@ -626,14 +671,20 @@ mod arg_tests {
         .unwrap();
         assert_eq!(msg.turn_id, "t-1");
         assert!(msg.attachments.is_empty());
-        // `attachments` omitted is the same as empty — the phone has no
-        // attachment picker in v1.
+        // `attachments` omitted is the same as empty — a phone on an older
+        // build, from before it had a picker, still sends without the key.
         assert!(parse::<SendMessageArgs>(json!({
             "agentId": "arabia", "turnId": "t-1", "text": "go"
         }))
         .unwrap()
         .attachments
         .is_empty());
+        let with: SendMessageArgs = parse(json!({
+            "agentId": "arabia", "turnId": "t-2", "text": "",
+            "attachments": ["/Users/alex/Library/Application Support/x/attachments/u1/shot.png"]
+        }))
+        .unwrap();
+        assert_eq!(with.attachments.len(), 1);
 
         let tool: AnswerToolUseArgs = parse(json!({
             "agentId": "arabia",
@@ -655,6 +706,24 @@ mod arg_tests {
         let head: FileArgs =
             parse(json!({ "agentId": "a", "path": "src/lib.rs", "baseMode": "head" })).unwrap();
         assert!(matches!(head.base_mode, Some(DiffBaseMode::Head)));
+    }
+
+    #[test]
+    fn attachment_args_use_the_upload_keys() {
+        let begin: AttachmentBeginArgs = parse(json!({ "name": "IMG_0001.jpeg" })).unwrap();
+        assert_eq!(begin.name, "IMG_0001.jpeg");
+        assert!(
+            parse::<AttachmentBeginArgs>(json!({})).is_err(),
+            "name is required"
+        );
+        let chunk: AttachmentChunkArgs =
+            parse(json!({ "upload": "u1", "data": "AAEA/w==" })).unwrap();
+        assert_eq!(
+            (chunk.upload.as_str(), chunk.data.as_str()),
+            ("u1", "AAEA/w==")
+        );
+        let end: AttachmentUploadArgs = parse(json!({ "upload": "u1" })).unwrap();
+        assert_eq!(end.upload, "u1");
     }
 
     #[test]

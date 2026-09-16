@@ -408,7 +408,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `get_workspace` | `{}` | `Workspace \| null` |
 | `allocate_draft_name` | `{ drafts: string[] }` | `string` |
 | `spawn_agent` | as command; host forces `view: "custom"`, ignores `purpose`, `skills`, `mcpServers`, `customAgentId` in v1 | `AgentRecord` |
-| `send_user_message` | `{ agentId, turnId, text, attachments: [] }` | `boolean` |
+| `send_user_message` | `{ agentId, turnId, text, attachments: string[] }` — paths from `attachment_end` (see "Attachments") | `boolean` |
 | `answer_tool_use` | `{ agentId, requestId, updatedInput, behavior, message? }` | `null` |
 | `stop_agent` | `{ agentId }` | `null` |
 | `resume_agent` | `{ agentId }` | `null` |
@@ -442,6 +442,10 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `dictation_audio` | `{ session, rate: number, pcm: string }` — base64 of 16-bit little-endian mono PCM at `rate` Hz (remote-only) | `null` |
 | `dictation_end` | `{ session }` (remote-only) | `{ text: string }` |
 | `dictation_cancel` | `{ session }` (remote-only) | `null` |
+| `attachment_begin` | `{ name }` (remote-only, see "Attachments") | `{ upload: string }` |
+| `attachment_chunk` | `{ upload, data: string }` — base64 of the file's next bytes (remote-only) | `null` |
+| `attachment_end` | `{ upload }` (remote-only) | `{ path: string }` |
+| `attachment_cancel` | `{ upload }` (remote-only) | `null` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
@@ -530,6 +534,42 @@ device is asking.
   well under the 4 MiB frame cap and the relay's 100-messages-per-10-s limit at
   one chunk a second. Two decodes never run at once (the engine serialises
   them), so a phone's transcription may wait behind a desktop session's.
+
+## Attachments
+
+The phone can attach photos and files to a message. They have no path on the
+Mac, so — like a screenshot pasted into the desktop composer — their bytes are
+written into the app-data staging area first and the message names the staged
+path; `send_user_message` then moves each staged file into the agent's
+workspace (`.fletch-attachments/`) and rewrites the path, the same adoption the
+desktop's paste goes through. The four `attachment_*` ops are remote-only and
+answer through the generic dispatcher.
+
+- **Flow.** `attachment_begin` names the file and answers with a host-minted
+  `upload` id. The phone sends `attachment_chunk` with consecutive slices of the
+  file, in order, one in flight at a time; `attachment_end` closes the upload
+  and answers with the staged `path`, which the phone holds until the user
+  sends and then puts in `attachments`. `attachment_cancel` drops the upload
+  and its partial file; it is idempotent. A phone that leaves the screen with
+  uploads staged but unsent leaves them in staging, as an unsent desktop paste
+  does.
+- **Chunking.** A device WebSocket message is capped at 4 MiB and a phone
+  screenshot base64-inflates past it, so the phone slices at 1 MiB (about
+  1.4 MiB on the wire). A decoded chunk over 2 MiB is refused.
+- **Names.** `name` is the display filename; the host keeps only its last
+  component, so a path-shaped name can only ever name a file inside the
+  upload's own staging dir. Empty or `..` becomes `attachment`.
+- **Bounds.** Chunks are written to disk as they arrive, not buffered — a
+  photo is tens of megabytes. An upload over 32 MiB is refused and removed
+  (a truncated file is a corrupt one, not a shorter one, so unlike dictation
+  nothing is silently dropped). The phone applies the same cap before it reads
+  a picked file, so a video or archive chosen by mistake never enters the
+  webview's memory or the wire. At most 8 uploads are open at once across
+  every phone; one that has received no chunk for 120 s is swept with its
+  partial file, after which its id is unknown.
+- **Images.** The phone re-encodes large or HEIC images to JPEG before
+  uploading, since most agents cannot read HEIC and a raw camera photo is a
+  poor use of the relay; small PNG/JPEG files go through untouched.
 
 ## Events (v1 whitelist)
 
@@ -620,8 +660,10 @@ launch once the disk recovers.
 
 QR scanning on the phone (manual entry of address and code, plus
 `fletch://pair` deep-link parsing, for now), creating a brand-new repo from the
-phone (`create_repo`), attachments, Run scripts, Keychain storage of the
-device key on the phone (it lives in the app data dir). Push follow-ups:
+phone (`create_repo`), Run scripts, Keychain storage of the device key on the
+phone (it lives in the app data dir). Attachment follow-ups: sweeping staged
+uploads the phone never sent (today they linger like an unsent desktop paste),
+and thumbnails on the phone's own bubbles. Push follow-ups:
 feeding APNs `410 Unregistered` back to the host so stale tokens are dropped,
 noticing a permission revoked in iOS Settings (the phone has no way to observe
 it today, so the host keeps a token that can no longer alert), a "mute while
