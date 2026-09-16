@@ -17,10 +17,11 @@ pub struct GitState {
     pub parent_branch: String,
     pub ahead: u32,
     pub behind: u32,
-    /// Commits on HEAD not yet on the upstream (origin) branch — i.e. how many
-    /// commits a push would actually send. Distinct from `ahead`, which is
-    /// measured against the base branch. When there is no upstream yet (branch
-    /// never pushed), this falls back to `ahead`.
+    /// Commits a push would actually send: those on HEAD not yet on the
+    /// branch's upstream, or — with no upstream configured (a detached agent
+    /// clone, a branch never pushed) — those no `origin` branch contains.
+    /// Distinct from `ahead`, which is measured against the base branch and so
+    /// counts commits `origin` may already have.
     pub unpushed: u32,
     pub files: Vec<FileStatus>,
     pub additions: u32,
@@ -120,11 +121,9 @@ pub async fn query(checkout_path: &Path, parent_branch: &str) -> Result<GitState
         }
     };
 
-    // 2. Ahead / behind (vs base), and unpushed (vs upstream)
+    // 2. Ahead / behind (vs base), and unpushed (vs origin)
     let (ahead, behind) = query_ahead_behind(checkout_path, parent_branch).await;
-    // No upstream yet → nothing has been pushed, so every base-ahead commit is
-    // effectively unpushed.
-    let unpushed = query_unpushed(checkout_path).await.unwrap_or(ahead);
+    let unpushed = query_unpushed(checkout_path).await;
 
     // 3. File list from `git status --porcelain=v1`
     let mut files = match run_status(checkout_path).await {
@@ -305,7 +304,7 @@ pub async fn git_meta(checkout_path: &Path, base: &str, base_sha: Option<&str>) 
         .take(MAX_META_FILES)
         .collect();
     let behind = match base_sha {
-        Some(sha) => rev_list_count(checkout_path, &format!("HEAD..{sha}")).await,
+        Some(sha) => rev_list_count(checkout_path, &[&format!("HEAD..{sha}")]).await,
         None => None,
     };
     GitMeta {
@@ -315,12 +314,14 @@ pub async fn git_meta(checkout_path: &Path, base: &str, base_sha: Option<&str>) 
     }
 }
 
-/// `git rev-list --count <range>`, or `None` when the range doesn't resolve
-/// (e.g. an object the shared store doesn't hold). One number — unlike
-/// `rev_list_counts`, which reads both sides of a symmetric range.
-async fn rev_list_count(checkout_path: &Path, range: &str) -> Option<u32> {
+/// `git rev-list --count <args>`, or `None` when the revisions don't resolve
+/// (e.g. an object the shared store doesn't hold, or a branch with no
+/// upstream). One number — unlike `rev_list_counts`, which reads both sides of
+/// a symmetric range.
+async fn rev_list_count(checkout_path: &Path, args: &[&str]) -> Option<u32> {
     let out = read_command(checkout_path)
-        .args(["rev-list", "--count", range])
+        .args(["rev-list", "--count"])
+        .args(args)
         .output()
         .await
         .ok()?;
@@ -498,20 +499,19 @@ pub(crate) fn github_web_url(remote: &str) -> Option<String> {
 // Private helpers — subprocess runners
 // ---------------------------------------------------------------------------
 
-/// Count commits on HEAD not yet on the upstream branch. Returns `None` when
-/// there is no upstream configured (branch never pushed), so the caller can
-/// fall back appropriately.
-async fn query_unpushed(checkout_path: &Path) -> Option<u32> {
-    let out = read_command(checkout_path)
-        .args(["rev-list", "--count", "@{upstream}..HEAD"])
-        .output()
-        .await
-        .ok()?;
-    // Non-zero exit means no upstream is configured for the branch.
-    if !out.status.success() {
-        return None;
+/// Count the commits a push would send. With an upstream configured that's
+/// `@{upstream}..HEAD`. Without one — an agent workspace is a detached clone,
+/// and a branch that was never pushed has no upstream either — it's every
+/// commit no `origin` branch already contains, which is what a push would have
+/// to carry. That's 0 for a fresh clone sitting on `origin/main`, where the
+/// base-relative `ahead` count can be stale and non-zero.
+async fn query_unpushed(checkout_path: &Path) -> u32 {
+    if let Some(n) = rev_list_count(checkout_path, &["@{upstream}..HEAD"]).await {
+        return n;
     }
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    rev_list_count(checkout_path, &["HEAD", "--not", "--remotes=origin"])
+        .await
+        .unwrap_or(0)
 }
 
 async fn query_ahead_behind(checkout_path: &Path, parent_branch: &str) -> (u32, u32) {
@@ -969,6 +969,85 @@ mod tests {
 
         // Bare `main` fails in the clone; the fallback resolves origin/main.
         assert_eq!(query_ahead_behind(&clone, "main").await, (0, 1));
+    }
+
+    // --- query_unpushed ---
+
+    fn git_run(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn commit(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), name.as_bytes()).unwrap();
+        git_run(dir, &["add", "-A"]);
+        git_run(dir, &["commit", "-q", "-m", name]);
+    }
+
+    /// A one-commit source repo plus a clone of it — the shape of an agent
+    /// workspace. Returns the clone.
+    fn clone_fixture(root: &Path) -> std::path::PathBuf {
+        let source = root.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        git_run(&source, &["init", "-q", "-b", "main"]);
+        git_run(&source, &["config", "user.email", "t@example.com"]);
+        git_run(&source, &["config", "user.name", "Tester"]);
+        commit(&source, "a.txt");
+
+        let clone = root.join("clone");
+        git_run(
+            root,
+            &[
+                "clone",
+                "-q",
+                source.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        git_run(&clone, &["config", "user.email", "t@example.com"]);
+        git_run(&clone, &["config", "user.name", "Tester"]);
+        clone
+    }
+
+    /// The bug this replaced: a detached agent clone has no upstream, and the
+    /// old fallback reported `ahead` — commits `origin` already has — so a
+    /// fresh workspace that changed nothing claimed a pushable backlog.
+    #[tokio::test]
+    async fn unpushed_is_zero_on_a_fresh_detached_clone() {
+        let td = tempfile::tempdir().unwrap();
+        let clone = clone_fixture(td.path());
+        git_run(&clone, &["checkout", "-q", "--detach", "origin/main"]);
+
+        assert_eq!(query_unpushed(&clone).await, 0);
+    }
+
+    #[tokio::test]
+    async fn unpushed_counts_detached_commits_origin_lacks() {
+        let td = tempfile::tempdir().unwrap();
+        let clone = clone_fixture(td.path());
+        git_run(&clone, &["checkout", "-q", "--detach", "origin/main"]);
+        commit(&clone, "work.txt");
+
+        assert_eq!(query_unpushed(&clone).await, 1);
+    }
+
+    #[tokio::test]
+    async fn unpushed_still_counts_against_the_upstream_when_there_is_one() {
+        let td = tempfile::tempdir().unwrap();
+        let clone = clone_fixture(td.path());
+        // The clone's `main` tracks `origin/main`.
+        assert_eq!(query_unpushed(&clone).await, 0);
+
+        commit(&clone, "work.txt");
+        assert_eq!(query_unpushed(&clone).await, 1);
     }
 
     // --- git_meta ---
