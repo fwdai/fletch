@@ -1,37 +1,17 @@
 import type { FileStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { statusLetter } from "@/util/diff";
 
-/** Status letter for the file badge — matches CSS `.gs.<kind>` selectors. */
-function kindLabel(kind: FileStatus["kind"]): string {
-  switch (kind) {
-    case "modified":
-      return "M";
-    case "added":
-      return "A";
-    case "deleted":
-      return "D";
-    case "renamed":
-      return "R";
-    case "untracked":
-      return "U"; // new-but-unstaged file, shown green like VS Code
-    case "conflicted":
-      return "!";
-    default:
-      return "?";
-  }
-}
-
-/** The uncommitted-changes file list (changes / conflicts states). */
+/** The uncommitted-changes file list (changes / conflicts states). Rows open
+ *  the file's diff when `onOpen` is given; without it the list is read-only. */
 export function ChangesList({
   files,
-  selected,
-  onSelect,
+  onOpen,
   onRefresh,
 }: {
   files: FileStatus[];
-  selected: string | null;
-  onSelect: (path: string) => void;
+  onOpen?: (path: string) => void;
   onRefresh: () => void;
 }) {
   return (
@@ -50,15 +30,17 @@ export function ChangesList({
         {files.map((f) => (
           <div
             key={f.path}
-            className={`git-file flex-center text-sm ${selected === f.path ? "active" : ""}`}
-            onClick={() => onSelect(f.path)}
+            role={onOpen ? "button" : undefined}
+            className={`git-file flex-center text-sm ${onOpen ? "openable" : ""}`}
+            onClick={onOpen ? () => onOpen(f.path) : undefined}
           >
-            <span className={`gs text-xs ${f.kind}`}>{kindLabel(f.kind)}</span>
+            <span className={`gs text-xs ${f.kind}`}>{statusLetter(f.kind)}</span>
             <span className="gn">{f.path}</span>
             <span className="gx text-xs">
               {f.additions > 0 && <span className="add">+{f.additions}</span>}
               {f.deletions > 0 && <span className="rem">−{f.deletions}</span>}
             </span>
+            {onOpen && <Icon name="chevR" size={11} className="gc" />}
           </div>
         ))}
       </div>

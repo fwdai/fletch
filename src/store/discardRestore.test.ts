@@ -127,4 +127,72 @@ describe("discard/restore/archive stay consistent when the refresh returns null"
     const a = store.getState().workspace?.agents.find((x) => x.id === "a");
     expect(a?.archive).not.toBeNull();
   });
+
+  it("a snapshot fetched before the archive committed cannot put the row back", async () => {
+    // The race: archive "a" is in flight; meanwhile a refresh issued by
+    // something else (the previous click's `workspace:changed`) resolves with
+    // a snapshot taken before the backend stamped `archived_at`, so it still
+    // lists "a" as live. It is the newest generation, so the guard applies it.
+    let finishArchive!: () => void;
+    archiveAgent.mockReturnValue(
+      new Promise<void>((r) => {
+        finishArchive = r;
+      }),
+    );
+    const store = makeStore([agent("a"), agent("b")]);
+
+    const archiving = store.getState().archive("a");
+    expect(store.getState().workspace?.agents.find((x) => x.id === "a")?.archive).not.toBeNull();
+
+    getWorkspace.mockResolvedValueOnce({ agents: [agent("a"), agent("b")] });
+    const { refreshWorkspace } = await import("./refreshWorkspace");
+    await refreshWorkspace(store.setState);
+    expect(
+      store.getState().workspace?.agents.find((x) => x.id === "a")?.archive,
+      "pre-commit snapshot must not re-expose the row",
+    ).not.toBeNull();
+
+    // The archive's own refresh then confirms it with real metadata.
+    getWorkspace.mockResolvedValueOnce({
+      agents: [{ id: "a", archive: { archived_at: "t" } }, agent("b")],
+    });
+    finishArchive();
+    await archiving;
+    const a = store.getState().workspace?.agents.find((x) => x.id === "a");
+    expect(a?.archive).toEqual({ archived_at: "t" });
+    expect(store.getState().managedLogs.a).toBeUndefined();
+  });
+
+  it("a refused archive withdraws the hide and puts the row back", async () => {
+    archiveAgent.mockRejectedValue(new Error("agent must be idle"));
+    const store = makeStore([agent("a"), agent("b")]);
+    // The drafts slice (not part of this fixture) rests activeDraftId at null.
+    store.setState({ selectedAgentId: "a", activeDraftId: null });
+
+    await store.getState().archive("a");
+
+    expect(store.getState().workspace?.agents.find((x) => x.id === "a")?.archive).toBeNull();
+    expect(store.getState().selectedAgentId).toBe("a");
+    expect(store.getState().lastError).toContain("must be idle");
+    // Withdrawn: a later live snapshot is applied as-is.
+    getWorkspace.mockResolvedValueOnce({ agents: [agent("a")] });
+    const { refreshWorkspace } = await import("./refreshWorkspace");
+    await refreshWorkspace(store.setState);
+    expect(store.getState().workspace?.agents.find((x) => x.id === "a")?.archive).toBeNull();
+  });
+
+  it("discard keeps the row out of a snapshot fetched before the delete committed", async () => {
+    const store = makeStore([agent("a"), agent("b")]);
+    await store.getState().discard("a");
+
+    getWorkspace.mockResolvedValueOnce({ agents: [agent("a"), agent("b")] });
+    const { refreshWorkspace } = await import("./refreshWorkspace");
+    await refreshWorkspace(store.setState);
+    expect(store.getState().workspace?.agents.map((x) => x.id)).toEqual(["b"]);
+
+    // Confirmed once a snapshot no longer lists it.
+    getWorkspace.mockResolvedValueOnce({ agents: [agent("b")] });
+    await refreshWorkspace(store.setState);
+    expect(store.getState().workspace?.agents.map((x) => x.id)).toEqual(["b"]);
+  });
 });

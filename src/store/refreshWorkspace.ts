@@ -15,8 +15,15 @@
 // call stamps the next generation, and only the newest generation's response is
 // applied. Older, slower responses are dropped, so the last-issued fetch — which
 // reflects every committed delete — always wins.
+//
+// The guard can't catch the other ordering: the newest fetch's response was
+// produced BEFORE a delete the user has since clicked (the backend hadn't
+// committed yet), so it still lists the agent. For that, every applied snapshot
+// passes through `applyPendingHides`, which keeps a user-requested removal
+// hidden until a snapshot confirms it.
 
 import { api, type Workspace } from "@/api";
+import { applyPendingHides } from "./pendingHides";
 import type { AppState, SliceCreator } from "./types";
 
 type AppSet = Parameters<SliceCreator<AppState>>[0];
@@ -46,6 +53,7 @@ export const refreshWorkspace = async (
   // A newer refresh started (and may already have applied) while we awaited —
   // ours is stale, so drop it instead of overwriting the newer snapshot.
   if (gen !== generation || !fresh) return null;
-  set((state) => ({ ...extra?.(fresh, state), workspace: fresh }));
-  return fresh;
+  const applied = applyPendingHides(fresh);
+  set((state) => ({ ...extra?.(applied, state), workspace: applied }));
+  return applied;
 };
