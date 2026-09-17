@@ -1784,7 +1784,10 @@ fn archive_trace_records_completion_and_error() {
     wm.finish_archive(&id, &[], Some("repo: teardown: busy"))
         .unwrap();
     let (archived_after, completed, error) = trace(&id);
-    assert_eq!(archived_after, archived, "finish must not move the click time");
+    assert_eq!(
+        archived_after, archived,
+        "finish must not move the click time"
+    );
     assert!(completed.is_some_and(|c| c >= archived.unwrap()));
     assert_eq!(error.as_deref(), Some("repo: teardown: busy"));
     // A recorded cleanup failure doesn't un-archive anything.

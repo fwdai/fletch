@@ -342,7 +342,10 @@ impl Supervisor {
 /// any destructive teardown. The tip is the checkout's HEAD — works whether the
 /// agent is on a branch or still detached (never pushed), so both restore from
 /// the exact committed tip.
-async fn capture_repo_snapshots(agent_id: &str, repos: &[TrackedRepo]) -> Vec<ArchivedRepoSnapshot> {
+async fn capture_repo_snapshots(
+    agent_id: &str,
+    repos: &[TrackedRepo],
+) -> Vec<ArchivedRepoSnapshot> {
     let mut snapshots: Vec<ArchivedRepoSnapshot> = Vec::with_capacity(repos.len());
 
     for repo in repos {
@@ -500,11 +503,7 @@ fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'sta
 /// agent must leave the directory exactly where it is. Every step of a run
 /// passes through here as it is archived, so the run's work would not survive
 /// its first completed step otherwise.
-async fn teardown_agent_checkouts(
-    agent_id: &str,
-    repos: &[TrackedRepo],
-    op: &str,
-) -> Vec<String> {
+async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &str) -> Vec<String> {
     let mut failures = Vec::new();
     for repo in repos {
         if repo.is_adopted() {
