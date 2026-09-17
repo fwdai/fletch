@@ -215,9 +215,23 @@
 .git-file:hover {
   background: var(--hover);
 }
-.git-file.active {
-  background: var(--selected);
-  color: var(--fg-0);
+/* rows that open the file's diff in place of the list */
+.git-file.openable {
+  cursor: pointer;
+}
+.git-file .gc {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.git-file.openable:hover .gc {
+  opacity: 1;
+}
+/* "2 / 5" beside the prev/next arrows in the diff view header */
+.git-diff-pos {
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
 }
 .git-file .gs {
   width: 14px;
