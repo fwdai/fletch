@@ -88,14 +88,21 @@ function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
     <div className="git-multi">
       {/* ≥2 PRs → the "one task, N PRs" strip presents the set as a unit. */}
       {prSet.length >= 2 && <PrSetStrip heading={`${prSet.length} PRs`} entries={prSet} />}
-      {sections.map((sc) => (
+      {sections.map((sc, i) => (
         <section key={sc.repo.subdir} className="git-repo-sect">
           {active.length > 0 && (
             <div className="git-repo-name text-xs">
               {sc.repo.label ?? basename(sc.repo.repo_path)}
             </div>
           )}
-          <GitRepoSection agent={agent} repo={sc.repo} subdir={sc.subdir} />
+          {/* The autopilot switch is per workspace, so only the first section
+              carries it — one switch, however many repos. */}
+          <GitRepoSection
+            agent={agent}
+            repo={sc.repo}
+            subdir={sc.subdir}
+            autopilotSwitch={i === 0}
+          />
         </section>
       ))}
     </div>

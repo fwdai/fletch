@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { GitState, MergeState, PrState } from "@/api";
 import type { GitPanelState } from "@/components/RightPanel/primaryActions";
 import { describeMergeGate, type MergeGateTone, mergeGateLabel } from "@/mergeGate";
@@ -97,6 +98,7 @@ export function StatusHeader({
   pr,
   mergeState,
   checksFailed,
+  controls,
 }: {
   state: GitPanelState;
   branch: string;
@@ -105,6 +107,10 @@ export function StatusHeader({
   pr: PrState | null;
   mergeState: MergeState | null;
   checksFailed: number;
+  /** Quiet per-workspace controls for the trailing meta slot (the autopilot
+   *  switch) — rendered after the state's own meta, so the GitHub link and the
+   *  diff summary keep their places. */
+  controls?: ReactNode;
 }) {
   const h = describeHeader(state, branch, base, pr, mergeState, checksFailed);
   const adds = git?.additions ?? 0;
@@ -123,6 +129,7 @@ export function StatusHeader({
           </span>
         )}
         {h.ext && pr?.url && <ViewOnGitHub href={pr.url} className="hdr-ext" size={13} />}
+        {controls}
       </div>
     </div>
   );

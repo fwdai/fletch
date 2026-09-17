@@ -5,7 +5,7 @@ import { stuckLabel } from "@/helpers/autopilotCopy";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import { ActionBar } from "./ActionBar";
-import { AutopilotHistory } from "./AutopilotHistory";
+import { AutopilotHistory, AutopilotSwitch } from "./Autopilot";
 import { ChangesList } from "./ChangesList";
 import { CommitComposer } from "./CommitComposer";
 import { ClosedPRCard, ConflictCard, PRCard } from "./cards";
@@ -37,10 +37,14 @@ export function GitRepoSection({
   agent,
   repo,
   subdir,
+  autopilotSwitch = true,
 }: {
   agent: AgentRecord;
   repo: TrackedRepo | undefined;
   subdir?: string;
+  /** Whether this section's header carries the workspace's autopilot switch.
+   *  It is per agent, not per checkout, so a multi-repo panel shows it once. */
+  autopilotSwitch?: boolean;
 }) {
   const {
     gitState,
@@ -65,10 +69,11 @@ export function GitRepoSection({
   const key = checkoutKey(agent.id, subdir);
   const delegation = useAppStore((s) => s.delegations[key]);
   const delegationNotice = useAppStore((s) => s.delegationNotices[key]);
-  // Autopilot has no UI of its own here — it is how the agent behaves on this PR
-  // (switched per project in settings). The action bar's status slot carries the
-  // two things worth knowing: that the in-flight turn was started automatically,
-  // and why it stopped working on the PR by itself, when it did.
+  // Autopilot is how the agent behaves on this PR (switched per project in
+  // settings, pausable per workspace from the header). The action bar's status
+  // slot carries the two things worth knowing: that the in-flight turn was
+  // started automatically, and why it stopped working on the PR by itself, when
+  // it did.
   const autopilot = useAppStore((s) => s.autopilot[key]);
   const autoAttempt = autopilot?.cycle?.phase === "working" ? autopilot.cycle.attempt : null;
   const autoStuck = autopilot?.stuck
@@ -164,6 +169,9 @@ export function GitRepoSection({
         pr={prState}
         mergeState={mergeState}
         checksFailed={checks?.failed ?? 0}
+        controls={
+          autopilotSwitch && <AutopilotSwitch agentId={agent.id} projectId={agent.project_id} />
+        }
       />
 
       {/* Earlier PRs of this checkout, once it has any — merged work stays one
@@ -207,6 +215,10 @@ export function GitRepoSection({
           />
         )}
 
+        {/* What the agent did on this PR by itself — with the PR/changes it
+         *  describes. Renders nothing until it has actually done something. */}
+        <AutopilotHistory agentId={agent.id} subdir={subdir} />
+
         <EmptyState state={panelState} base={base} />
       </div>
 
@@ -223,10 +235,6 @@ export function GitRepoSection({
             onSubmit={() => runAction(effectiveKey)}
           />
         )}
-
-        {/* What the agent did on this PR by itself — renders nothing until it
-         *  has actually done something here. */}
-        <AutopilotHistory agentId={agent.id} subdir={subdir} />
 
         <ActionBar
           statusKind={primary.statusKind}

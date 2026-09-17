@@ -93,6 +93,36 @@
   color: var(--fg-1);
   background: var(--hover);
 }
+/* autopilot switch — same footprint as the GitHub link beside it. Lit zap = on
+   (the accent the "started automatically" mark uses), struck zap = off. */
+.git-hdr .hdr-auto {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    opacity 0.12s;
+}
+.git-hdr .hdr-auto.off {
+  color: var(--fg-3);
+}
+.git-hdr .hdr-auto:hover:not(:disabled) {
+  background: var(--hover);
+}
+.git-hdr .hdr-auto.off:hover:not(:disabled) {
+  color: var(--fg-1);
+}
+.git-hdr .hdr-auto:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 
 /* per-state tints — header background, bottom border, and pill */
 .git-hdr.k-clean {
@@ -1094,42 +1124,49 @@
 }
 
 /* ── Autopilot history ─────────────────────────────────────────────────────
-   The receipt for a loop that ran unattended, folded under the chip. Quiet and
-   collapsed: it earns attention only when someone comes looking for it, so the
-   toggle reads as a caption and only the rows that mean trouble take colour. */
+   A section of the scrollable body, under the PR card / file list: the receipt
+   for a loop that ran unattended. Its header uses the body's caption style (the
+   same as "Changes" / "Pull request") so it reads as one more section, not a
+   feature; collapsed by default, and only the rows that mean trouble take
+   colour. */
 .ap-log {
-  padding: 4px 18px 0;
+  flex-shrink: 0;
+  padding: 8px 18px 10px;
+  border-top: 1px solid var(--bd-soft);
 }
-.ap-log-toggle {
-  display: inline-flex;
+.ap-log-h {
+  display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 0;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
   border: 0;
   background: transparent;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--fg-3);
   cursor: pointer;
+  text-align: left;
 }
-.ap-log-toggle:hover {
+.ap-log-h:hover {
   color: var(--fg-1);
 }
-.ap-log-toggle svg {
+.ap-log-h svg {
   width: 11px;
   height: 11px;
+  flex-shrink: 0;
 }
-.ap-log-count {
-  padding: 0 4px;
-  border-radius: 999px;
-  background: var(--bg-1);
+.ap-log-sum {
+  margin-left: auto;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
   color: var(--fg-3);
 }
-/* Capped so a full log scrolls inside the footer instead of pushing the action
-   bar — the primary CTA must stay reachable. */
 .ap-log-list {
-  max-height: 132px;
-  margin: 3px 0 0;
+  margin: 8px 0 0 5px;
   padding: 0;
-  overflow-y: auto;
   list-style: none;
   border-left: 1px solid var(--bd-soft);
 }
