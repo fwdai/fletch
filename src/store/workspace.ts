@@ -29,6 +29,12 @@ import { createKeyedQueue } from "@/util/keyedQueue";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { forkContextDigest } from "./forkDigest";
 import { interruptedAgents } from "./interrupted";
+import {
+  applyPendingHides,
+  clearPendingHide,
+  markPendingHide,
+  PENDING_ARCHIVE,
+} from "./pendingHides";
 import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppState, SliceCreator } from "./types";
 
@@ -681,12 +687,12 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // list and the per-agent state consistent even if the guarded refresh
       // below returns null (fetch failed) or is superseded — otherwise the old
       // snapshot would keep showing a discarded agent whose logs/git/PR state we
-      // just cleared, rendering an emptied view when opened.
+      // just cleared, rendering an emptied view when opened. The pending hide
+      // keeps a snapshot fetched before the commit from re-adding the row.
+      markPendingHide(id, "discard");
       set((s) => ({
         ...dropAgentEntries(s, id),
-        workspace: s.workspace
-          ? { ...s.workspace, agents: s.workspace.agents.filter((a) => a.id !== id) }
-          : s.workspace,
+        workspace: s.workspace ? applyPendingHides(s.workspace) : s.workspace,
         selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
       }));
       await refreshWorkspace(set);
@@ -696,46 +702,28 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   },
 
   archive: async (id) => {
-    // Optimistically hide the agent so the click feels instant: the sidebar
-    // filters on `!a.archive`, so stamping a placeholder ArchiveMetadata drops
-    // the row immediately. The real metadata (diff stats, branch snapshots)
-    // arrives with the fresh workspace fetch below. We keep `placeholder` by
-    // reference and remember the prior selection so a failure can undo exactly
-    // our own edits — without clobbering a newer workspace (status/repo/focus
-    // events, other actions) that may have landed while archiving was pending.
-    const placeholder = {
-      archived_at: "",
-      repos: [],
-      diff_stats: { additions: 0, deletions: 0 },
-    };
+    // The click is the decision: hide the agent now and keep it hidden. The
+    // sidebar filters on `!a.archive`, so stamping `PENDING_ARCHIVE` drops the
+    // row immediately, and registering the id as a pending hide makes every
+    // snapshot applied from here on re-stamp it (see `applyPendingHides`) until
+    // one confirms the archive — so a fetch that started before the backend
+    // committed can no longer put the row back. The real metadata (diff stats,
+    // branch snapshots) arrives with the confirming snapshot. The prior
+    // selection is remembered so a refusal can undo exactly our own edits —
+    // without clobbering a newer workspace (status/repo/focus events, other
+    // actions) that may have landed while archiving was pending.
     const wasSelected = get().selectedAgentId === id;
+    markPendingHide(id, "archive");
     set((s) => ({
-      workspace: s.workspace
-        ? {
-            ...s.workspace,
-            agents: s.workspace.agents.map((a) =>
-              a.id === id && !a.archive ? { ...a, archive: placeholder } : a,
-            ),
-          }
-        : s.workspace,
+      workspace: s.workspace ? applyPendingHides(s.workspace) : s.workspace,
       selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
     }));
     try {
       await api.archiveAgent(id);
-      // Archiving kills the agent's processes, so release its PTY state (both
-      // ring buffers and its cached live terminal); a restore starts fresh.
-      dropAgentPty(id);
-      // Drop the agent's side maps ATOMICALLY with the post-commit snapshot that
-      // archives (hides) the row, by folding the cleanup into the guarded
-      // refresh. Unlike the sidebar's optimistic placeholder — which a stale,
-      // still-current-generation refresh could transiently clobber and re-expose
-      // the row — this refresh's snapshot is taken after the archive committed,
-      // so applying it and dropping the maps together can never leave a reachable
-      // row whose logs/git/PR/panel state is already gone. If this refresh is
-      // superseded or returns null, the maps are kept until a later snapshot
-      // hides the row.
-      await refreshWorkspace(set, (_fresh, s) => dropAgentEntries(s, id));
     } catch (e) {
+      // The backend refused (already archived, or mid-turn), so nothing was
+      // archived: withdraw the hide and put the row back.
+      clearPendingHide(id);
       set((s) => {
         const ws = s.workspace;
         if (!ws) return { lastError: String(e) };
@@ -746,10 +734,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         //
         // (1) Undo the hide only if the placeholder is still ours. A refresh
         //     (getWorkspace / event-driven rebuild) lands new agent objects,
-        //     so a surviving `=== placeholder` means nothing authoritative has
-        //     overwritten us; if it's gone, that fresh state is the truth and
-        //     we leave it.
-        const reverting = agent?.archive === placeholder;
+        //     so a surviving `=== PENDING_ARCHIVE` means nothing authoritative
+        //     has overwritten us; if it's gone, that fresh state is the truth
+        //     and we leave it.
+        const reverting = agent?.archive === PENDING_ARCHIVE;
 
         // (2) Restore the selection based on the agent's state in the
         //     RESULTING workspace, not on who owns the placeholder. The agent
@@ -773,10 +761,29 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
           lastError: String(e),
         };
       });
+      return;
+    }
+    // Archiving kills the agent's processes, so release its PTY state (both
+    // ring buffers and its cached live terminal); a restore starts fresh.
+    dropAgentPty(id);
+    // Drop the agent's side maps ATOMICALLY with the post-commit snapshot that
+    // archives (hides) the row, by folding the cleanup into the guarded
+    // refresh: the backend stamps `archived_at` before it returns, so this
+    // snapshot confirms the archive and the maps go with it. If this refresh
+    // is superseded or returns null, the maps are kept until a later snapshot
+    // hides the row. The archive itself has committed, so a failed refetch is
+    // only reported — it must not put the row back.
+    try {
+      await refreshWorkspace(set, (_fresh, s) => dropAgentEntries(s, id));
+    } catch (e) {
+      set({ lastError: String(e) });
     }
   },
 
   restore: async (id) => {
+    // A restore withdraws any archive still awaiting confirmation, so the
+    // snapshot below can't re-hide the row it is about to bring back.
+    clearPendingHide(id);
     try {
       await api.restoreAgent(id);
       // Keep the JSONL-replayed log in place — claude's `--resume` in
