@@ -16,7 +16,6 @@ export function useReviewQueue(): ReviewItem[] {
   const prChecks = useAppStore((s) => s.prChecks);
   const prComments = useAppStore((s) => s.prComments);
   const verificationReports = useAppStore((s) => s.verificationReports);
-  const autopilot = useAppStore((s) => s.autopilot);
   const dismissed = useAppStore((s) => s.reviewDismissed);
   const runs = useRuns();
 
@@ -31,7 +30,6 @@ export function useReviewQueue(): ReviewItem[] {
         prChecks,
         prComments,
         verificationReports,
-        autopilot,
         runs,
         dismissed,
       }),
@@ -44,7 +42,6 @@ export function useReviewQueue(): ReviewItem[] {
       prChecks,
       prComments,
       verificationReports,
-      autopilot,
       runs,
       dismissed,
     ],

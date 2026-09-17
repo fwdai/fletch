@@ -417,17 +417,15 @@ function ciTint(checks: PrChecks | null): { variant: BadgeVariant; tip: string }
 /** Autopilot's mark on the row — advisory, so it decorates the sub-row it shares
  *  with the stale/diff hints and never claims space of its own.
  *
- *  `working` is the one glyph autopilot owns anywhere in the app: the agent
- *  started this turn itself. `stuck` borrows the app's ordinary "needs you"
- *  vocabulary — an amber dot, no autopilot iconography — because from the user's
- *  side it is just a PR waiting on them. The why is in the tooltip and in the
- *  Git panel's status line. */
+ *  The zap is autopilot's glyph everywhere in the app, and `working` is the one
+ *  thing it marks: the agent started this turn itself. What autopilot did once
+ *  the turn ended is the Git panel's history, not the row's business. */
 function AutopilotMark({ signal }: { signal: AutopilotSignal | null }) {
   if (!signal) return null;
   const tip = autopilotTip(signal);
   return (
-    <span className={`a-autopilot ${signal.mode} tip`} data-tip={tip} aria-label={tip}>
-      {signal.mode === "working" ? <Icon name="zap" size={9} /> : <span className="d" />}
+    <span className="a-autopilot working tip" data-tip={tip} aria-label={tip}>
+      <Icon name="zap" size={9} />
     </span>
   );
 }

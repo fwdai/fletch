@@ -1,17 +1,17 @@
 // ── Autopilot, in words ───────────────────────────────────────────────────────
 //
-// Autopilot is not a mode the user sees; it is how an agent behaves on a PR
-// (per project, in Project Settings). So nothing here names it: every line is a
-// fact about the PR, phrased as what happened, because the next move is the
-// user's. One home for the phrasing so the Git panel status line, the sidebar
-// tooltip, the Mission Control card and the history log can never disagree.
+// Autopilot is not a mode the user sees; it is how an agent behaves on an open
+// PR (per project, in Project Settings; pausable per workspace from the Git
+// panel). So nothing here names it: every line is a fact about the PR, phrased
+// as what happened. One home for the phrasing so the Git panel's status line,
+// the sidebar tooltip and the history log can never disagree.
 
-import { RUNG_BUDGET, type StuckReason } from "@/autopilot";
+import { type GiveUpReason, RUNG_BUDGET } from "@/autopilot";
 import type { DelegationKind } from "@/delegation";
 
-/** The rung as a thing on the PR, not as an action name. Partial because an
- *  escalation can name a rung autopilot doesn't drive (`needs-human` on a
- *  commit), and the raw kind is an honest fallback for those. */
+/** The rung as a thing on the PR, not as an action name. Partial because a log
+ *  row can name a rung autopilot doesn't drive, and the raw kind is an honest
+ *  fallback for those. */
 const RUNG_NOUN: Partial<Record<DelegationKind, string>> = {
   "fix-checks": "failing checks",
   resolve: "conflicts",
@@ -21,8 +21,10 @@ const RUNG_NOUN: Partial<Record<DelegationKind, string>> = {
 
 export const rungNoun = (kind: DelegationKind): string => RUNG_NOUN[kind] ?? kind;
 
-/** Why the agent stopped working on this PR by itself. */
-export function stuckLabel(reason: StuckReason, rung: DelegationKind | null): string {
+/** Why autopilot gave up on a rung — the one history row a returning user is
+ *  looking for. Past tense: this already happened, and autopilot is simply
+ *  waiting for the situation to change. */
+export function gaveUpLabel(reason: GiveUpReason, rung: DelegationKind | null): string {
   const noun = rung ? rungNoun(rung) : null;
   switch (reason) {
     case "budget-spent": {
@@ -33,12 +35,6 @@ export function stuckLabel(reason: StuckReason, rung: DelegationKind | null): st
     }
     case "no-progress":
       return noun ? `Last attempt on the ${noun} changed nothing` : "Last attempt changed nothing";
-    case "needs-human":
-      return "Needs a decision from you";
-    case "disputed-review":
-      return "Agent pushed back on a review comment";
-    case "dirty-tree":
-      return "Waiting on your uncommitted changes";
     case "no-evidence":
       return "No CI result came back";
   }

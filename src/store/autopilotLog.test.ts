@@ -44,16 +44,16 @@ describe("recording what autopilot did", () => {
     expect(store.getState().autopilotLog.a1.map((e) => e.at)).toEqual([3, 2, 1]);
   });
 
-  it("records the rung, the attempt and the escalation reason verbatim", () => {
+  it("records the rung, the attempt and the give-up reason verbatim", () => {
     // These four fields ARE the audit: what it worked on, which try, and why it
-    // handed back. An entry that loses any of them can't answer the question a
-    // user opens the log with.
+    // gave up. An entry that loses any of them can't answer the question a user
+    // opens the log with.
     const store = makeStore();
     store.getState().recordAutopilotEvent(
       "a1",
       entry({
         at: 7,
-        outcome: "escalate",
+        outcome: "give-up",
         rung: "resolve-comments",
         attempt: 2,
         reason: "no-progress",
@@ -62,7 +62,7 @@ describe("recording what autopilot did", () => {
 
     expect(store.getState().autopilotLog.a1[0]).toEqual({
       at: 7,
-      outcome: "escalate",
+      outcome: "give-up",
       rung: "resolve-comments",
       attempt: 2,
       reason: "no-progress",

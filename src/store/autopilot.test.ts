@@ -390,57 +390,16 @@ describe("enrollment", () => {
       enrolled: true,
       cycle: null,
       attempts: {},
+      situation: "",
       barren: [],
-      stuck: null,
     });
-  });
-
-  it("resuming is the only thing that clears stuck, and it clears the budget with it", () => {
-    // `stuck` is sticky by design: a human got it there, a human gets it out. The
-    // spent attempts and barren signatures go too — otherwise "try again" would
-    // immediately give up again.
-    const store = makeStore();
-    store.getState().enrollAutopilot("a1");
-    store.getState().retryAutopilotCycle("a1", "fix-checks", "sig");
-    store
-      .getState()
-      .markAutopilotStuck("a1", "budget-spent", "fix-checks", 5, "checks-failing:test");
-    expect(store.getState().autopilot.a1.stuck).not.toBeNull();
-
-    store.getState().resumeAutopilot("a1");
-    const s = store.getState().autopilot.a1;
-    expect(s.stuck).toBeNull();
-    expect(s.attempts).toEqual({});
-    expect(s.barren).toEqual([]);
-  });
-
-  it("reviving grants a fresh budget but REMEMBERS what it already failed at", () => {
-    // Revive is autopilot noticing the world moved, not the user insisting — so
-    // unlike `resumeAutopilot` it keeps `barren`. Without that, a checkout whose
-    // world oscillates (a flaky check flipping back and forth) would get a full
-    // budget on every flip and burn agent turns re-attempting a world it has
-    // already proven it cannot change.
-    const store = makeStore();
-    store.getState().enrollAutopilot("a1");
-    store.getState().retryAutopilotCycle("a1", "fix-checks", "dead-world");
-    store.getState().markAutopilotStuck("a1", "budget-spent", "fix-checks", 5, "checks-failing:x");
-
-    store.getState().reviveAutopilot("a1");
-
-    const s = store.getState().autopilot.a1;
-    expect(s.stuck).toBeNull();
-    expect(s.attempts).toEqual({});
-    expect(s.barren).toEqual(["dead-world"]);
-    // A human insisting DOES clear it — that is the difference between the two.
-    store.getState().resumeAutopilot("a1");
-    expect(store.getState().autopilot.a1.barren).toEqual([]);
   });
 
   it("unenrolling forgets the checkout entirely, and only that checkout", () => {
     const store = makeStore();
     store.getState().enrollAutopilot("a1");
     store.getState().enrollAutopilot("a1::web");
-    store.getState().markAutopilotStuck("a1", "budget-spent", "fix-checks", 5, "x");
+    store.getState().retryAutopilotCycle("a1", "fix-checks", "x");
     store.getState().unenrollAutopilot("a1");
 
     expect(Object.keys(store.getState().autopilot)).toEqual(["a1::web"]);
@@ -450,22 +409,46 @@ describe("enrollment", () => {
     // The driver only ticks enrolled keys, but a race (unenroll mid-tick) must
     // not resurrect an entry.
     const store = makeStore();
-    store.getState().openAutopilotCycle("ghost", "fix-checks", "sig");
-    store.getState().markAutopilotStuck("ghost", "no-progress", null, 1, "");
+    store.getState().openAutopilotCycle("ghost", "fix-checks", "sig", "checks-failing:test");
+    store.getState().retryAutopilotCycle("ghost", "fix-checks", null);
     expect(store.getState().autopilot.ghost).toBeUndefined();
   });
 });
 
 describe("cycle bookkeeping", () => {
+  const SITUATION = "checks-failing:test";
+
   it("numbers attempts from the rung's spent budget", () => {
     const store = makeStore();
     store.getState().enrollAutopilot("a1");
-    store.getState().openAutopilotCycle("a1", "fix-checks", "sig");
+    store.getState().openAutopilotCycle("a1", "fix-checks", "sig", SITUATION);
     expect(store.getState().autopilot.a1.cycle?.attempt).toBe(1);
 
     store.getState().retryAutopilotCycle("a1", "fix-checks", null);
-    store.getState().openAutopilotCycle("a1", "fix-checks", "sig2");
+    store.getState().openAutopilotCycle("a1", "fix-checks", "sig2", SITUATION);
     expect(store.getState().autopilot.a1.cycle?.attempt).toBe(2);
+  });
+
+  it("starts the budget over for a new situation, but REMEMBERS what it already failed at", () => {
+    // A different failing check is a different problem: the tries spent on the
+    // old one don't count against it. Barren signatures are kept regardless —
+    // without that, a checkout whose world oscillates (a flaky check flipping
+    // back and forth) would burn a full budget on every flip re-attempting a
+    // world it has already proven it cannot change.
+    const store = makeStore();
+    store.getState().enrollAutopilot("a1");
+    store.getState().openAutopilotCycle("a1", "fix-checks", "sig", SITUATION);
+    store.getState().retryAutopilotCycle("a1", "fix-checks", "dead-world");
+    store.getState().retryAutopilotCycle("a1", "fix-checks", null);
+    expect(store.getState().autopilot.a1.attempts).toEqual({ "fix-checks": 2 });
+
+    store.getState().openAutopilotCycle("a1", "fix-checks", "sig3", "checks-failing:lint");
+
+    const s = store.getState().autopilot.a1;
+    expect(s.situation).toBe("checks-failing:lint");
+    expect(s.cycle?.attempt).toBe(1);
+    expect(s.attempts).toEqual({});
+    expect(s.barren).toEqual(["dead-world"]);
   });
 
   it("records a barren signature once, and only when given one", () => {
@@ -491,7 +474,7 @@ describe("cycle bookkeeping", () => {
   it("stamps the phase clock when evidence starts being awaited", () => {
     const store = makeStore();
     store.getState().enrollAutopilot("a1");
-    store.getState().openAutopilotCycle("a1", "fix-checks", "sig");
+    store.getState().openAutopilotCycle("a1", "fix-checks", "sig", SITUATION);
     store.getState().advanceAutopilotCycle("a1", "awaiting-evidence", 4242);
     expect(store.getState().autopilot.a1.cycle).toMatchObject({
       phase: "awaiting-evidence",
@@ -509,7 +492,7 @@ describe("verdicts belong to the cycle that produced them", () => {
     store.getState().recordAutopilotVerdict("a1", report("failed"));
     expect(store.getState().autopilotVerdicts.a1).toBeDefined();
 
-    store.getState().openAutopilotCycle("a1", "fix-checks", "sig");
+    store.getState().openAutopilotCycle("a1", "fix-checks", "sig", "checks-failing:test");
     expect(store.getState().autopilotVerdicts.a1).toBeUndefined();
   });
 

@@ -98,6 +98,9 @@ const cycle = (over: Partial<Cycle> = {}): Cycle => ({
 
 /** The trigger a `fix-checks` dispatch sends, as `appActionMessage` builds it. */
 const TRIGGER = '[app-action] fix-checks failing="test"';
+/** The blocker fingerprint of the seeded world (`blockerFingerprint`), so a
+ *  fixture's spent attempts belong to the situation the pass will see. */
+const SITUATION = "checks-failing:test";
 
 interface Fixture {
   /** Tracked checkouts, by `checkoutKey`. Their readiness is seeded to the one
@@ -498,10 +501,13 @@ describe("autopilotPass records what it did", () => {
   });
 
   it("carries the attempt number forward, so a retry reads as the try it was", async () => {
-    // Second cycle on the same rung: the entry has to say #2, which is the whole
-    // reason the attempt is read from the cycle rather than counted in the log.
+    // Second cycle on the same rung and the same situation: the entry has to say
+    // #2, which is the whole reason the attempt is read from the cycle rather than
+    // counted in the log.
     const { store } = makeStore({
-      autopilot: { [key.primary]: state({ attempts: { "fix-checks": 1 } }) },
+      autopilot: {
+        [key.primary]: state({ attempts: { "fix-checks": 1 }, situation: SITUATION }),
+      },
       agents: { a1: "idle" },
     });
 
@@ -513,21 +519,33 @@ describe("autopilotPass records what it did", () => {
     });
   });
 
-  it("logs an escalation with the reason that stopped it", async () => {
-    // Budget spent: the pass escalates instead of dispatching, and the log has to
-    // record WHY — that reason is the only explanation the user ever gets.
-    const { store } = makeStore({
-      autopilot: { [key.primary]: state({ attempts: { "fix-checks": 3 } }) },
+  it("logs a give-up with the reason, then goes quiet", async () => {
+    // The last cycle in the budget failed: the pass records WHY — that row is the
+    // only explanation the user ever gets — and from then on the checkout waits
+    // silently for the situation to change. No state, no marker, no card.
+    const { store, sendUserMessage } = makeStore({
+      autopilot: {
+        [key.primary]: state({
+          cycle: cycle({ phase: "awaiting-evidence", attempt: 3 }),
+          attempts: { "fix-checks": 2 },
+          situation: SITUATION,
+        }),
+      },
       agents: { a1: "idle" },
     });
 
     await autopilotPass([key.primary], new Set());
-
     expect(store.getState().autopilotLog[key.primary][0]).toMatchObject({
-      outcome: "escalate",
+      outcome: "give-up",
       reason: "budget-spent",
       rung: "fix-checks",
+      attempt: 3,
     });
+    expect(store.getState().autopilot[key.primary].cycle).toBeNull();
+
+    await autopilotPass([key.primary], new Set());
+    expect(store.getState().autopilotLog[key.primary]).toHaveLength(1);
+    expect(sendUserMessage).not.toHaveBeenCalled();
   });
 
   it("stays silent on a tick with nothing to do", async () => {

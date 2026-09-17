@@ -4,8 +4,8 @@ import { SplitAction, type SplitActionItem } from "./SplitAction";
 import { GitLink, Spinner, ViewOnGitHub } from "./shared";
 
 /** The pinned footer's action row: a single status slot (busy spinner →
- *  delegation → transient notice → why autopilot stopped → the idle primary
- *  status) followed by the split action button. */
+ *  delegation → transient notice → the idle primary status) followed by the
+ *  split action button. */
 export function ActionBar({
   statusKind,
   statusLabel,
@@ -13,7 +13,6 @@ export function ActionBar({
   busy,
   delegationLabel,
   autoAttempt,
-  autoStuck,
   notice,
   panelState,
   pushedLink,
@@ -35,9 +34,6 @@ export function ActionBar({
    *  the retry number of that cycle. A second or third try is exactly when the
    *  user wants to know before it gives up. */
   autoAttempt: number | null;
-  /** Why autopilot stopped working on this PR by itself, or null while it
-   *  hasn't. Phrased as a fact about the PR (see `stuckLabel`). */
-  autoStuck: string | null;
   notice: string | null;
   panelState: GitPanelState;
   pushedLink: string | null;
@@ -80,15 +76,6 @@ export function ActionBar({
         <div className="git-notice iflex-center text-xs">
           <Icon name="check" size={11} />
           <span>{notice}</span>
-        </div>
-      ) : autoStuck ? (
-        // Warn, not danger: nothing is broken, the agent did what it could and
-        // the next step is a person's. The primary action below is that step.
-        <div className="git-act-status flex-center warn text-xs">
-          <span className="d" />
-          <span className="lbl" title={autoStuck}>
-            {autoStuck}
-          </span>
         </div>
       ) : (
         <div className={`git-act-status flex-center text-xs ${statusKind}`}>

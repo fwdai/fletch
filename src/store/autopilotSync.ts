@@ -161,16 +161,17 @@ async function apply(
   // `wait` is most ticks and would bury them; `verify` / `await-evidence` are
   // steps inside a cycle whose outcome already reports how it went. Each call
   // sits where the attempt number is correct — a dispatch has no cycle until
-  // `openAutopilotCycle` creates one, while settle/retry read the cycle the
-  // action they precede is about to clear. Stamped with the pass's `now` rather
-  // than a fresh clock read, so an entry's time matches the decision behind it.
+  // `openAutopilotCycle` creates one, while settle/retry/give-up read the cycle
+  // the action they precede is about to clear. Stamped with the pass's `now`
+  // rather than a fresh clock read, so an entry's time matches the decision
+  // behind it.
   const log = (entry: Omit<AutopilotLogEntry, "at">) =>
     useAppStore.getState().recordAutopilotEvent(key, { at: now, ...entry });
   const attemptNow = () => useAppStore.getState().autopilot[key]?.cycle?.attempt;
 
   switch (effect.do) {
     case "dispatch": {
-      s.openAutopilotCycle(key, effect.rung, effect.signature);
+      s.openAutopilotCycle(key, effect.rung, effect.signature, effect.situation);
       log({ outcome: "dispatch", rung: effect.rung, attempt: attemptNow() });
       // Same trigger construction the panel and Mission Control use, including
       // the `repo=` scope for a secondary checkout.
@@ -217,15 +218,12 @@ async function apply(
       log({ outcome: "retry", rung: effect.rung, attempt: attemptNow() });
       s.retryAutopilotCycle(key, effect.rung, effect.barren);
       return;
-    case "escalate":
-      log({ outcome: "escalate", rung: effect.rung, reason: effect.reason });
-      s.markAutopilotStuck(key, effect.reason, effect.rung, now, effect.blockers);
-      return;
-    case "revive":
-      // Recorded, because "it picked this back up on its own" is exactly the kind
-      // of unattended action the audit trail exists to explain.
-      log({ outcome: "revive", rung: null });
-      s.reviveAutopilot(key);
+    case "give-up":
+      // The same bookkeeping as a retry — count the attempt, remember a barren
+      // world — but recorded as the row a returning user is looking for. From
+      // here the policy waits until the situation changes; nothing else to do.
+      log({ outcome: "give-up", rung: effect.rung, attempt: attemptNow(), reason: effect.reason });
+      s.retryAutopilotCycle(key, effect.rung, effect.barren);
       return;
     case "wait":
       return;

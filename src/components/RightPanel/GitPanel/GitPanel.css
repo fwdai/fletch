@@ -1208,6 +1208,6 @@
   color: var(--success);
 }
 /* The row that ended the loop — the one a returning user is looking for. */
-.ap-log-row.o-escalate .ap-log-what {
+.ap-log-row.o-give-up .ap-log-what {
   color: var(--warn);
 }
