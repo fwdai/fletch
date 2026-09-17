@@ -6,7 +6,7 @@ import { checkoutKey } from "@/store/git";
 import { ActionBar } from "./ActionBar";
 import { AutopilotHistory, AutopilotSwitch } from "./Autopilot";
 import { ChangesList } from "./ChangesList";
-import { CommitComposer } from "./CommitComposer";
+import { CommitComposer, CommitStatus } from "./CommitComposer";
 import { ClosedPRCard, ConflictCard, PRCard } from "./cards";
 import { EmptyState } from "./EmptyState";
 import { FileDiffView } from "./FileDiffView";
@@ -228,7 +228,8 @@ export function GitRepoSection({
         )}
       </div>
 
-      {/* ── pinned footer: commit message + status + action ── */}
+      {/* ── pinned footer: one row of status + action, with the commit
+             message field unfolding above it only when the user opts in ── */}
       <div className="git-foot">
         {showCommit && (
           <CommitComposer
@@ -236,7 +237,6 @@ export function GitRepoSection({
             msg={msg}
             setMsg={setMsg}
             textareaRef={commitRef}
-            onOpen={openOverride}
             onRevert={revertOverride}
             onSubmit={() => runAction(effectiveKey)}
           />
@@ -245,7 +245,17 @@ export function GitRepoSection({
         <ActionBar
           statusKind={primary.statusKind}
           statusLabel={primary.statusLabel}
-          statusExtra={primary.statusExtra}
+          // In the changes state the status is who writes the message — the
+          // header and the button already say "uncommitted" and "commit".
+          idle={
+            showCommit ? (
+              <CommitStatus
+                writing={override}
+                hasMsg={msg.trim().length > 0}
+                onOpen={openOverride}
+              />
+            ) : undefined
+          }
           busy={busy}
           delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
           autoAttempt={autoAttempt}
@@ -253,7 +263,6 @@ export function GitRepoSection({
           panelState={panelState}
           pushedLink={pushedLink}
           aheadCount={aheadCount}
-          prUrl={prState?.url}
           items={items}
           selectedKey={effectiveKey}
           tone={tone}

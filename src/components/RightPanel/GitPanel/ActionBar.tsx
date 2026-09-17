@@ -1,15 +1,21 @@
+import type { ReactNode } from "react";
 import { Icon } from "@/components/Icon";
 import type { ActionTone, GitPanelState, StatusKind } from "@/components/RightPanel/primaryActions";
 import { SplitAction, type SplitActionItem } from "./SplitAction";
-import { GitLink, Spinner, ViewOnGitHub } from "./shared";
+import { GitLink, Spinner } from "./shared";
+
+/** States whose idle status would only repeat the header: the pill and its
+ *  text already say "PR #7 · checks failing", "#7 · closed", "#7 → main". The
+ *  slot stays empty and the action button stands alone. */
+const HEADER_SAYS_IT: readonly GitPanelState[] = ["pr-open", "pr-closed", "merged"];
 
 /** The pinned footer's action row: a single status slot (busy spinner →
- *  delegation → transient notice → the idle primary status) followed by the
- *  split action button. */
+ *  delegation → transient notice → the idle status) followed by the split
+ *  action button. The idle status says only what the header doesn't. */
 export function ActionBar({
   statusKind,
   statusLabel,
-  statusExtra,
+  idle,
   busy,
   delegationLabel,
   autoAttempt,
@@ -17,7 +23,6 @@ export function ActionBar({
   panelState,
   pushedLink,
   aheadCount,
-  prUrl,
   items,
   selectedKey,
   tone,
@@ -27,7 +32,9 @@ export function ActionBar({
 }: {
   statusKind: StatusKind;
   statusLabel: string;
-  statusExtra?: string;
+  /** Replaces `statusLabel` in the idle slot when set — the changes state's
+   *  "who writes the commit message" note (see `CommitStatus`). */
+  idle?: ReactNode;
   busy: string | null;
   delegationLabel: string | null;
   /** Set when the in-flight delegation was started by autopilot, not a click —
@@ -38,7 +45,6 @@ export function ActionBar({
   panelState: GitPanelState;
   pushedLink: string | null;
   aheadCount: number;
-  prUrl: string | undefined;
   items: SplitActionItem[];
   selectedKey: string;
   tone: ActionTone;
@@ -46,6 +52,7 @@ export function ActionBar({
   onSelect: (key: string) => void;
   onRun: () => void;
 }) {
+  const showIdle = idle != null || !HEADER_SAYS_IT.includes(panelState);
   return (
     <div className="git-act flex-center">
       {busy ? (
@@ -77,11 +84,13 @@ export function ActionBar({
           <Icon name="check" size={11} />
           <span>{notice}</span>
         </div>
-      ) : (
+      ) : showIdle ? (
         <div className={`git-act-status flex-center text-xs ${statusKind}`}>
           <span className="d" />
           <span className="lbl">
-            {panelState === "pushed" && pushedLink ? (
+            {idle != null ? (
+              idle
+            ) : panelState === "pushed" && pushedLink ? (
               <>
                 <GitLink href={pushedLink}>
                   {aheadCount === 1 ? "1 commit" : `${aheadCount} commits`}
@@ -92,14 +101,8 @@ export function ActionBar({
               statusLabel
             )}
           </span>
-          {statusExtra && <span className="ex text-xs">{statusExtra}</span>}
-          {/* View on GitHub is a convenience link, not an action — a quiet
-              chip beside the status, never a menu item. */}
-          {panelState === "pr-open" && prUrl && (
-            <ViewOnGitHub href={prUrl} className="st-ext" size={11} />
-          )}
         </div>
-      )}
+      ) : null}
       <SplitAction
         items={items}
         selectedKey={selectedKey}
