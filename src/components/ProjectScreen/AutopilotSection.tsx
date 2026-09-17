@@ -24,9 +24,9 @@ export function AutopilotSection({ projectId }: { projectId: string }) {
       <header className="ps-section-h">
         <h2 className="ps-section-t text-lg">Autopilot</h2>
         <p className="ps-section-lead text-sm">
-          When on, every agent in this project keeps its own PR moving: it fixes failing checks,
-          resolves conflicts, updates the branch and answers review comments without being asked,
-          and hands back when it gets stuck. On by default.
+          When on, every agent in this project keeps its open PR moving: it fixes failing checks,
+          resolves conflicts, updates the branch and answers review comments without being asked.
+          Anything else — committing, opening the PR, merging — stays yours. On by default.
         </p>
       </header>
 

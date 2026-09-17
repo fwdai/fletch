@@ -15,17 +15,16 @@
 // been archived. What survives a restart is the durable record: the agent's
 // transcript and the PR itself.
 
-import type { AutopilotEffect, StuckReason } from "@/autopilot";
+import type { AutopilotEffect, GiveUpReason } from "@/autopilot";
 import type { DelegationKind } from "@/delegation";
 import type { SliceCreator } from "./types";
 
-/** Entries kept per checkout. Sized to hold one complete ladder exhaustion — the
- *  full story behind a single `stuck`: the four rungs' budgets sum to 9 cycles
- *  (`RUNG_BUDGET`), each writing a dispatch plus its outcome, so 18 entries cover
- *  everything autopilot can do between a human's "go" and its handing back, with
- *  slack for the escalation itself. Beyond that the oldest rows are answering a
- *  question nobody is asking, and an unbounded array in a day-long session is
- *  just a leak. */
+/** Entries kept per checkout. Sized to hold one complete ladder exhaustion: the
+ *  four rungs' budgets sum to 9 cycles (`RUNG_BUDGET`), each writing a dispatch
+ *  plus its outcome, so 18 entries cover everything autopilot can do on one
+ *  situation before it has given up on every rung, with slack. Beyond that the
+ *  oldest rows are answering a question nobody is asking, and an unbounded array
+ *  in a day-long session is just a leak. */
 export const AUTOPILOT_LOG_LIMIT = 20;
 
 /** The effects worth remembering: the ones that spend an agent turn or change
@@ -39,7 +38,7 @@ export const AUTOPILOT_LOG_LIMIT = 20;
  *  the cycle's own outcome already says how it went. */
 export type AutopilotOutcome = Extract<
   AutopilotEffect["do"],
-  "dispatch" | "settle" | "retry" | "escalate" | "revive"
+  "dispatch" | "settle" | "retry" | "give-up"
 >;
 
 /** One thing autopilot did, in the terms a user would ask about it: what
@@ -54,13 +53,12 @@ export interface AutopilotLogEntry {
    *  describes. Same convention as `autopilot.ts` / `readiness.ts`. */
   at: number;
   outcome: AutopilotOutcome;
-  /** The rung concerned. Null only for an escalation the ladder raised before
-   *  settling on a rung. */
+  /** The rung concerned. */
   rung: DelegationKind | null;
   /** 1-based cycle attempt, when the event belongs to a cycle. */
   attempt?: number;
-  /** Why autopilot handed the checkout back. Only ever set on an `escalate`. */
-  reason?: StuckReason;
+  /** Why autopilot gave up on the rung. Only ever set on a `give-up`. */
+  reason?: GiveUpReason;
 }
 
 export interface AutopilotLogSlice {

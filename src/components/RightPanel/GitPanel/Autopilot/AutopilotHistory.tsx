@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
-import { rungNoun, stuckLabel } from "@/helpers/autopilotCopy";
+import { gaveUpLabel, rungNoun } from "@/helpers/autopilotCopy";
 import { useAppStore } from "@/store";
 import type { AutopilotLogEntry } from "@/store/autopilotLog";
 import { checkoutKey } from "@/store/git";
@@ -13,9 +13,9 @@ import { checkoutKey } from "@/store/git";
 // absent entirely until autopilot has done something worth reading, and only
 // the rows that mean trouble take colour.
 
-/** One row's phrasing, past tense — this already happened. Escalations reuse
- *  `stuckLabel`, so the reason a user reads in the log is worded exactly like
- *  the one in the status line. */
+/** One row's phrasing, past tense — this already happened. A give-up says why,
+ *  as a fact about the PR (`gaveUpLabel`); it is the row a returning user is
+ *  looking for, and the only place the reason is ever shown. */
 export function eventLabel(entry: AutopilotLogEntry): string {
   switch (entry.outcome) {
     case "dispatch":
@@ -24,13 +24,8 @@ export function eventLabel(entry: AutopilotLogEntry): string {
       return "Worked";
     case "retry":
       return "Didn't work — trying again";
-    case "escalate":
-      return entry.reason ? stuckLabel(entry.reason, entry.rung) : "Stopped";
-    case "revive":
-      // Phrased as what changed, not as a state flag: the user did something
-      // outside Fletch (committed, approved, settled a thread) and autopilot
-      // noticed. Saying so is the whole reason this row exists.
-      return "Picked it back up — what was blocking it changed";
+    case "give-up":
+      return entry.reason ? gaveUpLabel(entry.reason, entry.rung) : "Gave up";
   }
 }
 

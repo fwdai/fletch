@@ -15,12 +15,14 @@ import { autopilotProjectOn } from "@/store/autopilot";
 // Scoped to the agent, not the checkout: every repo of a multi-repo workspace
 // pauses together, so a multi-repo panel shows this once.
 
-/** Hover copy, phrased as what will happen — not as a mode. */
+/** Hover copy: one short line, because the bubble is a single unwrapped row
+ *  anchored at the panel's right edge (`data-tip-end`) — a sentence would run
+ *  off the left of the panel instead. */
 function switchTip(projectOn: boolean, on: boolean): string {
-  if (!projectOn) return "Autopilot is off for this project (Project Settings)";
+  if (!projectOn) return "Autopilot is off for this project";
   return on
-    ? "Autopilot on — fixes checks, conflicts and review comments by itself. Click to switch off for this workspace."
-    : "Autopilot off for this workspace. Click to let it keep the PR mergeable again.";
+    ? "Autopilot on · click to pause for this workspace"
+    : "Autopilot paused · click to resume";
 }
 
 export function AutopilotSwitch({ agentId, projectId }: { agentId: string; projectId: string }) {
@@ -43,6 +45,9 @@ export function AutopilotSwitch({ agentId, projectId }: { agentId: string; proje
       aria-checked={on}
       aria-label={tip}
       data-tip={tip}
+      // Rightmost glyph in the header: a centred bubble would be clipped by the
+      // panel edge, so anchor it to this edge and let it grow leftwards.
+      data-tip-end=""
       disabled={!projectOn}
       onClick={() => setAgentAutopilot(agentId, !on)}
     >

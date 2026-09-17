@@ -22,3 +22,11 @@
   bottom: auto;
   top: calc(100% + 6px);
 }
+/* For a trigger at the right edge of a clipping container (a panel header's
+   trailing icon): grow the bubble leftwards from the trigger's right edge
+   instead of centring it, so it can't run off the panel. */
+.tip[data-tip-end]:hover::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}

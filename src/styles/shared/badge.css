@@ -123,8 +123,8 @@
   flex-shrink: 0;
 }
 /* autopilot mark — same weight and metrics as the a-stale cue, because it is the
- * same kind of thing: a hint on an existing row, not an announcement. Only the
- * two situations a human might care about are ever rendered (see AutopilotMark). */
+ * same kind of thing: a hint on an existing row, not an announcement. Rendered
+ * only while the agent is on a turn autopilot started (see AutopilotMark). */
 .agent-sub .a-autopilot {
   display: inline-flex;
   align-items: center;
@@ -147,15 +147,6 @@
   50% {
     opacity: 1;
   }
-}
-/* stopped: the app's plain "needs you" dot in warn, not danger. Nothing is
- * broken — the agent did what it could and the next step is a person's. Danger
- * stays reserved for the error badge. */
-.agent-sub .a-autopilot.stuck .d {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--warn);
 }
 @media (prefers-reduced-motion: reduce) {
   .agent-sub .a-autopilot.working svg {

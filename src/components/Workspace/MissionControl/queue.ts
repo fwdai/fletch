@@ -16,9 +16,6 @@ import type {
   WfPausedReason,
   WfRun,
 } from "@/api";
-import type { AutopilotState, StuckReason } from "@/autopilot";
-import type { DelegationKind } from "@/delegation";
-
 /** A card's tests-evidence chip state, derived from a turn-end
  *  [`VerificationReport`]. Only ever a definitive verdict — `undefined` while
  *  unknown/running/skipped, so the card never shows a fake state. */
@@ -32,8 +29,7 @@ export type ReviewReason =
   | "workflow-conflict"
   | "unseen-results"
   | "checks-failing"
-  | "unresolved-comments"
-  | "autopilot-stuck";
+  | "unresolved-comments";
 
 /** A "base moved under this agent" signal — quiet information, not an alarm (a
  *  moved base is normal in a parallel fleet). Fed from the fleet-wide `gitMeta`
@@ -113,9 +109,6 @@ export interface ReviewItem {
    *  Omitted when unknown/running/no-tests, so it decorates an existing card
    *  and never fakes a state. */
   tests?: TestsEvidence;
-  /** Why autopilot handed this agent back, when it did. Drives the card's
-   *  reason line and its retry affordance. */
-  autopilotStuck?: { reason: StuckReason; rung: DelegationKind | null };
   staleness?: Staleness | null;
   /** Advisory overlap hints — other agents on the same repo touching some of
    *  the same files. Omitted when there are none. */
@@ -154,10 +147,6 @@ export interface QueueInput {
    *  = never verified. */
   verificationReports: Record<string, VerificationReport>;
   runs: readonly WfRun[];
-  /** Per-checkout autopilot state, keyed by `checkoutKey`. An enrolled checkout
-   *  that gave up is the one signal autopilot cannot surface itself: it has
-   *  stopped, so nothing else will raise its hand. */
-  autopilot: Record<string, AutopilotState>;
   /** Item id → signal signature it was dismissed at. */
   dismissed: Record<string, string>;
 }
@@ -242,32 +231,11 @@ function collectPrSignals(agentId: string, input: QueueInput): PrSignal[] {
 
 /** The agent item's signature: only the volatile review signals (across every
  *  repo's PR), so dismissing it holds until one of them changes. */
-/** The first of an agent's checkouts where autopilot gave up, or null.
- *
- *  Scanned across every checkout (`agentId` plus `agentId::subdir`) because a
- *  secondary repo's stuck autopilot deserves the same card as the primary's —
- *  same prefix scan `maxBehind` uses. First match wins: one card per agent, and
- *  the reason is what matters, not which repo produced it. */
-function stuckCheckout(
-  agentId: string,
-  input: QueueInput,
-): { reason: StuckReason; rung: DelegationKind | null } | null {
-  const prefix = `${agentId}::`;
-  for (const [key, state] of Object.entries(input.autopilot)) {
-    if (key !== agentId && !key.startsWith(prefix)) continue;
-    if (state.enrolled && state.stuck) {
-      return { reason: state.stuck.reason, rung: state.stuck.rung };
-    }
-  }
-  return null;
-}
-
 function agentSignature(p: {
   unseen: boolean;
   stats: ShortStats | undefined;
   signals: PrSignal[];
   tests: TestsEvidence | undefined;
-  stuck: { reason: StuckReason; rung: string | null } | null;
 }): string {
   const d = p.stats ? `${p.stats.additions}/${p.stats.deletions}/${p.stats.file_count}` : "-";
   const c = p.signals
@@ -277,11 +245,8 @@ function agentSignature(p: {
     })
     .join(",");
   // Include the tests verdict so a fresh verification resurfaces a dismissed
-  // card (a pass→fail flip, or the first result landing after dismissal), and the
-  // autopilot verdict so dismissing "stopped: budget spent" doesn't also hide a
-  // later "stopped: needs you" — a different reason is a different decision.
-  const ap = p.stuck ? `${p.stuck.reason}:${p.stuck.rung ?? "-"}` : "-";
-  return `u${p.unseen ? 1 : 0}|d${d}|c${c || "-"}|t${p.tests ?? "-"}|a${ap}`;
+  // card (a pass→fail flip, or the first result landing after dismissal).
+  return `u${p.unseen ? 1 : 0}|d${d}|c${c || "-"}|t${p.tests ?? "-"}`;
 }
 
 /** The agent's stalest checkout vs its base, or null when no base has moved
@@ -495,15 +460,10 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
     const failing = signals.filter((s) => s.checks?.rollup === "failing");
     const unresolved = signals.reduce((n, s) => n + s.unresolved, 0);
     const tests = testsEvidence(input.verificationReports[agent.id]);
-    // An enrolled checkout that gave up. Autopilot is stopped by then, so if this
-    // doesn't raise its hand nothing does — the whole point of an unattended loop
-    // is that you only hear about it when it needs you.
-    const stuck = stuckCheckout(agent.id, input);
 
     const reasons: ReviewReason[] = [];
     // Ad-hoc: a turn landed while you weren't looking and left changes behind.
     if (agent.status === "idle" && unseen && hasDiff) reasons.push("unseen-results");
-    if (stuck) reasons.push("autopilot-stuck");
     if (failing.length > 0) reasons.push("checks-failing");
     if (unresolved > 0) reasons.push("unresolved-comments");
     if (reasons.length === 0) continue;
@@ -511,15 +471,12 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
     // The evidence chips show one PR: the one carrying the issue (a failing
     // repo first, then one with unresolved threads, then the primary).
     const shown = failing[0] ?? signals.find((s) => s.unresolved > 0) ?? signals[0];
-    const isPr =
-      reasons.includes("checks-failing") ||
-      reasons.includes("unresolved-comments") ||
-      reasons.includes("autopilot-stuck");
+    const isPr = reasons.includes("checks-failing") || reasons.includes("unresolved-comments");
     items.push({
       id: `agent:${agent.id}`,
       kind: "agent",
       bucket: isPr ? BUCKET.pr : BUCKET.unseen,
-      signature: agentSignature({ unseen, stats, signals, tests, stuck }),
+      signature: agentSignature({ unseen, stats, signals, tests }),
       activityAt: parseCreated(agent.created_at),
       title: agent.name,
       goal: firstLine(agent.task) || "—",
@@ -533,7 +490,6 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
       // Decoration on an existing card (like staleness/overlaps below): the
       // tests chip never creates a card, only annotates one.
       tests,
-      autopilotStuck: stuck ?? undefined,
       // Always-visible signals (§2/§4): the base-moved chip and overlap hints
       // decorate an existing card in every panel state — they never create one.
       staleness: stalenessOf(agent.id, input),

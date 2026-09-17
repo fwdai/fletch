@@ -15,7 +15,7 @@
 // the live world.
 
 import type { AgentRecord, VerificationReport } from "@/api";
-import type { AutopilotState, Cycle, CyclePhase, StuckReason } from "@/autopilot";
+import type { AutopilotState, Cycle, CyclePhase } from "@/autopilot";
 import { newEnrollment } from "@/autopilot";
 import type { DelegationKind } from "@/delegation";
 import {
@@ -128,38 +128,26 @@ export interface AutopilotSlice {
   enrollAutopilot: (key: string) => void;
   /** Forget a checkout's state and history — used when its agent is gone. */
   unenrollAutopilot: (key: string) => void;
-  /** The human's "try again": clear `stuck`, its spent budget and the barren
-   *  signatures. Distinct from `reviveAutopilot`, which is autopilot noticing
-   *  the world moved on its own. */
-  resumeAutopilot: (key: string) => void;
 
   // ── driver transitions (called by autopilotSync, not by the UI) ──
-  /** Open a cycle for a dispatched rung. */
-  openAutopilotCycle: (key: string, rung: DelegationKind, signature: string) => void;
+  /** Open a cycle for a dispatched rung. `situation` is the blocker fingerprint
+   *  it is dispatched into; a situation other than the one the checkout's
+   *  attempts were spent on starts the budget over (see `AutopilotState`). */
+  openAutopilotCycle: (
+    key: string,
+    rung: DelegationKind,
+    signature: string,
+    situation: string,
+  ) => void;
   /** Move the in-flight cycle to a new phase, restamping its clock. */
   advanceAutopilotCycle: (key: string, phase: CyclePhase, now: number) => void;
   /** The cycle worked: clear it and give the rung its budget back. */
   settleAutopilotCycle: (key: string, rung: DelegationKind) => void;
-  /** The cycle failed with budget left: clear it, count the attempt, and record
-   *  a barren signature when the world didn't move. */
+  /** The cycle failed: clear it, count the attempt, and record a barren
+   *  signature when the world didn't move. The same transition whether budget
+   *  remains or autopilot is giving up — the policy decides that, and only the
+   *  history log tells the two apart. */
   retryAutopilotCycle: (key: string, rung: DelegationKind, barren: string | null) => void;
-  /** Hand the checkout back to the user. `blockers` is the situation that
-   *  stopped it, so `autopilotStep` can tell when that situation has passed. */
-  markAutopilotStuck: (
-    key: string,
-    reason: StuckReason,
-    rung: DelegationKind | null,
-    now: number,
-    blockers: string,
-  ) => void;
-  /** The situation that stopped it has changed — start looking again.
-   *
-   *  Distinct from `resumeAutopilot`: this is autopilot noticing the world moved,
-   *  not the user insisting. It grants a fresh budget (a new situation deserves
-   *  its own attempts) but KEEPS `barren`, so a world autopilot has already
-   *  proven it cannot change stays refused even if the checkout oscillates back
-   *  to it. A human saying "try again" clears barren too. */
-  reviveAutopilot: (key: string) => void;
   /** Store the local verification that will judge this cycle. */
   recordAutopilotVerdict: (key: string, report: VerificationReport) => void;
 }
@@ -280,26 +268,28 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
     });
   },
 
-  resumeAutopilot: (key) =>
-    // Clearing `stuck` AND the spent attempts is the point: the human has looked
-    // and wants another go. Barren signatures are cleared too — the world may
-    // have changed under them.
-    patch(set, key, (s) => ({ ...s, stuck: null, attempts: {}, barren: [] })),
-
-  openAutopilotCycle: (key, rung, signature) => {
-    patch(set, key, (s) => ({
-      ...s,
-      // `phaseSince` is stamped when the phase that needs a clock
-      // (`awaiting-evidence`) is entered, so `working` carries the dispatch time
-      // only for display.
-      cycle: {
-        rung,
-        attempt: (s.attempts[rung] ?? 0) + 1,
-        signature,
-        phase: "working",
-        phaseSince: 0,
-      } satisfies Cycle,
-    }));
+  openAutopilotCycle: (key, rung, signature, situation) => {
+    patch(set, key, (s) => {
+      // A different situation is a different problem: the tries spent on the
+      // old one don't count against it. Barren signatures are kept — a world
+      // already proven unchangeable stays refused whatever the situation.
+      const attempts = s.situation === situation ? s.attempts : {};
+      return {
+        ...s,
+        situation,
+        attempts,
+        // `phaseSince` is stamped when the phase that needs a clock
+        // (`awaiting-evidence`) is entered, so `working` carries the dispatch
+        // time only for display.
+        cycle: {
+          rung,
+          attempt: (attempts[rung] ?? 0) + 1,
+          signature,
+          phase: "working",
+          phaseSince: 0,
+        } satisfies Cycle,
+      };
+    });
     // The previous cycle's verdict must not be read as this one's.
     set((s) => ({ autopilotVerdicts: clearVerdict(s.autopilotVerdicts, key) }));
   },
@@ -323,12 +313,6 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
       attempts: { ...s.attempts, [rung]: (s.attempts[rung] ?? 0) + 1 },
       barren: barren && !s.barren.includes(barren) ? [...s.barren, barren] : s.barren,
     })),
-
-  markAutopilotStuck: (key, reason, rung, now, blockers) =>
-    patch(set, key, (s) => ({ ...s, cycle: null, stuck: { reason, rung, at: now, blockers } })),
-
-  reviveAutopilot: (key) =>
-    patch(set, key, (s) => ({ ...s, stuck: null, cycle: null, attempts: {} })),
 
   recordAutopilotVerdict: (key, report) =>
     set((s) => ({ autopilotVerdicts: { ...s.autopilotVerdicts, [key]: report } })),

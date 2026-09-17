@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AgentRecord, TrackedRepo } from "@/api";
 import { delegationLabel } from "@/delegation";
-import { stuckLabel } from "@/helpers/autopilotCopy";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import { ActionBar } from "./ActionBar";
@@ -72,14 +71,10 @@ export function GitRepoSection({
   const delegationNotice = useAppStore((s) => s.delegationNotices[key]);
   // Autopilot is how the agent behaves on this PR (switched per project in
   // settings, pausable per workspace from the header). The action bar's status
-  // slot carries the two things worth knowing: that the in-flight turn was
-  // started automatically, and why it stopped working on the PR by itself, when
-  // it did.
+  // slot carries the one thing worth knowing about it: that the in-flight turn
+  // was started automatically. What it did afterwards is the body's history.
   const autopilot = useAppStore((s) => s.autopilot[key]);
   const autoAttempt = autopilot?.cycle?.phase === "working" ? autopilot.cycle.attempt : null;
-  const autoStuck = autopilot?.stuck
-    ? stuckLabel(autopilot.stuck.reason, autopilot.stuck.rung)
-    : null;
 
   // The changed file whose diff is open in place of the list; null shows the
   // list. Falls back to the list when the file leaves it (e.g. after a commit).
@@ -254,7 +249,6 @@ export function GitRepoSection({
           busy={busy}
           delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
           autoAttempt={autoAttempt}
-          autoStuck={autoStuck}
           notice={notice ?? delegationNotice ?? null}
           panelState={panelState}
           pushedLink={pushedLink}

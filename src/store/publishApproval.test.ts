@@ -4,7 +4,7 @@
 // The load-bearing case is the *unattended* one. If `publishPreAuthorized` fails
 // to recognise an autopilot-driven push, the backend prompt goes unanswered, its
 // 120s timeout denies it, the rung fails, autopilot retries it to its budget and
-// then marks the checkout stuck — a run nobody was watching, stopped. So the
+// then gives up — a run nobody was watching, spent for nothing. So the
 // autopilot ground is asserted from both directions, and its independence from the
 // delegation ground is asserted too.
 
