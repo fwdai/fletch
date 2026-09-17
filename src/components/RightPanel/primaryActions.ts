@@ -63,7 +63,6 @@ export interface PrimaryAction {
   icon: IconName;
   statusLabel: string;
   statusKind: StatusKind;
-  statusExtra?: string;
   /** Visual tone of the CTA. Omitted → accent fill. */
   tone?: ActionTone;
 }
@@ -152,7 +151,6 @@ export function githubUnblockAction(counts?: ActionCounts): PrimaryAction | null
  *  Pass counts for dynamic status labels; falls back to generic copy. */
 export function primaryFor(state: GitPanelState, counts?: ActionCounts): PrimaryAction {
   const {
-    files = 0,
     ahead = 0,
     behind = 0,
     unpushed = 0,
@@ -196,6 +194,8 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
       // Offline / local-only: a push/PR mode can't run, so the primary becomes
       // plain local Commit (still fully functional) and the GitHub path is
       // offered in the menu — never a button that fails on click.
+      // The status is a fallback only: the panel shows who writes the message
+      // here (see `CommitStatus`), and the file count is the header's job.
       if (commitModeNeedsRemote(effective) && githubUnblockAction(counts)) {
         return {
           key: "agent-commit",
@@ -203,13 +203,11 @@ export function primaryFor(state: GitPanelState, counts?: ActionCounts): Primary
           icon: "commit",
           statusLabel: "Ready to commit",
           statusKind: "warn",
-          statusExtra: `${files} ${files === 1 ? "file" : "files"}`,
         };
       }
       const common = {
         statusLabel: "Ready to commit",
         statusKind: "warn" as StatusKind,
-        statusExtra: `${files} ${files === 1 ? "file" : "files"}`,
       };
       switch (effective) {
         case "agent-commit":

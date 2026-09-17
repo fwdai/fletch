@@ -1,5 +1,7 @@
+import { open } from "@tauri-apps/plugin-shell";
 import type { ReactNode } from "react";
 import type { GitState, MergeState, PrState } from "@/api";
+import { Icon } from "@/components/Icon";
 import type { GitPanelState } from "@/components/RightPanel/primaryActions";
 import { describeMergeGate, type MergeGateTone, mergeGateLabel } from "@/mergeGate";
 import { ViewOnGitHub } from "./shared";
@@ -29,8 +31,12 @@ interface HeaderInfo {
   dot?: boolean;
   /** Show the +adds/−dels diff summary on the right (changes state). */
   diff?: boolean;
-  /** Show a trailing ↗ link to the PR on GitHub. */
+  /** Show a trailing ↗ link to the PR on GitHub — for states whose pill is NOT
+   *  the PR (uncommitted work / a push on a branch that has one). */
   ext?: boolean;
+  /** The pill names the PR, so the pill IS the link: "PR #7 ↗". The one place
+   *  the panel links out to the PR itself, so it sits at the top. */
+  pillLink?: boolean;
 }
 
 export function describeHeader(
@@ -73,17 +79,22 @@ export function describeHeader(
         kind: HEADER_KIND_BY_TONE[gate.tone],
         pill,
         text: mergeGateLabel(gate.situation, base),
-        ext: true,
+        pillLink: true,
       };
     }
     case "pr-closed":
-      return { kind: "neutral", pill: "Closed", text: n != null ? `#${n}` : "—", ext: true };
+      return {
+        kind: "neutral",
+        pill: n != null ? `Closed #${n}` : "Closed",
+        text: branch,
+        pillLink: true,
+      };
     case "merged":
       return {
         kind: "merged",
-        pill: "Merged",
-        text: n != null ? `#${n} → ${base}` : `→ ${base}`,
-        ext: true,
+        pill: n != null ? `Merged #${n}` : "Merged",
+        text: `→ ${base}`,
+        pillLink: true,
       };
     default:
       return { kind: "clean", text: branch, sub: `← ${base}`, dot: true };
@@ -118,7 +129,20 @@ export function StatusHeader({
   return (
     <div className={`git-hdr flex-center k-${h.kind}`}>
       {h.dot && <span className="hdr-dot" />}
-      {h.pill && <span className="pill text-xs">{h.pill}</span>}
+      {h.pill &&
+        (h.pillLink && pr?.url ? (
+          <button
+            type="button"
+            className="pill pill-link text-xs"
+            title="View on GitHub"
+            onClick={() => void open(pr.url)}
+          >
+            {h.pill}
+            <Icon name="external" size={10} />
+          </button>
+        ) : (
+          <span className="pill text-xs">{h.pill}</span>
+        ))}
       <span className="bn text-sm">{h.text}</span>
       {h.sub && <span className="base text-xs">{h.sub}</span>}
       <div className="hdr-meta">

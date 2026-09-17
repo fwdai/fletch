@@ -39,6 +39,24 @@
   border-radius: 999px;
   white-space: nowrap;
 }
+/* the pill as the PR link (pr-open / closed / merged): same look, plus a ↗ and
+   a hover, so the one link out to the PR is the thing that names it */
+.git-hdr .pill-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.12s;
+}
+.git-hdr .pill-link:hover {
+  filter: brightness(1.15);
+}
+.git-hdr .pill-link svg {
+  opacity: 0.7;
+}
 .git-hdr .hdr-dot {
   width: 7px;
   height: 7px;
@@ -423,19 +441,17 @@
   opacity: 0.7;
 }
 
-/* ── pinned footer: commit message + status + action ── */
+/* ── pinned footer: one row of status + action; the commit message field
+   unfolds above it only when the user opts in ── */
 .git-foot {
   flex-shrink: 0;
   border-top: 1px solid var(--bd);
   background: var(--bg-1);
 }
-.git-commit {
-  padding: 13px 18px 0;
-}
 
-/* The composer holds two stacked rows in one slot — a collapsed note and the
-   override field. Each animates its own height via grid-template-rows so the
-   note shuts as the field opens (and vice-versa) in one smooth motion. */
+/* The override field animates its height via grid-template-rows. Closed, the
+   0fr track collapses it to nothing — its padding is on the inner, inside the
+   track, so a closed composer adds no gap above the action bar. */
 .cm-row {
   display: grid;
   grid-template-rows: 0fr;
@@ -447,14 +463,7 @@
 .cm-row > .cm-row-inner {
   overflow: hidden;
   min-height: 0;
-}
-.cm-row.note {
-  grid-template-rows: 1fr;
-  opacity: 1;
-}
-.cm-row.note.shut {
-  grid-template-rows: 0fr;
-  opacity: 0;
+  padding: 13px 18px 0;
 }
 .cm-row.field.open {
   grid-template-rows: 1fr;
@@ -466,12 +475,7 @@
   }
 }
 
-/* collapsed note (agent default) — quiet one-liner */
-.cm-note {
-  line-height: var(--lh-normal);
-  color: var(--fg-3);
-  text-wrap: pretty;
-}
+/* inline "Write it yourself" opt-in, in the status slot's note */
 .cm-link {
   background: none;
   border: 0;
@@ -557,28 +561,6 @@
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* helper line under the field */
-.git-commit .cm-foot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 7px;
-  line-height: var(--lh-snug);
-  color: var(--fg-3);
-}
-.git-commit .cm-foot svg {
-  width: 11px;
-  height: 11px;
-  flex-shrink: 0;
-  color: var(--accent);
-}
-.git-commit .cm-foot.on {
-  color: var(--accent);
-}
-.git-commit .cm-foot .cm-foot-dim {
-  color: var(--fg-3);
-}
-
 /* ── responsive action bar ──────────────────────────────────────────
    status sits left and takes the slack (ellipsis-truncates); the split-button
    is right-aligned at its natural width — never centered, never stretched.
@@ -649,31 +631,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.git-act-status .ex {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  color: var(--fg-3);
-  white-space: nowrap;
-}
-/* quiet "view on GitHub" chip beside the status text (pr-open) */
-.git-act-status .st-ext {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 4px;
-  padding: 0;
-  background: none;
-  color: var(--fg-3);
-  cursor: pointer;
-}
-.git-act-status .st-ext:hover {
-  background: var(--bg-3);
-  color: var(--fg-1);
 }
 
 /* split button — one CTA, auto-width, right-aligned */
