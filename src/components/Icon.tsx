@@ -36,6 +36,7 @@ import {
   GripVertical,
   Hand,
   History,
+  Image,
   Inbox,
   Laptop,
   Layers,
@@ -43,6 +44,7 @@ import {
   ListChecks,
   Map as MapIcon,
   MessageSquare,
+  MessageSquarePlus,
   Mic,
   MicOff,
   Minus,
@@ -183,6 +185,8 @@ const ICON_COMPONENTS = {
   hand: Hand,
   grip: GripVertical,
   feedback: MessageSquare,
+  chatPlus: MessageSquarePlus,
+  image: Image,
   activity: Activity,
 } satisfies Record<string, ComponentType<IconComponentProps>>;
 

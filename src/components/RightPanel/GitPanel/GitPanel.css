@@ -968,17 +968,18 @@
   display: flex;
   align-items: flex-start;
   gap: 7px;
-  padding: 4px;
-  border-radius: 5px;
+  padding: 6px 6px 3px;
+  border-radius: var(--r-sm);
   color: var(--fg-2);
   min-width: 0;
 }
-.pr-comment:hover {
+.pr-comment:hover,
+.pr-comment.is-open {
   background: var(--bg-3);
 }
 .pr-comment > svg {
   flex: none;
-  margin-top: 1px;
+  margin-top: 2px;
   opacity: 0.7;
 }
 .pr-comment .pc-body {
@@ -986,7 +987,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 .pr-comment .pc-top {
   display: flex;
@@ -1012,6 +1013,8 @@
   flex: none;
   margin-left: auto;
 }
+/* Collapsed: the body flattened to prose (markdown + HTML stripped), two
+   lines max. */
 .pr-comment .pc-text {
   color: var(--fg-2);
   line-height: var(--lh-snug);
@@ -1019,32 +1022,167 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
+/* Expanded: the rendered markdown, on a compact scale for the panel. */
+.pr-comment .pc-md {
+  color: var(--fg-1);
+  line-height: var(--lh-snug);
+  overflow-wrap: anywhere;
+}
+.pc-md > :first-child {
+  margin-top: 0;
+}
+.pc-md > :last-child {
+  margin-bottom: 0;
+}
+.pc-md p {
+  margin: 0 0 6px;
+}
+.pc-md h1,
+.pc-md h2,
+.pc-md h3,
+.pc-md h4 {
+  margin: 8px 0 4px;
+  font-size: inherit;
+  font-weight: 600;
+  line-height: var(--lh-tight);
+}
+.pc-md ul,
+.pc-md ol {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}
+.pc-md li {
+  margin: 2px 0;
+}
+.pc-md blockquote {
+  margin: 4px 0 6px;
+  padding: 0 0 0 8px;
+  color: var(--fg-2);
+  border-left: 2px solid var(--accent-line);
+}
+.pc-md a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.pc-md a:hover {
+  text-decoration: underline;
+}
+.pc-md code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--hover);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.pc-md pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  overflow-x: auto;
+}
+.pc-md pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  white-space: pre-wrap;
+}
+/* Image thumbnails: bounded, click opens in the browser. */
+.pc-img {
+  display: block;
+  margin: 6px 0;
+  padding: 0;
+  max-width: 100%;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.pc-img img {
+  display: block;
+  max-width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+}
+/* …or, when the image can't load here (private-repo attachment), a link. */
+.pc-img-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 4px 0;
+  padding: 3px 8px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-xs);
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.pc-img-link:hover {
+  color: var(--fg-1);
+  border-color: var(--bd);
+}
+
+/* Actions sit under the body and stay visible at rest — labelled, legible,
+   the primary one in accent. Negative inset lines the first label up with
+   the text above. */
 .pr-comment .pc-acts {
   display: flex;
+  align-items: center;
   gap: 2px;
-  flex: none;
-  opacity: 0;
+  margin: 2px 0 0 -7px;
+  min-width: 0;
 }
-.pr-comment:hover .pc-acts,
-.pr-comment:focus-within .pc-acts {
-  opacity: 1;
-}
-.pr-comment .pc-act {
+.pc-acts-end {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
+  gap: 2px;
+  margin-left: auto;
+}
+.pr-comment .pc-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 7px;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   background: none;
-  color: var(--fg-3);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
+}
+.pr-comment .pc-act svg {
+  flex: none;
 }
 .pr-comment .pc-act:hover {
   background: var(--bg-4, var(--bg-2));
   color: var(--fg-1);
+}
+.pr-comment .pc-act--primary {
+  color: var(--accent);
+}
+.pr-comment .pc-act--primary:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pc-media {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 
 /* menu opens upward from the split button (reuses .dd / .dd-item base) */

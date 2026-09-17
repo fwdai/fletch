@@ -43,7 +43,16 @@ const components: Components = { a: ExternalLink };
  *  handled by the provider on its own container, keyed on `TOKEN_CHIP_ATTR`. */
 export const TokenChipContext = createContext<ReadonlySet<string> | null>(null);
 
-export function Markdown({ children }: { children: string }) {
+export function Markdown({
+  children,
+  components: overrides,
+}: {
+  children: string;
+  /** Per-surface element overrides layered over the defaults (links always
+   *  open externally). Pass a module-level constant so the tree isn't
+   *  rebuilt every render. */
+  components?: Components;
+}) {
   const tokens = useContext(TokenChipContext);
   // Keyed on the set's identity, so a provider that holds it stable doesn't
   // recompile the pattern (or re-render the tree) on every unrelated change.
@@ -51,8 +60,12 @@ export function Markdown({ children }: { children: string }) {
     () => (tokens && tokens.size > 0 ? [remarkGfm, remarkTokenChips(tokens)] : [remarkGfm]),
     [tokens],
   );
+  const merged = useMemo(
+    () => (overrides ? { ...components, ...overrides } : components),
+    [overrides],
+  );
   return (
-    <ReactMarkdown remarkPlugins={plugins} components={components}>
+    <ReactMarkdown remarkPlugins={plugins} components={merged}>
       {children}
     </ReactMarkdown>
   );
