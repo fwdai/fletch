@@ -10,6 +10,7 @@ import { ChangesList } from "./ChangesList";
 import { CommitComposer } from "./CommitComposer";
 import { ClosedPRCard, ConflictCard, PRCard } from "./cards";
 import { EmptyState } from "./EmptyState";
+import { FileDiffView } from "./FileDiffView";
 import { useActionBarModel } from "./hooks/useActionBarModel";
 import { useCommitDraft } from "./hooks/useCommitDraft";
 import { useGitActions } from "./hooks/useGitActions";
@@ -75,16 +76,15 @@ export function GitRepoSection({
     ? stuckLabel(autopilot.stuck.reason, autopilot.stuck.rung)
     : null;
 
-  // Selected file in the changes list — kept valid across polls (fall back to
-  // the first file when the selection disappears).
-  const [selected, setSelected] = useState<string | null>(null);
+  // The changed file whose diff is open in place of the list; null shows the
+  // list. Falls back to the list when the file leaves it (e.g. after a commit).
+  const [viewing, setViewing] = useState<string | null>(null);
   useEffect(() => {
-    setSelected((prev) => {
-      const paths = gitState?.files.map((f) => f.path) ?? [];
-      if (prev && paths.includes(prev)) return prev;
-      return paths[0] ?? null;
-    });
+    setViewing((prev) => (prev && gitState?.files.some((f) => f.path === prev) ? prev : null));
   }, [gitState]);
+  // `get_file_diff` resolves paths against the primary checkout, so a
+  // secondary repo's rows stay read-only until the command learns `subdir`.
+  const canOpenDiff = subdir === undefined;
 
   const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
   const hasOrigin = gitState?.has_origin ?? true;
@@ -186,28 +186,39 @@ export function GitRepoSection({
 
       {/* ── scrollable body: the changes are the focus ── */}
       <div className={`git-body ${busy ? "busy" : ""}`}>
-        {panelState === "pr-open" && prState && (
-          <PRCard
-            pr={prState}
-            base={base}
-            checks={checks}
-            comments={comments}
-            onAddToChat={addCommentToChat}
-          />
-        )}
-        {panelState === "pr-closed" && prState && <ClosedPRCard pr={prState} />}
-        {panelState === "conflicts" && gitState && <ConflictCard files={gitState.files} />}
-
-        {showFiles && (
-          <ChangesList
+        {showFiles && viewing ? (
+          <FileDiffView
+            agentId={agent.id}
             files={gitState?.files ?? []}
-            selected={selected}
-            onSelect={setSelected}
-            onRefresh={() => void fetchGitState(agent.id)}
+            path={viewing}
+            onSelect={setViewing}
+            onBack={() => setViewing(null)}
           />
-        )}
+        ) : (
+          <>
+            {panelState === "pr-open" && prState && (
+              <PRCard
+                pr={prState}
+                base={base}
+                checks={checks}
+                comments={comments}
+                onAddToChat={addCommentToChat}
+              />
+            )}
+            {panelState === "pr-closed" && prState && <ClosedPRCard pr={prState} />}
+            {panelState === "conflicts" && gitState && <ConflictCard files={gitState.files} />}
 
-        <EmptyState state={panelState} base={base} />
+            {showFiles && (
+              <ChangesList
+                files={gitState?.files ?? []}
+                onOpen={canOpenDiff ? setViewing : undefined}
+                onRefresh={() => void fetchGitState(agent.id)}
+              />
+            )}
+
+            <EmptyState state={panelState} base={base} />
+          </>
+        )}
       </div>
 
       {/* ── pinned footer: commit message + status + action ── */}

@@ -1,3 +1,5 @@
+import type { FileStatus } from "@/api";
+
 // Parse `git diff` unified output into hunks the Code/Live panel can render.
 // Mirrors the prototype's hunk shape (fletch v2 data.jsx CODE_CHANGES):
 //   { header, lines: [{ op, o, n, t }] }
@@ -57,4 +59,25 @@ export function parseUnifiedDiff(text: string): DiffHunk[] {
   }
 
   return hunks;
+}
+
+/** git's status kind → the one-letter badge the file lists show (VS Code's
+ *  letters; untracked reads as a new file). */
+export function statusLetter(kind: FileStatus["kind"]): string {
+  switch (kind) {
+    case "modified":
+      return "M";
+    case "added":
+      return "A";
+    case "deleted":
+      return "D";
+    case "renamed":
+      return "R";
+    case "untracked":
+      return "U";
+    case "conflicted":
+      return "!";
+    default:
+      return "?";
+  }
 }

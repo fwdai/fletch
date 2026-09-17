@@ -11,7 +11,7 @@ import type { AgentRecord, DiffBaseMode, FileStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { useHljsTheme } from "@/util/codeTheme";
-import type { DiffLine } from "@/util/diff";
+import { type DiffLine, statusLetter } from "@/util/diff";
 import { DiffBody, extOf, useFileDiff } from "./DiffView";
 
 interface CodeLivePanelProps {
@@ -22,25 +22,6 @@ interface CodeLivePanelProps {
   diffBase: DiffBaseMode;
   onSelect: (path: string) => void;
   onOpenInEditor: (path: string) => void;
-}
-
-function statusLetter(kind: FileStatus["kind"]): string {
-  switch (kind) {
-    case "modified":
-      return "M";
-    case "added":
-      return "A";
-    case "deleted":
-      return "D";
-    case "renamed":
-      return "R";
-    case "untracked":
-      return "U"; // new-but-unstaged file, shown green like VS Code
-    case "conflicted":
-      return "!";
-    default:
-      return "?";
-  }
 }
 
 const sigOf = (f: FileStatus) => `${f.additions}:${f.deletions}`;
