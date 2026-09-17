@@ -10,8 +10,8 @@ use crate::git;
 use crate::sandbox::provision::{self, CheckoutSpec};
 use crate::sandbox::{docker, podman, EngineKind};
 use crate::workspace::{
-    agent_parent_dir, repo_checkout_path, AgentRecord, AgentStatus, ArchiveMetadata,
-    ArchivedRepoSnapshot, DiffStats, TrackedRepo,
+    agent_parent_dir, repo_checkout_path, AgentRecord, AgentStatus, ArchivedRepoSnapshot,
+    DiffStats, TrackedRepo,
 };
 
 use super::events::emit_workspace_changed;
@@ -27,6 +27,15 @@ impl Supervisor {
     /// Rejects while the agent is actively spawning or running a turn.
     /// Idle agents are safe to archive; we shut down the waiting
     /// process before taking repo snapshots.
+    ///
+    /// The archive is committed — `archived_at` stamped, `workspace:changed`
+    /// emitted — BEFORE any cleanup, and everything after that mark is
+    /// best-effort. The click is the user's decision; the seconds of git and
+    /// `rm -rf` that follow must not be a window in which a workspace read
+    /// still reports the agent as live (that is how a just-archived row used
+    /// to reappear in the sidebar). Cleanup failures are recorded on the row
+    /// (`finish_archive`) rather than returned, so the caller never sees an
+    /// error for an archive that did happen.
     pub async fn archive_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
         if record.archive.is_some() {
@@ -41,6 +50,9 @@ impl Supervisor {
             ));
         }
 
+        self.workspace.begin_archive(agent_id)?;
+        emit_workspace_changed(&app);
+
         self.detach_runtime(agent_id);
         reap_agent_containers(agent_id, Some(&record), "archive");
 
@@ -48,7 +60,7 @@ impl Supervisor {
         // down the checkouts/branches (best-effort — a single git failure
         // shouldn't block archive, since the user's intent is "get rid of
         // this").
-        let (snapshots, diff_stats) = capture_repo_snapshots(agent_id, &record.repos).await;
+        let snapshots = capture_repo_snapshots(agent_id, &record.repos).await;
 
         // A clone workspace's commits exist only inside the clone until they
         // are pushed — teardown deletes unpushed ones for good (restore can
@@ -70,19 +82,20 @@ impl Supervisor {
             }
         }
 
-        teardown_agent_checkouts(agent_id, &record.repos, "archive").await;
+        let failures = teardown_agent_checkouts(agent_id, &record.repos, "archive").await;
 
-        let archive = ArchiveMetadata {
-            archived_at: chrono::Utc::now().to_rfc3339(),
-            repos: snapshots,
-            diff_stats,
-        };
-
-        self.workspace.archive_agent(agent_id, archive)?;
-        // The frontend listens to `agent:status` to drive most UI;
-        // archive is structurally a deeper change, so we re-emit the
-        // workspace via a tiny event. Frontend already reloads on this
-        // signal via `get_workspace`.
+        let error = (!failures.is_empty()).then(|| failures.join("; "));
+        if let Err(e) = self
+            .workspace
+            .finish_archive(agent_id, &snapshots, error.as_deref())
+        {
+            // The agent is archived regardless; what's lost is the snapshot
+            // restore rebuilds from and the timing trace. Loud, not fatal.
+            tracing::error!(agent_id, error = %e, "recording archive completion failed");
+        }
+        // The snapshot (diff stats, branch tips) reshapes the record beyond
+        // what `agent:status` carries, so ping the frontend to reload the
+        // workspace now that History has something to show.
         emit_workspace_changed(&app);
         Ok(())
     }
@@ -251,7 +264,9 @@ impl Supervisor {
 
         self.detach_runtime(agent_id);
         reap_agent_containers(agent_id, record.as_ref(), "discard");
-        teardown_agent_checkouts(agent_id, &repos, "discard").await;
+        // Discard deletes the row, so there is nowhere to record failures;
+        // the helper has already logged them.
+        let _ = teardown_agent_checkouts(agent_id, &repos, "discard").await;
 
         self.workspace.remove_agent(agent_id)?;
         Ok(())
@@ -271,7 +286,7 @@ impl Supervisor {
     /// are logged by the shared checkout teardown helper as orphan cleanup.
     pub(super) async fn teardown_project_checkouts(&self, agents: &[AgentRecord]) {
         for agent in agents {
-            teardown_agent_checkouts(&agent.id, &agent.repos, "project delete").await;
+            let _ = teardown_agent_checkouts(&agent.id, &agent.repos, "project delete").await;
         }
     }
 
@@ -319,20 +334,16 @@ impl Supervisor {
     }
 }
 
-/// Snapshot each tracked repo's tip SHA + diff stats against its fork point,
-/// returning the per-repo snapshots plus the aggregate add/delete totals.
+/// Snapshot each tracked repo's tip SHA + diff stats against its fork point.
+/// (The aggregate totals History shows are summed from these rows when the
+/// record is read back — see `build_archive_metadata`.)
 ///
 /// Resolves SHAs without mutating anything, so callers can capture state before
 /// any destructive teardown. The tip is the checkout's HEAD — works whether the
 /// agent is on a branch or still detached (never pushed), so both restore from
 /// the exact committed tip.
-async fn capture_repo_snapshots(
-    agent_id: &str,
-    repos: &[TrackedRepo],
-) -> (Vec<ArchivedRepoSnapshot>, DiffStats) {
+async fn capture_repo_snapshots(agent_id: &str, repos: &[TrackedRepo]) -> Vec<ArchivedRepoSnapshot> {
     let mut snapshots: Vec<ArchivedRepoSnapshot> = Vec::with_capacity(repos.len());
-    let mut total_adds: u32 = 0;
-    let mut total_dels: u32 = 0;
 
     for repo in repos {
         let checkout = repo.checkout_path(agent_id).ok();
@@ -363,9 +374,6 @@ async fn capture_repo_snapshots(
                 }
             }
         }
-        total_adds = total_adds.saturating_add(adds);
-        total_dels = total_dels.saturating_add(dels);
-
         snapshots.push(ArchivedRepoSnapshot {
             repo_path: repo.repo_path.clone(),
             subdir: repo.subdir.clone(),
@@ -380,13 +388,7 @@ async fn capture_repo_snapshots(
         });
     }
 
-    (
-        snapshots,
-        DiffStats {
-            additions: total_adds,
-            deletions: total_dels,
-        },
-    )
+    snapshots
 }
 
 /// Whether `repo` has an `origin` remote — the only source a clone-mode restore
@@ -489,7 +491,8 @@ fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'sta
 /// Best-effort teardown of every tracked repo's checkout + branch, plus the
 /// agent's parent dir. Failures are logged (tagged with `op` for context) but
 /// never abort the sweep — the caller's intent is to get rid of the agent.
-/// Shared by archive and discard.
+/// Shared by archive and discard. Returns one message per failed step, so
+/// archive can keep them on the row as its audit trail; empty means clean.
 ///
 /// An *adopted* checkout is skipped: the agent was a tenant of a working tree
 /// something else owns (the workflow kernel's shared run workspace, which the
@@ -497,7 +500,12 @@ fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'sta
 /// agent must leave the directory exactly where it is. Every step of a run
 /// passes through here as it is archived, so the run's work would not survive
 /// its first completed step otherwise.
-async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &str) {
+async fn teardown_agent_checkouts(
+    agent_id: &str,
+    repos: &[TrackedRepo],
+    op: &str,
+) -> Vec<String> {
+    let mut failures = Vec::new();
     for repo in repos {
         if repo.is_adopted() {
             continue;
@@ -506,6 +514,7 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(error = %e, subdir = %repo.subdir, op, "checkout path resolution failed");
+                failures.push(format!("{}: checkout path: {e}", repo.subdir));
                 continue;
             }
         };
@@ -515,6 +524,7 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
         // would force-delete an unrelated same-named branch in the source repo.
         if let Err(e) = provision::teardown(&checkout).await {
             tracing::warn!(error = %e, subdir = %repo.subdir, op, "workspace teardown failed");
+            failures.push(format!("{}: teardown: {e}", repo.subdir));
         }
         // Legacy safety net: an agent provisioned under the removed worktree
         // mode (pre-upgrade) left a `.git/worktrees/<name>` registration in the
@@ -528,13 +538,17 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
 
     // Remove the parent dir (may still hold orphan files if any checkout
     // removal failed). Best-effort, retried + logged (see `remove_agent_dir`).
-    let _ = remove_agent_dir(agent_id, op).await;
+    if !remove_agent_dir(agent_id, op).await {
+        failures.push("agent dir removal failed".to_string());
+    }
 
     // The agent's RPC mailbox dies with it — nothing will ever read from it
     // again, and leaving it behind leaks one dir per agent ever spawned.
     if let Err(e) = crate::rpc::remove_mailbox(agent_id) {
         tracing::warn!(agent_id, op, error = %e, "rpc mailbox removal failed");
+        failures.push(format!("rpc mailbox: {e}"));
     }
+    failures
 }
 
 /// Remove an agent's parent checkout dir, retrying briefly. Returns `true` once

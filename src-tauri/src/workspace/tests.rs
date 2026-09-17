@@ -159,15 +159,7 @@ fn adopted_checkout_round_trips_and_is_cleared_by_restore() {
 
     // Restore provisions an agent-owned clone at the derived path, so the row
     // must stop naming the run's tree.
-    wm.archive_agent(
-        "yosemite",
-        ArchiveMetadata {
-            archived_at: chrono::Utc::now().to_rfc3339(),
-            repos: Vec::new(),
-            diff_stats: DiffStats::default(),
-        },
-    )
-    .unwrap();
+    wm.begin_archive("yosemite").unwrap();
     wm.restore_agent("yosemite", vec![mk_repo("/r")]).unwrap();
     let restored = wm.agent("yosemite").unwrap();
     assert_eq!(restored.repos[0].adopted_checkout, None);
@@ -1691,26 +1683,27 @@ fn archive_then_restore_roundtrip() {
     let id = rec.id.clone();
     wm.add_agent(&mut rec).unwrap();
 
-    let archive = ArchiveMetadata {
-        archived_at: "2026-05-26T12:00:00+00:00".into(),
-        repos: vec![ArchivedRepoSnapshot {
-            repo_path: PathBuf::from("/some/repo"),
-            subdir: "repo".into(),
-            branch_name: Some("feat/do-the-thing".into()),
-            branch_tip_sha: Some("deadbeef".into()),
-            parent_branch: Some("main".into()),
-            parent_branch_sha: Some("cafebabe".into()),
-            diff_stats: DiffStats {
-                additions: 12,
-                deletions: 3,
-            },
-        }],
+    // The mark alone archives the agent: it is hidden from the live list and
+    // derives Stopped before any snapshot is written.
+    wm.begin_archive(&id).unwrap();
+    let marked = wm.agent(&id).unwrap();
+    assert!(marked.archive.is_some());
+    assert!(marked.repos.is_empty());
+    assert_eq!(marked.status, AgentStatus::Stopped);
+
+    let snapshots = vec![ArchivedRepoSnapshot {
+        repo_path: PathBuf::from("/some/repo"),
+        subdir: "repo".into(),
+        branch_name: Some("feat/do-the-thing".into()),
+        branch_tip_sha: Some("deadbeef".into()),
+        parent_branch: Some("main".into()),
+        parent_branch_sha: Some("cafebabe".into()),
         diff_stats: DiffStats {
             additions: 12,
             deletions: 3,
         },
-    };
-    wm.archive_agent(&id, archive).unwrap();
+    }];
+    wm.finish_archive(&id, &snapshots, None).unwrap();
 
     let a = wm.agent(&id).unwrap();
     assert!(a.archive.is_some());
@@ -1724,6 +1717,8 @@ fn archive_then_restore_roundtrip() {
     assert_eq!(arch.repos[0].branch_tip_sha.as_deref(), Some("deadbeef"));
     assert_eq!(arch.repos[0].diff_stats.additions, 12);
     assert_eq!(arch.repos[0].diff_stats.deletions, 3);
+    assert_eq!(arch.diff_stats.additions, 12);
+    assert_eq!(arch.diff_stats.deletions, 3);
 
     // Restore puts repos back and clears the archived/stopped
     // disposition, so the record derives Idle. (The supervisor's
@@ -1748,6 +1743,62 @@ fn archive_then_restore_roundtrip() {
     assert_eq!(a.status, AgentStatus::Idle);
 }
 
+/// The audit trail behind archive's two writes: `begin_archive` leaves the
+/// completion columns empty (an archive that never finishes stays visibly
+/// unfinished), `finish_archive` stamps the completion time and any cleanup
+/// error, and restore wipes both so a later re-archive measures afresh.
+#[test]
+fn archive_trace_records_completion_and_error() {
+    let db = test_db();
+    seed_repo(&db, "/some/repo");
+    let wm = WorkspaceManager::new(db.clone());
+
+    let mut rec = new_agent_record(
+        "yosemite".into(),
+        "yosemite".into(),
+        "claude".into(),
+        mk_repo("/some/repo"),
+        "".into(),
+        AgentView::Custom,
+    );
+    let id = rec.id.clone();
+    wm.add_agent(&mut rec).unwrap();
+
+    let trace = |id: &str| -> (Option<i64>, Option<i64>, Option<String>) {
+        db.lock()
+            .query_row(
+                "SELECT archived_at, archive_completed_at, archive_error
+                 FROM workspaces WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+
+    wm.begin_archive(&id).unwrap();
+    let (archived, completed, error) = trace(&id);
+    assert!(archived.is_some());
+    assert_eq!(completed, None, "the mark alone must not read as finished");
+    assert_eq!(error, None);
+
+    wm.finish_archive(&id, &[], Some("repo: teardown: busy"))
+        .unwrap();
+    let (archived_after, completed, error) = trace(&id);
+    assert_eq!(archived_after, archived, "finish must not move the click time");
+    assert!(completed.is_some_and(|c| c >= archived.unwrap()));
+    assert_eq!(error.as_deref(), Some("repo: teardown: busy"));
+    // A recorded cleanup failure doesn't un-archive anything.
+    assert!(wm.agent(&id).unwrap().archive.is_some());
+
+    wm.restore_agent(&id, vec![mk_repo("/some/repo")]).unwrap();
+    assert_eq!(trace(&id), (None, None, None));
+
+    // Re-archiving starts a clean measurement.
+    wm.begin_archive(&id).unwrap();
+    let (_, completed, error) = trace(&id);
+    assert_eq!((completed, error), (None, None));
+}
+
 #[test]
 fn archived_agents_survive_reload_without_reconcile() {
     let db = test_db();
@@ -1765,15 +1816,7 @@ fn archived_agents_survive_reload_without_reconcile() {
         );
         let id = rec.id.clone();
         wm.add_agent(&mut rec).unwrap();
-        wm.archive_agent(
-            &id,
-            ArchiveMetadata {
-                archived_at: "2026-05-26T12:00:00+00:00".into(),
-                repos: vec![],
-                diff_stats: DiffStats::default(),
-            },
-        )
-        .unwrap();
+        wm.begin_archive(&id).unwrap();
     }
 
     // Second instance — archived agent should stay archived.
@@ -2535,18 +2578,7 @@ fn live_agent_ids_covers_live_agents_and_frees_archived_ones() {
         HashSet::from(["yosemite".to_string(), "dolomites".to_string()]),
     );
 
-    wm.archive_agent(
-        "dolomites",
-        ArchiveMetadata {
-            archived_at: "2026-07-29T12:00:00+00:00".into(),
-            repos: vec![],
-            diff_stats: DiffStats {
-                additions: 0,
-                deletions: 0,
-            },
-        },
-    )
-    .unwrap();
+    wm.begin_archive("dolomites").unwrap();
 
     assert_eq!(
         wm.live_agent_ids().unwrap(),

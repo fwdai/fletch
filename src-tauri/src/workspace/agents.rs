@@ -461,31 +461,41 @@ impl WorkspaceManager {
         Self::load_agent(&conn, id)
     }
 
-    /// Mark an agent as archived. Stamps `archived_at`, stores the
-    /// snapshot of every tracked repo, and clears `repos` so the
-    /// frontend doesn't treat the (now-deleted) checkouts as live.
-    /// Status moves to `Stopped` so resume-on-launch ignores it.
-    pub fn archive_agent(&self, id: &str, archive: ArchiveMetadata) -> Result<()> {
+    /// Mark an agent as archived — the first of archive's two writes, made
+    /// the moment the user asks, before any cleanup. Stamping `archived_at`
+    /// is what hides the agent from every workspace read and derives its
+    /// status to `Stopped` (so resume-on-launch ignores it); there is no
+    /// status column to flip. `setup_completed_at` is cleared too — restore
+    /// recreates the checkout from scratch, so node_modules etc. won't be
+    /// there. The completion trace is reset so a re-archive after restore
+    /// starts a fresh measurement.
+    pub fn begin_archive(&self, id: &str) -> Result<()> {
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE workspaces SET archived_at = ?1, setup_completed_at = NULL,
+                    archive_completed_at = NULL, archive_error = NULL
+             WHERE id = ?2",
+            rusqlite::params![now_millis(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Record the outcome of archive's cleanup — the second write. Stores the
+    /// snapshot of every tracked repo (what restore rebuilds from), stamps
+    /// `archive_completed_at`, and keeps `error` (the joined cleanup failures,
+    /// `None` when clean) as the audit trail. `archived_at` is untouched, so
+    /// the agent stays archived whatever happened here.
+    pub fn finish_archive(
+        &self,
+        id: &str,
+        snapshots: &[ArchivedRepoSnapshot],
+        error: Option<&str>,
+    ) -> Result<()> {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
 
-        // Parse archived_at string to millis for storage.
-        let archived_millis = chrono::DateTime::parse_from_rfc3339(&archive.archived_at)
-            .map(|dt| dt.timestamp_millis())
-            .unwrap_or_else(|_| now_millis());
-
-        // Clear setup_completed_at too — restore recreates the checkout
-        // from scratch, so node_modules etc. won't be there. Stamping
-        // archived_at is enough to derive `Stopped`; there is no status
-        // column to flip.
-        conn.execute(
-            "UPDATE workspaces SET archived_at = ?1,
-                    setup_completed_at = NULL WHERE id = ?2",
-            rusqlite::params![archived_millis, id],
-        )?;
-
-        // Update checkout rows with snapshot data from ArchiveMetadata.repos.
-        for snap in &archive.repos {
+        for snap in snapshots {
             conn.execute(
                 "UPDATE worktrees SET branch_tip_sha = ?1, parent_branch_sha = ?2,
                         diff_additions = ?3, diff_deletions = ?4
@@ -501,6 +511,10 @@ impl WorkspaceManager {
             )?;
         }
 
+        conn.execute(
+            "UPDATE workspaces SET archive_completed_at = ?1, archive_error = ?2 WHERE id = ?3",
+            rusqlite::params![now_millis(), error, id],
+        )?;
         Ok(())
     }
 
@@ -515,7 +529,9 @@ impl WorkspaceManager {
         // record to its resting `Idle` state — a restored agent should be
         // live-able again, not stuck Stopped.
         conn.execute(
-            "UPDATE workspaces SET archived_at = NULL, stopped_at = NULL WHERE id = ?1",
+            "UPDATE workspaces SET archived_at = NULL, stopped_at = NULL,
+                    archive_completed_at = NULL, archive_error = NULL
+             WHERE id = ?1",
             [id],
         )?;
 
