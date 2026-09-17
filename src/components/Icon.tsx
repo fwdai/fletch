@@ -75,6 +75,7 @@ import {
   Wrench,
   X,
   Zap,
+  ZapOff,
 } from "lucide-react";
 import type { ComponentType, CSSProperties, ReactNode, SVGProps } from "react";
 import { createElement } from "react";
@@ -177,6 +178,7 @@ const ICON_COMPONENTS = {
   moon: Moon,
   sun: Sun,
   zap: Zap,
+  zapOff: ZapOff,
   clock: Clock,
   hand: Hand,
   grip: GripVertical,

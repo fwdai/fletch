@@ -109,12 +109,21 @@ interface Fixture {
   projectOf?: Record<string, string>;
   /** Projects whose autopilot switch is off. */
   disabled?: string[];
+  /** Workspaces (agent ids) paused from the Git panel. */
+  paused?: string[];
   /** Checkouts (by key) to seed readiness for beyond the tracked ones — used
    *  when the pass is expected to enroll a checkout it hasn't seen. */
   readiness?: string[];
 }
 
-function makeStore({ autopilot, agents, projectOf = {}, disabled = [], readiness = [] }: Fixture) {
+function makeStore({
+  autopilot,
+  agents,
+  projectOf = {},
+  disabled = [],
+  paused = [],
+  readiness = [],
+}: Fixture) {
   const sendUserMessage = vi.fn();
   const store = create<AppState>()(
     (...a) =>
@@ -141,6 +150,7 @@ function makeStore({ autopilot, agents, projectOf = {}, disabled = [], readiness
     } as any,
     autopilot,
     autopilotDisabledProjects: disabled,
+    autopilotPausedAgents: paused,
     gitStates: per(git()),
     prStates: per(pr()),
     prChecks: per(checks()),
@@ -360,26 +370,39 @@ describe("autopilotKeys derives the sweep from live agents", () => {
   it("includes every checkout of every agent in an enabled project, keyed like the Git panel", () => {
     // The primary repo is the plain agent id (index 0, whatever its subdir says);
     // secondaries carry `::subdir` — the same keys every git/PR map uses.
-    const keys = autopilotKeys([agent("a1", "p1", ["", "web"]), agent("a2", "p2")], {}, []);
+    const keys = autopilotKeys([agent("a1", "p1", ["", "web"]), agent("a2", "p2")], {}, [], []);
     expect(keys).toEqual(["a1", "a1::web", "a2"]);
   });
 
   it("sweeps NOTHING while the opt-outs are unknown — fail closed, not open", () => {
     // Hydration failed or hasn't finished: even a checkout already tracked is
     // left alone, because we can't tell whose project said no.
-    expect(autopilotKeys([agent("a1", "p1")], { a1: state() }, null)).toEqual([]);
+    expect(autopilotKeys([agent("a1", "p1")], { a1: state() }, null, [])).toEqual([]);
   });
 
   it("leaves out the agents of a project that switched autopilot off", () => {
-    const keys = autopilotKeys([agent("a1", "p1"), agent("a2", "p2")], {}, ["p2"]);
+    const keys = autopilotKeys([agent("a1", "p1"), agent("a2", "p2")], {}, ["p2"], []);
     expect(keys).toEqual(["a1"]);
   });
 
+  it("leaves out every checkout of a workspace paused from the Git panel", () => {
+    // The pause is per agent: a multi-repo workspace's secondary goes with it,
+    // and a sibling agent in the same project is untouched.
+    const keys = autopilotKeys([agent("a1", "p1", ["", "web"]), agent("a2", "p1")], {}, [], ["a1"]);
+    expect(keys).toEqual(["a2"]);
+  });
+
   it("still visits a tracked checkout that is no longer live, so the pass can drop it", () => {
-    // Whether the agent is gone or its project was just switched off, the entry
-    // needs one more visit to be cleaned up rather than lingering forever.
-    const keys = autopilotKeys([agent("a1", "p1")], { gone: state(), a2: state() }, ["p2"]);
-    expect(keys).toEqual(["a1", "a2", "gone"]);
+    // Whether the agent is gone, its project was just switched off, or it was
+    // just paused, the entry needs one more visit to be cleaned up rather than
+    // lingering forever.
+    const keys = autopilotKeys(
+      [agent("a1", "p1"), agent("a3", "p1")],
+      { gone: state(), a2: state(), a3: state() },
+      ["p2"],
+      ["a3"],
+    );
+    expect(keys).toEqual(["a1", "a2", "a3", "gone"]);
   });
 });
 
@@ -415,6 +438,41 @@ describe("autopilotPass enrolls on the first tick and honours the project switch
     expect(store.getState().autopilot[key.primary]).toBeUndefined();
     expect(sendUserMessage).not.toHaveBeenCalled();
     expect(runVerification).not.toHaveBeenCalled();
+  });
+
+  it("does nothing for a paused workspace, and forgets its state — the kill switch", async () => {
+    // Someone else is already on this PR: the user flipped the panel switch
+    // mid-cycle. The turn already running is theirs to stop; autopilot just
+    // stops judging, dispatching, and claiming anything about this workspace.
+    const { store, sendUserMessage } = makeStore({
+      autopilot: { [key.primary]: state({ cycle: cycle() }), [key.web]: state() },
+      agents: { a1: "idle" },
+      paused: ["a1"],
+    });
+
+    await autopilotPass([key.primary, key.web], new Set());
+
+    expect(store.getState().autopilot).toEqual({});
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(runVerification).not.toHaveBeenCalled();
+  });
+
+  it("picks a workspace back up on the tick after it is un-paused, fresh", async () => {
+    const { store, sendUserMessage } = makeStore({
+      autopilot: {},
+      agents: { a1: "idle" },
+      paused: ["a1"],
+      readiness: [key.primary],
+    });
+
+    await autopilotPass([key.primary], new Set());
+    expect(sendUserMessage).not.toHaveBeenCalled();
+
+    store.setState({ autopilotPausedAgents: [] });
+    await autopilotPass([key.primary], new Set());
+
+    expect(store.getState().autopilot[key.primary].cycle?.rung).toBe("fix-checks");
+    expect(sendUserMessage).toHaveBeenCalledExactlyOnceWith("a1", TRIGGER);
   });
 });
 

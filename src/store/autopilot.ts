@@ -6,13 +6,15 @@
 // (`AUTOPILOT_ENABLED_KEY`) and is mirrored here as the list of projects that
 // turned it off. The driver enrolls every live checkout of an enabled project on
 // its own; the per-checkout entry below is runtime bookkeeping, not consent.
+// One workspace can opt out on top of that (`autopilotPausedAgents`, the Git
+// panel's switch) — for when someone or something else is already on the PR.
 //
 // Nothing per checkout is persisted. An in-flight cycle's agent turn doesn't
 // survive a restart, so resuming one would be judging a turn that never finished.
 // A restart drops back to "enrolled, no cycle", and the next tick re-derives from
 // the live world.
 
-import type { VerificationReport } from "@/api";
+import type { AgentRecord, VerificationReport } from "@/api";
 import type { AutopilotState, Cycle, CyclePhase, StuckReason } from "@/autopilot";
 import { newEnrollment } from "@/autopilot";
 import type { DelegationKind } from "@/delegation";
@@ -22,6 +24,7 @@ import {
   loadAutopilotDisabledProjects,
   setProjectSetting,
 } from "@/storage/projectSettings";
+import { setSetting } from "@/storage/settings";
 import { createKeyedQueue } from "@/util/keyedQueue";
 import type { SliceCreator } from "./types";
 
@@ -33,6 +36,19 @@ import type { SliceCreator } from "./types";
  *  must fail closed when it cannot tell who opted out. */
 export function autopilotProjectOn(disabled: readonly string[] | null, projectId: string): boolean {
   return disabled !== null && !disabled.includes(projectId);
+}
+
+/** Whether autopilot may act on this agent's checkouts at all: the project
+ *  switch must be on AND the workspace must not be paused from the Git panel.
+ *  The one predicate the driver uses for both the sweep and the per-checkout
+ *  guard, so a paused workspace is dropped exactly like one whose project
+ *  switched off. */
+export function autopilotAgentOn(
+  disabledProjects: readonly string[] | null,
+  pausedAgents: readonly string[],
+  agent: Pick<AgentRecord, "id" | "project_id">,
+): boolean {
+  return autopilotProjectOn(disabledProjects, agent.project_id) && !pausedAgents.includes(agent.id);
 }
 
 /** Project-switch writes, serialized per project. Two quick clicks on one toggle
@@ -76,6 +92,12 @@ export interface AutopilotSlice {
    *  projects opted out, or a startup hiccup would spend agent turns on exactly
    *  the projects the user switched off. */
   autopilotDisabledProjects: string[] | null;
+  /** Workspaces (agent ids) whose autopilot the user switched off from the Git
+   *  panel — the kill switch for "another agent is already on this". Scoped to
+   *  the agent, not the checkout: every repo of a multi-repo workspace pauses
+   *  together. Persisted in `settings` (`autopilotPausedAgents`) so a relaunch
+   *  doesn't quietly switch it back on; hydrated at launch. */
+  autopilotPausedAgents: string[];
   /** Local verification autopilot ran to judge the CURRENT cycle, keyed by
    *  `checkoutKey`.
    *
@@ -96,6 +118,10 @@ export interface AutopilotSlice {
    *  while it is still the latest request. A no-op while the opt-outs are
    *  unknown: there is nothing sound to flip from. */
   setProjectAutopilot: (projectId: string, enabled: boolean) => void;
+  /** Switch autopilot off (or back on) for ONE workspace, and persist it. The
+   *  driver drops the agent's checkouts on its next tick, so an in-flight cycle
+   *  stops being judged; the agent's current turn, if any, runs on. */
+  setAgentAutopilot: (agentId: string, enabled: boolean) => void;
 
   /** Start tracking a checkout (the driver does this for every live checkout of
    *  an enabled project). */
@@ -162,6 +188,7 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
   autopilot: {},
   autopilotVerdicts: {},
   autopilotDisabledProjects: null,
+  autopilotPausedAgents: [],
 
   loadAutopilotProjects: async () => {
     const gen = ++optOutsGen;
@@ -225,6 +252,22 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
         },
       );
   },
+
+  setAgentAutopilot: (agentId, enabled) =>
+    set((s) => {
+      const paused = s.autopilotPausedAgents.includes(agentId);
+      if (paused === !enabled) return s;
+      // Written whole, like `reviewDismissed`. Ids of workspaces that no longer
+      // exist are pruned on the way out, so the list can't grow with every
+      // discarded agent that was ever paused.
+      const live = new Set((s.workspace?.agents ?? []).map((a) => a.id));
+      const rest = s.autopilotPausedAgents.filter((id) => id !== agentId && live.has(id));
+      const autopilotPausedAgents = enabled ? rest : [...rest, agentId];
+      setSetting("autopilotPausedAgents", autopilotPausedAgents).catch((e) =>
+        console.error("save autopilotPausedAgents failed", e),
+      );
+      return { autopilotPausedAgents };
+    }),
 
   enrollAutopilot: (key) => {
     set((s) => ({ autopilot: { ...s.autopilot, [key]: newEnrollment() } }));

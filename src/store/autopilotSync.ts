@@ -20,7 +20,7 @@ import { type AutopilotEffect, type AutopilotState, autopilotStep } from "@/auto
 import { appActionMessage } from "@/delegation";
 import { useAppStore } from "@/store";
 import { usePoll } from "@/util/hooks";
-import { autopilotProjectOn } from "./autopilot";
+import { autopilotAgentOn } from "./autopilot";
 import type { AutopilotLogEntry } from "./autopilotLog";
 import { checkoutKey, splitCheckoutKey } from "./git";
 
@@ -31,9 +31,10 @@ import { checkoutKey, splitCheckoutKey } from "./git";
 const AUTOPILOT_TICK_MS = 10_000;
 
 /** The checkouts one pass should look at: every checkout of every live agent
- *  whose project has autopilot on, plus anything still tracked in `autopilot` —
- *  so an entry whose agent is gone, or whose project was just switched off, gets
- *  visited once more and dropped rather than lingering.
+ *  whose project has autopilot on and that isn't paused itself, plus anything
+ *  still tracked in `autopilot` — so an entry whose agent is gone, whose project
+ *  was just switched off, or that was just paused gets visited once more and
+ *  dropped rather than lingering.
  *
  *  The primary repo (index 0) keeps the plain agent id, exactly as the Git panel
  *  keys it (`checkoutScopes` in GitPanel/index.tsx); secondaries get `::subdir`.
@@ -46,11 +47,12 @@ export function autopilotKeys(
   agents: readonly AgentRecord[],
   tracked: Record<string, AutopilotState>,
   disabledProjects: readonly string[] | null,
+  pausedAgents: readonly string[],
 ): string[] {
   if (disabledProjects === null) return [];
   const keys = new Set(Object.keys(tracked));
   for (const agent of agents) {
-    if (!autopilotProjectOn(disabledProjects, agent.project_id)) continue;
+    if (!autopilotAgentOn(disabledProjects, pausedAgents, agent)) continue;
     for (const [i, repo] of (agent.repos ?? []).entries()) {
       keys.add(checkoutKey(agent.id, i === 0 ? undefined : repo.subdir));
     }
@@ -62,7 +64,12 @@ export function autopilotKeys(
 export function useAutopilotSync() {
   const keys = useAppStore(
     useShallow((s) =>
-      autopilotKeys(s.workspace?.agents ?? [], s.autopilot, s.autopilotDisabledProjects),
+      autopilotKeys(
+        s.workspace?.agents ?? [],
+        s.autopilot,
+        s.autopilotDisabledProjects,
+        s.autopilotPausedAgents,
+      ),
     ),
   );
 
@@ -103,10 +110,11 @@ export async function autopilotPass(keys: string[], verifying: Set<string>) {
     const s = useAppStore.getState();
     const { agentId, subdir } = splitCheckoutKey(key);
     const agent = s.workspace?.agents.find((a) => a.id === agentId);
-    // The checkout's agent is gone (archived/discarded), or its project switched
-    // autopilot off — drop the entry rather than ticking forever against nothing.
-    // A project that comes back on starts its checkouts fresh on the next tick.
-    if (!agent || !autopilotProjectOn(s.autopilotDisabledProjects, agent.project_id)) {
+    // The checkout's agent is gone (archived/discarded), its project switched
+    // autopilot off, or the workspace was paused — drop the entry rather than
+    // ticking forever against nothing. One that comes back on starts its
+    // checkouts fresh on the next tick.
+    if (!agent || !autopilotAgentOn(s.autopilotDisabledProjects, s.autopilotPausedAgents, agent)) {
       if (s.autopilot[key]) s.unenrollAutopilot(key);
       continue;
     }

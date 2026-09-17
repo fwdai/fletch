@@ -6,10 +6,12 @@ import type { AutopilotLogEntry } from "@/store/autopilotLog";
 import { checkoutKey } from "@/store/git";
 
 // ── What the agent did on this PR by itself ───────────────────────────────────
-// Directly above the action bar, because the first question a user has about a
-// loop that ran while they were away is "what did it already do, and what did
-// that cost?". Collapsed by default: it is a receipt, not a dashboard, and absent
-// entirely until autopilot has done something worth reading.
+// A section of the scrollable body, under the PR card or the file list — with
+// the thing it describes, not next to the action button. The first question a
+// user has about a loop that ran while they were away is "what did it already
+// do, and what did that cost?", so this is a receipt: collapsed by default,
+// absent entirely until autopilot has done something worth reading, and only
+// the rows that mean trouble take colour.
 
 /** One row's phrasing, past tense — this already happened. Escalations reuse
  *  `stuckLabel`, so the reason a user reads in the log is worded exactly like
@@ -43,23 +45,24 @@ export function AutopilotHistory({ agentId, subdir }: { agentId: string; subdir?
   const log = useAppStore((s) => s.autopilotLog[key]);
   const [open, setOpen] = useState(false);
 
-  // Nothing has happened yet: say nothing. An empty "history" affordance on every
-  // checkout would be noise in a footer that is already dense.
+  // Nothing has happened yet: say nothing. An empty section on every checkout
+  // would be noise in a body that should be about the changes.
   if (!log?.length) return null;
 
   return (
-    <div className="ap-log">
+    <section className="ap-log">
       <button
         type="button"
-        className="ap-log-toggle text-xs"
+        className="ap-log-h text-xs"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         title="What the agent has done on this PR by itself"
       >
         <Icon name={open ? "chevD" : "chevR"} />
-        <Icon name="history" />
-        <span>Auto-fixes</span>
-        <span className="ap-log-count">{log.length}</span>
+        <span>Autopilot</span>
+        <span className="ap-log-sum">
+          {log.length === 1 ? "1 action" : `${log.length} actions`}
+        </span>
       </button>
 
       {open && (
@@ -86,6 +89,6 @@ export function AutopilotHistory({ agentId, subdir }: { agentId: string; subdir?
           ))}
         </ol>
       )}
-    </div>
+    </section>
   );
 }

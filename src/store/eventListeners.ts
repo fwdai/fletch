@@ -51,6 +51,7 @@ import { getOrCreateAccount, toProfile } from "@/storage/accounts";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
+  parseAutopilotPausedAgents,
   parseDraftBaseBranches,
   parseFeatures,
   parseNewDraftSelection,
@@ -199,6 +200,8 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       // Mission Control's dismissed review-queue marks (item id → signal
       // signature); the queue honors a mark only while the signature matches.
       reviewDismissed: parseReviewDismissed(s.reviewDismissed),
+      // Workspaces whose autopilot the user switched off from the Git panel.
+      autopilotPausedAgents: parseAutopilotPausedAgents(s.autopilotPausedAgents),
       // Admin unlocks the Developer settings section in production. Opt-in:
       // only an explicit "true" in the `admin` settings row grants it.
       admin: s.admin === "true",

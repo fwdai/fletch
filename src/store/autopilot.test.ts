@@ -19,8 +19,10 @@ vi.mock("@/storage/projectSettings", () => ({
   deleteProjectSetting,
   loadAutopilotDisabledProjects,
 }));
+const { setSetting } = vi.hoisted(() => ({ setSetting: vi.fn(() => Promise.resolve()) }));
+vi.mock("@/storage/settings", () => ({ setSetting }));
 
-import { autopilotProjectOn, createAutopilotSlice } from "./autopilot";
+import { autopilotAgentOn, autopilotProjectOn, createAutopilotSlice } from "./autopilot";
 import type { AppState } from "./types";
 
 const makeStore = () =>
@@ -50,7 +52,89 @@ beforeEach(() => {
   setProjectSetting.mockReset().mockImplementation(() => Promise.resolve());
   deleteProjectSetting.mockReset().mockImplementation(() => Promise.resolve());
   loadAutopilotDisabledProjects.mockReset().mockImplementation(() => Promise.resolve([]));
+  setSetting.mockReset().mockImplementation(() => Promise.resolve());
   vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+describe("autopilotAgentOn", () => {
+  const agent = { id: "a1", project_id: "p1" };
+
+  it("needs the project on AND the workspace not paused", () => {
+    expect(autopilotAgentOn([], [], agent)).toBe(true);
+    expect(autopilotAgentOn(["p1"], [], agent)).toBe(false);
+    expect(autopilotAgentOn([], ["a1"], agent)).toBe(false);
+    expect(autopilotAgentOn([], ["a2"], agent)).toBe(true);
+  });
+
+  it("stays closed while the project opt-outs are unknown, whatever the pause says", () => {
+    expect(autopilotAgentOn(null, [], agent)).toBe(false);
+  });
+});
+
+// ── workspace switch ─────────────────────────────────────────────────────────
+// The Git panel's kill switch: one workspace off, on top of the project switch.
+// Persisted whole in `settings`, the way Mission Control's dismissals are.
+
+describe("workspace switch", () => {
+  const withAgents = (ids: string[]) => {
+    const store = makeStore();
+    store.setState({
+      workspace: { agents: ids.map((id) => ({ id, project_id: "p1" })) },
+      // biome-ignore lint/suspicious/noExplicitAny: minimal workspace fixture
+    } as any);
+    return store;
+  };
+
+  it("starts with nothing paused", () => {
+    expect(makeStore().getState().autopilotPausedAgents).toEqual([]);
+  });
+
+  it("pauses a workspace and persists the whole list", () => {
+    const store = withAgents(["a1", "a2"]);
+    store.getState().setAgentAutopilot("a1", false);
+    store.getState().setAgentAutopilot("a2", false);
+
+    expect(store.getState().autopilotPausedAgents).toEqual(["a1", "a2"]);
+    expect(setSetting).toHaveBeenLastCalledWith("autopilotPausedAgents", ["a1", "a2"]);
+  });
+
+  it("un-pauses only the workspace asked for", () => {
+    const store = withAgents(["a1", "a2"]);
+    store.setState({ autopilotPausedAgents: ["a1", "a2"] });
+    store.getState().setAgentAutopilot("a1", true);
+
+    expect(store.getState().autopilotPausedAgents).toEqual(["a2"]);
+    expect(setSetting).toHaveBeenCalledExactlyOnceWith("autopilotPausedAgents", ["a2"]);
+  });
+
+  it("does not write when the switch already says so", () => {
+    const store = withAgents(["a1"]);
+    store.getState().setAgentAutopilot("a1", true);
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  it("prunes ids of workspaces that no longer exist on the way out", () => {
+    // A discarded agent's pause would otherwise sit in the list forever; the
+    // next write is the natural moment to drop it.
+    const store = withAgents(["a1"]);
+    store.setState({ autopilotPausedAgents: ["gone"] });
+    store.getState().setAgentAutopilot("a1", false);
+
+    expect(store.getState().autopilotPausedAgents).toEqual(["a1"]);
+    expect(setSetting).toHaveBeenCalledExactlyOnceWith("autopilotPausedAgents", ["a1"]);
+  });
+
+  it("keeps the optimistic state when the write fails, and says so", async () => {
+    setSetting.mockRejectedValueOnce(new Error("db locked"));
+    const store = withAgents(["a1"]);
+    store.getState().setAgentAutopilot("a1", false);
+    await Promise.resolve();
+
+    // The switch is a kill switch: the in-session pause must hold even if the
+    // durable copy didn't land — a relaunch is the only thing that loses it.
+    expect(store.getState().autopilotPausedAgents).toEqual(["a1"]);
+    expect(console.error).toHaveBeenCalled();
+  });
 });
 
 describe("autopilotProjectOn", () => {
