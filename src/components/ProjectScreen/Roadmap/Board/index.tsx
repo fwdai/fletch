@@ -227,7 +227,6 @@ export function Board({
           <IconButton
             aria-label="Add roadmap item"
             tip="Add an item"
-            tipDown
             onClick={() => openNew("next")}
           >
             <Icon name="plus" />

@@ -148,7 +148,7 @@ export function RunRow({
               <Icon name="chevR" size={11} className="wf-chev" />
             </button>
           ) : (
-            <span className="ag-wf-tile tip" data-tip="Workflow run" data-tip-down="">
+            <span className="ag-wf-tile tip" data-tip="Workflow run">
               <Icon name="combine" size={11} className="wf-glyph" />
             </span>
           )}

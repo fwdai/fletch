@@ -427,9 +427,7 @@
   background: var(--hover);
   color: var(--fg-0);
 }
-/* Rotate only the inner icon, so the tooltip ::after on the button
- * doesn't rotate with it (and the button doesn't form a stacking context
- * that would trap the tooltip under the next row). */
+/* Rotate only the inner icon, so the button itself keeps a plain box. */
 .rs-revert-ic {
   justify-content: center;
   transition: transform 0.1s;

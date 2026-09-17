@@ -110,18 +110,6 @@
 .turn-meta .turn-copy + .fork-menu {
   margin-left: 0;
 }
-/* The fork button is the rightmost footer action, so its centered tooltip
-   overflows the chat scroll's right edge — which the scroll container clips
-   (overflow-y: auto forces overflow-x to clip too), and that edge sits right at
-   the seam with the right panel. A pseudo-element can't escape that clip, so
-   anchor the tooltip to the button's right edge and let it grow leftward, where
-   it stays fully inside the chat panel. */
-.turn-meta .turn-fork[data-tip]:hover::after {
-  left: auto;
-  right: 0;
-  transform: none;
-}
-
 /* Fork menu: a branch button that opens a small option list. The scrim is a
    full-viewport click-catcher for outside-dismiss; the menu anchors to the
    trigger's right edge and opens down by default, flipping up (`.up`) when the

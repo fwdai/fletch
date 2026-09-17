@@ -41,7 +41,6 @@ export function ParallelContainer({
         )}
         <button
           className="wb-step-menu tip"
-          data-tip-down
           data-tip="Remove parallel"
           onClick={(e) => {
             e.stopPropagation();

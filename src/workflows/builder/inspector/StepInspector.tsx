@@ -145,7 +145,6 @@ export function StepInspector({ step, ctx }: { step: EStep; ctx: BuilderCtx }) {
             <button
               key={c.id}
               className={`wb-comm ${step.comms.includes(c.id) ? "on" : ""} tip`}
-              data-tip-down
               data-tip={c.note}
               onClick={() => toggleComms(c.id)}
             >

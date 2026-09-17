@@ -74,7 +74,6 @@ export function ProvidersPane() {
           <>
             {scanning && <span className="set-checked mono text-xs">Scanning…</span>}
             <IconButton
-              tipDown
               tip="Re-scan system"
               aria-label="Re-scan system"
               onClick={rescan}

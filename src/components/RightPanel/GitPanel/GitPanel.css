@@ -706,15 +706,6 @@
   opacity: 0.5;
   cursor: default;
 }
-/* The caret sits near the panel's right edge; anchor its tooltip's right edge
-   to the caret so it grows leftward and stays inside the panel (which now
-   clips horizontal overflow). */
-.git-split .gsa-caret.tip[data-tip]:hover::after {
-  left: auto;
-  right: 0;
-  transform: none;
-}
-
 /* tone variants — success (ready to merge), merged, ghost (quiet), danger */
 .git-split.success .gsa-main,
 .git-split.success .gsa-caret {

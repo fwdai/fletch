@@ -157,28 +157,17 @@ export function WorkflowList({
                 <span>edited {timeAgo(d.updated_at)}</span>
               </div>
               <div className="wf-acts" onClick={(e) => e.stopPropagation()}>
-                <button
-                  className="btn-i sm tip"
-                  data-tip-down
-                  data-tip="Export YAML"
-                  onClick={() => onExport(d)}
-                >
+                <button className="btn-i sm tip" data-tip="Export YAML" onClick={() => onExport(d)}>
                   <Icon name="download" />
                 </button>
                 <button
                   className="btn-i sm tip"
-                  data-tip-down
                   data-tip="Duplicate"
                   onClick={() => onDuplicate(d)}
                 >
                   <Icon name="copy" />
                 </button>
-                <button
-                  className="btn-i sm tip"
-                  data-tip-down
-                  data-tip="Delete"
-                  onClick={() => onDelete(d.id)}
-                >
+                <button className="btn-i sm tip" data-tip="Delete" onClick={() => onDelete(d.id)}>
                   <Icon name="trash" />
                 </button>
               </div>

@@ -490,7 +490,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Scoped so `position: absolute` beats `.tip { position: relative }`. */
 .wb-step .wb-step-menu,
 .wb-cont .wb-step-menu {
   position: absolute;
@@ -1284,12 +1283,6 @@ button.ag-wf-tile {
 .ag-wf-tile.expandable:hover {
   background: color-mix(in oklch, var(--accent) 26%, transparent);
 }
-/* Tile tooltip hugs the row's left edge instead of centering (no clipping). */
-.ag-wf-tile.tip[data-tip]:hover::after {
-  left: 0;
-  transform: none;
-}
-
 /* Run names come from the workflow and can be long — unlike agent names they
    ellipsize rather than pushing the status slot off the row. (Three classes so
    this outweighs Sidebar.css's `.agent-row .ag-name { flex-shrink: 0 }`.) */
@@ -1307,11 +1300,6 @@ button.ag-wf-tile {
   display: inline-flex;
   align-items: center;
   color: var(--success);
-}
-.ag-run-done.tip[data-tip]:hover::after {
-  left: auto;
-  right: 0;
-  transform: none;
 }
 
 /* A row with no hover actions (e.g. a paused run) keeps its status meta on

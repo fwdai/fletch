@@ -13,7 +13,7 @@ interface Props {
   /** `sm` compacts to `.sm-t`; `lg` grows to 34px to sit beside an input row. */
   size?: "md" | "sm" | "lg";
   onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
-  /** Text for the CSS-only hover tooltip. */
+  /** Hover tooltip text (drawn by the app-wide `TooltipLayer`). */
   tip?: string;
   disabled?: boolean;
   className?: string;

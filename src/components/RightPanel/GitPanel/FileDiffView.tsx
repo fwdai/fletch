@@ -48,7 +48,6 @@ export function FileDiffView({
               <IconButton
                 size="xs"
                 tip={prev ? basename(prev.path) : "First file"}
-                tipDown
                 disabled={!prev}
                 onClick={() => prev && onSelect(prev.path)}
               >
@@ -57,7 +56,6 @@ export function FileDiffView({
               <IconButton
                 size="xs"
                 tip={next ? basename(next.path) : "Last file"}
-                tipDown
                 disabled={!next}
                 onClick={() => next && onSelect(next.path)}
               >

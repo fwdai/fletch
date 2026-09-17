@@ -42,7 +42,6 @@ export function OrchestrateContainer({
         )}
         <button
           className="wb-step-menu tip"
-          data-tip-down
           data-tip="Remove orchestrate"
           onClick={(e) => {
             e.stopPropagation();
