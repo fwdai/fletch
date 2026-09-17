@@ -17,7 +17,7 @@ interface Props {
   children: ReactNode;
   /** Color/tone. Maps to the `.ag-badge` variants in styles/shared/badge.css. */
   variant?: BadgeVariant;
-  /** Text for the short CSS-only hover tooltip (single line — see badge.css). */
+  /** Short hover tooltip text (drawn by the app-wide `TooltipLayer`). */
   tip?: string;
   /** Accessible name for an icon-only badge — renders `role="img"` +
    *  `aria-label` so screen readers announce what the glyph means. */

@@ -74,7 +74,6 @@ export function Thread({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath:
           (newChat ? (
             <IconButton
               tip="Back to the chat"
-              tipDown
               aria-label="Back to the chat"
               onClick={() => setComposing(false)}
             >
@@ -83,7 +82,6 @@ export function Thread({ roadmap, repoPath }: { roadmap: RoadmapState; repoPath:
           ) : (
             <IconButton
               tip="New planning session"
-              tipDown
               aria-label="New planning session"
               onClick={() => setComposing(true)}
             >

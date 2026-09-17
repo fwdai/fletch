@@ -118,7 +118,6 @@ export function BinaryPathRow({
             />
             <IconButton
               className="sm-i"
-              tipDown
               tip="Save"
               aria-label="Save path"
               disabled={busy}
@@ -128,7 +127,6 @@ export function BinaryPathRow({
             </IconButton>
             <IconButton
               className="sm-i"
-              tipDown
               tip="Cancel"
               aria-label="Cancel"
               disabled={busy}
@@ -159,7 +157,6 @@ export function BinaryPathRow({
             )}
             <IconButton
               className="sm-i"
-              tipDown
               tip="Edit path"
               aria-label="Edit binary path"
               onClick={beginEdit}

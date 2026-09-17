@@ -82,18 +82,13 @@ export function TreeBrowser({
           Changed
           <span className="fp-filter-count text-xs">{changedCount}</span>
         </button>
-        <IconButton size="xs" tip="New file" tipDown onClick={() => onBeginCreate("newFile", "")}>
+        <IconButton size="xs" tip="New file" onClick={() => onBeginCreate("newFile", "")}>
           <Icon name="file" />
         </IconButton>
-        <IconButton
-          size="xs"
-          tip="New folder"
-          tipDown
-          onClick={() => onBeginCreate("newFolder", "")}
-        >
+        <IconButton size="xs" tip="New folder" onClick={() => onBeginCreate("newFolder", "")}>
           <Icon name="folder" />
         </IconButton>
-        <IconButton size="xs" tip="Collapse all" tipDown onClick={onCollapseAll}>
+        <IconButton size="xs" tip="Collapse all" onClick={onCollapseAll}>
           <Icon name="shrink" />
         </IconButton>
       </div>

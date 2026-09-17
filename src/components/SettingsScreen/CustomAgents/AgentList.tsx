@@ -89,20 +89,13 @@ export function AgentList({
                 <div className="ca-acts flex-center" onClick={(e) => e.stopPropagation()}>
                   <IconButton
                     size="sm"
-                    tipDown
                     tip="Duplicate"
                     aria-label="Duplicate"
                     onClick={() => onDuplicate(a)}
                   >
                     <Icon name="copy" />
                   </IconButton>
-                  <IconButton
-                    size="sm"
-                    tipDown
-                    tip="Edit"
-                    aria-label="Edit"
-                    onClick={() => onEdit(a)}
-                  >
+                  <IconButton size="sm" tip="Edit" aria-label="Edit" onClick={() => onEdit(a)}>
                     <Icon name="edit" />
                   </IconButton>
                   <ArmedDeleteButton

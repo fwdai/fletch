@@ -93,7 +93,6 @@ function BaseSwitch({
         role="tab"
         aria-selected={value === "fork"}
         className={`cms-seg iflex-center text-xs ${value === "fork" ? "active" : ""} tip`}
-        data-tip-down
         data-tip="Diff everything changed in this workspace, since it started"
         onClick={() => onChange("fork")}
       >
@@ -103,7 +102,6 @@ function BaseSwitch({
         role="tab"
         aria-selected={value === "head"}
         className={`cms-seg iflex-center text-xs ${value === "head" ? "active" : ""} tip`}
-        data-tip-down
         data-tip="Diff only uncommitted work, since the last commit"
         onClick={() => onChange("head")}
       >
@@ -139,7 +137,6 @@ function ModeSwitch({
         role="tab"
         aria-selected={mode === "files"}
         className={`cms-seg iflex-center text-xs ${mode === "files" ? "active" : ""} tip`}
-        data-tip-down
         data-tip="Browse and edit any file in the checkout"
         onClick={() => onChange("files")}
       >
@@ -150,7 +147,6 @@ function ModeSwitch({
         role="tab"
         aria-selected={mode === "live"}
         className={`cms-seg iflex-center text-xs ${mode === "live" ? "active" : ""} tip`}
-        data-tip-down
         data-tip="Watch the agent's changes as they happen"
         onClick={() => onChange("live")}
       >

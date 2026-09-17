@@ -106,7 +106,6 @@ export function ProjectGroup({
         <button
           className="padd padd-settings tip"
           data-tip="Project settings"
-          data-tip-down=""
           onClick={onOpenSettings}
           aria-label="Project settings"
         >
@@ -115,7 +114,6 @@ export function ProjectGroup({
         <button
           className="padd tip"
           data-tip="New agent  ⌘N"
-          data-tip-down=""
           onClick={onAddAgent}
           aria-label="New agent"
         >

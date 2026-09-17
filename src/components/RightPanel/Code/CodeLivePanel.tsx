@@ -193,7 +193,6 @@ export function CodeLivePanel({
         {displayPath && (
           <button
             className="code-open tip text-xs"
-            data-tip-down
             data-tip="Open this file in the editor"
             onClick={() => onOpenInEditor(displayPath)}
           >
@@ -203,7 +202,6 @@ export function CodeLivePanel({
         )}
         <button
           className={`code-follow ${follow ? "on" : "off"} ${busy ? "live" : ""} tip text-xs`}
-          data-tip-down
           data-tip={
             follow ? "Auto-following the agent's current file" : "Click to auto-follow agent edits"
           }

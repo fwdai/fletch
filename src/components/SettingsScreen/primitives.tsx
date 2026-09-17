@@ -111,8 +111,8 @@ export function SetToggle({
       <i />
     </button>
   );
-  // A disabled button receives no pointer events, so the CSS-only tooltip has
-  // to hang off a wrapper or it would never show.
+  // A disabled button receives no pointer events in the WebView, so the
+  // tooltip trigger has to be a wrapper or it would never show.
   return disabled && tip ? (
     <span className="tip set-toggle-tip" data-tip={tip}>
       {toggle}

@@ -21,8 +21,11 @@ and is the path of least resistance for new UI.
 | `ModalSheet` | The wide overlay sheet (History, Project Settings) — dimmed backdrop + large card, no built-in header. `fill` pins it to full viewport height. | `.modal-sheet` |
 | `Scrim` | Full-screen dim/click-catcher behind popovers and overlays. | `.ui-scrim` |
 
-Tooltips are CSS-only: pass `tip="…"` (and `tipDown` where supported) — it sets
-`.tip` + `data-tip` and renders on hover. No JS tooltip library.
+Tooltips: pass `tip="…"` — it sets `.tip` + `data-tip`. The single
+`components/TooltipLayer` (mounted in `App`) draws one body-level bubble for
+whichever trigger is hovered or keyboard-focused, placing it above by default,
+below near the top edge, and clamped to the viewport. Nothing can clip it, so
+call sites never choose a side. No JS tooltip library.
 
 ## Conventions
 - Each primitive is a thin wrapper: a typed `Props`, a `className` passthrough,

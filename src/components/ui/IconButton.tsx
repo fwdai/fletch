@@ -13,10 +13,8 @@ interface Props {
   danger?: boolean;
   /** Adds the `active` class — used for "open" affordance on a toggle. */
   active?: boolean;
-  /** Text rendered in the CSS-only tooltip above the button. */
+  /** Tooltip text, shown by the app-wide `TooltipLayer` on hover / focus. */
   tip?: string;
-  /** Anchor the tooltip below the button instead of above. */
-  tipDown?: boolean;
   disabled?: boolean;
   "aria-label"?: string;
   /** On/off state for a button that toggles in place (the composer's mic), so
@@ -28,7 +26,7 @@ interface Props {
 }
 
 /** Square icon button used across title bar, sidebar, composer, and
- *  right panel. Tooltip behavior is CSS-only — set `tip`. */
+ *  right panel. Set `tip` for a tooltip; placement is automatic. */
 export function IconButton({
   children,
   onClick,
@@ -37,7 +35,6 @@ export function IconButton({
   danger,
   active,
   tip,
-  tipDown,
   disabled,
   className,
   style,
@@ -64,7 +61,6 @@ export function IconButton({
       disabled={disabled}
       style={style}
       data-tip={tip}
-      data-tip-down={tipDown ? "" : undefined}
       aria-label={rest["aria-label"] ?? tip}
       aria-pressed={rest["aria-pressed"]}
     >

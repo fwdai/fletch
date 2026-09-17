@@ -39,7 +39,6 @@ export function ArmedDeleteButton({ armed, onClick }: { armed: boolean; onClick:
     <IconButton
       size="sm"
       className={armed ? "danger" : undefined}
-      tipDown
       tip={armed ? "Click again to delete" : "Delete"}
       aria-label={armed ? "Confirm delete" : "Delete"}
       onClick={onClick}
@@ -142,13 +141,7 @@ export function LibraryList<T extends { id: string }>({
                   <div className="ca-desc truncate text-sm">{r.desc}</div>
                 </div>
                 <div className="ca-acts flex-center" onClick={(e) => e.stopPropagation()}>
-                  <IconButton
-                    size="sm"
-                    tipDown
-                    tip="Edit"
-                    aria-label="Edit"
-                    onClick={() => onEdit(item)}
-                  >
+                  <IconButton size="sm" tip="Edit" aria-label="Edit" onClick={() => onEdit(item)}>
                     <Icon name="edit" />
                   </IconButton>
                   <ArmedDeleteButton

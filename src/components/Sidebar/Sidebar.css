@@ -223,11 +223,6 @@
   height: 14px;
   flex-shrink: 0;
 }
-.proj-h .padd.tip[data-tip]:hover::after {
-  left: auto;
-  right: 0;
-  transform: none;
-}
 
 .agents {
   display: flex;
@@ -465,11 +460,6 @@
 .ag-act.confirm-del:hover {
   color: var(--danger);
 }
-.ag-act.tip[data-tip]:hover::after {
-  left: auto;
-  right: 0;
-  transform: none;
-}
 
 /* waiting-for-input indicator — amber hand, a soft breathing pulse so it
  * reads as an ask, not a dead icon */
@@ -478,17 +468,8 @@
   align-items: center;
   color: var(--warn);
 }
-/* pulse only the glyph — animating the wrapper's opacity would drag its
- * `::after` tooltip along with it */
 .ag-waiting svg {
   animation: agWaiting 2s var(--ease) infinite;
-}
-/* pinned to the row's right edge like the action buttons — anchor the tooltip
- * right so it never spills past the sidebar */
-.ag-waiting.tip[data-tip]:hover::after {
-  left: auto;
-  right: 0;
-  transform: none;
 }
 @keyframes agWaiting {
   0%,

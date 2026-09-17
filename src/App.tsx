@@ -12,6 +12,7 @@ import { Settings } from "./components/Settings";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
+import { TooltipLayer } from "./components/TooltipLayer";
 import { UpdateToast } from "./components/UpdateToast";
 import { Workspace } from "./components/Workspace";
 import { ACCENT_VALUES } from "./data/providers";
@@ -168,6 +169,8 @@ export function App() {
       <UpdateToast />
       <DockerBuildToast />
       <PublishApproval />
+      {/* One bubble for every `data-tip` trigger in the app. */}
+      <TooltipLayer />
     </div>
   );
 }

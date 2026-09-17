@@ -20,7 +20,6 @@ export function AgentIdentityChip({ agent, size = 14 }: { agent: AgentRecord; si
           ? `${customAgent.name} · ${providerLabel(agent.provider)}`
           : providerLabel(agent.provider)
       }
-      data-tip-down=""
     >
       {customAgent ? (
         <Mono name={customAgent.name} hue={customAgent.color} size={size} />

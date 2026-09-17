@@ -1,32 +1,21 @@
-/* tooltip */
-.tip {
-  position: relative;
-}
-.tip[data-tip]:hover::after {
-  content: attr(data-tip);
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+/* tooltip
+   A trigger is any element with the `tip` class and a `data-tip` attribute.
+   The bubble is not drawn on the trigger: `components/TooltipLayer` renders one
+   fixed bubble at body level for whichever trigger is hovered or focused, so
+   no scroll container or overflow: hidden pane can clip it. Placement (above,
+   flipped below near the top, clamped to the viewport) is decided there. */
+.tooltip-bubble {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-toast);
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 4px 8px;
   background: var(--bg-1);
   border: 1px solid var(--bd);
+  border-radius: var(--r-xs);
   color: var(--fg-0);
   font-size: var(--fs-xs);
-  padding: 4px 8px;
-  border-radius: var(--r-xs);
-  white-space: nowrap;
+  line-height: 1.4;
   pointer-events: none;
-  z-index: var(--z-toast);
-}
-.tip[data-tip-down]:hover::after {
-  bottom: auto;
-  top: calc(100% + 6px);
-}
-/* For a trigger at the right edge of a clipping container (a panel header's
-   trailing icon): grow the bubble leftwards from the trigger's right edge
-   instead of centring it, so it can't run off the panel. */
-.tip[data-tip-end]:hover::after {
-  left: auto;
-  right: 0;
-  transform: none;
 }

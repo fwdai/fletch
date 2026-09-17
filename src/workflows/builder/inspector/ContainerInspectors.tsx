@@ -176,7 +176,6 @@ export function OrchestrateInspector({ block, ctx }: { block: EOrchestrate; ctx:
             <button
               key={c.id}
               className={`wb-comm ${block.comms.includes(c.id) ? "on" : ""} tip`}
-              data-tip-down
               data-tip={c.note}
               onClick={() => toggleComms(c.id)}
             >

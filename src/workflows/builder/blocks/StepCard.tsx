@@ -66,7 +66,6 @@ export function StepCard({
         {canRemove && (
           <button
             className="tip wb-step-menu"
-            data-tip-down
             data-tip={role === "child" ? "Remove" : "Remove step"}
             onClick={(e) => {
               e.stopPropagation();

@@ -44,7 +44,6 @@ export function LoopContainer({
         )}
         <button
           className="wb-step-menu tip"
-          data-tip-down
           data-tip="Remove loop"
           onClick={(e) => {
             e.stopPropagation();

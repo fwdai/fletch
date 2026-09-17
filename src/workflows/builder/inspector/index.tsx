@@ -49,7 +49,6 @@ export function Inspector({
         {selected && (
           <button
             className="wb-insp-close tip"
-            data-tip-down
             data-tip="Back to overview"
             onClick={() => ctx.select(null)}
           >

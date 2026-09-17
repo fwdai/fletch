@@ -291,11 +291,7 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
       <span className="ag-rail idle" />
       <div className="agent-row flex-center">
         <span className="ag-name ag-name-draft">{draft.name}</span>
-        <span
-          className="ag-prov-chip tip"
-          data-tip={providerLabel(draft.provider)}
-          data-tip-down=""
-        >
+        <span className="ag-prov-chip tip" data-tip={providerLabel(draft.provider)}>
           <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={14} />
         </span>
         <span className="ag-slot iflex-center">
