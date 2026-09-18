@@ -5,10 +5,29 @@
   packaging/fletch-host.service, same shape, same reasons — it runs as you, so
   the database, the checkouts and the provider CLI logins are all yours.
 
-  launchd does not expand `~`, so replace YOU with your short user name:
+  Installing it:
 
-    sed "s/YOU/$USER/g" packaging/com.fletch.host.plist \
-      > ~/Library/LaunchAgents/com.fletch.host.plist
+    fletch-host service install
+    fletch-host service uninstall
+
+  This file is a template, and the only copy of the agent: `fletch-host service
+  install` compiles it in with `include_str!` and fills in the three
+  placeholders below, so an agent written by the CLI and one written by hand
+  cannot drift. Each appears in the body as its name in doubled curly braces.
+  launchd expands neither `~` nor `$HOME`, which is half of why they exist; the
+  other half is that a launchd agent's environment is not your shell's, so the
+  data dir has to be named rather than re-derived.
+
+    EXEC         absolute path of the fletch-host binary
+    ARG_STRINGS  the rest of ProgramArguments, one indented
+                 <string>…</string> per argument, starting with `serve` and
+                 then `--data-dir <abs>` plus `--port`/`--name` if you asked
+                 for them
+    LOG_PATH     absolute path of the log file
+
+  To install by hand, substitute all three, write the result to
+  ~/Library/LaunchAgents/com.fletch.host.plist and then
+
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.fletch.host.plist
 
   Stop it with `launchctl bootout gui/$(id -u)/com.fletch.host`.
@@ -23,8 +42,8 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/YOU/.local/bin/fletch-host</string>
-        <string>serve</string>
+        <string>{{EXEC}}</string>
+{{ARG_STRINGS}}
     </array>
 
     <key>RunAtLoad</key>
@@ -51,8 +70,8 @@
 
     <!-- Logs go to stderr; launchd has no journal, so name a file. -->
     <key>StandardOutPath</key>
-    <string>/Users/YOU/Library/Logs/fletch-host.log</string>
+    <string>{{LOG_PATH}}</string>
     <key>StandardErrorPath</key>
-    <string>/Users/YOU/Library/Logs/fletch-host.log</string>
+    <string>{{LOG_PATH}}</string>
 </dict>
 </plist>

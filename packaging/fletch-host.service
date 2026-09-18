@@ -1,14 +1,38 @@
-# A systemd **user** unit: the host runs as you, not as root.
+# A systemd unit for the headless Fletch host, as a **user** unit by default:
+# the host runs as you, not as root.
 #
 # Everything it touches is yours — your `~/.local/share/fletch-host` data dir
 # (database, and the checkouts and RPC mailboxes under it), the provider CLI
 # logins in your home directory — and on Linux the container sandbox maps its
 # files back to this same user, which a root-owned service would defeat.
 #
-#   install -Dm644 packaging/fletch-host.service ~/.config/systemd/user/fletch-host.service
-#   systemctl --user daemon-reload
-#   systemctl --user enable --now fletch-host
-#   loginctl enable-linger $USER     # keep it running when you are logged out
+# Installing it:
+#
+#   fletch-host service install                        # user unit, enabled, started
+#   fletch-host service install --system --user fletch # /etc/systemd/system
+#   fletch-host service uninstall
+#
+# This file is a **template**, and the only copy of the unit: `fletch-host
+# service install` compiles it in with `include_str!` and fills in the four
+# placeholders below, so a unit written by the CLI and one written by hand
+# cannot drift. Each appears in the body as its name in doubled curly braces;
+# to install by hand, substitute all four and then `systemctl --user
+# daemon-reload && systemctl --user enable --now fletch-host`.
+#
+#   EXEC        absolute path of the fletch-host binary
+#   SERVE_ARGS  the rest of the command line after `serve` — always
+#               `--data-dir <abs>`, plus `--port`/`--name` if you asked for
+#               them. Resolved absolutely because an init system's environment
+#               is not your shell's: `$XDG_DATA_HOME` and even `$HOME` may be
+#               unset or different, and the service must open the same data dir
+#               the CLI subcommands talk to.
+#   USER        `User=<name>` for a system unit; empty for a user unit
+#   WANTED_BY   `default.target` for a user unit, `multi-user.target` for a
+#               system unit
+#
+# A user unit stops when you log out unless lingering is on:
+#
+#   loginctl enable-linger $USER
 #
 # Logs: journalctl --user -u fletch-host -f
 # See crates/fletch-host/README.md for the rest.
@@ -22,7 +46,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/fletch-host serve
+ExecStart={{EXEC}} serve{{SERVE_ARGS}}
+{{USER}}
 # Only on failure: `serve` exits 0 on SIGTERM (`systemctl --user stop`), and a
 # clean stop must stay stopped.
 Restart=on-failure
@@ -38,4 +63,4 @@ Environment=RUST_LOG=info
 TimeoutStopSec=30
 
 [Install]
-WantedBy=default.target
+WantedBy={{WANTED_BY}}

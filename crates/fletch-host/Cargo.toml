@@ -11,6 +11,9 @@ authors = ["Alex Chaplinsky", "fwdai.org"]
 license = "AGPL-3.0-only"
 edition = "2021"
 rust-version = "1.77"
+# Puts the compile-time target triple in `env!("TARGET")`, which is how
+# `update` names the release asset built for this machine (`build.rs`).
+build = "build.rs"
 
 [[bin]]
 name = "fletch-host"
@@ -56,6 +59,24 @@ dirs = "5"
 # terminal. `default-features = false` drops the `image` and `svg` renderers:
 # the unicode one needs no feature and nothing here writes a file.
 qrcode = { version = "0.14", default-features = false, optional = true }
+# `update`: the GitHub release API and the three downloads. Same version and
+# features as the engine's client (`crates/fletch-core/Cargo.toml`), so the
+# binary carries one copy of reqwest and one TLS stack.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# `update`, again: checksum the download, unpack the tarball, and verify the
+# minisign signature against the key the desktop updater trusts. All four are
+# already in the desktop's tree — `minisign-verify` is what
+# `tauri-plugin-updater` itself verifies with, so the host checks releases the
+# same way and with the same key.
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+minisign-verify = "0.2"
+base64 = "0.22"
+# `service install` needs this process's uid for launchd's `gui/<uid>` domain,
+# and `update` needs it again to kickstart the agent. The `user` feature only,
+# out of the same crate the engine already uses to map container ownership.
+nix = { version = "0.29", features = ["user"] }
 
 [dev-dependencies]
 tempfile = "3"

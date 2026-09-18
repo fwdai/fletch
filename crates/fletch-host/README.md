@@ -13,8 +13,9 @@ host refuses to start rather than run an agent outside the boundary it promised.
 
 ## Install
 
-Each release publishes `fletch-host-<version>-<target>.tar.gz` and a matching
-`.sha256`:
+Each release publishes `fletch-host-<version>-<target>.tar.gz`, a matching
+`.sha256`, and a `.sig` (minisign, the same key the desktop's updater trusts —
+`fletch-host update` checks both):
 
 ```sh
 V=<the release version>                       # e.g. 0.7.32, without the leading v
@@ -26,10 +27,11 @@ tar xzf fletch-host-$V-$T.tar.gz
 install -Dm755 fletch-host ~/.local/bin/fletch-host
 ```
 
-`~/.local/bin` is where the service units below expect it. Make sure it is on
-your `PATH` (`export PATH="$HOME/.local/bin:$PATH"`). The tarball also carries
-this README and both service units, so the paths in "Run it as a service" work
-from the extracted directory as well as from a checkout.
+`~/.local/bin` is a directory you own, which is what makes `fletch-host update`
+able to replace the binary without `sudo`. Make sure it is on your `PATH`
+(`export PATH="$HOME/.local/bin:$PATH"`). The tarball also carries this README
+and both service templates, so the paths under "Run it as a service" work from
+the extracted directory as well as from a checkout.
 
 From a checkout instead:
 
@@ -69,35 +71,102 @@ never mistaken for a crash.
 
 ## Run it as a service
 
-Both units in `packaging/` run the host **as your own user**, never as root:
-everything it touches is yours, and on Linux the container sandbox maps the
-agent's files back to that same user (see "The sandbox" below).
+```sh
+fletch-host service install            # systemd user unit, or a launchd user agent
+fletch-host service uninstall
+```
 
-Linux, systemd:
+Either way the host runs **as your own user**, never as root: everything it
+touches is yours, and on Linux the container sandbox maps the agent's files
+back to that same user (see "The sandbox" below).
+
+`install` writes the service definition, enables it and starts it, printing
+every file it wrote and every command it ran. Running it again rewrites the
+definition and restarts the host, so it is also how you change the flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--data-dir PATH` | the data dir to serve (global flag; defaults to the same one every other subcommand uses) |
+| `--port N` | port for paired devices |
+| `--name NAME` | the name paired devices show |
+| `--user NAME` | Linux, with `--system`: the user the unit runs as. Defaults to you |
+| `--system` | Linux: `/etc/systemd/system` instead of your own user unit. Needs `sudo`; not a thing on macOS |
+
+The resolved data dir and this binary's absolute path are written into the
+definition rather than left to be re-derived, because an init system's
+environment is not your shell's — `$HOME` and `$XDG_DATA_HOME` may be unset or
+different, and the service has to open the same data dir the CLI subcommands
+talk to.
+
+**Linux.** The unit is `~/.config/systemd/user/fletch-host.service`
+(`/etc/systemd/system/fletch-host.service` with `--system`). One step is left
+for you, because it needs `sudo`:
 
 ```sh
-install -Dm644 packaging/fletch-host.service ~/.config/systemd/user/fletch-host.service
-systemctl --user daemon-reload
-systemctl --user enable --now fletch-host
-loginctl enable-linger $USER          # or it stops when you log out of SSH
+loginctl enable-linger $USER          # or the host stops when you log out of SSH
 journalctl --user -u fletch-host -f   # logs
 ```
 
 `enable-linger` is the step people forget: without it systemd tears your user
-session down when the last SSH connection closes, agents and all.
+session down when the last SSH connection closes, agents and all. `install`
+prints the command.
 
-macOS, launchd (`launchd` does not expand `~`, so substitute your user name):
+**macOS.** The agent is `~/Library/LaunchAgents/com.fletch.host.plist`, loaded
+with `launchctl bootstrap gui/$(id -u)` (and `launchctl load -w` on macOS old
+enough to need it). Logs: `tail -f ~/Library/Logs/fletch-host.log`. A Mac that
+sleeps is a host that answers nothing — `sudo pmset -a sleep 0`.
+
+Set `QUORUM_GITHUB_CLIENT_ID` in the installed definition if you want
+`fletch-host github login` to work (see "GitHub" below); both templates have
+the line commented out and ready.
+
+### Installing the definition by hand
+
+`packaging/fletch-host.service` and `packaging/com.fletch.host.plist` are the
+only copies of those two files: `service install` compiles them in with
+`include_str!` and substitutes a handful of `{{PLACEHOLDER}}` tokens, so a
+definition written by the CLI and one written by hand cannot drift. Each file's
+header lists its tokens and what to put in them. That is why the copies in the
+release tarball still have the tokens in them — they are the template, not a
+rendered default.
+
+## Update
 
 ```sh
-sed "s/YOU/$USER/g" packaging/com.fletch.host.plist \
-  > ~/Library/LaunchAgents/com.fletch.host.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.fletch.host.plist
-tail -f ~/Library/Logs/fletch-host.log
+fletch-host update --check     # current vs available, and nothing else
+fletch-host update             # install the latest release
+fletch-host update 0.7.32      # install (or reinstall) one version
 ```
 
-Set `QUORUM_GITHUB_CLIENT_ID` in whichever unit you use if you want
-`fletch-host github login` to work (see "GitHub" below); both files have the
-line commented out and ready.
+What it does, in order — and it stops at the first thing that does not hold:
+
+1. Resolves the release through the GitHub API and picks the asset for this
+   build's target triple, `fletch-host-<version>-<target>.tar.gz`.
+2. Downloads the tarball, its `.sha256` and its `.sig` into
+   `<data-dir>/updates/<version>/`, and leaves them there.
+3. Checks the sha256, **and** verifies the minisign signature against the key
+   the desktop's updater trusts (`plugins.updater.pubkey` in
+   `src-tauri/tauri.conf.json`; the release workflow signs the tarball with the
+   matching private key). A missing or bad `.sig` aborts — a host that installs
+   an unverified binary is a remote code execution path, so there is no
+   `--force` for it.
+4. Copies the SQLite database to
+   `<data-dir>/backups/data.db.<old-version>.bak`. A running host's WAL is not
+   in that copy, so stop the host first if you want a clean one.
+5. Extracts `fletch-host` next to the running executable as `fletch-host.new`,
+   chmods it 755 and `rename`s it over the current path — atomic, so the path
+   never resolves to half a binary. If that directory is not writable it says
+   so before touching anything, and tells you to re-run with `sudo` or to
+   install into `~/.local/bin` instead.
+6. Restarts the service from `service install` if there is one
+   (`systemctl restart` / `launchctl kickstart -k`). If instead a bare `serve`
+   is running — the admin socket answers — it says that it has to be restarted
+   and does **not** kill it: a host with agents mid-run is not something an
+   update gets to end.
+
+There is no rollback and no unattended upgrade path: that is deferred item 17
+in `docs/multi-host-plan.md` §5.3. The database copy from step 4 is what a
+manual rollback uses.
 
 ## The sandbox
 

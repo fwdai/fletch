@@ -9,9 +9,10 @@ name: Release
 # Publishing makes it available to the in-app auto-updater.
 #
 # The `host` job then adds the headless `fletch-host` binaries to that same
-# release, one tarball per target. It is deliberately a separate job: it shares
-# nothing with the desktop build but the version number, it needs no signing
-# identity, and a failure there must not take the app release with it.
+# release, one tarball per target with a `.sha256` and a `.sig` beside it. It is
+# deliberately a separate job: it shares nothing with the desktop build but the
+# version number and the updater signing key, it needs no Apple identity, and a
+# failure there must not take the app release with it.
 on:
   workflow_dispatch:
 
@@ -143,6 +144,18 @@ jobs:
           rustup toolchain install
           rustup target add ${{ matrix.target }}
 
+      - name: Setup Bun
+        # Only for `@tauri-apps/cli signer` in the signing step below; nothing
+        # in this job builds a frontend.
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.3"
+
+      - name: Install frontend dependencies
+        # `@tauri-apps/cli` is already a devDependency (package.json), and
+        # bun.lock is what pins the signer's version.
+        run: bun install --frozen-lockfile
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -202,6 +215,26 @@ jobs:
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
+      - name: Sign the tarball
+        # The same minisign keypair the desktop's updater artifacts are signed
+        # with, so the host verifies a release exactly the way the app does:
+        # `fletch-host update` carries the matching public key as
+        # `update::UPDATER_PUBKEY` (a test asserts it equals
+        # `plugins.updater.pubkey` in src-tauri/tauri.conf.json) and refuses
+        # any download whose `.sig` is missing or does not verify. Writes
+        # `<tarball>.sig` beside the tarball.
+        env:
+          TAURI_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          TARBALL="${{ steps.package.outputs.name }}.tar.gz"
+          bunx @tauri-apps/cli signer sign \
+            -k "$TAURI_KEY" -p "$TAURI_KEY_PASSWORD" "$TARBALL"
+          # An empty or absent signature is a release nobody can install, and
+          # that must fail here rather than at the first `fletch-host update`.
+          test -s "$TARBALL.sig"
+
       # `gh release upload`, not `softprops/action-gh-release`: the action
       # *patches* the release it is pointed at, and the job above has just
       # replaced that release's body with GitHub's generated notes. Adding
@@ -214,4 +247,5 @@ jobs:
           gh release upload ${{ steps.package.outputs.tag }}
           ${{ steps.package.outputs.name }}.tar.gz
           ${{ steps.package.outputs.name }}.tar.gz.sha256
+          ${{ steps.package.outputs.name }}.tar.gz.sig
           --clobber
