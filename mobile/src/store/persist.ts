@@ -3,8 +3,8 @@
 // browser. There is no credential here: the device's identity is the Noise
 // static key, which lives in the Rust layer's app data dir.
 
+import { inTauri } from "@desktop/remote/ws";
 import { BaseDirectory, exists, mkdir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { inTauri } from "../remote/ws";
 
 const FILE = "settings.json";
 const DIR = "fletch";

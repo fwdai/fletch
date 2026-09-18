@@ -1,7 +1,7 @@
 // Wire types for docs/remote-protocol.md. Kept free of any transport or React
 // dependency so both the ws and mock hosts, and the tests, share one contract.
 
-import type { Workspace } from "@desktop/api/types/agent";
+import type { Workspace } from "../api/types/agent";
 
 export type ConnectionState = "disconnected" | "connecting" | "pairing" | "connected" | "error";
 

@@ -1,9 +1,10 @@
 # Fletch remote protocol (mobile ↔ desktop)
 
 Status: v2 contract (v1 plus the secure channel). Both the desktop `remote`
-module (`src-tauri/src/remote/`) and the mobile client (`mobile/src/remote/`
-and `mobile/src-tauri/src/remote/`) implement exactly this document.
-Deviations are made here first, then in code.
+module (`src-tauri/src/remote/`) and the client — the shared TypeScript
+protocol client (`src/remote/`, used by the mobile app through `@desktop/*`)
+plus the mobile Rust transport (`mobile/src-tauri/src/remote/`) — implement
+exactly this document. Deviations are made here first, then in code.
 
 ## Concept
 

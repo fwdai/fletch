@@ -4,9 +4,9 @@
 // call here answers as if permission had been refused, which leaves the browser
 // dev loop with nothing to register and nobody to prompt.
 
+import { inTauri } from "@desktop/remote/ws";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { inTauri } from "./ws";
 
 export type PushPermission = "granted" | "denied" | "prompt";
 
