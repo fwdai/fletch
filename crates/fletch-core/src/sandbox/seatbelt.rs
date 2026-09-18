@@ -920,11 +920,13 @@ mod tests {
         let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
 
         // `sh -c 'printf x > <path>'` under the profile: exit 0 means the write
-        // landed, non-zero means the sandbox refused it.
+        // landed, non-zero means the sandbox refused it. The path is single-quoted
+        // so a space in it (`Library/Application Support`) can't split the
+        // redirect and land the write on a different, allowed path.
         let write_allowed = |path: &std::path::Path| {
             std::process::Command::new(SANDBOX_EXEC)
                 .args(profile_args(&profile))
-                .args(["/bin/sh", "-c", &format!("printf x > {}", path.display())])
+                .args(["/bin/sh", "-c", &format!("printf x > '{}'", path.display())])
                 .status()
                 .expect("sandbox-exec")
                 .success()
@@ -1604,12 +1606,15 @@ mod tests {
         // `sh -c 'printf x > <path>'` under the profile: exit 0 means the write
         // landed, non-zero means the sandbox refused it. Parents are created
         // host-side (outside the sandbox) so the test probes the *policy*, not a
-        // missing directory.
+        // missing directory. The path MUST be single-quoted: every probe here is
+        // under `Library/Application Support`, and unquoted the shell split the
+        // redirect at the space, wrote `<home>/Library/Application` (allowed),
+        // and reported every surface writable — the test was vacuous.
         let write_allowed = |path: &std::path::Path| {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::process::Command::new(SANDBOX_EXEC)
                 .args(profile_args(&profile))
-                .args(["/bin/sh", "-c", &format!("printf x > {}", path.display())])
+                .args(["/bin/sh", "-c", &format!("printf x > '{}'", path.display())])
                 .status()
                 .expect("sandbox-exec")
                 .success()
