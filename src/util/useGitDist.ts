@@ -1,5 +1,5 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
+import { localTransport, type UnlistenFn } from "@/api/transport";
 
 /** Payload of the backend's `git-dist:state` event: the portable-git
  *  bootstrap that runs at launch when no usable system git exists. */
@@ -25,24 +25,26 @@ export function useGitDist(onSettled?: () => void): GitDistState {
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
-    void listen<GitDistState>("git-dist:state", (e) => {
-      const isSettled = (p: GitDistState["phase"]) => p === "ready" || p === "failed";
-      // Fire on the first transition into a settled phase. This covers the
-      // normal "downloading" -> "ready"/"failed" path and the race where we
-      // mount mid-download and only ever observe the final settled event (the
-      // "downloading" progress having been emitted before the listener
-      // attached, so phaseRef is still "unknown"). When the bootstrap settled
-      // *before* mount no event arrives at all, so this never fires spuriously.
-      if (isSettled(e.payload.phase) && !isSettled(phaseRef.current)) {
-        onSettledRef.current?.();
-      }
-      phaseRef.current = e.payload.phase;
-      setState(e.payload);
-    }).then((fn) => {
-      // The effect may have been cleaned up while listen() was in flight.
-      if (disposed) fn();
-      else unlisten = fn;
-    });
+    void localTransport
+      .on<GitDistState>("git-dist:state", (next) => {
+        const isSettled = (p: GitDistState["phase"]) => p === "ready" || p === "failed";
+        // Fire on the first transition into a settled phase. This covers the
+        // normal "downloading" -> "ready"/"failed" path and the race where we
+        // mount mid-download and only ever observe the final settled event (the
+        // "downloading" progress having been emitted before the listener
+        // attached, so phaseRef is still "unknown"). When the bootstrap settled
+        // *before* mount no event arrives at all, so this never fires spuriously.
+        if (isSettled(next.phase) && !isSettled(phaseRef.current)) {
+          onSettledRef.current?.();
+        }
+        phaseRef.current = next.phase;
+        setState(next);
+      })
+      .then((fn) => {
+        // The effect may have been cleaned up while the subscribe was in flight.
+        if (disposed) fn();
+        else unlisten = fn;
+      });
     return () => {
       disposed = true;
       unlisten?.();

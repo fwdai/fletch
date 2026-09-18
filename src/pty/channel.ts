@@ -5,7 +5,9 @@
 //
 // Kept generic and outside any store on purpose: routing terminal bytes through
 // React state would be wasteful, and the same shape serves an agent's PTY, its
-// side shell (./buffers) and a provider sign-in alike.
+// side shell (./buffers) and a provider sign-in alike. The key is whatever the
+// owner says it is — ./buffers scopes its keys by environment, so two hosts'
+// agents of the same name keep separate buffers.
 
 export type OutputHandler = (bytes: Uint8Array) => void;
 
