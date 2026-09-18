@@ -69,11 +69,15 @@ pub fn default_data_dir() -> PathBuf {
 /// its only fig leaf. The per-build split still applies underneath, so a debug
 /// and a release host pointed at *one* data dir stay separate as well.
 ///
-/// The data dir is fine to hang an agent's writable tree off: the one policy
-/// that carves a data dir out of what a sandboxed agent may touch names the
-/// desktop's bundle dir specifically (`sandbox::seatbelt`'s `deny_app_data_dir`
-/// / `fletch_core::BUNDLE_ID`), and a container sees nothing but the paths bound
-/// into it.
+/// Hanging an agent's writable tree off the data dir puts it inside the
+/// directory the sandbox has to keep opaque, so the two have to agree. The macOS
+/// profile denies a confined process read *and* write on the data dir this
+/// engine was configured with (`boot` publishes it through
+/// `sandbox::set_data_dir`; see `sandbox::seatbelt`'s `deny_engine_data_dir`) and
+/// then re-allows exactly the two roots below — so the database, `remote/` and
+/// the admin socket stay unreachable while the agent keeps its checkout and its
+/// mailbox. A container sees nothing but the paths bound into it and needs none
+/// of this.
 ///
 /// Anything already set — an operator's own layout, a disk with room for
 /// checkouts — is left alone, and then uniqueness across hosts is theirs to
