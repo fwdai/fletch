@@ -11,7 +11,16 @@
 // ./terminals, because "an agent's PTY state" is one thing: the ring buffer and
 // the terminal rendering it are cleared, reset and released together.
 
+import { activeEnvironmentId } from "@/store/environments";
 import { createPtyChannel, type OutputHandler } from "./channel";
+
+// Every buffer and cached terminal is keyed by environment as well as agent.
+// Agent ids are place names from a small recycled pool, so two hosts will both
+// have an agent called `fuji` (docs/multi-host-plan.md §1.3) and one's
+// scrollback must never be replayed into the other's view. The public functions
+// still take a bare agent id and resolve the active environment themselves, so
+// no caller changes.
+const scoped = (agentId: string) => `${activeEnvironmentId()}:${agentId}`;
 
 // ---- Agent PTY ----------------------------------------------------------------
 const agentPty = createPtyChannel();
@@ -42,11 +51,11 @@ export function setTerminalCacheHooks(hooks: TerminalCacheHooks) {
 
 /** Buffer an agent-output chunk and forward it to the live view sink (if any). */
 export function pushAgentOutput(agentId: string, chunk: Uint8Array) {
-  agentPty.push(agentId, chunk);
+  agentPty.push(scoped(agentId), chunk);
 }
 
 export function getOutputBuffer(agentId: string): Uint8Array | undefined {
-  return agentPty.get(agentId);
+  return agentPty.get(scoped(agentId));
 }
 
 /** Drop an agent's replay history because its PTY restarted (view switch,
@@ -54,7 +63,7 @@ export function getOutputBuffer(agentId: string): Uint8Array | undefined {
  *  dropped, so wipe its screen too — otherwise the next mount would re-attach a
  *  dead session's frame instead of the blank one a restart used to produce. */
 export function clearOutputBuffer(agentId: string) {
-  agentPty.clear(agentId);
+  agentPty.clear(scoped(agentId));
   terminalCache?.reset(agentId);
 }
 
@@ -62,8 +71,9 @@ export function clearOutputBuffer(agentId: string) {
  *  Nothing else clears the shell buffer or the terminal cache, so without this
  *  both grow for the life of the app session. */
 export function dropAgentPty(agentId: string) {
-  agentPty.drop(agentId);
-  shellPty.drop(agentId);
+  const key = scoped(agentId);
+  agentPty.drop(key);
+  shellPty.drop(key);
   terminalCache?.evict(agentId);
 }
 
@@ -74,18 +84,18 @@ export function dropAgentPty(agentId: string) {
  *  native view keeps feeding its cached screen in the background and no second
  *  view can ever be contending for the same slot. */
 export function registerOutputSink(agentId: string, handler: OutputHandler): () => void {
-  return agentPty.registerSink(agentId, handler);
+  return agentPty.registerSink(scoped(agentId), handler);
 }
 
 /** Buffer a shell-output chunk and forward it to the live TermPanel sink. */
 export function pushShellOutput(agentId: string, chunk: Uint8Array) {
-  shellPty.push(agentId, chunk);
+  shellPty.push(scoped(agentId), chunk);
 }
 
 export function getShellBuffer(agentId: string): Uint8Array | undefined {
-  return shellPty.get(agentId);
+  return shellPty.get(scoped(agentId));
 }
 
 export function registerShellSink(agentId: string, handler: OutputHandler): () => void {
-  return shellPty.registerSink(agentId, handler);
+  return shellPty.registerSink(scoped(agentId), handler);
 }

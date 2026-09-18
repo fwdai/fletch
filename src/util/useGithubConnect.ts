@@ -1,7 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useCallback, useRef, useState } from "react";
+import { localTransport, type UnlistenFn } from "@/api/transport";
 import { getOrCreateAccount, linkOAuthAccount, type OAuthProfile } from "@/storage/accounts";
 import { useAppStore } from "@/store";
 import { type ConnectSource, track } from "./track";
@@ -51,24 +50,25 @@ export function useGithubConnect(onConnected?: () => void, source: ConnectSource
       setError(null);
       setDevice(null);
       track("github_connect_started", { source, provider });
-      // Default no-op so `finally` can always call it; listen() lives inside
-      // the try so an IPC failure surfaces as an error instead of throwing.
+      // Default no-op so `finally` can always call it; the subscribe lives
+      // inside the try so an IPC failure surfaces as an error instead of
+      // throwing.
       let unlisten: UnlistenFn = () => {};
       try {
-        unlisten = await listen<{
+        unlisten = await localTransport.on<{
           provider: string;
           user_code: string;
           verification_uri: string;
-        }>("oauth:device-code", (e) => {
+        }>("oauth:device-code", (code) => {
           if (stale()) return;
           setDevice({
-            provider: e.payload.provider,
-            userCode: e.payload.user_code,
-            verificationUri: e.payload.verification_uri,
+            provider: code.provider,
+            userCode: code.user_code,
+            verificationUri: code.verification_uri,
           });
-          void openExternal(e.payload.verification_uri).catch(() => {});
+          void openExternal(code.verification_uri).catch(() => {});
         });
-        const profile = await invoke<OAuthProfile>("oauth_device_login", { provider });
+        const profile = await localTransport.call<OAuthProfile>("oauth_device_login", { provider });
         if (stale()) return;
         const account = await getOrCreateAccount();
         await linkOAuthAccount(account.id, profile);

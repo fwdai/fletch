@@ -1,14 +1,16 @@
-import { invoke } from "@tauri-apps/api/core";
+// The desktop's own SQLite bridge: this app's local rows (accounts, drafts,
+// autopilot log), not an engine's workspace. Always the local transport.
+import { invokeLocal } from "@/api/invoke";
 
 export async function dbInsert(table: string, data: Record<string, unknown>): Promise<string> {
-  return invoke<string>("db_insert", { table, data });
+  return invokeLocal<string>("db_insert", { table, data });
 }
 
 export async function dbSelect<T>(
   table: string,
   query: Record<string, unknown> = {},
 ): Promise<T[]> {
-  const rows = await invoke<T[]>("db_select", { table, query });
+  const rows = await invokeLocal<T[]>("db_select", { table, query });
   return Array.isArray(rows) ? rows : [];
 }
 
@@ -25,16 +27,16 @@ export async function dbUpdate(
   where: Record<string, unknown>,
   data: Record<string, unknown>,
 ): Promise<number> {
-  return invoke<number>("db_update", { table, query: { where }, data });
+  return invokeLocal<number>("db_update", { table, query: { where }, data });
 }
 
 export async function dbDelete(table: string, where: Record<string, unknown>): Promise<number> {
-  return invoke<number>("db_delete", { table, query: { where } });
+  return invokeLocal<number>("db_delete", { table, query: { where } });
 }
 
 export async function dbCount(table: string, where?: Record<string, unknown>): Promise<number> {
   const query = where ? { where } : {};
-  return invoke<number>("db_count", { table, query });
+  return invokeLocal<number>("db_count", { table, query });
 }
 
 export async function dbUpsert(
@@ -42,7 +44,7 @@ export async function dbUpsert(
   data: Record<string, unknown>,
   conflictColumn: string,
 ): Promise<string> {
-  return invoke<string>("db_upsert", {
+  return invokeLocal<string>("db_upsert", {
     table,
     data,
     conflictColumn,
@@ -50,6 +52,6 @@ export async function dbUpsert(
 }
 
 export async function dbQuery<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-  const rows = await invoke<T[]>("db_query", { sql, params });
+  const rows = await invokeLocal<T[]>("db_query", { sql, params });
   return Array.isArray(rows) ? rows : [];
 }
