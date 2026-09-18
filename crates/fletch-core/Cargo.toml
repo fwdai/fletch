@@ -1,6 +1,11 @@
 [package]
 name = "fletch-core"
-version = "0.1.0"
+# Fletch's one product version, shared with `src-tauri/tauri.conf.json`,
+# `src-tauri/Cargo.toml` and `crates/fletch-host/Cargo.toml` — CI asserts all
+# four agree. This is the version a paired client reads as `HostInfo.appVersion`
+# (`remote::mod`), so a crate version of its own would report a number no
+# release ever had. Bump all four together; see docs/RELEASING.md.
+version = "0.7.32"
 description = "The Fletch engine: agents, sandboxes, workspaces, workflows and the remote host, with no Tauri in the dependency graph"
 authors = ["Alex Chaplinsky", "fwdai.org"]
 license = "AGPL-3.0-only"

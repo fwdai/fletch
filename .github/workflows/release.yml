@@ -1,7 +1,9 @@
 name: Release
 
-# Manual only. Bump `version` in src-tauri/tauri.conf.json (and keep
-# package.json + Cargo.toml in sync) before running. This builds, signs, and
+# Manual only. Bump `version` in src-tauri/tauri.conf.json, the three Cargo
+# manifests (src-tauri, crates/fletch-core, crates/fletch-host) and
+# package.json before running — `scripts/check-version.sh` is what asserts the
+# first four agree, in CI and again in the `host` job below. This builds, signs, and
 # notarizes a universal macOS app and creates a PUBLISHED GitHub release with
 # the .dmg, the updater artifact (.app.tar.gz + .sig), and latest.json.
 # Publishing makes it available to the in-app auto-updater.
@@ -161,12 +163,24 @@ jobs:
         id: package
         run: |
           set -euo pipefail
-          # The release's version, not the crate's: the tag the desktop job
-          # created is `v$(jq -r .version src-tauri/tauri.conf.json)`.
-          VERSION="$(jq -r .version src-tauri/tauri.conf.json)"
+          # The release's version — `src-tauri/tauri.conf.json`, which is what
+          # the desktop job derived the tag `v__VERSION__` from — and the assert
+          # that the three Cargo manifests say the same. The archive name and
+          # the number inside the binary come from one source or this job does
+          # not run: an archive called 0.7.32 holding a binary that reports
+          # 0.1.0 is not something a user can be asked to reason about.
+          VERSION="$(./scripts/check-version.sh)"
           NAME="fletch-host-$VERSION-${{ matrix.target }}"
           # This package is not in a workspace, so its target dir is its own.
           BIN="crates/fletch-host/target/${{ matrix.target }}/release/fletch-host"
+          # And the binary itself: every target here builds natively, so the
+          # freshly built one runs on this runner. `--version` prints
+          # `fletch-host <version>`.
+          BUILT="$("$BIN" --version | awk '{print $NF}')"
+          if [ "$BUILT" != "$VERSION" ]; then
+            echo "::error::fletch-host --version says $BUILT, this release is $VERSION"
+            exit 1
+          fi
           if [ "${{ runner.os }}" = "macOS" ]; then
             strip -x "$BIN"
           else
