@@ -487,6 +487,14 @@ remote-only — the desktop has its own microphone and its own commands — and
 answer through the generic dispatcher, since none of them needs to know which
 device is asking.
 
+- **Hosts without a speech engine.** The five names are on the allowlist of
+  *every* host, so a phone may always ask and the capability descriptor always
+  advertises them. A host with no local engine behind it — a Linux
+  `fletch-host`, or a non-macOS desktop build, where whisper.cpp is not compiled
+  — answers `dictation_status` with `available: false` and a `reason` of
+  "Dictation from a phone needs a Mac host: whisper.cpp is only built there.",
+  and fails the four capture ops with that same message. Neither is `unknown
+  op`: the op exists, the host just cannot serve it.
 - **Preconditions.** The Mac's `dictation_engine` setting must be `whisper` and
   the selected model's weights must be on disk. `dictation_status` reports
   exactly that as `available`, with a `reason` the phone shows as-is when it is
