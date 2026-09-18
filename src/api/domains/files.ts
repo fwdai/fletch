@@ -1,4 +1,5 @@
 import { invoke } from "../invoke";
+import { invokeLocalRaw } from "../transport";
 import type {
   CheckoutFile,
   CheckoutFileContents,
@@ -32,7 +33,7 @@ export const filesApi = {
    *  absolute path so it can be staged like a dropped file. The name goes in a
    *  header (raw-body IPC), so it's reduced to a plain ASCII basename here. */
   savePastedAttachment: (name: string, bytes: Uint8Array) =>
-    invoke<string>("save_pasted_attachment", bytes, {
+    invokeLocalRaw<string>("save_pasted_attachment", bytes, {
       headers: { name: name.replace(/[^A-Za-z0-9._-]/g, "_") },
     }),
 };
