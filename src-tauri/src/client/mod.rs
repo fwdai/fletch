@@ -1,24 +1,33 @@
-// The phone's four secure-channel commands. Everything they do is
-// `fletch_proto::client::Dialer` — the socket, the Noise state, the connection
-// map and the device key file — so this module is only the Tauri end of it:
-// managed state, command signatures, and the three events on the webview's bus.
+// The desktop's four secure-channel commands: this Mac as a *client* of other
+// Fletch hosts, alongside `remote/`, which is this Mac as a host. The two share
+// nothing but the protocol crate — separate keys, separate state — so one
+// machine can be both at once.
 //
-// The same wrapper exists on the desktop (`src-tauri/src/client/mod.rs`), which
-// is what makes one dialer serve both apps. Keep the two in step: the command
-// names, their argument keys and the event payloads are the contract the shared
-// TS transport (`src/remote/ws.ts`) is written against.
+// Everything they do is `fletch_proto::client::Dialer` — the socket, the Noise
+// state, the connection map and the device key file — so this module is only
+// the Tauri end of it: managed state, command signatures, and the three events
+// on the webview's bus.
+//
+// The same wrapper exists on the phone (`mobile/src-tauri/src/remote/mod.rs`),
+// which is what makes one dialer serve both apps. Keep the two in step: the
+// command names, their argument keys and the event payloads are the contract
+// the shared TS transport (`src/remote/ws.ts`) is written against.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use fletch_proto::client::{ClientEvent, ConnectResult, ConnectionId, Dialer, Target};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
-/// The dialer this app's commands work on. The device key stays where it has
-/// always been — `<app_data_dir>/device_key` — so existing pairings survive.
-pub fn dialer(app: &AppHandle) -> tauri::Result<Arc<Dialer>> {
-    let dir = app.path().app_data_dir()?;
+/// The dialer this app's commands work on.
+///
+/// `dir` is `<data_dir>/remote`, where the device key sits beside — and is
+/// never confused with — the host key: this machine's identity as a client is
+/// not its identity as a host, so revoking one leaves the other alone. The file
+/// is created on first use, so a desktop that never dials a host never gets one.
+pub fn dialer(app: &AppHandle, dir: &Path) -> Arc<Dialer> {
     let app = app.clone();
-    Ok(Dialer::new(dir, Box::new(move |event| emit(&app, event))))
+    Dialer::new(dir, Box::new(move |event| emit(&app, event)))
 }
 
 /// Every event carries its connection id, so the webview can run more than one
