@@ -1,16 +1,16 @@
 //! Interactive per-agent shell PTYs: open, close, write, resize.
 
 use std::sync::Arc;
-use tauri::AppHandle;
 
 use crate::error::{Error, Result};
+use crate::host::EngineCtx;
 use crate::pty_session::{PtySession, PtySpawn};
 
 use super::events::emit_shell_output;
 use super::Supervisor;
 
 impl Supervisor {
-    pub fn open_agent_shell(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+    pub fn open_agent_shell(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
         {
             let shells = self.shells.lock();
             if shells.contains_key(agent_id) {
@@ -43,7 +43,7 @@ impl Supervisor {
                 kill_plan: crate::sandbox::KillHandle::ProcessGroup,
             },
             move |bytes| {
-                emit_shell_output(&app, &agent_id_out, bytes);
+                emit_shell_output(ctx.sink.as_ref(), &agent_id_out, bytes);
             },
             move |exit| {
                 tracing::info!(

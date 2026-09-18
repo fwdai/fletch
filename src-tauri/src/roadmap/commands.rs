@@ -1,6 +1,6 @@
 //! Tauri command surface for the roadmap. Domain work lives in sibling modules.
 
-use tauri::AppHandle;
+use std::sync::Arc;
 
 use super::assignments;
 use super::brakes::{self, ProjectHold};
@@ -17,6 +17,7 @@ use super::rulings;
 use super::store;
 use super::types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
 use super::Db;
+use crate::host::EngineCtx;
 
 #[tauri::command]
 pub async fn roadmap_list_items(
@@ -40,7 +41,7 @@ pub async fn roadmap_get_item(
 pub async fn roadmap_create_item(
     project_id: String,
     item: NewItem,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<RoadmapItem, String> {
     if item.title.trim().is_empty() {
@@ -50,8 +51,8 @@ pub async fn roadmap_create_item(
         let conn = db.lock();
         create_checked(&conn, &project_id, &item)?
     };
-    emit_item(&app, &created);
-    emit_item_event(&app, &event);
+    emit_item(ctx.sink.as_ref(), &created);
+    emit_item_event(ctx.sink.as_ref(), &event);
     drainer::nudge();
     Ok(created)
 }
@@ -62,7 +63,7 @@ pub async fn roadmap_update_item(
     patch: ItemPatch,
     expect_status: Option<ItemStatus>,
     queue: Option<bool>,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<ItemUpdate, String> {
     let (outcome, event) = {
@@ -71,9 +72,9 @@ pub async fn roadmap_update_item(
     };
     let outcome = outcome.ok_or_else(|| store::missing(&id))?;
     if outcome.applied {
-        emit_item(&app, &outcome.item);
+        emit_item(ctx.sink.as_ref(), &outcome.item);
         if let Some(event) = &event {
-            emit_item_event(&app, event);
+            emit_item_event(ctx.sink.as_ref(), event);
         }
         drainer::nudge();
         if outcome.item.status == ItemStatus::InReview {
@@ -88,7 +89,7 @@ pub async fn roadmap_update_item(
 pub async fn roadmap_set_rank(
     item_id: String,
     rank: f64,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<RoadmapItem, String> {
     let item = {
@@ -104,7 +105,7 @@ pub async fn roadmap_set_rank(
         .map_err(|e| e.to_string())?
     };
     let item = item.ok_or_else(|| store::missing(&item_id))?;
-    emit_item(&app, &item);
+    emit_item(ctx.sink.as_ref(), &item);
     drainer::nudge();
     Ok(item)
 }
@@ -113,15 +114,15 @@ pub async fn roadmap_set_rank(
 pub async fn roadmap_hand_off_item(
     item_id: String,
     agent_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<RoadmapItem, String> {
     let (item, event) = {
         let conn = db.lock();
         assignments::hand_off(&conn, &item_id, &agent_id)?
     };
-    emit_item(&app, &item);
-    emit_item_event(&app, &event);
+    emit_item(ctx.sink.as_ref(), &item);
+    emit_item_event(ctx.sink.as_ref(), &event);
     Ok(item)
 }
 
@@ -158,7 +159,7 @@ pub async fn roadmap_merge_item_pr(
 pub async fn roadmap_note_review_feedback(
     item_id: String,
     threads: usize,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<ItemEvent, String> {
     let event = {
@@ -183,7 +184,7 @@ pub async fn roadmap_note_review_feedback(
         )
         .map_err(|e| e.to_string())?
     };
-    emit_item_event(&app, &event);
+    emit_item_event(ctx.sink.as_ref(), &event);
     Ok(event)
 }
 
@@ -191,7 +192,7 @@ pub async fn roadmap_note_review_feedback(
 pub async fn roadmap_hold_item(
     item_id: String,
     reason: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<RoadmapItem, String> {
     let reason = brakes::clean_reason(&reason)?;
@@ -199,24 +200,24 @@ pub async fn roadmap_hold_item(
         let conn = db.lock();
         brakes::hold_with_event(&conn, &item_id, &reason, EventActor::User)?
     };
-    emit_item(&app, &item);
-    emit_item_event(&app, &event);
+    emit_item(ctx.sink.as_ref(), &item);
+    emit_item_event(ctx.sink.as_ref(), &event);
     Ok(item)
 }
 
 #[tauri::command]
 pub async fn roadmap_release_item(
     item_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<RoadmapItem, String> {
     let (item, event) = {
         let conn = db.lock();
         brakes::release_with_event(&conn, &item_id)?
     };
-    emit_item(&app, &item);
+    emit_item(ctx.sink.as_ref(), &item);
     if let Some(event) = &event {
-        emit_item_event(&app, event);
+        emit_item_event(ctx.sink.as_ref(), event);
         drainer::nudge();
     }
     Ok(item)
@@ -235,7 +236,7 @@ pub async fn roadmap_get_project_hold(
 pub async fn roadmap_hold_project(
     project_id: String,
     reason: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<ProjectHold, String> {
     let reason = brakes::clean_reason(&reason)?;
@@ -244,7 +245,7 @@ pub async fn roadmap_hold_project(
         brakes::hold_project(&conn, &project_id, &reason, EventActor::User)
             .map_err(|e| e.to_string())?
     };
-    emit_project_hold(&app, &hold);
+    emit_project_hold(ctx.sink.as_ref(), &hold);
     Ok(hold)
 }
 
@@ -252,14 +253,14 @@ pub async fn roadmap_hold_project(
 // Release is user-only; no agent RPC path.
 pub async fn roadmap_release_project(
     project_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<(), String> {
     {
         let conn = db.lock();
         brakes::release_project(&conn, &project_id).map_err(|e| e.to_string())?;
     }
-    client_events::emit_project_hold_released(&app, &project_id);
+    client_events::emit_project_hold_released(ctx.sink.as_ref(), &project_id);
     drainer::nudge();
     Ok(())
 }
@@ -267,15 +268,15 @@ pub async fn roadmap_release_project(
 #[tauri::command]
 pub async fn roadmap_reclaim_item(
     item_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<RoadmapItem, String> {
     let (item, event) = {
         let conn = db.lock();
         assignments::reclaim(&conn, &item_id)?
     };
-    emit_item(&app, &item);
-    emit_item_event(&app, &event);
+    emit_item(ctx.sink.as_ref(), &item);
+    emit_item_event(ctx.sink.as_ref(), &event);
     drainer::nudge();
     Ok(item)
 }
@@ -284,17 +285,17 @@ pub async fn roadmap_reclaim_item(
 pub async fn roadmap_reject_item(
     item_id: String,
     reason: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<RoadmapItem, String> {
     let (item, event, pending) = {
         let conn = db.lock();
         rulings::reject_item(&conn, &item_id, &reason)?
     };
-    emit_item(&app, &item);
-    emit_item_event(&app, &event);
+    emit_item(ctx.sink.as_ref(), &item);
+    emit_item_event(ctx.sink.as_ref(), &event);
     if let Some(p) = &pending {
-        client_events::emit_proposal_deleted(&app, &p.id);
+        client_events::emit_proposal_deleted(ctx.sink.as_ref(), &p.id);
     }
     drainer::nudge();
     Ok(item)
@@ -303,20 +304,20 @@ pub async fn roadmap_reject_item(
 #[tauri::command]
 pub async fn roadmap_reopen_item(
     item_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<RoadmapItem, String> {
     let (item, event, corrections) = {
         let conn = db.lock();
         rulings::reopen_item(&conn, &item_id)?
     };
-    emit_item(&app, &item);
+    emit_item(ctx.sink.as_ref(), &item);
     if let Some(event) = &event {
-        emit_item_event(&app, event);
+        emit_item_event(ctx.sink.as_ref(), event);
         drainer::nudge();
     }
     for note in &corrections {
-        emit_item_event(&app, note);
+        emit_item_event(ctx.sink.as_ref(), note);
     }
     Ok(item)
 }
@@ -325,7 +326,7 @@ pub async fn roadmap_reopen_item(
 // Cascade-delete pending proposal; stale dep codes count as satisfied.
 pub async fn roadmap_delete_item(
     id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<(), String> {
     let (removed, pending) = {
@@ -343,9 +344,9 @@ pub async fn roadmap_delete_item(
         (removed, pending.filter(|_| removed))
     };
     if removed {
-        client_events::emit_item_deleted(&app, &id);
+        client_events::emit_item_deleted(ctx.sink.as_ref(), &id);
         if let Some(p) = pending {
-            client_events::emit_proposal_deleted(&app, &p.id);
+            client_events::emit_proposal_deleted(ctx.sink.as_ref(), &p.id);
         }
         drainer::nudge();
     }
@@ -382,18 +383,18 @@ pub async fn roadmap_list_proposals(
 #[tauri::command]
 pub async fn roadmap_accept_proposal(
     proposal_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<(), String> {
     let ruling = {
         let conn = db.lock();
         rulings::accept_proposal(&conn, &proposal_id)?
     };
-    client_events::emit_proposal_deleted(&app, &proposal_id);
+    client_events::emit_proposal_deleted(ctx.sink.as_ref(), &proposal_id);
     match ruling {
         rulings::Ruling::Updated { item, event } => {
-            emit_item(&app, &item);
-            emit_item_event(&app, &event);
+            emit_item(ctx.sink.as_ref(), &item);
+            emit_item_event(ctx.sink.as_ref(), &event);
             drainer::nudge();
             Ok(())
         }
@@ -404,15 +405,15 @@ pub async fn roadmap_accept_proposal(
 #[tauri::command]
 pub async fn roadmap_reject_proposal(
     proposal_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<(), String> {
     let event = {
         let conn = db.lock();
         rulings::reject_proposal(&conn, &proposal_id)?
     };
-    client_events::emit_proposal_deleted(&app, &proposal_id);
-    emit_item_event(&app, &event);
+    client_events::emit_proposal_deleted(ctx.sink.as_ref(), &proposal_id);
+    emit_item_event(ctx.sink.as_ref(), &event);
     Ok(())
 }
 
@@ -428,18 +429,18 @@ pub async fn roadmap_get_order_proposal(
 #[tauri::command]
 pub async fn roadmap_accept_order_proposal(
     project_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<(), String> {
     let ruling = {
         let conn = db.lock();
         rulings::accept_order(&conn, &project_id)?
     };
-    client_events::emit_order_proposal_deleted(&app, &project_id);
+    client_events::emit_order_proposal_deleted(ctx.sink.as_ref(), &project_id);
     match ruling {
         rulings::OrderRuling::Applied(rows) => {
             for row in &rows {
-                emit_item(&app, row);
+                emit_item(ctx.sink.as_ref(), row);
             }
             drainer::nudge();
             Ok(())
@@ -451,14 +452,14 @@ pub async fn roadmap_accept_order_proposal(
 #[tauri::command]
 pub async fn roadmap_reject_order_proposal(
     project_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<(), String> {
     {
         let conn = db.lock();
         order_proposals::delete(&conn, &project_id).map_err(|e| e.to_string())?;
     }
-    client_events::emit_order_proposal_deleted(&app, &project_id);
+    client_events::emit_order_proposal_deleted(ctx.sink.as_ref(), &project_id);
     Ok(())
 }
 
@@ -484,29 +485,29 @@ pub async fn roadmap_get_brief_proposal(
 // Brief + proposal consume under one lock (invariant 3).
 pub async fn roadmap_accept_brief_proposal(
     project_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<Brief, String> {
     let applied = {
         let conn = db.lock();
         memory::accept(&conn, &project_id).map_err(|e| e.to_string())?
     };
-    client_events::emit_brief_proposal_deleted(&app, &project_id);
+    client_events::emit_brief_proposal_deleted(ctx.sink.as_ref(), &project_id);
     let brief = applied.ok_or("this brief update has already been ruled on")?;
-    client_events::emit_brief(&app, &brief);
+    client_events::emit_brief(ctx.sink.as_ref(), &brief);
     Ok(brief)
 }
 
 #[tauri::command]
 pub async fn roadmap_reject_brief_proposal(
     project_id: String,
-    app: AppHandle,
+    ctx: tauri::State<'_, Arc<EngineCtx>>,
     db: tauri::State<'_, Db>,
 ) -> Result<(), String> {
     {
         let conn = db.lock();
         memory::delete_proposal(&conn, &project_id).map_err(|e| e.to_string())?;
     }
-    client_events::emit_brief_proposal_deleted(&app, &project_id);
+    client_events::emit_brief_proposal_deleted(ctx.sink.as_ref(), &project_id);
     Ok(())
 }

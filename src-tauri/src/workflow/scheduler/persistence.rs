@@ -49,10 +49,10 @@ pub(crate) fn load_run(conn: &Connection, run_id: &str) -> Result<RunEssentials>
     .map_err(|e| Error::Other(format!("run {run_id} not found: {e}")))
 }
 
-/// Update the run row's status and emit `wf:run` (when an app handle is present).
+/// Update the run row's status and emit `wf:run` (when an engine ctx is present).
 pub(crate) fn set_status(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     run_id: &str,
     status: &str,
     paused_reason: Option<&str>,
@@ -62,13 +62,13 @@ pub(crate) fn set_status(
         "UPDATE wf_run SET status = ?1, paused_reason = ?2, error = ?3, updated_at = ?4 WHERE id = ?5",
         rusqlite::params![status, paused_reason, error, crate::workflow::now_ms(), run_id],
     );
-    if let Some(app) = app {
+    if let Some(engine) = engine {
         if let Ok(run) = conn.query_row(
             "SELECT * FROM wf_run WHERE id = ?1",
             [run_id],
             crate::workflow::types::Run::from_row,
         ) {
-            journal::emit_run(app, &run);
+            journal::emit_run(engine.sink.as_ref(), &run);
         }
     }
 }
@@ -86,7 +86,7 @@ pub(crate) fn set_status(
 /// (immediately after) carries the timestamp the sidebar orders on.
 pub(crate) fn set_pr(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     run_id: &str,
     number: Option<i64>,
     url: &str,
@@ -95,13 +95,13 @@ pub(crate) fn set_pr(
         "UPDATE wf_run SET pr_number = ?1, pr_url = ?2 WHERE id = ?3",
         rusqlite::params![number, url, run_id],
     );
-    if let Some(app) = app {
+    if let Some(engine) = engine {
         if let Ok(run) = conn.query_row(
             "SELECT * FROM wf_run WHERE id = ?1",
             [run_id],
             crate::workflow::types::Run::from_row,
         ) {
-            journal::emit_run(app, &run);
+            journal::emit_run(engine.sink.as_ref(), &run);
         }
     }
 }
@@ -112,22 +112,27 @@ pub(crate) fn set_pr(
 /// materialized-row change. Mirrors the `run_done` journal+status pair, so a
 /// panic, ferry failure, or stage failure all leave a `run_failed` in the
 /// timeline with the same human-readable cause stored on `wf_run.error`.
-pub(crate) fn fail_run(conn: &Connection, app: Option<&AppHandle>, run_id: &str, error: &str) {
+pub(crate) fn fail_run(
+    conn: &Connection,
+    engine: Option<&Arc<EngineCtx>>,
+    run_id: &str,
+    error: &str,
+) {
     journal_event(
         conn,
-        app,
+        engine,
         run_id,
         event_type::RUN_FAILED,
         None,
         &json!({ "error": error }),
     );
-    set_status(conn, app, run_id, "failed", None, Some(error));
+    set_status(conn, engine, run_id, "failed", None, Some(error));
 }
 
-/// Append a journal event and emit `wf:event` (when an app handle is present).
+/// Append a journal event and emit `wf:event` (when an engine ctx is present).
 pub(crate) fn journal_event(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     run_id: &str,
     event_type: &str,
     step_exec_id: Option<&str>,
@@ -135,8 +140,8 @@ pub(crate) fn journal_event(
 ) {
     match journal::append(conn, run_id, event_type, step_exec_id, payload) {
         Ok(ev) => {
-            if let Some(app) = app {
-                journal::emit_event(app, &ev);
+            if let Some(engine) = engine {
+                journal::emit_event(engine.sink.as_ref(), &ev);
             }
         }
         Err(e) => tracing::warn!(error = %e, run_id, event_type, "journal append failed"),
@@ -181,7 +186,7 @@ pub(crate) fn finish_step_exec(conn: &Connection, id: &str, status: &str, head_e
 /// `ATTEMPT_ABANDONED` event (§8.3). The caller holds `conn`.
 pub(crate) fn abandon_exec(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     run_id: &str,
     exec_id: &str,
     cause: &str,
@@ -192,7 +197,7 @@ pub(crate) fn abandon_exec(
     );
     journal_event(
         conn,
-        app,
+        engine,
         run_id,
         event_type::ATTEMPT_ABANDONED,
         Some(exec_id),
@@ -314,7 +319,7 @@ pub(crate) fn finish_budget_pause(
     persist_spent(&conn, run_id, ledger);
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type::RUN_PAUSED,
         exec_id,
@@ -322,7 +327,7 @@ pub(crate) fn finish_budget_pause(
     );
     set_status(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         "paused",
         Some("budget_exceeded"),

@@ -382,7 +382,7 @@ async fn linear_two_step_run_reaches_done_and_pushes() {
     let ctx = RunCtx {
         db: db.clone(),
         driver,
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -517,7 +517,7 @@ async fn cancel_marks_run_canceled_and_runs_no_step() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, true),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(true)), // pre-canceled
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -546,7 +546,7 @@ async fn a_step_is_visible_while_it_runs_not_only_once_it_ends() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: driver.clone(),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -580,7 +580,7 @@ async fn terminal_run_is_not_redriven() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, true),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -609,7 +609,7 @@ async fn unmet_commit_gate_pauses_blocked() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, false),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -643,7 +643,7 @@ async fn drive_to_approval(tmp: &Path, run_id: &str, branch: &str) -> Db {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, true),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -716,7 +716,7 @@ async fn approval_with_missing_artifact_pauses_blocked_not_approval() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, false),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -762,7 +762,7 @@ async fn approval_with_present_artifact_pauses_with_its_content_in_evidence() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, true),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -802,7 +802,7 @@ async fn passing_artifact_gate_journals_the_artifact_as_evidence() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, true),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -927,7 +927,7 @@ async fn pause_stops_the_live_step_agent() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: driver.clone(),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -997,7 +997,7 @@ async fn failed_run_emits_a_run_failed_event() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: SpawnFailDriver::new(),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -1047,7 +1047,7 @@ async fn stale_verdict_archival_failure_does_not_gate_on_the_stale_verdict() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, true),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -1260,7 +1260,7 @@ async fn ask_pauses_question_then_answer_resumes_to_done() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: driver.clone(),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: pending_ask.clone(),
         deadlines: Deadlines::default(),
@@ -1369,7 +1369,7 @@ async fn queued_ask_backstop_pauses_even_when_poke_is_missed() {
     let ctx = RunCtx {
         db: db.clone(),
         driver,
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask,
         deadlines: Deadlines::default(),
@@ -1419,7 +1419,7 @@ async fn mailbox_drain_surfaces_a_late_ask_before_the_check() {
     let ctx = RunCtx {
         db: db.clone(),
         driver,
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask,
         deadlines: Deadlines::default(),
@@ -1461,7 +1461,7 @@ async fn resume_abandons_a_stale_attempt_then_retries_to_done() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, true),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -1587,7 +1587,7 @@ async fn zero_turn_budget_pauses_before_any_spawn() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, true),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -1627,7 +1627,7 @@ async fn budget_exceeded_pauses_then_resume_with_patch_completes() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(ws, true),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -2362,7 +2362,7 @@ fn par_ctx(db: Db, driver: Arc<MatrixDriver>) -> RunCtx {
     RunCtx {
         db,
         driver,
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -3205,7 +3205,7 @@ fn loop_ctx(db: Db, driver: Arc<VerdictStub>) -> RunCtx {
     RunCtx {
         db,
         driver,
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -3763,7 +3763,7 @@ fn orch_ctx(db: Db, driver: Arc<OrchDriver>) -> RunCtx {
     RunCtx {
         db,
         driver,
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         // Tick the stall watchdog fast so the stall test resolves quickly.
@@ -3997,7 +3997,7 @@ fn stale_retry_result_is_discarded_by_generation() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: StubDriver::new(tmp.path().join("ws"), true),
-        app: None,
+        engine: None,
         cancel: Arc::new(AtomicBool::new(false)),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -4563,7 +4563,7 @@ async fn cancel_mid_turn_stops_the_attempt_and_cancels_the_run() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: driver.clone(),
-        app: None,
+        engine: None,
         cancel: cancel.clone(),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),
@@ -4603,7 +4603,7 @@ async fn cancel_mid_parallel_stage_winds_children_down_and_cancels_the_run() {
     let ctx = RunCtx {
         db: db.clone(),
         driver: driver.clone(),
-        app: None,
+        engine: None,
         cancel: cancel.clone(),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),

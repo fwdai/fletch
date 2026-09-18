@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::AppHandle;
 
+use crate::host::EngineCtx;
 use crate::rpc;
 
 use super::events::{emit_branch, emit_git_action};
@@ -25,13 +25,13 @@ const RPC_TICK: Duration = Duration::from_millis(100);
 /// is idempotent, so extra triggers are safe).
 pub(super) fn spawn_rpc_watcher(
     sup: Arc<Supervisor>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     dispatcher: Arc<dyn rpc::RpcDispatcher>,
     rpc_dir: PathBuf,
     gen: u64,
 ) {
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         loop {
             tokio::time::sleep(RPC_TICK).await;
 
@@ -40,7 +40,7 @@ pub(super) fn spawn_rpc_watcher(
                 return;
             }
 
-            process_agent_rpc_once(&sup, &app, &agent_id, dispatcher.as_ref(), &rpc_dir).await;
+            process_agent_rpc_once(&sup, &ctx, &agent_id, dispatcher.as_ref(), &rpc_dir).await;
         }
     });
 }
@@ -54,18 +54,18 @@ pub(super) fn spawn_rpc_watcher(
 /// the scheduler acts on that turn's gate outcome (§10.4).
 pub(super) async fn process_agent_rpc_once(
     sup: &Arc<Supervisor>,
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     agent_id: &str,
     dispatcher: &dyn rpc::RpcDispatcher,
     rpc_dir: &std::path::Path,
 ) {
     let events = rpc::process_pending(rpc_dir, dispatcher).await;
     for event in events {
-        handle_rpc_event(sup, app, agent_id, event);
+        handle_rpc_event(sup, ctx, agent_id, event);
     }
 }
 
-fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rpc::RpcEvent) {
+fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, event: rpc::RpcEvent) {
     // The subdir of the checkout a branch/PR event belongs to: the dispatcher
     // stamps the targeted repo into the payload (`args.repo` routing), so a PR
     // opened in a sibling checkout lands on that repo's worktree row. Events
@@ -114,7 +114,7 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                             "git_push/open_pr: failed to persist branch name"
                         );
                     } else {
-                        emit_branch(app, agent_id, subdir, branch);
+                        emit_branch(ctx.sink.as_ref(), agent_id, subdir, branch);
                     }
                 }
             }
@@ -174,12 +174,12 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                     }
                 }
             }
-            sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+            sup.fetch_and_emit_pr_state(ctx.clone(), agent_id.to_string());
             // The agent may now hold PRs in two or more repos — cross-link the
             // set in each PR's body (best-effort, in the background).
             let workspace = sup.workspace.clone();
             let id = agent_id.to_string();
-            tauri::async_runtime::spawn(async move {
+            crate::host::spawn(async move {
                 super::sync_pr_set_links(&workspace, &id).await;
             });
         }
@@ -193,7 +193,7 @@ fn handle_rpc_event(sup: &Supervisor, app: &AppHandle, agent_id: &str, event: rp
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            emit_git_action(app, agent_id, op);
+            emit_git_action(ctx.sink.as_ref(), agent_id, op);
         }
         rpc::RpcEvent::Named { name, payload } => {
             tracing::debug!(event = %name, payload = %payload, "rpc: unhandled event");

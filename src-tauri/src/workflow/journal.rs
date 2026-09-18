@@ -11,8 +11,8 @@
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
 
+use crate::host::{emit, EventSink};
 use crate::workflow::now_ms;
 use crate::workflow::types::{Event, Run};
 
@@ -82,10 +82,11 @@ struct EventEnvelope<'a> {
 
 /// Notify the frontend that an event was appended (§7.2). Best-effort: a failed
 /// emit (no renderer listening) never affects the persisted journal.
-pub fn emit_event(app: &AppHandle, ev: &Event) {
-    let _ = app.emit(
+pub fn emit_event(sink: &dyn EventSink, ev: &Event) {
+    emit(
+        sink,
         "wf:event",
-        EventEnvelope {
+        &EventEnvelope {
             run_id: &ev.run_id,
             seq: ev.seq,
             event_type: &ev.event_type,
@@ -97,14 +98,14 @@ pub fn emit_event(app: &AppHandle, ev: &Event) {
 
 /// Notify the frontend that a run row changed (§7.2): emits the full row so the
 /// sidebar and monitor update without a round-trip.
-pub fn emit_run(app: &AppHandle, run: &Run) {
-    let _ = app.emit("wf:run", run);
+pub fn emit_run(sink: &dyn EventSink, run: &Run) {
+    emit(sink, "wf:run", run);
 }
 
 /// Notify the frontend that a run's rows were deleted (`wf_delete_run`, §13),
 /// so the sidebar drops the row instead of upserting it.
-pub fn emit_run_deleted(app: &AppHandle, run_id: &str) {
-    let _ = app.emit("wf:run-deleted", run_id);
+pub fn emit_run_deleted(sink: &dyn EventSink, run_id: &str) {
+    emit(sink, "wf:run-deleted", run_id);
 }
 
 #[cfg(test)]

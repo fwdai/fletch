@@ -25,12 +25,12 @@ use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::AppHandle;
 use tokio::sync::broadcast;
 
 use crate::activity::Activity;
 use crate::agent::Agent;
 use crate::error::{Error, Result};
+use crate::host::EngineCtx;
 use crate::message_queue::MessageQueue;
 use crate::native_input::NativeInputTracker;
 use crate::pty_session::PtySession;
@@ -173,7 +173,7 @@ impl Supervisor {
     /// also processes on its tick; `process_pending` is idempotent and
     /// in-flight-guarded, so the two never double-dispatch. A no-op for an agent
     /// with no registered dispatcher.
-    pub async fn settle_agent_rpc(self: &Arc<Self>, app: &tauri::AppHandle, agent_id: &str) {
+    pub async fn settle_agent_rpc(self: &Arc<Self>, ctx: &Arc<EngineCtx>, agent_id: &str) {
         let dispatcher = self.rpc_dispatchers.lock().get(agent_id).cloned();
         let Some(dispatcher) = dispatcher else {
             return;
@@ -181,7 +181,7 @@ impl Supervisor {
         let Ok(rpc_dir) = crate::rpc::mailbox_dir(agent_id) else {
             return;
         };
-        rpc_watch::process_agent_rpc_once(self, app, agent_id, dispatcher.as_ref(), &rpc_dir).await;
+        rpc_watch::process_agent_rpc_once(self, ctx, agent_id, dispatcher.as_ref(), &rpc_dir).await;
     }
 
     /// Subscribe to runtime status transitions across all agents. To avoid a
@@ -287,7 +287,7 @@ impl Supervisor {
     /// only persists durable dispositions (last_error via update_agent_status).
     fn set_status(
         &self,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
         status: AgentStatus,
         last_error: Option<String>,
@@ -302,7 +302,7 @@ impl Supervisor {
             to = ?status,
             "agent status transition"
         );
-        self.persist_and_emit_status(app, agent_id, status, last_error);
+        self.persist_and_emit_status(ctx, agent_id, status, last_error);
     }
 
     /// Atomically flip the live status out of `Spawning` to `to`, returning
@@ -313,7 +313,7 @@ impl Supervisor {
     /// how each side learns the other already resolved the spawn.
     fn claim_spawn_outcome(
         &self,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
         to: AgentStatus,
         last_error: Option<String>,
@@ -325,7 +325,7 @@ impl Supervisor {
             }
             statuses.insert(agent_id.to_string(), to.clone());
         }
-        self.persist_and_emit_status(app, agent_id, to, last_error);
+        self.persist_and_emit_status(ctx, agent_id, to, last_error);
         true
     }
 
@@ -335,7 +335,7 @@ impl Supervisor {
     /// status map under the lock.
     fn persist_and_emit_status(
         &self,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
         status: AgentStatus,
         last_error: Option<String>,
@@ -369,13 +369,13 @@ impl Supervisor {
             }
         }
         // Fan the transition out to in-process subscribers (the workflow
-        // scheduler) before the Tauri emit. `send` errs only when there are no
+        // scheduler) before the sink emit. `send` errs only when there are no
         // receivers, which is the common case for user-spawned agents — ignore.
         let _ = self.status_tx.send(StatusEvent {
             agent_id: agent_id.to_string(),
             status: status.clone(),
         });
-        emit_status(app, agent_id, status, last_error);
+        emit_status(ctx.sink.as_ref(), agent_id, status, last_error);
     }
 
     /// Report a completed turn to product telemetry: usage-weighted provider
@@ -579,7 +579,7 @@ impl Supervisor {
     }
 }
 
-fn transition_active(sup: &Supervisor, app: &AppHandle, agent_id: &str, new: AgentStatus) {
+fn transition_active(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, new: AgentStatus) {
     // Operate on the live in-memory status. A live agent with no entry yet
     // is treated as Spawning (the at-rest derivation).
     let cur = sup.live_status(agent_id).unwrap_or(AgentStatus::Spawning);
@@ -588,20 +588,20 @@ fn transition_active(sup: &Supervisor, app: &AppHandle, agent_id: &str, new: Age
         AgentStatus::Spawning | AgentStatus::Running | AgentStatus::Idle
     ) && cur != new;
     if should_change {
-        sup.set_status(app, agent_id, new.clone(), None);
+        sup.set_status(ctx, agent_id, new.clone(), None);
         if matches!(new, AgentStatus::Idle) {
-            sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+            sup.fetch_and_emit_pr_state(ctx.clone(), agent_id.to_string());
             // Turn ended (managed in-band, per-turn exit, or native silence all
             // converge here). Ingest the just-written transcript into
             // session_records. Idempotent + reader-gated, so it's a cheap no-op
             // for agents without a reader.
-            sup.trigger_session_sync(app.clone(), agent_id.to_string());
+            sup.trigger_session_sync(ctx.clone(), agent_id.to_string());
             // Opt-in per project (OFF by default): run verification on the
             // agent's checkout so its Mission Control card carries test
             // evidence. Ad-hoc agents only, fire-and-forget, never blocks.
-            sup.trigger_turn_end_verification(app.clone(), agent_id.to_string());
-            drain_pending_respawn(sup, app, agent_id);
-            drain_message_queue(sup, app, agent_id);
+            sup.trigger_turn_end_verification(ctx.clone(), agent_id.to_string());
+            drain_pending_respawn(sup, ctx, agent_id);
+            drain_message_queue(sup, ctx, agent_id);
         }
     }
 }

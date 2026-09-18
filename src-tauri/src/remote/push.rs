@@ -15,20 +15,22 @@
 //!   per batch of parallel prompts.
 //! - Neither while the desktop's own window has focus: the user is right here.
 //!
-//! ## Why the taps and not `Supervisor::subscribe_status`
+//! ## Why a sink and not a subscriber task
 //!
 //! Telling a user stop from a natural end means reading `Supervisor::interrupted`
 //! at the instant of the Idle transition, and that instant is short:
-//! `supervisor::transition_active` sends the `StatusEvent` broadcast and then,
-//! with no await in between, calls `drain_message_queue`, which *removes* the
-//! agent from `interrupted`. A broadcast subscriber is a separate task and may
-//! be polled on another worker thread, so it can only ever race that removal —
-//! it would report every stop as a natural completion. The Tauri listener that
-//! `events::install_taps` uses runs synchronously inside `emit` (see
-//! `tauri::event::listener::Listeners::emit_filter`), and `emit_status` is
-//! called *before* `drain_message_queue` in the same frame, so a tap on
-//! `agent:status` sees the flag while it still means something. Hence both
-//! triggers hang off event taps and this module contains no `async`.
+//! `supervisor::transition_active` emits `agent:status` and then, with no await
+//! in between, calls `drain_message_queue`, which *removes* the agent from
+//! `interrupted` (`supervisor/mod.rs`, `messaging.rs`). A subscriber on a
+//! channel — the engine's broadcast, or `Supervisor::subscribe_status` — is a
+//! separate task and may be polled on another worker thread, so it can only
+//! ever race that removal: it would report every stop as a natural completion.
+//!
+//! So these two triggers are an [`EventSink`] in the host's fanout instead.
+//! A sink runs *inside* `emit`, on the emitting thread, exactly where the Tauri
+//! `listen_any` tap used to run, and `agent:status` is emitted before
+//! `drain_message_queue` in the same frame — so the flag still means something
+//! when the trigger reads it. Hence this module contains no `async`.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,10 +38,10 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::Deserialize;
-use serde_json::json;
-use tauri::{AppHandle, Listener, Manager};
+use serde_json::{json, Value};
 
 use super::RemoteState;
+use crate::host::{EngineCtx, EventSink, Sink};
 use crate::supervisor::Supervisor;
 use crate::workspace::{AgentStatus, AgentView};
 
@@ -194,10 +196,24 @@ impl PushTriggers {
         self.alert(agents, agent_id, KIND_TURN_COMPLETE, TITLE_TURN_COMPLETE);
     }
 
-    /// One `agent:event` payload, as JSON. Only held `can_use_tool` control
-    /// requests are of interest; everything else is transcript.
-    pub(super) fn on_agent_event(&self, agents: &dyn AgentLookup, payload: &str) {
-        let Ok(payload) = serde_json::from_str::<AgentEventPayload>(payload) else {
+    /// Route one event off the sink. The two names are the whole surface; every
+    /// other event the engine emits passes through untouched.
+    pub(super) fn on_event(&self, agents: &dyn AgentLookup, event: &str, payload: &Value) {
+        match event {
+            "agent:status" => {
+                if let Ok(status) = StatusPayload::deserialize(payload) {
+                    self.on_status(agents, &status.agent_id, &status.status);
+                }
+            }
+            "agent:event" => self.on_agent_event(agents, payload),
+            _ => {}
+        }
+    }
+
+    /// One `agent:event` payload. Only held `can_use_tool` control requests are
+    /// of interest; everything else is transcript.
+    pub(super) fn on_agent_event(&self, agents: &dyn AgentLookup, payload: &Value) {
+        let Ok(payload) = AgentEventPayload::deserialize(payload) else {
             return;
         };
         let held = payload.event.is_some_and(|event| {
@@ -269,49 +285,50 @@ fn clamp(text: &str) -> String {
     text.chars().take(MAX_TEXT_CHARS).collect()
 }
 
-/// Install the two taps. Called from `events::install_taps`, so push follows
-/// the same "in unconditionally, short-circuits when nothing is listening"
-/// rule as event forwarding: with no relay link and no registered token,
-/// `alert` gives up before it builds anything.
-pub(super) fn install_taps(app: &AppHandle, state: Arc<RemoteState>) {
-    let triggers = Arc::new(PushTriggers::for_state(state, window_focus(app.clone())));
-
-    let status_triggers = triggers.clone();
-    let status_app = app.clone();
-    app.listen_any("agent:status", move |event| {
-        with_supervisor(&status_app, |agents| {
-            if let Ok(status) = serde_json::from_str::<StatusPayload>(event.payload()) {
-                status_triggers.on_status(agents, &status.agent_id, &status.status);
-            }
-        });
-    });
-
-    let event_app = app.clone();
-    app.listen_any("agent:event", move |event| {
-        with_supervisor(&event_app, |agents| {
-            triggers.on_agent_event(agents, event.payload());
-        });
-    });
+/// The tap, as a sink for the host's fanout. Built from `events::install_taps`,
+/// so push follows the same "in unconditionally, short-circuits when nothing is
+/// listening" rule as event forwarding: with no relay link and no registered
+/// token, `alert` gives up before it builds anything.
+pub(super) fn tap(ctx: &Arc<EngineCtx>, state: Arc<RemoteState>) -> Sink {
+    Arc::new(PushTap {
+        triggers: PushTriggers::for_state(state, host_focus(ctx.clone())),
+        ctx: ctx.clone(),
+    })
 }
 
-/// Run `f` with the managed supervisor, if there is one. Resolved per event
-/// rather than captured, so the taps can be installed before (or without) the
-/// supervisor being managed — the same lookup `supervisor::messaging` does.
-fn with_supervisor(app: &AppHandle, f: impl FnOnce(&Supervisor)) {
-    if let Some(sup) = app.try_state::<Arc<Supervisor>>() {
-        f(sup.inner().as_ref());
+/// The two triggers hanging off the engine's emits. See the module doc for why
+/// this is a sink and not a task.
+struct PushTap {
+    triggers: PushTriggers,
+    ctx: Arc<EngineCtx>,
+}
+
+impl EventSink for PushTap {
+    fn emit_value(&self, event: &str, payload: Value) -> Result<(), String> {
+        with_supervisor(&self.ctx, |agents| {
+            self.triggers.on_event(agents, event, &payload)
+        });
+        // A tap, not a destination: "nobody could be reached" is not a thing it
+        // can report, and the one caller that reads an emit error is asking
+        // about the user's window (see `host::sink::FanoutSink`).
+        Ok(())
     }
 }
 
-/// The default focus check: does the main window have focus right now. A window
-/// that is not there (or cannot be asked) counts as unfocused, so a trigger is
-/// sent rather than silently swallowed.
-fn window_focus(app: AppHandle) -> FocusCheck {
-    Box::new(move || {
-        app.get_webview_window("main")
-            .and_then(|window| window.is_focused().ok())
-            .unwrap_or(false)
-    })
+/// Run `f` with the supervisor, if there is one. Resolved per event rather than
+/// captured, so the taps can be installed before (or without) the supervisor
+/// being published on the ctx — the same lookup `supervisor::messaging` does.
+fn with_supervisor(ctx: &EngineCtx, f: impl FnOnce(&Supervisor)) {
+    if let Some(sup) = ctx.supervisor() {
+        f(sup.as_ref());
+    }
+}
+
+/// The focus check: is the user looking at this host right now. Whatever the
+/// host answers — a desktop asks its main window; a headless host says no, so a
+/// trigger is sent rather than silently swallowed.
+fn host_focus(ctx: Arc<EngineCtx>) -> FocusCheck {
+    Box::new(move || (ctx.focus)())
 }
 
 /// `supervisor::events::AgentStatusPayload`, the part of it this needs.

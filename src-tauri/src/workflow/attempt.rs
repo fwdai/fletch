@@ -21,6 +21,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
 use tokio::time::{interval, sleep_until, Duration, Instant};
 
+use crate::host::EngineCtx;
 use crate::supervisor::StatusEvent;
 use crate::workspace::AgentStatus;
 
@@ -152,7 +153,7 @@ pub struct AttemptEvent {
 /// `MockDriver` lifecycle tests keep running with no DB.
 pub struct AttemptJournal {
     pub db: super::Db,
-    pub app: Option<tauri::AppHandle>,
+    pub engine: Option<Arc<EngineCtx>>,
     pub run_id: String,
 }
 
@@ -161,7 +162,7 @@ impl AttemptJournal {
         let conn = self.db.lock();
         super::scheduler::journal_event(
             &conn,
-            self.app.as_ref(),
+            self.engine.as_ref(),
             &self.run_id,
             e.event_type,
             Some(exec_id),
