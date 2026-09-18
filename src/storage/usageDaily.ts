@@ -16,22 +16,27 @@ const lastWritten = new Map<string, string>();
 /** Upsert today's cumulative usage snapshot for a workspace. Fire-and-forget:
  *  failures are logged, never thrown — stats are best-effort by design. No-op
  *  when the project is unknown or the totals haven't changed since the last
- *  write this session. */
+ *  write this session.
+ *
+ *  `costUsd` overrides the snapshot's own cost, for callers that have priced it
+ *  from the model catalog (`priceSnapshot`) — that is how claude and codex
+ *  sessions, which report no dollars of their own, get a cost history at all. */
 export function recordUsageSnapshot(
   workspaceId: string,
   projectId: string | undefined,
   usage: UsageSnapshot,
+  costUsd?: number | null,
 ): void {
   if (!workspaceId || !projectId) return;
   const now = Date.now();
   const day = localDay(now);
-  const { tokens, costUsd } = usage.spend;
+  const { tokens } = usage.spend;
   // `cost_usd` is NOT NULL DEFAULT 0, and a bound NULL does not fall back to a
   // column default — it fails the constraint. A snapshot's cost is null whenever
-  // no agent priced its own calls (claude, codex, cursor), which is most
-  // sessions, so this is the difference between recording their history and
-  // silently recording none of it. The column already reads 0 as "unpriced".
-  const cost = costUsd ?? 0;
+  // no agent priced its own calls (claude, codex, cursor) and the caller passed
+  // no catalog price either, so this is the difference between recording their
+  // history and silently recording none of it. The column reads 0 as "unpriced".
+  const cost = costUsd ?? usage.spend.costUsd ?? 0;
   const fingerprint = [
     day,
     tokens.input,

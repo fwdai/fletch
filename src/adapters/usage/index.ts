@@ -21,6 +21,8 @@
 //   answer the wrong question.
 
 import type { SessionRecord } from "@/api";
+import { priceTokens } from "@/data/modelCatalog/pricing";
+import type { SlimCatalog } from "@/data/modelCatalog/types";
 import { getAdapter } from "../index";
 import {
   type Coverage,
@@ -45,8 +47,14 @@ export interface UsageSnapshot {
   spend: {
     tokens: TokenCounts;
     /** Null when no agent in the session prices its own calls (claude, codex
-     *  and cursor report tokens but no dollars); 0 is a real free session. */
+     *  and cursor report tokens but no dollars); 0 is a real free session.
+     *  `priceSnapshot` fills that gap from the catalog's list rates. */
     costUsd: number | null;
+    /** The same spend, split by the model that incurred it — the split pricing
+     *  needs, since a session can switch models mid-flight and a subagent runs
+     *  on a cheaper one. Same set-keyed dedupe as `tokens`, so the parts sum to
+     *  the whole. Calls whose model the transcript never states are keyed `""`. */
+    byModel: Record<string, TokenCounts>;
   };
   /** The LIVE context window, as of the last turn that measured it. */
   context: {
@@ -65,7 +73,7 @@ export interface UsageSnapshot {
 const EMPTY_FILL: WindowFill = Object.freeze({ input: 0, cacheRead: 0, cacheWrite: 0 });
 
 export const EMPTY_SNAPSHOT: UsageSnapshot = Object.freeze({
-  spend: Object.freeze({ tokens: NO_TOKENS, costUsd: null }),
+  spend: Object.freeze({ tokens: NO_TOKENS, costUsd: null, byModel: Object.freeze({}) }),
   context: Object.freeze({
     state: "unknown" as ContextState,
     fill: EMPTY_FILL,
@@ -116,7 +124,7 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
   // early streaming snapshots carry a partial output count and the settled one
   // carries the final count. Records with no identity get a unique key, so they
   // are never mistaken for duplicates of each other.
-  const calls = new Map<string, { tokens: TokenCounts; costUsd?: number }>();
+  const calls = new Map<string, { tokens: TokenCounts; costUsd?: number; model?: string }>();
   let unkeyed = 0;
   // Keys for entries with no provider identity. The prefix can't collide with a
   // real id, and the counter can't collide with itself.
@@ -135,6 +143,12 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
   let model: string | undefined;
   let priced = false;
 
+  // The model in force, for events that carry none of their own: codex states
+  // it on a separate record ahead of the turn (a `model` hint), and any event
+  // that does name a model updates it for the ones that follow. A subagent's
+  // model is its own — it must not become the main conversation's.
+  let currentModel: string | undefined;
+
   const observe = (next: WindowFill, nextModel?: string) => {
     if (next.input + next.cacheRead + next.cacheWrite <= 0) return;
     state = "measured";
@@ -143,6 +157,11 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
   };
 
   for (const event of events) {
+    if (event.kind === "model") {
+      currentModel = event.model;
+      continue;
+    }
+
     if (event.kind === "boundary") {
       // The conversation was thrown away; the fill we were reporting describes
       // something that no longer exists. Spend is untouched — it was spent.
@@ -153,21 +172,27 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
     }
 
     if (event.kind === "counter") {
+      if (event.model) currentModel = event.model;
       const delta = counterDelta(event.totals, counter);
       counter = event.totals;
-      if (totalTokens(delta) > 0) calls.set(ownKey(), { tokens: delta });
+      if (totalTokens(delta) > 0) {
+        calls.set(ownKey(), { tokens: delta, ...(currentModel ? { model: currentModel } : {}) });
+      }
       if (event.limit && event.limit > 0) limit = event.limit;
-      if (event.window) observe(event.window, event.model);
+      if (event.window) observe(event.window, currentModel);
       continue;
     }
 
+    if (event.model && !event.ownWindow) currentModel = event.model;
     if (totalTokens(event.tokens) === 0 && event.costUsd == null) continue;
+    const callModel = event.model ?? currentModel;
     const key = event.id ?? ownKey();
     const seen = calls.get(key);
     if (!seen || totalTokens(event.tokens) > totalTokens(seen.tokens)) {
       calls.set(key, {
         tokens: event.tokens,
         ...(event.costUsd != null ? { costUsd: event.costUsd } : {}),
+        ...(callModel ? { model: callModel } : {}),
       });
     }
     if (event.costUsd != null) priced = true;
@@ -188,18 +213,15 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
 
   let tokens: TokenCounts = NO_TOKENS;
   let costUsd = 0;
+  const byModel: Record<string, TokenCounts> = {};
   for (const call of calls.values()) {
-    tokens = {
-      input: tokens.input + call.tokens.input,
-      output: tokens.output + call.tokens.output,
-      cacheRead: tokens.cacheRead + call.tokens.cacheRead,
-      cacheWrite: tokens.cacheWrite + call.tokens.cacheWrite,
-    };
+    tokens = addTokens(tokens, call.tokens);
+    byModel[call.model ?? ""] = addTokens(byModel[call.model ?? ""] ?? NO_TOKENS, call.tokens);
     costUsd += call.costUsd ?? 0;
   }
 
   return {
-    spend: { tokens, costUsd: priced ? costUsd : null },
+    spend: { tokens, costUsd: priced ? costUsd : null, byModel },
     context: {
       state,
       fill,
@@ -209,6 +231,35 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
     },
     coverage,
   };
+}
+
+function addTokens(a: TokenCounts, b: TokenCounts): TokenCounts {
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cacheRead: a.cacheRead + b.cacheRead,
+    cacheWrite: a.cacheWrite + b.cacheWrite,
+  };
+}
+
+/** Price a snapshot in dollars, or null when nothing in it can be priced.
+ *
+ *  A provider that priced its own calls (opencode, pi) always wins: it billed
+ *  the account, list rates only approximate it. Everyone else is priced from
+ *  the catalog, per model, and models the catalog can't price are simply left
+ *  out — a partial total is more useful than none, and the alternative is
+ *  pricing a session at whatever the last known model charged. */
+export function priceSnapshot(catalog: SlimCatalog, snapshot: UsageSnapshot): number | null {
+  if (snapshot.spend.costUsd != null) return snapshot.spend.costUsd;
+  let total = 0;
+  let anyPriced = false;
+  for (const [modelId, tokens] of Object.entries(snapshot.spend.byModel)) {
+    const usd = priceTokens(catalog, modelId, tokens);
+    if (usd == null) continue;
+    total += usd;
+    anyPriced = true;
+  }
+  return anyPriced ? total : null;
 }
 
 /** Difference a running counter against the previous one, or take it whole when

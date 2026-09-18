@@ -8,10 +8,11 @@ const DAYS = 30;
 
 /** What this project has been spending, day by day.
  *
- *  Plots tokens rather than dollars because tokens are the one unit every
- *  provider reports — claude, codex and cursor price nothing, so a cost chart
- *  would be empty for most projects. Cost rides along in the tooltip and the
- *  stat row wherever a provider actually reported it. */
+ *  Plots tokens rather than dollars because tokens are what was actually
+ *  measured: dollars are the provider's own figure where it reports one
+ *  (opencode, pi) and otherwise the model catalog's list API rates applied to
+ *  the tokens — a good estimate, not a bill. Cost rides along in the tooltip
+ *  and the stat row. */
 export function Spend({ projectId }: { projectId: string }) {
   const [spend, setSpend] = useState<SpendDay[] | null>(null);
   const days = useMemo(() => recentDays(Date.now(), DAYS), []);
@@ -79,7 +80,11 @@ export function Spend({ projectId }: { projectId: string }) {
         {cost > 0 && (
           <>
             <span className="stat-sep" />
-            <Stat label="cost" loading={!spend} tip="only providers that price their own calls">
+            <Stat
+              label="cost"
+              loading={!spend}
+              tip="list API rates from models.dev — a subscription is not billed this way"
+            >
               {spend && formatCost(cost)}
             </Stat>
           </>

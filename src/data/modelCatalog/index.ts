@@ -12,6 +12,8 @@ import type { AgentModels, UnifiedCatalog } from "./types";
 
 export { modelSummary } from "./build";
 export { lookupModel, lookupModelInList } from "./normalize";
+export type { ModelCost } from "./pricing";
+export { cacheSavingsUsd, modelCost, priceTokens } from "./pricing";
 export type { ModelMeta, SlimCatalog } from "./types";
 
 /** How the caller asks the host which models each agent CLI supports. Injected
@@ -19,7 +21,7 @@ export type { ModelMeta, SlimCatalog } from "./types";
  *  discovery is a remote call over the host link, not a Tauri invoke. */
 export type DiscoverAgents = () => Promise<AgentModels[]>;
 
-const CACHE_KEY = "modelCatalog.cache.v14";
+const CACHE_KEY = "modelCatalog.cache.v15";
 const TTL_MS = 60 * 60 * 1000; // 1h
 
 const EMPTY: UnifiedCatalog = { byId: {}, byAgent: {} };

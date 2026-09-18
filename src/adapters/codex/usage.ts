@@ -10,6 +10,11 @@
 //      "last_token_usage":{…same shape…},
 //      "model_context_window":258400}}}
 //
+// The counter carries no model; the rollout states that separately on
+// `turn_context` records (`payload.model`), which precede the turn they
+// configure. Those become `model` hint events so each turn's delta can be
+// attributed — and priced — against the model actually in force.
+//
 // So the record becomes a `counter` event and the aggregator differences it —
 // codex re-emits identical snapshots (summing would double-count) and restarts
 // the counter when a thread continues in a fresh rollout (latest-wins would
@@ -34,6 +39,16 @@ import type { RawEvent } from "@/adapters/types";
 import type { TokenCounts, UsageEvent, WindowFill } from "@/adapters/usage";
 
 export function usageEvents(body: RawEvent): UsageEvent[] {
+  // The counter itself never names a model; `turn_context` does, and it always
+  // precedes the turn it configures. Emitting it as a standalone `model` hint
+  // lets the aggregator attribute each turn's delta to the model in force —
+  // the only way a codex session can be priced — without inventing a fake
+  // counter reading that the differencing would then have to special-case.
+  if (body.type === "turn_context") {
+    const model = asRecord(body.payload).model;
+    return typeof model === "string" && model ? [{ kind: "model", model }] : [];
+  }
+
   if (body.type !== "event_msg") return [];
   const payload = asRecord(body.payload);
   if (payload.type !== "token_count") return [];

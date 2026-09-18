@@ -13,6 +13,7 @@ import { runApi } from "./domains/run";
 import { sandboxApi } from "./domains/sandbox";
 import { sessionApi } from "./domains/session";
 import { shellApi } from "./domains/shell";
+import { usageApi } from "./domains/usage";
 import { workflowsApi } from "./domains/workflows";
 import { workspaceApi } from "./domains/workspace";
 
@@ -32,6 +33,7 @@ export * from "./types/roadmap";
 export * from "./types/run";
 export * from "./types/sandbox";
 export * from "./types/session";
+export * from "./types/usage";
 export * from "./types/verify";
 export * from "./types/workflow";
 
@@ -56,4 +58,5 @@ export const api = {
   ...remoteApi,
   ...workflowsApi,
   ...roadmapApi,
+  ...usageApi,
 };

@@ -77,10 +77,14 @@ export function formatDuration(ms: number): string {
   return `${days.toFixed(days < 10 ? 1 : 0)}d`;
 }
 
+/** A token count at one scale: raw under 1k, then k / M / B with one decimal.
+ *  Billions matter for the all-sessions usage view, where a 90-day window
+ *  across every local transcript runs to ten figures. */
 export function formatTokens(n: number): string {
   if (n < 1_000) return `${n}`;
   if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  return `${(n / 1_000_000_000).toFixed(1)}B`;
 }
 
 /** A dollar cost: 2 decimals at $1 and up ($5.00), sub-cent precision below $1
@@ -88,6 +92,17 @@ export function formatTokens(n: number): string {
 export function formatCost(usd: number): string {
   if (usd > 0 && usd < 0.01) return "<$0.01";
   return `$${usd.toFixed(usd < 1 ? 3 : 2)}`;
+}
+
+/** A 0–1 fraction as a percentage: whole percents at 1% and up ("42%"), one
+ *  decimal below that ("0.4%"), and a floor marker under a tenth — the same
+ *  shape as `formatCost`, so a small-but-real share never reads as nothing. */
+export function formatPercent(fraction: number): string {
+  const pct = fraction * 100;
+  if (pct <= 0) return "0%";
+  if (pct < 0.1) return "<0.1%";
+  if (pct < 1) return `${pct.toFixed(1)}%`;
+  return `${Math.round(pct)}%`;
 }
 
 /** A download size in decimal units (574 MB), the way the files themselves are

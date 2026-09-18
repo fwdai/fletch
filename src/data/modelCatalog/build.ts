@@ -346,6 +346,9 @@ function metaFor(d: DiscoveredModel, index: ModelsDevIndex): ModelMeta {
     ...(d.defaultReasoning ? { defaultReasoning: d.defaultReasoning } : {}),
     ...(dev?.family ? { family: dev.family } : {}),
     ...(dev?.releaseDate ? { releaseDate: dev.releaseDate } : {}),
+    // Rates come only from models.dev — no CLI reports them — so an id it
+    // doesn't know stays unpriced rather than being priced as something else.
+    ...(dev?.cost ? { cost: dev.cost } : {}),
   };
 }
 
