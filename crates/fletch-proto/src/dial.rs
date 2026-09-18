@@ -1,18 +1,18 @@
-// Opening the WebSocket's TCP socket with both address families in the race.
-//
-// `tokio_tungstenite::connect_async` resolves the host, then tries the
-// addresses one at a time with no bound on any of them. On a cellular network
-// the phone holds a global IPv6 address, so the resolver lists the relay's
-// AAAA records first — and when the carrier's IPv6 path to the relay
-// blackholes, that first SYN sits until the caller's whole open budget is
-// gone and the IPv4 addresses are never dialled. The symptom was a relay that
-// worked from any IPv4-only Wi-Fi and "timed out after 15000 ms" on LTE.
-//
-// This dials the way a browser does (RFC 8305, "Happy Eyeballs"): addresses
-// interleaved by family, each attempt started a short stagger after the last,
-// the first socket to connect wins and the rest are dropped. TLS and the
-// WebSocket upgrade then run on the winner exactly as `connect_async` would
-// have done.
+//! Opening the WebSocket's TCP socket with both address families in the race.
+//!
+//! `tokio_tungstenite::connect_async` resolves the host, then tries the
+//! addresses one at a time with no bound on any of them. On a cellular network
+//! the phone holds a global IPv6 address, so the resolver lists the relay's
+//! AAAA records first — and when the carrier's IPv6 path to the relay
+//! blackholes, that first SYN sits until the caller's whole open budget is
+//! gone and the IPv4 addresses are never dialled. The symptom was a relay that
+//! worked from any IPv4-only Wi-Fi and "timed out after 15000 ms" on LTE.
+//!
+//! This dials the way a browser does (RFC 8305, "Happy Eyeballs"): addresses
+//! interleaved by family, each attempt started a short stagger after the last,
+//! the first socket to connect wins and the rest are dropped. TLS and the
+//! WebSocket upgrade then run on the winner exactly as `connect_async` would
+//! have done.
 
 use std::io;
 use std::net::SocketAddr;
@@ -24,6 +24,8 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::{client_async_tls, MaybeTlsStream, WebSocketStream};
 
+use crate::Result;
+
 pub type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// RFC 8305 suggests 250 ms between attempts. A little more here: the
@@ -34,7 +36,7 @@ pub const STAGGER: Duration = Duration::from_millis(300);
 /// Dial `url` and complete the WebSocket upgrade (TLS included for `wss://`).
 /// The caller bounds the whole thing; nothing here waits on its own account
 /// beyond the stagger between attempts.
-pub async fn connect(url: &str) -> Result<Ws, String> {
+pub async fn connect(url: &str) -> Result<Ws> {
     let request = url.into_client_request().map_err(|e| e.to_string())?;
     let (host, port) = host_port(&request)?;
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
@@ -50,7 +52,7 @@ pub async fn connect(url: &str) -> Result<Ws, String> {
 
 /// The host to resolve and the port to dial, with the scheme's default port
 /// when the URL names none — the same rule `connect_async` applies.
-fn host_port(request: &Request) -> Result<(String, u16), String> {
+fn host_port(request: &Request) -> Result<(String, u16)> {
     let uri = request.uri();
     let host = uri.host().ok_or("the URL names no host")?;
     // `host()` keeps the brackets of an IPv6 literal; the resolver wants them off.

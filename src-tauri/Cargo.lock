@@ -1358,6 +1358,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "flate2",
+ "fletch-proto",
  "futures-util",
  "if-addrs",
  "nix 0.29.0",
@@ -1379,7 +1380,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
- "snow",
  "tar",
  "tauri",
  "tauri-build",
@@ -1400,6 +1400,19 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "whisper-rs",
+]
+
+[[package]]
+name = "fletch-proto"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures-util",
+ "serde",
+ "sha2",
+ "snow",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

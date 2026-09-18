@@ -1148,19 +1148,27 @@ dependencies = [
 name = "fletch-mobile"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
- "futures-util",
+ "fletch-proto",
  "objc2",
  "rustls",
- "serde",
  "serde_json",
- "snow",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",
  "tauri-plugin-fs",
  "tauri-plugin-notification",
  "tauri-plugin-push",
+]
+
+[[package]]
+name = "fletch-proto"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures-util",
+ "serde",
+ "sha2",
+ "snow",
  "tokio",
  "tokio-tungstenite",
 ]
