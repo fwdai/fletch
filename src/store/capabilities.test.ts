@@ -53,13 +53,44 @@ describe("gateReason", () => {
     // old for them — which is the whole reason they are gates and not calls.
     expect(gateReason(old, "mergePr")).toBe(GATES.mergePr.reason);
     expect(gateReason(old, "restore")).toBe(GATES.restore.reason);
+    expect(gateReason(old, "pull")).toBe(GATES.pull.reason);
+    expect(gateReason(old, "rebase")).toBe(GATES.rebase.reason);
+    expect(gateReason(old, "stash")).toBe(GATES.stash.reason);
+    expect(gateReason(old, "discardChanges")).toBe(GATES.discardChanges.reason);
+    expect(gateReason(old, "abortMerge")).toBe(GATES.abortMerge.reason);
   });
 
   it("opens the newly exposed ops on a host that advertises them", () => {
-    const current = host([...V2_DEFAULT_OPS, "merge_pr", "restore_agent"]);
+    const current = host([
+      ...V2_DEFAULT_OPS,
+      "merge_pr",
+      "restore_agent",
+      "pull_agent",
+      "rebase_agent",
+      "stash_agent",
+      "discard_agent_changes",
+      "abort_merge_agent",
+    ]);
 
     expect(gateReason(current, "mergePr")).toBeNull();
     expect(gateReason(current, "restore")).toBeNull();
+    expect(gateReason(current, "pull")).toBeNull();
+    expect(gateReason(current, "rebase")).toBeNull();
+    expect(gateReason(current, "stash")).toBeNull();
+    expect(gateReason(current, "discardChanges")).toBeNull();
+    expect(gateReason(current, "abortMerge")).toBeNull();
+  });
+
+  it("keeps the withheld branch delete closed on a host that answers everything else", () => {
+    // `delete_branch_agent` is off the wire on purpose — it writes in the
+    // user's real clone, not the agent's checkout — so no host advertises it
+    // and this gate never opens remotely, however new the host is.
+    const current = host([...V2_DEFAULT_OPS, "pull_agent", "abort_merge_agent"]);
+
+    expect(gateReason(current, "deleteBranch")).toBe(GATES.deleteBranch.reason);
+    expect(gateReason(host(), "deleteBranch")).toBe(GATES.deleteBranch.reason);
+    // …and is still open on this Mac, where the command is a desktop command.
+    expect(gateReason(local, "deleteBranch")).toBeNull();
   });
 
   it("opens a gate the host says it answers", () => {
