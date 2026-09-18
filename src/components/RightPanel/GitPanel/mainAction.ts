@@ -19,17 +19,20 @@ export function mainActionState(input: {
   /** `describeMergeGate`'s verdict — review, checks and mergeability. Its own
    *  explanation is the PR card's, so it produces no reason here. */
   mergeAllowed: boolean;
-  /** `gateReason(env, "mergePr")`: set only against a host from before the
-   *  `merge_pr` op, where the click would come back `unknown op`. */
-  mergePrGate: string | null;
+  /** `actionGateReason(env, effectiveKey)` (./actionGates): why the environment
+   *  the user is driving cannot be asked to run this action — a host from
+   *  before its op, or an op withheld on policy — and null for every action it
+   *  can. Already keyed by the action, so this is the whole capability story
+   *  for the button, whichever key is selected. */
+  actionGate: string | null;
 }): MainActionState {
-  const { effectiveKey, delegationActive, mergeAllowed, mergePrGate } = input;
-  const merging = effectiveKey === "merge";
+  const { effectiveKey, delegationActive, mergeAllowed, actionGate } = input;
   return {
     disabled:
       effectiveKey === "loading" ||
       delegationActive ||
-      (merging && (!mergeAllowed || mergePrGate !== null)),
-    reason: merging ? mergePrGate : null,
+      actionGate !== null ||
+      (effectiveKey === "merge" && !mergeAllowed),
+    reason: actionGate,
   };
 }

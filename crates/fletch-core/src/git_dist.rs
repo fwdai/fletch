@@ -106,6 +106,15 @@ fn identity_source() -> &'static RwLock<Option<IdentitySource>> {
     SRC.get_or_init(|| RwLock::new(None))
 }
 
+/// The data-dir subdirectory holding the portable install
+/// (`<data dir>/git-dist/<dist tag>/bin/git`). Named here rather than spelled
+/// at the one call site because a second reader depends on it: the macOS
+/// sandbox profile re-allows *reads* under this exact path, so that an agent on
+/// a host with no system git can still execute the portable one the host put on
+/// its PATH ([`child_env`]). Renaming the dir without that rule following would
+/// take git away from those agents.
+pub const INSTALL_DIR_NAME: &str = "git-dist";
+
 /// Set the portable-install root. Must be called once before any resolution
 /// that should consider a portable install (startup does this immediately).
 pub fn init(install_root: PathBuf) {

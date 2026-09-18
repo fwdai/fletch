@@ -35,6 +35,16 @@
 //! app state even though its parent is writable. The Run profile keeps the same
 //! deny but re-allows the `dev` subdir, so a nested *dev* Fletch launched from
 //! the Run panel can still open its own database.
+//!
+//! The same carve-out applies to the data dir *this* engine was configured with
+//! ([`super::set_data_dir`], published by `host::boot`), which on a `fletch-host`
+//! is `~/Library/Application Support/fletch-host` or wherever `--data-dir`
+//! points — a path no `BUNDLE_ID`-derived rule matches, holding a database whose
+//! `settings` table carries the GitHub token in plaintext plus the host's Noise
+//! identity. Because a host hangs its checkouts and RPC mailboxes off that same
+//! directory, that deny is immediately followed by re-allows for the two roots
+//! this profile is handed, plus a read-only one for the portable git a host may
+//! have put on the agent's PATH — see [`deny_engine_data_dir`].
 
 use std::path::{Path, PathBuf};
 
@@ -127,6 +137,121 @@ fn deny_app_data_dir(home_s: &str) -> String {
          ;; state), even though the broad Application Support grant above covers its\n\
          ;; parent. Last-match-wins, so this must come after the allow block.\n\
          (deny file-read* file-write* (subpath {app_data}))"
+    )
+}
+
+/// SBPL deny carving the data dir *this* engine was configured with back out of
+/// the broad `Application Support` grant — [`deny_app_data_dir`]'s sibling for a
+/// host — immediately followed by the re-allows for `state_roots`.
+///
+/// [`deny_app_data_dir`] names the desktop's bundle directory, which is the only
+/// data dir the desktop has. A `fletch-host` keeps its database (holding the
+/// GitHub token in plaintext, since a service has no unlocked keychain), its
+/// Noise `remote/host_key` and its `remote/devices.json` under
+/// `~/Library/Application Support/fletch-host` or wherever `--data-dir` points.
+/// No `BUNDLE_ID`-derived rule matches that, and the broad grant above leaves it
+/// not merely readable (exfiltration) but *writable* (forge a device pairing) to
+/// every agent the host spawns — so the engine publishes its actual data dir at
+/// boot ([`super::set_data_dir`]) and it is denied here. The bundle-id deny is
+/// kept alongside: a desktop and a host on one Mac each protect their own state
+/// from agents the other spawns.
+///
+/// Returns empty when no data dir was published (every unit test, and any caller
+/// that is not `host::boot`) or when the published dir already sits under the
+/// bundle-id deny — which is the desktop, debug (`<BUNDLE_ID>/dev`) and release
+/// (`<BUNDLE_ID>`) alike, so the desktop's profile text is unchanged.
+fn deny_engine_data_dir(home_s: &str, state_roots: &[&Path]) -> String {
+    match super::configured_data_dir() {
+        Some(dir) => engine_data_dir_rules(&dir, home_s, state_roots),
+        None => String::new(),
+    }
+}
+
+/// Pure core of [`deny_engine_data_dir`], so the desktop's no-op case and the
+/// deny-then-allow ordering are testable without the process-global mirror.
+///
+/// The deny is emitted in **symlink-resolved form only**, unlike
+/// [`deny_provider_exec_config`]'s literal+resolved pair: the sandbox checks
+/// resolved paths, and a `--data-dir` may be relative or reach the dir through
+/// `/tmp` → `/private/tmp`, which makes the literal form both the one that would
+/// not match and the one that could be an invalid SBPL subpath.
+///
+/// Two things are given back after the deny. The first is read-only: Fletch's
+/// portable git under `<data dir>/git-dist`, which a host with no usable system
+/// git puts on the agent's own PATH ([`crate::git_dist::child_env`]), so denying
+/// reads there would leave those agents with no `git` at all. It stays
+/// write-denied — the agent executes those binaries, and the host runs the same
+/// ones unsandboxed.
+///
+/// The second is `state_roots`: the roots this profile was handed — the agent's
+/// writable checkout parent and its RPC mailbox — which a host derives under its data
+/// dir (`<data-dir>/workspaces/<agent>`, `<data-dir>/rpc/<agent>`, with a
+/// per-build `dev/` segment; see `fletch_core::build_state_subpath`). Without
+/// giving them back, the deny would take the agent's own working tree and its
+/// own mailbox with it. They are already granted in the allow block, so these
+/// lines re-grant what was granted and add only the read that `allow default`
+/// gave anyway.
+///
+/// Position is load-bearing twice over, both following from last-match-wins:
+/// this block MUST come after the `(allow file-write* …)` block (or the grants
+/// win over the deny), and the re-allows MUST come *before* the invariant-2/3/4
+/// denies (or a re-allowed checkout would take `.git/config` back out of
+/// invariant 3).
+fn engine_data_dir_rules(data_dir: &Path, home_s: &str, state_roots: &[&Path]) -> String {
+    let data_dir = policy::resolve_existing_prefix(data_dir);
+    let bundle_dir = PathBuf::from(format!(
+        "{home_s}/Library/Application Support/{}",
+        crate::BUNDLE_ID
+    ));
+    // Already covered by `deny_app_data_dir` — the desktop, whose data dir *is*
+    // the bundle dir (or its `dev` subdir under a debug build).
+    if data_dir.starts_with(&bundle_dir) {
+        return String::new();
+    }
+    let reallows = state_roots
+        .iter()
+        .map(|root| {
+            format!(
+                "(allow file-read* file-write* (subpath {}))",
+                sbpl_string(&root.to_string_lossy())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let git_dist = sbpl_string(
+        &data_dir
+            .join(crate::git_dist::INSTALL_DIR_NAME)
+            .to_string_lossy(),
+    );
+    format!(
+        ";; The same carve-out for the data dir THIS engine was configured with\n\
+         ;; (`fletch-host --data-dir`, default `~/Library/Application Support/\n\
+         ;; fletch-host`): its database holds the GitHub token in plaintext and\n\
+         ;; `remote/host_key` is this host's identity, yet nothing bundle-id-derived\n\
+         ;; matches it and the broad grant above leaves it writable. Deny reads and\n\
+         ;; writes. Last-match-wins, so this must come after the allow block.\n\
+         (deny file-read* file-write* (subpath {}))\n\
+         \n\
+         ;; Exception, read-only: Fletch's own portable git lives here\n\
+         ;; (`<data dir>/git-dist/<dist tag>/bin/git`), and on a host with no usable\n\
+         ;; system git the agent's PATH is pointed at it (`git_dist::child_env`) — so\n\
+         ;; the deny above would take git away from every agent on such a host.\n\
+         ;; Reads only: the agent executes these binaries, so it must not be able to\n\
+         ;; rewrite one and have the host run it unsandboxed on the next `git`\n\
+         ;; invocation. Nothing secret is under it — it is an unpacked upstream\n\
+         ;; tarball. (The desktop's own git-dist sits inside the bundle-id deny above\n\
+         ;; and is read-denied there today; that is pre-existing and out of scope\n\
+         ;; here, which is why this rule rides the host-only block.)\n\
+         (allow file-read* (subpath {git_dist}))\n\
+         \n\
+         ;; Exception: a host derives the agent checkouts root and the RPC mailbox\n\
+         ;; root from that same data dir, so the deny above just took this agent's\n\
+         ;; own working tree and its own mailbox with it. Give back exactly the two\n\
+         ;; roots this profile was handed (last-match-wins again) — and no more: the\n\
+         ;; database, `remote/` and the admin socket stay opaque. These re-allows\n\
+         ;; precede the invariant-2/3/4 denies below, which therefore still win\n\
+         ;; inside the checkout.\n{reallows}",
+        sbpl_string(&data_dir.to_string_lossy())
     )
 }
 
@@ -378,6 +503,11 @@ pub fn build_run_profile(
         .join("\n  ");
 
     let deny_app_data = deny_app_data_dir(&home_s);
+    // …and this engine's own data dir, which no bundle-id rule matches. A Run
+    // command's `writable_root` is the checkout it runs in, which on a host is
+    // under that data dir, so it is the one root given back here (a Run process
+    // has no mailbox). Empty on the desktop — see `deny_engine_data_dir`.
+    let deny_engine_data = block_after(deny_engine_data_dir(&home_s, &[writable_root.as_path()]));
     let app_data_dev = sbpl_string(&format!(
         "{home_s}/Library/Application Support/{}/dev",
         crate::BUNDLE_ID
@@ -392,7 +522,7 @@ pub fn build_run_profile(
 (allow file-write*
   {writable_block})
 
-{deny_app_data}
+{deny_app_data}{deny_engine_data}
 ;; Exception: a nested *dev* Fletch launched from the Run panel stores its data
 ;; under `<data dir>/dev` (see lib.rs setup) and must open its own database, so
 ;; re-allow just that subtree (last-match-wins). A Run-panel process can thus
@@ -628,6 +758,14 @@ pub fn build_profile(
     // No `dev` exception here (unlike the Run profile): agents never legitimately
     // touch any Fletch data dir, dev or otherwise.
     let deny_app_data = deny_app_data_dir(&home_s);
+    // …plus the data dir this engine was actually configured with, which nothing
+    // bundle-id-derived matches. A host derives both roots below it, so the deny
+    // hands back exactly the two this profile was given. Empty on the desktop —
+    // see `deny_engine_data_dir`.
+    let deny_engine_data = block_after(deny_engine_data_dir(
+        &home_s,
+        &[writable_root.as_path(), rpc_root.as_path()],
+    ));
 
     // Invariant 3, agent profile only. The Run profile deliberately does NOT
     // carry this: Run executes real project toolchains, and `npm install` on a
@@ -674,7 +812,7 @@ pub fn build_profile(
 {claude_credentials}{claude_config_extra}
 {policy_dirs})
 
-{deny_app_data}
+{deny_app_data}{deny_engine_data}
 
 {deny_git_config}
 
@@ -740,6 +878,18 @@ fn subpath_grants(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
 /// a few KB against a 1 MB `ARG_MAX`, so there is no size concern.
 pub fn profile_args(text: &str) -> [String; 2] {
     ["-p".to_string(), text.to_string()]
+}
+
+/// Splice an optional rule block into a profile template: a blank line and the
+/// block, or nothing at all. Keeps a profile that has no such block — every
+/// desktop one, where [`deny_engine_data_dir`] is a no-op — byte-for-byte what
+/// it was before the block existed, rather than gaining a stray blank line.
+fn block_after(block: String) -> String {
+    if block.is_empty() {
+        block
+    } else {
+        format!("\n\n{block}")
+    }
 }
 
 fn sbpl_string(s: &str) -> String {
@@ -920,11 +1070,13 @@ mod tests {
         let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
 
         // `sh -c 'printf x > <path>'` under the profile: exit 0 means the write
-        // landed, non-zero means the sandbox refused it.
+        // landed, non-zero means the sandbox refused it. The path is single-quoted
+        // so a space in it (`Library/Application Support`) can't split the
+        // redirect and land the write on a different, allowed path.
         let write_allowed = |path: &std::path::Path| {
             std::process::Command::new(SANDBOX_EXEC)
                 .args(profile_args(&profile))
-                .args(["/bin/sh", "-c", &format!("printf x > {}", path.display())])
+                .args(["/bin/sh", "-c", &format!("printf x > '{}'", path.display())])
                 .status()
                 .expect("sandbox-exec")
                 .success()
@@ -1460,6 +1612,318 @@ mod tests {
         );
     }
 
+    /// The process-global host data dir the data-dir tests share.
+    ///
+    /// [`super::super::set_data_dir`] publishes one value for the whole process
+    /// (the same mirror idiom as the engine selection), so every test that needs
+    /// one has to agree on it rather than race to set its own. Shaped like a real
+    /// host's: the database and `remote/host_key` at the top, the checkouts and
+    /// mailbox roots one level down under the per-build `dev/` segment. Returns
+    /// the symlink-resolved path, which is the form the profile emits.
+    fn shared_host_data_dir() -> &'static Path {
+        use std::os::unix::fs::PermissionsExt;
+
+        static DIR: std::sync::OnceLock<(tempfile::TempDir, PathBuf)> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let td = tempfile::tempdir().unwrap();
+            let dir = td.path().to_path_buf();
+            std::fs::create_dir_all(dir.join("remote")).unwrap();
+            std::fs::write(dir.join(crate::database::DB_FILENAME), b"sqlite").unwrap();
+            std::fs::write(dir.join("remote").join("host_key"), b"private").unwrap();
+            let resolved = policy::resolve_existing_prefix(&dir);
+            let (root, rpc) = host_state_roots(&resolved);
+            for d in [&root, &rpc] {
+                std::fs::create_dir_all(d).unwrap();
+            }
+            // A stand-in for the portable git dist, at the real layout
+            // (`git-dist/<dist tag>/bin/git`) so the acceptance test can actually
+            // execute it.
+            let bin = portable_git_bin(&resolved);
+            std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+            std::fs::write(&bin, "#!/bin/sh\nprintf 'git version 0.0.0-test\\n'\n").unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::sandbox::set_data_dir(dir);
+            (td, resolved)
+        })
+        .1
+        .as_path()
+    }
+
+    /// Any dist tag will do — the profile grants the whole `git-dist` subtree, so
+    /// an upgrade must not need a policy change.
+    const TEST_DIST_TAG: &str = "v0.0.0-test";
+
+    /// Where [`shared_host_data_dir`] puts its stand-in portable git.
+    fn portable_git_bin(data_dir: &Path) -> PathBuf {
+        data_dir
+            .join(crate::git_dist::INSTALL_DIR_NAME)
+            .join(TEST_DIST_TAG)
+            .join("bin")
+            .join("git")
+    }
+
+    /// The two roots a host derives under its data dir — `fletch-host`'s
+    /// `claim_state_roots` pointed at it, plus the engine's per-build segment
+    /// ([`crate::build_state_subpath`]) and the agent's own name.
+    fn host_state_roots(data_dir: &Path) -> (PathBuf, PathBuf) {
+        (
+            data_dir
+                .join(crate::build_state_subpath("workspaces"))
+                .join("fuji"),
+            data_dir
+                .join(crate::build_state_subpath("rpc"))
+                .join("fuji"),
+        )
+    }
+
+    /// The host gap: `fletch-host` keeps its database — with the GitHub token in
+    /// plaintext, since a service has no unlocked keychain — its Noise host key
+    /// and its device store in a data dir no bundle-id rule matches, and the
+    /// broad `Application Support` grant left it readable *and* writable to every
+    /// agent the host spawns. The profile must deny the dir the engine was
+    /// actually configured with, then give back exactly the two roots that hang
+    /// off it — in that order, since SBPL is last-match-wins.
+    #[test]
+    fn agent_profile_denies_the_configured_data_dir_and_reallows_its_state_roots() {
+        let data_dir = shared_host_data_dir();
+        let (_td, _unused, _unused_rpc, home) = sandbox_dirs();
+        let (root, rpc) = host_state_roots(data_dir);
+
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+
+        let deny = format!(
+            "(deny file-read* file-write* (subpath \"{}\"))",
+            data_dir.display()
+        );
+        assert!(
+            profile.contains(&deny),
+            "the profile must deny the engine's configured data dir: missing {deny}"
+        );
+        // The bundle-id deny stays alongside it: a desktop and a host on one Mac
+        // each protect their own state from agents the other spawns.
+        assert!(
+            profile.contains(&format!(
+                "(deny file-read* file-write* (subpath \"{}/Library/Application Support/{}\"))",
+                canonical_home.display(),
+                crate::BUNDLE_ID
+            )),
+            "the bundle-id deny must not be traded away for the configured one"
+        );
+
+        // After the whole allow block, and after the broad Application Support
+        // grant it exists to override.
+        let allow_at = profile
+            .find("(allow file-write*")
+            .expect("write allow block");
+        let grant_at = profile
+            .find(&format!(
+                "(subpath \"{}/Library/Application Support\")",
+                canonical_home.display()
+            ))
+            .expect("broad app support grant");
+        let deny_at = profile.find(&deny).unwrap();
+        assert!(
+            deny_at > allow_at && deny_at > grant_at,
+            "the data-dir deny must follow the grants it overrides"
+        );
+
+        // …and the re-allows follow the deny, or the agent loses its own
+        // checkout and its own mailbox.
+        let mut reallow_at = Vec::new();
+        for given_back in [&root, &rpc] {
+            let allow = format!(
+                "(allow file-read* file-write* (subpath \"{}\"))",
+                given_back.display()
+            );
+            let at = profile
+                .find(&allow)
+                .unwrap_or_else(|| panic!("missing re-allow: {allow}\n{profile}"));
+            assert!(at > deny_at, "the re-allow must follow the deny: {allow}");
+            reallow_at.push(at);
+        }
+        // Fletch's portable git is given back too, but **read-only**: a host with
+        // no usable system git puts it on the agent's own PATH, so a blanket
+        // read-deny would leave those agents with no git at all — while a write
+        // grant would let an agent rewrite a binary the host then runs
+        // unsandboxed.
+        let git_dist = data_dir.join(crate::git_dist::INSTALL_DIR_NAME);
+        let git_allow = format!("(allow file-read* (subpath \"{}\"))", git_dist.display());
+        let git_at = profile
+            .find(&git_allow)
+            .unwrap_or_else(|| panic!("missing portable-git read allow: {git_allow}\n{profile}"));
+        assert!(
+            git_at > deny_at,
+            "the portable-git read allow must follow the deny to take effect"
+        );
+        assert!(
+            !profile.contains(&format!(
+                "(allow file-read* file-write* (subpath \"{}\"))",
+                git_dist.display()
+            )),
+            "portable git must not be writable: the host executes those binaries"
+        );
+        reallow_at.push(git_at);
+
+        // Nothing else under the data dir is handed back: the database, the
+        // `remote/` dir and the admin socket are covered by the deny alone.
+        for opaque in [
+            data_dir.join(crate::database::DB_FILENAME),
+            data_dir.join("remote"),
+            data_dir.join("host.sock"),
+        ] {
+            assert!(
+                !profile.contains(&format!("(subpath \"{}\")", opaque.display()))
+                    && !profile.contains(&format!("(literal \"{}\")", opaque.display())),
+                "{} must be covered by the deny only",
+                opaque.display()
+            );
+        }
+        // Invariant 3 still wins inside the re-allowed checkout: the re-allows are
+        // positioned before the git-exec-config deny, not after it.
+        let git_deny_at = profile.find(r"/\.git/(config").expect("git config deny");
+        assert!(
+            reallow_at.iter().all(|at| *at < git_deny_at),
+            "a checkout re-allow after invariant 3's deny would take .git/config back out of it"
+        );
+    }
+
+    /// The desktop case, on the pure core so it needs no process-global: its data
+    /// dir *is* the bundle dir (release) or its `dev` subdir (debug), which
+    /// `deny_app_data_dir` already covers — so nothing is emitted and the
+    /// desktop's profile text is exactly what it was.
+    #[test]
+    fn a_data_dir_under_the_bundle_dir_adds_no_rules() {
+        let home_s = "/Users/agent";
+        let bundle = format!("{home_s}/Library/Application Support/{}", crate::BUNDLE_ID);
+        let root = PathBuf::from("/Users/agent/.fletch/workspaces/fuji");
+        for same in [PathBuf::from(&bundle), PathBuf::from(&bundle).join("dev")] {
+            assert_eq!(
+                engine_data_dir_rules(&same, home_s, &[root.as_path()]),
+                "",
+                "{} is already covered by the bundle-id deny",
+                same.display()
+            );
+        }
+        // A host's dir, by contrast, is denied and its root given back — in that
+        // order — along with the read-only portable-git exception.
+        let rules = engine_data_dir_rules(
+            Path::new("/srv/fletch-host"),
+            home_s,
+            &[Path::new("/srv/fletch-host/workspaces/fuji")],
+        );
+        let deny = "(deny file-read* file-write* (subpath \"/srv/fletch-host\"))";
+        let allow = "(allow file-read* file-write* (subpath \"/srv/fletch-host/workspaces/fuji\"))";
+        let git = "(allow file-read* (subpath \"/srv/fletch-host/git-dist\"))";
+        for rule in [deny, allow, git] {
+            assert!(rules.contains(rule), "missing {rule} in:\n{rules}");
+        }
+        let deny_at = rules.find(deny).unwrap();
+        assert!(deny_at < rules.find(allow).unwrap());
+        assert!(deny_at < rules.find(git).unwrap());
+        // The leaf comes from `git_dist`, so a rename there cannot silently leave
+        // this rule pointing at a directory nothing installs into.
+        assert_eq!(crate::git_dist::INSTALL_DIR_NAME, "git-dist");
+    }
+
+    /// The Run profile carries the same carve-out (it already carried the
+    /// bundle-id one), giving back only the checkout it runs in — a Run process
+    /// has no mailbox.
+    #[test]
+    fn run_profile_denies_the_configured_data_dir_and_reallows_the_checkout() {
+        let data_dir = shared_host_data_dir();
+        let (_td, _unused, _unused_rpc, home) = sandbox_dirs();
+        let (checkout, _rpc) = host_state_roots(data_dir);
+
+        let profile = build_run_profile(&checkout, &home, &[]).unwrap();
+        let deny = format!(
+            "(deny file-read* file-write* (subpath \"{}\"))",
+            data_dir.display()
+        );
+        let allow = format!(
+            "(allow file-read* file-write* (subpath \"{}\"))",
+            checkout.display()
+        );
+        assert!(profile.contains(&deny), "missing {deny}");
+        assert!(profile.contains(&allow), "missing {allow}");
+        assert!(profile.find(&deny).unwrap() < profile.find(&allow).unwrap());
+    }
+
+    /// Manual/local acceptance check (macOS-only, `#[ignore]`d so it stays off
+    /// the Linux CI path — and it cannot run inside Fletch's own sandbox, where a
+    /// nested `sandbox_apply` is refused). The text tests above prove the profile
+    /// *text*; only this proves the kernel enforces it: a host's database and
+    /// Noise key are unreadable while the agent's own checkout and mailbox, which
+    /// live under that very directory, stay writable. Run with:
+    ///   cargo test --lib seatbelt_denies_the_configured_data_dir -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn seatbelt_denies_the_configured_data_dir() {
+        let data_dir = shared_host_data_dir();
+        let (_td, _unused, _unused_rpc, home) = sandbox_dirs();
+        let (root, rpc) = host_state_roots(data_dir);
+        let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
+
+        // `sh -c <script>` under the profile: exit 0 means the kernel allowed it.
+        let allowed = |script: String| {
+            std::process::Command::new(SANDBOX_EXEC)
+                .args(profile_args(&profile))
+                .args(["/bin/sh", "-c", &script])
+                .status()
+                .expect("sandbox-exec")
+                .success()
+        };
+        let read = |p: &Path| allowed(format!("cat {} > /dev/null", p.display()));
+        let write = |p: &Path| allowed(format!("printf x > {}", p.display()));
+
+        // The host's own state is opaque: no exfiltration of the GitHub token in
+        // the database, no reading the Noise identity, no forging a pairing.
+        let db = data_dir.join(crate::database::DB_FILENAME);
+        assert!(db.is_file(), "the fixture database must exist to matter");
+        for secret in [&db, &data_dir.join("remote").join("host_key")] {
+            assert!(!read(secret), "{} was readable", secret.display());
+        }
+        assert!(
+            !write(&data_dir.join("remote").join("devices.json")),
+            "the device store was writable"
+        );
+
+        // Fletch's portable git stays *executable*: on a host with no usable
+        // system git this is the `git` on the agent's own PATH, and a blanket
+        // read-deny would leave the agent unable to run git at all.
+        let portable_git = portable_git_bin(data_dir);
+        assert!(
+            allowed(format!("{} --version > /dev/null", portable_git.display())),
+            "the portable git must stay executable — an agent on a host without \
+             system git has no other one"
+        );
+        // …but read-only. An agent that could rewrite one of these binaries would
+        // own the host, which runs the same ones unsandboxed.
+        assert!(
+            !write(&portable_git),
+            "the portable git binary was writable"
+        );
+        assert!(
+            !write(&portable_git.with_file_name("git-upload-pack")),
+            "a new binary could be dropped beside the portable git"
+        );
+
+        // …while the two roots the host hangs off the same directory stay
+        // writable — without the re-allows the agent could not write the checkout
+        // it was spawned for, nor answer an RPC request.
+        assert!(
+            write(&root.join("src.rs")),
+            "the agent's checkout must stay writable — the re-allow is missing"
+        );
+        assert!(
+            write(&rpc.join("replies.json")),
+            "the agent's mailbox must stay writable — the re-allow is missing"
+        );
+        // Given back precisely, not wholesale: the roots' shared parent is not.
+        assert!(!write(&root.parent().unwrap().join("stray")));
+    }
+
     #[test]
     fn agent_profile_does_not_reallow_dev_data_dir() {
         // Agents never legitimately touch any Fletch data dir — no `dev`
@@ -1604,12 +2068,15 @@ mod tests {
         // `sh -c 'printf x > <path>'` under the profile: exit 0 means the write
         // landed, non-zero means the sandbox refused it. Parents are created
         // host-side (outside the sandbox) so the test probes the *policy*, not a
-        // missing directory.
+        // missing directory. The path MUST be single-quoted: every probe here is
+        // under `Library/Application Support`, and unquoted the shell split the
+        // redirect at the space, wrote `<home>/Library/Application` (allowed),
+        // and reported every surface writable — the test was vacuous.
         let write_allowed = |path: &std::path::Path| {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::process::Command::new(SANDBOX_EXEC)
                 .args(profile_args(&profile))
-                .args(["/bin/sh", "-c", &format!("printf x > {}", path.display())])
+                .args(["/bin/sh", "-c", &format!("printf x > '{}'", path.display())])
                 .status()
                 .expect("sandbox-exec")
                 .success()

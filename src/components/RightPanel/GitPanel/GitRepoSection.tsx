@@ -239,7 +239,14 @@ export function GitRepoSection({
             setMsg={setMsg}
             textareaRef={commitRef}
             onRevert={revertOverride}
-            onSubmit={() => runAction(effectiveKey)}
+            // Cmd/Ctrl+Enter in the field is the main button's twin, so it
+            // inherits its disabled state: the environment can't run the
+            // selected action, the merge gate is shut, or a delegation holds
+            // the checkout. `runAction` refuses the first of those by itself,
+            // but the shortcut should be as dead as the button for all three.
+            onSubmit={() => {
+              if (!mainDisabled) runAction(effectiveKey);
+            }}
           />
         )}
 

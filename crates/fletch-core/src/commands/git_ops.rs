@@ -1,4 +1,11 @@
-//! Per-agent git actions shared with the remote dispatcher: push and commit.
+//! Per-agent git actions shared with the remote dispatcher: commit, push, and
+//! the Git panel's working-tree moves (pull, rebase, stash, discard, abort).
+//!
+//! Every one of them acts inside the agent's own checkout and nowhere else,
+//! which is the reach `commit_agent_impl` has always had. `delete_branch_agent`
+//! is deliberately not here: it force-deletes a ref in the *parent* repository
+//! (the user's real clone), outside any checkout, so it stays a desktop-only
+//! command — see `docs/remote-protocol.md`.
 
 use std::sync::Arc;
 
@@ -37,4 +44,63 @@ pub async fn commit_agent_impl(
 ) -> Result<()> {
     let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     git::commit(&checkout, message).await
+}
+
+/// Pull latest into the targeted repo's checkout (primary by default).
+/// Shared with the remote dispatcher.
+pub async fn pull_agent_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<()> {
+    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    git::pull(&checkout).await
+}
+
+/// Rebase the agent's branch onto its parent (base) branch — the clean-state
+/// panel action for catching up when the base has advanced.
+/// Shared with the remote dispatcher.
+pub async fn rebase_agent_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<()> {
+    let (repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    // Onto the base's resolved tip, not its name: the clone's local
+    // `refs/heads/<base>` is a stale snapshot from clone time.
+    let base = repo.resolve_base(&checkout).await;
+    git::rebase_onto(&checkout, &base).await
+}
+
+/// Stash all working-tree changes in the checkout, including untracked files.
+/// Shared with the remote dispatcher.
+pub async fn stash_agent_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<()> {
+    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    git::stash_push(&checkout).await
+}
+
+/// Discard every uncommitted change in the checkout (destructive).
+/// Shared with the remote dispatcher.
+pub async fn discard_agent_changes_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<()> {
+    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    git::discard_all(&checkout).await
+}
+
+/// Abort an in-progress merge in the agent's checkout, restoring the pre-merge
+/// working tree. Shared with the remote dispatcher.
+pub async fn abort_merge_agent_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<()> {
+    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    git::merge_abort(&checkout).await
 }

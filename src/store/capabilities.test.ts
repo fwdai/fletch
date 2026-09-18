@@ -22,6 +22,16 @@ const host = (ops?: string[]): EnvironmentEntry => ({
   ...(ops ? { protocol: { version: 2, ops, events: [], features: [] } } : {}),
 });
 
+/** Every op a gate names: what a host has to answer for the app to offer it
+ *  everything that can be offered remotely. Derived from the table, so a gate
+ *  added later cannot quietly fall out of the fixtures below. */
+const GATED_OPS: string[] = Object.values(GATES)
+  .map((g): string | null => g.op)
+  .filter((op): op is string => op !== null);
+
+/** How many gates a host can close by itself — the rest are this side's. */
+const OP_BACKED = GATED_OPS.length;
+
 describe("gateReason", () => {
   it("never gates the local environment", () => {
     for (const gate of Object.keys(GATES) as (keyof typeof GATES)[]) {
@@ -53,13 +63,44 @@ describe("gateReason", () => {
     // old for them — which is the whole reason they are gates and not calls.
     expect(gateReason(old, "mergePr")).toBe(GATES.mergePr.reason);
     expect(gateReason(old, "restore")).toBe(GATES.restore.reason);
+    expect(gateReason(old, "pull")).toBe(GATES.pull.reason);
+    expect(gateReason(old, "rebase")).toBe(GATES.rebase.reason);
+    expect(gateReason(old, "stash")).toBe(GATES.stash.reason);
+    expect(gateReason(old, "discardChanges")).toBe(GATES.discardChanges.reason);
+    expect(gateReason(old, "abortMerge")).toBe(GATES.abortMerge.reason);
   });
 
   it("opens the newly exposed ops on a host that advertises them", () => {
-    const current = host([...V2_DEFAULT_OPS, "merge_pr", "restore_agent"]);
+    const current = host([
+      ...V2_DEFAULT_OPS,
+      "merge_pr",
+      "restore_agent",
+      "pull_agent",
+      "rebase_agent",
+      "stash_agent",
+      "discard_agent_changes",
+      "abort_merge_agent",
+    ]);
 
     expect(gateReason(current, "mergePr")).toBeNull();
     expect(gateReason(current, "restore")).toBeNull();
+    expect(gateReason(current, "pull")).toBeNull();
+    expect(gateReason(current, "rebase")).toBeNull();
+    expect(gateReason(current, "stash")).toBeNull();
+    expect(gateReason(current, "discardChanges")).toBeNull();
+    expect(gateReason(current, "abortMerge")).toBeNull();
+  });
+
+  it("keeps the withheld branch delete closed on a host that answers everything else", () => {
+    // `delete_branch_agent` is off the wire on purpose — it writes in the
+    // user's real clone, not the agent's checkout — so no host advertises it
+    // and this gate never opens remotely, however new the host is.
+    const current = host([...V2_DEFAULT_OPS, "pull_agent", "abort_merge_agent"]);
+
+    expect(gateReason(current, "deleteBranch")).toBe(GATES.deleteBranch.reason);
+    expect(gateReason(host(), "deleteBranch")).toBe(GATES.deleteBranch.reason);
+    // …and is still open on this Mac, where the command is a desktop command.
+    expect(gateReason(local, "deleteBranch")).toBeNull();
   });
 
   it("opens a gate the host says it answers", () => {
@@ -95,17 +136,7 @@ describe("closedGates", () => {
   });
 
   it("leaves only the local-only gate closed on a host that answers everything", () => {
-    const every = host([
-      ...V2_DEFAULT_OPS,
-      "open_agent_shell",
-      "run_start",
-      "wf_list_runs",
-      "roadmap_list_items",
-      "switch_view",
-      "fork_agent",
-      "merge_pr",
-      "restore_agent",
-    ]);
+    const every = host([...V2_DEFAULT_OPS, ...GATED_OPS]);
 
     expect(closedGates(every).map((g) => g.name)).toEqual(["addProject"]);
   });
@@ -132,32 +163,16 @@ describe("hostSkew", () => {
   it("says nothing about a connected host that answers every gated op", () => {
     // `addProject` is still closed — the picker is this Mac's — but that is not
     // this host's shortcoming, so the row stays quiet.
-    const every = host([
-      ...V2_DEFAULT_OPS,
-      "open_agent_shell",
-      "run_start",
-      "wf_list_runs",
-      "roadmap_list_items",
-      "switch_view",
-      "fork_agent",
-      "merge_pr",
-      "restore_agent",
-    ]);
+    const every = host([...V2_DEFAULT_OPS, ...GATED_OPS]);
 
     expect(gateReason(every, "addProject")).not.toBeNull();
     expect(hostSkew(every, CLIENT)).toBeNull();
   });
 
   it("names the gaps while there are few of them", () => {
-    const nearly = host([
-      ...V2_DEFAULT_OPS,
-      "open_agent_shell",
-      "run_start",
-      "wf_list_runs",
-      "roadmap_list_items",
-      "fork_agent",
-      "merge_pr",
-    ]);
+    // Everything but the native view and restoring a session.
+    const missing = ["switch_view", "restore_agent"];
+    const nearly = host([...V2_DEFAULT_OPS, ...GATED_OPS.filter((op) => !missing.includes(op))]);
 
     const skew = hostSkew(withVersion(nearly, "0.7.30"), CLIENT);
 
@@ -170,9 +185,10 @@ describe("hostSkew", () => {
   it("counts them once a list would be too long, and reports both versions", () => {
     const skew = hostSkew(withVersion(host(), "0.7.30"), CLIENT);
 
-    // Eight op-backed gates; `addProject` is this side's and is left out.
-    expect(skew?.closed).toHaveLength(8);
-    expect(skew?.summary).toBe("8 features unavailable on this host");
+    // Every op-backed gate: none of their ops is in the v2 set, which is what
+    // makes each one a gate. `addProject` is this side's and is left out.
+    expect(skew?.closed).toHaveLength(OP_BACKED);
+    expect(skew?.summary).toBe(`${OP_BACKED} features unavailable on this host`);
     expect(skew?.tip).toContain(`Merging a PR: ${GATES.mergePr.reason}`);
     expect(skew?.tip).not.toContain(GATES.addProject.reason);
     // Reported side by side, never compared: the list above is the op table's

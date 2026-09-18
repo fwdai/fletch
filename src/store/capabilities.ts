@@ -1,6 +1,6 @@
 // What the UI may offer in the environment the user is driving.
 //
-// A paired host answers a subset of this app's 212 commands — the 48 rows of
+// A paired host answers a subset of this app's 212 commands — the 53 rows of
 // docs/remote-protocol.md's op table — so a control whose op is not on it has
 // to say so rather than fail on click. Gating is by op NAME, never by version
 // (docs/multi-host-plan.md §5.1): `hostSupports` takes a host that reported a
@@ -82,6 +82,44 @@ export const GATES = {
     op: "restore_agent",
     label: "Restoring a session",
     reason: "This host is too old to restore an archived session.",
+  },
+  /** The Git panel's working-tree actions. All five are on the wire — they act
+   *  inside the agent's checkout, the reach `commit_agent` has — so these close
+   *  only against a host from before the ops existed. */
+  pull: {
+    op: "pull_agent",
+    label: "Pulling",
+    reason: "This host is too old to pull — pull on the host.",
+  },
+  rebase: {
+    op: "rebase_agent",
+    label: "Rebasing",
+    reason: "This host is too old to rebase — rebase on the host.",
+  },
+  stash: {
+    op: "stash_agent",
+    label: "Stashing",
+    reason: "This host is too old to stash — stash on the host.",
+  },
+  discardChanges: {
+    op: "discard_agent_changes",
+    label: "Discarding changes",
+    reason: "This host is too old to discard changes — discard on the host.",
+  },
+  abortMerge: {
+    op: "abort_merge_agent",
+    label: "Aborting a merge",
+    reason: "This host is too old to abort the merge — abort on the host.",
+  },
+  /** The one Git-panel action deliberately withheld rather than pending: it
+   *  runs `git branch -D` in the user's real clone, outside every checkout
+   *  (docs/remote-protocol.md, "Withheld on policy"). No host advertises the
+   *  op, so this closes on every remote environment — and opens by itself if a
+   *  later release does add the row. */
+  deleteBranch: {
+    op: "delete_branch_agent",
+    label: "Deleting a branch",
+    reason: "Delete the branch on the host — it lives in the project repo, not the session.",
   },
 } as const satisfies Record<string, Gate>;
 
@@ -196,6 +234,13 @@ export const activeEntry = (s: AppState): EnvironmentEntry =>
  *  rendering it disabled, or leaving it out. */
 export function useGate(gate: GateName): string | null {
   return useAppStore((s) => gateReason(activeEntry(s), gate));
+}
+
+/** [`useGate`] for a gate picked at render time — the Git panel's action bar
+ *  chooses one by the selected action's key. `undefined` means the control
+ *  calls nothing a host could refuse, so it is never gated. */
+export function useGateFor(gate: GateName | undefined): string | null {
+  return useAppStore((s) => (gate ? gateReason(activeEntry(s), gate) : null));
 }
 
 /** True while the UI is driving a paired host rather than this Mac — for the
