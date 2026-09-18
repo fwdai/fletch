@@ -9,6 +9,7 @@ import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { providerChip, providerLabel } from "@/data/providers";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { maxBehind } from "@/store/git";
 import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
@@ -91,6 +92,9 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
   const promoteAgentToWorkflow = useAppStore((s) => s.promoteAgentToWorkflow);
+  // Promoting seeds the workflow builder, and a host answers no `wf_*` op — so
+  // on a remote environment there is nothing to promote into.
+  const workflowGate = useGate("workflows");
   const now = useMinuteClock();
   const [statsOpen, setStatsOpen] = useState(false);
 
@@ -205,14 +209,16 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
             {agent.status === "error" && <Badge variant="err">error</Badge>}
           </span>
           <span className="ag-actions">
-            <button
-              className="ag-act iflex-center tip"
-              data-tip="Promote to workflow"
-              onClick={onPromote}
-              aria-label="Promote to workflow"
-            >
-              <Icon name="combine" size={11} />
-            </button>
+            {!workflowGate && (
+              <button
+                className="ag-act iflex-center tip"
+                data-tip="Promote to workflow"
+                onClick={onPromote}
+                aria-label="Promote to workflow"
+              >
+                <Icon name="combine" size={11} />
+              </button>
+            )}
             {stoppable && !awaiting && (
               <button
                 className="ag-act iflex-center tip"

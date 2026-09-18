@@ -19,7 +19,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { type ITerminalOptions, Terminal } from "@xterm/xterm";
-import { activeEnvironmentId } from "@/store/environments";
+import { activeEnvironmentId, type EnvironmentId } from "@/store/environments";
 import { setTerminalCacheHooks } from "./buffers";
 
 export interface LiveTerminal {
@@ -44,8 +44,13 @@ const cache = new Map<string, LiveTerminal>();
 /** Cache key for an agent's native TUI terminal. Namespaced so another cached
  *  surface for the same agent (e.g. its side shell) can never collide with it,
  *  and scoped to the environment so the same agent name on two hosts cannot
- *  (agent names are recycled place names — docs/multi-host-plan.md §1.3). */
-export const nativeTerminalKey = (agentId: string) => `native:${activeEnvironmentId()}:${agentId}`;
+ *  (agent names are recycled place names — docs/multi-host-plan.md §1.3).
+ *
+ *  `envId` is passed in only by the cleanup paths, which resolve it before the
+ *  engine round-trip they follow (see `dropAgentPty` in ./buffers); everything
+ *  else runs while its environment is the active one. */
+export const nativeTerminalKey = (agentId: string, envId?: EnvironmentId) =>
+  `native:${envId ?? activeEnvironmentId()}:${agentId}`;
 
 /** Build a Terminal + FitAddon (+ WebGL renderer when available) inside a host
  *  element appended to `parent`.
@@ -128,13 +133,13 @@ export function acquireTerminal(
  *  very history, so leaving it would re-attach a dead session's frame on the
  *  next mount. `reset()` clears buffer, scrollback and modes without touching
  *  the DOM or the fitted geometry. */
-function resetAgentTerminal(agentId: string) {
-  cache.get(nativeTerminalKey(agentId))?.term.reset();
+function resetAgentTerminal(agentId: string, envId?: EnvironmentId) {
+  cache.get(nativeTerminalKey(agentId, envId))?.term.reset();
 }
 
 /** Dispose an agent's cached native terminal — the agent is gone. */
-function evictAgentTerminal(agentId: string) {
-  const key = nativeTerminalKey(agentId);
+function evictAgentTerminal(agentId: string, envId?: EnvironmentId) {
+  const key = nativeTerminalKey(agentId, envId);
   const entry = cache.get(key);
   if (!entry) return;
   cache.delete(key);

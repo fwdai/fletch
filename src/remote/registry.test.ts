@@ -112,17 +112,22 @@ function harness() {
   const store = create<AppState>()((...a) => ({ ...createEnvironmentsSlice(...a) }) as AppState);
   const client = fakeClient();
   const device = vi.fn(() => Promise.resolve(DEVICE));
+  // What a handshake reports upwards. Spied rather than wired to the switch
+  // slice: the registry's contract is that it fires once per handshake, and
+  // what the store then does with it is `environmentSwitch`'s own test.
+  const reconnected = vi.fn();
   const registry = createHostRegistry({
     writers: {
       upsertEnvironment: store.getState().upsertEnvironment,
       setEnvironmentConnection: store.getState().setEnvironmentConnection,
       removeEnvironment: store.getState().removeEnvironment,
+      environmentReconnected: reconnected,
     },
     device,
     newClient: () => client,
   });
   const entry = (): EnvironmentEntry | undefined => store.getState().environments[HOST_KEY];
-  return { store, client, registry, entry, device };
+  return { store, client, registry, entry, device, reconnected };
 }
 
 describe("the paired-host lifecycle", () => {
@@ -167,6 +172,35 @@ describe("the paired-host lifecycle", () => {
     // The descriptor survives the drop: it is what the UI is gated on, and a
     // reconnect refreshes rather than re-earns it.
     expect(entry()?.protocol).toEqual(PROTOCOL);
+  });
+
+  it("mirrors the client's `retrying` so a wait can be told from a dead end", async () => {
+    const { registry, entry, client } = harness();
+    await registry.adopt(RECORD);
+
+    client.retrying = true;
+    client.moveTo("error", "Your Mac is offline");
+    expect(entry()?.retrying).toBe(true);
+
+    // 4003 / 4004: the client schedules nothing, because only the user can
+    // clear it.
+    client.retrying = false;
+    client.moveTo("error", "This device is not paired with the host any more");
+    expect(entry()?.retrying).toBe(false);
+  });
+
+  it("reports every handshake, so the client of the day can catch up", async () => {
+    const { registry, client, reconnected } = harness();
+    await registry.adopt(RECORD);
+
+    client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    expect(reconnected).toHaveBeenCalledWith(HOST_KEY);
+
+    // A reconnect is the same event again — the live log and the workspace are
+    // behind by however long the socket was down.
+    client.moveTo("connecting");
+    client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    expect(reconnected).toHaveBeenCalledTimes(2);
   });
 
   it("reads `pairing` as connecting, since it is a connection being established", async () => {

@@ -8,16 +8,18 @@
 // and events go straight down Tauri IPC through the `localTransport` singleton,
 // exactly as they do today.
 //
-// Nothing here switches anything yet: `activeEnvironmentId` is the local
-// environment for the whole of this PR. The writers below are what the paired-
-// host lifecycle (src/remote/hosts.ts) drives an entry with, and what this buys
-// is that the two lookups which cannot wait for React (the transport a call goes
-// down, and the key a PTY chunk is buffered under) have one answer, in one
-// place.
+// The writers below are what the paired-host lifecycle (src/remote/hosts.ts)
+// drives an entry with, and what this buys is that the two lookups which cannot
+// wait for React (the transport a call goes down, and the key a PTY chunk is
+// buffered under) have one answer, in one place.
+//
+// The switch itself — parking one environment's view and restoring another's —
+// lives in ./environmentSwitch, which needs @/api and so cannot live here (see
+// the note on `setEnvironmentsSource` at the bottom).
 
 import type { Transport } from "@/api/transport";
 import type { HostProtocol } from "@/remote/types";
-import type { SliceCreator } from "./types";
+import type { AppState, SliceCreator } from "./types";
 
 /** The desktop's own engine, following T3Code's `PRIMARY_LOCAL_ENVIRONMENT_ID`.
  *  A constant, never a host key: host public keys identify *remote*
@@ -35,6 +37,11 @@ export interface EnvironmentEntry {
   connection: ConnectionStatus;
   /** Why the connection is in `error`, for the (later) environment status. */
   error?: string;
+  /** Remote only. Mirrors `RemoteClient.retrying`: a retry is scheduled behind
+   *  this failure, so the switcher says "reconnecting" rather than "offline".
+   *  False with a non-`connected` state is a failure only the user can clear
+   *  (unpaired, remote access off, a changed host key). */
+  retrying?: boolean;
   /** Remote only. The local environment's transport is the module-level
    *  `localTransport`, which is what `activeTransport()` falls back to. */
   transport?: Transport;
@@ -43,6 +50,16 @@ export interface EnvironmentEntry {
    *  one that has not been greeted yet. The local environment is never gated
    *  (docs/multi-host-plan.md §5.1), so it never has one. */
   protocol?: HostProtocol;
+  /** What this environment was showing when the user last left it — the
+   *  workspace snapshot and every map keyed by something that belongs to one
+   *  engine (agent ids, checkouts, repo paths). Written and read only by
+   *  `switchEnvironment` (./environmentSwitch), which owns the list; absent
+   *  until the user has switched away from this environment once. */
+  stash?: Partial<AppState>;
+  /** The agent selected here when the user last left, restored on the way
+   *  back. Kept out of `stash` because it is the one piece of the parked view
+   *  the switcher itself may want to read. */
+  lastSelectedAgentId?: string | null;
 }
 
 export interface EnvironmentsSlice {
@@ -53,12 +70,13 @@ export interface EnvironmentsSlice {
    *  id — a reconnect re-reports the same host with a fresh descriptor and the
    *  entry it lands on must not lose anything the caller left out. */
   upsertEnvironment: (entry: EnvironmentEntry) => void;
-  /** Mirror one connection's state onto its entry. `error` is written as
-   *  given, so a state change with no reason clears the last one. */
+  /** Mirror one connection's state onto its entry. `error` and `retrying` are
+   *  written as given, so a state change with no reason clears the last one. */
   setEnvironmentConnection: (
     id: EnvironmentId,
     connection: ConnectionStatus,
     error?: string,
+    retrying?: boolean,
   ) => void;
   /** Forget a paired host. The local environment is not removable: it is this
    *  process's own engine, present from the first render, and nothing in the
@@ -89,13 +107,15 @@ export const createEnvironmentsSlice: SliceCreator<EnvironmentsSlice> = (set) =>
       environments: { ...s.environments, [entry.id]: { ...s.environments[entry.id], ...entry } },
     })),
 
-  setEnvironmentConnection: (id, connection, error) =>
+  setEnvironmentConnection: (id, connection, error, retrying) =>
     set((s) => {
       const entry = s.environments[id];
       // A state arriving for a host that has since been forgotten is not worth
       // reviving the entry for.
       if (!entry) return {};
-      return { environments: { ...s.environments, [id]: { ...entry, connection, error } } };
+      return {
+        environments: { ...s.environments, [id]: { ...entry, connection, error, retrying } },
+      };
     }),
 
   removeEnvironment: (id) =>
@@ -104,8 +124,10 @@ export const createEnvironmentsSlice: SliceCreator<EnvironmentsSlice> = (set) =>
       const { [id]: _gone, ...rest } = s.environments;
       return {
         environments: rest,
-        // Nothing switches the active environment in this PR, but a removal
-        // must not be able to strand it on an id that is no longer there.
+        // A removal must not strand the active id on an entry that is no longer
+        // there. This is the backstop, not the path: forgetting the host on
+        // screen goes through `switchEnvironment` first (see remote/hosts.ts),
+        // which is what actually puts This Mac's view back.
         activeEnvironmentId:
           s.activeEnvironmentId === id ? LOCAL_ENVIRONMENT_ID : s.activeEnvironmentId,
       };

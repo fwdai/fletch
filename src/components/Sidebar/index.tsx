@@ -4,6 +4,7 @@ import { Icon } from "@/components/Icon";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
 import { useRuns } from "@/workflows/run/useRuns";
@@ -132,6 +133,7 @@ function applySearch(groups: ProjectGroupData[], q: string): ProjectGroupData[] 
 }
 
 export function Sidebar() {
+  const addProjectGate = useGate("addProject");
   const workspace = useAppStore((s) => s.workspace);
   const drafts = useAppStore((s) => s.drafts);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
@@ -301,14 +303,22 @@ export function Sidebar() {
       <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
       <div className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">
-          <button
-            className="add-proj-cta flex-center text-sm"
-            onClick={() => setNpOpen(true)}
-            aria-label="Add project"
-          >
-            <Icon name="plus" size={13} />
-            <span>Add project</span>
-          </button>
+          {/* Every route into this popover opens a native folder picker on
+              this Mac, which cannot browse a paired host's disk — so on a
+              remote environment it says where to add projects instead. A
+              disabled button gets no pointer events in the WebView, so the
+              tooltip trigger has to be the wrapper. */}
+          <span className={addProjectGate ? "tip" : undefined} data-tip={addProjectGate}>
+            <button
+              className="add-proj-cta flex-center text-sm"
+              onClick={() => setNpOpen(true)}
+              disabled={addProjectGate !== null}
+              aria-label="Add project"
+            >
+              <Icon name="plus" size={13} />
+              <span>Add project</span>
+            </button>
+          </span>
 
           {filtered.length === 0 ? (
             <div className="empty-msg" style={{ padding: "28px 12px" }}>

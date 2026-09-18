@@ -13,17 +13,19 @@
 // all: with no saved hosts there is no client, no socket and no timer.
 
 import { RemoteTransport } from "@/api/transport";
+import type { EnvironmentSwitchSlice } from "@/store/environmentSwitch";
 import type { ConnectionStatus, EnvironmentsSlice } from "@/store/environments";
 import { parseAddress } from "./pairing";
 import type { ConnectionState, DeviceInfo, HelloResult, HostTarget, RemoteClient } from "./types";
 
-/** The three store writers the registry drives. Taken as an interface rather
- *  than reached for through the app store, so the lifecycle is testable with
- *  nothing but a fake client and a fake set of writers. */
+/** The store writers the registry drives. Taken as an interface rather than
+ *  reached for through the app store, so the lifecycle is testable with nothing
+ *  but a fake client and a fake set of writers. */
 export type EnvironmentWriters = Pick<
   EnvironmentsSlice,
   "upsertEnvironment" | "setEnvironmentConnection" | "removeEnvironment"
->;
+> &
+  Pick<EnvironmentSwitchSlice, "environmentReconnected">;
 
 /** Where to dial one host under management, and what to call it. Mirrors the
  *  persisted `SavedHost` minus `pairedAt`: the registry neither reads nor
@@ -113,19 +115,33 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
     // that the client schedules no retry behind them, which is what
     // `client.retrying` tells the pane.
     client.onState((state, error) =>
-      writers.setEnvironmentConnection(record.hostKey, asEntryConnection(state), error),
+      // `retrying` rides along so the switcher can tell "reconnecting" from
+      // "offline" — the client schedules no retry behind 4003/4004, and that
+      // difference is the only thing that says whether waiting will help.
+      writers.setEnvironmentConnection(
+        record.hostKey,
+        asEntryConnection(state),
+        error,
+        client.retrying,
+      ),
     );
     client.onSnapshot((snapshot) => {
       // The host's own name wins over the one the pairing link carried, and the
-      // descriptor is what 12b gates a remote environment's UI on.
+      // descriptor is what gates a remote environment's UI.
       name = snapshot.host.name || name;
       writers.upsertEnvironment({
         id: record.hostKey,
         name,
         kind: "remote",
         connection: "connected",
+        retrying: false,
         protocol: snapshot.protocol,
       });
+      // Every handshake — the first and every reconnect — means this client has
+      // been out of touch, so whatever is on screen for this host is behind.
+      // The store decides whether that matters (it does only while this host is
+      // the active environment).
+      writers.environmentReconnected(record.hostKey);
     });
     return { client, dial };
   }

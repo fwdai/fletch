@@ -15,6 +15,7 @@ import type { AutopilotLogSlice } from "./autopilotLog";
 import type { ComposerSlice } from "./composer";
 import type { CustomAgentsSlice } from "./customAgents";
 import type { DraftsSlice } from "./drafts";
+import type { EnvironmentSwitchSlice } from "./environmentSwitch";
 import type { EnvironmentEntry, EnvironmentId, EnvironmentsSlice } from "./environments";
 import type { GitSlice } from "./git";
 import type { LocalCommandsSlice } from "./localCommands";
@@ -39,6 +40,7 @@ export type {
   DraftsSlice,
   EnvironmentEntry,
   EnvironmentId,
+  EnvironmentSwitchSlice,
   EnvironmentsSlice,
   GitSlice,
   InstallState,
@@ -57,6 +59,7 @@ export type {
 
 export type AppState = AppSlice &
   EnvironmentsSlice &
+  EnvironmentSwitchSlice &
   WorkspaceSlice &
   ReposSlice &
   GitSlice &
