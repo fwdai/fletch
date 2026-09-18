@@ -6,8 +6,9 @@ import { cursorAdapter } from "@/adapters/cursor";
 import { opencodeAdapter } from "@/adapters/opencode";
 import { piAdapter } from "@/adapters/pi";
 import type { RawEvent } from "@/adapters/types";
-import { EMPTY_SNAPSHOT, usageFromRecords } from "@/adapters/usage";
+import { EMPTY_SNAPSHOT, priceSnapshot, usageFromRecords } from "@/adapters/usage";
 import type { SessionRecord } from "@/api";
+import { indexModelsDev } from "@/data/modelCatalog/modelsDev";
 
 // Bodies below are the agents' real ON-DISK transcript shapes (captured from
 // live sessions), which is what session_records persists and what the usage
@@ -389,6 +390,172 @@ describe("codex usage", () => {
         record("codex", { type: "event_msg", payload: { type: "agent_message" } } as RawEvent),
       ]),
     ).toBe(EMPTY_SNAPSHOT);
+  });
+});
+
+// ── per-model attribution ────────────────────────────────────────────────────
+
+/** A codex rollout metadata line. It carries no usage — it states the model the
+ *  turns after it run against, which the counter never does. */
+function codexTurnContext(model: string): RawEvent {
+  return { type: "turn_context", payload: { turn_id: "t1", cwd: "/tmp", model } } as RawEvent;
+}
+
+describe("spend by model", () => {
+  it("splits claude's calls by the model each ran on, deduped like the total", () => {
+    const snapshot = (output: number) =>
+      claudeAssistant({
+        msgId: "msg_A",
+        requestId: "req_1",
+        input: 4,
+        output,
+        model: "claude-opus-4-8",
+      });
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        snapshot(9),
+        snapshot(159),
+        claudeAssistant({ msgId: "m2", input: 3, output: 20, model: "claude-sonnet-4-6" }),
+      ]),
+    );
+    expect(u.spend.byModel["claude-opus-4-8"]).toEqual({
+      input: 4,
+      output: 159, // the re-written line collapsed, exactly as in the total
+      cacheRead: 0,
+      cacheWrite: 0,
+    });
+    expect(u.spend.byModel["claude-sonnet-4-6"]).toEqual({
+      input: 3,
+      output: 20,
+      cacheRead: 0,
+      cacheWrite: 0,
+    });
+    // The parts sum to the whole.
+    expect(u.spend.tokens.input).toBe(7);
+    expect(u.spend.tokens.output).toBe(179);
+  });
+
+  it("keeps a subagent's spend under its own model", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        claudeAssistant({ msgId: "m1", input: 5, model: "claude-opus-4-8" }),
+        claudeAssistant({
+          msgId: "m2",
+          input: 900,
+          model: "claude-haiku-4-5",
+          sidechain: true,
+        }),
+      ]),
+    );
+    expect(u.spend.byModel["claude-haiku-4-5"].input).toBe(900);
+    expect(u.spend.byModel["claude-opus-4-8"].input).toBe(5);
+  });
+
+  it("files calls with no stated model under the empty key", () => {
+    const u = usageFromRecords("claude", [record("claude", claudeAssistant({ input: 10 }))]);
+    expect(u.spend.byModel[""]).toEqual({ input: 10, output: 0, cacheRead: 0, cacheWrite: 0 });
+  });
+
+  // Codex logs a counter with no model on it; `turn_context` states the model
+  // ahead of each turn. Without carrying that hint forward, a whole codex
+  // session is unattributable and therefore unpriceable.
+  it("attributes codex's counter deltas to the model turn_context last named", () => {
+    const u = usageFromRecords(
+      "codex",
+      records("codex", [
+        codexTurnContext("gpt-5.5"),
+        codexCounter({ input: 100, output: 10 }, { total: 100 }),
+        codexTurnContext("gpt-5.3-codex"),
+        codexCounter({ input: 250, output: 25 }, { total: 150 }),
+      ]),
+    );
+    expect(u.spend.byModel["gpt-5.5"]).toEqual({
+      input: 100,
+      output: 10,
+      cacheRead: 0,
+      cacheWrite: 0,
+    });
+    // Only the DELTA moves to the new model, not the running total.
+    expect(u.spend.byModel["gpt-5.3-codex"]).toEqual({
+      input: 150,
+      output: 15,
+      cacheRead: 0,
+      cacheWrite: 0,
+    });
+    // …and the hint names the model the window belongs to, too.
+    expect(u.context.model).toBe("gpt-5.3-codex");
+  });
+
+  it("files codex spend with no preceding turn_context under the empty key", () => {
+    const u = usageFromRecords("codex", [
+      record("codex", codexCounter({ input: 100, output: 10 }, { total: 100 })),
+    ]);
+    expect(u.spend.byModel[""].input).toBe(100);
+  });
+});
+
+describe("priceSnapshot", () => {
+  const catalog = indexModelsDev({
+    anthropic: {
+      models: {
+        "claude-opus-5": {
+          name: "Claude Opus 5",
+          cost: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
+        },
+      },
+    },
+    openai: {
+      models: { "gpt-5.5": { name: "GPT-5.5", cost: { input: 1.25, output: 10 } } },
+    },
+  } as never).byId;
+
+  it("prices an unpriced session from the catalog, per model", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        claudeAssistant({ msgId: "m1", input: 1_000_000, model: "claude-opus-5" }),
+        claudeAssistant({ msgId: "m2", output: 1_000_000, model: "claude-opus-5" }),
+      ]),
+    );
+    expect(priceSnapshot(catalog, u)).toBeCloseTo(30, 6);
+  });
+
+  it("prefers the provider's own cost over list rates", () => {
+    const u = usageFromRecords("pi", [
+      record("pi", {
+        type: "message",
+        message: {
+          id: "m1",
+          role: "assistant",
+          model: "claude-opus-5",
+          usage: { input: 1_000_000, output: 0, cost: { total: 0.01 } },
+        },
+      } as RawEvent),
+    ]);
+    // List rates would say $5; pi billed $0.01, and a real bill always wins.
+    expect(u.spend.costUsd).toBeCloseTo(0.01);
+    expect(priceSnapshot(catalog, u)).toBeCloseTo(0.01);
+  });
+
+  it("prices the models it knows and skips the ones it doesn't", () => {
+    const u = usageFromRecords(
+      "claude",
+      records("claude", [
+        claudeAssistant({ msgId: "m1", input: 1_000_000, model: "claude-opus-5" }),
+        claudeAssistant({ msgId: "m2", input: 1_000_000, model: "big-pickle" }),
+      ]),
+    );
+    expect(priceSnapshot(catalog, u)).toBeCloseTo(5, 6);
+  });
+
+  it("is null when nothing in the session can be priced", () => {
+    const u = usageFromRecords("claude", [
+      record("claude", claudeAssistant({ msgId: "m1", input: 10, model: "big-pickle" })),
+    ]);
+    expect(priceSnapshot(catalog, u)).toBeNull();
+    expect(priceSnapshot(catalog, EMPTY_SNAPSHOT)).toBeNull();
   });
 });
 

@@ -21,6 +21,7 @@ export type SettingsSection =
   | "skills"
   | "tools"
   | "workflows"
+  | "usage"
   | "experimental"
   | "developer";
 

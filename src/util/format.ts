@@ -55,6 +55,31 @@ export function localDay(ms: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+const DAY_MS = 86_400_000;
+
+/** Local noon of the day containing `ms`. Stepping whole days from noon can't
+ *  skip or repeat a date across a DST boundary, which is why every calendar
+ *  helper below anchors here first. */
+function localNoon(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(12, 0, 0, 0);
+  return d.getTime();
+}
+
+/** Every local day key from the day of `sinceMs` through the day of `untilMs`,
+ *  inclusive, oldest first. */
+export function dayKeysBetween(sinceMs: number, untilMs: number): string[] {
+  const end = localNoon(untilMs);
+  const out: string[] = [];
+  for (let t = localNoon(sinceMs); t <= end; t += DAY_MS) out.push(localDay(t));
+  return out;
+}
+
+/** The last `n` local day keys, oldest first, ending on the day of `nowMs`. */
+export function recentDays(nowMs: number, n: number): string[] {
+  return dayKeysBetween(localNoon(nowMs) - (n - 1) * DAY_MS, nowMs);
+}
+
 /** The local Monday of the week containing `ms`, as a `localDay` key. Anchored
  *  at noon before stepping whole days, so a DST boundary can't land the result
  *  on the wrong date (the same trick the heatmap grid uses). */
@@ -63,6 +88,13 @@ export function weekStartDay(ms: number): string {
   d.setHours(12, 0, 0, 0);
   d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
   return localDay(d.getTime());
+}
+
+/** The local clock time of `ms` to the minute ("11:00", or "11:00 AM" where the
+ *  locale is 12-hour). Used where a window boundary is an hour rather than a
+ *  day and saying only the date would overstate the window. */
+export function formatClockTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 /** A span of elapsed time at one significant scale: minutes under an hour,
@@ -77,10 +109,14 @@ export function formatDuration(ms: number): string {
   return `${days.toFixed(days < 10 ? 1 : 0)}d`;
 }
 
+/** A token count at one scale: raw under 1k, then k / M / B with one decimal.
+ *  Billions matter for the all-sessions usage view, where a 90-day window
+ *  across every local transcript runs to ten figures. */
 export function formatTokens(n: number): string {
   if (n < 1_000) return `${n}`;
   if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  return `${(n / 1_000_000_000).toFixed(1)}B`;
 }
 
 /** A dollar cost: 2 decimals at $1 and up ($5.00), sub-cent precision below $1
@@ -88,6 +124,17 @@ export function formatTokens(n: number): string {
 export function formatCost(usd: number): string {
   if (usd > 0 && usd < 0.01) return "<$0.01";
   return `$${usd.toFixed(usd < 1 ? 3 : 2)}`;
+}
+
+/** A 0–1 fraction as a percentage: whole percents at 1% and up ("42%"), one
+ *  decimal below that ("0.4%"), and a floor marker under a tenth — the same
+ *  shape as `formatCost`, so a small-but-real share never reads as nothing. */
+export function formatPercent(fraction: number): string {
+  const pct = fraction * 100;
+  if (pct <= 0) return "0%";
+  if (pct < 0.1) return "<0.1%";
+  if (pct < 1) return `${pct.toFixed(1)}%`;
+  return `${Math.round(pct)}%`;
 }
 
 /** A download size in decimal units (574 MB), the way the files themselves are

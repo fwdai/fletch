@@ -7,9 +7,21 @@
 // https://models.dev in connect-src, so the frontend fetches it directly — no
 // backend round-trip.
 
+import type { ModelCost } from "./pricing";
 import type { ModelMeta } from "./types";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
+
+/** models.dev prices a model in USD per MILLION tokens. Cache rates are
+ *  optional — a provider that charges cache traffic as ordinary input lists
+ *  neither. The per-tier overrides (`tiers`, `context_over_200k`) are ignored;
+ *  everything here is the base tier. */
+interface RawCost {
+  input?: number;
+  output?: number;
+  cache_read?: number;
+  cache_write?: number;
+}
 
 interface RawModel {
   name?: string;
@@ -17,6 +29,23 @@ interface RawModel {
   family?: string;
   release_date?: string;
   limit?: { context?: number };
+  cost?: RawCost;
+}
+
+/** Map models.dev's `cost` block to the catalog's rates, defaulting the cache
+ *  rates to the input rate. Undefined when models.dev prices neither side of
+ *  the call — an unpriced entry must read as "unknown", never as free. */
+function toCost(cost: RawCost | undefined): ModelCost | undefined {
+  const input = typeof cost?.input === "number" ? cost.input : undefined;
+  const output = typeof cost?.output === "number" ? cost.output : undefined;
+  if (input === undefined && output === undefined) return undefined;
+  const base = input ?? 0;
+  return {
+    input: base,
+    output: output ?? 0,
+    cacheRead: typeof cost?.cache_read === "number" ? cost.cache_read : base,
+    cacheWrite: typeof cost?.cache_write === "number" ? cost.cache_write : base,
+  };
 }
 
 /** A lookup over models.dev: metadata by bare model id, and the model ids each
@@ -27,6 +56,7 @@ export interface ModelsDevIndex {
 }
 
 function toMeta(id: string, m: RawModel): ModelMeta {
+  const cost = toCost(m.cost);
   return {
     id,
     name: m.name ?? id,
@@ -34,6 +64,7 @@ function toMeta(id: string, m: RawModel): ModelMeta {
     reasoning: m.reasoning === true,
     ...(m.family ? { family: m.family } : {}),
     ...(m.release_date ? { releaseDate: m.release_date } : {}),
+    ...(cost ? { cost } : {}),
   };
 }
 

@@ -8,6 +8,8 @@
 //              opencode, pi).
 //   counter  — the provider's running total now reads this (codex).
 //   boundary — the context window was discarded and rebuilt (claude compaction).
+//   model    — the calls from here on run against this model (codex), stated by
+//              a record that carries no counts of its own.
 
 /** Token counts for one call. Two invariants every adapter normalizes to,
  *  because the vendors disagree: `input` is FRESH input — cache reads and
@@ -68,6 +70,14 @@ export type UsageEvent =
       window?: WindowFill;
       /** Window size in tokens, when the provider states it (codex). */
       limit?: number;
+    }
+  | {
+      // Which model the spend that follows belongs to, from a record that
+      // reports no usage itself. Codex logs a counter with no model on it and
+      // states the model separately on `turn_context`, so without this hint its
+      // whole session is unattributable — and therefore unpriceable.
+      kind: "model";
+      model: string;
     }
   | {
       kind: "boundary";

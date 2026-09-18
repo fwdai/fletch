@@ -1,12 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  dailySpend,
-  mergeStats,
-  type PrRow,
-  recentDays,
-  recentWeeks,
-  type UsageRow,
-} from "./derive";
+import { dailySpend, mergeStats, type PrRow, recentWeeks, type UsageRow } from "./derive";
 
 // Local-midnight epoch for a YYYY-MM-DD day, so fixtures read as dates and the
 // bucketing under test sees the same local calendar the app runs on.
@@ -18,21 +11,6 @@ const at = (day: string, hour = 12): number => {
 const HOUR = 3_600_000;
 
 // ── calendar ranges ───────────────────────────────────────────────────────
-
-describe("recentDays", () => {
-  it("returns n days oldest-first, ending today", () => {
-    expect(recentDays(at("2026-03-05"), 4)).toEqual([
-      "2026-03-02",
-      "2026-03-03",
-      "2026-03-04",
-      "2026-03-05",
-    ]);
-  });
-
-  it("steps across a month boundary", () => {
-    expect(recentDays(at("2026-03-02"), 3)).toEqual(["2026-02-28", "2026-03-01", "2026-03-02"]);
-  });
-});
 
 describe("recentWeeks", () => {
   it("returns Mondays oldest-first, ending with this week", () => {

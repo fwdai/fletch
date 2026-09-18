@@ -16,6 +16,7 @@ import { ProvidersPane } from "./ProvidersPane";
 import { RemoteControlPane } from "./RemoteControl";
 import { SandboxPane } from "./Sandbox";
 import { SkillsPane } from "./Skills";
+import { UsagePane } from "./Usage";
 import { WorkspacePane } from "./WorkspacePane";
 
 // Lazily loaded — code-split into its own chunk, fetched only when the Developer
@@ -49,6 +50,9 @@ const NAV: NavItem[] = [
   { id: "account", label: "Account", icon: "user", order: 10 },
   { id: "general", label: "General", icon: "settings", order: 20 },
   { id: "workspace", label: "Workspace", icon: "laptop", order: 25 },
+  // A report, not a set of knobs — but it's about this machine's agent usage,
+  // so it reads next to Workspace rather than down with the feature sections.
+  { id: "usage", label: "Usage", icon: "activity", order: 27 },
   { id: "providers", label: "Providers", icon: "blocks", order: 30 },
   { id: "git", label: "Git", icon: "branch", order: 33 },
   // The box is the app's existing sandbox glyph (SandboxBadge, the env-vars
@@ -140,6 +144,7 @@ export function SettingsScreen() {
           {visible && section === "general" && <GeneralPane />}
           {visible && section === "account" && <AccountPane />}
           {visible && section === "workspace" && <WorkspacePane />}
+          {visible && section === "usage" && <UsagePane />}
           {visible && section === "git" && <GitPane />}
           {visible && section === "sandbox" && <SandboxPane />}
           {visible && section === "remote" && <RemoteControlPane />}

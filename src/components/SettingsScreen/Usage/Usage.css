@@ -1,0 +1,253 @@
+/* ─── Settings · Usage ────────────────────────────────────────────────────
+ * The all-sessions token/cost pane. Composes on the settings shell
+ * (`.set-pane`, `.set-group`, `.set-group-h`) and on the shared chart + stat
+ * primitives in Stats.css (`.mb-*`, `.stat-row`); only what's specific to this
+ * pane lives here.
+ *
+ * Imported AFTER SettingsScreen.css and Stats.css — see the manifest in
+ * app.css. */
+
+/* ── header controls ── */
+.usg-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.usg-range {
+  color: var(--fg-1);
+}
+/* Scan age sits at the end of the description line, deliberately quiet. */
+.usg-scanned {
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.usg-scanned::before {
+  content: " · ";
+}
+.usg-refresh.busy svg {
+  animation: usg-spin 0.9s linear infinite;
+}
+@keyframes usg-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .usg-refresh.busy svg {
+    animation: none;
+  }
+}
+
+/* ── re-scan in flight ──
+   The figures stay on screen and stay readable — the point is only that they're
+   visibly provisional, so this is a dim and a slow pulse, not a shimmer.
+   Pointer events stay live: a stale tooltip is better than a dead one. */
+.usg-content {
+  transition: opacity 0.18s var(--ease);
+}
+.usg-content[aria-busy="true"] {
+  opacity: 0.55;
+  animation: usg-pulse 1.4s ease-in-out infinite;
+}
+@keyframes usg-pulse {
+  50% {
+    opacity: 0.78;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .usg-content[aria-busy="true"] {
+    animation: none;
+  }
+}
+
+/* ── error / empty ── */
+.usg-state {
+  margin-top: 8px;
+  padding: 18px 20px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  color: var(--fg-1);
+  line-height: var(--lh-normal);
+  text-wrap: pretty;
+}
+.usg-state.error {
+  border-color: color-mix(in oklab, var(--danger) 40%, transparent);
+}
+/* One quiet line explaining why every cost reads "Unpriced" — a note about the
+   catalog, not an error about the usage. */
+.usg-hint {
+  margin-top: 8px;
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
+
+/* ── summary + chart ── */
+/* Two columns down to the settings column's narrow breakpoint, where the chart
+   would be too cramped to read and stacks under the numbers instead. */
+.usg-top {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+@media (max-width: 1080px) {
+  .usg-top {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.usg-headline {
+  font-size: 34px;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--fg-0);
+  font-variant-numeric: tabular-nums;
+}
+.usg-headline-l {
+  margin-top: 4px;
+  color: var(--fg-2);
+}
+/* The "at least" marker on a partly-priced total: present enough to read as
+   part of the figure, quiet enough not to be mistaken for a digit. */
+.usg-approx {
+  color: var(--fg-2);
+  font-size: 0.7em;
+  vertical-align: 0.12em;
+}
+/* A headline with nothing priced behind it is a word, not a number. */
+.usg-headline-unpriced {
+  font-size: 24px;
+  color: var(--fg-3);
+}
+
+.usg-provs {
+  display: flex;
+  flex-direction: column;
+  margin-top: 18px;
+}
+.usg-prov {
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--bd-soft);
+}
+.usg-prov:first-child {
+  border-top: 0;
+}
+.usg-prov-skel {
+  margin: 10px 0;
+}
+.usg-prov-id {
+  flex: 1;
+  min-width: 0;
+}
+.usg-prov-name {
+  color: var(--fg-0);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usg-prov-sub {
+  color: var(--fg-2);
+}
+.usg-prov-nums {
+  flex-shrink: 0;
+  text-align: right;
+}
+.usg-prov-tok {
+  color: var(--fg-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.usg-chart-t {
+  color: var(--fg-2);
+  margin-bottom: 10px;
+}
+
+/* ── totals strip ── */
+.usg-totals {
+  gap: 12px;
+  margin-top: 4px;
+}
+
+/* ── breakdown table ── */
+.usg-breakdown-h {
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+/* The group heading's own bottom margin is carried by the row above. */
+.usg-breakdown-h .set-group-h {
+  margin-bottom: 0;
+}
+
+.usg-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.usg-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 64px 88px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--bd-soft);
+  color: var(--fg-1);
+}
+.usg-row:first-child {
+  border-top: 0;
+}
+.usg-row.head {
+  background: var(--bg-2);
+  color: var(--fg-3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.usg-row.empty {
+  display: block;
+  color: var(--fg-2);
+}
+/* Placeholder rows keep the real row's grid, so the columns don't shift when
+   the numbers arrive. The label column is wider than the figure columns. */
+.usg-row.skel {
+  height: 34px;
+}
+.usg-skel-label {
+  width: 45%;
+}
+/* Figures right-align into columns so they can be compared down the list. */
+.usg-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.usg-unpriced {
+  color: var(--fg-3);
+}
+.usg-share {
+  color: var(--fg-2);
+}
+.usg-model {
+  gap: 8px;
+  min-width: 0;
+}
+.usg-model-id {
+  color: var(--fg-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usg-day {
+  color: var(--fg-0);
+}
+
+.usg-foot {
+  margin-top: 16px;
+  color: var(--fg-3);
+  text-wrap: pretty;
+}

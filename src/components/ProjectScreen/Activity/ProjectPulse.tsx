@@ -7,6 +7,7 @@ import {
   Skeleton,
   Stat,
 } from "@/components/Stats";
+import { useAppStore } from "@/store";
 import { formatCost, formatTokens } from "@/util/format";
 import {
   loadPulseActivity,
@@ -36,6 +37,7 @@ export function ProjectPulse({ projectId }: { projectId: string }) {
   const [activity, setActivity] = useState<PulseActivity | null>(null);
   const [totals, setTotals] = useState<PulseTotals | null>(null);
   const [usage, setUsage] = useState<PulseUsage | null>(null);
+  const catalog = useAppStore((s) => s.modelCatalog);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,7 +51,7 @@ export function ProjectPulse({ projectId }: { projectId: string }) {
     loadPulseTotals(projectId, now)
       .then((t) => !cancelled && setTotals(t))
       .catch((err) => console.error("pulse totals failed", err));
-    loadPulseUsage(projectId)
+    loadPulseUsage(projectId, catalog)
       .then((u) => !cancelled && setUsage(u))
       .catch((err) => {
         console.error("pulse usage failed", err);
@@ -58,7 +60,7 @@ export function ProjectPulse({ projectId }: { projectId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, catalog]);
 
   const turns = activity?.turns ?? {};
   const streak = activity ? computeStreak(turns, Date.now()) : 0;
@@ -138,7 +140,9 @@ export function ProjectPulse({ projectId }: { projectId: string }) {
         <Stat
           label="tokens"
           loading={!usage}
-          tip={usage && usage.costUsd > 0 ? `≈ ${formatCost(usage.costUsd)}` : undefined}
+          tip={
+            usage && usage.costUsd > 0 ? `≈ ${formatCost(usage.costUsd)} at list rates` : undefined
+          }
         >
           {usage && <CountUp value={usage.tokens} format={formatTokens} />}
         </Stat>

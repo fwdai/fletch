@@ -16,7 +16,14 @@ const lastWritten = new Map<string, string>();
 /** Upsert today's cumulative usage snapshot for a workspace. Fire-and-forget:
  *  failures are logged, never thrown — stats are best-effort by design. No-op
  *  when the project is unknown or the totals haven't changed since the last
- *  write this session. */
+ *  write this session.
+ *
+ *  Only the provider's OWN cost is stored (opencode, pi). A catalog-priced
+ *  figure deliberately is not: the rows are cumulative and a day's spend is the
+ *  delta between snapshots, so a rate change — or a snapshot taken before the
+ *  catalog loaded and one after — would book the whole repricing as that day's
+ *  spend. Pricing claude/codex history needs per-model token deltas, not a
+ *  cumulative dollar figure. */
 export function recordUsageSnapshot(
   workspaceId: string,
   projectId: string | undefined,

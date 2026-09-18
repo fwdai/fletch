@@ -48,6 +48,7 @@ mod slash_commands;
 mod supervisor;
 mod telemetry;
 mod transcripts;
+mod usage_scan;
 mod verify;
 mod workflow;
 mod workspace;
@@ -2072,6 +2073,7 @@ pub fn run() {
             commands::cancel_agent_install,
             commands::validate_agent_bin,
             commands::discover_supported_models,
+            commands::scan_usage_transcripts,
             commands::probe_provider_auth,
             commands::reveal_logs,
             commands::start_docker_desktop,

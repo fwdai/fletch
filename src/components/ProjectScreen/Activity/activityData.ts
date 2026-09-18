@@ -1,5 +1,6 @@
-import { hasUsage, usageFromRecords } from "@/adapters/usage";
+import { hasUsage, priceSnapshot, usageFromRecords } from "@/adapters/usage";
 import { api } from "@/api";
+import type { SlimCatalog } from "@/data/modelCatalog";
 import { dbQuery } from "@/storage/db";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import {
@@ -41,7 +42,8 @@ export interface PulseTotals {
 export interface PulseUsage {
   /** Input + output tokens across every session of the project. */
   tokens: number;
-  /** Summed cost; 0 when no provider in the project reports cost. */
+  /** Summed cost — the provider's own figure where it reports one, list API
+   *  rates from the model catalog otherwise. 0 when nothing could be priced. */
   costUsd: number;
 }
 
@@ -123,8 +125,14 @@ export async function loadPulseTotals(projectId: string, nowMs: number): Promise
  *  agent's transcript records, so it runs lazily behind the tile shimmer;
  *  folded totals are also snapshotted into usage_daily, seeding per-day
  *  history for the whole project. Per-agent failures are skipped — the total
- *  is best-effort over what's readable. */
-export async function loadPulseUsage(projectId: string): Promise<PulseUsage> {
+ *  is best-effort over what's readable.
+ *
+ *  `catalog` supplies the per-model list rates that price the agents reporting
+ *  no dollars of their own (claude, codex). That priced figure is for the tile
+ *  only: it is recomputed live with whatever the catalog says today, and is
+ *  NOT snapshotted — see `recordUsageSnapshot` for why a cumulative
+ *  catalog-priced number would corrupt the per-day history. */
+export async function loadPulseUsage(projectId: string, catalog: SlimCatalog): Promise<PulseUsage> {
   const rows = await dbQuery<{ id: string; provider: string | null }>(
     `SELECT w.id AS id,
             (SELECT s.provider FROM sessions s WHERE s.workspace_id = w.id
@@ -148,7 +156,7 @@ export async function loadPulseUsage(projectId: string): Promise<PulseUsage> {
           // re-read every turn, so including them would make a long session
           // look like an order of magnitude more work than it was.
           tokens += usage.spend.tokens.input + usage.spend.tokens.output;
-          costUsd += usage.spend.costUsd ?? 0;
+          costUsd += priceSnapshot(catalog, usage) ?? 0;
           recordUsageSnapshot(r.id, projectId, usage);
         } catch {
           // Unreadable session (e.g. cleaned-up archive) — skip, don't abort.

@@ -6,6 +6,8 @@
 // — a flat id→meta map (`byId`, for the usage gauge) plus per-agent lists
 // (`byAgent`, for the future model picker).
 
+import type { ModelCost } from "./pricing";
+
 /** Metadata for one model, keyed in `byId` by the id used for lookup/launch. */
 export interface ModelMeta {
   /** Bare model id as passed to the agent CLI (e.g. "claude-opus-4-8"). */
@@ -28,6 +30,9 @@ export interface ModelMeta {
   family?: string;
   /** Model release date from models.dev (`YYYY-MM-DD`), when known. */
   releaseDate?: string;
+  /** List API rates from models.dev, when it prices this model. Absent means
+   *  unpriceable, not free — see `pricing.ts`. */
+  cost?: ModelCost;
 }
 
 /** One model an agent reports it supports (from the Rust discovery command).

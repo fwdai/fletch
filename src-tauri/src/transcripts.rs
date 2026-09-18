@@ -49,7 +49,10 @@ pub(crate) fn find_session_jsonl(
 /// with `CLAUDE_CONFIG_DIR` set wrote its transcript somewhere we never scanned,
 /// so it was never ingested into `session_records` and was lost when that dir
 /// moved.
-fn claude_projects_dirs() -> Vec<PathBuf> {
+///
+/// Also the root list for the whole-disk usage scan (`usage_scan`), which walks
+/// every `<projects dir>/*/*.jsonl` rather than one known session id.
+pub(crate) fn claude_projects_dirs() -> Vec<PathBuf> {
     projects_dirs_from(
         std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
         dirs::home_dir(),
@@ -103,16 +106,24 @@ fn find_session_jsonl_in(
     None
 }
 
+/// Codex's session root: `$CODEX_HOME/sessions` (CODEX_HOME defaults to
+/// `~/.codex`), holding a `YYYY/MM/DD` tree of `rollout-<ts>-<id>.jsonl`.
+/// `None` only when neither CODEX_HOME nor a home dir can be resolved. Shared
+/// by the per-session locator below and the whole-disk usage scan.
+pub(crate) fn codex_sessions_dir() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
+        .map(|home| home.join("sessions"))
+}
+
 /// All of codex's rollout files for a thread id, ordered (filenames are
 /// timestamp-prefixed, so lexical sort == chronological). Codex stores sessions
 /// at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
 /// defaults to `~/.codex`); the id suffix is the thread id we captured. Resume
 /// normally keeps one file per session, but returning all is correct if it splits.
 pub(crate) fn find_codex_rollouts(session_id: &str, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
-    else {
+    let Some(sessions) = codex_sessions_dir() else {
         return Vec::new();
     };
     // Anchor on the `-<id>.jsonl` boundary (filenames are
@@ -129,7 +140,6 @@ pub(crate) fn find_codex_rollouts(session_id: &str, diag: &mut ReadDiagnostics) 
             .filter(|p| p.is_dir())
             .collect()
     }
-    let sessions = home.join("sessions");
     diag.root_exists = sessions.exists();
     let mut out = Vec::new();
     for year in dirs_in(&sessions) {

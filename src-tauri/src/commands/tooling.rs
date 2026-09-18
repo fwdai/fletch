@@ -169,6 +169,29 @@ pub async fn discover_supported_models() -> Vec<crate::model_catalog::AgentModel
     crate::model_catalog::discover_supported_models().await
 }
 
+/// Scan every Claude Code and Codex transcript on disk — not just the sessions
+/// this app spawned — and return token usage bucketed by local hour, provider
+/// and model for `[since_ms, until_ms)`, plus a first/last span per session.
+/// Hourly buckets and session spans let the caller scan its widest window once
+/// and slice shorter ranges client-side. Pricing is the frontend's job (it
+/// enriches against models.dev), so this returns raw counts only. Blocking file
+/// walk, so it runs off the async runtime's worker threads.
+///
+/// Parsed records are cached in memory per file for the process's lifetime, so
+/// a repeat call only reads files that changed since the last one, and of those
+/// only the bytes appended (`filesRead`/`bytesRead` report what it cost). The
+/// cache is keyed by path, not by window: any window is answered from the same
+/// records.
+#[tauri::command]
+pub async fn scan_usage_transcripts(
+    since_ms: i64,
+    until_ms: i64,
+) -> Result<crate::usage_scan::UsageScan> {
+    tauri::async_runtime::spawn_blocking(move || crate::usage_scan::scan_all(since_ms, until_ms))
+        .await
+        .map_err(|e| Error::Other(format!("usage scan failed: {e}")))
+}
+
 /// Probe whether each provider's CLI is *signed in* — the question
 /// [`probe_provider_versions`] doesn't answer. Structural checks only (file
 /// presence, JSON shape, Keychain item presence); no credential value is read

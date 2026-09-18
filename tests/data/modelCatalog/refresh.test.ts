@@ -9,7 +9,7 @@ vi.mock("@/data/modelCatalog/modelsDev", () => ({
   fetchModelsDevIndex: mocks.fetchModelsDevIndex,
 }));
 
-const CACHE_KEY = "modelCatalog.cache.v14";
+const CACHE_KEY = "modelCatalog.cache.v15";
 
 const storage = new Map<string, string>();
 

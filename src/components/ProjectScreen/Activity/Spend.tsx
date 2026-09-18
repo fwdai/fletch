@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatDayTick, formatHeatDay, type MiniBar, MiniBars, Stat } from "@/components/Stats";
-import { formatCost, formatTokens } from "@/util/format";
+import { formatCost, formatTokens, recentDays } from "@/util/format";
 import { loadSpend } from "./activityData";
-import { recentDays, type SpendDay } from "./derive";
+import type { SpendDay } from "./derive";
 
 const DAYS = 30;
 
@@ -11,7 +11,10 @@ const DAYS = 30;
  *  Plots tokens rather than dollars because tokens are the one unit every
  *  provider reports — claude, codex and cursor price nothing, so a cost chart
  *  would be empty for most projects. Cost rides along in the tooltip and the
- *  stat row wherever a provider actually reported it. */
+ *  stat row wherever a provider actually reported it. (The catalog-priced
+ *  estimate lives on the Pulse tile only: it is recomputed live, whereas this
+ *  history is built from cumulative snapshots and would book any repricing as
+ *  a day's spend — see `recordUsageSnapshot`.) */
 export function Spend({ projectId }: { projectId: string }) {
   const [spend, setSpend] = useState<SpendDay[] | null>(null);
   const days = useMemo(() => recentDays(Date.now(), DAYS), []);

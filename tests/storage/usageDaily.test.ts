@@ -18,6 +18,7 @@ const usage = (input: number, output: number, cost: number | null = 0): UsageSna
   spend: {
     tokens: { input, output, cacheRead: 0, cacheWrite: 0 },
     costUsd: cost,
+    byModel: {},
   },
 });
 
