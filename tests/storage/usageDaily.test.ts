@@ -66,21 +66,6 @@ describe("recordUsageSnapshot", () => {
     expect(Object.values(upserts[0].data).some((v) => v == null)).toBe(false);
   });
 
-  // Claude and codex report no dollars, so their cost history exists only if
-  // the caller's catalog-priced figure is what gets written.
-  it("writes the caller's priced cost over the snapshot's own", async () => {
-    recordUsageSnapshot("ws5", "p1", usage(100, 50, null), 1.25);
-    recordUsageSnapshot("ws5", "p1", usage(100, 50, null), 2.5);
-    await flush();
-    expect(upserts.map((u) => u.data.cost_usd)).toEqual([1.25, 2.5]);
-  });
-
-  it("falls back to the snapshot's cost when the caller prices nothing", async () => {
-    recordUsageSnapshot("ws6", "p1", usage(100, 50, 0.4), null);
-    await flush();
-    expect(upserts[0].data.cost_usd).toBe(0.4);
-  });
-
   it("is a no-op without a project id", async () => {
     recordUsageSnapshot("ws3", undefined, usage(10, 5));
     await flush();

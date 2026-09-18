@@ -90,6 +90,13 @@ export function weekStartDay(ms: number): string {
   return localDay(d.getTime());
 }
 
+/** The local clock time of `ms` to the minute ("11:00", or "11:00 AM" where the
+ *  locale is 12-hour). Used where a window boundary is an hour rather than a
+ *  day and saying only the date would overstate the window. */
+export function formatClockTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
 /** A span of elapsed time at one significant scale: minutes under an hour,
  *  hours under a day, then days. One decimal below 10 of a unit ("4.2h") so
  *  short spans stay distinguishable, none above it ("14h"). */

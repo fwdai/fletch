@@ -15,6 +15,10 @@ export interface UsageStatsResult {
    *  but dim them so it's visible that they may move. */
   refreshing: boolean;
   error: string | null;
+  /** The model catalog has prices in it. False on a cold start before the
+   *  catalog lands, when every bucket prices to null and a cost of "$0.00"
+   *  would be a statement about the catalog, not about the usage. */
+  catalogReady: boolean;
   /** Force a re-scan, ignoring the cache's TTL. */
   refresh: () => void;
   /** When the scan on screen was taken, epoch ms; null before the first one. */
@@ -123,6 +127,7 @@ export function useUsageStats(range: UsageRange): UsageStatsResult {
     loading: stats === null && error === null,
     refreshing: scanning && stats !== null,
     error,
+    catalogReady: Object.keys(catalog).length > 0,
     refresh,
     scannedAt: entry?.fetchedAt ?? null,
   };

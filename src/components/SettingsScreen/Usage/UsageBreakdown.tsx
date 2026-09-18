@@ -2,8 +2,8 @@ import { useState } from "react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { formatHeatDay, Skeleton } from "@/components/Stats";
 import { providerChip } from "@/data/providers";
-import type { UsageStats } from "@/data/usage";
-import { formatCost, formatPercent, formatTokens } from "@/util/format";
+import { type CostLabel, coverageLabel, modelCostLabel, type UsageStats } from "@/data/usage";
+import { formatPercent, formatTokens } from "@/util/format";
 import { SetSeg } from "../primitives";
 
 type Mode = "model" | "day";
@@ -13,11 +13,19 @@ const MODES: { value: Mode; label: string }[] = [
   { value: "day", label: "Day" },
 ];
 
-/** A cost cell, or the muted "Unpriced" that stands in for a model the catalog
- *  has no rate for — $0.00 would claim those calls were free. */
-function Cost({ usd }: { usd: number | null }) {
-  if (usd === null) return <span className="usg-cell usg-unpriced mono">Unpriced</span>;
-  return <span className="usg-cell mono">{formatCost(usd)}</span>;
+/** A cost cell: the figure, the muted "Unpriced" that stands in for a model the
+ *  catalog has no rate for ($0.00 would claim those calls were free), or a
+ *  "≥ $x" floor for a day that mixed priced and unpriced models. */
+function Cost({ label }: { label: CostLabel }) {
+  const muted = label.kind === "unpriced" ? " usg-unpriced" : "";
+  return (
+    <span
+      className={`usg-cell mono${muted}${label.tip ? " tip" : ""}`}
+      data-tip={label.tip ?? undefined}
+    >
+      {label.text}
+    </span>
+  );
 }
 
 /** Placeholder rows for the first load, so the table holds its shape instead of
@@ -69,7 +77,7 @@ export function UsageBreakdown({ stats, loading }: { stats: UsageStats | null; l
                 <ProviderIcon slug={m.provider} {...providerChip(m.provider)} size={18} />
                 <span className="usg-model-id mono">{m.model}</span>
               </span>
-              <Cost usd={m.costUsd} />
+              <Cost label={modelCostLabel(m)} />
               <span className="usg-cell usg-share mono">{formatPercent(m.share)}</span>
               <span className="usg-cell mono">{formatTokens(m.tokens)}</span>
             </div>
@@ -78,7 +86,7 @@ export function UsageBreakdown({ stats, loading }: { stats: UsageStats | null; l
           stats?.byDay.map((d) => (
             <div key={d.day} className="usg-row text-sm">
               <span className="usg-day">{formatHeatDay(d.day)}</span>
-              <Cost usd={d.costUsd} />
+              <Cost label={coverageLabel(d)} />
               <span className="usg-cell usg-share mono">{formatPercent(d.share)}</span>
               <span className="usg-cell mono">{formatTokens(d.tokens)}</span>
             </div>

@@ -2,11 +2,13 @@ import { Icon } from "@/components/Icon";
 import { formatDayTick } from "@/components/Stats";
 import { IconButton } from "@/components/ui";
 import type { UsageMetric, UsageRange, UsageRangeBounds } from "@/data/usage";
-import { formatAge, localDay } from "@/util/format";
+import { formatAge, formatClockTime, localDay } from "@/util/format";
 import { SetHead, SetSeg } from "../primitives";
 
-const RANGES: { value: UsageRange; label: string }[] = [
-  { value: "24h", label: "Past 24h" },
+const RANGES: { value: UsageRange; label: string; tip?: string }[] = [
+  // Buckets are hourly, so "24h" is 24 whole hours rather than a rolling day —
+  // the tooltip says so, and `rangeText` shows the opening hour.
+  { value: "24h", label: "Past 24h", tip: "The last 24 whole hours" },
   { value: "7d", label: "7 days" },
   { value: "30d", label: "30 days" },
   { value: "90d", label: "90 days" },
@@ -36,9 +38,14 @@ function scanAge(at: number): string {
   return age === "now" ? "scanned just now" : `scanned ${age} ago`;
 }
 
-/** "Aug 19 to Sep 17" — the window in the same tick form the chart axis uses. */
-function rangeText({ sinceMs, untilMs }: UsageRangeBounds): string {
-  return `${formatDayTick(localDay(sinceMs))} to ${formatDayTick(localDay(untilMs))}`;
+/** "Aug 19 to Sep 17" — the window in the same tick form the chart axis uses.
+ *  The 24h window is hours rather than days, and saying only its dates would
+ *  read as two whole days, so it names the hour it opens on: "Sep 17, 11:00 to
+ *  now". */
+function rangeText(range: UsageRange, { sinceMs, untilMs }: UsageRangeBounds): string {
+  const from = formatDayTick(localDay(sinceMs));
+  if (range === "24h") return `${from}, ${formatClockTime(sinceMs)} to now`;
+  return `${from} to ${formatDayTick(localDay(untilMs))}`;
 }
 
 export function UsageHeader({
@@ -61,8 +68,8 @@ export function UsageHeader({
       title="Usage"
       desc={
         <>
-          <span className="usg-range mono">{rangeText(bounds)}</span> · every Claude Code and Codex
-          session on this machine, read straight from their transcripts.
+          <span className="usg-range mono">{rangeText(range, bounds)}</span> · every Claude Code and
+          Codex session on this machine, read straight from their transcripts.
           {scanned && <span className="usg-scanned mono">{scanned}</span>}
         </>
       }

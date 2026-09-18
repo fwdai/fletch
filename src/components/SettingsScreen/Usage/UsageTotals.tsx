@@ -1,12 +1,17 @@
 import { Stat } from "@/components/Stats";
-import type { UsageStats } from "@/data/usage";
-import { formatCost, formatTokens } from "@/util/format";
+import { costLabel, type UsageStats } from "@/data/usage";
+import { formatTokens } from "@/util/format";
+
+const SAVINGS_TIP = "List price of the cached input, minus what the cache read cost";
 
 /** The token ledger behind the headline: what was sent fresh, what came back
  *  from cache, what was written to it, and what the cache saved in dollars. */
 export function UsageTotals({ stats, loading }: { stats: UsageStats | null; loading: boolean }) {
   const t = stats?.totals;
   const busy = loading && !stats;
+  // The savings number can only cover the buckets that had a price, so it gets
+  // the same exact / at-least / unpriced treatment as the headline.
+  const savings = t ? costLabel(t.cacheSavingsUsd, t.processed, t.unpricedTokens) : null;
 
   return (
     <section className="set-group">
@@ -39,9 +44,13 @@ export function UsageTotals({ stats, loading }: { stats: UsageStats | null; load
         <Stat
           label="cache savings"
           loading={busy}
-          tip="List price of the cached input, minus what the cache read cost"
+          tip={savings?.tip ? `${SAVINGS_TIP} · ${savings.tip}` : SAVINGS_TIP}
         >
-          {t && formatCost(t.cacheSavingsUsd)}
+          {savings && (
+            <span className={savings.kind === "unpriced" ? "usg-unpriced" : undefined}>
+              {savings.text}
+            </span>
+          )}
         </Stat>
       </div>
     </section>

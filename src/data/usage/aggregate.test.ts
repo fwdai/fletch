@@ -3,6 +3,7 @@ import type { UsageBucket, UsageScan, UsageScanTokens, UsageSessionSpan } from "
 import type { SlimCatalog } from "@/data/modelCatalog";
 import { dayKeysBetween, localDay } from "@/util/format";
 import { aggregateUsage, localHourStart, rangeBounds } from "./aggregate";
+import { costLabel, coverageLabel, modelCostLabel } from "./costLabel";
 import { isFresh, SCAN_TTL_MS } from "./useUsageStats";
 
 // A fixture catalog rather than a real one: what models.dev charges changes
@@ -70,10 +71,24 @@ const scan = (buckets: UsageBucket[], sessions: UsageSessionSpan[] = []): UsageS
 describe("rangeBounds", () => {
   const now = new Date(2026, 8, 17, 15, 30).getTime(); // Thu Sep 17 2026, 15:30 local
 
-  it("treats 24h as a rolling day", () => {
+  it("opens 24h on the 24th whole hour back, not a rolling day", () => {
     const { sinceMs, untilMs } = rangeBounds("24h", now);
     expect(untilMs).toBe(now);
-    expect(sinceMs).toBe(now - 86_400_000);
+    // 23 complete hours plus the one in progress: 16:00 yesterday, not 15:30.
+    expect(sinceMs).toBe(at("2026-09-16", 16));
+    expect(new Date(sinceMs).getMinutes()).toBe(0);
+    expect((now - sinceMs) / 3_600_000).toBeCloseTo(23.5, 10);
+  });
+
+  it("keeps 24h exactly 24 hour buckets wide whatever the minute", () => {
+    for (const minute of [0, 1, 30, 59]) {
+      const from = new Date(2026, 8, 17, 10, minute).getTime();
+      const { sinceMs } = rangeBounds("24h", from);
+      expect(sinceMs).toBe(at("2026-09-16", 11));
+      // Hour starts in [sinceMs, from]: 11:00 yesterday through 10:00 today.
+      const hours = Math.floor((localHourStart(from) - sinceMs) / 3_600_000) + 1;
+      expect(hours).toBe(24);
+    }
   });
 
   it("starts multi-day ranges at local midnight so the chart shows whole days", () => {
@@ -143,15 +158,56 @@ describe("aggregateUsage", () => {
       cacheWrite: 800,
       processed: 9_000,
       cacheSavingsUsd: SONNET_SAVINGS,
+      unpricedTokens: 2_400,
     });
     expect(stats.totalTokens).toBe(9_000);
     expect(stats.empty).toBe(false);
     expect(stats.scannedFiles).toBe(3);
   });
 
-  it("costs only what the catalog prices", () => {
+  it("costs only what the catalog prices, and says how much it couldn't", () => {
     // The sonnet-5 buckets are priced; the codex "mystery" tokens are not.
     expect(stats.totalCostUsd).toBeCloseTo(SONNET_COST, 10);
+    expect(stats.unpricedTokens).toBe(2_400);
+  });
+
+  it("carries pricing coverage down to providers, days and day rows", () => {
+    const [claude, codex] = stats.providers;
+    expect(claude.unpricedTokens).toBe(0);
+    expect(codex.unpricedTokens).toBe(2_400);
+
+    // Day 0 is all sonnet-5; the last day mixes a priced and an unpriced model.
+    expect(stats.daily[0].unpricedTokens).toBe(0);
+    expect(stats.daily[2].unpricedTokens).toBe(2_400);
+    const bySlice = Object.fromEntries(
+      stats.daily[2].byProvider.map((p) => [p.provider, p.unpricedTokens]),
+    );
+    expect(bySlice).toEqual({ claude: 0, codex: 2_400 });
+
+    expect(stats.byDay.map((d) => d.unpricedTokens)).toEqual([2_400, 0]);
+  });
+
+  it("reports full coverage when the catalog prices everything", () => {
+    const priced = aggregateUsage(
+      scan([bucket({ hourStartMs: at(days[0], 9), model: "sonnet-5" })]),
+      CATALOG,
+      range,
+    );
+    expect(priced.unpricedTokens).toBe(0);
+    expect(priced.totals.unpricedTokens).toBe(0);
+    expect(priced.providers[0].unpricedTokens).toBe(0);
+    expect(priced.byDay[0].unpricedTokens).toBe(0);
+  });
+
+  it("reports every token as unpriced against an empty catalog", () => {
+    const blind = aggregateUsage(full, {}, range);
+    expect(blind.totalCostUsd).toBe(0);
+    expect(blind.unpricedTokens).toBe(blind.totalTokens);
+    expect(blind.totals.unpricedTokens).toBe(9_000);
+    expect(blind.totals.cacheSavingsUsd).toBe(0);
+    expect(blind.providers.every((p) => p.unpricedTokens === p.tokens)).toBe(true);
+    expect(blind.byDay.every((d) => d.unpricedTokens === d.tokens)).toBe(true);
+    expect(blind.byModel.every((m) => m.costUsd === null)).toBe(true);
   });
 
   it("splits by provider with sessions and token share", () => {
@@ -175,7 +231,13 @@ describe("aggregateUsage", () => {
 
   it("derives the calendar day from each bucket's hour", () => {
     expect(stats.daily.map((d) => d.day)).toEqual(days);
-    expect(stats.daily[1]).toEqual({ day: days[1], tokens: 0, costUsd: 0, byProvider: [] });
+    expect(stats.daily[1]).toEqual({
+      day: days[1],
+      tokens: 0,
+      costUsd: 0,
+      unpricedTokens: 0,
+      byProvider: [],
+    });
     expect(stats.daily[0].tokens).toBe(6_000);
     expect(stats.daily[2].byProvider.map((p) => p.provider)).toEqual(["codex", "claude"]);
   });
@@ -195,6 +257,7 @@ describe("aggregateUsage", () => {
     expect(blank.empty).toBe(true);
     expect(blank.totalTokens).toBe(0);
     expect(blank.totalCostUsd).toBe(0);
+    expect(blank.unpricedTokens).toBe(0);
     expect(blank.byModel).toEqual([]);
     expect(blank.byDay).toEqual([]);
     expect(blank.daily.map((d) => d.tokens)).toEqual([0, 0, 0]);
@@ -207,7 +270,7 @@ describe("aggregateUsage", () => {
       range,
     );
     expect(only.providers).toEqual([
-      { provider: "codex", sessions: 1, tokens: 0, costUsd: 0, share: 0 },
+      { provider: "codex", sessions: 1, tokens: 0, costUsd: 0, unpricedTokens: 0, share: 0 },
     ]);
   });
 });
@@ -237,16 +300,30 @@ describe("aggregateUsage slicing", () => {
     expect(opening.empty).toBe(false);
   });
 
-  it("admits the partial hour a mid-hour start lands in", () => {
-    // 24h from 10:42 must still show the 10:00 bucket — the window opens inside
-    // that hour, so its tokens belong to it.
+  it("does not widen a mid-hour start back to the top of its hour", () => {
+    // A window opening at 10:42 does not cover the 10:00 bucket: most of that
+    // bucket is before the window, and admitting it is how "past 24h" used to
+    // stretch to nearly 25. `rangeBounds` never produces a mid-hour start now,
+    // so no range depends on the old rounding.
     const from = { sinceMs: at(days[3], 10, 42), untilMs: at(days[3], 20) };
     const sliced = aggregateUsage(
       { ...wide, buckets: [bucket({ hourStartMs: at(days[3], 10), model: "sonnet-5" })] },
       CATALOG,
       from,
     );
-    expect(sliced.totalTokens).toBe(110);
+    expect(sliced.empty).toBe(true);
+  });
+
+  it("covers 24 hourly buckets for the 24h range and no more", () => {
+    const now = at(days[3], 10, 59);
+    const hourly = scan(
+      // 25 hours back through the current one, one bucket each.
+      Array.from({ length: 26 }, (_, i) =>
+        bucket({ hourStartMs: at(days[3], 10) - i * 3_600_000, model: "sonnet-5" }),
+      ),
+    );
+    const sliced = aggregateUsage(hourly, CATALOG, rangeBounds("24h", now));
+    expect(sliced.totalTokens).toBe(24 * 110);
   });
 
   it("excludes a bucket sitting exactly on untilMs", () => {
@@ -303,6 +380,61 @@ describe("aggregateUsage session spans", () => {
       ["claude", 2],
       ["codex", 1],
     ]);
+  });
+});
+
+describe("costLabel", () => {
+  it("states a fully priced figure exactly", () => {
+    expect(costLabel(4.2, 1_000, 0)).toEqual({
+      kind: "exact",
+      usd: 4.2,
+      text: "$4.20",
+      tip: null,
+    });
+  });
+
+  it("floors a partly priced figure and says how much is missing", () => {
+    const label = costLabel(4.2, 1_000, 250);
+    expect(label.kind).toBe("partial");
+    expect(label.usd).toBe(4.2);
+    expect(label.text).toBe("≥ $4.20");
+    expect(label.tip).toBe("250 tokens (25%) ran on models without a known price");
+  });
+
+  it("refuses to print $0.00 when nothing was priced", () => {
+    const label = costLabel(0, 2_400, 2_400);
+    expect(label.kind).toBe("unpriced");
+    expect(label.usd).toBe(0);
+    expect(label.text).toBe("Unpriced");
+    expect(label.tip).toBe("2.4k tokens (100%) ran on models without a known price");
+  });
+
+  it("treats a slice with no tokens as exactly nothing", () => {
+    expect(costLabel(0, 0, 0)).toMatchObject({ kind: "exact", text: "$0.000" });
+  });
+
+  it("labels an all-or-nothing model row from its null cost", () => {
+    expect(modelCostLabel({ costUsd: 0.03, tokens: 6_600 })).toMatchObject({
+      kind: "exact",
+      text: "$0.030",
+    });
+    expect(modelCostLabel({ costUsd: null, tokens: 2_400 })).toMatchObject({
+      kind: "unpriced",
+      text: "Unpriced",
+    });
+  });
+
+  it("reads coverage straight off an aggregated slice", () => {
+    const [claude, codex] = aggregateUsage(
+      scan([
+        bucket({ hourStartMs: at("2026-09-17", 9), model: "sonnet-5" }),
+        bucket({ hourStartMs: at("2026-09-17", 9), model: "mystery", provider: "codex" }),
+      ]),
+      CATALOG,
+      { sinceMs: at("2026-09-17", 0), untilMs: at("2026-09-17", 23) },
+    ).providers;
+    expect(coverageLabel(claude).kind).toBe("exact");
+    expect(coverageLabel(codex).kind).toBe("unpriced");
   });
 });
 

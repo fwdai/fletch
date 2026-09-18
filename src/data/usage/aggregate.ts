@@ -24,6 +24,7 @@ import type {
 // React, no IO — `useUsageStats` supplies the scan and the catalog.
 
 const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
 
 const RANGE_DAYS: Record<UsageRange, number> = { "24h": 1, "7d": 7, "30d": 30, "90d": 90 };
 
@@ -36,11 +37,25 @@ export const WIDEST_RANGE: UsageRange = "90d";
  *  token shape is the adapters' `TokenCounts`, so this is the same sum. */
 export const processedTokens: (t: UsageScanTokens) => number = totalTokens;
 
-/** The window a range control selects, ending now. Multi-day ranges start at
- *  local midnight N−1 days back, so "7 days" is seven whole calendar columns
- *  on the chart rather than six and a fraction. "24h" is a rolling day. */
+/** The start of the local hour containing `ms`. The scan buckets by local hour,
+ *  so every range boundary is stated in those terms rather than in a precision
+ *  the data doesn't have. */
+export function localHourStart(ms: number): number {
+  const d = new Date(ms);
+  d.setMinutes(0, 0, 0);
+  return d.getTime();
+}
+
+/** The window a range control selects, ending now.
+ *
+ *  Multi-day ranges start at local midnight N−1 days back, so "7 days" is seven
+ *  whole calendar columns on the chart rather than six and a fraction. "24h" is
+ *  the last 24 *whole* local hours: 23 complete buckets plus the one in
+ *  progress. A rolling `now − 24h` would open mid-hour and, since buckets are
+ *  hourly, either drop that hour or drag in the whole of it — at 10:59 that
+ *  means yesterday's 10:00 traffic inside a window labelled "past 24h". */
 export function rangeBounds(range: UsageRange, nowMs: number): UsageRangeBounds {
-  if (range === "24h") return { sinceMs: nowMs - DAY_MS, untilMs: nowMs };
+  if (range === "24h") return { sinceMs: localHourStart(nowMs) - 23 * HOUR_MS, untilMs: nowMs };
   // Stepped from noon so a DST boundary can't land the start on the wrong
   // date, then snapped back to that date's midnight.
   const start = new Date(nowMs);
@@ -50,23 +65,16 @@ export function rangeBounds(range: UsageRange, nowMs: number): UsageRangeBounds 
   return { sinceMs: start.getTime(), untilMs: nowMs };
 }
 
-/** The start of the local hour containing `ms`. Buckets are keyed by local hour
- *  start, so a range whose `sinceMs` falls mid-hour must admit the hour it
- *  lands in — otherwise a "24h" window silently drops its oldest bucket. */
-export function localHourStart(ms: number): number {
-  const d = new Date(ms);
-  d.setMinutes(0, 0, 0);
-  return d.getTime();
-}
-
-/** The buckets a range covers: hour starts from the range's opening hour up to
- *  (but not including) `untilMs`. */
+/** The buckets a range covers: `[sinceMs, untilMs)` by bucket start. Every
+ *  bound `rangeBounds` produces is already on an hour (multi-day ranges open at
+ *  local midnight, "24h" at a whole hour), so a bucket is in or out with no
+ *  rounding — and a caller passing a mid-hour `sinceMs` gets the honest answer
+ *  rather than a silently widened window. */
 export function bucketsInRange(
   buckets: readonly UsageBucket[],
   { sinceMs, untilMs }: UsageRangeBounds,
 ): UsageBucket[] {
-  const from = localHourStart(sinceMs);
-  return buckets.filter((b) => b.hourStartMs >= from && b.hourStartMs < untilMs);
+  return buckets.filter((b) => b.hourStartMs >= sinceMs && b.hourStartMs < untilMs);
 }
 
 /** Sessions whose span overlaps the range at all — a session that opened before
@@ -82,6 +90,7 @@ export function sessionsInRange(
 interface DayAcc {
   tokens: number;
   costUsd: number;
+  unpricedTokens: number;
   byProvider: Map<UsageProvider, UsageDaySlice>;
 }
 
@@ -103,9 +112,16 @@ export function aggregateUsage(
 
   const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, processed: 0 };
   let totalCostUsd = 0;
+  // Processed tokens the catalog had no rate for. Carried beside every dollar
+  // figure so the UI can say "at least $X" instead of passing a partial sum off
+  // as a total — see `costLabel`.
+  let unpricedTokens = 0;
   let savingsUsd = 0;
 
-  const providers = new Map<UsageProvider, { tokens: number; costUsd: number }>();
+  const providers = new Map<
+    UsageProvider,
+    { tokens: number; costUsd: number; unpricedTokens: number }
+  >();
   const models = new Map<string, UsageModelRow>();
   const days = new Map<string, DayAcc>();
 
@@ -121,10 +137,13 @@ export function aggregateUsage(
     totals.cacheWrite += b.tokens.cacheWrite;
     totals.processed += tokens;
     totalCostUsd += cost ?? 0;
+    const unpriced = cost === null ? tokens : 0;
+    unpricedTokens += unpriced;
 
-    const prov = providers.get(b.provider) ?? { tokens: 0, costUsd: 0 };
+    const prov = providers.get(b.provider) ?? { tokens: 0, costUsd: 0, unpricedTokens: 0 };
     prov.tokens += tokens;
     prov.costUsd += cost ?? 0;
+    prov.unpricedTokens += unpriced;
     providers.set(b.provider, prov);
 
     // Keyed by provider too: the same model id can be reached through more
@@ -143,16 +162,24 @@ export function aggregateUsage(
     row.costUsd = cost === null || row.costUsd === null ? null : row.costUsd + cost;
     models.set(modelKey, row);
 
-    const day = days.get(dayKey) ?? { tokens: 0, costUsd: 0, byProvider: new Map() };
+    const day = days.get(dayKey) ?? {
+      tokens: 0,
+      costUsd: 0,
+      unpricedTokens: 0,
+      byProvider: new Map(),
+    };
     day.tokens += tokens;
     day.costUsd += cost ?? 0;
+    day.unpricedTokens += unpriced;
     const slice = day.byProvider.get(b.provider) ?? {
       provider: b.provider,
       tokens: 0,
       costUsd: 0,
+      unpricedTokens: 0,
     };
     slice.tokens += tokens;
     slice.costUsd += cost ?? 0;
+    slice.unpricedTokens += unpriced;
     day.byProvider.set(b.provider, slice);
     days.set(dayKey, day);
   }
@@ -171,6 +198,7 @@ export function aggregateUsage(
         sessions: sessionsBy.get(provider) ?? 0,
         tokens,
         costUsd: p?.costUsd ?? 0,
+        unpricedTokens: p?.unpricedTokens ?? 0,
         share: share(tokens),
       };
     })
@@ -182,6 +210,7 @@ export function aggregateUsage(
       day,
       tokens: acc?.tokens ?? 0,
       costUsd: acc?.costUsd ?? 0,
+      unpricedTokens: acc?.unpricedTokens ?? 0,
       byProvider: acc ? [...acc.byProvider.values()].sort(byTokensDesc) : [],
     };
   });
@@ -197,6 +226,7 @@ export function aggregateUsage(
       day,
       tokens: acc.tokens,
       costUsd: acc.costUsd,
+      unpricedTokens: acc.unpricedTokens,
       share: share(acc.tokens),
     }))
     .sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0));
@@ -205,9 +235,12 @@ export function aggregateUsage(
     range,
     totalTokens: totals.processed,
     totalCostUsd,
+    unpricedTokens,
     totalSessions: sessions.length,
     providers: providerRows,
-    totals: { ...totals, cacheSavingsUsd: savingsUsd },
+    // The savings figure covers exactly the buckets the cost figure does, so it
+    // carries the same coverage number.
+    totals: { ...totals, cacheSavingsUsd: savingsUsd, unpricedTokens },
     daily,
     byModel,
     byDay,

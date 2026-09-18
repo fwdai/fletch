@@ -12,7 +12,8 @@ import { UsageTotals } from "./UsageTotals";
 export function UsagePane() {
   const [range, setRange] = useState<UsageRange>("30d");
   const [metric, setMetric] = useState<UsageMetric>("cost");
-  const { stats, loading, refreshing, error, refresh, scannedAt } = useUsageStats(range);
+  const { stats, loading, refreshing, error, refresh, scannedAt, catalogReady } =
+    useUsageStats(range);
 
   // The header describes the *selected* window immediately; `stats.range` is
   // the window the data in hand covers, which lags by one scan.
@@ -34,6 +35,14 @@ export function UsagePane() {
         scannedAt={scannedAt}
         onRefresh={refresh}
       />
+
+      {/* No catalog, no rates: every bucket prices to null, so the pane would
+          otherwise be a wall of "Unpriced". Say why once, at the top. */}
+      {!catalogReady && !empty && (
+        <div className="usg-hint text-sm">
+          Prices not loaded yet — cost appears once the model catalog loads.
+        </div>
+      )}
 
       {error && (
         <div className="usg-state error text-sm">

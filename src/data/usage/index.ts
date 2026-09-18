@@ -11,7 +11,15 @@ export {
   sessionsInRange,
   WIDEST_RANGE,
 } from "./aggregate";
+export {
+  type CostKind,
+  type CostLabel,
+  costLabel,
+  coverageLabel,
+  modelCostLabel,
+} from "./costLabel";
 export type {
+  UsageCostCoverage,
   UsageDay,
   UsageDayRow,
   UsageDaySlice,

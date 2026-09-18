@@ -28,39 +28,50 @@ export interface UsageTokenTotals {
   processed: number;
 }
 
+/** Every level that carries dollars carries its pricing coverage alongside
+ *  them: `costUsd` is what WAS priced, `unpricedTokens` is how many processed
+ *  tokens ran on models the catalog has no rate for. A reader can then be told
+ *  "$4.10" or "at least $4.10" or "unpriced" instead of being handed a partial
+ *  sum dressed up as a total — see `costLabel`. */
+export interface UsageCostCoverage {
+  costUsd: number;
+  /** Processed tokens whose bucket priced to null. */
+  unpricedTokens: number;
+}
+
 /** The totals strip: every token bucket plus what the cache saved. */
 export interface UsageTotals extends UsageTokenTotals {
-  /** List-price dollars avoided by cache reads. 0 when nothing was priced. */
+  /** List-price dollars avoided by cache reads, over the priced buckets only. */
   cacheSavingsUsd: number;
+  /** Processed tokens the savings figure could not account for — a bucket with
+   *  no price has no cache discount to report either. */
+  unpricedTokens: number;
 }
 
 /** One provider's slice of the window. */
-export interface UsageProviderRow {
+export interface UsageProviderRow extends UsageCostCoverage {
   provider: UsageProvider;
   /** Distinct sessions observed in the window. */
   sessions: number;
   /** Processed tokens. */
   tokens: number;
-  costUsd: number;
   /** Fraction of all processed tokens, 0–1. */
   share: number;
 }
 
 /** One provider's slice of a single day — the chart's hover breakdown. */
-export interface UsageDaySlice {
+export interface UsageDaySlice extends UsageCostCoverage {
   provider: UsageProvider;
   tokens: number;
-  costUsd: number;
 }
 
 /** One column of the daily chart. Present for every day in range, zeroed on
  *  days with no activity, so the x-axis is a real calendar rather than a list
  *  of the days that happened to have traffic. */
-export interface UsageDay {
+export interface UsageDay extends UsageCostCoverage {
   /** Local date key, YYYY-MM-DD. */
   day: string;
   tokens: number;
-  costUsd: number;
   byProvider: UsageDaySlice[];
 }
 
@@ -78,10 +89,9 @@ export interface UsageModelRow {
 }
 
 /** A row of the breakdown table in Day mode. Only days with activity. */
-export interface UsageDayRow {
+export interface UsageDayRow extends UsageCostCoverage {
   day: string;
   tokens: number;
-  costUsd: number;
   share: number;
 }
 
@@ -90,8 +100,12 @@ export interface UsageStats {
   range: UsageRangeBounds;
   /** Processed tokens across every provider. */
   totalTokens: number;
-  /** Summed list-price cost; unpriced models contribute nothing. */
+  /** Summed list-price cost of the buckets that could be priced. Read it with
+   *  `unpricedTokens`: alone it is a lower bound, not a total. */
   totalCostUsd: number;
+  /** Processed tokens that ran on models the catalog has no rate for. 0 means
+   *  `totalCostUsd` is the whole story; `totalTokens` means nothing is priced. */
+  unpricedTokens: number;
   totalSessions: number;
   providers: UsageProviderRow[];
   totals: UsageTotals;

@@ -128,8 +128,10 @@ export async function loadPulseTotals(projectId: string, nowMs: number): Promise
  *  is best-effort over what's readable.
  *
  *  `catalog` supplies the per-model list rates that price the agents reporting
- *  no dollars of their own (claude, codex). The priced figure is what gets
- *  snapshotted, so the Spend chart's cost series fills in for them too. */
+ *  no dollars of their own (claude, codex). That priced figure is for the tile
+ *  only: it is recomputed live with whatever the catalog says today, and is
+ *  NOT snapshotted — see `recordUsageSnapshot` for why a cumulative
+ *  catalog-priced number would corrupt the per-day history. */
 export async function loadPulseUsage(projectId: string, catalog: SlimCatalog): Promise<PulseUsage> {
   const rows = await dbQuery<{ id: string; provider: string | null }>(
     `SELECT w.id AS id,
@@ -154,9 +156,8 @@ export async function loadPulseUsage(projectId: string, catalog: SlimCatalog): P
           // re-read every turn, so including them would make a long session
           // look like an order of magnitude more work than it was.
           tokens += usage.spend.tokens.input + usage.spend.tokens.output;
-          const priced = priceSnapshot(catalog, usage);
-          costUsd += priced ?? 0;
-          recordUsageSnapshot(r.id, projectId, usage, priced);
+          costUsd += priceSnapshot(catalog, usage) ?? 0;
+          recordUsageSnapshot(r.id, projectId, usage);
         } catch {
           // Unreadable session (e.g. cleaned-up archive) — skip, don't abort.
         }

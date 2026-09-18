@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { dayKeysBetween, formatCost, formatPercent, formatTokens, recentDays } from "./format";
+import {
+  dayKeysBetween,
+  formatClockTime,
+  formatCost,
+  formatPercent,
+  formatTokens,
+  recentDays,
+} from "./format";
 
 // Local-noon epoch for a YYYY-MM-DD day, so fixtures read as dates and see the
 // same local calendar the app runs on.
@@ -34,6 +41,16 @@ describe("recentDays", () => {
 
   it("steps across a month boundary", () => {
     expect(recentDays(at("2026-03-02"), 3)).toEqual(["2026-02-28", "2026-03-01", "2026-03-02"]);
+  });
+});
+
+describe("formatClockTime", () => {
+  // Locale decides 24- vs 12-hour, so assert the parts rather than one spelling:
+  // the hour and its minutes, to the minute, on the hour boundary.
+  it("renders the local hour and minute", () => {
+    const text = formatClockTime(new Date(2026, 8, 17, 11, 0).getTime());
+    expect(text).toMatch(/\b11[:.]00\b/);
+    expect(formatClockTime(new Date(2026, 8, 17, 11, 30).getTime())).toMatch(/\b11[:.]30\b/);
   });
 });
 

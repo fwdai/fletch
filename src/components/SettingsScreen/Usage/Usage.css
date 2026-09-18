@@ -76,6 +76,13 @@
 .usg-state.error {
   border-color: color-mix(in oklab, var(--danger) 40%, transparent);
 }
+/* One quiet line explaining why every cost reads "Unpriced" — a note about the
+   catalog, not an error about the usage. */
+.usg-hint {
+  margin-top: 8px;
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
 
 /* ── summary + chart ── */
 /* Two columns down to the settings column's narrow breakpoint, where the chart
@@ -102,6 +109,18 @@
 .usg-headline-l {
   margin-top: 4px;
   color: var(--fg-2);
+}
+/* The "at least" marker on a partly-priced total: present enough to read as
+   part of the figure, quiet enough not to be mistaken for a digit. */
+.usg-approx {
+  color: var(--fg-2);
+  font-size: 0.7em;
+  vertical-align: 0.12em;
+}
+/* A headline with nothing priced behind it is a word, not a number. */
+.usg-headline-unpriced {
+  font-size: 24px;
+  color: var(--fg-3);
 }
 
 .usg-provs {

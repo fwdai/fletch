@@ -128,7 +128,9 @@ export function SetSeg<T extends string>({
   onChange,
 }: {
   value: T;
-  options: { value: T; label: string }[];
+  /** `tip` is optional hover detail for an option whose short label can't say
+   *  everything — e.g. exactly what window "Past 24h" means. */
+  options: { value: T; label: string; tip?: string }[];
   onChange: (v: T) => void;
 }) {
   return (
@@ -137,7 +139,8 @@ export function SetSeg<T extends string>({
         <button
           key={o.value}
           type="button"
-          className={value === o.value ? "active" : ""}
+          className={`${value === o.value ? "active" : ""}${o.tip ? " tip" : ""}`}
+          data-tip={o.tip}
           onClick={() => onChange(o.value)}
         >
           {o.label}
