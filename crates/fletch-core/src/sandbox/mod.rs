@@ -7,6 +7,7 @@ pub mod policy;
 pub mod provision;
 mod seatbelt;
 
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use parking_lot::RwLock;
@@ -47,6 +48,33 @@ pub fn set_selected_engine_kind(kind: EngineKind) {
 /// re-engines them.
 pub fn selected_engine_kind() -> EngineKind {
     *SELECTED_ENGINE.read()
+}
+
+/// This engine's own data directory ([`crate::host::BootConfig::data_dir`]),
+/// mirrored process-wide so the macOS profile builder — reached on the spawn
+/// path, with no handle on the boot config — can carve it out of what a confined
+/// agent may read or write. Same mirror idiom as [`set_selected_engine_kind`].
+///
+/// It cannot be derived. [`crate::data_dir`] is the *desktop's* directory, keyed
+/// by [`crate::BUNDLE_ID`]; a `fletch-host` keeps its database (the GitHub token
+/// in plaintext, since a service has no unlocked keychain), its Noise
+/// `remote/host_key` and its `remote/devices.json` under
+/// `~/Library/Application Support/fletch-host` or wherever `--data-dir` points.
+///
+/// `None` until a host publishes one — which is what every unit test and every
+/// caller that is not [`crate::host::boot`] sees, and the profile then carries
+/// the bundle-id deny alone, exactly as it always did.
+static DATA_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// Publish the data dir this engine was configured with. Called once from
+/// [`crate::host::boot`], before anything can spawn an agent.
+pub fn set_data_dir(dir: PathBuf) {
+    *DATA_DIR.write() = Some(dir);
+}
+
+/// The data dir [`set_data_dir`] published, if a host published one.
+pub(crate) fn configured_data_dir() -> Option<PathBuf> {
+    DATA_DIR.read().clone()
 }
 
 /// Resolve the engine for an agent stamped with `kind`, availability-checked

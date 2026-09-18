@@ -228,6 +228,20 @@ filesystem instead:
 So: **run the host as its own user, and let nothing else read that directory.**
 Anyone who can read it can push as you.
 
+That includes the agents this host spawns. On a macOS host they run under
+`sandbox-exec`, and the profile denies both reads and writes on this host's data
+dir — so an agent (or anything a prompt injection talks it into) cannot read the
+database and walk off with the GitHub token, cannot read `remote/host_key` to
+impersonate the host, and cannot write `remote/devices.json` to pair a device of
+its own. The two roots that hang off the same directory are re-allowed
+individually, so an agent keeps its own checkout and its own RPC mailbox and
+nothing else — a sibling agent's mailbox is not readable either. A Run panel
+command gets the same deny, with its checkout re-allowed. On Linux the question
+does not arise: a container sees only the paths bound into it, and the data dir
+is not one of them. None of this helps against anything *outside* the sandbox,
+though — a `--data-dir` left world-readable is still world-readable, which is
+what the `0700` above is for.
+
 Deliberately not the desktop's data directory. A Mac running both must not have
 two engines on one SQLite database — each would sweep the other's live agents as
 orphans. A debug build takes a `dev` subfolder of it for the same reason: one

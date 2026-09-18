@@ -290,6 +290,16 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // paths without touching the DB each time.
     bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&db.lock()));
 
+    // Publish this engine's data dir for the sandbox layer, before anything
+    // below can spawn an agent. The macOS profile has to deny a confined agent
+    // read *and* write on the directory holding this engine's database (the
+    // GitHub token in plaintext on a host), its Noise host key and its device
+    // store — and it cannot work that directory out for itself: `data_dir()` is
+    // the desktop's bundle directory, while a `fletch-host` lives under
+    // `~/Library/Application Support/fletch-host` or wherever `--data-dir`
+    // points. So it comes from the boot config, the one place that knows.
+    sandbox::set_data_dir(data_dir.clone());
+
     // Seed the in-memory sandbox engine selection (mirror of the
     // `sandbox_engine` setting) so spawn-time engine resolution — deep in agent
     // code with no DB handle — honors the user's choice. Missing/unknown values
