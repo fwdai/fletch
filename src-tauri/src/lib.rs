@@ -5,6 +5,7 @@ mod agent_profile;
 mod attachments;
 mod bin_resolve;
 mod child_io;
+mod client;
 mod codegraph;
 mod commands;
 mod database;
@@ -1854,6 +1855,13 @@ pub fn run() {
                 app.manage(state);
             }
 
+            // The other direction: this Mac as a client of other Fletch hosts.
+            // Independent of the block above — no listener, no device store,
+            // its own key — and unconditional, because the four commands are
+            // registered unconditionally and a command whose state is not
+            // managed panics when the webview calls it.
+            app.manage(client::dialer(app.handle(), &data_dir.join("remote")));
+
             // Menu-bar tray (close-to-tray + status line) — the second half of
             // the laptop-GUI hardening feature; the first half (the activity
             // monitor) was already armed above, before any work resumed.
@@ -2136,6 +2144,12 @@ pub fn run() {
             commands::remote_set_relay,
             commands::remote_begin_pairing,
             commands::remote_revoke_device,
+            // This Mac as a client of other hosts (`client/`), the same four
+            // commands the phone registers over the same dialer.
+            client::remote_connect,
+            client::remote_send,
+            client::remote_close,
+            client::remote_device_public_key,
             dictation::dictation_availability,
             dictation::dictation_start,
             dictation::dictation_stop,
