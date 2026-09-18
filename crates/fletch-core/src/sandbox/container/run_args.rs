@@ -26,6 +26,18 @@ pub(crate) const CREDENTIALS_FILE: &str = CLAUDE_CREDENTIALS_FILE;
 pub(crate) const DEFAULT_MEMORY: &str = "4g";
 pub(crate) const DEFAULT_CPUS: &str = "2";
 
+/// Mount options for the synthetic `$HOME` a uid-mapped launch needs (see
+/// [`RunSpec::run_as_user`]). World-writable because the uid the container runs
+/// as is not in the image's passwd file, and capped because a tmpfs is RAM: it
+/// is charged to the container's `--memory`, and an agent that fills its npm
+/// cache should hit `ENOSPC` rather than the OOM killer.
+const HOME_TMPFS_OPTS: &str = "rw,mode=1777,size=1g";
+
+/// Mount options for the [`EPHEMERAL_RUNTIME_SUBDIRS`] overlays on a uid-mapped
+/// launch. A bare `--tmpfs` is `0755 root:root`, which a non-root agent cannot
+/// write — claude `mkdir`s into both every session.
+const EPHEMERAL_TMPFS_OPTS: &str = "rw,mode=1777";
+
 /// Subdirs Claude Code rewrites every session, which a bare write to the
 /// read-only config dir would fail with `EROFS`; each gets a throwaway tmpfs
 /// overlay instead. Deliberately narrow: everything else stays read-only so a
@@ -111,6 +123,15 @@ pub(crate) struct RunSpec<'a> {
     pub borrowed_object_stores: &'a [PathBuf],
     pub memory: &'a str,
     pub cpus: &'a str,
+    /// `uid:gid` to run the container as, or `None` to run it as the image's
+    /// user (root, for every embedded image). `Some` only on a Linux host with
+    /// a runtime whose container root *is* host root: there, every file the
+    /// agent writes into the read-write binds comes back `root:root` and the
+    /// user cannot even delete their own checkout. Docker Desktop's VirtioFS
+    /// maps ownership to the user whatever the container runs as, and a
+    /// rootless runtime already maps container root to the user, so both pass
+    /// `None` — see `sandbox::container::util::linux_host_user`.
+    pub run_as_user: Option<&'a str>,
     pub image: &'a str,
     pub agent_bin: &'a str,
     /// Auth var *names* the chain resolved ([`resolve`]), forwarded as bare
@@ -139,6 +160,22 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push(labels::host_pid_label());
     args.push("--label".into());
     args.push(labels::agent_id_label(spec.agent_id));
+    // Ownership mapping on a Linux host (see [`RunSpec::run_as_user`]). The uid
+    // is not a secret, so it may ride in argv; nothing else here does.
+    if let Some(user) = spec.run_as_user {
+        args.push("--user".into());
+        args.push(user.into());
+        // `$HOME` itself is not a mount — the runtime materializes it
+        // `root:root` as the parent of the config-dir binds — so a non-root
+        // agent could write neither the `~/.claude.json` the entrypoint seeds
+        // (under `set -e`, so the container would not start at all) nor any
+        // cache a tool puts in its home. A world-writable tmpfs gives the same
+        // throwaway home the container's own layer gives when it runs as root,
+        // and the deeper binds still land on top of it: both runtimes mount by
+        // increasing path depth, whatever the argv order.
+        args.push("--tmpfs".into());
+        args.push(format!("{}:{HOME_TMPFS_OPTS}", spec.home.to_string_lossy()));
+    }
     // Mounts at identical host paths (invariant 1). Exactly these — nothing
     // else from the host enters the container.
     for path in [spec.writable_root, spec.rpc_dir] {
@@ -174,14 +211,24 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
             config_dir_credentials_rw,
             projects_src,
         } => {
+            // The overlays must be writable by the uid a mapped launch runs
+            // as; a bare `--tmpfs` would be `0755 root:root`.
+            let tmpfs_opts = spec.run_as_user.map(|_| EPHEMERAL_TMPFS_OPTS);
             push_claude_config_mount(
                 &mut args,
                 &spec.home.join(".claude"),
                 *credentials_rw,
                 projects_src,
+                tmpfs_opts,
             );
             if let Some(dir) = config_dir {
-                push_claude_config_mount(&mut args, dir, *config_dir_credentials_rw, projects_src);
+                push_claude_config_mount(
+                    &mut args,
+                    dir,
+                    *config_dir_credentials_rw,
+                    projects_src,
+                    tmpfs_opts,
+                );
             }
         }
         ProviderMounts::Codex { config_dir, .. } => push_rw_bind(&mut args, config_dir),
@@ -340,6 +387,7 @@ fn push_claude_config_mount(
     dir: &Path,
     credentials_rw: bool,
     projects_src: &Path,
+    tmpfs_opts: Option<&str>,
 ) {
     let path = dir.to_string_lossy();
     args.push("-v".into());
@@ -358,8 +406,13 @@ fn push_claude_config_mount(
         projects_target.to_string_lossy()
     ));
     for sub in EPHEMERAL_RUNTIME_SUBDIRS {
+        let target = dir.join(sub);
+        let target = target.to_string_lossy();
         args.push("--tmpfs".into());
-        args.push(dir.join(sub).to_string_lossy().into_owned());
+        args.push(match tmpfs_opts {
+            Some(opts) => format!("{target}:{opts}"),
+            None => target.into_owned(),
+        });
     }
 }
 
@@ -368,7 +421,9 @@ mod tests {
     use super::*;
 
     /// Podman refuses a launch whose sources its machine doesn't share, so an
-    /// unvetted `-v` would be bound and arrive empty.
+    /// unvetted `-v` would be bound and arrive empty. Run in the uid-mapped
+    /// shape, which is the one that adds mounts (the `$HOME` tmpfs): those must
+    /// add no bind source, or the preflight would be vetting an incomplete set.
     #[test]
     fn every_bind_source_is_covered_by_mount_sources() {
         let root = Path::new("/tmp/fletch-run-args/work");
@@ -419,6 +474,7 @@ mod tests {
                 borrowed_object_stores: &stores,
                 memory: DEFAULT_MEMORY,
                 cpus: DEFAULT_CPUS,
+                run_as_user: Some("1000:1000"),
                 image: "fletch-agent:cafe00000000",
                 agent_bin: "claude",
                 auth_vars: &["ANTHROPIC_API_KEY"],
@@ -480,6 +536,7 @@ mod tests {
             borrowed_object_stores: &[],
             memory: DEFAULT_MEMORY,
             cpus: DEFAULT_CPUS,
+            run_as_user: None,
             image: "fletch-agent:cafe00000000",
             agent_bin: "claude",
             auth_vars: &[],

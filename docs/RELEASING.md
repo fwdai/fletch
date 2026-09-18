@@ -87,11 +87,25 @@ the app verifies against the embedded pubkey — the proxy can't forge an update
 
 ## Per-release procedure
 
-1. **Bump the version** in all three files (keep them identical):
-   - `src-tauri/tauri.conf.json` → `version` (this is what the release tag/name
-     is derived from, via `v__VERSION__`)
-   - `package.json` → `version`
-   - `src-tauri/Cargo.toml` → `version`
+1. **Bump the version.** Four files must be identical, because each one is what
+   something *reports*, and `scripts/check-version.sh` asserts it (in CI on
+   every PR, and again in the release workflow's `host` job before it packages
+   anything):
+   - `src-tauri/tauri.conf.json` → `version` — the authority: the release
+     tag/name (`v__VERSION__`) and the `fletch-host` archive names come from it
+   - `src-tauri/Cargo.toml` → `version` — the desktop binary's own version
+   - `crates/fletch-core/Cargo.toml` → `version` — what a paired phone or
+     desktop shows as the host's `appVersion`
+   - `crates/fletch-host/Cargo.toml` → `version` — what `fletch-host --version`
+     and `fletch-host status` print, and what the release job checks the built
+     binary against
+
+   Also bump `package.json` → `version`. It is not in the assert (nothing reads
+   a version off it, and npm tooling rewrites it), but leaving it behind is
+   confusing.
+
+   Run `./scripts/check-version.sh` before opening the PR: it prints the agreed
+   version, or names the file that disagrees.
 2. Merge that to `main`.
 3. Run the **Release** workflow: GitHub → Actions → *Release* → *Run workflow*.
 4. Wait for it to finish. It creates a **draft** release `Fletch v<version>`

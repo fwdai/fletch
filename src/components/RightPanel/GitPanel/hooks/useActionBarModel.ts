@@ -10,6 +10,7 @@ import {
 } from "@/components/RightPanel/primaryActions";
 import { describeMergeGate } from "@/mergeGate";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 
 /** Builds the split-button model for the current state: the action counts, the
  *  primary/secondary actions, the menu `items`, and the selection bookkeeping
@@ -44,6 +45,10 @@ export function useActionBarModel(input: {
 
   const gitCommitAction = useAppStore((s) => s.gitCommitAction);
   const setGitCommitAction = useAppStore((s) => s.setGitCommitAction);
+  // `merge_pr` is on the wire, so this is null everywhere except against a host
+  // from before the op — where the button has to be dead rather than dispatch a
+  // call that comes back `unknown op`.
+  const mergePrGate = useGate("mergePr");
 
   const behind = gitState?.behind ?? 0;
   const mergeable = prState?.mergeable ?? "unknown";
@@ -104,14 +109,17 @@ export function useActionBarModel(input: {
   const effectiveKey = items.some((i) => i.key === selectedKey) ? selectedKey : primary.key;
 
   // The CTA's main button is disabled while loading git state, while the agent
-  // holds a delegation, and when Merge is selected but the merge gate isn't
-  // open. Gate semantics live in describeMergeGate (spec §6).
+  // holds a delegation, and when Merge is selected but either the merge gate
+  // isn't open or the environment can't merge at all. Gate semantics live in
+  // describeMergeGate (spec §6).
   const { mergeAllowed } = describeMergeGate(checks ? mergeState : null, {
     checksFailed,
     mergeable,
   });
   const mainDisabled =
-    effectiveKey === "loading" || delegationActive || (effectiveKey === "merge" && !mergeAllowed);
+    effectiveKey === "loading" ||
+    delegationActive ||
+    (effectiveKey === "merge" && (!mergeAllowed || mergePrGate !== null));
   // Tone applies only when the selected action is the state's primary; picking
   // an alternate from the menu falls back to the neutral accent fill.
   const tone: ActionTone = effectiveKey === primary.key ? (primary.tone ?? "accent") : "accent";

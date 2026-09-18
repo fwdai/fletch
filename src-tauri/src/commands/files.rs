@@ -18,9 +18,8 @@ use fletch_core::commands::files::{
 };
 
 pub use fletch_core::commands::files::{
-    agent_repo_checkout, agent_repo_checkout_opt, checkout_pending, expand_tilde, primary_repo,
-    primary_repo_checkout, repo_branch, CheckoutFile, CheckoutFileContents, DiffBaseMode,
-    DirListing,
+    agent_repo_checkout, expand_tilde, primary_repo, primary_repo_checkout, repo_branch,
+    CheckoutFile, CheckoutFileContents, DiffBaseMode, DirListing,
 };
 
 /// List the agent's checkout files (tracked + untracked), each tagged with

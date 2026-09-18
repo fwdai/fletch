@@ -16,7 +16,7 @@ import type {
 } from "@desktop/api/types/agent";
 import type { PrStateChangedEvent } from "@desktop/api/types/pr";
 import type { RoadmapItem } from "@desktop/api/types/roadmap";
-import type { PublishApproval } from "@desktop/api/types/sandbox";
+import type { PublishApproval, PublishApprovalResolved } from "@desktop/api/types/sandbox";
 import type {
   SessionRecordsAppendedEvent,
   TurnSentEvent,
@@ -203,6 +203,14 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // the op does not have — the card handles that, not this tap.
   on<PublishApproval>("publish:approval-requested", (request) => {
     get().receivePublishApproval(request);
+  });
+
+  // …and its closing half: the request is over, whoever ended it — this phone,
+  // the Mac, a host terminal, or nobody before the wait lapsed. The card goes,
+  // and nothing is sent back. A host that never emits this leaves the card up
+  // until it is answered, which is what every client did before the event.
+  on<PublishApprovalResolved>("publish:approval-resolved", (e) => {
+    get().resolvePublishApproval(e.id);
   });
 
   // `verify:report` is forwarded by the host but has no v1 surface on the phone

@@ -167,6 +167,10 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   /** A gated publish the host is holding, from `publish:approval-requested`. */
   receivePublishApproval(request: PublishApproval): void;
   answerPublishApproval(id: string, approved: boolean): Promise<void>;
+  /** The host says that request is over (`publish:approval-resolved`) — someone
+   *  else answered it, or its wait lapsed. Drop the card; there is nothing to
+   *  send back. */
+  resolvePublishApproval(id: string): void;
   stop(agentId: string): Promise<void>;
   resume(agentId: string): Promise<void>;
   archive(agentId: string): Promise<void>;
@@ -886,6 +890,12 @@ export const useStore = create<MobileState>()((set, get) => ({
       pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
     }));
     await guard(set, () => api.answerPublishApproval(id, approved));
+  },
+
+  resolvePublishApproval(id) {
+    set((s) => ({
+      pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
+    }));
   },
 
   async stop(agentId) {

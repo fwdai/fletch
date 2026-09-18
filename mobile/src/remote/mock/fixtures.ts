@@ -632,6 +632,7 @@ export const protocol: HostProtocol = {
     "pr:state_changed",
     "verify:report",
     "publish:approval-requested",
+    "publish:approval-resolved",
     "roadmap:item",
     "roadmap:item-deleted",
   ],

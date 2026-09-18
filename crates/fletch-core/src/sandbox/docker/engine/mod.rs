@@ -46,12 +46,20 @@
 //! 2) is the review gate that keeps agent output off the real repo, `~/.claude`
 //! is read-only except the credential file (invariant 5) so a compromised agent
 //! can neither plant a host-executed hook nor exfiltrate via config, and secrets
-//! stay out of argv (invariant 3). Containers run as root in v1 (a known
-//! limitation — see below), so in-container isolation is not relied upon.
+//! stay out of argv (invariant 3). In-container isolation is not relied upon.
 //!
-//! Containers run as root in v1: Docker Desktop's VirtioFS maps ownership so
-//! mounted host files appear owned by the user. // TODO(linux-host): UID
-//! mapping before supporting Linux hosts.
+//! **Who the container runs as.** On macOS, the image's root: Docker Desktop
+//! runs the daemon in a VM whose shared filesystem maps every file to the user
+//! who mounted it, so a root-owned write inside the container is still the
+//! user's file outside it. On Linux there is no VM and no mapping, so a rootful
+//! daemon would hand the service user back a `root:root` checkout it cannot
+//! delete and RPC replies it cannot read; there, the launch adds
+//! `--user <uid>:<gid>` plus the writable `$HOME` that non-root agent needs
+//! ([`util::launch_user`], [`run_args`]). A *rootless* daemon already maps
+//! container root to the user and is left alone. Consequences on a mapped
+//! launch, both documented in `crates/fletch-host/README.md`: an agent can no
+//! longer `apt-get install` inside its container, and the Cursor image — whose
+//! CLI installs under `/root` (mode 700) — cannot run.
 //!
 //! Layout: this module folder splits the engine into
 //! - [`settings`] — launch knobs and the version-refresh guard
@@ -93,7 +101,7 @@ pub(super) use settings::{image_override, record_version_refresh, version_refres
 use crate::sandbox::container::run_args::{run_args, RunSpec, DEFAULT_CPUS, DEFAULT_MEMORY};
 use crate::sandbox::container::util::{container_name, non_blank};
 use settings::LAUNCH_SETTINGS;
-use util::{container_gone_within, describe_exit_code};
+use util::{container_gone_within, describe_exit_code, launch_user};
 
 /// Signal/removal docker calls during teardown.
 const KILL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -213,6 +221,10 @@ impl SandboxEngine for DockerEngine {
 
         let prefix_args = {
             let auth_vars = prep.auth_vars();
+            // Owned for the duration of the argv build: the probe behind it may
+            // decline to cache its answer, so there is no `&'static str` to
+            // borrow (see `util::launch_user`).
+            let run_as_user = launch_user();
             run_args(&RunSpec {
                 interactive: ctx.interactive,
                 name: &name,
@@ -227,6 +239,7 @@ impl SandboxEngine for DockerEngine {
                 borrowed_object_stores: &prep.borrowed_object_stores,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
                 cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
+                run_as_user: run_as_user.as_deref(),
                 image: &image,
                 agent_bin,
                 auth_vars: &auth_vars,

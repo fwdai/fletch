@@ -35,7 +35,7 @@ import type {
   RoadmapQueueNote,
 } from "./types/roadmap";
 import type { RunOutputEvent, RunPortEvent, RunStateEvent } from "./types/run";
-import type { DockerBuildEvent, PublishApproval } from "./types/sandbox";
+import type { DockerBuildEvent, PublishApproval, PublishApprovalResolved } from "./types/sandbox";
 import type {
   SessionRecordsAppendedEvent,
   SessionSyncHealthEvent,
@@ -329,6 +329,17 @@ export function onRunPort(cb: (e: RunPortEvent) => void): Promise<UnlistenFn> {
  *  side after a timeout, so ignoring one is safe. */
 export function onPublishApprovalRequested(cb: (e: PublishApproval) => void): Promise<UnlistenFn> {
   return on<PublishApproval>("publish:approval-requested", cb);
+}
+
+/** One held publish is no longer held — answered here, answered on another
+ *  device, answered from the host's CLI, or refused because nobody answered in
+ *  time. The prompt for `id` comes down; the verdict itself has already reached
+ *  the agent. A host that never emits it leaves the old behaviour intact: the
+ *  prompt stays until it is answered. */
+export function onPublishApprovalResolved(
+  cb: (e: PublishApprovalResolved) => void,
+): Promise<UnlistenFn> {
+  return on<PublishApprovalResolved>("publish:approval-resolved", cb);
 }
 
 /** Fires per line (and at start/finish/failure) while the embedded docker agent

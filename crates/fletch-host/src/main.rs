@@ -178,14 +178,16 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
         }
         Command::Pair => {
             let invite = admin::call(data_dir, "begin_pairing", json!({})).await?;
-            println!("{}", string(&invite, "url"));
+            let url = string(&invite, "url");
+            println!("{url}");
             println!();
+            print_pairing_qr(&url);
             println!("code:    {}", string(&invite, "token"));
             println!("expires: {}", string(&invite, "expiresAt"));
             println!();
             println!(
-                "Open Fletch on the phone, choose \"Pair with a host\" and paste the link \
-                 above (or type the code)."
+                "Open Fletch on the phone, choose \"Pair with a host\" and scan the code \
+                 above (or paste the link, or type the code)."
             );
         }
         Command::Devices { command } => match command {
@@ -269,6 +271,30 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
     }
     Ok(())
 }
+
+/// The pairing link as a QR code, in half-block characters so a 33×33 symbol
+/// fits an 80×24 terminal. The phone's pairing screen has a scanner; the link
+/// carries this host's public key, and typing that by hand is not an option.
+///
+/// A link that will not encode (or a build without the `qr` feature, where the
+/// `qrcode` crate could not be fetched) prints nothing: the link and the code
+/// above it are still the whole pairing credential.
+#[cfg(feature = "qr")]
+fn print_pairing_qr(url: &str) {
+    use qrcode::render::unicode;
+
+    match qrcode::QrCode::new(url) {
+        Ok(code) => {
+            let rendered = code.render::<unicode::Dense1x2>().quiet_zone(true).build();
+            println!("{rendered}");
+            println!();
+        }
+        Err(e) => tracing::debug!(error = %e, "the pairing link would not encode as a QR code"),
+    }
+}
+
+#[cfg(not(feature = "qr"))]
+fn print_pairing_qr(_url: &str) {}
 
 /// How often `github login` asks the host whether the code has been entered.
 /// The host is already polling GitHub on the provider's own interval; this only

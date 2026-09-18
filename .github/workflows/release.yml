@@ -1,10 +1,17 @@
 name: Release
 
-# Manual only. Bump `version` in src-tauri/tauri.conf.json (and keep
-# package.json + Cargo.toml in sync) before running. This builds, signs, and
+# Manual only. Bump `version` in src-tauri/tauri.conf.json, the three Cargo
+# manifests (src-tauri, crates/fletch-core, crates/fletch-host) and
+# package.json before running — `scripts/check-version.sh` is what asserts the
+# first four agree, in CI and again in the `host` job below. This builds, signs, and
 # notarizes a universal macOS app and creates a PUBLISHED GitHub release with
 # the .dmg, the updater artifact (.app.tar.gz + .sig), and latest.json.
 # Publishing makes it available to the in-app auto-updater.
+#
+# The `host` job then adds the headless `fletch-host` binaries to that same
+# release, one tarball per target. It is deliberately a separate job: it shares
+# nothing with the desktop build but the version number, it needs no signing
+# identity, and a failure there must not take the app release with it.
 on:
   workflow_dispatch:
 
@@ -94,3 +101,117 @@ jobs:
       # WEB_DEPLOY_HOOK is the deploy-hook URL from the Worker's Settings > Builds.
       - name: Trigger website redeploy
         run: curl -fsS -X POST "${{ secrets.WEB_DEPLOY_HOOK }}"
+
+  # `fletch-host`, the headless engine (crates/fletch-host/README.md): one
+  # stripped tarball plus checksum per target, uploaded to the release the job
+  # above published. Every target builds natively — no `cross`, no sysroot — so
+  # each one is a plain `cargo build`:
+  #
+  #   x86_64-unknown-linux-gnu    ubuntu-latest
+  #   aarch64-unknown-linux-gnu   ubuntu-24.04-arm   (GitHub's arm64 runner,
+  #                                                   free for public repos)
+  #   aarch64-apple-darwin        macos-latest       (Apple silicon)
+  #
+  # No apt step: the engine has no GTK, no WebKit and no OpenSSL in its graph
+  # (which is what `cargo tree -i tauri` being empty is for), and its only
+  # native build is SQLite, which `rusqlite`'s `bundled` feature compiles with
+  # `cc` — everything needed is already on the runner images.
+  host:
+    needs: release
+    permissions:
+      contents: write
+    strategy:
+      # One target's failure leaves the others' assets on the release.
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        # Toolchain version + components come from /rust-toolchain.toml, as in
+        # ci.yml. The target is the runner's own, so this only names it for
+        # `--target` to keep the output path predictable.
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/fletch-host
+
+      - name: Build
+        env:
+          # Baked in so `fletch-host github login` works out of the box; the
+          # binary still prefers the runtime `$QUORUM_GITHUB_CLIENT_ID`, which
+          # is how a host signs in as a different OAuth app (see login.rs).
+          QUORUM_GITHUB_CLIENT_ID: ${{ secrets.QUORUM_GITHUB_CLIENT_ID }}
+        run: >
+          cargo build --release
+          --manifest-path crates/fletch-host/Cargo.toml
+          --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          # The release's version — `src-tauri/tauri.conf.json`, which is what
+          # the desktop job derived the tag `v__VERSION__` from — and the assert
+          # that the three Cargo manifests say the same. The archive name and
+          # the number inside the binary come from one source or this job does
+          # not run: an archive called 0.7.32 holding a binary that reports
+          # 0.1.0 is not something a user can be asked to reason about.
+          VERSION="$(./scripts/check-version.sh)"
+          NAME="fletch-host-$VERSION-${{ matrix.target }}"
+          # This package is not in a workspace, so its target dir is its own.
+          BIN="crates/fletch-host/target/${{ matrix.target }}/release/fletch-host"
+          # And the binary itself: every target here builds natively, so the
+          # freshly built one runs on this runner. `--version` prints
+          # `fletch-host <version>`.
+          BUILT="$("$BIN" --version | awk '{print $NF}')"
+          if [ "$BUILT" != "$VERSION" ]; then
+            echo "::error::fletch-host --version says $BUILT, this release is $VERSION"
+            exit 1
+          fi
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            strip -x "$BIN"
+          else
+            strip "$BIN"
+          fi
+          # Flat tarball: `tar xzf … && install -Dm755 fletch-host ~/.local/bin/`
+          # is what the README tells people to do, and the service units it
+          # tells them to install travel with it.
+          mkdir -p "stage/$NAME/packaging"
+          cp "$BIN" crates/fletch-host/README.md "stage/$NAME/"
+          cp packaging/fletch-host.service packaging/com.fletch.host.plist \
+             "stage/$NAME/packaging/"
+          tar -czf "$NAME.tar.gz" -C "stage/$NAME" .
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          else
+            shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          fi
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      # `gh release upload`, not `softprops/action-gh-release`: the action
+      # *patches* the release it is pointed at, and the job above has just
+      # replaced that release's body with GitHub's generated notes. Adding
+      # assets must not risk overwriting them, and `gh` (preinstalled on every
+      # runner) does only that.
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          gh release upload ${{ steps.package.outputs.tag }}
+          ${{ steps.package.outputs.name }}.tar.gz
+          ${{ steps.package.outputs.name }}.tar.gz.sha256
+          --clobber

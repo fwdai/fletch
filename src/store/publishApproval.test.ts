@@ -10,7 +10,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
-import type { PublishApproval } from "@/api";
+import type { PublishApproval, PublishApprovalResolved } from "@/api";
 import type { AutopilotState } from "@/autopilot";
 import { newEnrollment } from "@/autopilot";
 import type { Delegation, DelegationKind } from "@/delegation";
@@ -25,6 +25,7 @@ vi.mock("@/api", () => ({ api: { answerPublishApproval } }));
  *  the sandbox slice plus the two maps the policy reads, not the whole AppState. */
 type SliceFn = (set: unknown, get: unknown) => Record<string, unknown>;
 type Recv = (r: PublishApproval) => void;
+type Resolve = (e: PublishApprovalResolved) => void;
 
 const KEY = checkoutKey("a1");
 const SECOND_REPO = checkoutKey("a1", "web");
@@ -176,5 +177,26 @@ describe("receivePublishApproval", () => {
     (s.getState().receivePublishApproval as Recv)(request({ op: "open_pr" }));
     expect(answerPublishApproval).not.toHaveBeenCalled();
     expect(s.getState().pendingPublishApprovals).toHaveLength(1);
+  });
+
+  // `publish:approval-resolved`: the question ended somewhere else, so the
+  // prompt has to come down without another word to the engine — answering a
+  // request it has already dropped would reach nothing.
+  it("drops a queued prompt the engine says is over, and answers nothing", () => {
+    const s = store();
+    (s.getState().receivePublishApproval as Recv)(request());
+    (s.getState().receivePublishApproval as Recv)(request({ id: "r2" }));
+
+    (s.getState().resolvePublishApproval as Resolve)({ id: "r1", outcome: "expired" });
+
+    const left = s.getState().pendingPublishApprovals as PublishApproval[];
+    expect(left.map((r) => r.id)).toEqual(["r2"]);
+    expect(answerPublishApproval).not.toHaveBeenCalled();
+  });
+
+  it("ignores a resolution for a prompt it never queued", () => {
+    const s = store();
+    (s.getState().resolvePublishApproval as Resolve)({ id: "never-seen", outcome: "approved" });
+    expect(s.getState().pendingPublishApprovals).toEqual([]);
   });
 });

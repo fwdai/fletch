@@ -41,6 +41,29 @@ pub(crate) fn non_blank(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|v| !v.is_empty())
 }
 
+/// This process's `uid:gid` for [`RunSpec::run_as_user`], on Linux only.
+///
+/// A container that runs as root writes root-owned files through a bind mount
+/// on Linux, where the container's root really is the machine's root: the
+/// agent's checkout, its RPC responses and claude's transcripts all come back
+/// `root:root`, the service user cannot delete its own workspace, and the host
+/// side of the RPC loop cannot read the replies. macOS never sees this —
+/// Docker Desktop and the Podman machine both run the containers inside a VM
+/// whose shared filesystem maps every file to the user who mounted it — so the
+/// mapping is Linux-only, and the desktop's argv is unchanged.
+///
+/// [`RunSpec::run_as_user`]: super::run_args::RunSpec::run_as_user
+pub(crate) fn linux_host_user() -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    Some(format!(
+        "{}:{}",
+        nix::unistd::getuid().as_raw(),
+        nix::unistd::getgid().as_raw()
+    ))
+}
+
 /// The runtime-specific wording [`describe_exit_code`] renders around — one
 /// value per runtime, declared next to that runtime's engine.
 pub(crate) struct ExitCopy {

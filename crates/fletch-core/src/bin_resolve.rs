@@ -7,6 +7,12 @@
 //! `claude`, `codex`, … — does not, so `Command::new("gh")` fails with
 //! ENOENT ("No such file or directory"). Resolve the absolute path first:
 //! current PATH → the user's login-shell PATH → the usual install dirs.
+//!
+//! A headless host has the same problem for a different reason: a systemd unit
+//! inherits systemd's environment, not a shell's. So the login shell is the
+//! user's own ([`login_shell`]) and the install dirs include Linuxbrew's
+//! prefix — a zsh hardcoded here would have silently resolved nothing on a
+//! Linux box, leaving every version-managed `claude` unfindable.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -159,6 +165,10 @@ fn common_bin_paths(name: &str, home: &Path) -> Vec<PathBuf> {
         home.join(format!(".bun/bin/{name}")),
         PathBuf::from(format!("/opt/homebrew/bin/{name}")),
         PathBuf::from(format!("/usr/local/bin/{name}")),
+        // Linuxbrew's prefix, the Linux counterpart of `/opt/homebrew`: the
+        // default install location of Homebrew on Linux, and where a host
+        // installed `gh` or `claude` that way lives.
+        PathBuf::from(format!("/home/linuxbrew/.linuxbrew/bin/{name}")),
     ]
 }
 
@@ -181,11 +191,38 @@ fn login_shell_path() -> Option<String> {
     login_shell_env().and_then(|env| env.get("PATH").cloned())
 }
 
+/// macOS's login shell since Catalina, and the one this module asked for
+/// unconditionally before Linux hosts existed.
+const DEFAULT_SHELL: &str = "/bin/zsh";
+
+/// The shell to ask for the login environment: the user's own (`$SHELL`) when
+/// it is set and runnable, else zsh where it exists, else `/bin/sh` — POSIX
+/// guarantees that one, and `-lc` is understood by every shell here.
+///
+/// The hardcoded zsh this replaces silently no-ops on a Linux host, where the
+/// service user's shell is usually bash and `/bin/zsh` is usually absent: the
+/// call fails, the login PATH is `None`, and every version-manager or Linuxbrew
+/// install falls off the search. On macOS `$SHELL` is `/bin/zsh` for anyone who
+/// has not changed it, so the common path is byte-identical to before.
+fn login_shell(shell_env: Option<&str>, runnable: impl Fn(&Path) -> bool) -> PathBuf {
+    if let Some(shell) = shell_env.map(str::trim).filter(|s| !s.is_empty()) {
+        let shell = Path::new(shell);
+        if shell.is_absolute() && runnable(shell) {
+            return shell.to_path_buf();
+        }
+    }
+    let zsh = Path::new(DEFAULT_SHELL);
+    if runnable(zsh) {
+        return zsh.to_path_buf();
+    }
+    PathBuf::from("/bin/sh")
+}
+
 fn load_login_shell_env() -> Option<HashMap<String, String>> {
-    let out = Command::new("/bin/zsh")
-        .args(["-lc", "env -0"])
-        .output()
-        .ok()?;
+    let shell = login_shell(std::env::var("SHELL").ok().as_deref(), |path| {
+        is_executable(path)
+    });
+    let out = Command::new(shell).args(["-lc", "env -0"]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -296,6 +333,67 @@ mod tests {
             PathBuf::from("/opt/homebrew/bin/claude"),
         );
         assert_eq!(expand_tilde("~bob/x", home), PathBuf::from("~bob/x"));
+    }
+
+    /// The login shell is picked, never assumed: a macOS user who has not
+    /// changed theirs still gets zsh (the old hardcoded path), a Linux host
+    /// gets its own `$SHELL`, and a box with neither `$SHELL` nor zsh falls
+    /// back to `/bin/sh` rather than failing the call and losing the login
+    /// PATH entirely.
+    #[test]
+    fn login_shell_prefers_the_users_shell_then_zsh_then_sh() {
+        let present = |paths: &'static [&'static str]| {
+            move |path: &Path| paths.iter().any(|p| Path::new(p) == path)
+        };
+        let both = present(&["/bin/zsh", "/bin/bash", "/usr/bin/fish"]);
+
+        // The user's own shell wins wherever it lives.
+        assert_eq!(
+            login_shell(Some("/bin/bash"), both),
+            PathBuf::from("/bin/bash"),
+        );
+        assert_eq!(
+            login_shell(Some("/usr/bin/fish"), both),
+            PathBuf::from("/usr/bin/fish"),
+        );
+        // macOS's common case: `$SHELL` is zsh, so nothing changes.
+        assert_eq!(
+            login_shell(Some("/bin/zsh"), both),
+            PathBuf::from("/bin/zsh")
+        );
+        // Unset, blank, relative or missing `$SHELL` → zsh when it exists.
+        for shell in [None, Some(""), Some("  "), Some("zsh"), Some("/bin/nope")] {
+            assert_eq!(
+                login_shell(shell, present(&["/bin/zsh"])),
+                PathBuf::from("/bin/zsh"),
+                "{shell:?} should fall back to zsh",
+            );
+        }
+        // A host with no zsh and no usable `$SHELL`: `/bin/sh` is the one
+        // shell POSIX guarantees, and it takes `-lc` too.
+        assert_eq!(login_shell(None, present(&[])), PathBuf::from("/bin/sh"));
+        assert_eq!(
+            login_shell(Some("/bin/dash"), present(&["/bin/bash"])),
+            PathBuf::from("/bin/sh"),
+        );
+    }
+
+    /// Linuxbrew is where a Linux host's `brew install` lands, so it has to be
+    /// searched the way `/opt/homebrew` is on macOS.
+    #[test]
+    fn common_bin_paths_cover_both_homebrew_prefixes() {
+        let paths = common_bin_paths("gh", Path::new("/home/fletch"));
+        for expected in [
+            "/opt/homebrew/bin/gh",
+            "/usr/local/bin/gh",
+            "/home/linuxbrew/.linuxbrew/bin/gh",
+            "/home/fletch/.local/bin/gh",
+        ] {
+            assert!(
+                paths.contains(&PathBuf::from(expected)),
+                "{expected} is not searched: {paths:?}",
+            );
+        }
     }
 
     #[test]

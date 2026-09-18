@@ -11,9 +11,7 @@ use crate::host::EngineCtx;
 use crate::new_project;
 use crate::supervisor::Supervisor;
 
-use super::files::{
-    agent_repo_checkout, agent_repo_checkout_opt, expand_tilde, primary_repo, primary_repo_checkout,
-};
+use super::files::{expand_tilde, primary_repo, primary_repo_checkout};
 
 /// Whether the app has a working GitHub connection — drives the New Project
 /// flow's gating (clone and create both need the API).
@@ -120,8 +118,7 @@ pub async fn merge_pr(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    gh::pr_merge(&checkout).await
+    fletch_core::commands::merge_pr_impl(&supervisor, &agent_id, subdir.as_deref()).await
 }
 
 /// Fetch and return the current PR state for the agent's primary repo: by
@@ -234,34 +231,7 @@ pub async fn get_pr_threads(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<Option<gh::PrComments>> {
-    // Same resolver as `get_pr_live`, so this shares its adoption and throttling
-    // rather than running a second branch scan of its own. Its live lookup is a
-    // conditional REST read the fast tick has already warmed, so reaching for the
-    // PR number here is free.
-    let Some((state, _bound)) = crate::supervisor::resolve_pr_state(
-        &supervisor.workspace,
-        &agent_id,
-        subdir.as_deref(),
-        crate::supervisor::Discovery::Throttled,
-    )
-    .await
-    else {
-        return Ok(None);
-    };
-    // Only an open PR has threads worth polling.
-    if !matches!(state.state, gh::PrStatus::Open) {
-        return Ok(None);
-    }
-    let Some((repo, checkout)) =
-        agent_repo_checkout_opt(&supervisor, &agent_id, subdir.as_deref())?
-    else {
-        return Ok(None);
-    };
-    Ok(
-        gh::pr_threads_number(&checkout, Some(&repo.repo_path), state.number)
-            .await
-            .unwrap_or(None),
-    )
+    fletch_core::commands::get_pr_threads_impl(&supervisor, &agent_id, subdir.as_deref()).await
 }
 
 /// App-wide background poll that refreshes PR state for every repo with a

@@ -1,5 +1,5 @@
 import type { SandboxEngine } from "@/storage/preferences";
-import { invoke } from "../invoke";
+import { invoke, invokeLocal } from "../invoke";
 import type {
   ContainerAuthStatus,
   DockerProbe,
@@ -39,9 +39,15 @@ export const sandboxApi = {
   // surfaces the consent URL + auth-code prompt as `claude-setup:url` /
   // `claude-setup:awaiting-code` events, and resolves once the token is stored.
   // The token itself never crosses this boundary. See `useClaudeSetup`.
-  connectClaudeContainerAuth: () => invoke<void>("connect_claude_container_auth"),
-  submitClaudeSetupCode: (code: string) => invoke<void>("submit_claude_setup_code", { code }),
-  cancelClaudeContainerAuth: () => invoke<void>("cancel_claude_container_auth"),
+  //
+  // Local whatever environment is active: this is a sign-in the user completes
+  // in this window, against a PTY on this machine, and its events arrive over
+  // the local bus. A remote host has its own container token and its own way in
+  // (`fletch-host github login`), so following the active environment here would
+  // strand the flow the moment the user switched hosts.
+  connectClaudeContainerAuth: () => invokeLocal<void>("connect_claude_container_auth"),
+  submitClaudeSetupCode: (code: string) => invokeLocal<void>("submit_claude_setup_code", { code }),
+  cancelClaudeContainerAuth: () => invokeLocal<void>("cancel_claude_container_auth"),
   // Advanced docker launch knobs (image override + resource limits). Backend-
   // owned settings (`docker_image` / `docker_memory` / `docker_cpus`): the
   // command persists all three AND updates the spawn-path mirror. Blank clears
@@ -55,6 +61,7 @@ export const sandboxApi = {
   setPodmanLaunchSettings: (image: string | null, memory: string | null, cpus: string | null) =>
     invoke<void>("set_podman_launch_settings", { image, memory, cpus }),
   /** Launch Docker Desktop (the daemon-down error state's action). macOS-only;
-   *  rejects elsewhere. */
-  startDockerDesktop: () => invoke<void>("start_docker_desktop"),
+   *  rejects elsewhere. Local whatever environment is active: it opens an app on
+   *  this Mac, and there is no screen on a remote host to open one on. */
+  startDockerDesktop: () => invokeLocal<void>("start_docker_desktop"),
 };
