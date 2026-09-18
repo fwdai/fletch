@@ -2,10 +2,16 @@
 // the desktop adapters rendering real stream-json shapes. The jsdom URL in
 // vite.config.ts puts this file in mock mode (see `mockEnabled`).
 
+import { ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
+import { PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { PENDING_REQUEST_ID, PENDING_TOOL_USE_ID } from "../src/remote/mock/fixtures";
-import { agentOf, api, client, useStore } from "../src/store";
+import {
+  PENDING_REQUEST_ID,
+  PENDING_TOOL_USE_ID,
+  PM_CUSTOM_AGENT_ID,
+} from "../src/remote/mock/fixtures";
+import { agentOf, api, client, projectOf, useStore } from "../src/store";
 import { clearHost, loadSettings, saveSettings } from "../src/store/persist";
 
 const state = () => useStore.getState();
@@ -82,7 +88,7 @@ describe("event folding", () => {
 
   it("agent:status drives the record and the busy flag", async () => {
     await vi.waitFor(() => expect(state().busy.arabia).toBe(true));
-    await vi.waitFor(() => expect(agentOf(state().workspace, "arabia")?.status).toBe("idle"), {
+    await vi.waitFor(() => expect(agentOf(state(), "arabia")?.status).toBe("idle"), {
       timeout: 5000,
     });
     expect(state().busy.arabia).toBe(false);
@@ -317,7 +323,7 @@ describe("spawn flow", () => {
     // A tool call has streamed in and the turn is still running.
     await vi.waitFor(
       () => {
-        expect(agentOf(state().workspace, id)?.status).toBe("running");
+        expect(agentOf(state(), id)?.status).toBe("running");
         expect((state().logs[id] ?? []).some((i) => i.kind === "tool_call")).toBe(true);
       },
       { timeout: 10_000 },
@@ -340,7 +346,7 @@ describe("spawn flow", () => {
 
     // Once the turn ends the host's records are complete and authoritative:
     // re-opening then does rebuild from them.
-    await vi.waitFor(() => expect(agentOf(state().workspace, id)?.status).toBe("idle"), {
+    await vi.waitFor(() => expect(agentOf(state(), id)?.status).toBe("idle"), {
       timeout: 10_000,
     });
     useStore.setState((s) => ({ logs: { ...s.logs, [id]: (s.logs[id] ?? []).slice(0, 1) } }));
@@ -385,7 +391,7 @@ describe("optimistic busy flag", () => {
   it("clears against a fresh snapshot when the turn ended off-socket", async () => {
     useStore.setState((s) => ({ busy: { ...s.busy, caspian: true } }));
     await state().refreshWorkspace();
-    expect(agentOf(state().workspace, "caspian")?.status).not.toBe("running");
+    expect(agentOf(state(), "caspian")?.status).not.toBe("running");
     expect(state().busy.caspian).toBe(false);
   });
 
@@ -409,6 +415,260 @@ describe("optimistic busy flag", () => {
     } finally {
       send.mockRestore();
     }
+  });
+});
+
+/** A planning chat is an ordinary agent record tagged with a purpose, which is
+ *  what keeps it out of the workspace snapshot. It therefore lives in its own
+ *  per-project registry, and everything that addresses an agent by id reaches it
+ *  through `agentOf`'s fallback. */
+describe("planning chats", () => {
+  const projectId = "prj-fletch";
+  const repoPath = () => useStore.getState().workspace?.projects[0].path ?? "";
+
+  it("is offered only by a host that lists them", () => {
+    expect(state().hostSupports("list_project_chats")).toBe(true);
+  });
+
+  it("lists the chats the snapshot holds back, and resolves them like any agent", async () => {
+    expect((state().workspace?.agents ?? []).some((a) => a.id === "sakura")).toBe(false);
+    await state().loadChats(projectId);
+    expect(state().chats[projectId]?.map((c) => c.id)).toContain("sakura");
+    // The fallback is what makes the agent screen, the composer and the event
+    // handlers work for a chat without knowing it is one.
+    expect(agentOf(state(), "sakura")?.purpose).toBe(ROADMAP_PM_PURPOSE);
+    expect(projectOf(state(), "sakura")?.name).toBe("fletch");
+  });
+
+  it("spawns under the Mac's Project Manager, registers the chat, then sends the idea", async () => {
+    const spawn = vi.spyOn(api, "spawnAgent");
+    try {
+      await state().startPlanningChat({
+        projectId,
+        prompt: "An offline queue for messages typed underground",
+      });
+      expect(spawn).toHaveBeenCalledWith(
+        repoPath(),
+        PROJECT_MANAGER_PRESET.base,
+        expect.any(String),
+        PROJECT_MANAGER_PRESET.effort,
+        PROJECT_MANAGER_PRESET.model,
+        "main",
+        {
+          instructions: PROJECT_MANAGER_PRESET.instructions,
+          customAgentId: PM_CUSTOM_AGENT_ID,
+          purpose: ROADMAP_PM_PURPOSE,
+        },
+      );
+    } finally {
+      spawn.mockRestore();
+    }
+    const chat = state().chats[projectId]?.[0];
+    expect(chat?.purpose).toBe(ROADMAP_PM_PURPOSE);
+    // The chat is prepended, and it is not in the snapshot the host answers.
+    expect(state().chats[projectId]?.map((c) => c.id)).toContain("sakura");
+    expect((state().workspace?.agents ?? []).some((a) => a.id === chat?.id)).toBe(false);
+    // The record came back `spawning`; only the live `agent:status` can have
+    // cleared it, and for a chat that patch lands in the registry — which is
+    // also what let `waitForSpawn` release the first message below.
+    expect(chat?.status).not.toBe("spawning");
+    await vi.waitFor(
+      () =>
+        expect(
+          (state().logs[chat?.id ?? ""] ?? []).some(
+            (i) => i.kind === "user_message" && i.text.includes("offline queue"),
+          ),
+        ).toBe(true),
+      { timeout: 5000 },
+    );
+  });
+
+  it("falls back to the bundled preset when the Mac's library has no Project Manager", async () => {
+    const list = vi.spyOn(api, "listCustomAgents").mockResolvedValue([]);
+    const spawn = vi.spyOn(api, "spawnAgent");
+    try {
+      await state().startPlanningChat({ projectId, prompt: "Ship the widget" });
+      expect(spawn).toHaveBeenCalledWith(
+        repoPath(),
+        PROJECT_MANAGER_PRESET.base,
+        expect.any(String),
+        PROJECT_MANAGER_PRESET.effort,
+        PROJECT_MANAGER_PRESET.model,
+        "main",
+        expect.objectContaining({
+          // Nothing is seeded from the phone: the brief travels with the spawn.
+          customAgentId: null,
+          instructions: PROJECT_MANAGER_PRESET.instructions,
+        }),
+      );
+    } finally {
+      spawn.mockRestore();
+      list.mockRestore();
+    }
+  });
+
+  it("patches a chat record in place, and ignores an id it does not hold", () => {
+    state().patchChat("sakura", { task: "Offline queue, sliced" });
+    expect(state().chats[projectId]?.find((c) => c.id === "sakura")?.task).toBe(
+      "Offline queue, sliced",
+    );
+    const before = state().chats;
+    state().patchChat("arabia", { task: "not a chat" });
+    expect(state().chats).toBe(before);
+  });
+
+  it("follows a model or effort change, which the composer reads off the record", async () => {
+    await state().loadChats(projectId);
+    await state().setModel("sakura", "opus");
+    await vi.waitFor(() => expect(agentOf(state(), "sakura")?.model).toBe("opus"));
+    await state().setEffort("sakura", "high");
+    await vi.waitFor(() => expect(agentOf(state(), "sakura")?.effort).toBe("high"));
+  });
+
+  it("deletes a chat outright — the registry first, then the host", async () => {
+    await state().startPlanningChat({ projectId, prompt: "A queue nobody asked for" });
+    const id = state().chats[projectId]?.[0]?.id ?? "";
+    const discard = vi.spyOn(api, "discardAgent");
+    try {
+      await state().deleteChat(id);
+      expect(discard).toHaveBeenCalledWith(id);
+    } finally {
+      discard.mockRestore();
+    }
+    expect(state().chats[projectId]?.some((c) => c.id === id)).toBe(false);
+    // Gone on the host too, not merely hidden: the list read no longer has it.
+    await state().loadChats(projectId);
+    expect(state().chats[projectId]?.some((c) => c.id === id)).toBe(false);
+  });
+
+  it("puts the list back when the host refuses the delete", async () => {
+    await state().loadChats(projectId);
+    const discard = vi.spyOn(api, "discardAgent").mockRejectedValue(new Error("chat is busy"));
+    try {
+      await expect(state().deleteChat("sakura")).rejects.toThrow("chat is busy");
+    } finally {
+      discard.mockRestore();
+    }
+    // The optimistic removal was wrong, so the host's own list is read back.
+    expect(state().chats[projectId]?.map((c) => c.id)).toContain("sakura");
+    expect(state().lastError).toContain("chat is busy");
+  });
+
+  it("refuses to archive a chat — an archived one could never be listed again", async () => {
+    await state().loadChats(projectId);
+    const before = state().chats;
+    const archive = vi.spyOn(api, "archiveAgent");
+    try {
+      await expect(state().archive("sakura")).rejects.toThrow(/deleted, not archived/);
+      expect(archive).not.toHaveBeenCalled();
+    } finally {
+      archive.mockRestore();
+    }
+    expect(state().chats).toBe(before);
+  });
+
+  it("resolves a chat from its id alone — all a tapped notification carries", async () => {
+    // A cold launch: the snapshot never named the chat and nothing has listed
+    // it, so the agent screen has an id and an empty registry behind it.
+    useStore.setState({ chats: {} });
+    await state().ensureAgent("sakura");
+    expect(agentOf(state(), "sakura")?.purpose).toBe(ROADMAP_PM_PURPOSE);
+    // An id the host does not know registers nothing, rather than a placeholder.
+    const before = state().chats;
+    await state().ensureAgent("no-such-agent");
+    expect(state().chats).toBe(before);
+  });
+});
+
+/** A ticket the PM proposed is a real board row parked at `proposed` — a ghost
+ *  nobody has ruled on. The phone holds those per project and draws them in the
+ *  planning chat that raised them, so the whole surface is: read the board and
+ *  keep the ghosts, fold the live rows, and rule. */
+describe("PM proposals", () => {
+  const projectId = "prj-fletch";
+  const ghosts = () => state().proposals[projectId] ?? [];
+  const ghost = (code: string) => ghosts().find((i) => i.code === code);
+
+  it("keeps only the ghosts off the board, newest first", async () => {
+    await state().loadProposals(projectId);
+    // FLT-198 is already open — an item, not a question.
+    expect(ghosts().map((i) => i.code)).toEqual(["FLT-207", "FLT-209"]);
+  });
+
+  it("accepts as a conditional transition, and the card goes with the ruling", async () => {
+    await state().loadProposals(projectId);
+    const item = ghost("FLT-207");
+    if (!item) throw new Error("no ghost to rule on");
+    const update = vi
+      .spyOn(api, "roadmapUpdateItem")
+      .mockResolvedValue({ applied: true, item: { ...item, status: "queued" } });
+    try {
+      await state().acceptProposal(item, true);
+      // Exactly the desktop board's accept: `proposed → open`, conditional on
+      // the row still being a proposal, with `queue` handing it straight on.
+      expect(update).toHaveBeenCalledWith(item.id, { status: "open" }, "proposed", true);
+    } finally {
+      update.mockRestore();
+    }
+    expect(ghost("FLT-207")).toBeUndefined();
+  });
+
+  it("discards by deleting the row — it never made the board", async () => {
+    await state().loadProposals(projectId);
+    const item = ghost("FLT-209");
+    if (!item) throw new Error("no ghost to rule on");
+    const discard = vi
+      .spyOn(api, "roadmapDiscardProposal")
+      .mockResolvedValue({ applied: true, item: null });
+    try {
+      await state().discardProposal(item);
+      expect(discard).toHaveBeenCalledWith(item.id);
+    } finally {
+      discard.mockRestore();
+    }
+    expect(ghost("FLT-209")).toBeUndefined();
+  });
+
+  it("deletes nothing when the row was accepted first, and still takes the card down", async () => {
+    await state().loadProposals(projectId);
+    const item = ghost("FLT-209");
+    if (!item) throw new Error("no ghost to rule on");
+    // What the host answers for a row that has moved on: the discard is refused
+    // and the row comes back as it really is.
+    const discard = vi
+      .spyOn(api, "roadmapDiscardProposal")
+      .mockResolvedValue({ applied: false, item: { ...item, status: "queued" } });
+    try {
+      await state().discardProposal(item);
+    } finally {
+      discard.mockRestore();
+    }
+    // The card goes — a queued row is not a question this chat is waiting on —
+    // but the item someone accepted is still on the board.
+    expect(ghost("FLT-209")).toBeUndefined();
+    expect((await api.roadmapListItems(projectId)).some((i) => i.id === item.id)).toBe(true);
+  });
+
+  it("replaces the card when a `roadmap:item` says the row is still proposed", async () => {
+    await state().loadProposals(projectId);
+    // Written on the host, so only the event can carry it here — a PM revising
+    // its own suggestion must replace the card rather than stack a second one.
+    await api.roadmapUpdateItem("itm-offline-queue", { title: "Queue sends made underground" });
+    await vi.waitFor(() => expect(ghost("FLT-207")?.title).toBe("Queue sends made underground"));
+    expect(ghosts()).toHaveLength(2);
+  });
+
+  it("takes the card down when a `roadmap:item` says the row was ruled on", async () => {
+    await state().loadProposals(projectId);
+    await api.roadmapUpdateItem("itm-offline-queue", { status: "open" });
+    await vi.waitFor(() => expect(ghost("FLT-207")).toBeUndefined());
+    expect(ghosts().map((i) => i.code)).toEqual(["FLT-209"]);
+  });
+
+  it("takes the card down on `roadmap:item-deleted`, which carries the bare id", async () => {
+    await state().loadProposals(projectId);
+    await api.roadmapDiscardProposal("itm-tunnel-banner");
+    await vi.waitFor(() => expect(ghosts()).toHaveLength(0));
   });
 });
 

@@ -237,6 +237,16 @@
   height: 50px;
   border-radius: 16px;
 }
+/* Two actions share the bar: neither can claim the 200px a lone one gets, or
+   they run off the side of a small phone. */
+.fab-wrap.duo {
+  gap: 10px;
+}
+.fab-wrap.duo .btn {
+  min-width: 0;
+  flex: 1 1 0;
+  padding: 0 12px;
+}
 
 /* search field */
 .search {

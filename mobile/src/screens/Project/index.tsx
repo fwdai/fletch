@@ -1,5 +1,5 @@
 import { Icon } from "@desktop/components/Icon";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AgentRow } from "../../components/AgentRow";
 import { Nav, Segmented, Swatch } from "../../components/ui";
 import { agentsOfProject, baseOf, isActive, isBusy, repoLabel } from "../../lib/agents";
@@ -17,7 +17,21 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
   const pop = useStore((s) => s.pop);
   const openAgent = useStore((s) => s.openAgent);
   const openSheet = useStore((s) => s.openSheet);
+  // Indexed straight out of the store: the registry's array is a stable
+  // reference, where a `?? []` inside the selector would be a fresh one.
+  const chats = useStore((s) => s.chats[projectId]);
+  const loadChats = useStore((s) => s.loadChats);
+  const connected = useStore((s) => s.connection === "connected");
+  const canPlan = useStore((s) => s.hostSupports("list_project_chats"));
   const [filter, setFilter] = useState<Filter>("all");
+
+  // Planning chats are absent from the workspace snapshot, so they are read on
+  // their own — on arrival, and again on every reconnect, since nothing pushes
+  // a chat started on the Mac to this screen.
+  useEffect(() => {
+    if (connected) void loadChats(projectId);
+  }, [connected, projectId, loadChats]);
+
   if (!project) return null;
 
   const hasPr = (id: string) =>
@@ -95,16 +109,41 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
             </div>
           )}
         </div>
+        {/* Below the filtered agents, and outside them: a planning chat is not
+            a filter of the fleet, it is a conversation about what the fleet
+            should build next. */}
+        {canPlan && chats && chats.length > 0 && (
+          <>
+            <div className="sect">
+              Planning <span className="n">{chats.length}</span>
+            </div>
+            <div className="card">
+              {chats.map((c) => (
+                <AgentRow key={c.id} agent={c} project={project} onClick={() => openAgent(c.id)} />
+              ))}
+            </div>
+          </>
+        )}
       </div>
-      <div className="fab-wrap">
+      <div className={`fab-wrap${canPlan ? " duo" : ""}`}>
         <button
           type="button"
           className="btn primary"
           onClick={() => openSheet("newAgent", { projectId })}
         >
           <Icon name="plus" size={18} strokeWidth={2.2} />
-          New agent in {project.name}
+          {canPlan ? "New agent" : `New agent in ${project.name}`}
         </button>
+        {canPlan && (
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => openSheet("newPlan", { projectId })}
+          >
+            <Icon name="map" size={18} strokeWidth={2.2} />
+            Plan with PM
+          </button>
+        )}
       </div>
     </>
   );

@@ -2,26 +2,28 @@ import { spliceTranscript } from "@desktop/components/Composer/dictation/spliceT
 import { primaryState } from "@desktop/components/Composer/PrimaryControl/primaryState";
 import { Icon } from "@desktop/components/Icon";
 import { type ReactNode, useEffect, useRef } from "react";
-import { AttachButton, type Attachments, StagedChips } from "../../attachments";
-import { Notice } from "../../components/ui/Notice";
-import { useDictation, VoiceRow } from "../../dictation";
-import { autosize } from "../../lib/autosize";
+import { AttachButton, type Attachments, StagedChips } from "../attachments";
+import { useDictation, VoiceRow } from "../dictation";
+import { autosize } from "../lib/autosize";
+import { Notice } from "./ui/Notice";
 
 /** The heights the field grows between, in px. Mirrors `.na-prompt textarea`
  *  in screens.css, which sets the resting one. */
 const MIN_PX = 120;
 const MAX_PX = 260;
 
-/** The first prompt for a new agent: the field, and the row of pickers along
- *  its foot. The mic sits at the right of that row and, while it is open, the
- *  pickers give way to the waveform — the same dictation the chat composer
- *  offers, in the shape this box has room for. Files attach beside the mic,
- *  and their chips sit under the box; they ride with the first message. */
+/** The opening prompt of a new workspace — an agent's task, or the idea a
+ *  planning chat starts from: the field, and the row of pickers along its foot.
+ *  The mic sits at the right of that row and, while it is open, the pickers give
+ *  way to the waveform — the same dictation the chat composer offers, in the
+ *  shape this box has room for. Files attach beside the mic, and their chips sit
+ *  under the box; they ride with the first message. */
 export function PromptField({
   value,
   onChange,
   onDictating,
   attachments,
+  placeholder,
   children,
 }: {
   value: string;
@@ -31,9 +33,12 @@ export function PromptField({
   onDictating: (live: boolean) => void;
   /** The sheet's staged files — owned there, since they go out with `spawn`. */
   attachments: Attachments;
+  /** Overrides the default, which describes an agent's first message. Keep it
+   *  free of mic wording: dictation is not offered by every host. */
+  placeholder?: string;
   /** The pickers under the field (the runner chip). Hidden while the waveform
-   *  has the row. */
-  children: ReactNode;
+   *  has the row. Nothing to show is fine — the mic keeps the row. */
+  children?: ReactNode;
 }) {
   const ta = useRef<HTMLTextAreaElement>(null);
   // Read in the dictation callback, which lands whenever the host answers —
@@ -72,9 +77,10 @@ export function PromptField({
           ref={ta}
           rows={4}
           placeholder={
-            dictation.supported
+            placeholder ??
+            (dictation.supported
               ? "Describe the task, or tap the mic — this becomes the agent's first message."
-              : "Describe the task — this becomes the agent's first message."
+              : "Describe the task — this becomes the agent's first message.")
           }
           value={value}
           onChange={(e) => {

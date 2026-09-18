@@ -172,6 +172,16 @@ pub struct ItemUpdate {
     pub item: RoadmapItem,
 }
 
+/// A conditional discard's outcome. `item` carries the row that stopped the
+/// delete — one another client has already ruled on — so the caller can show
+/// where it actually stands instead of silently losing it; `None` means there
+/// was nothing to delete.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ItemDiscard {
+    pub applied: bool,
+    pub item: Option<RoadmapItem>,
+}
+
 pub(crate) fn double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,

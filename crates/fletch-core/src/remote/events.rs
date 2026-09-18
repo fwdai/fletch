@@ -36,6 +36,10 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "verify:report",
     "publish:approval-requested",
     "publish:approval-resolved",
+    // The two rows a phone's planning chat renders: a PM proposal arriving and
+    // an item leaving the board. The rest of `roadmap:*` stays off the wire.
+    "roadmap:item",
+    "roadmap:item-deleted",
 ];
 
 /// Install the taps and hand back the push-alert one.

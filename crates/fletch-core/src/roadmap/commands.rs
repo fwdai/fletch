@@ -17,7 +17,7 @@ use super::pr_review;
 use super::proposals::{self, Proposal};
 use super::rulings;
 use super::store;
-use super::types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
+use super::types::{ItemDiscard, ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
 use super::Db;
 use crate::host::EngineCtx;
 
@@ -310,10 +310,40 @@ pub async fn roadmap_delete_item_impl(
     ctx: &Arc<EngineCtx>,
     db: &Db,
 ) -> Result<(), String> {
+    delete_item(id, false, ctx, db).map(|_| ())
+}
+
+/// Discard a *proposal*: the same delete, refused once the row has been ruled
+/// on. A client can hold a `proposed` card for minutes; without the check its
+/// discard would delete a row someone else has since accepted and worked.
+pub async fn roadmap_discard_proposal_impl(
+    id: String,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
+) -> Result<ItemDiscard, String> {
+    delete_item(id, true, ctx, db)
+}
+
+/// The delete both entry points share. `only_proposed` reads the row and rules
+/// on it under the same lock as the write, so nothing can slip between them.
+fn delete_item(
+    id: String,
+    only_proposed: bool,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
+) -> Result<ItemDiscard, String> {
     let (removed, pending) = {
         let conn = db.lock();
         let pending = proposals::for_item(&conn, &id).map_err(|e| e.to_string())?;
         let doomed = store::get(&conn, &id).map_err(|e| e.to_string())?;
+        if only_proposed {
+            if let Some(row) = doomed.as_ref().filter(|r| r.status != ItemStatus::Proposed) {
+                return Ok(ItemDiscard {
+                    applied: false,
+                    item: Some(row.clone()),
+                });
+            }
+        }
         let removed = store::delete(&conn, &id).map_err(|e| e.to_string())?;
         if removed {
             if let Some(row) = doomed.filter(|r| r.status == ItemStatus::Proposed) {
@@ -331,7 +361,10 @@ pub async fn roadmap_delete_item_impl(
         }
         drainer::nudge();
     }
-    Ok(())
+    Ok(ItemDiscard {
+        applied: removed,
+        item: None,
+    })
 }
 
 pub async fn roadmap_list_item_events_impl(

@@ -5,6 +5,7 @@
 
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
+import type { RoadmapItem, RoadmapItemPatch } from "@desktop/api/types/roadmap";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { Socket, SocketFactory } from "@desktop/remote/socket";
 import {
@@ -38,6 +39,8 @@ interface MockState {
    *  gets its attachments and typed text back from. */
   turns: Record<string, UserTurn[]>;
   pendingToolUse: Record<string, string>;
+  /** The roadmap boards, flat across projects as the host's table is. */
+  roadmapItems: RoadmapItem[];
   nextPrNumber: number;
   /** Mutable, because cloning creates a directory the next clone must trip
    *  over ("a folder already exists at …"). */
@@ -77,6 +80,7 @@ export class MockHost {
       records: structuredClone(fx.records),
       turns: structuredClone(fx.userTurns),
       pendingToolUse: { pamukkale: fx.PENDING_REQUEST_ID },
+      roadmapItems: structuredClone(fx.roadmapItems),
       nextPrNumber: 649,
       filesystem: structuredClone(fx.filesystem),
     };
@@ -131,6 +135,16 @@ export class MockHost {
 
   private event(event: string, payload: unknown) {
     this.emit({ event, payload });
+  }
+
+  /** The snapshot as the host reports it: purpose-tagged chats are held back,
+   *  exactly as the real `get_workspace` does — they are listed on their own
+   *  through `list_project_chats`. */
+  private visibleWorkspace(): Workspace {
+    return {
+      ...this.state.workspace,
+      agents: this.state.workspace.agents.filter((a) => !a.purpose),
+    };
   }
 
   private agent(id: string): AgentRecord {
@@ -214,7 +228,11 @@ export class MockHost {
   /** Play a scripted turn: live `agent:event` frames, then the canonical
    *  records + `session:records-appended`, exactly as a real host does. */
   private runTurn(id: string, prompt: string) {
-    const provider = this.agent(id).provider;
+    // A turn queued behind a discard has nothing left to run on: the host drops
+    // the session with the record, it does not raise an error at nobody.
+    const agent = this.state.workspace.agents.find((a) => a.id === id);
+    if (!agent) return;
+    const provider = agent.provider;
     const steps = scriptFor(provider, prompt);
     this.event("turn:started", { agent_id: id, started_at: Date.now() });
     this.setStatus(id, "running");
@@ -250,10 +268,54 @@ export class MockHost {
         // stands in for: anything that gets this far is a known device.
         this.authed = true;
         this.later(() => this.bootstrap(), 400);
-        return { host: fx.hostInfo, workspace: this.state.workspace, protocol: fx.protocol };
+        return { host: fx.hostInfo, workspace: this.visibleWorkspace(), protocol: fx.protocol };
       }
       case "get_workspace":
-        return this.state.workspace;
+        return this.visibleWorkspace();
+      // Read off the whole agent list rather than the visible one: this op is
+      // how a phone resolves a record nothing has listed for it, purpose-tagged
+      // chats very much included.
+      case "get_agent":
+        return this.state.workspace.agents.find((a) => a.id === id) ?? null;
+      case "list_project_chats":
+        return this.state.workspace.agents
+          .filter((a) => a.project_id === args.projectId && a.purpose === args.purpose)
+          .sort((a, b) => b.created_at.localeCompare(a.created_at));
+      case "list_custom_agents":
+        return fx.customAgents;
+      case "roadmap_list_items":
+        return this.state.roadmapItems.filter((i) => i.project_id === args.projectId);
+      case "roadmap_update_item": {
+        const itemId = String(args.id ?? "");
+        const item = this.state.roadmapItems.find((i) => i.id === itemId);
+        if (!item) throw new Error("item not found");
+        // The host's conditional transition: an expectation that misses changes
+        // nothing and reports the row as it really is.
+        const expect = args.expectStatus ?? null;
+        if (expect && item.status !== expect) return { applied: false, item };
+        const patch = (args.patch as RoadmapItemPatch) ?? {};
+        // Where an accept lands is the host's call — the project's autoqueue
+        // dial, a board hold. The mock's call is the simple one: `queue` sends
+        // an admitted row straight on to the drainer.
+        const status = args.queue === true && patch.status === "open" ? "queued" : patch.status;
+        const next = { ...item, ...patch, status: status ?? item.status, updated_at: Date.now() };
+        this.state.roadmapItems = this.state.roadmapItems.map((i) => (i.id === itemId ? next : i));
+        this.event("roadmap:item", next);
+        return { applied: true, item: next };
+      }
+      case "roadmap_discard_proposal": {
+        const itemId = String(args.id ?? "");
+        const item = this.state.roadmapItems.find((i) => i.id === itemId);
+        // Gone already: nothing was deleted and there is no row to report.
+        if (!item) return { applied: false, item: null };
+        // The host's condition: a row that has been ruled on is not a proposal
+        // any more, so it survives the discard and comes back as it really is.
+        if (item.status !== "proposed") return { applied: false, item };
+        this.state.roadmapItems = this.state.roadmapItems.filter((i) => i.id !== itemId);
+        // The payload is the bare id, as the host forwards it.
+        this.event("roadmap:item-deleted", itemId);
+        return { applied: true, item: null };
+      }
       case "allocate_draft_name": {
         const used = new Set([
           ...this.state.workspace.agents.map((a) => a.name),
@@ -290,10 +352,12 @@ export class MockHost {
           archive: null,
           effort: (args.effort as string) ?? null,
           model: (args.model as string) ?? null,
-          custom_agent_id: null,
+          custom_agent_id: (args.customAgentId as string) ?? null,
           sandbox_engine: "sandbox-exec",
           issue_ref: null,
-          purpose: null,
+          // A tagged workspace is a purpose chat: it stays out of the snapshot
+          // from here on, as it does on a real host.
+          purpose: (args.purpose as string) ?? null,
         };
         this.state.workspace = {
           ...this.state.workspace,
@@ -388,6 +452,17 @@ export class MockHost {
           ...this.state.workspace,
           agents: this.state.workspace.agents.filter((a) => a.id !== id),
         };
+        this.event("workspace:changed", null);
+        return null;
+      // The destructive twin: the record goes for good, so a purpose-tagged
+      // chat drops out of `list_project_chats` the same way a sidebar agent
+      // drops out of the snapshot.
+      case "discard_agent":
+        this.state.workspace = {
+          ...this.state.workspace,
+          agents: this.state.workspace.agents.filter((a) => a.id !== id),
+        };
+        delete this.state.records[id];
         this.event("workspace:changed", null);
         return null;
       case "set_agent_model":

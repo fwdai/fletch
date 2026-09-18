@@ -53,6 +53,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::instructions::toml_basic_string;
 
+#[path = "agent_profile/library.rs"]
+pub mod library;
+
 /// One skill resolved by value at spawn: a named instruction document the
 /// agent loads on demand.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
