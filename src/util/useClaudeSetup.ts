@@ -1,6 +1,6 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useRef, useState } from "react";
 import { api } from "@/api";
+import { localTransport, type UnlistenFn } from "@/api/transport";
 import { useAppStore } from "@/store";
 
 /** Where the automated `claude setup-token` flow is:
@@ -42,18 +42,18 @@ export function useClaudeSetup(onConnected?: () => void) {
     setPhase("connecting");
     setUrl(null);
     setError(null);
-    // Default no-ops so `finally` can always call them; listen() lives inside
-    // the try so an IPC failure surfaces as an error instead of throwing.
+    // Default no-ops so `finally` can always call them; the subscribes live
+    // inside the try so an IPC failure surfaces as an error instead of throwing.
     let unlistenUrl: UnlistenFn = () => {};
     let unlistenCode: UnlistenFn = () => {};
     try {
       // Surface the consent URL as a fallback — the CLI already opens the
       // browser itself, so we show (not auto-open) it to avoid a duplicate tab.
-      unlistenUrl = await listen<string>("claude-setup:url", (e) => {
+      unlistenUrl = await localTransport.on<string>("claude-setup:url", (consentUrl) => {
         if (stale()) return;
-        setUrl(e.payload);
+        setUrl(consentUrl);
       });
-      unlistenCode = await listen("claude-setup:awaiting-code", () => {
+      unlistenCode = await localTransport.on("claude-setup:awaiting-code", () => {
         if (stale()) return;
         setPhase("awaiting-code");
       });

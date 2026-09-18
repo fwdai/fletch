@@ -3,6 +3,7 @@ import { Icon } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import { ForkMenu, type ForkOption } from "./ForkMenu";
@@ -40,6 +41,7 @@ interface Props {
 }
 
 export function WorkspaceHeader({ agent }: Props) {
+  const nativeGate = useGate("nativeView");
   const switchView = useAppStore((s) => s.switchView);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id]);
   // Native view is gated behind an experimental flag: while it's off the
@@ -89,8 +91,12 @@ export function WorkspaceHeader({ agent }: Props) {
           // The native TUI resumes the agent's session, which only exists once
           // the first turn lands (claude gets one up front, so it's never
           // gated). Matches the backend switch_view guard.
-          nativeDisabled={!agent.session_id}
-          nativeReason="Available after the agent's first turn"
+          //
+          // A remote host answers no `switch_view` (the view is the structured
+          // one there, which is also what it forces for phone spawns), so the
+          // gate disables the same option with its own reason.
+          nativeDisabled={!agent.session_id || nativeGate !== null}
+          nativeReason={nativeGate ?? "Available after the agent's first turn"}
         />
       )}
 
@@ -106,6 +112,7 @@ export function WorkspaceHeader({ agent }: Props) {
         </IconButton>
       )}
 
+      {/* Hides itself on a remote environment — see ForkMenu. */}
       <ForkMenu
         agentId={agent.id}
         options={HEADER_FORK_OPTIONS}

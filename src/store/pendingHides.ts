@@ -39,6 +39,15 @@ export const clearPendingHide = (id: string): void => {
   pending.delete(id);
 };
 
+/** Forget every pending hide. Called when the UI switches environments: the
+ *  keys are bare agent ids, which collide across hosts, and the snapshot that
+ *  would have confirmed one is not coming while another environment is on
+ *  screen. Safe because the action itself has already committed on its host —
+ *  the row is hidden by the authoritative snapshot the switch back fetches. */
+export const clearPendingHides = (): void => {
+  pending.clear();
+};
+
 /** Confirm every pending hide `ws` already reflects (agent archived or gone),
  *  then re-apply the rest: a pending archive is stamped with `PENDING_ARCHIVE`,
  *  a pending discard is dropped from the list. Returns `ws` itself when there

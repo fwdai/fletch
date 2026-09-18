@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
+import { whenIdle } from "./remote/defer";
+import { startSavedHosts } from "./remote/hosts";
 import { useAppStore } from "./store";
 import { setupAppMenu } from "./util/appMenu";
 import { runStartupUpdateCheck } from "./util/autoUpdate";
@@ -32,3 +34,10 @@ void runStartupUpdateCheck((version, notes) => {
 // Install the native menu (adds "Check for Updates…"). Fire-and-forget; never
 // blocks launch.
 void setupAppMenu();
+
+// Paired hosts are dialled once the browser has nothing better to do, never
+// before the first paint: they are a second engine this window happens to know
+// about, and the local one — which is what every pixel on screen is about — must
+// not wait behind a socket to a machine that may be asleep. With no saved hosts
+// this is one keyed settings read and then nothing.
+whenIdle(() => void startSavedHosts());

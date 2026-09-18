@@ -1,4 +1,3 @@
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import {
   api,
@@ -6,6 +5,7 @@ import {
   type DictationModelStatus,
   onDictationModelProgress,
 } from "@/api";
+import type { UnlistenFn } from "@/api/transport";
 
 export interface DictationModelView {
   /** `null` until the first fetch resolves. */

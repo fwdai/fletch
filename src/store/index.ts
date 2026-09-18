@@ -9,6 +9,8 @@ import { createAutopilotLogSlice } from "./autopilotLog";
 import { createComposerSlice } from "./composer";
 import { createCustomAgentsSlice } from "./customAgents";
 import { createDraftsSlice } from "./drafts";
+import { createEnvironmentSwitchSlice } from "./environmentSwitch";
+import { createEnvironmentsSlice, setEnvironmentsSource } from "./environments";
 import { createGitSlice } from "./git";
 import { createLocalCommandsSlice } from "./localCommands";
 import { createMcpServersSlice } from "./mcpServers";
@@ -24,6 +26,8 @@ export const EMPTY_AGENTS: readonly AgentRecord[] = Object.freeze([]);
 
 export const useAppStore = create<AppState>()((...a) => ({
   ...createAppSlice(...a),
+  ...createEnvironmentsSlice(...a),
+  ...createEnvironmentSwitchSlice(...a),
   ...createWorkspaceSlice(...a),
   ...createReposSlice(...a),
   ...createGitSlice(...a),
@@ -42,6 +46,10 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createSandboxSlice(...a),
   ...createLocalCommandsSlice(...a),
 }));
+
+// The transport lookup and the PTY buffers read the active environment straight
+// off the store, outside React (see ./environments).
+setEnvironmentsSource(useAppStore.getState);
 
 export type { ChatItem } from "@/adapters";
 export type { UsageSnapshot } from "@/adapters/usage";

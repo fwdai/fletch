@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
+import { EnvironmentSwitcher } from "./EnvironmentSwitcher";
 
-/** Search input that filters the agent list. The filter itself is
- *  applied in `Sidebar` — this component only owns the input. */
+/** Search input that filters the agent list, and — once a host is paired — the
+ *  environment switcher beside it. The filter itself is applied in `Sidebar`;
+ *  this component only owns the input. */
 interface Props {
   query: string;
   onChange: (q: string) => void;
@@ -25,6 +27,7 @@ export function SidebarHeader({ query, onChange, onArrowDown }: Props) {
   }
   return (
     <div className="side-head flex-center">
+      <EnvironmentSwitcher />
       <div className="search flex-center text-base">
         <Icon name="search" size={12} />
         <input

@@ -3,6 +3,7 @@ import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
 import type { GitState, ShortStats } from "@desktop/api/types/git";
 import type { PrChecks, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
+import type { PublishApproval } from "@desktop/api/types/sandbox";
 import { appActionMessage } from "@desktop/delegation";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
@@ -14,7 +15,9 @@ import {
   createClient,
   DEFAULT_PORT,
   type HostInfo,
+  type HostProtocol,
   type HostTarget,
+  hostSupports,
   mockEnabled,
   type PairStep,
   type Via,
@@ -66,6 +69,10 @@ export interface MobileState {
    *  the details for a one-tap retry if it fails. */
   pairTarget: HostTarget | null;
   hostInfo: HostInfo | null;
+  /** What the connected host said it answers, or null when it said nothing (a
+   *  host from before the field) or nothing is connected. Read through
+   *  `hostSupports`, never compared against `hostInfo.appVersion`. */
+  protocol: HostProtocol | null;
   /** The paired host's public key — pinned on first contact, and what makes
    *  the app paired at all. */
   hostKey: string | null;
@@ -83,6 +90,9 @@ export interface MobileState {
   busy: Record<string, boolean>;
   /** tool_use id → held control-protocol request id, per agent. */
   pendingToolUse: Record<string, Record<string, string>>;
+  /** Gated publishes waiting on an answer, oldest first. The host is blocked on
+   *  each one until it is answered or its wait lapses. */
+  pendingPublishApprovals: PublishApproval[];
   turnStartedAt: Record<string, number>;
   gitStates: Record<string, GitState | null>;
   /** Uncommitted working-tree stats for the whole fleet, from the app-wide
@@ -110,6 +120,10 @@ export interface MobileState {
   setTheme(theme: ThemeMode): void;
   setSystemTheme(t: "light" | "dark"): void;
   clearError(): void;
+  /** Whether the connected host answers `op` (docs/remote-protocol.md,
+   *  "Compatibility"). Everything on the v1 allowlist is always true, so only a
+   *  surface added after v2 was fixed needs to ask. */
+  hostSupports(op: string): boolean;
 
   push(screen: ScreenName, props?: Record<string, string>): void;
   pop(): void;
@@ -141,6 +155,9 @@ export interface MobileState {
     updatedInput: unknown,
     behavior: "allow" | "deny",
   ): Promise<void>;
+  /** A gated publish the host is holding, from `publish:approval-requested`. */
+  receivePublishApproval(request: PublishApproval): void;
+  answerPublishApproval(id: string, approved: boolean): Promise<void>;
   stop(agentId: string): Promise<void>;
   resume(agentId: string): Promise<void>;
   archive(agentId: string): Promise<void>;
@@ -324,6 +341,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   pairStep: null,
   pairTarget: null,
   hostInfo: null,
+  protocol: null,
   hostKey: null,
   relay: null,
   via: null,
@@ -333,6 +351,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   logs: {},
   busy: {},
   pendingToolUse: {},
+  pendingPublishApprovals: [],
   turnStartedAt: {},
   gitStates: {},
   shortstats: {},
@@ -362,6 +381,7 @@ export const useStore = create<MobileState>()((set, get) => ({
         connectionError: error ?? null,
         retrying: client.retrying,
         hostInfo: client.host,
+        protocol: client.protocol,
         via: client.via,
       }),
     );
@@ -379,7 +399,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       if (agentId) void get().loadAgent(agentId).catch(ignore);
     };
     client.onSnapshot((snapshot) => {
-      set({ hostInfo: snapshot.host });
+      set({ hostInfo: snapshot.host, protocol: snapshot.protocol ?? null });
       const ws = snapshot.workspace;
       // The handshake's snapshot is as authoritative as `refreshWorkspace`'s
       // read, so it reconciles the optimistic busy flags the same way — this is
@@ -521,6 +541,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       lastDestParent: null,
       workspace: null,
       hostInfo: null,
+      protocol: null,
+      // Prompts belong to the host that raised them; it is no longer waiting
+      // on this device for an answer.
+      pendingPublishApprovals: [],
       logs: {},
       sheet: null,
       nav: [homeItem()],
@@ -549,6 +573,9 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
   clearError() {
     set({ lastError: null });
+  },
+  hostSupports(op) {
+    return hostSupports(get().protocol, op);
   },
 
   push(screen, props = {}) {
@@ -781,6 +808,21 @@ export const useStore = create<MobileState>()((set, get) => ({
         throw e;
       }
     });
+  },
+
+  receivePublishApproval(request) {
+    // No pre-authorization to consult, unlike the desktop's autopilot: the
+    // phone has no standing per-checkout grant, so every prompt is shown.
+    set((s) => ({ pendingPublishApprovals: [...s.pendingPublishApprovals, request] }));
+  },
+
+  async answerPublishApproval(id, approved) {
+    // Dropped first, as on the desktop: the card must not linger if the op
+    // fails, and a request the host has already timed out is a no-op there.
+    set((s) => ({
+      pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
+    }));
+    await guard(set, () => api.answerPublishApproval(id, approved));
   },
 
   async stop(agentId) {
