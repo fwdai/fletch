@@ -1,17 +1,17 @@
-import { ProtocolClient } from "./client";
+import { ProtocolClient } from "@desktop/remote/client";
+import type { DeviceInfo, RemoteClient } from "@desktop/remote/types";
+import { openWebSocket } from "@desktop/remote/ws";
 import { mockSocket } from "./mock";
-import type { DeviceInfo, RemoteClient } from "./types";
-import { openWebSocket } from "./ws";
 
 export {
   type Candidate,
   candidatesFor,
   LAN_OPEN_TIMEOUT_MS,
   RELAY_OPEN_TIMEOUT_MS,
-} from "./candidates";
-export { ProtocolClient } from "./client";
-export { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
-export * from "./types";
+} from "@desktop/remote/candidates";
+export { ProtocolClient } from "@desktop/remote/client";
+export { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "@desktop/remote/pairing";
+export * from "@desktop/remote/types";
 
 const search = () =>
   typeof window === "undefined"

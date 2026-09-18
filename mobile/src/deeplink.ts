@@ -2,9 +2,9 @@
 // Tauri the deep-link plugin delivers it; in a browser the same URL can be
 // pasted into the Pair screen, so there is nothing to register.
 
+import { inTauri } from "@desktop/remote/ws";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { parsePairUrl } from "./remote";
-import { inTauri } from "./remote/ws";
 import { useStore } from "./store";
 
 /** Pair from the first `fletch://pair` link in `urls`, ignoring anything else

@@ -6,16 +6,16 @@
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
-import { parseRepoSpec } from "@desktop/util/repoSpec";
-import { baseName, childPath, parentPath } from "../../lib/paths";
-import type { Socket, SocketFactory } from "../socket";
+import type { Socket, SocketFactory } from "@desktop/remote/socket";
 import {
   CLOSE_BAD_FIRST_FRAME,
   CLOSE_UNAUTHENTICATED,
   type EventFrame,
   type RequestFrame,
   type ResponseFrame,
-} from "../types";
+} from "@desktop/remote/types";
+import { parseRepoSpec } from "@desktop/util/repoSpec";
+import { baseName, childPath, parentPath } from "../../lib/paths";
 import * as fx from "./fixtures";
 import { scriptFor } from "./script";
 
