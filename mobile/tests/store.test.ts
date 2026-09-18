@@ -516,6 +516,18 @@ describe("planning chats", () => {
     state().patchChat("arabia", { task: "not a chat" });
     expect(state().chats).toBe(before);
   });
+
+  it("resolves a chat from its id alone — all a tapped notification carries", async () => {
+    // A cold launch: the snapshot never named the chat and nothing has listed
+    // it, so the agent screen has an id and an empty registry behind it.
+    useStore.setState({ chats: {} });
+    await state().ensureAgent("sakura");
+    expect(agentOf(state(), "sakura")?.purpose).toBe(ROADMAP_PM_PURPOSE);
+    // An id the host does not know registers nothing, rather than a placeholder.
+    const before = state().chats;
+    await state().ensureAgent("no-such-agent");
+    expect(state().chats).toBe(before);
+  });
 });
 
 /** A ticket the PM proposed is a real board row parked at `proposed` — a ghost
@@ -555,14 +567,36 @@ describe("PM proposals", () => {
     await state().loadProposals(projectId);
     const item = ghost("FLT-209");
     if (!item) throw new Error("no ghost to rule on");
-    const del = vi.spyOn(api, "roadmapDeleteItem").mockResolvedValue(null);
+    const discard = vi
+      .spyOn(api, "roadmapDiscardProposal")
+      .mockResolvedValue({ applied: true, item: null });
     try {
       await state().discardProposal(item);
-      expect(del).toHaveBeenCalledWith(item.id);
+      expect(discard).toHaveBeenCalledWith(item.id);
     } finally {
-      del.mockRestore();
+      discard.mockRestore();
     }
     expect(ghost("FLT-209")).toBeUndefined();
+  });
+
+  it("deletes nothing when the row was accepted first, and still takes the card down", async () => {
+    await state().loadProposals(projectId);
+    const item = ghost("FLT-209");
+    if (!item) throw new Error("no ghost to rule on");
+    // What the host answers for a row that has moved on: the discard is refused
+    // and the row comes back as it really is.
+    const discard = vi
+      .spyOn(api, "roadmapDiscardProposal")
+      .mockResolvedValue({ applied: false, item: { ...item, status: "queued" } });
+    try {
+      await state().discardProposal(item);
+    } finally {
+      discard.mockRestore();
+    }
+    // The card goes — a queued row is not a question this chat is waiting on —
+    // but the item someone accepted is still on the board.
+    expect(ghost("FLT-209")).toBeUndefined();
+    expect((await api.roadmapListItems(projectId)).some((i) => i.id === item.id)).toBe(true);
   });
 
   it("replaces the card when a `roadmap:item` says the row is still proposed", async () => {
@@ -583,7 +617,7 @@ describe("PM proposals", () => {
 
   it("takes the card down on `roadmap:item-deleted`, which carries the bare id", async () => {
     await state().loadProposals(projectId);
-    await api.roadmapDeleteItem("itm-tunnel-banner");
+    await api.roadmapDiscardProposal("itm-tunnel-banner");
     await vi.waitFor(() => expect(ghosts()).toHaveLength(0));
   });
 });

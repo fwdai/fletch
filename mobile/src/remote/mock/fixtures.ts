@@ -609,11 +609,12 @@ export const protocol: HostProtocol = {
   ops: [
     ...V2_DEFAULT_OPS,
     "answer_publish_approval",
+    "get_agent",
     "list_project_chats",
     "list_custom_agents",
     "roadmap_list_items",
     "roadmap_update_item",
-    "roadmap_delete_item",
+    "roadmap_discard_proposal",
   ],
   events: [
     "agent:event",

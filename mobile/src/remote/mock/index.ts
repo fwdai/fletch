@@ -268,6 +268,11 @@ export class MockHost {
       }
       case "get_workspace":
         return this.visibleWorkspace();
+      // Read off the whole agent list rather than the visible one: this op is
+      // how a phone resolves a record nothing has listed for it, purpose-tagged
+      // chats very much included.
+      case "get_agent":
+        return this.state.workspace.agents.find((a) => a.id === id) ?? null;
       case "list_project_chats":
         return this.state.workspace.agents
           .filter((a) => a.project_id === args.projectId && a.purpose === args.purpose)
@@ -294,12 +299,18 @@ export class MockHost {
         this.event("roadmap:item", next);
         return { applied: true, item: next };
       }
-      case "roadmap_delete_item": {
+      case "roadmap_discard_proposal": {
         const itemId = String(args.id ?? "");
+        const item = this.state.roadmapItems.find((i) => i.id === itemId);
+        // Gone already: nothing was deleted and there is no row to report.
+        if (!item) return { applied: false, item: null };
+        // The host's condition: a row that has been ruled on is not a proposal
+        // any more, so it survives the discard and comes back as it really is.
+        if (item.status !== "proposed") return { applied: false, item };
         this.state.roadmapItems = this.state.roadmapItems.filter((i) => i.id !== itemId);
         // The payload is the bare id, as the host forwards it.
         this.event("roadmap:item-deleted", itemId);
-        return null;
+        return { applied: true, item: null };
       }
       case "allocate_draft_name": {
         const used = new Set([

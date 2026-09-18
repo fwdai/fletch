@@ -9,7 +9,7 @@
 import { type AgentRecord, ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
 import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import type { Api } from "../api";
-import type { MobileState } from "./index";
+import { agentOf, type MobileState } from "./index";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
 type Get = () => MobileState;
@@ -32,6 +32,12 @@ export interface ChatsSlice {
   /** Apply a live event to a chat record. A no-op for an agent that is not in
    *  the registry, so the event handlers can call it unconditionally. */
   patchChat(agentId: string, fields: Partial<AgentRecord>): void;
+  /** Make an agent id resolvable before a screen mounts on it. A tapped
+   *  notification (or a deep link) carries nothing but an id, and on a cold
+   *  launch both registries are empty — so the record is fetched by id, which
+   *  is the only read that reaches a chat the snapshot hides. Advisory: a
+   *  failure leaves the screen as it was. */
+  ensureAgent(agentId: string): Promise<void>;
 }
 
 /** What the slice borrows from the store it composes into, so it can be a
@@ -50,12 +56,29 @@ export interface ChatsDeps {
   }): Promise<void>;
 }
 
-/** The spawn profile a planning chat runs under: the Mac's own Project Manager
- *  row when its library has one — so an edited brief is honoured and the chat is
- *  attributed to that agent — and the bundled preset otherwise.
+/** Put a record in its project's list — replacing the one already there, or
+ *  prepending it as the newest chat. Every other project's array keeps its
+ *  reference, which is what the selectors reading them need. */
+function upsert(chats: Record<string, AgentRecord[]>, record: AgentRecord) {
+  const list = chats[record.project_id] ?? [];
+  return {
+    ...chats,
+    [record.project_id]: list.some((c) => c.id === record.id)
+      ? list.map((c) => (c.id === record.id ? record : c))
+      : [record, ...list],
+  };
+}
+
+/** The spawn profile a planning chat runs under. The phone only *names* it: it
+ *  sends the Mac's Project Manager row id, and the host resolves that row by
+ *  value — its brief, its skills and its MCP servers — so an edited brief is
+ *  honoured, the chat is attributed to that agent, and no MCP configuration
+ *  crosses the wire.
  *
- *  The phone never seeds the library: creating a custom agent is the desktop's
- *  call, and a spawn with the preset's instructions inline behaves the same. */
+ *  The inline `instructions` are the fallback and nothing else: the host uses
+ *  them only for a library with no Project Manager row. The phone never seeds
+ *  one — creating a custom agent is the desktop's call, and a spawn carrying
+ *  the bundled preset's brief behaves the same. */
 async function projectManager(api: Api) {
   const row = await api
     .listCustomAgents()
@@ -118,9 +141,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         );
         // Registered before the screen opens: `agentOf` resolves from here, and
         // the agent screen mounts on the very next frame.
-        set((s) => ({
-          chats: { ...s.chats, [projectId]: [record, ...(s.chats[projectId] ?? [])] },
-        }));
+        set((s) => ({ chats: upsert(s.chats, record) }));
         await firstTurn({
           record,
           prompt,
@@ -128,6 +149,25 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
           recover: () => get().loadChats(projectId),
         });
       });
+    },
+
+    async ensureAgent(agentId) {
+      // Already resolvable — the snapshot has it, or this registry does.
+      if (agentOf(get(), agentId)) return;
+      if (!get().hostSupports("get_agent")) return;
+      try {
+        const record = await api.getAgent(agentId);
+        if (!record) return;
+        // A purpose tag is exactly what keeps a record out of the snapshot, so
+        // it is this registry's to hold. An untagged record is a sidebar agent
+        // that was spawned after the snapshot was read — the workspace is what
+        // has to catch up there, not this list.
+        if (record.purpose) set((s) => ({ chats: upsert(s.chats, record) }));
+        else await get().refreshWorkspace();
+      } catch {
+        // Advisory: the screen stays as it was rather than the open failing,
+        // and the next reconnect or open tries again.
+      }
     },
 
     patchChat(agentId, fields) {

@@ -442,7 +442,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 |---|---|---|
 | `get_workspace` | `{}` | `Workspace \| null` |
 | `allocate_draft_name` | `{ drafts: string[] }` | `string` |
-| `spawn_agent` | as command; host forces `view: "custom"` and ignores `skills` / `mcpServers`. `customAgentId` is honoured; `purpose` is honoured only when it is `"roadmap-pm"` (see "Planning chats from the phone") and dropped otherwise | `AgentRecord` |
+| `spawn_agent` | as command; host forces `view: "custom"` and ignores `skills` / `mcpServers` — it resolves `customAgentId` against its own library instead, stamping that row's brief, skills and MCP servers on the session (a dangling id spawns a plain agent, and the phone's `instructions` are used only when the row's brief is blank). `purpose` is honoured only when it is `"roadmap-pm"` (see "Planning chats from the phone") and dropped otherwise | `AgentRecord` |
 | `send_user_message` | `{ agentId, turnId, text, attachments: string[] }` — paths from `attachment_end` (see "Attachments") | `boolean` |
 | `answer_tool_use` | `{ agentId, requestId, updatedInput, behavior, message? }` | `null` |
 | `answer_publish_approval` | `{ id, approved }` — `id` from the `publish:approval-requested` event; an id the host has already timed out is ignored | `null` |
@@ -484,9 +484,10 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `attachment_cancel` | `{ upload }` (remote-only) | `null` |
 | `list_project_chats` | `{ projectId, purpose }` — `purpose` is `"roadmap-pm"` | `AgentRecord[]` |
 | `list_custom_agents` | `{}` — the stored `custom_agents` rows, newest-edited first; `skill_ids` / `mcp_server_ids` are JSON text as stored | `CustomAgentRow[]` |
+| `get_agent` | `{ agentId }` — one record by id, including the ones `get_workspace` hides (purpose-scoped chats, run-owned steps) | `AgentRecord \| null` |
 | `roadmap_list_items` | `{ projectId }` | `RoadmapItem[]` |
 | `roadmap_update_item` | `{ id, patch, expectStatus?, queue? }` | `{ applied: boolean, item: RoadmapItem }` |
-| `roadmap_delete_item` | `{ id }` | `null` |
+| `roadmap_discard_proposal` | `{ id }` — deletes only while the item is still `proposed` | `{ applied: boolean, item: RoadmapItem \| null }` — `applied` with `item: null` when it was deleted; `applied: false` with the current `item` when it had already been accepted; `applied: false, item: null` when the id is gone |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
@@ -522,19 +523,31 @@ repo from the phone (`create_repo`) is a follow-up.
 Planning chats from the phone are the desktop Roadmap tab's Project Manager
 chat, reached through the same commands. `list_custom_agents` returns the
 user's presets so the phone can find the Project Manager one; `spawn_agent`
-then opens the chat with `purpose: "roadmap-pm"`, that preset's
-`customAgentId`, and its `instructions` (the only `purpose` the host accepts —
-any other value is dropped and the spawn lands as an ordinary sidebar agent).
+then opens the chat with `purpose: "roadmap-pm"` and that preset's
+`customAgentId` (the only `purpose` the host accepts — any other value is
+dropped and the spawn lands as an ordinary sidebar agent). The phone names the
+preset and nothing more: the host reads the row itself and stamps its brief,
+its skills and its MCP servers on the session, so a planning chat keeps the
+tools the desktop gives it while MCP commands, tokens and headers never cross
+the wire.
+
 A PM chat is absent from `get_workspace`, so `list_project_chats` with
-`{ projectId, purpose: "roadmap-pm" }` is how the phone lists them. The chat
-itself is `send_user_message` and `agent:event` like any other. What the PM
-proposes arrives as `roadmap:item` events and is read back with
-`roadmap_list_items`; the user accepts a proposal with `roadmap_update_item`
-(`patch: { status: "open" }`, `expectStatus: "proposed"` so two clients cannot
-both accept the same ghost row, plus `queue: true` to dispatch it straight
-away) and discards one with `roadmap_delete_item`, which comes back as
-`roadmap:item-deleted`. Nothing else roadmap-side is on the wire: the board's
-own editing — creating, ranking, holding, handing off — stays on the desktop.
+`{ projectId, purpose: "roadmap-pm" }` is how the phone lists them, and
+`get_agent` is how it resolves a single one — a cold open from a push
+notification knows only the id it carried. The chat itself is
+`send_user_message` and `agent:event` like any other. What the PM proposes
+arrives as `roadmap:item` events and is read back with `roadmap_list_items`;
+the user accepts a proposal with `roadmap_update_item` (`patch:
+{ status: "open" }`, `expectStatus: "proposed"` so two clients cannot both
+accept the same ghost row, plus `queue: true` to dispatch it straight away) and
+discards one with `roadmap_discard_proposal`, which comes back as
+`roadmap:item-deleted`. Discard is conditional for the same reason accept is: a
+phone can hold a `proposed` card for minutes, so the host refuses it once the
+row has been ruled on and answers `applied: false` with the row as it now
+stands rather than deleting work in flight. The unconditional
+`roadmap_delete_item` stays off the wire, as does everything else roadmap-side:
+the board's own editing — creating, ranking, holding, handing off — stays on
+the desktop.
 
 ## Dictation
 

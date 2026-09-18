@@ -14,8 +14,10 @@ const CRITERIA_SHOWN = 3;
  *
  *  Accepting is `proposed → open`, conditionally — the same transition the
  *  desktop board's accept makes — with "Add & start agent" queueing it for the
- *  drainer in the same gesture. Discarding deletes: the row never made the
- *  board, so there is no decision to keep. */
+ *  drainer in the same gesture. Discarding deletes, and is conditional for the
+ *  same reason: the row never made the board, so there is no decision to keep,
+ *  but a card left open while someone else accepted it must not take the row
+ *  with it. */
 export function ProposalCard({ item }: { item: RoadmapItem }) {
   const accept = useStore((s) => s.acceptProposal);
   const discard = useStore((s) => s.discardProposal);

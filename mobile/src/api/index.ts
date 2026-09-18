@@ -27,8 +27,13 @@ import type { RemoteClient } from "../remote";
 /** The extras a preset-backed spawn carries. All optional: a plain spawn sends
  *  null for each, exactly as before. */
 export interface SpawnOptions {
-  /** Standing brief injected for the session (a custom agent's instructions). */
+  /** The preset's brief, sent only as the *fallback*: the host uses it when
+   *  `customAgentId` is absent or names a row that is no longer there. A
+   *  library with a Project Manager row wins, and its own brief is what runs. */
   instructions?: string | null;
+  /** The library row the session runs as. The host resolves it by value — the
+   *  row's brief, skills and MCP servers all come off the Mac — so the phone
+   *  names the preset and never carries its configuration. */
   customAgentId?: string | null;
   /** What the workspace is for — `ROADMAP_PM_PURPOSE` for a planning chat.
    *  A tagged workspace is hidden from the snapshot and listed on its own. */
@@ -43,16 +48,28 @@ export type CustomAgentRow = Omit<CustomAgent, "skillIds" | "mcpServerIds"> & {
   mcp_server_ids: string;
 };
 
+/** The result of discarding a ghost — the delete's answer to
+ *  `RoadmapItemUpdate`. `applied` is true only when the row was still
+ *  `proposed` and so was deleted, and `item` then has nothing to report. A row
+ *  that had already been ruled on comes back untouched as `item`, and one that
+ *  is gone already comes back as neither. */
+export interface RoadmapItemDiscard {
+  applied: boolean;
+  item: RoadmapItem | null;
+}
+
 export function createApi(client: RemoteClient) {
   const call = <T>(op: string, args?: Record<string, unknown>) => client.call<T>(op, args);
   return {
     getWorkspace: () => call<Workspace | null>("get_workspace"),
     allocateDraftName: (drafts: string[]) => call<string>("allocate_draft_name", { drafts }),
-    /** Host forces `view: "custom"` and ignores skills/mcp in v1, so only the
-     *  fields the phone can actually influence are sent. `options` carries what
-     *  a preset-backed spawn adds — a standing brief, the custom agent it came
-     *  from, and the purpose tag that keeps a chat off the sidebar. A host from
-     *  before those were honoured simply ignores them. */
+    /** Host forces `view: "custom"`. `skills`/`mcpServers` go null because the
+     *  phone never chooses them: it names the preset in `customAgentId` and the
+     *  host resolves that row's brief, skills and MCP servers by value, so MCP
+     *  configuration never crosses the wire. `options` carries the rest of what
+     *  a preset-backed spawn adds — the fallback brief for a library with no
+     *  such row, and the purpose tag that keeps a chat off the sidebar. A host
+     *  from before those were honoured simply ignores them. */
     spawnAgent: (
       repoPath: string,
       provider: string,
@@ -82,6 +99,10 @@ export function createApi(client: RemoteClient) {
      *  is the only way the phone learns about them. */
     listProjectChats: (projectId: string, purpose: string) =>
       call<AgentRecord[]>("list_project_chats", { projectId, purpose }),
+    /** One record by id, purpose-tagged chats included — the read that resolves
+     *  an agent nothing has listed yet, which is all a phone launched by a
+     *  notification tap has. Gated on `hostSupports("get_agent")`. */
+    getAgent: (agentId: string) => call<AgentRecord | null>("get_agent", { agentId }),
     /** The Mac's custom-agent library, as raw rows. The phone only reads the
      *  spawn profile off them (base/model/effort/instructions); the two JSON id
      *  columns are passed over — the host resolves skills and MCP servers. */
@@ -178,10 +199,15 @@ export function createApi(client: RemoteClient) {
         expectStatus: expectStatus ?? null,
         queue: queue ?? null,
       }),
-    /** Drop an item outright — the other half of ruling on a ghost. A row nobody
-     *  accepted was never a roadmap item, so discarding it deletes rather than
-     *  rejects (a rejection is for a row that made the board). */
-    roadmapDeleteItem: (id: string) => call<null>("roadmap_delete_item", { id }),
+    /** Say no to a ghost — the other half of ruling on one. A row nobody
+     *  accepted was never a roadmap item, so this deletes rather than rejects (a
+     *  rejection is for a row that made the board).
+     *
+     *  Conditional like `roadmapUpdateItem`'s accept, and for the same reason: a
+     *  card can sit on screen for minutes, and a discard tapped after someone
+     *  else accepted the row must not delete work already under way. */
+    roadmapDiscardProposal: (id: string) =>
+      call<RoadmapItemDiscard>("roadmap_discard_proposal", { id }),
 
     /** Remote-only (docs/remote-protocol.md, "Push notifications"): where the
      *  host should have the relay send this phone's alerts. A token needs its

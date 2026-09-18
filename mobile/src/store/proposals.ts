@@ -22,7 +22,8 @@ export interface ProposalsSlice {
    *  same gesture. */
   acceptProposal(item: RoadmapItem, queue: boolean): Promise<void>;
   /** Say no. The row was never a roadmap item, so it goes rather than being
-   *  ruled off the board. */
+   *  ruled off the board — unless it has since been accepted elsewhere, in
+   *  which case the host refuses and the card comes down on the truth. */
   discardProposal(item: RoadmapItem): Promise<void>;
   /** Fold a live `roadmap:item` in. A no-op for a project nothing is watching,
    *  so the event handler can call it unconditionally. */
@@ -94,8 +95,14 @@ export function createProposalsSlice(set: Set, get: Get, deps: ProposalsDeps): P
 
     async discardProposal(item) {
       return guard(async () => {
-        await api.roadmapDeleteItem(item.id);
-        get().removeRoadmapItem(item.id);
+        // Conditional like the accept: the host deletes only while the row is
+        // still a proposal. `applied: false` with a row means someone ruled on
+        // it first — folding that row in takes the card down (it is no longer a
+        // ghost) without anything having been deleted. `applied: false` with no
+        // row is a ghost that is already gone.
+        const { applied, item: current } = await api.roadmapDiscardProposal(item.id);
+        if (!applied && current) get().applyRoadmapItem(current);
+        else get().removeRoadmapItem(item.id);
       });
     },
 

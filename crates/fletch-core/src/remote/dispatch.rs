@@ -117,9 +117,10 @@ pub const OPS: &[&str] = &[
     "attachment_cancel",
     "list_project_chats",
     "list_custom_agents",
+    "get_agent",
     "roadmap_list_items",
     "roadmap_update_item",
-    "roadmap_delete_item",
+    "roadmap_discard_proposal",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -207,13 +208,36 @@ impl Dispatch for SupervisorDispatch {
                 }
 
                 // The structured chat view is forced: the phone has no UI for a
-                // native PTY. `customAgentId` and a roadmap-PM `purpose` pass
-                // through so a phone can open the same planning chat the Roadmap
-                // tab does (see [`remote_purpose`]); `skills` / `mcpServers` stay
-                // dropped, since they are snapshots by value out of desktop
-                // storage the phone cannot see.
+                // native PTY. A roadmap-PM `purpose` passes through so a phone
+                // can open the same planning chat the Roadmap tab does (see
+                // [`remote_purpose`]). The phone only *names* a preset in
+                // `customAgentId`; this host resolves it by value out of its own
+                // library — brief, skills, MCP servers — so MCP commands and
+                // their secrets never cross the wire, and the phone's own
+                // `skills` / `mcpServers` keys stay ignored. A dangling id
+                // resolves to nothing and spawns a plain agent, as the desktop
+                // does.
                 "spawn_agent" => {
                     let a: SpawnArgs = parse(args)?;
+                    let profile = a.custom_agent_id.as_deref().and_then(|id| {
+                        let conn = ctx.db.lock();
+                        crate::agent_profile::library::resolve_custom_agent(
+                            &conn,
+                            id,
+                            // The same default `spawn_agent_impl` applies, so
+                            // the MCP filter matches the provider that runs.
+                            a.provider.as_deref().unwrap_or("claude"),
+                        )
+                    });
+                    let (custom_agent_id, instructions, skills, mcp_servers) = match profile {
+                        Some(p) => (
+                            Some(p.custom_agent_id),
+                            p.instructions.or(a.instructions),
+                            Some(p.skills),
+                            Some(p.mcp_servers),
+                        ),
+                        None => (None, a.instructions, None, None),
+                    };
                     res(crate::commands::spawn_agent_impl(
                         sup.clone(),
                         ctx.clone(),
@@ -223,10 +247,10 @@ impl Dispatch for SupervisorDispatch {
                         a.name,
                         a.effort,
                         a.model,
-                        a.instructions,
-                        a.custom_agent_id,
-                        None,
-                        None,
+                        instructions,
+                        custom_agent_id,
+                        skills,
+                        mcp_servers,
                         a.fork_base,
                         a.issue_ref,
                         remote_purpose(a.purpose),
@@ -477,6 +501,14 @@ impl Dispatch for SupervisorDispatch {
                     res(rows)
                 }
 
+                // One agent by id, hidden records included — a phone opened
+                // cold from a push notification knows only the id it carried,
+                // and a planning chat is absent from `get_workspace`.
+                "get_agent" => {
+                    let a: AgentArgs = parse(args)?;
+                    ok(sup.agent_record(&a.agent_id))
+                }
+
                 "roadmap_list_items" => {
                     let a: ProjectArgs = parse(args)?;
                     ok(
@@ -501,10 +533,16 @@ impl Dispatch for SupervisorDispatch {
                     .await?)
                 }
 
-                "roadmap_delete_item" => {
+                // Discard, not delete: the phone may have held the card since
+                // before another client accepted it, and a stale discard must
+                // not take a row that is already being worked. `applied: false`
+                // comes back with the row as it now stands.
+                "roadmap_discard_proposal" => {
                     let a: ItemIdArgs = parse(args)?;
-                    crate::roadmap::commands::roadmap_delete_item_impl(a.id, ctx, &ctx.db).await?;
-                    Ok(Value::Null)
+                    ok(
+                        crate::roadmap::commands::roadmap_discard_proposal_impl(a.id, ctx, &ctx.db)
+                            .await?,
+                    )
                 }
 
                 // Unreachable while `OPS` and the arms above agree; kept so a

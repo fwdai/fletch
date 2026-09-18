@@ -456,6 +456,16 @@ impl Supervisor {
         chats
     }
 
+    /// One agent by id, with runtime status overlaid. Unlike the workspace
+    /// snapshot this answers for hidden records too — purpose-scoped chats and
+    /// run-owned steps — which is what lets a cold push-notification open
+    /// resolve the chat it names.
+    pub fn agent_record(&self, agent_id: &str) -> Option<AgentRecord> {
+        let mut record = self.workspace.agent(agent_id).ok()?;
+        record.status = self.effective_status(&record.id, &record);
+        Some(record)
+    }
+
     pub fn add_workspace_repo(&self, repo_path: PathBuf) -> Result<Workspace> {
         self.workspace.add_workspace_repo(repo_path)
     }

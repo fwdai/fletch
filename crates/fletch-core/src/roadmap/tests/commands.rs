@@ -1105,3 +1105,53 @@ fn rejecting_writes_a_note_and_consumes_the_proposal() {
     let row = store::get(&conn, &it.id).unwrap().unwrap();
     assert_eq!(row.title, it.title);
 }
+
+/// A phone can hold a `proposed` card for minutes. Discard only deletes while
+/// the row is still a proposal — once another client has accepted it, the
+/// stale discard reports the row as it now stands rather than deleting work.
+#[tokio::test]
+async fn discarding_a_proposal_deletes_it() {
+    let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+    let conn = test_conn();
+    let it = with_status(&conn, ItemStatus::Proposed);
+    let db = test_db(conn);
+
+    let out = roadmap_discard_proposal_impl(it.id.clone(), &ctx, &db)
+        .await
+        .unwrap();
+    assert!(out.applied);
+    assert!(out.item.is_none());
+    assert!(store::get(&db.lock(), &it.id).unwrap().is_none());
+    assert_eq!(
+        sink.events(),
+        vec![("roadmap:item-deleted".to_string(), serde_json::json!(it.id))]
+    );
+}
+
+#[tokio::test]
+async fn discarding_an_accepted_item_leaves_it_alone() {
+    let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+    let conn = test_conn();
+    let it = with_status(&conn, ItemStatus::Open);
+    let db = test_db(conn);
+
+    let out = roadmap_discard_proposal_impl(it.id.clone(), &ctx, &db)
+        .await
+        .unwrap();
+    assert!(!out.applied);
+    assert_eq!(out.item.as_ref().map(|r| r.status), Some(ItemStatus::Open));
+    assert!(store::get(&db.lock(), &it.id).unwrap().is_some());
+    assert!(sink.events().is_empty(), "nothing was written to announce");
+}
+
+#[tokio::test]
+async fn discarding_an_unknown_id_reports_nothing_to_discard() {
+    let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+    let db = test_db(test_conn());
+
+    let out = roadmap_discard_proposal_impl("no-such-item".into(), &ctx, &db)
+        .await
+        .unwrap();
+    assert!(!out.applied);
+    assert!(out.item.is_none());
+}

@@ -1,5 +1,5 @@
 import { Icon } from "@desktop/components/Icon";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Nav, ProviderMark, Segmented } from "../../components/ui";
 import { baseOf, branchOf, isBusy, STATUS_LABEL } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
@@ -90,10 +90,22 @@ export function AgentScreen({ agentId }: { agentId: string }) {
   const pop = useStore((s) => s.pop);
   const openSheet = useStore((s) => s.openSheet);
   const git = useStore((s) => s.gitStates[agentId]);
+  const ensureAgent = useStore((s) => s.ensureAgent);
+  const connected = useStore((s) => s.connection === "connected");
   const [tab, setTab] = useState<Tab>("chat");
   const [dir, setDir] = useState(1);
   // Owned here so sending a message can re-pin the log to the bottom.
   const pinnedToBottom = useRef(true);
+
+  // An id with no record behind it: a notification tapped on a cold launch, or
+  // a deep link, opens this screen before anything has listed the agent — and a
+  // planning chat is never in the snapshot at all. Fetching it by id is what
+  // turns the blank screen into the chat the tap named.
+  const missing = agent === undefined;
+  useEffect(() => {
+    if (missing && connected) void ensureAgent(agentId);
+  }, [missing, connected, agentId, ensureAgent]);
+
   if (!agent) return null;
 
   // A purpose-tagged workspace is a conversation, not a piece of work: the PM
