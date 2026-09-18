@@ -17,12 +17,63 @@
 //!
 //! Secrets read or written here must never appear in logs, telemetry, or
 //! error strings — the `github::client` invariant, enforced at the store too.
+//!
+//! [`use_settings_store_only`] is the one runtime override: a headless host
+//! (`fletch-host`, see `host::boot` under `RemoteBoot::Headless`) keeps its
+//! secrets in the settings table even on a release macOS build, because the
+//! keychain ACL the desktop relies on needs a login keychain — and a service
+//! started by launchd or over SSH has none, so every read would fail (or, worse,
+//! block on a consent dialog nobody can see). The host's protection is
+//! filesystem permissions on its data dir instead; its README says so.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusqlite::Connection;
 
 use crate::error::Result;
 
-pub use store::{delete, get, set};
+/// Which store this process uses for the platform default; see
+/// [`use_settings_store_only`].
+static SETTINGS_ONLY: AtomicBool = AtomicBool::new(false);
+
+/// Keep every secret in the `settings` table for the rest of this process's
+/// life, whatever the platform default would have been. Called once at boot,
+/// before anything reads a secret.
+pub fn use_settings_store_only() {
+    SETTINGS_ONLY.store(true, Ordering::Relaxed);
+}
+
+fn settings_only() -> bool {
+    SETTINGS_ONLY.load(Ordering::Relaxed)
+}
+
+#[cfg(not(all(target_os = "macos", not(debug_assertions))))]
+use settings as platform;
+/// The store this build would use if nothing overrode it: the keychain on
+/// release macOS, the settings table everywhere else.
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
+use store as platform;
+
+pub fn get(conn: &Connection, key: &str) -> Result<Option<String>> {
+    if settings_only() {
+        return settings::get(conn, key);
+    }
+    platform::get(conn, key)
+}
+
+pub fn set(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    if settings_only() {
+        return settings::set(conn, key, value);
+    }
+    platform::set(conn, key, value)
+}
+
+pub fn delete(conn: &Connection, key: &str) -> Result<()> {
+    if settings_only() {
+        return settings::delete(conn, key);
+    }
+    platform::delete(conn, key)
+}
 
 /// Keychain-backed store (release macOS). The setting key doubles as the
 /// keychain account name; the service is the app bundle id.
@@ -141,11 +192,13 @@ mod store {
     }
 }
 
-/// `settings`-table store (dev builds and non-macOS): the pre-keychain
-/// plaintext posture, kept where keychain ACLs can't work — an ad-hoc-signed
-/// dev binary changes identity every rebuild and would prompt each run.
-#[cfg(not(all(target_os = "macos", not(debug_assertions))))]
-mod store {
+/// `settings`-table store: the pre-keychain plaintext posture, kept where
+/// keychain ACLs can't work — an ad-hoc-signed dev binary changes identity
+/// every rebuild and would prompt each run, and a headless service has no
+/// login keychain at all. Compiled on every platform, because
+/// [`use_settings_store_only`] can select it even where the keychain is
+/// available.
+mod settings {
     use super::*;
     use crate::database;
 

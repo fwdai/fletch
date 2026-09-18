@@ -94,8 +94,9 @@ pub struct BootConfig {
 }
 
 /// Whether this host serves paired devices.
-// `Off` is what the headless host and the "local engine off" desktop setting
-// will pass; the desktop always wants `Desktop`.
+// `Off` is what a test and the "local engine off" desktop setting pass; the
+// desktop always wants `Desktop`, and `fletch-host serve` always wants
+// `Headless`.
 #[allow(dead_code)]
 pub enum RemoteBoot {
     /// No listener, no taps, no device store.
@@ -103,6 +104,30 @@ pub enum RemoteBoot {
     /// Today's desktop behaviour: install the taps unconditionally and start
     /// the listener if the stored setting says so.
     Desktop,
+    /// A host with no window: the listener always starts, whatever
+    /// `remote.enabled` says, because serving devices is the only reason the
+    /// process exists. Each field overrides the stored setting *for this run
+    /// only* — nothing here is written back, exactly as the desktop's `boot`
+    /// writes none of the three (the settings pane's `remote_set_*` commands
+    /// are what persist a user's choice).
+    Headless {
+        /// `None` uses the stored `remote.port`, or [`crate::remote::DEFAULT_PORT`].
+        port: Option<u16>,
+        relay: HeadlessRelay,
+        /// The name a paired device shows for this host. `None` asks the
+        /// machine, as the desktop does.
+        name: Option<String>,
+    },
+}
+
+/// What a headless host does about the relay.
+pub enum HeadlessRelay {
+    /// Whatever `remote.relay_url` says, which is what the desktop does.
+    Stored,
+    /// Dial this one instead.
+    Url(String),
+    /// No outbound link this run, whatever is stored (`--no-relay`).
+    Off,
 }
 
 /// The engine, booted. Everything a host has to hold on to: the desktop hands
@@ -126,17 +151,26 @@ pub struct Engine {
     pub events: broadcast::Sender<Event>,
 }
 
-/// Why the engine could not start. Only the database is fatal — every other
-/// step is best-effort and logs.
+/// Why the engine could not start. The database is fatal for every host; the
+/// other two are only reachable under [`RemoteBoot::Headless`], where they are
+/// fatal because a host that cannot isolate an agent, or cannot be reached by
+/// any client, has nothing left to do. Every other step is best-effort and logs.
 #[derive(Debug)]
 pub enum BootError {
     Database(crate::error::Error),
+    /// No sandbox engine is available and none is configured. Off macOS only:
+    /// there is no `sandbox-exec` to fall back to.
+    Sandbox(String),
+    /// The listener could not bind (the port is taken, most likely).
+    Remote(crate::error::Error),
 }
 
 impl std::fmt::Display for BootError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Database(e) => write!(f, "database init failed: {e}"),
+            Self::Sandbox(e) => write!(f, "{e}"),
+            Self::Remote(e) => write!(f, "{e}"),
         }
     }
 }
@@ -157,6 +191,14 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         #[cfg(unix)]
         signals,
     } = cfg;
+
+    let headless = matches!(remote, RemoteBoot::Headless { .. });
+    // Before the first secret is read (the seeds a few steps below): a headless
+    // process has no login keychain to unlock, so it keeps its secrets in the
+    // settings table even where the desktop would not. See `secrets`.
+    if headless {
+        secrets::use_settings_store_only();
+    }
 
     let db = match database::init(&data_dir) {
         Ok(db) => db,
@@ -198,12 +240,17 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // Seed the in-memory sandbox engine selection (mirror of the
     // `sandbox_engine` setting) so spawn-time engine resolution — deep in agent
     // code with no DB handle — honors the user's choice. Missing/unknown values
-    // keep the sandbox-exec default.
-    if let Some(kind) = database::get_setting(&db.lock(), sandbox::ENGINE_SETTING)
+    // keep the sandbox-exec default, except on a headless host off macOS, where
+    // there is no such thing (see `headless_container_engine`).
+    match database::get_setting(&db.lock(), sandbox::ENGINE_SETTING)
         .as_deref()
         .and_then(sandbox::EngineKind::from_setting)
     {
-        sandbox::set_selected_engine_kind(kind);
+        Some(kind) => sandbox::set_selected_engine_kind(kind),
+        None if headless && !cfg!(target_os = "macos") => {
+            sandbox::set_selected_engine_kind(headless_container_engine()?)
+        }
+        None => {}
     }
 
     {
@@ -406,11 +453,15 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
 
     // Paired-device remote access. The event taps go in unconditionally (with
     // nothing connected, forwarding short-circuits before it touches a payload);
-    // the listener itself only starts when the user has turned it on. A failure
-    // here is never fatal — the app is a desktop app first.
+    // whether the listener starts is the one thing the two hosts disagree about.
+    // On the desktop it starts only if the user turned it on, and a failure is
+    // never fatal — the app is a desktop app first. Headless it always starts,
+    // and a failure ends the boot, because a host nothing can reach has no
+    // second purpose to fall back on.
     let remote = match remote {
         RemoteBoot::Off => None,
-        RemoteBoot::Desktop => {
+        // Both hosts build the same thing; only what they do with it differs.
+        serving => {
             let mut dispatch =
                 crate::remote::SupervisorDispatch::new(ctx.clone(), supervisor.clone());
             if let Some(build) = dictation {
@@ -442,21 +493,54 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
                     database::get_setting(&conn, crate::remote::RELAY_URL_SETTING),
                 )
             };
-            // The URL is stored before the autostart, so `start` brings the host
-            // link up with the listener. Safe outside the async runtime: nothing
-            // is enabled yet, so this cannot spawn the link task here.
-            if let Err(e) = state.set_relay(relay_url) {
-                tracing::warn!(error = %e, "remote: stored relay url rejected");
-            }
-            if enabled {
-                // `start` binds synchronously but spawns onto the async runtime,
-                // so it has to run inside it.
-                let state = state.clone();
-                crate::host::spawn(async move {
-                    if let Err(e) = state.start(port) {
-                        tracing::error!(error = %e, "remote: autostart failed");
+            match serving {
+                RemoteBoot::Off => unreachable!("handled above"),
+                RemoteBoot::Desktop => {
+                    // The URL is stored before the autostart, so `start` brings
+                    // the host link up with the listener. Safe outside the async
+                    // runtime: nothing is enabled yet, so this cannot spawn the
+                    // link task here.
+                    if let Err(e) = state.set_relay(relay_url) {
+                        tracing::warn!(error = %e, "remote: stored relay url rejected");
                     }
-                });
+                    if enabled {
+                        // `start` binds synchronously but spawns onto the async
+                        // runtime, so it has to run inside it.
+                        let state = state.clone();
+                        crate::host::spawn(async move {
+                            if let Err(e) = state.start(port) {
+                                tracing::error!(error = %e, "remote: autostart failed");
+                            }
+                        });
+                    }
+                }
+                RemoteBoot::Headless {
+                    port: port_override,
+                    relay,
+                    name,
+                } => {
+                    if let Some(name) = name.as_deref() {
+                        crate::remote::set_name_override(name);
+                    }
+                    let relay_url = match relay {
+                        HeadlessRelay::Stored => relay_url,
+                        HeadlessRelay::Url(url) => Some(url),
+                        HeadlessRelay::Off => None,
+                    };
+                    // A URL the CLI passed is a typo worth refusing outright,
+                    // unlike a stored one the settings pane already validated.
+                    if let Err(e) = state.set_relay(relay_url) {
+                        return Err(BootError::Remote(e));
+                    }
+                    // Unconditional, and synchronous so a port clash is the
+                    // process's exit status rather than a log line nobody reads:
+                    // `serve` runs `boot` inside its runtime for this reason.
+                    // The stored `remote.enabled` is not consulted and not
+                    // written — a host serves devices by definition.
+                    state
+                        .start(port_override.unwrap_or(port))
+                        .map_err(BootError::Remote)?;
+                }
             }
             Some(state)
         }
@@ -509,6 +593,36 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         remote,
         events,
     })
+}
+
+/// The sandbox a headless host uses off macOS when the user has never chosen
+/// one: Docker if the daemon answers, else Podman, else nothing.
+///
+/// There is no safe default to fall back to. `sandbox-exec` — the engine the
+/// desktop starts with — is a macOS binary, and `engine_for` deliberately fails
+/// closed rather than launching an agent outside the boundary the record claims,
+/// so a host that guessed wrong here would accept spawns and refuse every one of
+/// them at the last moment. Refusing to boot says the same thing at the one
+/// moment an operator is watching.
+fn headless_container_engine() -> Result<crate::sandbox::EngineKind, BootError> {
+    use crate::sandbox::{DockerAvailability, EngineKind, PodmanAvailability};
+
+    let docker = sandbox::docker::availability();
+    if matches!(docker, DockerAvailability::Available { .. }) {
+        tracing::info!("no sandbox engine configured; using docker");
+        return Ok(EngineKind::Docker);
+    }
+    let podman = sandbox::podman::availability();
+    if matches!(podman, PodmanAvailability::Available { .. }) {
+        tracing::info!("no sandbox engine configured; using podman");
+        return Ok(EngineKind::Podman);
+    }
+    Err(BootError::Sandbox(format!(
+        "no container runtime is available, and this host has no sandbox engine configured. \
+         Docker: {docker:?}. Podman: {podman:?}. Install and start one of them, or set the \
+         `{}` setting, then start fletch-host again.",
+        sandbox::ENGINE_SETTING
+    )))
 }
 
 /// Startup seed retry pacing for an unavailable secret store: start at 30s (the

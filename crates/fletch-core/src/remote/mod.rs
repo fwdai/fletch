@@ -582,6 +582,21 @@ pub fn candidate_addresses() -> Vec<String> {
     addrs.into_iter().map(|v4| v4.to_string()).collect()
 }
 
+/// The name this host answers to, when the host was started with one
+/// (`fletch-host serve --name`). Set once, before the listener starts, and never
+/// persisted: it is a property of this run, like the port the CLI was given.
+static NAME_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Override the name a device sees, instead of asking the machine for it. A
+/// blank name is ignored; a second call keeps the first.
+pub fn set_name_override(name: &str) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    let _ = NAME_OVERRIDE.set(name.to_string());
+}
+
 /// Host identity for the pairing URL and the `hello` result.
 pub fn host_info() -> HostInfo {
     HostInfo {
@@ -596,6 +611,9 @@ pub fn host_info() -> HostInfo {
 /// ("Alexs-MacBook-Pro.local"), so `scutil` is asked first. Cold path — called
 /// only when pairing or reading status.
 fn machine_name() -> String {
+    if let Some(name) = NAME_OVERRIDE.get() {
+        return name.clone();
+    }
     let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
         &[("scutil", &["--get", "ComputerName"]), ("hostname", &[])]
     } else {
