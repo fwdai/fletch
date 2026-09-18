@@ -166,7 +166,7 @@ pub fn track(event: &str, props: Value) {
 
     let body = build_body(tel, event, props);
     let guard = InflightGuard::register(tel);
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         let _guard = guard;
         if let Err(e) = post(tel, body).await {
             tracing::debug!(error = %e, "telemetry: send failed");

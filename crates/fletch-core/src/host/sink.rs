@@ -55,16 +55,6 @@ pub fn emit<T: serde::Serialize + ?Sized>(sink: &dyn EventSink, event: &str, pay
     }
 }
 
-/// The desktop's sink: events reach the webview exactly as they did when the
-/// engine called `app.emit` itself.
-pub struct TauriSink(pub tauri::AppHandle);
-
-impl EventSink for TauriSink {
-    fn emit_value(&self, event: &str, payload: Value) -> Result<(), String> {
-        tauri::Emitter::emit(&self.0, event, payload).map_err(|e| e.to_string())
-    }
-}
-
 /// Publishes every event on a broadcast channel, for the host's own
 /// subscribers: today the remote event taps, tomorrow anything a headless host
 /// wants to watch without a webview.
@@ -72,8 +62,8 @@ impl EventSink for TauriSink {
 /// No receivers is success, not failure. A channel nobody has subscribed to is
 /// the normal state of a desktop with no phone paired, and the one caller that
 /// reads the error — the publish-approval gate, which denies when the question
-/// could not be asked — is asking about the *user*, whose sink is
-/// [`TauriSink`].
+/// could not be asked — is asking about the *user*, whose sink is the shell's
+/// own `TauriSink`.
 pub struct BroadcastSink(pub broadcast::Sender<Event>);
 
 impl EventSink for BroadcastSink {

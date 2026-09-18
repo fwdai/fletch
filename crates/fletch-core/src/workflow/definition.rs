@@ -17,7 +17,7 @@ use super::now_ms;
 use super::spec::{self, Spec};
 use super::yaml::{self, ImportReport, LocalAgent};
 
-type Db = Arc<Mutex<Connection>>;
+pub type Db = Arc<Mutex<Connection>>;
 
 fn new_id() -> String {
     format!("wf-{}", uuid::Uuid::new_v4())

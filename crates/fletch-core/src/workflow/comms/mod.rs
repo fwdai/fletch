@@ -454,16 +454,13 @@ impl RpcDispatcher for WorkflowCommsDispatcher {
 
 // ───────────────────────────── command (§13) ────────────────────────────────
 
-type Svc<'a> = tauri::State<'a, Arc<WorkflowService>>;
-
 /// Answer a paused `question` and resume the run (spec §13, §10.4).
-#[tauri::command]
-pub async fn wf_answer(
+pub async fn wf_answer_impl(
     project_id: String,
     run_id: String,
     message_id: String,
     body: String,
-    service: Svc<'_>,
+    service: &Arc<WorkflowService>,
 ) -> std::result::Result<(), String> {
     service
         .answer(&project_id, &run_id, &message_id, &body)

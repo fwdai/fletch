@@ -226,7 +226,7 @@ impl ActivityMonitor {
 /// Debounced release: after [`RELEASE_DEBOUNCE`], drop the assertion iff still
 /// idle and no newer recompute has happened (generation match).
 fn schedule_release(generation: u64) {
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         tokio::time::sleep(RELEASE_DEBOUNCE).await;
         let m = ActivityMonitor::global();
         let mut inner = m.inner.lock();

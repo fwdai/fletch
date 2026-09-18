@@ -33,7 +33,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::workflow::types::{Event, Message, Run, RunDetail, StepExec};
 
-type Db = Arc<Mutex<Connection>>;
+pub type Db = Arc<Mutex<Connection>>;
 
 /// Epoch milliseconds, matching the core schema's timestamp convention.
 pub(crate) fn now_ms() -> i64 {

@@ -28,12 +28,7 @@ tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Portable YAML export/import of workflow definitions (workflow/yaml.rs). 0.9 is
-# feature-frozen but stable and is the round-trip serializer the workflows spec
-# names; the file format is the only place we (de)serialize YAML.
-serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
-thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "5"
 tracing = "0.1"
@@ -45,13 +40,10 @@ tracing-appender = "0.2"
 # errors land in one project. Disabled (no-op) when no DSN is baked in.
 sentry = { version = "0.42", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tracing"] }
 tauri-plugin-sentry = "0.5"
-portable-pty = "0.8"
 parking_lot = "0.12"
-nix = { version = "0.29", features = ["signal"] }
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 rusqlite = { version = "0.31", features = ["bundled", "backup"] }
-rusqlite_migration = "1"
 # Native, synchronous message dialog for the fatal DB-init failure path. Used
 # directly (not via tauri-plugin-dialog) because it runs on the calling thread
 # and so works inside `setup`, before the Tauri event loop that the plugin's
@@ -63,26 +55,6 @@ rusqlite_migration = "1"
 rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 base64 = "0.22"
-# Portable git distribution (git_dist.rs): checksum-verify and unpack the
-# pinned dugite-native tarball downloaded when no usable system git exists.
-sha2 = "0.10"
-flate2 = "1"
-tar = "0.4"
-# Paired-device remote access (`remote/`). `handshake` for the LAN listener,
-# `connect` + `rustls-tls-webpki-roots` for the outbound relay link
-# (`remote/relay.rs`), which dials a `wss://` URL and therefore does need a TLS
-# backend — webpki roots rather than the platform store so the link behaves the
-# same on every OS. The *payload* is still end-to-end encrypted by the Noise
-# channel inside the WebSocket, not by TLS, so the same frames survive the relay
-# unchanged (see docs/remote-protocol.md). Pinned to 0.27 rather than 0.30
-# deliberately: 0.30 moves to sha1 0.11 / digest 0.11 and rand 0.10, which would
-# add a second copy of the whole hashing and RNG stack next to the sha2 0.10 and
-# rand 0.9 already in the tree.
-tokio-tungstenite = { version = "0.27", default-features = false, features = [
-  "handshake",
-  "connect",
-  "rustls-tls-webpki-roots",
-] }
 # rustls ends up with *both* crypto backends enabled in this tree (reqwest 0.12
 # via sentry wants aws-lc-rs, reqwest 0.13 wants ring), and with two it refuses
 # to pick: the first `ClientConfig::builder()` panics unless a process-level
@@ -91,33 +63,20 @@ tokio-tungstenite = { version = "0.27", default-features = false, features = [
 # anything dials; this direct dependency is only what gives `run()` the path to
 # name it — it enables nothing that was not already on.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-# The wire protocol, shared with the mobile app: the Noise channel
-# (`Noise_XX_25519_ChaChaPoly_BLAKE2s`, the pattern the protocol doc fixes), the
-# host key file, the relay proof and the relay's multiplexing framing. A path
-# dependency rather than a workspace member, so each package keeps its own
-# lockfile and the release workflow needs no change.
-fletch-proto = { path = "../crates/fletch-proto" }
-# `sink` for `SinkExt` on the split WebSocket writer; nothing else in the crate
-# needs the combinator zoo.
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-# Pairing codes and device tokens (`remote/auth.rs`). Already in the tree
-# transitively at this major.
-rand = "0.9"
-# The host's LAN addresses, for the pairing URL and the settings pane's
-# "reachable at" line. Smallest interface-enumeration crate: libc on unix,
-# windows-sys elsewhere, both already present.
-if-addrs = "0.13"
+# The engine: agents, sandboxes, workspaces, workflows, the roadmap and the
+# remote host, with no Tauri in its dependency graph (`crates/fletch-core`).
+# This crate is the desktop *shell* around it — Tauri setup, the command
+# wrappers, the tray, dictation, OAuth and the updater. A path dependency rather
+# than a workspace member, so each binary package keeps its own lockfile and the
+# release workflow needs no change. The wire protocol (`fletch-proto`) arrives
+# transitively through it.
+fletch-core = { path = "../crates/fletch-core" }
 
 # Window state (size/position/maximized) persistence — desktop only.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
 
-# App-held secrets (secrets.rs): release builds keep the GitHub / container
-# tokens in the login Keychain via the in-process API — the same signed binary
-# creates and reads the items, so access is silent. Already in the dep tree
-# transitively; pinned to the lockfile's major.
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3"
 # Local dictation (dictation/whisper/): whisper.cpp, built from source by
 # whisper-rs-sys. macOS-only on purpose — `metal` puts inference on the GPU,
 # and the Linux CI build has no reason to compile a C++/CMake tree it never
@@ -162,11 +121,6 @@ objc2-av-foundation = { version = "0.3", default-features = false, features = [
 
 [dev-dependencies]
 tempfile = "3"
-# `test-util` unlocks the paused-time test clock (`#[tokio::test(start_paused)]`)
-# the workflow attempt tests use to exercise spawn/turn/stall deadlines
-# deterministically. Test-only (unioned with the runtime `full` feature); it
-# activates no extra crates, so the lockfile is unchanged.
-tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 opt-level = "z"

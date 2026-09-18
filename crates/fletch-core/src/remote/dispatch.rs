@@ -42,6 +42,26 @@ pub trait Dispatch: Send + Sync + 'static {
 /// The error text the protocol reserves for an op that is not on the allowlist.
 pub const UNKNOWN_OP: &str = "unknown op";
 
+/// The five ops a host can only answer with a local speech engine behind it.
+/// They stay in [`OPS`] on every host — the protocol descriptor advertises them
+/// and a phone may always ask — but a host with no engine answers
+/// `dictation_status` with `available: false` and the four capture ops with
+/// [`DICTATION_UNAVAILABLE`], which is the wire shape a non-macOS build has
+/// always had.
+const DICTATION_OPS: &[&str] = &[
+    "dictation_status",
+    "dictation_begin",
+    "dictation_audio",
+    "dictation_end",
+    "dictation_cancel",
+];
+
+/// What a host with no local speech engine says. The same words the non-macOS
+/// build has always answered with, so the phone's message does not change with
+/// the host's shape.
+pub const DICTATION_UNAVAILABLE: &str =
+    "Dictation from a phone needs a Mac host: whisper.cpp is only built there.";
+
 /// The error text a connection gets when it already has the per-connection
 /// maximum of requests outstanding (`server::MAX_IN_FLIGHT`). The request is
 /// answered without being dispatched; the client retries.
@@ -122,11 +142,29 @@ pub fn is_allowed(op: &str) -> bool {
 pub struct SupervisorDispatch {
     ctx: Arc<EngineCtx>,
     sup: Arc<Supervisor>,
+    /// The host's local speech engine, if it has one. Not an arm here because
+    /// transcription is the one op group that needs a platform the engine does
+    /// not: whisper.cpp is built on macOS only, and its module lives in the
+    /// desktop shell beside the microphone code it shares. See
+    /// [`DICTATION_OPS`].
+    dictation: Option<Arc<dyn Dispatch>>,
 }
 
 impl SupervisorDispatch {
     pub fn new(ctx: Arc<EngineCtx>, sup: Arc<Supervisor>) -> Self {
-        Self { ctx, sup }
+        Self {
+            ctx,
+            sup,
+            dictation: None,
+        }
+    }
+
+    /// Answer the five [`DICTATION_OPS`] with `dictation` instead of the
+    /// unavailable stub. The desktop passes its whisper-backed dispatcher
+    /// through [`crate::host::BootConfig::dictation`].
+    pub fn with_dictation(mut self, dictation: Arc<dyn Dispatch>) -> Self {
+        self.dictation = Some(dictation);
+        self
     }
 }
 
@@ -137,6 +175,19 @@ impl Dispatch for SupervisorDispatch {
             // layer and has no identity here, so it fails closed.
             if !OPS.contains(&op) {
                 return Err(UNKNOWN_OP.to_string());
+            }
+            if DICTATION_OPS.contains(&op) {
+                return match &self.dictation {
+                    Some(dictation) => dictation.dispatch(op, args).await,
+                    // Same shape `dictation::remote::Status` serializes, so a
+                    // phone talking to an engine-less host reads the reply it
+                    // already knows how to render.
+                    None if op == "dictation_status" => Ok(serde_json::json!({
+                        "available": false,
+                        "reason": DICTATION_UNAVAILABLE,
+                    })),
+                    None => Err(DICTATION_UNAVAILABLE.to_string()),
+                };
             }
             let sup = &self.sup;
             let ctx = &self.ctx;
@@ -359,28 +410,6 @@ impl Dispatch for SupervisorDispatch {
                     add_project_op(sup, op, args).await,
                 ),
 
-                // Remote-only: the phone captures, this Mac transcribes with the
-                // local whisper engine (`dictation::remote`). The transcript is
-                // the reply to `dictation_end`; no event is involved. The engine
-                // settings these read come off the ctx's DB handle — the same
-                // connection the Tauri commands reach through `State`, so a
-                // phone sees exactly what Settings › Dictation shows.
-                "dictation_status" => ok(crate::dictation::remote::status(&ctx.db)),
-                "dictation_begin" => res(crate::dictation::remote::begin(&ctx.db)),
-                "dictation_audio" => {
-                    let a: DictationAudioArgs = parse(args)?;
-                    res(crate::dictation::remote::append(&a.session, a.rate, &a.pcm))
-                }
-                "dictation_end" => {
-                    let a: DictationSessionArgs = parse(args)?;
-                    res(crate::dictation::remote::end(&ctx.db, &a.session).await)
-                }
-                "dictation_cancel" => {
-                    let a: DictationSessionArgs = parse(args)?;
-                    crate::dictation::remote::cancel(&a.session);
-                    Ok(Value::Null)
-                }
-
                 // Remote-only: the phone streams a file's bytes, this Mac stages
                 // it where a desktop paste lands (`attachments::remote`). The
                 // path `attachment_end` answers with goes in `send_user_message`'s
@@ -585,20 +614,6 @@ struct CreatePrArgs {
     body: String,
     #[serde(default)]
     subdir: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct DictationSessionArgs {
-    session: String,
-}
-
-/// One chunk of a phone's dictation: 16-bit little-endian mono PCM, base64,
-/// at the rate the phone captured it. See `dictation::remote`.
-#[derive(Deserialize)]
-struct DictationAudioArgs {
-    session: String,
-    rate: f64,
-    pcm: String,
 }
 
 /// Opens a phone upload; `name` is the display filename (path components are

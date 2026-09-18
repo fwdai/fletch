@@ -66,6 +66,11 @@ pub struct BootConfig {
     /// The runtime the engine's background tasks belong to (`host::runtime`).
     pub runtime: tokio::runtime::Handle,
     pub remote: RemoteBoot,
+    /// The host's local speech engine, for the five `dictation_*` ops. The
+    /// desktop passes its whisper-backed dispatcher; a host without one passes
+    /// `None`, and those ops answer "unavailable" (see
+    /// [`crate::remote::SupervisorDispatch::with_dictation`]).
+    pub dictation: Option<Arc<dyn crate::remote::Dispatch>>,
     /// Recovery for a failed `database::init`; `None` boots no further.
     pub recover_db: Option<DbRecovery>,
     /// Run once the supervisor exists and before anything resumes work. The
@@ -107,8 +112,7 @@ pub struct Engine {
     pub workspace: Arc<WorkspaceManager>,
     pub supervisor: Arc<Supervisor>,
     pub workflows: Arc<WorkflowService>,
-    /// `None` under [`RemoteBoot::Off`], or when remote access is compiled out.
-    #[cfg(desktop)]
+    /// `None` under [`RemoteBoot::Off`].
     pub remote: Option<Arc<crate::remote::RemoteState>>,
     /// Every engine event, for the host's own subscribers. The remote taps are
     /// already subscribed (see [`RemoteBoot::Desktop`]), which is why the
@@ -142,6 +146,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         focus,
         runtime,
         remote,
+        dictation,
         recover_db,
         on_supervisor,
         #[cfg(unix)]
@@ -398,14 +403,15 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // nothing connected, forwarding short-circuits before it touches a payload);
     // the listener itself only starts when the user has turned it on. A failure
     // here is never fatal — the app is a desktop app first.
-    #[cfg(desktop)]
     let remote = match remote {
         RemoteBoot::Off => None,
         RemoteBoot::Desktop => {
-            let dispatch = Arc::new(crate::remote::SupervisorDispatch::new(
-                ctx.clone(),
-                supervisor.clone(),
-            ));
+            let mut dispatch =
+                crate::remote::SupervisorDispatch::new(ctx.clone(), supervisor.clone());
+            if let Some(dictation) = dictation {
+                dispatch = dispatch.with_dictation(dictation);
+            }
+            let dispatch = Arc::new(dispatch);
             // `RemoteState::new` cannot fail: the state has to be managed even
             // when the device store or the host key is unusable, or
             // `remote_status` panics the moment Settings opens. Such a failure
@@ -495,7 +501,6 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         workspace,
         supervisor,
         workflows,
-        #[cfg(desktop)]
         remote,
         events,
     })
@@ -572,6 +577,7 @@ mod tests {
                 focus: Box::new(|| false),
                 runtime: tokio::runtime::Handle::current(),
                 remote: RemoteBoot::Off,
+                dictation: None,
                 recover_db: None,
                 on_supervisor: None,
                 #[cfg(unix)]
@@ -591,7 +597,6 @@ mod tests {
                 &engine.ctx.workflows().unwrap(),
                 &engine.workflows
             ));
-            #[cfg(desktop)]
             assert!(
                 engine.remote.is_none(),
                 "RemoteBoot::Off started a listener"

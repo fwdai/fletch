@@ -725,18 +725,19 @@ pub async fn wf_retry_impl(
     service.retry(&run_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn wf_approve(run_id: String, service: Svc<'_>) -> std::result::Result<(), String> {
+pub async fn wf_approve_impl(
+    run_id: String,
+    service: &Arc<WorkflowService>,
+) -> std::result::Result<(), String> {
     service.approve(&run_id).map_err(|e| e.to_string())
 }
 
 /// Reject a run paused on an approval gate (spec §9): re-prompt the step with the
 /// `note` for one more attempt within budget, else pause `blocked_gate`.
-#[tauri::command]
-pub async fn wf_reject(
+pub async fn wf_reject_impl(
     run_id: String,
     note: String,
-    service: Svc<'_>,
+    service: &Arc<WorkflowService>,
 ) -> std::result::Result<(), String> {
     service.reject(&run_id, &note).map_err(|e| e.to_string())
 }
@@ -745,13 +746,12 @@ pub async fn wf_reject(
 /// the review surface diffs a ferried step ref against the run base, both objects
 /// in `~/.fletch/runs/<id>/repo`. `path` scopes it to one file; omit for the whole
 /// diff. Read-only.
-#[tauri::command]
-pub async fn wf_run_diff(
+pub async fn wf_run_diff_impl(
     run_id: String,
     from_sha: String,
     to_sha: String,
     path: Option<String>,
-    service: Svc<'_>,
+    service: &Arc<WorkflowService>,
 ) -> std::result::Result<String, String> {
     service
         .run_diff(&run_id, &from_sha, &to_sha, path.as_deref())
@@ -761,24 +761,22 @@ pub async fn wf_run_diff(
 
 /// Delete a terminal run and everything it owns (spec §13): run-owned step
 /// agents (and their chats), the run directory, and the run's rows.
-#[tauri::command]
-pub async fn wf_delete_run(
+pub async fn wf_delete_run_impl(
     run_id: String,
-    service: Svc<'_>,
-    supervisor: tauri::State<'_, Arc<Supervisor>>,
+    service: &Arc<WorkflowService>,
+    supervisor: &Arc<Supervisor>,
 ) -> std::result::Result<(), String> {
     service
-        .delete_run(supervisor.inner(), &run_id)
+        .delete_run(supervisor, &run_id)
         .await
         .map_err(|e| e.to_string())
 }
 
 /// Resolve a merge conflict (§12.3): `mode` is `"agent"` or `"human"`.
-#[tauri::command]
-pub async fn wf_resolve_conflict(
+pub async fn wf_resolve_conflict_impl(
     run_id: String,
     mode: String,
-    service: Svc<'_>,
+    service: &Arc<WorkflowService>,
 ) -> std::result::Result<(), String> {
     service
         .resolve_conflict(&run_id, &mode)

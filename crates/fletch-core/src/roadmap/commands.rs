@@ -1,4 +1,6 @@
-//! Tauri command surface for the roadmap. Domain work lives in sibling modules.
+//! The roadmap's command surface. Domain work lives in sibling modules; the
+//! `#[tauri::command]` wrappers that reach these live in
+//! `src-tauri/src/commands/roadmap.rs`.
 
 use std::sync::Arc;
 
@@ -19,30 +21,27 @@ use super::types::{ItemPatch, ItemStatus, ItemUpdate, NewItem, RoadmapItem};
 use super::Db;
 use crate::host::EngineCtx;
 
-#[tauri::command]
-pub async fn roadmap_list_items(
+pub async fn roadmap_list_items_impl(
     project_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Vec<RoadmapItem>, String> {
     let conn = db.lock();
     store::list(&conn, &project_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn roadmap_get_item(
+pub async fn roadmap_get_item_impl(
     item_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Option<RoadmapItem>, String> {
     let conn = db.lock();
     store::get(&conn, &item_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn roadmap_create_item(
+pub async fn roadmap_create_item_impl(
     project_id: String,
     item: NewItem,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<RoadmapItem, String> {
     if item.title.trim().is_empty() {
         return Err("a roadmap item needs a title".into());
@@ -57,14 +56,13 @@ pub async fn roadmap_create_item(
     Ok(created)
 }
 
-#[tauri::command]
-pub async fn roadmap_update_item(
+pub async fn roadmap_update_item_impl(
     id: String,
     patch: ItemPatch,
     expect_status: Option<ItemStatus>,
     queue: Option<bool>,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<ItemUpdate, String> {
     let (outcome, event) = {
         let conn = db.lock();
@@ -84,13 +82,12 @@ pub async fn roadmap_update_item(
     Ok(outcome)
 }
 
-#[tauri::command]
 // Rank-only write: deliberately no history event (migration 0032).
-pub async fn roadmap_set_rank(
+pub async fn roadmap_set_rank_impl(
     item_id: String,
     rank: f64,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<RoadmapItem, String> {
     let item = {
         let conn = db.lock();
@@ -110,12 +107,11 @@ pub async fn roadmap_set_rank(
     Ok(item)
 }
 
-#[tauri::command]
-pub async fn roadmap_hand_off_item(
+pub async fn roadmap_hand_off_item_impl(
     item_id: String,
     agent_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<RoadmapItem, String> {
     let (item, event) = {
         let conn = db.lock();
@@ -126,25 +122,23 @@ pub async fn roadmap_hand_off_item(
     Ok(item)
 }
 
-#[tauri::command]
 // Drop DB lock before network; never hold the app connection across awaits.
-pub async fn roadmap_item_review(
+pub async fn roadmap_item_review_impl(
     item_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Option<pr_review::ItemReview>, String> {
-    let Some((repo, number)) = pr_review::target(&db, &item_id) else {
+    let Some((repo, number)) = pr_review::target(db, &item_id) else {
         return Ok(None);
     };
     Ok(Some(pr_review::fetch(&repo, number).await))
 }
 
-#[tauri::command]
-pub async fn roadmap_merge_item_pr(
+pub async fn roadmap_merge_item_pr_impl(
     item_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<(), String> {
-    merge_sweep::merge_hold_gate(&db, &item_id)?;
-    let (repo, number) = pr_review::target(&db, &item_id).ok_or(
+    merge_sweep::merge_hold_gate(db, &item_id)?;
+    let (repo, number) = pr_review::target(db, &item_id).ok_or(
         "this item has no pull request to merge — it may have shipped or come back to the board",
     )?;
     crate::github::pr_merge_number(&repo, number)
@@ -154,13 +148,12 @@ pub async fn roadmap_merge_item_pr(
     Ok(())
 }
 
-#[tauri::command]
 // Not hand_off: that gate refuses past `open`.
-pub async fn roadmap_note_review_feedback(
+pub async fn roadmap_note_review_feedback_impl(
     item_id: String,
     threads: usize,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<ItemEvent, String> {
     let event = {
         let conn = db.lock();
@@ -188,12 +181,11 @@ pub async fn roadmap_note_review_feedback(
     Ok(event)
 }
 
-#[tauri::command]
-pub async fn roadmap_hold_item(
+pub async fn roadmap_hold_item_impl(
     item_id: String,
     reason: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<RoadmapItem, String> {
     let reason = brakes::clean_reason(&reason)?;
     let (item, event) = {
@@ -205,11 +197,10 @@ pub async fn roadmap_hold_item(
     Ok(item)
 }
 
-#[tauri::command]
-pub async fn roadmap_release_item(
+pub async fn roadmap_release_item_impl(
     item_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<RoadmapItem, String> {
     let (item, event) = {
         let conn = db.lock();
@@ -223,21 +214,19 @@ pub async fn roadmap_release_item(
     Ok(item)
 }
 
-#[tauri::command]
-pub async fn roadmap_get_project_hold(
+pub async fn roadmap_get_project_hold_impl(
     project_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Option<ProjectHold>, String> {
     let conn = db.lock();
     brakes::get_project(&conn, &project_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn roadmap_hold_project(
+pub async fn roadmap_hold_project_impl(
     project_id: String,
     reason: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<ProjectHold, String> {
     let reason = brakes::clean_reason(&reason)?;
     let hold = {
@@ -249,12 +238,11 @@ pub async fn roadmap_hold_project(
     Ok(hold)
 }
 
-#[tauri::command]
 // Release is user-only; no agent RPC path.
-pub async fn roadmap_release_project(
+pub async fn roadmap_release_project_impl(
     project_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<(), String> {
     {
         let conn = db.lock();
@@ -265,11 +253,10 @@ pub async fn roadmap_release_project(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn roadmap_reclaim_item(
+pub async fn roadmap_reclaim_item_impl(
     item_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<RoadmapItem, String> {
     let (item, event) = {
         let conn = db.lock();
@@ -281,12 +268,11 @@ pub async fn roadmap_reclaim_item(
     Ok(item)
 }
 
-#[tauri::command]
-pub async fn roadmap_reject_item(
+pub async fn roadmap_reject_item_impl(
     item_id: String,
     reason: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<RoadmapItem, String> {
     let (item, event, pending) = {
         let conn = db.lock();
@@ -301,11 +287,10 @@ pub async fn roadmap_reject_item(
     Ok(item)
 }
 
-#[tauri::command]
-pub async fn roadmap_reopen_item(
+pub async fn roadmap_reopen_item_impl(
     item_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<RoadmapItem, String> {
     let (item, event, corrections) = {
         let conn = db.lock();
@@ -322,12 +307,11 @@ pub async fn roadmap_reopen_item(
     Ok(item)
 }
 
-#[tauri::command]
 // Cascade-delete pending proposal; stale dep codes count as satisfied.
-pub async fn roadmap_delete_item(
+pub async fn roadmap_delete_item_impl(
     id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<(), String> {
     let (removed, pending) = {
         let conn = db.lock();
@@ -353,38 +337,34 @@ pub async fn roadmap_delete_item(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn roadmap_list_item_events(
+pub async fn roadmap_list_item_events_impl(
     item_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Vec<ItemEvent>, String> {
     let conn = db.lock();
     events::list_for_item(&conn, &item_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn roadmap_latest_events(
+pub async fn roadmap_latest_events_impl(
     project_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Vec<ItemEvent>, String> {
     let conn = db.lock();
     events::latest_per_item(&conn, &project_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn roadmap_list_proposals(
+pub async fn roadmap_list_proposals_impl(
     project_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Vec<Proposal>, String> {
     let conn = db.lock();
     proposals::list_for_project(&conn, &project_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn roadmap_accept_proposal(
+pub async fn roadmap_accept_proposal_impl(
     proposal_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<(), String> {
     let ruling = {
         let conn = db.lock();
@@ -402,11 +382,10 @@ pub async fn roadmap_accept_proposal(
     }
 }
 
-#[tauri::command]
-pub async fn roadmap_reject_proposal(
+pub async fn roadmap_reject_proposal_impl(
     proposal_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<(), String> {
     let event = {
         let conn = db.lock();
@@ -417,20 +396,18 @@ pub async fn roadmap_reject_proposal(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn roadmap_get_order_proposal(
+pub async fn roadmap_get_order_proposal_impl(
     project_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Option<OrderProposal>, String> {
     let conn = db.lock();
     order_proposals::get(&conn, &project_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn roadmap_accept_order_proposal(
+pub async fn roadmap_accept_order_proposal_impl(
     project_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<(), String> {
     let ruling = {
         let conn = db.lock();
@@ -449,11 +426,10 @@ pub async fn roadmap_accept_order_proposal(
     }
 }
 
-#[tauri::command]
-pub async fn roadmap_reject_order_proposal(
+pub async fn roadmap_reject_order_proposal_impl(
     project_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<(), String> {
     {
         let conn = db.lock();
@@ -463,30 +439,27 @@ pub async fn roadmap_reject_order_proposal(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn roadmap_get_brief(
+pub async fn roadmap_get_brief_impl(
     project_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Option<Brief>, String> {
     let conn = db.lock();
     memory::load(&conn, &project_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn roadmap_get_brief_proposal(
+pub async fn roadmap_get_brief_proposal_impl(
     project_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Option<BriefProposal>, String> {
     let conn = db.lock();
     memory::get_proposal(&conn, &project_id).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
 // Brief + proposal consume under one lock (invariant 3).
-pub async fn roadmap_accept_brief_proposal(
+pub async fn roadmap_accept_brief_proposal_impl(
     project_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<Brief, String> {
     let applied = {
         let conn = db.lock();
@@ -498,11 +471,10 @@ pub async fn roadmap_accept_brief_proposal(
     Ok(brief)
 }
 
-#[tauri::command]
-pub async fn roadmap_reject_brief_proposal(
+pub async fn roadmap_reject_brief_proposal_impl(
     project_id: String,
-    ctx: tauri::State<'_, Arc<EngineCtx>>,
-    db: tauri::State<'_, Db>,
+    ctx: &Arc<EngineCtx>,
+    db: &Db,
 ) -> Result<(), String> {
     {
         let conn = db.lock();
