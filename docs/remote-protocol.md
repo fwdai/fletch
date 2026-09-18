@@ -464,6 +464,11 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `get_file_diff` | as command | `string` |
 | `commit_agent` | as command | `null` |
 | `push_agent` | as command | `string` |
+| `pull_agent` | as command — `git pull` in the checkout, with the same GitHub credential `push_agent` spends | `null` |
+| `rebase_agent` | as command — rebases the checkout onto its base's resolved tip, not onto the clone's stale local base ref | `null` |
+| `stash_agent` | as command — stashes the working tree, untracked files included | `null` |
+| `discard_agent_changes` | as command — destructive: every uncommitted change in the checkout goes. Not `discard_agent`, which takes the whole session | `null` |
+| `abort_merge_agent` | as command — `git merge --abort` in the checkout | `null` |
 | `create_pr` | as command | `PrState` |
 | `merge_pr` | as command — merges the open PR on the targeted repo's branch | `null` |
 | `get_pr_state` | as command | `PrState \| null` |
@@ -503,11 +508,23 @@ roadmap op but the three listed above (no create, no rank, no hand-off, no
 queue, no proposal or hold ops). Adding an op means adding a row here and a
 match arm in the dispatcher.
 
+Withheld on policy, not scope: `delete_branch_agent`. Every other Git-panel
+action acts inside the agent's own checkout, which is the reach `commit_agent`
+has always had; this one runs `git branch -D` in `TrackedRepo.repo_path` — the
+user's real clone, outside every checkout — so a remote client cannot ask for
+it. The branch it would delete is the agent's own recorded branch and never
+comes from the request, but the write still lands in a repository the protocol
+does not otherwise touch, which is the line `rpc/caps.rs` draws for agents:
+force is confined to the branch the host itself materialized. Deleting a merged
+branch is done on the host, or on GitHub.
+
 Not yet exposed, but only for want of a reason to be: `fork_agent`,
 `delete_project` and `create_repo`. These are scope, not policy — a client gates
 each one on its absence from `protocol.ops` and says so, and a later release may
 add the row. `merge_pr` was in this group until it earned its row above: the
-credential it spends is the one `push_agent` and `create_pr` already spend.
+credential it spends is the one `push_agent` and `create_pr` already spend, and
+the five working-tree ops (`pull_agent`, `rebase_agent`, `stash_agent`,
+`discard_agent_changes`, `abort_merge_agent`) joined it for the same reason.
 
 The spawn flow is the desktop's: `allocate_draft_name` → `spawn_agent` →
 wait for `agent:status` to leave `spawning` → `send_user_message` with the

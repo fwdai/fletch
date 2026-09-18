@@ -4,6 +4,7 @@ import type { PrChecks, PrComment } from "@/api";
 import { formatCommentForChat } from "@/components/RightPanel/prComments";
 import { appActionMessage, type DelegationKind } from "@/delegation";
 import { useAppStore } from "@/store";
+import { activeActionGateReason } from "../actionGates";
 
 // Actions that push to / read from GitHub. In local/offline mode these are
 // intercepted in `runAction` and replaced with connect-or-publish, so none of
@@ -120,6 +121,17 @@ export function useGitActions(ctx: GitActionsCtx) {
     // instead of dispatching a call that would error.
     if (NEEDS_GITHUB.has(key) && !githubConnected) key = "connect-github";
     else if (NEEDS_GITHUB.has(key) && !hasOrigin) key = "publish";
+
+    // Same backstop for the environment: a host from before this action's op
+    // existed answers `unknown op`, so say why instead of calling it. The main
+    // button is already dead for this (`useActionBarModel`), but the dispatch
+    // has callers that never consult it — the commit composer's Cmd/Ctrl+Enter
+    // was dispatching a refused op — so the refusal belongs here too.
+    const gateClosed = activeActionGateReason(key);
+    if (gateClosed) {
+      showNotice(gateClosed);
+      return;
+    }
 
     switch (key) {
       case "connect-github":
