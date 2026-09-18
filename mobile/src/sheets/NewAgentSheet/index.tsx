@@ -1,13 +1,13 @@
 import { Icon } from "@desktop/components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { useAttachments } from "../../attachments";
+import { PromptField } from "../../components/PromptField";
 import { PickerSheet, ProviderMark, Sheet, Swatch } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { modelLabel, providerLabel } from "../../lib/agents";
 import { ignore } from "../../lib/ignore";
 import { modelsFor, useModels } from "../../lib/models";
 import { api, useStore } from "../../store";
-import { PromptField } from "./PromptField";
 import { RunnerSheet } from "./RunnerSheet";
 
 type Picker = "project" | "branch" | "runner" | null;

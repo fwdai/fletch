@@ -2,7 +2,12 @@
 // stream-json shapes (the same ones tests/adapters/**/fixtures carry), so the
 // desktop adapters render them exactly as they render a live host's.
 
-import type { AgentRecord, TrackedRepo, Workspace } from "@desktop/api/types/agent";
+import {
+  type AgentRecord,
+  ROADMAP_PM_PURPOSE,
+  type TrackedRepo,
+  type Workspace,
+} from "@desktop/api/types/agent";
 import type { CheckoutFile, CheckoutFileContents, DirEntry } from "@desktop/api/types/checkout";
 import type { GitState } from "@desktop/api/types/git";
 import type { PrChecks, PrState } from "@desktop/api/types/pr";
@@ -10,6 +15,8 @@ import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import { type HostProtocol, V2_DEFAULT_OPS } from "@desktop/remote/types";
+import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
+import type { CustomAgentRow } from "../../api";
 
 export const FLETCH_REPO = "/Users/alex/.fletch/workspaces/fletch";
 export const ATLAS_REPO = "/Users/alex/.fletch/workspaces/atlas";
@@ -52,6 +59,8 @@ const agent = (a: Partial<AgentRecord> & Pick<AgentRecord, "id" | "name" | "proj
     purpose: null,
     ...a,
   }) as AgentRecord;
+
+export const PM_CUSTOM_AGENT_ID = "ca-project-manager";
 
 export const workspace: Workspace = {
   repos: [FLETCH_REPO, ATLAS_REPO],
@@ -103,8 +112,40 @@ export const workspace: Workspace = {
       task: "Virtualize the Today list",
       repos: [repo(ATLAS_REPO, "perf/list-virtualization", "main")],
     }),
+    // A planning chat the user already had going. Purpose-tagged, so the host
+    // keeps it out of every `get_workspace` answer and only `list_project_chats`
+    // reports it — which is exactly the path the phone's chat registry takes.
+    agent({
+      id: "sakura",
+      name: "sakura",
+      project_id: "prj-fletch",
+      status: "idle",
+      task: "Offline queue for messages typed on the train",
+      purpose: ROADMAP_PM_PURPOSE,
+      custom_agent_id: PM_CUSTOM_AGENT_ID,
+      created_at: "2026-09-08T07:40:00Z",
+    }),
   ],
 };
+
+/** The Mac's custom-agent library, as raw `custom_agents` rows. The Project
+ *  Manager is the row a planning chat resolves itself from. */
+export const customAgents: CustomAgentRow[] = [
+  {
+    id: PM_CUSTOM_AGENT_ID,
+    name: PROJECT_MANAGER_NAME,
+    description: PROJECT_MANAGER_PRESET.description,
+    color: PROJECT_MANAGER_PRESET.color,
+    base: PROJECT_MANAGER_PRESET.base,
+    model: PROJECT_MANAGER_PRESET.model,
+    effort: PROJECT_MANAGER_PRESET.effort,
+    instructions: PROJECT_MANAGER_PRESET.instructions,
+    skill_ids: "[]",
+    mcp_server_ids: "[]",
+    created_at: 1_757_000_000_000,
+    updated_at: 1_757_000_000_000,
+  },
+];
 
 // --- session records ------------------------------------------------------
 
@@ -500,7 +541,7 @@ export const hostInfo = { name: "Alex's MacBook Pro", appVersion: "0.7.23", os: 
  *  the rest of this file — it is the host's answer, not the client's belief. */
 export const protocol: HostProtocol = {
   version: 2,
-  ops: [...V2_DEFAULT_OPS, "answer_publish_approval"],
+  ops: [...V2_DEFAULT_OPS, "answer_publish_approval", "list_project_chats", "list_custom_agents"],
   events: [
     "agent:event",
     "agent:status",

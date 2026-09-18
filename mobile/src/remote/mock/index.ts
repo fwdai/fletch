@@ -133,6 +133,16 @@ export class MockHost {
     this.emit({ event, payload });
   }
 
+  /** The snapshot as the host reports it: purpose-tagged chats are held back,
+   *  exactly as the real `get_workspace` does — they are listed on their own
+   *  through `list_project_chats`. */
+  private visibleWorkspace(): Workspace {
+    return {
+      ...this.state.workspace,
+      agents: this.state.workspace.agents.filter((a) => !a.purpose),
+    };
+  }
+
   private agent(id: string): AgentRecord {
     const found = this.state.workspace.agents.find((a) => a.id === id);
     if (!found) throw new Error("agent not found");
@@ -250,10 +260,16 @@ export class MockHost {
         // stands in for: anything that gets this far is a known device.
         this.authed = true;
         this.later(() => this.bootstrap(), 400);
-        return { host: fx.hostInfo, workspace: this.state.workspace, protocol: fx.protocol };
+        return { host: fx.hostInfo, workspace: this.visibleWorkspace(), protocol: fx.protocol };
       }
       case "get_workspace":
-        return this.state.workspace;
+        return this.visibleWorkspace();
+      case "list_project_chats":
+        return this.state.workspace.agents
+          .filter((a) => a.project_id === args.projectId && a.purpose === args.purpose)
+          .sort((a, b) => b.created_at.localeCompare(a.created_at));
+      case "list_custom_agents":
+        return fx.customAgents;
       case "allocate_draft_name": {
         const used = new Set([
           ...this.state.workspace.agents.map((a) => a.name),
@@ -290,10 +306,12 @@ export class MockHost {
           archive: null,
           effort: (args.effort as string) ?? null,
           model: (args.model as string) ?? null,
-          custom_agent_id: null,
+          custom_agent_id: (args.customAgentId as string) ?? null,
           sandbox_engine: "sandbox-exec",
           issue_ref: null,
-          purpose: null,
+          // A tagged workspace is a purpose chat: it stays out of the snapshot
+          // from here on, as it does on a real host.
+          purpose: (args.purpose as string) ?? null,
         };
         this.state.workspace = {
           ...this.state.workspace,

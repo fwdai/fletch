@@ -15,15 +15,38 @@ import type { PrChecks, PrLive, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
+import type { CustomAgent } from "@desktop/storage/customAgents";
 import type { RemoteClient } from "../remote";
+
+/** The extras a preset-backed spawn carries. All optional: a plain spawn sends
+ *  null for each, exactly as before. */
+export interface SpawnOptions {
+  /** Standing brief injected for the session (a custom agent's instructions). */
+  instructions?: string | null;
+  customAgentId?: string | null;
+  /** What the workspace is for — `ROADMAP_PM_PURPOSE` for a planning chat.
+   *  A tagged workspace is hidden from the snapshot and listed on its own. */
+  purpose?: string | null;
+}
+
+/** A `custom_agents` row as the host stores it: the desktop's `CustomAgent`
+ *  with its two id arrays still in their JSON TEXT columns. Typed off the
+ *  desktop's own interface so a field added there is not re-declared here. */
+export type CustomAgentRow = Omit<CustomAgent, "skillIds" | "mcpServerIds"> & {
+  skill_ids: string;
+  mcp_server_ids: string;
+};
 
 export function createApi(client: RemoteClient) {
   const call = <T>(op: string, args?: Record<string, unknown>) => client.call<T>(op, args);
   return {
     getWorkspace: () => call<Workspace | null>("get_workspace"),
     allocateDraftName: (drafts: string[]) => call<string>("allocate_draft_name", { drafts }),
-    /** Host forces `view: "custom"` and ignores purpose/skills/mcp in v1, so
-     *  only the fields the phone can actually influence are sent. */
+    /** Host forces `view: "custom"` and ignores skills/mcp in v1, so only the
+     *  fields the phone can actually influence are sent. `options` carries what
+     *  a preset-backed spawn adds — a standing brief, the custom agent it came
+     *  from, and the purpose tag that keeps a chat off the sidebar. A host from
+     *  before those were honoured simply ignores them. */
     spawnAgent: (
       repoPath: string,
       provider: string,
@@ -31,6 +54,7 @@ export function createApi(client: RemoteClient) {
       effort: string | null,
       model: string | null,
       forkBase: string,
+      options: SpawnOptions = {},
     ) =>
       call<AgentRecord>("spawn_agent", {
         view: "custom",
@@ -39,14 +63,23 @@ export function createApi(client: RemoteClient) {
         name,
         effort,
         model,
-        instructions: null,
-        customAgentId: null,
+        instructions: options.instructions ?? null,
+        customAgentId: options.customAgentId ?? null,
         skills: null,
         mcpServers: null,
         forkBase,
         issueRef: null,
-        purpose: null,
+        purpose: options.purpose ?? null,
       }),
+    /** A project's purpose-tagged chats, newest first. They are absent from the
+     *  `get_workspace` snapshot by design (see `AgentRecord.purpose`), so this
+     *  is the only way the phone learns about them. */
+    listProjectChats: (projectId: string, purpose: string) =>
+      call<AgentRecord[]>("list_project_chats", { projectId, purpose }),
+    /** The Mac's custom-agent library, as raw rows. The phone only reads the
+     *  spawn profile off them (base/model/effort/instructions); the two JSON id
+     *  columns are passed over — the host resolves skills and MCP servers. */
+    listCustomAgents: () => call<CustomAgentRow[]>("list_custom_agents"),
     sendUserMessage: (agentId: string, turnId: string, text: string, attachments: string[] = []) =>
       call<boolean>("send_user_message", { agentId, turnId, text, attachments }),
     answerToolUse: (

@@ -15,7 +15,7 @@ export function AgentMoreSheet({
   onClose: () => void;
   agentId?: string;
 }) {
-  const agent = useStore((s) => (agentId ? agentOf(s.workspace, agentId) : undefined));
+  const agent = useStore((s) => (agentId ? agentOf(s, agentId) : undefined));
   const stop = useStore((s) => s.stop);
   const archive = useStore((s) => s.archive);
   if (!agent) return null;

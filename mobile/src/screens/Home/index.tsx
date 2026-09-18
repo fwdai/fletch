@@ -96,6 +96,9 @@ export function HomeScreen() {
   const openSheet = useStore((s) => s.openSheet);
   const hostName = useStore((s) => s.hostInfo?.name);
   const connection = useStore((s) => s.connection);
+  // Planning chats are listed by their own op; a Mac without it shows nothing
+  // new (docs/remote-protocol.md, "Compatibility").
+  const canPlan = useStore((s) => s.hostSupports("list_project_chats"));
   const errored = agents.filter((a) => a.status === "error").length;
   const running = agents.filter(isBusy).length;
   const attention = pendingTotal + errored;
@@ -165,11 +168,17 @@ export function HomeScreen() {
       </div>
       {/* Starting an agent needs a live host and a project to put it in. */}
       {showList && projects.length > 0 && connected && (
-        <div className="fab-wrap">
+        <div className={`fab-wrap${canPlan ? " duo" : ""}`}>
           <button type="button" className="btn primary" onClick={() => openSheet("newAgent")}>
             <Icon name="plus" size={18} strokeWidth={2.2} />
             New agent
           </button>
+          {canPlan && (
+            <button type="button" className="btn ghost" onClick={() => openSheet("newPlan")}>
+              <Icon name="map" size={18} strokeWidth={2.2} />
+              Plan with PM
+            </button>
+          )}
         </div>
       )}
     </>

@@ -33,7 +33,7 @@ function SpawnPane({ task, base, branch }: { task: string; base: string; branch:
 }
 
 function Subtitle({ agentId }: { agentId: string }) {
-  const agent = useStore((s) => agentOf(s.workspace, agentId));
+  const agent = useStore((s) => agentOf(s, agentId));
   const startedAt = useStore((s) => s.turnStartedAt[agentId]);
   const pending = useStore((s) => Object.keys(s.pendingToolUse[agentId] ?? {}).length);
   const git = useStore((s) => s.gitStates[agentId]);
@@ -65,6 +65,9 @@ function Subtitle({ agentId }: { agentId: string }) {
       </>
     );
   }
+  // A planning chat has no checkout to report on: nothing loads its git state
+  // (see `loadAgent`), so the diff line below would read "clean" forever.
+  if (agent.purpose) return <>Planning chat</>;
   const changed = (git?.additions ?? 0) + (git?.deletions ?? 0) > 0;
   return (
     <>
@@ -82,8 +85,8 @@ function Subtitle({ agentId }: { agentId: string }) {
 }
 
 export function AgentScreen({ agentId }: { agentId: string }) {
-  const agent = useStore((s) => agentOf(s.workspace, agentId));
-  const project = useStore((s) => projectOf(s.workspace, agentId));
+  const agent = useStore((s) => agentOf(s, agentId));
+  const project = useStore((s) => projectOf(s, agentId));
   const pop = useStore((s) => s.pop);
   const openSheet = useStore((s) => s.openSheet);
   const git = useStore((s) => s.gitStates[agentId]);
@@ -92,6 +95,12 @@ export function AgentScreen({ agentId }: { agentId: string }) {
   // Owned here so sending a message can re-pin the log to the bottom.
   const pinnedToBottom = useRef(true);
   if (!agent) return null;
+
+  // A purpose-tagged workspace is a conversation, not a piece of work: the PM
+  // never edits a file and the host denies it the publish ops, so Code and
+  // Changes have nothing to show and the tab bar has nothing to choose between.
+  const planning = !!agent.purpose;
+  const pane = planning ? "chat" : tab;
 
   const go = (next: string) => {
     setDir(TABS.indexOf(next as Tab) > TABS.indexOf(tab) ? 1 : -1);
@@ -121,23 +130,25 @@ export function AgentScreen({ agentId }: { agentId: string }) {
           </button>
         }
       />
-      <div className="ag-tabs">
-        <Segmented
-          items={[
-            { id: "chat", label: "Chat" },
-            { id: "code", label: "Code" },
-            { id: "changes", label: "Changes", count: git?.files.length ?? 0 },
-          ]}
-          value={tab}
-          onChange={go}
-        />
-      </div>
+      {!planning && (
+        <div className="ag-tabs">
+          <Segmented
+            items={[
+              { id: "chat", label: "Chat" },
+              { id: "code", label: "Code" },
+              { id: "changes", label: "Changes", count: git?.files.length ?? 0 },
+            ]}
+            value={tab}
+            onChange={go}
+          />
+        </div>
+      )}
       <div className="ag-body">
         {agent.status === "spawning" ? (
           <SpawnPane task={agent.task} base={baseOf(agent)} branch={branchOf(agent)} />
         ) : (
           <div
-            key={tab}
+            key={pane}
             className="pane"
             style={
               {
@@ -149,13 +160,13 @@ export function AgentScreen({ agentId }: { agentId: string }) {
               } as React.CSSProperties
             }
           >
-            {tab === "chat" && <ChatTab agent={agent} pinRef={pinnedToBottom} />}
-            {tab === "code" && <CodeTab agent={agent} />}
-            {tab === "changes" && <ChangesTab agent={agent} onDelegated={() => go("chat")} />}
+            {pane === "chat" && <ChatTab agent={agent} pinRef={pinnedToBottom} />}
+            {pane === "code" && <CodeTab agent={agent} />}
+            {pane === "changes" && <ChangesTab agent={agent} onDelegated={() => go("chat")} />}
           </div>
         )}
       </div>
-      {tab === "chat" && agent.status !== "spawning" && (
+      {pane === "chat" && agent.status !== "spawning" && (
         <Composer
           agent={agent}
           onSend={() => {

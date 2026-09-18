@@ -2,10 +2,16 @@
 // the desktop adapters rendering real stream-json shapes. The jsdom URL in
 // vite.config.ts puts this file in mock mode (see `mockEnabled`).
 
+import { ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
+import { PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
-import { PENDING_REQUEST_ID, PENDING_TOOL_USE_ID } from "../src/remote/mock/fixtures";
-import { agentOf, api, client, useStore } from "../src/store";
+import {
+  PENDING_REQUEST_ID,
+  PENDING_TOOL_USE_ID,
+  PM_CUSTOM_AGENT_ID,
+} from "../src/remote/mock/fixtures";
+import { agentOf, api, client, projectOf, useStore } from "../src/store";
 import { clearHost, loadSettings, saveSettings } from "../src/store/persist";
 
 const state = () => useStore.getState();
@@ -82,7 +88,7 @@ describe("event folding", () => {
 
   it("agent:status drives the record and the busy flag", async () => {
     await vi.waitFor(() => expect(state().busy.arabia).toBe(true));
-    await vi.waitFor(() => expect(agentOf(state().workspace, "arabia")?.status).toBe("idle"), {
+    await vi.waitFor(() => expect(agentOf(state(), "arabia")?.status).toBe("idle"), {
       timeout: 5000,
     });
     expect(state().busy.arabia).toBe(false);
@@ -317,7 +323,7 @@ describe("spawn flow", () => {
     // A tool call has streamed in and the turn is still running.
     await vi.waitFor(
       () => {
-        expect(agentOf(state().workspace, id)?.status).toBe("running");
+        expect(agentOf(state(), id)?.status).toBe("running");
         expect((state().logs[id] ?? []).some((i) => i.kind === "tool_call")).toBe(true);
       },
       { timeout: 10_000 },
@@ -340,7 +346,7 @@ describe("spawn flow", () => {
 
     // Once the turn ends the host's records are complete and authoritative:
     // re-opening then does rebuild from them.
-    await vi.waitFor(() => expect(agentOf(state().workspace, id)?.status).toBe("idle"), {
+    await vi.waitFor(() => expect(agentOf(state(), id)?.status).toBe("idle"), {
       timeout: 10_000,
     });
     useStore.setState((s) => ({ logs: { ...s.logs, [id]: (s.logs[id] ?? []).slice(0, 1) } }));
@@ -385,7 +391,7 @@ describe("optimistic busy flag", () => {
   it("clears against a fresh snapshot when the turn ended off-socket", async () => {
     useStore.setState((s) => ({ busy: { ...s.busy, caspian: true } }));
     await state().refreshWorkspace();
-    expect(agentOf(state().workspace, "caspian")?.status).not.toBe("running");
+    expect(agentOf(state(), "caspian")?.status).not.toBe("running");
     expect(state().busy.caspian).toBe(false);
   });
 
@@ -409,6 +415,106 @@ describe("optimistic busy flag", () => {
     } finally {
       send.mockRestore();
     }
+  });
+});
+
+/** A planning chat is an ordinary agent record tagged with a purpose, which is
+ *  what keeps it out of the workspace snapshot. It therefore lives in its own
+ *  per-project registry, and everything that addresses an agent by id reaches it
+ *  through `agentOf`'s fallback. */
+describe("planning chats", () => {
+  const projectId = "prj-fletch";
+  const repoPath = () => useStore.getState().workspace?.projects[0].path ?? "";
+
+  it("is offered only by a host that lists them", () => {
+    expect(state().hostSupports("list_project_chats")).toBe(true);
+  });
+
+  it("lists the chats the snapshot holds back, and resolves them like any agent", async () => {
+    expect((state().workspace?.agents ?? []).some((a) => a.id === "sakura")).toBe(false);
+    await state().loadChats(projectId);
+    expect(state().chats[projectId]?.map((c) => c.id)).toContain("sakura");
+    // The fallback is what makes the agent screen, the composer and the event
+    // handlers work for a chat without knowing it is one.
+    expect(agentOf(state(), "sakura")?.purpose).toBe(ROADMAP_PM_PURPOSE);
+    expect(projectOf(state(), "sakura")?.name).toBe("fletch");
+  });
+
+  it("spawns under the Mac's Project Manager, registers the chat, then sends the idea", async () => {
+    const spawn = vi.spyOn(api, "spawnAgent");
+    try {
+      await state().startPlanningChat({
+        projectId,
+        prompt: "An offline queue for messages typed underground",
+      });
+      expect(spawn).toHaveBeenCalledWith(
+        repoPath(),
+        PROJECT_MANAGER_PRESET.base,
+        expect.any(String),
+        PROJECT_MANAGER_PRESET.effort,
+        PROJECT_MANAGER_PRESET.model,
+        "main",
+        {
+          instructions: PROJECT_MANAGER_PRESET.instructions,
+          customAgentId: PM_CUSTOM_AGENT_ID,
+          purpose: ROADMAP_PM_PURPOSE,
+        },
+      );
+    } finally {
+      spawn.mockRestore();
+    }
+    const chat = state().chats[projectId]?.[0];
+    expect(chat?.purpose).toBe(ROADMAP_PM_PURPOSE);
+    // The chat is prepended, and it is not in the snapshot the host answers.
+    expect(state().chats[projectId]?.map((c) => c.id)).toContain("sakura");
+    expect((state().workspace?.agents ?? []).some((a) => a.id === chat?.id)).toBe(false);
+    // The record came back `spawning`; only the live `agent:status` can have
+    // cleared it, and for a chat that patch lands in the registry — which is
+    // also what let `waitForSpawn` release the first message below.
+    expect(chat?.status).not.toBe("spawning");
+    await vi.waitFor(
+      () =>
+        expect(
+          (state().logs[chat?.id ?? ""] ?? []).some(
+            (i) => i.kind === "user_message" && i.text.includes("offline queue"),
+          ),
+        ).toBe(true),
+      { timeout: 5000 },
+    );
+  });
+
+  it("falls back to the bundled preset when the Mac's library has no Project Manager", async () => {
+    const list = vi.spyOn(api, "listCustomAgents").mockResolvedValue([]);
+    const spawn = vi.spyOn(api, "spawnAgent");
+    try {
+      await state().startPlanningChat({ projectId, prompt: "Ship the widget" });
+      expect(spawn).toHaveBeenCalledWith(
+        repoPath(),
+        PROJECT_MANAGER_PRESET.base,
+        expect.any(String),
+        PROJECT_MANAGER_PRESET.effort,
+        PROJECT_MANAGER_PRESET.model,
+        "main",
+        expect.objectContaining({
+          // Nothing is seeded from the phone: the brief travels with the spawn.
+          customAgentId: null,
+          instructions: PROJECT_MANAGER_PRESET.instructions,
+        }),
+      );
+    } finally {
+      spawn.mockRestore();
+      list.mockRestore();
+    }
+  });
+
+  it("patches a chat record in place, and ignores an id it does not hold", () => {
+    state().patchChat("sakura", { task: "Offline queue, sliced" });
+    expect(state().chats[projectId]?.find((c) => c.id === "sakura")?.task).toBe(
+      "Offline queue, sliced",
+    );
+    const before = state().chats;
+    state().patchChat("arabia", { task: "not a chat" });
+    expect(state().chats).toBe(before);
   });
 });
 

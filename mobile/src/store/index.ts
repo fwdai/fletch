@@ -23,6 +23,7 @@ import {
   type Via,
 } from "../remote";
 import type { PushFletch } from "../remote/push";
+import { type ChatsSlice, createChatsSlice } from "./chats";
 import { registerRemoteEvents } from "./events";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { forgetPush, startPush, syncPush } from "./push";
@@ -33,7 +34,14 @@ export const api = createApi(client);
 
 export type ThemeMode = "system" | "light" | "dark";
 export type ScreenName = "home" | "project" | "agent" | "file" | "diff";
-export type SheetName = "host" | "newAgent" | "addProject" | "agentMore" | "modelPicker" | "pr";
+export type SheetName =
+  | "host"
+  | "newAgent"
+  | "newPlan"
+  | "addProject"
+  | "agentMore"
+  | "modelPicker"
+  | "pr";
 
 export interface NavItem {
   key: number;
@@ -48,7 +56,7 @@ export interface SheetState {
   open: boolean;
 }
 
-export interface MobileState {
+export interface MobileState extends ChatsSlice {
   ready: boolean;
   connection: ConnectionState;
   connectionError: string | null;
@@ -227,6 +235,12 @@ const withAttachments = (attachments: string[]) => (attachments.length > 0 ? { a
 
 type Setter = (partial: Partial<MobileState>) => void;
 
+/** The store's own setter, which also takes an updater — what any write that
+ *  reads the current state has to be handed. */
+type StateSetter = (
+  partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>),
+) => void;
+
 /** Record the failure where the error UI can see it, then rethrow: an action
  *  that swallows leaves its caller believing it succeeded — which is how a
  *  failed spawn used to clear the prompt the user still needs. */
@@ -275,12 +289,22 @@ async function adopt(set: Setter, get: () => MobileState, host: HostInfo): Promi
   });
 }
 
-export const agentOf = (ws: Workspace | null, id: string): AgentRecord | undefined =>
-  ws?.agents.find((a) => a.id === id);
+/** Where an agent record can live: the workspace snapshot, or — for a chat the
+ *  snapshot hides behind a purpose tag — the planning-chat registry. */
+export type AgentSource = Pick<MobileState, "workspace" | "chats">;
 
-export const projectOf = (ws: Workspace | null, agentId: string) => {
-  const agent = agentOf(ws, agentId);
-  return ws?.projects.find((p) => p.project_id === agent?.project_id);
+/** Any agent the app knows about, wherever its record is kept. Every screen
+ *  that takes an agent id goes through here, which is what lets the chat, the
+ *  composer and the event handlers treat a planning chat as an ordinary agent. */
+export const agentOf = (s: AgentSource, id: string): AgentRecord | undefined =>
+  s.workspace?.agents.find((a) => a.id === id) ??
+  Object.values(s.chats)
+    .flat()
+    .find((c) => c.id === id);
+
+export const projectOf = (s: AgentSource, agentId: string) => {
+  const agent = agentOf(s, agentId);
+  return s.workspace?.projects.find((p) => p.project_id === agent?.project_id);
 };
 
 /** Agents with a send in flight from this device. Their optimistic `busy` flag
@@ -324,13 +348,67 @@ function waitForSpawn(get: () => MobileState, agentId: string, timeoutMs = 30_00
   return new Promise<void>((resolve, reject) => {
     const started = Date.now();
     const tick = () => {
-      const status = agentOf(get().workspace, agentId)?.status;
+      const status = agentOf(get(), agentId)?.status;
       if (status && status !== "spawning") return resolve();
       if (Date.now() - started > timeoutMs) return reject(new Error("agent never started"));
       setTimeout(tick, 150);
     };
     tick();
   });
+}
+
+/** What a spawn does once the host has answered with a record, whichever
+ *  registry that record was filed in: put the first turn on screen, open the
+ *  agent, and send the prompt as soon as it leaves `spawning`.
+ *
+ *  `recover` re-reads that registry when the send fails — the workspace for a
+ *  sidebar agent, the project's chat list for a planning chat. */
+async function firstTurn(
+  set: StateSetter,
+  get: () => MobileState,
+  {
+    record,
+    prompt,
+    attachments,
+    recover,
+  }: {
+    record: AgentRecord;
+    prompt: string;
+    attachments: string[];
+    recover: () => Promise<void>;
+  },
+): Promise<void> {
+  const turnId = newId();
+  set((s) => ({
+    logs: {
+      ...s.logs,
+      [record.id]: [
+        { kind: "user_message", text: prompt, turnId, ...withAttachments(attachments) },
+      ],
+    },
+    busy: { ...s.busy, [record.id]: true },
+  }));
+  get().closeSheet();
+  get().push("agent", { agentId: record.id });
+  try {
+    await whileSending(record.id, async () => {
+      await waitForSpawn(get, record.id);
+      await api.sendUserMessage(record.id, turnId, prompt, attachments);
+    });
+  } catch (e) {
+    // The agent exists on the host but never got the prompt: drop the
+    // optimistic turn and the busy flag, and let the re-read record show
+    // whatever state it is really in.
+    set((s) => {
+      const logs = { ...s.logs };
+      const busy = { ...s.busy };
+      delete logs[record.id];
+      delete busy[record.id];
+      return { logs, busy };
+    });
+    await recover();
+    throw e;
+  }
 }
 
 export const useStore = create<MobileState>()((set, get) => ({
@@ -546,6 +624,8 @@ export const useStore = create<MobileState>()((set, get) => ({
       // on this device for an answer.
       pendingPublishApprovals: [],
       logs: {},
+      // The chats belong to the host that holds their checkouts.
+      chats: {},
       sheet: null,
       nav: [homeItem()],
       // The link that paired this host carried a code that is long spent;
@@ -648,10 +728,13 @@ export const useStore = create<MobileState>()((set, get) => ({
     // with the prompt alone, so a re-open or reconnect mid-turn keeps what the
     // stream rendered. The turn-end `session:records-appended` rebuild — which
     // calls rebuildLog directly — is the authoritative one.
-    const agent = agentOf(get().workspace, agentId);
+    const agent = agentOf(get(), agentId);
     const midTurn = agent !== undefined && isBusy(agent) && get().logs[agentId] !== undefined;
     if (!midTurn) await get().rebuildLog(agentId);
-    await get().loadGit(agentId);
+    // A purpose-tagged chat has no code of its own to report on — the PM never
+    // edits a file, and the host denies it the publish ops — so the git and PR
+    // reads are skipped rather than answered with an empty diff.
+    if (!agent?.purpose) await get().loadGit(agentId);
   },
 
   async rebuildLog(agentId) {
@@ -676,7 +759,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // records-appended handler makes the same call). A brand-new agent has
       // no log either way, so the empty state still renders for it.
       if (records.length === 0) return;
-      const provider = agentOf(get().workspace, agentId)?.provider;
+      const provider = agentOf(get(), agentId)?.provider;
       const items = applyUserTurns(reduceRecords(provider, records), turns);
       set((s) => ({ logs: { ...s.logs, [agentId]: items } }));
     });
@@ -752,40 +835,17 @@ export const useStore = create<MobileState>()((set, get) => ({
       // agent must launch under it, not a fresh draw.
       const name = shown || (await api.allocateDraftName([]));
       const record = await api.spawnAgent(repoPath, provider, name, effort, model, base);
-      const turnId = newId();
       set((s) => ({
         workspace: s.workspace
           ? { ...s.workspace, agents: [record, ...s.workspace.agents] }
           : s.workspace,
-        logs: {
-          ...s.logs,
-          [record.id]: [
-            { kind: "user_message", text: prompt, turnId, ...withAttachments(attachments) },
-          ],
-        },
-        busy: { ...s.busy, [record.id]: true },
       }));
-      get().closeSheet();
-      get().push("agent", { agentId: record.id });
-      try {
-        await whileSending(record.id, async () => {
-          await waitForSpawn(get, record.id);
-          await api.sendUserMessage(record.id, turnId, prompt, attachments);
-        });
-      } catch (e) {
-        // The agent exists on the host but never got the prompt: drop the
-        // optimistic turn and the busy flag, and let the refreshed workspace
-        // show whatever state it is really in.
-        set((s) => {
-          const logs = { ...s.logs };
-          const busy = { ...s.busy };
-          delete logs[record.id];
-          delete busy[record.id];
-          return { logs, busy };
-        });
-        await get().refreshWorkspace();
-        throw e;
-      }
+      await firstTurn(set, get, {
+        record,
+        prompt,
+        attachments,
+        recover: () => get().refreshWorkspace(),
+      });
     });
   },
 
@@ -840,10 +900,14 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async archive(agentId) {
+    const chat = agentOf(get(), agentId);
     return guard(set, async () => {
       await api.archiveAgent(agentId);
       get().closeSheet();
       get().pop();
+      // A planning chat is absent from the snapshot `refreshWorkspace` re-reads,
+      // so its own list is what has to catch up with it being gone.
+      if (chat?.purpose) await get().loadChats(chat.project_id);
       await get().refreshWorkspace();
     });
   },
@@ -914,6 +978,12 @@ export const useStore = create<MobileState>()((set, get) => ({
   async ghRepoList() {
     return guard(set, () => api.ghRepoList());
   },
+
+  ...createChatsSlice(set, get, {
+    api,
+    guard: (fn) => guard(set, fn),
+    firstTurn: (input) => firstTurn(set, get, input),
+  }),
 }));
 
 export type { RawEvent };

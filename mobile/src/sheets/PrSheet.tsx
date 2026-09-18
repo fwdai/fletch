@@ -19,7 +19,7 @@ export function PrSheet({
   onClose: () => void;
   agentId?: string;
 }) {
-  const agent = useStore((s) => (agentId ? agentOf(s.workspace, agentId) : undefined));
+  const agent = useStore((s) => (agentId ? agentOf(s, agentId) : undefined));
   const git = useStore((s) => (agentId ? s.gitStates[agentId] : undefined));
   const pr = useStore((s) => (agentId ? (s.prStates[agentId] ?? null) : null));
   const publish = useStore((s) => s.publish);

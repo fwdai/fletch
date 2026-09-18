@@ -12,6 +12,7 @@ import { AgentMoreSheet } from "./sheets/AgentMoreSheet";
 import { HostSheet } from "./sheets/HostSheet";
 import { ModelPickerSheet } from "./sheets/ModelPickerSheet";
 import { NewAgentSheet } from "./sheets/NewAgentSheet";
+import { NewPlanSheet } from "./sheets/NewPlanSheet";
 import { PrSheet } from "./sheets/PrSheet";
 import { type NavItem, useStore } from "./store";
 import "./styles/base.css";
@@ -19,7 +20,7 @@ import "./styles/screens.css";
 import "./styles/agent.css";
 
 /** Sheets that push the whole stack back rather than sitting over it. */
-const FULL_SHEETS = new Set(["newAgent", "addProject", "pr"]);
+const FULL_SHEETS = new Set(["newAgent", "newPlan", "addProject", "pr"]);
 
 function Screen({ item }: { item: NavItem }) {
   switch (item.screen) {
@@ -71,6 +72,7 @@ export function App() {
           <Stack dimmed={dimmed} render={(item) => <Screen item={item} />} />
           <HostSheet open={isOpen("host")} onClose={closeSheet} />
           <NewAgentSheet open={isOpen("newAgent")} onClose={closeSheet} {...props("newAgent")} />
+          <NewPlanSheet open={isOpen("newPlan")} onClose={closeSheet} {...props("newPlan")} />
           <AddProjectSheet
             open={isOpen("addProject")}
             onClose={closeSheet}

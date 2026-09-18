@@ -13,7 +13,7 @@ export function ModelPickerSheet({
   onClose: () => void;
   agentId?: string;
 }) {
-  const agent = useStore((s) => (agentId ? agentOf(s.workspace, agentId) : undefined));
+  const agent = useStore((s) => (agentId ? agentOf(s, agentId) : undefined));
   const setModel = useStore((s) => s.setModel);
   const models = useModels();
   if (!agent) return null;

@@ -25,7 +25,7 @@ import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import type { RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
-import type { MobileState } from "./index";
+import { agentOf, type MobileState } from "./index";
 import { applyLiveEvent } from "./transcript";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
@@ -66,7 +66,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   on<AgentManagedEvent>("agent:event", (e) => {
     const raw = e.event as RawEvent;
     if (foldControlRequest(set, e.agent_id, raw)) return;
-    const provider = get().workspace?.agents.find((a) => a.id === e.agent_id)?.provider;
+    const provider = agentOf(get(), e.agent_id)?.provider;
     const { items, turnEnded } = applyLiveEvent(provider, get().logs[e.agent_id] ?? [], raw);
     set((s) => ({
       logs: { ...s.logs, [e.agent_id]: items },
@@ -82,18 +82,23 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   on<AgentStatusEvent>("agent:status", (e) => {
-    const ws = get().workspace;
-    if (!ws) return;
+    // A planning chat's record is not in the snapshot, so it is patched in its
+    // own registry — this is what lets `waitForSpawn` and the status line work
+    // for one. A no-op for a sidebar agent.
+    get().patchChat(e.agent_id, { status: e.status, last_error: e.last_error ?? null });
     set((s) => {
+      const ws = s.workspace;
       const turnStartedAt = { ...s.turnStartedAt };
       if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
         delete turnStartedAt[e.agent_id];
       }
       return {
-        workspace: patchAgent(ws, e.agent_id, {
-          status: e.status,
-          last_error: e.last_error ?? undefined,
-        }),
+        workspace: ws
+          ? patchAgent(ws, e.agent_id, {
+              status: e.status,
+              last_error: e.last_error ?? undefined,
+            })
+          : ws,
         busy:
           e.status === "running"
             ? { ...s.busy, [e.agent_id]: true }
@@ -124,6 +129,8 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   on<AgentTaskEvent>("agent:task", (e) => {
+    // The task is a chat's title, so it is patched in both registries too.
+    get().patchChat(e.agent_id, { task: e.task });
     const ws = get().workspace;
     if (ws) set({ workspace: patchAgent(ws, e.agent_id, { task: e.task }) });
   });
