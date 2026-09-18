@@ -5,6 +5,7 @@ import { providerChip } from "@/data/providers";
 import { type CostLabel, coverageLabel, modelCostLabel, type UsageStats } from "@/data/usage";
 import { formatPercent, formatTokens } from "@/util/format";
 import { SetSeg } from "../primitives";
+import { UsageGroupHead } from "./UsageGroupHead";
 
 type Mode = "model" | "day";
 
@@ -54,10 +55,9 @@ export function UsageBreakdown({ stats, loading }: { stats: UsageStats | null; l
 
   return (
     <section className="set-group">
-      <div className="usg-breakdown-h flex-center">
-        <div className="set-group-h mono text-xs">Breakdown</div>
+      <UsageGroupHead label="Breakdown">
         <SetSeg<Mode> value={mode} options={MODES} onChange={setMode} />
-      </div>
+      </UsageGroupHead>
 
       <div className="usg-table">
         <div className="usg-row head mono text-xs">
