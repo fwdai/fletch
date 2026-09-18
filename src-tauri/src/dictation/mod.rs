@@ -51,6 +51,10 @@ pub mod whisper;
 // everywhere so the remote dispatcher can name the ops; the transcription
 // itself is macOS-only inside, like the engine.
 pub mod remote;
+// The `Dispatch` extension the engine consults for the five `dictation_*` ops,
+// since whisper.cpp lives here and not in the engine crate.
+#[cfg(desktop)]
+pub mod dispatch;
 
 /// How much audio one session may capture, whichever microphone it comes from.
 /// A dictation is a sentence or two; this is the bound that keeps a mic left

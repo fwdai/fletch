@@ -1,62 +1,45 @@
-mod activity;
-mod agent;
-mod agent_install;
-mod agent_profile;
-mod attachments;
-mod bin_resolve;
-mod child_io;
+//! The Fletch desktop shell.
+//!
+//! The engine lives in `fletch-core` (`crates/fletch-core`) and knows nothing
+//! about Tauri. What is left here is the shell around it: the Tauri builder and
+//! `setup`, the `#[tauri::command]` wrappers, the tray and its activity
+//! monitor, dictation, the OAuth device flows, the updater, and the
+//! [`TauriSink`] that carries engine events into the webview.
+//!
+//! Every engine module is re-exported below, so a `crate::supervisor::…` path
+//! in this crate resolves exactly as it did when the module lived here.
+
+// This Mac as a client of *other* Fletch hosts: desktop glue over
+// `fletch_proto::client::Dialer`, so it stays a real module here rather than
+// joining the engine re-exports below.
 mod client;
-mod codegraph;
 mod commands;
-mod database;
 mod dictation;
-mod download;
 mod editors;
-mod error;
-mod exec_session;
-mod git;
-mod git_dist;
-mod git_state;
-mod github;
-mod host;
-mod instructions;
-mod issues;
-mod keychain;
-mod linear;
-mod managed_session;
-mod message_queue;
-mod model_catalog;
-mod names;
-mod native_input;
-mod new_project;
 mod oauth;
-mod power;
 mod provider_login;
-mod pty_session;
-mod publish_prefs;
+mod sentry_scrub;
+
+// ── The engine (`fletch-core`) ────────────────────────────────────────────
+// Re-exported rather than imported at each use site: these were `mod`
+// declarations until the crate split, and every `crate::x::y` path in the shell
+// keeps resolving through them.
+pub use fletch_core::{
+    activity, agent, agent_install, agent_profile, attachments, bin_resolve, child_io, codegraph,
+    database, download, error, exec_session, git, git_dist, git_state, github, host, instructions,
+    issues, keychain, linear, managed_session, message_queue, model_catalog, names, native_input,
+    new_project, power, pty_session, publish_prefs, roadmap, rpc, run_detect, run_env, run_session,
+    sandbox, secrets, slash_commands, supervisor, telemetry, transcripts, usage_scan, verify,
+    workflow, workspace,
+};
 // Paired-device remote access (Settings → Remote control). Desktop-only: the
 // host is the machine agents run on, never the phone.
 #[cfg(desktop)]
-mod remote;
-mod roadmap;
-mod rpc;
-mod run_detect;
-mod run_env;
-mod run_session;
-mod sandbox;
-mod secrets;
-mod sentry_scrub;
-mod slash_commands;
-mod supervisor;
-mod telemetry;
-mod transcripts;
-mod usage_scan;
-mod verify;
-mod workflow;
-mod workspace;
+pub use fletch_core::remote;
+// The shell's own paths onto the engine's on-disk layout and DB handle.
+pub use fletch_core::{build_state_subpath, data_dir, logs_dir, DbState, BUNDLE_ID};
 
 use parking_lot::Mutex;
-use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -64,99 +47,21 @@ use tauri::Manager;
 
 use crate::supervisor::Supervisor;
 
-/// The managed DB handle every command that reads or writes settings asks for.
-/// `pub(crate)` because those commands don't all live here (see
-/// `dictation::dictation_model_status`, and `dictation::engine` which reaches
-/// it through `AppHandle::state`).
-pub(crate) type DbState = Arc<Mutex<Connection>>;
+/// The desktop's sink: events reach the webview exactly as they did when the
+/// engine called `app.emit` itself. The newtype lives here rather than beside
+/// [`fletch_core::host::EventSink`] because the trait is the engine's and the
+/// `AppHandle` is Tauri's — neither is ours to implement on the other's turf.
+pub struct TauriSink(pub tauri::AppHandle);
 
-/// The app's bundle identifier. Must match `identifier` in `tauri.conf.json`;
-/// macOS derives the app's on-disk folder names from it.
-pub(crate) const BUNDLE_ID: &str = "com.fletch.desktop";
-
-/// Fletch's on-disk data directory — `~/Library/Application Support/
-/// <BUNDLE_ID>` (with a `dev` subfolder under debug builds), matching
-/// what `app.path().app_data_dir()` resolves to in `setup`. Computed without
-/// an `AppHandle` so logging can be initialized before the Tauri app is built.
-pub(crate) fn data_dir() -> PathBuf {
-    let base = dirs::data_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(BUNDLE_ID);
-    if cfg!(debug_assertions) {
-        base.join("dev")
-    } else {
-        base
+impl fletch_core::host::EventSink for TauriSink {
+    fn emit_value(&self, event: &str, payload: Value) -> Result<(), String> {
+        tauri::Emitter::emit(&self.0, event, payload).map_err(|e| e.to_string())
     }
-}
-
-/// The per-build path segment for a kind of on-disk state under a shared base
-/// (`~/.fletch`, or an override root): `<leaf>` for release, `dev/<leaf>` for
-/// debug — the same `dev` split [`data_dir`] applies to app data. Release keeps
-/// the historical flat segment, so existing installs need no migration.
-///
-/// Every root a *live* agent's state hangs off must go through this: a debug
-/// instance and a release install have separate DBs but one filesystem, so from
-/// a shared root each build's startup housekeeping sees the other's live state
-/// as garbage — and their name allocators, drawing from one pool, can hand both
-/// builds the same agent id. The `dev` prefix makes the two roots siblings, not
-/// nested, so neither build's sweep can even see the other's.
-pub(crate) fn build_state_subpath(leaf: &str) -> PathBuf {
-    if cfg!(debug_assertions) {
-        PathBuf::from("dev").join(leaf)
-    } else {
-        PathBuf::from(leaf)
-    }
-}
-
-/// Fletch's log directory. On macOS this is `~/Library/Logs/<BUNDLE_ID>`
-/// (with a `dev` subfolder under debug builds, mirroring `data_dir`) — the
-/// platform convention, where Console.app indexes per-app logs. Elsewhere (the
-/// Linux CI build) it stays nested under `data_dir()`. Computed without an
-/// `AppHandle` so logging can be initialized before the Tauri app is built,
-/// and reused by the `reveal_logs` command.
-pub(crate) fn logs_dir() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        if let Some(home) = dirs::home_dir() {
-            let base = home.join("Library").join("Logs").join(BUNDLE_ID);
-            return if cfg!(debug_assertions) {
-                base.join("dev")
-            } else {
-                base
-            };
-        }
-    }
-    data_dir().join("logs")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn data_dir_is_under_the_bundle_id() {
-        let dir = data_dir();
-        assert!(dir.to_string_lossy().contains(BUNDLE_ID));
-        // Tests build in debug, so the dev sandbox subfolder is used.
-        assert_eq!(dir.file_name().unwrap(), "dev");
-    }
-
-    #[test]
-    fn logs_dir_follows_the_platform_convention() {
-        let dir = logs_dir();
-        if cfg!(target_os = "macos") {
-            // ~/Library/Logs/<BUNDLE_ID>, plus the dev subfolder in debug
-            // builds (tests build in debug).
-            assert!(dir
-                .to_string_lossy()
-                .contains(&format!("Library/Logs/{BUNDLE_ID}")));
-            assert_eq!(dir.file_name().unwrap(), "dev");
-            assert!(!dir.starts_with(data_dir()));
-        } else {
-            // Linux CI fallback: nested under the data dir, as before.
-            assert!(dir.starts_with(data_dir()));
-            assert_eq!(dir.file_name().unwrap(), "logs");
-        }
-    }
 
     #[test]
     fn db_basenames_lists_current_before_legacy() {
@@ -1437,7 +1342,7 @@ pub fn run() {
                 // Events reach the webview exactly as they did when the engine
                 // held the `AppHandle` itself; `boot` fans this out to its own
                 // broadcast for the remote taps.
-                sink: Arc::new(host::sink::TauriSink(app.handle().clone())),
+                sink: Arc::new(TauriSink(app.handle().clone())),
                 focus: {
                     let focus_app = app.handle().clone();
                     Box::new(move || {
@@ -1451,6 +1356,12 @@ pub fn run() {
                 // background tasks keep running on the same threads as before.
                 runtime: tauri::async_runtime::handle().inner().clone(),
                 remote: host::RemoteBoot::Desktop,
+                // The five `dictation_*` ops: the engine keeps them on the wire
+                // and asks this for them, because whisper.cpp is built on macOS
+                // only and lives here beside the mic code it shares.
+                dictation: Some(Box::new(|ctx| {
+                    Arc::new(dictation::dispatch::DictationDispatch::new(ctx))
+                })),
                 // A failed `database::init` is a native dialog and a retry loop
                 // on the main thread, not an error the engine can resolve.
                 recover_db: Some({
@@ -1623,54 +1534,54 @@ pub fn run() {
             cancel_claude_container_auth,
             set_docker_launch_settings,
             set_podman_launch_settings,
-            workflow::wf_list_runs,
-            workflow::wf_get_run,
-            workflow::wf_events,
-            workflow::scheduler::wf_launch,
-            workflow::scheduler::wf_cancel,
-            workflow::scheduler::wf_resume,
-            workflow::scheduler::wf_retry,
-            workflow::scheduler::wf_approve,
-            workflow::scheduler::wf_reject,
-            workflow::scheduler::wf_run_diff,
-            workflow::scheduler::wf_resolve_conflict,
-            workflow::scheduler::wf_delete_run,
-            workflow::comms::wf_answer,
-            workflow::definition::wf_def_save,
-            workflow::definition::wf_def_list,
-            workflow::definition::wf_def_delete,
-            workflow::definition::wf_def_export_yaml,
-            workflow::definition::wf_def_import_yaml,
-            roadmap::roadmap_list_items,
-            roadmap::roadmap_get_item,
-            roadmap::roadmap_create_item,
-            roadmap::roadmap_update_item,
-            roadmap::roadmap_set_rank,
-            roadmap::roadmap_hand_off_item,
-            roadmap::roadmap_item_review,
-            roadmap::roadmap_merge_item_pr,
-            roadmap::roadmap_note_review_feedback,
-            roadmap::roadmap_hold_item,
-            roadmap::roadmap_release_item,
-            roadmap::roadmap_hold_project,
-            roadmap::roadmap_release_project,
-            roadmap::roadmap_get_project_hold,
-            roadmap::roadmap_reclaim_item,
-            roadmap::roadmap_reject_item,
-            roadmap::roadmap_reopen_item,
-            roadmap::roadmap_delete_item,
-            roadmap::roadmap_list_item_events,
-            roadmap::roadmap_latest_events,
-            roadmap::roadmap_list_proposals,
-            roadmap::roadmap_accept_proposal,
-            roadmap::roadmap_reject_proposal,
-            roadmap::roadmap_get_order_proposal,
-            roadmap::roadmap_accept_order_proposal,
-            roadmap::roadmap_reject_order_proposal,
-            roadmap::roadmap_get_brief,
-            roadmap::roadmap_get_brief_proposal,
-            roadmap::roadmap_accept_brief_proposal,
-            roadmap::roadmap_reject_brief_proposal,
+            commands::wf_list_runs,
+            commands::wf_get_run,
+            commands::wf_events,
+            commands::wf_launch,
+            commands::wf_cancel,
+            commands::wf_resume,
+            commands::wf_retry,
+            commands::wf_approve,
+            commands::wf_reject,
+            commands::wf_run_diff,
+            commands::wf_resolve_conflict,
+            commands::wf_delete_run,
+            commands::wf_answer,
+            commands::wf_def_save,
+            commands::wf_def_list,
+            commands::wf_def_delete,
+            commands::wf_def_export_yaml,
+            commands::wf_def_import_yaml,
+            commands::roadmap_list_items,
+            commands::roadmap_get_item,
+            commands::roadmap_create_item,
+            commands::roadmap_update_item,
+            commands::roadmap_set_rank,
+            commands::roadmap_hand_off_item,
+            commands::roadmap_item_review,
+            commands::roadmap_merge_item_pr,
+            commands::roadmap_note_review_feedback,
+            commands::roadmap_hold_item,
+            commands::roadmap_release_item,
+            commands::roadmap_hold_project,
+            commands::roadmap_release_project,
+            commands::roadmap_get_project_hold,
+            commands::roadmap_reclaim_item,
+            commands::roadmap_reject_item,
+            commands::roadmap_reopen_item,
+            commands::roadmap_delete_item,
+            commands::roadmap_list_item_events,
+            commands::roadmap_latest_events,
+            commands::roadmap_list_proposals,
+            commands::roadmap_accept_proposal,
+            commands::roadmap_reject_proposal,
+            commands::roadmap_get_order_proposal,
+            commands::roadmap_accept_order_proposal,
+            commands::roadmap_reject_order_proposal,
+            commands::roadmap_get_brief,
+            commands::roadmap_get_brief_proposal,
+            commands::roadmap_accept_brief_proposal,
+            commands::roadmap_reject_brief_proposal,
             oauth::oauth_device_login,
             commands::get_workspace,
             commands::wf_run_agents,

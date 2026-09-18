@@ -1,0 +1,359 @@
+//! Per-agent activity tracking — the abstraction that decides when a
+//! turn has ended.
+//!
+//! Each running agent owns one `Activity` instance. The supervisor
+//! feeds it whatever signal the agent's output channel produces (PTY
+//! bytes for native view, stream-json events for custom view) and
+//! periodically asks "has the turn ended?". The state machine is
+//! provider-agnostic; only the impls know about claude-specific event
+//! shapes. Adding gemini / codex / etc. means writing new impls
+//! against this trait, not touching the supervisor.
+
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
+
+/// Native-mode silence threshold. Claude's TUI emits continuous
+/// redraw bytes (spinners, progress lines) while it's working, so a
+/// pause this long indicates the prompt is sitting idle.
+const NATIVE_SILENCE_THRESHOLD: Duration = Duration::from_millis(2500);
+
+pub trait Activity: Send {
+    /// Feed a PTY chunk to the detector. Default does nothing — only
+    /// native-mode impls care about raw bytes.
+    fn observe_bytes(&mut self, _bytes: &[u8]) {}
+
+    /// Feed a structured event to the detector. Default does nothing —
+    /// only managed-mode impls care.
+    fn observe_event(&mut self, _event: &Value) {}
+
+    /// Called every watchdog tick. Returns true if the current turn
+    /// should be considered ended (claude has stopped responding).
+    fn turn_ended(&self) -> bool;
+
+    /// Called when a new user turn is submitted. Resets the detector
+    /// so any prior explicit-end flag or stale silence doesn't
+    /// immediately mark the new turn as ended.
+    fn reset_for_new_turn(&mut self);
+}
+
+/// Custom view: agents that stream structured events and signal end-of-turn
+/// with one specific event. The turn-end *signal* is the only thing that
+/// varies between providers, so it's injected as a predicate; the rest of the
+/// state machine trusts only that explicit signal. Construct via the provider
+/// helpers below.
+pub struct ManagedActivity {
+    explicit_turn_end: bool,
+    /// Returns true for the event that marks the end of a turn.
+    is_turn_end: fn(&Value) -> bool,
+}
+
+impl ManagedActivity {
+    fn new(is_turn_end: fn(&Value) -> bool) -> Self {
+        Self {
+            explicit_turn_end: false,
+            is_turn_end,
+        }
+    }
+
+    /// Claude (`--print --output-format stream-json`) ends a turn with a
+    /// `result` event. Cursor emits Claude-shaped stream-json, so it shares
+    /// this detector.
+    pub fn claude() -> Self {
+        Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("result"))
+    }
+
+    /// Codex (`codex exec --json`) ends a turn with `turn.completed`, or with
+    /// `turn.failed` when the model call errored (usage limit, auth, 4xx) —
+    /// after which the process exits non-zero. Both are the turn's explicit
+    /// end; the supervisor uses that to tell a failed turn from a crash. (The
+    /// per-turn process exit is handled separately and does not feed this
+    /// detector.)
+    pub fn codex() -> Self {
+        Self::new(|event| {
+            matches!(
+                event.get("type").and_then(|v| v.as_str()),
+                Some("turn.completed") | Some("turn.failed")
+            )
+        })
+    }
+
+    /// OpenCode (`opencode run --format json`) emits one or more `step_finish`
+    /// events per turn (one per reasoning/tool step); only the final one
+    /// carries `part.reason == "stop"`. Intermediate steps use `tool-calls`
+    /// and must not be treated as turn-end.
+    pub fn opencode() -> Self {
+        Self::new(|event| {
+            event.get("type").and_then(|v| v.as_str()) == Some("step_finish")
+                && event
+                    .get("part")
+                    .and_then(|p| p.get("reason"))
+                    .and_then(|r| r.as_str())
+                    == Some("stop")
+        })
+    }
+
+    /// Pi (`pi -p --mode json`) emits a `turn_end` per assistant step (so it
+    /// fires mid-turn after a tool call); the whole turn ends with a single
+    /// `agent_end`, which is the signal we key on.
+    pub fn pi() -> Self {
+        Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("agent_end"))
+    }
+}
+
+impl Activity for ManagedActivity {
+    fn observe_event(&mut self, event: &Value) {
+        // Subagent (sidechain) events carry the spawning Task/Agent tool's id in
+        // a top-level `parent_tool_use_id`. They belong to a nested turn, not the
+        // main one: a subagent's `result` must not end the main turn. Ignore
+        // sidechain events entirely here. (The frontend mirrors this via
+        // `parent_tool_use_id` routing in reduce.ts.)
+        if event
+            .get("parent_tool_use_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty())
+        {
+            return;
+        }
+        if (self.is_turn_end)(event) {
+            self.explicit_turn_end = true;
+        }
+    }
+
+    fn turn_ended(&self) -> bool {
+        // Structured providers define an explicit terminal event. Silence is
+        // not completion: reasoning, tools, and provider-side work can all be
+        // quiet for an arbitrary amount of time before more events arrive.
+        self.explicit_turn_end
+    }
+
+    fn reset_for_new_turn(&mut self) {
+        self.explicit_turn_end = false;
+    }
+}
+
+/// Native view: claude runs in a PTY rendering its full TUI. There's
+/// no clean external turn-end event, so we use the silence between
+/// PTY chunks. Claude's TUI animates its "working" state with
+/// frequent redraws, so silence longer than the threshold is our best
+/// available heuristic. The supervisor corrects it if output resumes.
+#[derive(Default)]
+pub struct ClaudeNativeActivity {
+    last_byte_at: Option<Instant>,
+}
+
+impl ClaudeNativeActivity {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Activity for ClaudeNativeActivity {
+    fn observe_bytes(&mut self, _bytes: &[u8]) {
+        self.last_byte_at = Some(Instant::now());
+    }
+
+    fn turn_ended(&self) -> bool {
+        self.last_byte_at
+            .map(|t| t.elapsed() >= NATIVE_SILENCE_THRESHOLD)
+            .unwrap_or(false)
+    }
+
+    fn reset_for_new_turn(&mut self) {
+        self.last_byte_at = Some(Instant::now());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread::sleep;
+
+    #[test]
+    fn managed_ends_on_result_event() {
+        let mut a = ManagedActivity::claude();
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "assistant"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "result", "subtype": "success"}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn managed_resets_after_new_turn() {
+        let mut a = ManagedActivity::claude();
+        a.observe_event(&serde_json::json!({"type": "result"}));
+        assert!(a.turn_ended());
+        a.reset_for_new_turn();
+        assert!(!a.turn_ended());
+    }
+
+    #[test]
+    fn managed_non_terminal_events_never_end_turn() {
+        let mut a = ManagedActivity::claude();
+        a.observe_event(&serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash"}]}
+        }));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1"}]}
+        }));
+        assert!(!a.turn_ended());
+    }
+
+    #[test]
+    fn managed_result_ends_after_tool_activity() {
+        let mut a = ManagedActivity::claude();
+        a.observe_event(&serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": "toolu_1"}]}
+        }));
+        a.observe_event(&serde_json::json!({"type": "result", "subtype": "success"}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn managed_ignores_subagent_sidechain_events() {
+        // The main agent spawns a subagent via a Task tool call.
+        let mut a = ManagedActivity::claude();
+        a.observe_event(&serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": "toolu_task", "name": "Task"}]}
+        }));
+        assert!(!a.turn_ended());
+
+        // The subagent runs, emitting its own tool cycle and finally a `result`,
+        // all tagged with the spawning tool's id. None of it must end the main
+        // turn.
+        a.observe_event(&serde_json::json!({
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_task",
+            "message": {"content": [{"type": "tool_use", "id": "toolu_sub", "name": "Bash"}]}
+        }));
+        a.observe_event(&serde_json::json!({
+            "type": "result",
+            "parent_tool_use_id": "toolu_task",
+            "subtype": "success"
+        }));
+        // Subagent's result must NOT end the main turn.
+        assert!(!a.turn_ended());
+
+        // The main agent finally gets the Task tool_result, then ends its turn.
+        a.observe_event(&serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_task"}]}
+        }));
+        a.observe_event(&serde_json::json!({"type": "result", "subtype": "success"}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn codex_ends_on_turn_completed_event() {
+        let mut a = ManagedActivity::codex();
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "turn.started"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "item.completed"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "turn.completed", "usage": {}}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn codex_ends_on_turn_failed_event() {
+        let mut a = ManagedActivity::codex();
+        a.observe_event(&serde_json::json!({"type": "turn.started"}));
+        a.observe_event(&serde_json::json!({"type": "error", "message": "usage limit"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "turn.failed", "error": {"message": "x"}}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn codex_resets_after_new_turn() {
+        let mut a = ManagedActivity::codex();
+        a.observe_event(&serde_json::json!({"type": "turn.completed"}));
+        assert!(a.turn_ended());
+        a.reset_for_new_turn();
+        assert!(!a.turn_ended());
+    }
+
+    #[test]
+    fn opencode_ends_only_on_step_finish_stop() {
+        let mut a = ManagedActivity::opencode();
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "step_start"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "tool_use"}));
+        assert!(!a.turn_ended());
+        // Intermediate step finishing for a tool call must NOT end the turn.
+        a.observe_event(
+            &serde_json::json!({"type": "step_finish", "part": {"reason": "tool-calls"}}),
+        );
+        assert!(!a.turn_ended());
+        // The final step stops.
+        a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn opencode_resets_after_new_turn() {
+        let mut a = ManagedActivity::opencode();
+        a.observe_event(&serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}}));
+        assert!(a.turn_ended());
+        a.reset_for_new_turn();
+        assert!(!a.turn_ended());
+    }
+
+    #[test]
+    fn pi_ends_on_agent_end_not_turn_end() {
+        let mut a = ManagedActivity::pi();
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "session", "id": "x"}));
+        assert!(!a.turn_ended());
+        // A mid-turn `turn_end` (after a tool step) must NOT end the turn.
+        a.observe_event(&serde_json::json!({"type": "turn_end"}));
+        assert!(!a.turn_ended());
+        a.observe_event(&serde_json::json!({"type": "agent_end"}));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn pi_resets_after_new_turn() {
+        let mut a = ManagedActivity::pi();
+        a.observe_event(&serde_json::json!({"type": "agent_end"}));
+        assert!(a.turn_ended());
+        a.reset_for_new_turn();
+        assert!(!a.turn_ended());
+    }
+
+    #[test]
+    fn native_ends_after_silence() {
+        // Run with a much shorter threshold so the test stays fast.
+        let mut a = ClaudeNativeActivity::new();
+        a.observe_bytes(b"hello");
+        // Just-observed — definitely still active.
+        assert!(!a.turn_ended());
+        // Past the native threshold (2.5s) would take too long to wait
+        // in a unit test — instead, sanity-check the time math with a
+        // freshly-zero detector.
+        let stale = ClaudeNativeActivity {
+            last_byte_at: Some(Instant::now() - Duration::from_secs(5)),
+        };
+        assert!(stale.turn_ended());
+    }
+
+    #[test]
+    fn empty_native_does_not_claim_turn_ended() {
+        // Fresh detector with no observed bytes shouldn't claim
+        // turn-end — otherwise a just-spawned process would
+        // immediately be flagged idle before any real activity.
+        let a = ClaudeNativeActivity::new();
+        assert!(!a.turn_ended());
+        // (Sleep just to make sure elapsed-on-None is the path used.)
+        sleep(Duration::from_millis(10));
+        assert!(!a.turn_ended());
+    }
+}
