@@ -1317,7 +1317,7 @@ fn docker_run_echo_round_trip() {
         cpus: "1",
         // What this machine's daemon would really be launched with, so the
         // round-trip covers the mapping on a Linux runner too.
-        run_as_user: launch_user(),
+        run_as_user: launch_user().as_deref(),
         image: "busybox",
         agent_bin: "echo",
         auth_vars: &[],

@@ -221,6 +221,10 @@ impl SandboxEngine for DockerEngine {
 
         let prefix_args = {
             let auth_vars = prep.auth_vars();
+            // Owned for the duration of the argv build: the probe behind it may
+            // decline to cache its answer, so there is no `&'static str` to
+            // borrow (see `util::launch_user`).
+            let run_as_user = launch_user();
             run_args(&RunSpec {
                 interactive: ctx.interactive,
                 name: &name,
@@ -235,7 +239,7 @@ impl SandboxEngine for DockerEngine {
                 borrowed_object_stores: &prep.borrowed_object_stores,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
                 cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
-                run_as_user: launch_user(),
+                run_as_user: run_as_user.as_deref(),
                 image: &image,
                 agent_bin,
                 auth_vars: &auth_vars,
