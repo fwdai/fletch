@@ -82,9 +82,17 @@ pub fn default_data_dir() -> PathBuf {
 fn claim_state_roots(data_dir: &Path) {
     // Absolute: a `--data-dir` may be relative, but a seatbelt profile and a
     // container bind mount are both built from these paths and neither takes a
-    // relative one. `absolute` is pure — no existence check, no symlink
-    // resolution — so it is safe here, before the dir is created.
-    let base = std::path::absolute(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    // relative one. Spelled out rather than `std::path::absolute` (1.79, past
+    // this package's MSRV), and deliberately without the filesystem: the dir
+    // does not exist yet on a first start, and the sandbox canonicalizes what
+    // it is handed anyway.
+    let base = if data_dir.is_absolute() {
+        data_dir.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(data_dir))
+            .unwrap_or_else(|_| data_dir.to_path_buf())
+    };
     for key in [
         fletch_core::workspace::WORKSPACES_ROOT_ENV,
         fletch_core::rpc::RPC_ROOT_ENV,
