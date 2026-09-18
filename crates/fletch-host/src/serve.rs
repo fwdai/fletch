@@ -105,6 +105,10 @@ pub async fn start(config: Config) -> Result<Arc<Admin>, String> {
 
     let engine = match host::boot(BootConfig {
         data_dir: data_dir.clone(),
+        // `claim_state_roots` above pointed the engine at roots this host
+        // derived for itself, so they are this host's to sweep — the engine
+        // cannot tell that from how they were configured (see `StateRoots`).
+        state_roots: host::StateRoots::Owned,
         // Nowhere, on purpose. `boot` wraps this in a fanout with its own
         // broadcast, and the remote taps subscribe to *that*, so events still
         // reach every paired device — there is simply no second destination

@@ -106,7 +106,7 @@ pub fn mailbox_dir(agent_id: &str) -> Result<PathBuf> {
     Ok(rpc_root()?.join(agent_id))
 }
 
-fn rpc_root() -> Result<PathBuf> {
+pub(crate) fn rpc_root() -> Result<PathBuf> {
     let base = match std::env::var_os(RPC_ROOT_ENV).filter(|v| !v.is_empty()) {
         Some(root) => PathBuf::from(root),
         None => dirs::home_dir()
@@ -155,21 +155,17 @@ pub fn remove_mailbox(agent_id: &str) -> Result<()> {
     }
 }
 
-/// Sound only because the root is per-build: every mailbox under it belongs to
-/// the DB `live` came from. Skipped when `RPC_ROOT_ENV` is set; nested-Fletch
-/// roots are reclaimed by `sandbox::cleanup_nested_rpc_roots`.
-pub fn sweep_orphan_mailboxes(live: &HashSet<String>) {
-    if std::env::var_os(RPC_ROOT_ENV)
-        .filter(|v| !v.is_empty())
-        .is_some()
-    {
-        return;
-    }
-    let Ok(root) = rpc_root() else { return };
-    sweep_orphan_mailboxes_in(&root, live);
-}
-
-/// Split out so tests don't mutate the process-global `RPC_ROOT_ENV`.
+/// Remove every mailbox under `root` that no agent in `live` owns.
+///
+/// Sound only because the root is per-build *and* owned by the engine `live`
+/// came from: every mailbox under it belongs to that engine's database. Whether
+/// this engine owns its root is the host's answer, not this module's — see
+/// [`crate::host::StateRoots`], which is what decides whether `boot` calls this
+/// at all. A nested Fletch's root belongs to the parent, which reclaims it in
+/// `sandbox::cleanup_nested_rpc_roots`.
+///
+/// Takes the root as an argument rather than reading `RPC_ROOT_ENV` so tests
+/// never mutate the process-global override.
 pub(crate) fn sweep_orphan_mailboxes_in(root: &Path, live: &HashSet<String>) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
