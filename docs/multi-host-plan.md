@@ -590,12 +590,12 @@ cannot start before 13.
 
 Kept current as PRs open and merge. Status legend: `[x]` merged to `main`,
 `[o]` PR open, `[~]` in progress on a branch, `[ ]` not started. Last update
-2026-09-19 (boot PR #762 open; fletch-core split in progress).
+2026-09-19, later: #751/#753/#756 merged; #762 boot, #764 fletch-core, #758, #763 open; fletch-host binary in progress.
 
 ### 6.1 v1 scope (§5.2)
 
 **Phase 0: protocol groundwork**
-- [o] `protocol { version, ops, events, features }` on `pair`/`hello`; op `answer_publish_approval`; mobile approve/deny card; protocol doc "Compatibility" section; this plan committed. PR #751 (`feat/remote-protocol-descriptor`, merged with `main` 2026-09-19, all checks green).
+- [x] `protocol { version, ops, events, features }` on `pair`/`hello`; op `answer_publish_approval`; mobile approve/deny card; protocol doc "Compatibility" section; this plan committed. PR #751.
 
 **Phase 1: decouple the engine from Tauri**
 - [x] 1a `EventSink`, `host::emit`, 28 emit sites converted. PR #750.
@@ -604,23 +604,23 @@ Kept current as PRs open and merge. Status legend: `[x]` merged to `main`,
 
 **Phase 2: crates**
 - [x] 2a `crates/fletch-proto` (keys, noise, dial, relay framing, test vector); both apps depend by path; no Cargo workspace; CI gate. PR #752.
-- [~] 2b `crates/fletch-core`: move `database`, `workspace`, `git`, `github`, `agent`, `sandbox`, `codegraph`, `rpc`, `host`, `supervisor`, `workflow`, `roadmap`, `remote` (minus Tauri commands) behind `pub use` shims; dictation ops via an optional dispatcher extension; platform gates; `cargo tree -i tauri` empty; CI gate. Branch `refactor/fletch-core-crate` off #762 (agent running). Must precede 3b: a binary depending on the Tauri app crate would pull webkit into the Linux build.
-- [~] 2c `_impl` split of the 48 `#[tauri::command]` fns in `workflow/` and `roadmap/` (same PR as 2b).
+- [o] 2b `crates/fletch-core`: 47 engine modules moved behind `pub use` shims; dictation ops via `SupervisorDispatch::with_dictation` + `BootConfig::dictation` hook; `cargo tree -i tauri` empty; CI gate; tests 1651 core + 68 shell = 1715 (baseline exact). PR #764 (base #762). Precedes 3b: a binary depending on the Tauri app crate would pull webkit into the Linux build.
+- [o] 2c `_impl` split of the 48 `#[tauri::command]` fns in `workflow/` and `roadmap/` (+18 the remote dispatcher needs); 212 handler names unchanged. PR #764.
 
 **Phase 3: fletch-host**
 - [o] 3a `host::boot(BootConfig) -> Engine` extracted from Tauri `setup`; dictation arms read `ctx.db` instead of an `AppHandle`; `BootConfig` hooks for DB recovery dialog, activity monitor, exit path. PR #762 (base `main`).
-- [ ] 3b `crates/fletch-host` binary: `serve [--data-dir] [--port] [--relay|--no-relay] [--name]`, `pair` (URL + QR), `devices list|revoke`, `status`, `approvals list`, `approve <id> [--deny]`, `github login`, `project add|clone`; admin Unix socket `<data_dir>/host.sock` 0600; SIGTERM path shared with desktop.
+- [~] 3b `crates/fletch-host` binary: `serve [--data-dir] [--port] [--relay|--no-relay] [--name]` (`RemoteBoot::Headless`, `NullSink` host sink, settings-table secrets, Docker/Podman default off macOS), `pair` (URL + QR), `devices list|revoke`, `status`, `approvals list`, `approve <id> [--deny]`, `github login`, `project add|clone`; admin Unix socket `<data_dir>/host.sock` 0600 with the wire envelope; default data dir `dirs::data_dir()/fletch-host`; e2e test pairs a `fletch-proto` client against a booted headless engine. Branch `feat/fletch-host` off #764 (agent running).
 - [ ] 3c headless macOS smoke test (free checkpoint): `fletch-host serve` + phone pair on this Mac.
 - [ ] 3d Linux: Docker/Podman default when no setting, UID mapping (`sandbox/docker/engine/mod.rs:53` TODO), `bin_resolve.rs:185` `/bin/zsh` → `$SHELL`/`sh -lc`, Linuxbrew path, XDG data dir, `packaging/fletch-host.service`, release job for `x86_64-unknown-linux-gnu` + `aarch64-unknown-linux-gnu` (+ `aarch64-apple-darwin`).
 - [ ] 3e Acceptance: Ubuntu + Docker + `claude` logged in over SSH; phone pairs (LAN and relay), spawns, approves a push, opens a PR; `kill -TERM` mid-run then restart resumes.
 
 **Desktop as client (reduced Phase 6)**
 - [x] Shared TS protocol client moved to `src/remote/`. PR #749.
-- [o] Environment-keyed store + `Transport` seam (`LocalTransport`, `RemoteTransport`, `invokeLocal`/`onLocal` for desktop-only domains; PTY buffers env-keyed). PR #753 (base #749, now `main`).
-- [o] Shared Rust dialer `fletch_proto::client::Dialer` (many connections, keyed by connection id); desktop `remote_connect/send/close/device_public_key`; desktop device key. PR #756 (base #752, now `main`).
-- [o] Paired hosts part a: `remote.hosts` setting, background connections after first paint, Settings → Remote control → Paired hosts (paste link, state dot, Forget). PR #758 (base #753; also carries #756 until it merges).
-- [~] Paired hosts part b: switcher (only when a host is saved), `switchEnvironment` (stash/restore workspace + selected agent, re-attach engine listeners), per-slice agent-id collision audit, capability gating from `protocol`, reconnect refetch, `retrying` on the entry. Branch `feat/environment-switcher` off #758 (agent running).
-- [ ] Manual pass once #753/#756/#758 merge: local app unchanged with no hosts; device key created lazily and `host_key` untouched; native-view replay after env-keyed PTY buffers; pair a phone against a desktop built on `fletch-proto`.
+- [x] Environment-keyed store + `Transport` seam (`LocalTransport`, `RemoteTransport`, `invokeLocal`/`onLocal` for desktop-only domains; PTY buffers env-keyed). PR #753.
+- [x] Shared Rust dialer `fletch_proto::client::Dialer` (many connections, keyed by connection id); desktop `remote_connect/send/close/device_public_key`; desktop device key. PR #756.
+- [o] Paired hosts part a: `remote.hosts` setting, background connections after first paint, Settings → Remote control → Paired hosts (paste link, state dot, Forget). PR #758 (base `main`; updated from `main` by merge commit 2026-09-19).
+- [o] Paired hosts part b: switcher in the sidebar header (only when a host is saved), `switchEnvironment` (stash/restore workspace-shaped state + selected agent, detach/re-attach engine listeners), per-slice agent-id collision table, capability gating from `protocol` (add project, shells, run, workflows, roadmap, native view, fork; autopilot local-only), reconnect refetch, `retrying` on the entry. PR #763 (base #758).
+- [ ] Manual pass once #758/#763 merge: local app unchanged with no hosts; device key created lazily and `host_key` untouched; native-view replay after env-keyed PTY buffers; pair a phone against a desktop built on `fletch-proto`.
 
 ### 6.2 Deferred (§5.3)
 
