@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use fletch_core::host::HeadlessRelay;
-use fletch_host::{admin, serve};
+use fletch_host::{admin, serve, service, update};
 use serde_json::{json, Value};
 
 #[derive(Parser)]
@@ -87,6 +87,49 @@ enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    /// Run `serve` under this machine's init system (systemd or launchd).
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
+    /// Replace this binary with a published release's.
+    Update {
+        /// The version to install, e.g. 0.7.32. Defaults to the latest
+        /// release. Naming the version this binary already is reinstalls it.
+        version: Option<String>,
+        /// Print what is available and stop; change nothing.
+        #[arg(long)]
+        check: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Write the service definition, enable it and start it. Running this
+    /// again rewrites it and restarts the host, so it is how flags are
+    /// changed.
+    Install {
+        /// Port for paired devices, written into the service definition.
+        #[arg(long)]
+        port: Option<u16>,
+        /// The name paired devices show for this host.
+        #[arg(long)]
+        name: Option<String>,
+        /// Linux, with `--system`: the user the unit runs as. Defaults to
+        /// whoever runs this command.
+        #[arg(long, value_name = "NAME")]
+        user: Option<String>,
+        /// Linux: install to /etc/systemd/system (needs sudo) instead of your
+        /// own systemd user directory.
+        #[arg(long)]
+        system: bool,
+    },
+    /// Stop the service, disable it and remove its definition.
+    Uninstall {
+        /// Linux: the unit in /etc/systemd/system rather than your own.
+        #[arg(long)]
+        system: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -161,6 +204,12 @@ fn main() {
                 handle_signals: true,
             }))
         }
+        // Neither of these goes over the admin socket: they act on this
+        // machine's init system and on this binary's own file.
+        Command::Service { command } => service_command(&data_dir, command),
+        Command::Update { version, check } => {
+            runtime.block_on(update::run(&data_dir, version, check))
+        }
         command => runtime.block_on(client(&data_dir, command)),
     };
     if let Err(e) = result {
@@ -172,7 +221,9 @@ fn main() {
 async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), String> {
     match command {
         // Handled by the caller; listed so this match stays exhaustive.
-        Command::Serve { .. } => unreachable!("serve does not go over the socket"),
+        Command::Serve { .. } | Command::Service { .. } | Command::Update { .. } => {
+            unreachable!("these do not go over the socket")
+        }
         Command::Status => {
             print_json(&admin::call(data_dir, "status", json!({})).await?);
         }
@@ -270,6 +321,33 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
         },
     }
     Ok(())
+}
+
+/// `service install|uninstall`. The service runs `serve` with the flags given
+/// here, from this binary's own absolute path and against the data dir this
+/// command resolved — an init system's environment is not the operator's
+/// shell, so both are written into the unit rather than re-derived by it.
+fn service_command(data_dir: &std::path::Path, command: ServiceCommand) -> Result<(), String> {
+    match command {
+        ServiceCommand::Install {
+            port,
+            name,
+            user,
+            system,
+        } => {
+            let spec = service::Spec {
+                exec: update::current_exe()?,
+                data_dir: data_dir.to_path_buf(),
+                port,
+                name,
+                user: user.or_else(|| std::env::var("USER").ok()),
+                system,
+                log_path: service::launchd_log_path()?,
+            };
+            service::install(&spec)
+        }
+        ServiceCommand::Uninstall { system } => service::uninstall(system),
+    }
 }
 
 /// The pairing link as a QR code, in half-block characters so a 33×33 symbol
