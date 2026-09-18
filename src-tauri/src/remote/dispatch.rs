@@ -58,6 +58,7 @@ pub const OPS: &[&str] = &[
     "spawn_agent",
     "send_user_message",
     "answer_tool_use",
+    "answer_publish_approval",
     "stop_agent",
     "resume_agent",
     "archive_agent",
@@ -198,6 +199,17 @@ impl Dispatch for SupervisorDispatch {
                         a.behavior,
                         a.message,
                     ))
+                }
+
+                // The gated-publish prompt already reaches a phone as
+                // `publish:approval-requested`; this is the answer. The same
+                // function the `answer_publish_approval` command calls, so an
+                // id that has already timed out is ignored here too and a late
+                // answer can never publish anything.
+                "answer_publish_approval" => {
+                    let a: PublishApprovalArgs = parse(args)?;
+                    crate::rpc::approval::answer(&a.id, a.approved);
+                    Ok(Value::Null)
                 }
 
                 "stop_agent" => {
@@ -544,6 +556,14 @@ struct AnswerToolUseArgs {
     message: Option<String>,
 }
 
+/// One answer to a `publish:approval-requested` prompt; `id` is the one the
+/// event carried.
+#[derive(Deserialize)]
+struct PublishApprovalArgs {
+    id: String,
+    approved: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelArgs {
@@ -699,6 +719,15 @@ mod arg_tests {
         assert_eq!(tool.request_id, "req-9");
         assert_eq!(tool.behavior, ToolUseBehavior::Allow);
         assert!(tool.message.is_none());
+    }
+
+    #[test]
+    fn publish_approval_args_need_both_the_id_and_the_verdict() {
+        let a: PublishApprovalArgs = parse(json!({ "id": "r1", "approved": false })).unwrap();
+        assert_eq!(a.id, "r1");
+        assert!(!a.approved);
+        assert!(parse::<PublishApprovalArgs>(json!({ "id": "r1" })).is_err());
+        assert!(parse::<PublishApprovalArgs>(json!({ "approved": true })).is_err());
     }
 
     #[test]

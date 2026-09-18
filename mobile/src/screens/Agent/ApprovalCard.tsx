@@ -1,3 +1,4 @@
+import type { PublishApproval } from "@desktop/api/types/sandbox";
 import { Icon } from "@desktop/components/Icon";
 import type { ChatItem } from "../../adapters";
 import { providerLabel } from "../../lib/agents";
@@ -45,6 +46,43 @@ export function ApprovalCard({
         </button>
       </div>
       <div className="always">Answering resumes the turn on the host.</div>
+    </div>
+  );
+}
+
+/** A publish the host is holding for a human (`publish:approval-requested`,
+ *  raised when the Mac's "Confirm before publishing" setting is on). The agent
+ *  is blocked on it until someone answers or the host's wait lapses, so this is
+ *  shown wherever the phone can reach it — including on an older host that
+ *  cannot be answered from here, where saying so beats a silent stall. */
+export function PublishApprovalCard({ request }: { request: PublishApproval }) {
+  const answer = useStore((s) => s.answerPublishApproval);
+  const canAnswer = useStore((s) => s.hostSupports("answer_publish_approval"));
+  const decide = (approved: boolean) => void answer(request.id, approved).catch(ignore);
+  return (
+    <div className="appr rise">
+      <div className="h">
+        <Icon name="alert" size={16} />
+        Approval needed
+      </div>
+      <div className="why">This agent wants to publish outside the sandbox.</div>
+      <div className="cmd">{request.detail}</div>
+      {canAnswer && (
+        <div className="acts">
+          <button type="button" className="btn ghost" onClick={() => decide(false)}>
+            Deny
+          </button>
+          <button type="button" className="btn primary" onClick={() => decide(true)}>
+            <Icon name="check" size={15} strokeWidth={2.2} />
+            Approve
+          </button>
+        </div>
+      )}
+      <div className="always">
+        {canAnswer
+          ? "An unanswered publish is refused on the host."
+          : "Answer it on your Mac — this one is too old to answer from the phone."}
+      </div>
     </div>
   );
 }

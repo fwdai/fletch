@@ -94,6 +94,27 @@ pub struct HostInfo {
     pub os: String,
 }
 
+/// The version the `fletch-remote-v2` prologue names. Changes are additive
+/// within a version: a client gates on the lists below, never on this number or
+/// on `HostInfo::app_version`.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// What the host can do, sent in the `pair` and `hello` results so a client can
+/// hide what this host lacks instead of guessing from its version. A result
+/// without it is a host from before the field, which means exactly the v2
+/// default set (`docs/remote-protocol.md`, "Compatibility").
+#[derive(Debug, Clone, Serialize)]
+pub struct Protocol {
+    pub version: u32,
+    /// Every op name a device may send: the dispatcher's allowlist plus the ones
+    /// the session layer answers itself.
+    pub ops: Vec<&'static str>,
+    /// The forwarded-event whitelist.
+    pub events: Vec<&'static str>,
+    /// Named behaviours that are neither an op nor an event. None yet.
+    pub features: Vec<&'static str>,
+}
+
 /// A paired device as Settings renders it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -586,6 +607,19 @@ pub fn host_info() -> HostInfo {
         name: machine_name(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         os: std::env::consts::OS.to_string(),
+    }
+}
+
+/// What this host answers, as the `pair` and `hello` results report it
+/// (docs/remote-protocol.md, "Compatibility"). Read off the two allowlists that
+/// already define the wire surface, so a name can only appear here by being
+/// reachable.
+pub fn protocol_descriptor() -> Protocol {
+    Protocol {
+        version: PROTOCOL_VERSION,
+        ops: [dispatch::OPS, dispatch::SESSION_OPS].concat(),
+        events: events::FORWARDED_EVENTS.to_vec(),
+        features: Vec::new(),
     }
 }
 
