@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { V2_DEFAULT_OPS } from "@/remote/types";
-import { GATES, gateReason } from "./capabilities";
+import { closedGates, GATES, gateReason, hostSkew, hostVersionLabel } from "./capabilities";
 import type { EnvironmentEntry } from "./environments";
 
 const local: EnvironmentEntry = {
@@ -74,5 +74,126 @@ describe("gateReason", () => {
     const narrow = host(["get_workspace"]);
 
     expect(gateReason(narrow, "sideShell")).toBe(GATES.sideShell.reason);
+  });
+});
+
+describe("closedGates", () => {
+  it("closes nothing on the local environment", () => {
+    expect(closedGates(local)).toEqual([]);
+  });
+
+  it("lists every closed gate with the reason its control shows", () => {
+    const old = host();
+
+    // A host from before the descriptor answers the v2 set, which carries none
+    // of the gated ops — so this is the whole table.
+    expect(closedGates(old).map((g) => g.name)).toEqual(Object.keys(GATES));
+    for (const gate of closedGates(old)) {
+      expect(gate.reason).toBe(gateReason(old, gate.name));
+      expect(gate.label).toBe(GATES[gate.name].label);
+    }
+  });
+
+  it("leaves only the local-only gate closed on a host that answers everything", () => {
+    const every = host([
+      ...V2_DEFAULT_OPS,
+      "open_agent_shell",
+      "run_start",
+      "wf_list_runs",
+      "roadmap_list_items",
+      "switch_view",
+      "fork_agent",
+      "merge_pr",
+      "restore_agent",
+    ]);
+
+    expect(closedGates(every).map((g) => g.name)).toEqual(["addProject"]);
+  });
+});
+
+describe("hostSkew", () => {
+  const CLIENT = "0.7.32";
+  const withVersion = (env: EnvironmentEntry, appVersion: string): EnvironmentEntry => ({
+    ...env,
+    appVersion,
+  });
+
+  it("says nothing about the local environment", () => {
+    expect(hostSkew(local, CLIENT)).toBeNull();
+  });
+
+  it("says nothing about a host that has not answered a handshake yet", () => {
+    // No descriptor and not connected: reading the missing one as the v2 set
+    // here would accuse a host of gaps it may not have.
+    expect(hostSkew({ ...host(), connection: "connecting" }, CLIENT)).toBeNull();
+    expect(hostSkew({ ...host(), connection: "error", error: "offline" }, CLIENT)).toBeNull();
+  });
+
+  it("says nothing about a connected host that answers every gated op", () => {
+    // `addProject` is still closed — the picker is this Mac's — but that is not
+    // this host's shortcoming, so the row stays quiet.
+    const every = host([
+      ...V2_DEFAULT_OPS,
+      "open_agent_shell",
+      "run_start",
+      "wf_list_runs",
+      "roadmap_list_items",
+      "switch_view",
+      "fork_agent",
+      "merge_pr",
+      "restore_agent",
+    ]);
+
+    expect(gateReason(every, "addProject")).not.toBeNull();
+    expect(hostSkew(every, CLIENT)).toBeNull();
+  });
+
+  it("names the gaps while there are few of them", () => {
+    const nearly = host([
+      ...V2_DEFAULT_OPS,
+      "open_agent_shell",
+      "run_start",
+      "wf_list_runs",
+      "roadmap_list_items",
+      "fork_agent",
+      "merge_pr",
+    ]);
+
+    const skew = hostSkew(withVersion(nearly, "0.7.30"), CLIENT);
+
+    expect(skew?.closed.map((g) => g.name)).toEqual(["nativeView", "restore"]);
+    expect(skew?.summary).toBe(
+      "The native terminal view and Restoring a session unavailable on this host",
+    );
+  });
+
+  it("counts them once a list would be too long, and reports both versions", () => {
+    const skew = hostSkew(withVersion(host(), "0.7.30"), CLIENT);
+
+    // Eight op-backed gates; `addProject` is this side's and is left out.
+    expect(skew?.closed).toHaveLength(8);
+    expect(skew?.summary).toBe("8 features unavailable on this host");
+    expect(skew?.tip).toContain(`Merging a PR: ${GATES.mergePr.reason}`);
+    expect(skew?.tip).not.toContain(GATES.addProject.reason);
+    // Reported side by side, never compared: the list above is the op table's
+    // answer, not this line's.
+    expect(skew?.tip.split("\n").at(-1)).toBe("Host 0.7.30 · this app 0.7.32");
+  });
+
+  it("owns up to a host that reported no version", () => {
+    expect(hostSkew(host(), CLIENT)?.tip.split("\n").at(-1)).toBe(
+      "Host version unknown · this app 0.7.32",
+    );
+  });
+});
+
+describe("hostVersionLabel", () => {
+  it("is null for the local environment and for a host that reported none", () => {
+    expect(hostVersionLabel({ ...local, appVersion: "0.7.32" })).toBeNull();
+    expect(hostVersionLabel(host())).toBeNull();
+  });
+
+  it("labels the version the host reported", () => {
+    expect(hostVersionLabel({ ...host(), appVersion: "0.7.30" })).toBe("v0.7.30");
   });
 });

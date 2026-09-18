@@ -127,7 +127,8 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
     );
     client.onSnapshot((snapshot) => {
       // The host's own name wins over the one the pairing link carried, and the
-      // descriptor is what gates a remote environment's UI.
+      // descriptor is what gates a remote environment's UI. The version rides
+      // along for the rows that name the host — it is reported, never gated on.
       name = snapshot.host.name || name;
       writers.upsertEnvironment({
         id: record.hostKey,
@@ -135,6 +136,7 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
         kind: "remote",
         connection: "connected",
         retrying: false,
+        appVersion: snapshot.host.appVersion,
         protocol: snapshot.protocol,
       });
       // Every handshake — the first and every reconnect — means this client has

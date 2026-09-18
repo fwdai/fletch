@@ -45,6 +45,12 @@ export interface EnvironmentEntry {
   /** Remote only. The local environment's transport is the module-level
    *  `localTransport`, which is what `activeTransport()` falls back to. */
   transport?: Transport;
+  /** Remote only: the app version the host reported in `hello`/`pair`
+   *  (`HostInfo.appVersion`), for the rows that identify it. In memory only —
+   *  it is whatever the last handshake said, so there is nothing worth keeping
+   *  on disk. Never gated on: capability is `protocol.ops` membership
+   *  (src/remote/types.ts). */
+  appVersion?: string;
   /** Remote only: what the connected host said it answers, from the last
    *  handshake. Absent for a host that sent none (one from before the field) or
    *  one that has not been greeted yet. The local environment is never gated
