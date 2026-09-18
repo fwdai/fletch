@@ -188,14 +188,16 @@ jobs:
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
-      # Same action tauri-action uses underneath, pointed at the tag that job
-      # published: it adds assets to the existing release rather than making a
-      # second one.
+      # `gh release upload`, not `softprops/action-gh-release`: the action
+      # *patches* the release it is pointed at, and the job above has just
+      # replaced that release's body with GitHub's generated notes. Adding
+      # assets must not risk overwriting them, and `gh` (preinstalled on every
+      # runner) does only that.
       - name: Upload to the release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.package.outputs.tag }}
-          files: |
-            ${{ steps.package.outputs.name }}.tar.gz
-            ${{ steps.package.outputs.name }}.tar.gz.sha256
-          fail_on_unmatched_files: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          gh release upload ${{ steps.package.outputs.tag }}
+          ${{ steps.package.outputs.name }}.tar.gz
+          ${{ steps.package.outputs.name }}.tar.gz.sha256
+          --clobber
