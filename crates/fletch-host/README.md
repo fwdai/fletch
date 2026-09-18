@@ -26,18 +26,21 @@ install -Dm755 fletch-host ~/.local/bin/fletch-host
 ```
 
 `~/.local/bin` is where the service units below expect it. Make sure it is on
-your `PATH` (`export PATH="$HOME/.local/bin:$PATH"`).
+your `PATH` (`export PATH="$HOME/.local/bin:$PATH"`). The tarball also carries
+this README and both service units, so the paths in "Run it as a service" work
+from the extracted directory as well as from a checkout.
 
 From a checkout instead:
 
 ```sh
 cargo build --release --manifest-path crates/fletch-host/Cargo.toml
-install -Dm755 src-tauri/target/release/fletch-host ~/.local/bin/fletch-host
+install -Dm755 crates/fletch-host/target/release/fletch-host ~/.local/bin/fletch-host
 ```
 
-(The target directory is shared with the desktop build; `--target-dir` moves it.
-`--no-default-features` drops the pairing QR, which is the only dependency
-outside the desktop's own tree.)
+(This package is not in a Cargo workspace, so it builds into its own target
+directory; `--target-dir` or `$CARGO_TARGET_DIR` shares one with the desktop.
+`--no-default-features` drops the pairing QR, the only dependency outside the
+desktop's own tree — for a registry you cannot reach.)
 
 ## Run it
 
