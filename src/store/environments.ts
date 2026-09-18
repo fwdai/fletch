@@ -8,12 +8,15 @@
 // and events go straight down Tauri IPC through the `localTransport` singleton,
 // exactly as they do today.
 //
-// Nothing here connects, pairs or switches anything yet — the dialer PR adds the
-// writers. What this buys now is that the two lookups which cannot wait for
-// React (the transport a call goes down, and the key a PTY chunk is buffered
-// under) have one answer, in one place.
+// Nothing here switches anything yet: `activeEnvironmentId` is the local
+// environment for the whole of this PR. The writers below are what the paired-
+// host lifecycle (src/remote/hosts.ts) drives an entry with, and what this buys
+// is that the two lookups which cannot wait for React (the transport a call goes
+// down, and the key a PTY chunk is buffered under) have one answer, in one
+// place.
 
 import type { Transport } from "@/api/transport";
+import type { HostProtocol } from "@/remote/types";
 import type { SliceCreator } from "./types";
 
 /** The desktop's own engine, following T3Code's `PRIMARY_LOCAL_ENVIRONMENT_ID`.
@@ -23,25 +26,50 @@ export const LOCAL_ENVIRONMENT_ID = "local";
 
 export type EnvironmentId = string;
 
+export type ConnectionStatus = "connected" | "connecting" | "disconnected" | "error";
+
 export interface EnvironmentEntry {
   id: EnvironmentId;
   name: string;
   kind: "local" | "remote";
-  connection: "connected" | "connecting" | "disconnected" | "error";
+  connection: ConnectionStatus;
   /** Why the connection is in `error`, for the (later) environment status. */
   error?: string;
   /** Remote only. The local environment's transport is the module-level
    *  `localTransport`, which is what `activeTransport()` falls back to. */
   transport?: Transport;
+  /** Remote only: what the connected host said it answers, from the last
+   *  handshake. Absent for a host that sent none (one from before the field) or
+   *  one that has not been greeted yet. The local environment is never gated
+   *  (docs/multi-host-plan.md §5.1), so it never has one. */
+  protocol?: HostProtocol;
 }
 
 export interface EnvironmentsSlice {
   environments: Record<EnvironmentId, EnvironmentEntry>;
   activeEnvironmentId: EnvironmentId;
+
+  /** Add a remote environment, or merge `entry` into the one already under its
+   *  id — a reconnect re-reports the same host with a fresh descriptor and the
+   *  entry it lands on must not lose anything the caller left out. */
+  upsertEnvironment: (entry: EnvironmentEntry) => void;
+  /** Mirror one connection's state onto its entry. `error` is written as
+   *  given, so a state change with no reason clears the last one. */
+  setEnvironmentConnection: (
+    id: EnvironmentId,
+    connection: ConnectionStatus,
+    error?: string,
+  ) => void;
+  /** Forget a paired host. The local environment is not removable: it is this
+   *  process's own engine, present from the first render, and nothing in the
+   *  app has a fallback for its absence. */
+  removeEnvironment: (id: EnvironmentId) => void;
 }
 
+type EnvironmentsState = Pick<EnvironmentsSlice, "environments" | "activeEnvironmentId">;
+
 /** The state every client starts in: one local environment, connected. */
-const initialState = (): EnvironmentsSlice => ({
+const initialState = (): EnvironmentsState => ({
   environments: {
     [LOCAL_ENVIRONMENT_ID]: {
       id: LOCAL_ENVIRONMENT_ID,
@@ -53,7 +81,36 @@ const initialState = (): EnvironmentsSlice => ({
   activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
 });
 
-export const createEnvironmentsSlice: SliceCreator<EnvironmentsSlice> = () => initialState();
+export const createEnvironmentsSlice: SliceCreator<EnvironmentsSlice> = (set) => ({
+  ...initialState(),
+
+  upsertEnvironment: (entry) =>
+    set((s) => ({
+      environments: { ...s.environments, [entry.id]: { ...s.environments[entry.id], ...entry } },
+    })),
+
+  setEnvironmentConnection: (id, connection, error) =>
+    set((s) => {
+      const entry = s.environments[id];
+      // A state arriving for a host that has since been forgotten is not worth
+      // reviving the entry for.
+      if (!entry) return {};
+      return { environments: { ...s.environments, [id]: { ...entry, connection, error } } };
+    }),
+
+  removeEnvironment: (id) =>
+    set((s) => {
+      if (id === LOCAL_ENVIRONMENT_ID) return {};
+      const { [id]: _gone, ...rest } = s.environments;
+      return {
+        environments: rest,
+        // Nothing switches the active environment in this PR, but a removal
+        // must not be able to strand it on an id that is no longer there.
+        activeEnvironmentId:
+          s.activeEnvironmentId === id ? LOCAL_ENVIRONMENT_ID : s.activeEnvironmentId,
+      };
+    }),
+});
 
 // The store owns this state, but the readers below are called from outside React
 // — on every op and on every PTY chunk — and src/api must not import the store
@@ -61,9 +118,9 @@ export const createEnvironmentsSlice: SliceCreator<EnvironmentsSlice> = () => in
 // hands its getter in here once, the way src/pty/terminals registers its cache
 // hooks with src/pty/buffers. Until it does, the answer is the local
 // environment, which is also what the store starts with.
-let read: () => EnvironmentsSlice = initialState;
+let read: () => EnvironmentsState = initialState;
 
-export function setEnvironmentsSource(source: () => EnvironmentsSlice) {
+export function setEnvironmentsSource(source: () => EnvironmentsState) {
   read = source;
 }
 
