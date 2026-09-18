@@ -59,7 +59,7 @@ fn pr_set_trailer(project_name: Option<&str>, refs: &[String]) -> String {
 /// Best-effort throughout: an unresolvable slug drops that repo from the set,
 /// a fetch/update failure is logged and skipped, and an active rate-limit
 /// backoff skips the whole sync (the next PR-binding event retries it).
-pub(crate) async fn sync_pr_set_links(workspace: &WorkspaceManager, agent_id: &str) {
+pub async fn sync_pr_set_links(workspace: &WorkspaceManager, agent_id: &str) {
     if crate::github::client::is_backing_off() {
         return;
     }

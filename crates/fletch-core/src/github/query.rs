@@ -204,7 +204,7 @@ pub(crate) fn gh_time_ms(node: &Value, field: &str) -> Option<i64> {
 
 /// One PR to look up by number in a batched query.
 #[derive(Debug, Clone)]
-pub(crate) struct PrRef {
+pub struct PrRef {
     pub owner: String,
     pub repo: String,
     pub number: u32,
@@ -297,7 +297,7 @@ async fn pr_batch<T>(
 /// halves the sweep's cost and — more importantly — means the sidebar's badge
 /// and its CI tint always come from the same instant instead of drifting up to
 /// a cadence apart.
-pub(crate) async fn pr_status_batch(refs: &[PrRef]) -> Result<Vec<Option<(PrState, PrChecks)>>> {
+pub async fn pr_status_batch(refs: &[PrRef]) -> Result<Vec<Option<(PrState, PrChecks)>>> {
     pr_batch(
         refs,
         &format!("state {PR_STATE_FIELDS} {PR_CHECKS_FIELDS}"),

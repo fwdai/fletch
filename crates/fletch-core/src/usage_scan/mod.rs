@@ -1437,7 +1437,7 @@ mod tests {
         }
 
         let expected: HashMap<String, Expected> =
-            serde_json::from_str(include_str!("../../../tests/fixtures/usage/expected.json"))
+            serde_json::from_str(include_str!("../../../../tests/fixtures/usage/expected.json"))
                 .expect("expected.json");
 
         let td = tempfile::tempdir().unwrap();
@@ -1445,7 +1445,7 @@ mod tests {
         std::fs::create_dir_all(&projects).unwrap();
         std::fs::write(
             projects.join("7f3c9d21-0b64-4f0a-9c2e-1d5b7a4e8c30.jsonl"),
-            include_str!("../../../tests/fixtures/usage/claude.jsonl"),
+            include_str!("../../../../tests/fixtures/usage/claude.jsonl"),
         )
         .unwrap();
         let day = td
@@ -1457,7 +1457,7 @@ mod tests {
         std::fs::create_dir_all(&day).unwrap();
         std::fs::write(
             day.join("rollout-2026-03-04T09-00-00-019e4448-78a8-7203-a078-981c1d34c547.jsonl"),
-            include_str!("../../../tests/fixtures/usage/codex.jsonl"),
+            include_str!("../../../../tests/fixtures/usage/codex.jsonl"),
         )
         .unwrap();
 

@@ -51,7 +51,7 @@ pub(crate) fn staging_root() -> PathBuf {
 /// path-shaped name (`../fletch.db`, `/etc/passwd`) can only ever name a file
 /// inside the staging dir it is written to. Empty or all-separator input falls
 /// back to `fallback`.
-pub(crate) fn sanitize_name(name: &str, fallback: &str) -> String {
+pub fn sanitize_name(name: &str, fallback: &str) -> String {
     Path::new(name)
         .file_name()
         .and_then(|n| n.to_str())

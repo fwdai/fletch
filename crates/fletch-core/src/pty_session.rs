@@ -53,7 +53,7 @@ pub struct PtyExit {
 /// number array (`[27,91,...]`), which inflates the payload ~3.5×. Shared by
 /// every event that carries PTY output; the frontend decodes back to the
 /// identical byte stream (`src/pty/decode.ts`).
-pub(crate) fn serialize_bytes_b64<S: serde::Serializer>(
+pub fn serialize_bytes_b64<S: serde::Serializer>(
     bytes: &[u8],
     s: S,
 ) -> std::result::Result<S::Ok, S::Error> {

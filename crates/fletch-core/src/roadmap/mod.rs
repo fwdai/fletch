@@ -12,7 +12,7 @@ pub mod assignments;
 pub mod autonomy;
 pub mod brakes;
 pub mod client_events;
-mod commands;
+pub mod commands;
 pub mod deps;
 pub mod drainer;
 pub mod events;

@@ -197,7 +197,7 @@ fn deleting_an_item_takes_its_history() {
 
 #[test]
 fn every_kind_is_declared_on_both_sides_of_the_wire() {
-    const TS: &str = include_str!("../../../../src/api/types/roadmap.ts");
+    const TS: &str = include_str!("../../../../../src/api/types/roadmap.ts");
     // The union's own block, so an unrelated string literal elsewhere in the
     let union = TS
         .split("export type RoadmapEventKind =")

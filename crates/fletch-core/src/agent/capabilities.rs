@@ -261,7 +261,7 @@ pub fn mcp_delivery(provider: &str) -> Option<McpDeliveryBuilder> {
 
 /// (binary, human label) for a provider, or `None` if unknown. Same dispatch
 /// as `transcript_reader`: per-turn descriptors + the claude special case.
-pub(crate) fn provider_bin_label(provider: &str) -> Option<(&'static str, &'static str)> {
+pub fn provider_bin_label(provider: &str) -> Option<(&'static str, &'static str)> {
     match per_turn_descriptor(provider) {
         Some(d) => Some((d.bin, d.label)),
         None if provider == "claude" => Some(("claude", "Claude Code")),

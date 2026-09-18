@@ -36,7 +36,6 @@ pub use fletch_core::remote;
 pub use fletch_core::{build_state_subpath, data_dir, logs_dir, DbState, BUNDLE_ID};
 
 use parking_lot::Mutex;
-use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1353,6 +1352,12 @@ pub fn run() {
                 // background tasks keep running on the same threads as before.
                 runtime: tauri::async_runtime::handle().inner().clone(),
                 remote: host::RemoteBoot::Desktop,
+                // The five `dictation_*` ops: the engine keeps them on the wire
+                // and asks this for them, because whisper.cpp is built on macOS
+                // only and lives here beside the mic code it shares.
+                dictation: Some(Box::new(|ctx| {
+                    Arc::new(dictation::dispatch::DictationDispatch::new(ctx))
+                })),
                 // A failed `database::init` is a native dialog and a retry loop
                 // on the main thread, not an error the engine can resolve.
                 recover_db: Some({

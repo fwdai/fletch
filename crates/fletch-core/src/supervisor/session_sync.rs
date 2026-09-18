@@ -216,7 +216,7 @@ pub(crate) fn pr_snapshot(repo: &TrackedRepo) -> Option<PrState> {
 /// (never propagating) a write failure. Every path that learns a PR's state —
 /// the single and batched polls and `create_pr` — funnels through here so the
 /// persistence contract lives in one place.
-pub(crate) fn persist_pr_snapshot(
+pub fn persist_pr_snapshot(
     workspace: &WorkspaceManager,
     agent_id: &str,
     subdir: &str,
@@ -329,7 +329,7 @@ fn clear_discovery(agent_id: &str, subdir: &str) {
 /// due but throttled". Callers already treat `None` as no-PR, and the badge they
 /// render comes from the persisted snapshot in the bound case, so a throttled
 /// tick shows the same thing the previous tick did.
-pub(crate) async fn resolve_pr_state(
+pub async fn resolve_pr_state(
     workspace: &WorkspaceManager,
     agent_id: &str,
     subdir: Option<&str>,
@@ -414,7 +414,7 @@ pub(crate) async fn resolve_pr_state(
 /// `pr:state_changed` reducer) reads — and secondaries get
 /// `"{agent_id}::{subdir}"`, the same suffixed form the Git panel's per-repo
 /// fetches use.
-pub(crate) fn pr_map_key(agent_id: &str, subdir: &str, primary: bool) -> String {
+pub fn pr_map_key(agent_id: &str, subdir: &str, primary: bool) -> String {
     if primary {
         agent_id.to_string()
     } else {
@@ -461,7 +461,7 @@ impl AgentPrStatus {
 /// [`pr_map_key`]: plain agent id for the primary, `"{agent_id}::{subdir}"`
 /// for secondaries — so single-repo agents produce exactly one plain-keyed
 /// entry, byte-identical to before.
-pub(crate) async fn resolve_all_pr_status(
+pub async fn resolve_all_pr_status(
     workspace: &WorkspaceManager,
     reverify_closed: bool,
 ) -> std::collections::HashMap<String, AgentPrStatus> {
@@ -726,7 +726,7 @@ struct SyncOutcome {
 /// The turn-end ingest health for a reader-backed agent, derived purely from
 /// the last pass's [`ReadDiagnostics`](crate::agent::ReadDiagnostics).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(crate) enum SyncHealth {
+pub enum SyncHealth {
     /// Records parsed this turn — ingestion is working.
     Healthy,
     /// The CLI's transcript root dir is gone though it just ran a turn — a

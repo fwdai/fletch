@@ -12,7 +12,7 @@ use crate::git_state::{self, GitState, ShortStats};
 use crate::github as gh;
 use crate::supervisor::Supervisor;
 
-use super::files::{agent_repo_checkout_opt, checkout_pending};
+use super::files::checkout_pending;
 
 /// Returns git state for one of the agent's checkouts — the repo whose
 /// `subdir` matches, or the primary when none is given.

@@ -451,7 +451,7 @@ pub(super) async fn add_project_op(sup: &Supervisor, op: &str, args: Value) -> D
     match op {
         "list_dir" => {
             let a: PathArgs = parse(args)?;
-            res(crate::commands::list_dir(a.path).await)
+            res(crate::commands::list_dir_impl(a.path).await)
         }
 
         "add_workspace_repo" => {
@@ -466,8 +466,8 @@ pub(super) async fn add_project_op(sup: &Supervisor, op: &str, args: Value) -> D
 
         // Both take no arguments; calling the commands themselves keeps the
         // repo-list cap in one place.
-        "gh_status" => res(crate::commands::gh_status().await),
-        "gh_repo_list" => res(crate::commands::gh_repo_list().await),
+        "gh_status" => res(crate::commands::gh_status_impl().await),
+        "gh_repo_list" => res(crate::commands::gh_repo_list_impl().await),
 
         _ => Err(UNKNOWN_OP.to_string()),
     }

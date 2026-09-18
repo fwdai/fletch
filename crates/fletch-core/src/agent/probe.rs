@@ -33,7 +33,7 @@ pub fn cached_provider_version(provider: &str) -> Option<String> {
 /// (catches nvm / fnm / volta / homebrew setups the GUI process's bare
 /// PATH misses), then the usual install dirs. `label` is the
 /// human-facing product name used only in the not-found error.
-pub(crate) fn resolve_agent_bin(
+pub fn resolve_agent_bin(
     agent_id: &str,
     name: &str,
     label: &str,
@@ -173,7 +173,7 @@ fn probe_version(bin: &str) -> Option<String> {
 /// Extract the first `N.N[.N[.N]]` token from arbitrary version output.
 /// Strips a leading `v` from each word before testing so `v1.0.42` and
 /// `1.0.42` both match. Returns the token with a `v` prefix.
-pub(crate) fn parse_semver(s: &str) -> Option<String> {
+pub fn parse_semver(s: &str) -> Option<String> {
     for word in s.split_whitespace() {
         let word = word.trim_start_matches('v');
         // Accept anything that is purely digit-and-dot with at least one dot.

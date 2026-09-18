@@ -430,7 +430,7 @@ pub(super) fn emit_run_port(sink: &dyn EventSink, agent_id: &str, port: u16) {
 /// Structural workspace change (archive/restore, a project pinned or cloned) —
 /// the frontend reloads the whole workspace on this signal rather than patching
 /// from finer events.
-pub(crate) fn emit_workspace_changed(sink: &dyn EventSink) {
+pub fn emit_workspace_changed(sink: &dyn EventSink) {
     emit(sink, "workspace:changed", ());
 }
 

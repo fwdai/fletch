@@ -546,7 +546,7 @@ fn a_signal_with_nowhere_to_go_is_dropped() {
 
 #[test]
 fn the_midrun_dial_is_declared_on_both_sides_of_the_wire() {
-    const TS: &str = include_str!("../../../../src/components/ProjectScreen/Roadmap/autonomy.ts");
+    const TS: &str = include_str!("../../../../../src/components/ProjectScreen/Roadmap/autonomy.ts");
     let expected = format!("export const MIDRUN_AWARENESS_KEY = {MIDRUN_AWARENESS_KEY:?};");
     assert!(
         TS.contains(&expected),
@@ -556,7 +556,7 @@ fn the_midrun_dial_is_declared_on_both_sides_of_the_wire() {
 
 #[test]
 fn the_system_turn_marker_is_declared_on_both_sides_of_the_wire() {
-    const TS: &str = include_str!("../../../../src/util/instructions.ts");
+    const TS: &str = include_str!("../../../../../src/util/instructions.ts");
     assert!(
         TS.contains("export const SYSTEM_TURN_MARKER")
             && TS.contains(&format!("{SYSTEM_TURN_MARKER:?}")),

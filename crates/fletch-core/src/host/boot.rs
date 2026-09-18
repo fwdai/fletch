@@ -47,6 +47,11 @@ pub type DbRecovery = Box<dyn Fn(crate::error::Error) -> Db>;
 /// see [`BootConfig::on_supervisor`].
 pub type SupervisorHook = Box<dyn FnOnce(&Arc<Supervisor>)>;
 
+/// Builds the host's local speech engine once the engine context exists; see
+/// [`BootConfig::dictation`]. A closure because the dispatcher it returns reads
+/// the ctx's DB handle, and the ctx is made inside [`boot`].
+pub type DictationHook = Box<dyn FnOnce(Arc<EngineCtx>) -> Arc<dyn crate::remote::Dispatch>>;
+
 /// What a caught SIGINT/SIGTERM does once the children are dead; see
 /// [`BootConfig::signals`].
 #[cfg(unix)]
@@ -70,7 +75,7 @@ pub struct BootConfig {
     /// desktop passes its whisper-backed dispatcher; a host without one passes
     /// `None`, and those ops answer "unavailable" (see
     /// [`crate::remote::SupervisorDispatch::with_dictation`]).
-    pub dictation: Option<Arc<dyn crate::remote::Dispatch>>,
+    pub dictation: Option<DictationHook>,
     /// Recovery for a failed `database::init`; `None` boots no further.
     pub recover_db: Option<DbRecovery>,
     /// Run once the supervisor exists and before anything resumes work. The
@@ -408,8 +413,8 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         RemoteBoot::Desktop => {
             let mut dispatch =
                 crate::remote::SupervisorDispatch::new(ctx.clone(), supervisor.clone());
-            if let Some(dictation) = dictation {
-                dispatch = dispatch.with_dictation(dictation);
+            if let Some(build) = dictation {
+                dispatch = dispatch.with_dictation(build(ctx.clone()));
             }
             let dispatch = Arc::new(dispatch);
             // `RemoteState::new` cannot fail: the state has to be managed even

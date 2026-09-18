@@ -10,15 +10,15 @@ use std::sync::Arc;
 use tauri::State;
 
 use fletch_core::commands::files::{
-    checkout_scope_for_path, expand_tilde, get_file_diff_impl, list_checkout_tree_impl,
-    list_dir_impl, read_checkout_file_impl, resolve_new_path, safe_join,
+    checkout_scope_for_path, get_file_diff_impl, list_checkout_tree_impl, list_dir_impl,
+    read_checkout_file_impl, resolve_new_path, safe_join,
 };
 use crate::error::{Error, Result};
 use crate::git;
 use crate::supervisor::Supervisor;
 
 pub use fletch_core::commands::files::{
-    agent_repo_checkout, agent_repo_checkout_opt, checkout_pending, primary_repo,
+    agent_repo_checkout, agent_repo_checkout_opt, checkout_pending, expand_tilde, primary_repo,
     primary_repo_checkout, repo_branch, CheckoutFile, CheckoutFileContents, DiffBaseMode,
     DirListing,
 };
