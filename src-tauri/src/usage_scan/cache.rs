@@ -30,7 +30,7 @@ use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
-use super::parse::{parse_claude_line, parse_codex_line, CodexState, UsageRecord};
+use super::parse::{parse_claude_line, parse_codex_line, ClaudeState, CodexState, UsageRecord};
 use super::Provider;
 
 /// What one file contributed, plus enough metadata to resume it.
@@ -46,6 +46,9 @@ pub(super) struct FileEntry {
     /// for the next scan to read whole.
     pub(super) offset: u64,
     pub(super) records: Vec<UsageRecord>,
+    /// Claude only: the model carried between lines, so an appended record that
+    /// names none is attributed exactly as a single pass would have.
+    pub(super) claude: Option<ClaudeState>,
     /// Codex only: the state machine's position, so appended lines parse as if
     /// the whole file had been read in one pass.
     pub(super) codex: Option<CodexState>,
@@ -64,8 +67,13 @@ impl FileEntry {
             mtime_ms: UNREAD_MTIME_MS,
             offset: 0,
             records: Vec::new(),
-            // Also picks what per-file state has to survive between scans:
-            // Claude lines are self-describing, Codex lines are not.
+            // Also picks which parser's per-file state has to survive between
+            // scans: both formats carry something forward, a Codex rollout a
+            // whole state machine and a Claude transcript just its model.
+            claude: match provider {
+                Provider::Claude => Some(ClaudeState::default()),
+                Provider::Codex => None,
+            },
             codex: match provider {
                 Provider::Claude => None,
                 Provider::Codex => Some(CodexState::default()),
@@ -214,16 +222,27 @@ fn read_into(
     start: u64,
     io: &mut IoStats,
 ) -> std::io::Result<ReadOutcome> {
-    let FileEntry { records, codex, .. } = entry;
+    let FileEntry {
+        records,
+        claude,
+        codex,
+        ..
+    } = entry;
     let outcome = match codex {
         Some(state) => read_lines_from(reader, start, io, |line| {
             parse_codex_line(line, state, records)
         }),
-        None => read_lines_from(reader, start, io, |line| {
-            if let Some(record) = parse_claude_line(line) {
-                records.push(record);
-            }
-        }),
+        None => {
+            // `get_or_insert_with` rather than an unreachable arm: the entry may
+            // have come off disk, where nothing guarantees the pair of states a
+            // `FileEntry::new` sets up.
+            let state = claude.get_or_insert_with(ClaudeState::default);
+            read_lines_from(reader, start, io, |line| {
+                if let Some(record) = parse_claude_line(line, state) {
+                    records.push(record);
+                }
+            })
+        }
     }?;
     entry.offset = outcome.offset();
     Ok(outcome)
@@ -420,6 +439,73 @@ mod tests {
         assert_eq!(warm.buckets[0].requests, 2);
         assert_eq!(warm.buckets[0].tokens.input, 11);
         assert_eq!(warm.buckets[0].tokens.output, 7);
+    }
+
+    #[test]
+    fn appending_a_model_less_claude_record_resumes_the_carried_model() {
+        // The model a record inherits comes from lines an earlier scan already
+        // consumed, so the tail-read has to start from the cached state — a
+        // blank one would bucket the appended record under "".
+        let td = tempfile::tempdir().unwrap();
+        let projects = claude_file(
+            td.path(),
+            "slug",
+            "s1",
+            &[claude_line(
+                "s1",
+                "m1",
+                "r1",
+                "2026-01-02T10:00:00Z",
+                "claude-opus-4",
+                claude_usage(10, 5, 0, 0),
+            )],
+        );
+        let file = claude_path(&projects, "slug", "s1");
+
+        let (since, until) = wide_window();
+        let mut cache = ScanCache::default();
+        let cold = scan_dirs_with(
+            &mut cache,
+            std::slice::from_ref(&projects),
+            &[],
+            since,
+            until,
+        );
+        assert_eq!(cold.buckets[0].model, "claude-opus-4");
+
+        let added = append(
+            &file,
+            &format!(
+                "{}\n",
+                claude_line_without_model(
+                    "s1",
+                    "m2",
+                    "r2",
+                    "2026-01-02T10:10:00Z",
+                    claude_usage(1, 2, 0, 0),
+                )
+            ),
+        );
+        let warm = scan_dirs_with(
+            &mut cache,
+            std::slice::from_ref(&projects),
+            &[],
+            since,
+            until,
+        );
+        assert_eq!((warm.files_read, warm.bytes_read), (1, added));
+        assert_eq!(
+            warm.buckets
+                .iter()
+                .map(|b| (b.model.as_str(), b.requests))
+                .collect::<Vec<_>>(),
+            vec![("claude-opus-4", 2)],
+        );
+        // A resumed parse must agree with reading the finished file in one go.
+        assert_eq!(
+            answer(&warm),
+            answer(&scan_dirs(&[projects], &[], since, until))
+        );
     }
 
     #[test]

@@ -1,16 +1,44 @@
 {
   "claude": {
-    "input": 21,
-    "output": 721,
-    "cacheRead": 51986,
-    "cacheWrite": 19277,
-    "calls": 7
+    "input": 32,
+    "output": 847,
+    "cacheRead": 55186,
+    "cacheWrite": 19677,
+    "calls": 9,
+    "byModel": {
+      "claude-opus-5": {
+        "input": 31,
+        "output": 547,
+        "cacheRead": 47186,
+        "cacheWrite": 18477
+      },
+      "claude-sonnet-4-5": {
+        "input": 1,
+        "output": 300,
+        "cacheRead": 8000,
+        "cacheWrite": 1200
+      }
+    }
   },
   "codex": {
     "input": 8186,
     "output": 1708,
     "cacheRead": 89960,
     "cacheWrite": 900,
-    "calls": 3
+    "calls": 3,
+    "byModel": {
+      "gpt-5.5": {
+        "input": 2186,
+        "output": 8,
+        "cacheRead": 24960,
+        "cacheWrite": 0
+      },
+      "gpt-5.5-codex": {
+        "input": 6000,
+        "output": 1700,
+        "cacheRead": 65000,
+        "cacheWrite": 900
+      }
+    }
   }
 }

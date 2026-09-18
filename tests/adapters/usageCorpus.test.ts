@@ -9,18 +9,25 @@ import type { SessionRecord } from "@/api";
 // tested against, folded through the TS adapters. Two parsers exist on purpose
 // — the Rust one walks gigabytes machine-wide, the TS one prices the sessions
 // this app runs — so this is the one place that pins them to identical
-// semantics: dedupe of repeated content blocks, `<synthetic>` exclusion,
-// model-less records kept, the cache_creation TTL breakdown, and codex's
-// cached-input subtraction. Change a rule in one parser and this fails until
-// the other and `expected.json` agree.
+// semantics: dedupe of repeated content blocks with the largest copy winning,
+// `<synthetic>` exclusion, model-less records kept and attributed to the last
+// model the transcript named (never a sidechain's), the cache_creation TTL
+// breakdown, and codex's cached-input subtraction. Change a rule in one parser
+// and this fails until the other and `expected.json` agree.
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "usage");
 
-interface ExpectedTotals {
+interface TokenCounts {
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
+}
+
+interface ExpectedTotals extends TokenCounts {
+  /** The same totals split by the model that incurred them — what pins the
+   *  carry-forward rule for records that name no model of their own. */
+  byModel: Record<string, TokenCounts>;
 }
 
 const expected = JSON.parse(readFileSync(join(FIXTURES, "expected.json"), "utf8")) as Record<
@@ -49,5 +56,10 @@ describe.each(["claude", "codex"] as const)("usage corpus: %s", (provider) => {
     const { tokens } = usageFromRecords(provider, recordsOf(provider)).spend;
     const { input, output, cacheRead, cacheWrite } = expected[provider];
     expect(tokens).toEqual({ input, output, cacheRead, cacheWrite });
+  });
+
+  it("splits them across the same models the Rust scanner buckets by", () => {
+    const { byModel } = usageFromRecords(provider, recordsOf(provider)).spend;
+    expect(byModel).toEqual(expected[provider].byModel);
   });
 });

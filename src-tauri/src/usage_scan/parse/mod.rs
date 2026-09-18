@@ -12,7 +12,7 @@
 mod claude;
 mod codex;
 
-pub(crate) use claude::parse_claude_line;
+pub(crate) use claude::{parse_claude_line, ClaudeState};
 pub(crate) use codex::{parse_codex_line, CodexState};
 
 use chrono::{Local, TimeZone, Timelike};

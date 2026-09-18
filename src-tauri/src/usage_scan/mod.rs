@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use cache::IoStats;
 pub use cache::ScanCache;
-use parse::local_hour_start_ms;
+use parse::{local_hour_start_ms, UsageRecord};
 use persist::cache_path;
 
 /// Which CLI a record came from. The lowercase serialisation is the wire shape
@@ -215,8 +215,9 @@ pub fn scan_dirs_with(
     until_ms: i64,
 ) -> UsageScan {
     let mut io = IoStats::default();
-    // Aggregation order decides which copy of a duplicated Claude record wins,
-    // so the files are collected in one deterministic (sorted, per root) order.
+    // Aggregation order breaks ties between equal copies of a duplicated Claude
+    // record, so the files are collected in one deterministic (sorted, per
+    // root) order.
     let mut files: Vec<PathBuf> = Vec::new();
 
     for dir in claude_projects_dirs {
@@ -292,8 +293,8 @@ fn collect_jsonl_recursive(root: &Path) -> Vec<PathBuf> {
             }
         }
     }
-    // Deterministic order so the global dedupe's "keep the first occurrence"
-    // resolves the same way on every run.
+    // Deterministic order so the global dedupe's tie-break resolves the same
+    // way on every run.
     out.sort();
     out
 }
@@ -316,6 +317,13 @@ fn read_jsonl_files(dir: &Path) -> Vec<PathBuf> {
 /// `[since_ms, until_ms)`. Windowing, the global Claude dedupe and the
 /// zero-token drop are applied here, in that order, so the result is identical
 /// to a single-pass scan whatever the cache did.
+///
+/// Two passes, because the dedupe can't be resolved as it goes: the copies of
+/// one Claude call are not interchangeable. Claude appends a line every time it
+/// re-writes a streaming response — same `message.id` and `requestId`, a
+/// growing `output_tokens` — so the *largest* copy is the finished call and any
+/// earlier one undercounts it. The first pass picks that copy per dedupe key;
+/// the second folds the records, skipping the copies it didn't pick.
 fn aggregate(
     cache: &ScanCache,
     files: &[PathBuf],
@@ -323,11 +331,62 @@ fn aggregate(
     since_ms: i64,
     until_ms: i64,
 ) -> UsageScan {
-    let mut acc = Accumulator::default();
     // A record is copied forward into the transcript of a resumed or forked
-    // session, so the seen-set spans every file, not just the current one.
-    let mut seen_claude: HashSet<&str> = HashSet::new();
+    // session, so the choice spans every file, not just the current one. Ties
+    // keep the first in file order — identical content-block repeats and resume
+    // copies say nothing to choose between, and the file order is fixed.
+    let mut chosen: HashMap<&str, (u64, usize)> = HashMap::new();
+    for_each_in_window(cache, files, since_ms, until_ms, |index, _, record| {
+        if let Some(key) = record.dedupe_key.as_deref() {
+            let total = record.tokens.total();
+            let best = chosen.entry(key).or_insert((total, index));
+            if total > best.0 {
+                *best = (total, index);
+            }
+        }
+    });
 
+    let mut acc = Accumulator::default();
+    for_each_in_window(
+        cache,
+        files,
+        since_ms,
+        until_ms,
+        |index, session, record| {
+            if let Some(key) = record.dedupe_key.as_deref() {
+                if chosen.get(key).map(|&(_, at)| at) != Some(index) {
+                    return;
+                }
+            }
+            if record.tokens.total() == 0 {
+                return;
+            }
+            acc.record(record.ts_ms, record.provider, &record.model, &record.tokens);
+            // The session credited is the chosen copy's, not the first copy's:
+            // what counted is what that record says happened.
+            if let Some(id) = session {
+                acc.touch_session(record.provider, id, record.ts_ms);
+            }
+        },
+    );
+
+    acc.finish(files.len() as u32, io, since_ms, until_ms)
+}
+
+/// Visit every in-window record of `files`, in the fixed file order, with the
+/// session to credit it to and a running index that identifies it across both
+/// aggregation passes.
+fn for_each_in_window<'a>(
+    cache: &'a ScanCache,
+    files: &[PathBuf],
+    since_ms: i64,
+    until_ms: i64,
+    // The record outlives the walk (it is cached), so the first pass can key a
+    // map by its dedupe key. The session id may not: a Codex one is built from
+    // the file's path for the length of one file.
+    mut visit: impl FnMut(usize, Option<&str>, &'a UsageRecord),
+) {
+    let mut index = 0usize;
     for path in files {
         let Some(entry) = cache.files.get(path) else {
             continue;
@@ -339,26 +398,14 @@ fn aggregate(
             if record.ts_ms < since_ms || record.ts_ms >= until_ms {
                 continue;
             }
-            if let Some(key) = record.dedupe_key.as_deref() {
-                if !seen_claude.insert(key) {
-                    continue;
-                }
-            }
-            if record.tokens.total() == 0 {
-                continue;
-            }
-            acc.record(record.ts_ms, record.provider, &record.model, &record.tokens);
-            let session_id = match record.provider {
+            let session = match record.provider {
                 Provider::Codex => codex_session_id.as_deref(),
                 Provider::Claude => record.session_id.as_deref(),
             };
-            if let Some(id) = session_id {
-                acc.touch_session(record.provider, id, record.ts_ms);
-            }
+            visit(index, session, record);
+            index += 1;
         }
     }
-
-    acc.finish(files.len() as u32, io, since_ms, until_ms)
 }
 
 #[derive(Default)]
@@ -481,6 +528,88 @@ mod tests {
             }
         );
         // Only the first occurrence's session contributed.
+        assert_eq!(session_ids(&out, "claude"), vec!["s1"]);
+    }
+
+    #[test]
+    fn claude_keeps_the_largest_copy_of_a_duplicated_record_from_either_file() {
+        // Claude appends a line each time it re-writes a streaming response —
+        // same message and request id, a growing `output_tokens` — and copies
+        // records forward on resume, so a scan can meet the copies in either
+        // order. Only the largest is the finished call.
+        let copy = |session: &str, output: u64| {
+            claude_line(
+                session,
+                "msg_1",
+                "req_1",
+                "2026-01-02T10:00:00Z",
+                "claude-opus-4",
+                claude_usage(10, output, 100, 20),
+            )
+        };
+        // The bigger copy in the second file, then in the first: the answer must
+        // not depend on which one the sorted walk reaches first.
+        for (a, b, winning_session) in [(5, 90, "s2"), (90, 5, "s1")] {
+            let td = tempfile::tempdir().unwrap();
+            let projects = claude_file(td.path(), "slug-a", "s1", &[copy("s1", a)]);
+            claude_file(td.path(), "slug-b", "s2", &[copy("s2", b)]);
+
+            let (since, until) = wide_window();
+            let out = scan_dirs(&[projects], &[], since, until);
+            assert_eq!(out.buckets.len(), 1);
+            assert_eq!(out.buckets[0].requests, 1);
+            assert_eq!(out.buckets[0].tokens.output, 90);
+            assert_eq!(out.buckets[0].tokens.input, 10, "and only once");
+            // Session credit follows the copy that counted.
+            assert_eq!(session_ids(&out, "claude"), vec![winning_session]);
+        }
+    }
+
+    #[test]
+    fn claude_breaks_a_tie_between_copies_on_file_order() {
+        // Same total, split differently: nothing says one is more finished than
+        // the other, so the deterministic file order decides — as it did for
+        // every duplicate before the largest-copy rule existed.
+        let td = tempfile::tempdir().unwrap();
+        let projects = claude_file(
+            td.path(),
+            "slug-a",
+            "s1",
+            &[claude_line(
+                "s1",
+                "msg_1",
+                "req_1",
+                "2026-01-02T10:00:00Z",
+                "claude-opus-4",
+                claude_usage(10, 5, 100, 20),
+            )],
+        );
+        claude_file(
+            td.path(),
+            "slug-b",
+            "s2",
+            &[claude_line(
+                "s2",
+                "msg_1",
+                "req_1",
+                "2026-01-02T10:00:00Z",
+                "claude-opus-4",
+                claude_usage(5, 10, 20, 100),
+            )],
+        );
+
+        let (since, until) = wide_window();
+        let out = scan_dirs(&[projects], &[], since, until);
+        assert_eq!(out.buckets.len(), 1);
+        assert_eq!(
+            out.buckets[0].tokens,
+            TokenCounts {
+                input: 10,
+                output: 5,
+                cache_read: 100,
+                cache_write: 20
+            }
+        );
         assert_eq!(session_ids(&out, "claude"), vec!["s1"]);
     }
 
@@ -636,12 +765,11 @@ mod tests {
         // The TS adapter keeps the call with `model` undefined and the fold
         // keys it as ""; dropping it here would lose spend that happened.
         let td = tempfile::tempdir().unwrap();
-        let no_model = claude_line(
+        let no_model = claude_line_without_model(
             "s1",
             "m1",
             "r1",
             "2026-01-02T10:00:00Z",
-            "",
             claude_usage(5, 5, 0, 0),
         );
         let projects = claude_file(td.path(), "slug", "s1", &[no_model]);
@@ -652,6 +780,95 @@ mod tests {
         assert_eq!(out.buckets[0].model, "");
         assert_eq!(out.buckets[0].tokens.input, 5);
         assert_eq!(session_ids(&out, "claude"), vec!["s1"]);
+    }
+
+    #[test]
+    fn claude_attributes_a_model_less_record_to_the_last_model_its_file_named() {
+        // Claude drops `message.model` on some lines (a post-compaction
+        // continuation, for one). The TS fold attributes them to the model in
+        // force, which is the only way that spend reaches the right price.
+        let td = tempfile::tempdir().unwrap();
+        let projects = claude_file(
+            td.path(),
+            "slug",
+            "s1",
+            &[
+                claude_line(
+                    "s1",
+                    "m1",
+                    "r1",
+                    "2026-01-02T10:00:00Z",
+                    "claude-opus-4",
+                    claude_usage(1, 1, 0, 0),
+                ),
+                claude_line_without_model(
+                    "s1",
+                    "m2",
+                    "r2",
+                    "2026-01-02T10:05:00Z",
+                    claude_usage(2, 2, 0, 0),
+                ),
+            ],
+        );
+
+        let (since, until) = wide_window();
+        let out = scan_dirs(&[projects], &[], since, until);
+        assert_eq!(
+            out.buckets
+                .iter()
+                .map(|b| (b.model.as_str(), b.requests, b.tokens.input))
+                .collect::<Vec<_>>(),
+            vec![("claude-opus-4", 2, 3)],
+            "both records belong to the one model the file named"
+        );
+    }
+
+    #[test]
+    fn a_claude_subagents_model_is_its_own_and_is_never_carried_forward() {
+        // A sidechain record runs on its own model in its own window. It is
+        // attributed to that model, but the main conversation's next model-less
+        // record must still fall back to the last model the conversation named.
+        let td = tempfile::tempdir().unwrap();
+        let projects = claude_file(
+            td.path(),
+            "slug",
+            "s1",
+            &[
+                claude_line(
+                    "s1",
+                    "m1",
+                    "r1",
+                    "2026-01-02T10:00:00Z",
+                    "claude-opus-4",
+                    claude_usage(1, 1, 0, 0),
+                ),
+                claude_sidechain_line(
+                    "s1",
+                    "m2",
+                    "r2",
+                    "2026-01-02T10:05:00Z",
+                    "claude-haiku-4",
+                    claude_usage(2, 2, 0, 0),
+                ),
+                claude_line_without_model(
+                    "s1",
+                    "m3",
+                    "r3",
+                    "2026-01-02T10:10:00Z",
+                    claude_usage(4, 4, 0, 0),
+                ),
+            ],
+        );
+
+        let (since, until) = wide_window();
+        let out = scan_dirs(&[projects], &[], since, until);
+        assert_eq!(
+            out.buckets
+                .iter()
+                .map(|b| (b.model.as_str(), b.requests, b.tokens.input))
+                .collect::<Vec<_>>(),
+            vec![("claude-haiku-4", 1, 2), ("claude-opus-4", 2, 5)],
+        );
     }
 
     // ── codex ───────────────────────────────────────────────────────────────
@@ -1155,6 +1372,10 @@ mod tests {
             cache_read: u64,
             cache_write: u64,
             calls: u32,
+            /// The same totals split by the model that incurred them — the
+            /// split the frontend prices, and the one that pins the carried
+            /// model on records that name none.
+            by_model: BTreeMap<String, TokenCounts>,
         }
 
         let expected: HashMap<String, Expected> =
@@ -1193,10 +1414,13 @@ mod tests {
         for (provider, want) in &expected {
             let mut tokens = TokenCounts::default();
             let mut calls = 0;
+            let mut by_model: BTreeMap<String, TokenCounts> = BTreeMap::new();
             for b in out.buckets.iter().filter(|b| &b.provider == provider) {
                 tokens.add(&b.tokens);
                 calls += b.requests;
+                by_model.entry(b.model.clone()).or_default().add(&b.tokens);
             }
+            assert_eq!(by_model, want.by_model, "{provider} per-model totals");
             assert_eq!(
                 (
                     tokens.input,

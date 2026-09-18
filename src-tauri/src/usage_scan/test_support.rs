@@ -60,6 +60,38 @@ pub(super) fn claude_line(
     .to_string()
 }
 
+/// A [`claude_line`] with no `message.model` at all — the shape the carried
+/// model exists for. (A *stated* empty model is a different thing: it buckets
+/// under "" rather than falling back.)
+pub(super) fn claude_line_without_model(
+    session: &str,
+    msg_id: &str,
+    req_id: &str,
+    ts: &str,
+    usage: Value,
+) -> String {
+    let mut v: Value =
+        serde_json::from_str(&claude_line(session, msg_id, req_id, ts, "", usage)).unwrap();
+    v["message"].as_object_mut().unwrap().remove("model");
+    v.to_string()
+}
+
+/// A subagent's [`claude_line`]: real spend on a model of its own, which must
+/// never become the main conversation's.
+pub(super) fn claude_sidechain_line(
+    session: &str,
+    msg_id: &str,
+    req_id: &str,
+    ts: &str,
+    model: &str,
+    usage: Value,
+) -> String {
+    let mut v: Value =
+        serde_json::from_str(&claude_line(session, msg_id, req_id, ts, model, usage)).unwrap();
+    v["isSidechain"] = Value::Bool(true);
+    v.to_string()
+}
+
 pub(super) fn claude_usage(input: u64, output: u64, read: u64, write: u64) -> Value {
     serde_json::json!({
         "input_tokens": input,

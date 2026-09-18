@@ -27,7 +27,9 @@ pub(super) const CACHE_FILE: &str = "usage-scan-cache.json";
 /// 2: Claude records now keep a model-less call, skip `<synthetic>`, prefer the
 /// `cache_creation` TTL breakdown and only dedupe on a `message.id`; Codex no
 /// longer subtracts cache writes from fresh input.
-const CACHE_VERSION: u32 = 2;
+/// 3: Claude entries carry a `ClaudeState`, and a record naming no model is
+/// attributed to the last model its transcript named instead of `""`.
+const CACHE_VERSION: u32 = 3;
 
 /// Where [`scan_all`](super::scan_all) keeps its cache: the app data dir, which
 /// is already split per build (`…/<bundle id>/dev` in debug), so a debug run
@@ -254,6 +256,16 @@ mod tests {
             Some("gpt-5")
         );
         assert!(codex.offset > 0 && codex.offset == codex.len);
+        // Claude's carry-forward model comes back the same way, so a record
+        // appended later without one is still attributed.
+        let claude = loaded
+            .files
+            .get(&claude_path(&fx.projects, "slug", "s1"))
+            .expect("claude entry");
+        assert_eq!(
+            claude.claude.as_ref().unwrap().last_model.as_deref(),
+            Some("claude-opus-4")
+        );
         // Re-saving the loaded cache reproduces the file byte for byte.
         let again = fx.cache_file.with_extension("again");
         loaded.save(&again).unwrap();
@@ -282,7 +294,10 @@ mod tests {
                 "version": CACHE_VERSION + 1,
                 "entries": [{
                     "path": "/tmp/whatever.jsonl",
-                    "entry": { "len": 1, "mtime_ms": 2, "offset": 1, "records": [], "codex": null },
+                    "entry": {
+                        "len": 1, "mtime_ms": 2, "offset": 1, "records": [],
+                        "claude": {}, "codex": null,
+                    },
                 }],
             })
             .to_string(),
