@@ -36,7 +36,7 @@ const HOME_TMPFS_OPTS: &str = "rw,mode=1777,size=1g";
 /// Mount options for the [`EPHEMERAL_RUNTIME_SUBDIRS`] overlays on a uid-mapped
 /// launch. A bare `--tmpfs` is `0755 root:root`, which a non-root agent cannot
 /// write — claude `mkdir`s into both every session.
-const EPHEMERAL_TMPFS_OPTS: &str = ":rw,mode=1777";
+const EPHEMERAL_TMPFS_OPTS: &str = "rw,mode=1777";
 
 /// Subdirs Claude Code rewrites every session, which a bare write to the
 /// read-only config dir would fail with `EROFS`; each gets a throwaway tmpfs
@@ -213,11 +213,7 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         } => {
             // The overlays must be writable by the uid a mapped launch runs
             // as; a bare `--tmpfs` would be `0755 root:root`.
-            let tmpfs_opts = if spec.run_as_user.is_some() {
-                EPHEMERAL_TMPFS_OPTS
-            } else {
-                ""
-            };
+            let tmpfs_opts = spec.run_as_user.map(|_| EPHEMERAL_TMPFS_OPTS);
             push_claude_config_mount(
                 &mut args,
                 &spec.home.join(".claude"),
@@ -391,7 +387,7 @@ fn push_claude_config_mount(
     dir: &Path,
     credentials_rw: bool,
     projects_src: &Path,
-    tmpfs_opts: &str,
+    tmpfs_opts: Option<&str>,
 ) {
     let path = dir.to_string_lossy();
     args.push("-v".into());
@@ -410,8 +406,13 @@ fn push_claude_config_mount(
         projects_target.to_string_lossy()
     ));
     for sub in EPHEMERAL_RUNTIME_SUBDIRS {
+        let target = dir.join(sub);
+        let target = target.to_string_lossy();
         args.push("--tmpfs".into());
-        args.push(format!("{}{tmpfs_opts}", dir.join(sub).to_string_lossy()));
+        args.push(match tmpfs_opts {
+            Some(opts) => format!("{target}:{opts}"),
+            None => target.into_owned(),
+        });
     }
 }
 

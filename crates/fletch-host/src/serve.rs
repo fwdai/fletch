@@ -182,6 +182,25 @@ fn prepare_data_dir(data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The one thing an operator needs from the log to get a phone paired: where
+/// this host is listening and who it says it is.
+fn log_where_we_are(engine: &Engine, data_dir: &Path) {
+    let Some(remote) = engine.remote.as_ref() else {
+        return;
+    };
+    let status = remote.status();
+    tracing::info!(
+        port = status.port,
+        host_id = %status.host_id,
+        addresses = %status.addresses.join(", "),
+        data_dir = %data_dir.display(),
+        "fletch-host serving"
+    );
+    if let Some(error) = status.error {
+        tracing::error!(error = %error, "the remote directory is not usable; pairing will fail");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,24 +232,5 @@ mod tests {
         }
         assert!(checkouts.ends_with("dev/workspaces"), "{checkouts:?}");
         assert!(mailboxes.ends_with("dev/rpc/orkney"), "{mailboxes:?}");
-    }
-}
-
-/// The one thing an operator needs from the log to get a phone paired: where
-/// this host is listening and who it says it is.
-fn log_where_we_are(engine: &Engine, data_dir: &Path) {
-    let Some(remote) = engine.remote.as_ref() else {
-        return;
-    };
-    let status = remote.status();
-    tracing::info!(
-        port = status.port,
-        host_id = %status.host_id,
-        addresses = %status.addresses.join(", "),
-        data_dir = %data_dir.display(),
-        "fletch-host serving"
-    );
-    if let Some(error) = status.error {
-        tracing::error!(error = %error, "the remote directory is not usable; pairing will fail");
     }
 }
