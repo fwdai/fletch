@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatDayTick, formatHeatDay, type MiniBar, MiniBars, Stat } from "@/components/Stats";
-import { formatCost, formatTokens } from "@/util/format";
+import { formatCost, formatTokens, recentDays } from "@/util/format";
 import { loadSpend } from "./activityData";
-import { recentDays, type SpendDay } from "./derive";
+import type { SpendDay } from "./derive";
 
 const DAYS = 30;
 

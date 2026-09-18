@@ -75,7 +75,6 @@ export interface UsageModelRow {
   costUsd: number | null;
   /** Fraction of all processed tokens, 0–1. */
   share: number;
-  requests: number;
 }
 
 /** A row of the breakdown table in Day mode. Only days with activity. */

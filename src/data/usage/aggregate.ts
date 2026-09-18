@@ -8,7 +8,7 @@ import type {
 } from "@/api";
 import type { SlimCatalog } from "@/data/modelCatalog";
 import { cacheSavingsUsd, priceTokens } from "@/data/modelCatalog";
-import { localDay } from "@/util/format";
+import { dayKeysBetween, localDay } from "@/util/format";
 import type {
   UsageDay,
   UsageDayRow,
@@ -30,22 +30,6 @@ const RANGE_DAYS: Record<UsageRange, number> = { "24h": 1, "7d": 7, "30d": 30, "
 /** The widest window any range can ask for. `useUsageStats` scans this once and
  *  slices every narrower range out of it in memory. */
 export const WIDEST_RANGE: UsageRange = "90d";
-
-/** How pricing is looked up. Defaults to the model catalog's own helpers;
- *  injectable so the aggregation can be unit-tested without depending on what
- *  models.dev happens to price today. */
-export interface UsagePricing {
-  priceTokens: (
-    catalog: SlimCatalog,
-    modelId: string | undefined,
-    tokens: UsageScanTokens,
-  ) => number | null;
-  cacheSavingsUsd: (
-    catalog: SlimCatalog,
-    modelId: string | undefined,
-    tokens: UsageScanTokens,
-  ) => number | null;
-}
 
 /** input + output + cache reads + cache writes — every token the provider
  *  touched, which is the figure their own usage pages headline. The scan's
@@ -95,19 +79,6 @@ export function sessionsInRange(
   return sessions.filter((s) => s.lastMs >= sinceMs && s.firstMs < untilMs);
 }
 
-/** Every local day key in the window, inclusive, oldest first. */
-export function daysInRange({ sinceMs, untilMs }: UsageRangeBounds): string[] {
-  const noon = (ms: number) => {
-    const d = new Date(ms);
-    d.setHours(12, 0, 0, 0);
-    return d.getTime();
-  };
-  const end = noon(untilMs);
-  const days: string[] = [];
-  for (let t = noon(sinceMs); t <= end; t += DAY_MS) days.push(localDay(t));
-  return days;
-}
-
 interface DayAcc {
   tokens: number;
   costUsd: number;
@@ -126,9 +97,7 @@ export function aggregateUsage(
   scan: UsageScan,
   catalog: SlimCatalog,
   range: UsageRangeBounds,
-  pricing?: UsagePricing,
 ): UsageStats {
-  const price = pricing ?? { priceTokens, cacheSavingsUsd };
   const buckets = bucketsInRange(scan.buckets, range);
   const sessions = sessionsInRange(scan.sessions, range);
 
@@ -143,8 +112,8 @@ export function aggregateUsage(
   for (const b of buckets) {
     const dayKey = localDay(b.hourStartMs);
     const tokens = processedTokens(b.tokens);
-    const cost = price.priceTokens(catalog, b.model, b.tokens);
-    savingsUsd += price.cacheSavingsUsd(catalog, b.model, b.tokens) ?? 0;
+    const cost = priceTokens(catalog, b.model, b.tokens);
+    savingsUsd += cacheSavingsUsd(catalog, b.model, b.tokens) ?? 0;
 
     totals.input += b.tokens.input;
     totals.output += b.tokens.output;
@@ -167,10 +136,8 @@ export function aggregateUsage(
       tokens: 0,
       costUsd: 0 as number | null,
       share: 0,
-      requests: 0,
     };
     row.tokens += tokens;
-    row.requests += b.requests;
     // One unpriced bucket makes the whole row unpriced — a partial sum would
     // understate the model's cost while looking like a complete one.
     row.costUsd = cost === null || row.costUsd === null ? null : row.costUsd + cost;
@@ -209,7 +176,7 @@ export function aggregateUsage(
     })
     .sort((a, b) => b.tokens - a.tokens || b.sessions - a.sessions);
 
-  const daily: UsageDay[] = daysInRange(range).map((day) => {
+  const daily: UsageDay[] = dayKeysBetween(range.sinceMs, range.untilMs).map((day) => {
     const acc = days.get(day);
     return {
       day,

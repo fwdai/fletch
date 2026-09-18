@@ -5,12 +5,10 @@
 export {
   aggregateUsage,
   bucketsInRange,
-  daysInRange,
   localHourStart,
   processedTokens,
   rangeBounds,
   sessionsInRange,
-  type UsagePricing,
   WIDEST_RANGE,
 } from "./aggregate";
 export type {

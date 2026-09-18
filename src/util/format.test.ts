@@ -1,5 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { formatCost, formatPercent, formatTokens } from "./format";
+import { dayKeysBetween, formatCost, formatPercent, formatTokens, recentDays } from "./format";
+
+// Local-noon epoch for a YYYY-MM-DD day, so fixtures read as dates and see the
+// same local calendar the app runs on.
+const at = (day: string, hour = 12): number => {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(y, m - 1, d, hour).getTime();
+};
+
+describe("dayKeysBetween", () => {
+  it("lists every day from the first instant's day through the last's", () => {
+    expect(dayKeysBetween(at("2026-03-04", 23), at("2026-03-06", 1))).toEqual([
+      "2026-03-04",
+      "2026-03-05",
+      "2026-03-06",
+    ]);
+  });
+
+  it("collapses a same-day window to one key", () => {
+    expect(dayKeysBetween(at("2026-03-05", 9), at("2026-03-05", 17))).toEqual(["2026-03-05"]);
+  });
+});
+
+describe("recentDays", () => {
+  it("returns n days oldest-first, ending today", () => {
+    expect(recentDays(at("2026-03-05"), 4)).toEqual([
+      "2026-03-02",
+      "2026-03-03",
+      "2026-03-04",
+      "2026-03-05",
+    ]);
+  });
+
+  it("steps across a month boundary", () => {
+    expect(recentDays(at("2026-03-02"), 3)).toEqual(["2026-02-28", "2026-03-01", "2026-03-02"]);
+  });
+});
 
 describe("formatTokens", () => {
   it("leaves counts under a thousand raw", () => {

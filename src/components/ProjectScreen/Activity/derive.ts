@@ -7,21 +7,9 @@ import { localDay, weekStartDay } from "@/util/format";
 // bucketing across DST, and the distinction between "none" and "not observed".
 
 // ── calendar ranges ───────────────────────────────────────────────────────
-// Both build their keys by stepping a noon-anchored Date, so a DST boundary
-// can never land a bucket on the wrong day (see `weekStartDay`).
-
-/** The last `n` local day keys, oldest first, ending on the day of `nowMs`. */
-export function recentDays(nowMs: number, n: number): string[] {
-  const d = new Date(nowMs);
-  d.setHours(12, 0, 0, 0);
-  d.setDate(d.getDate() - (n - 1));
-  const out: string[] = [];
-  for (let i = 0; i < n; i++) {
-    out.push(localDay(d.getTime()));
-    d.setDate(d.getDate() + 1);
-  }
-  return out;
-}
+// Keys are built by stepping a noon-anchored Date, so a DST boundary can never
+// land a bucket on the wrong day (see `weekStartDay`). Day keys come from
+// `recentDays` in `@/util/format`, which the usage pane shares.
 
 /** The last `n` local Monday keys, oldest first, ending with the week
  *  containing `nowMs`. Aligns with `weekStartDay`, which buckets into them. */

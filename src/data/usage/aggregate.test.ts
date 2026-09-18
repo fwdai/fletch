@@ -1,34 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { UsageBucket, UsageScan, UsageScanTokens, UsageSessionSpan } from "@/api";
 import type { SlimCatalog } from "@/data/modelCatalog";
-import { localDay } from "@/util/format";
-import {
-  aggregateUsage,
-  daysInRange,
-  localHourStart,
-  processedTokens,
-  rangeBounds,
-  type UsagePricing,
-} from "./aggregate";
+import { dayKeysBetween, localDay } from "@/util/format";
+import { aggregateUsage, localHourStart, rangeBounds } from "./aggregate";
 import { isFresh, SCAN_TTL_MS } from "./useUsageStats";
 
-// Pricing is stubbed rather than driven off a real catalog: what models.dev
-// charges for a given id changes under us, and this file is testing the fold,
-// not the price table. "sonnet" is priced, "mystery" is not.
-const PRICES: Record<string, number> = { sonnet: 0.000_01, opus: 0.000_05 };
-
-const pricing: UsagePricing = {
-  priceTokens: (_catalog, modelId, t) => {
-    const rate = modelId ? PRICES[modelId] : undefined;
-    return rate === undefined ? null : processedTokens(t) * rate;
-  },
-  cacheSavingsUsd: (_catalog, modelId, t) => {
-    const rate = modelId ? PRICES[modelId] : undefined;
-    return rate === undefined ? null : t.cacheRead * rate;
+// A fixture catalog rather than a real one: what models.dev charges changes
+// under us, and this file is testing the fold, not the price table. Rates are
+// USD per million tokens; "sonnet-5" is priced, "mystery" is not.
+const CATALOG: SlimCatalog = {
+  "sonnet-5": {
+    id: "sonnet-5",
+    name: "Sonnet 5",
+    contextWindow: 200_000,
+    reasoning: true,
+    cost: { input: 10, output: 10, cacheRead: 1, cacheWrite: 10 },
   },
 };
-
-const CATALOG: SlimCatalog = {};
 
 /** Local wall-clock ms for a `YYYY-MM-DD` key, so fixtures are timezone-proof. */
 const at = (day: string, hour = 0, minute = 0) =>
@@ -93,9 +81,11 @@ describe("rangeBounds", () => {
     expect(untilMs).toBe(now);
     expect(localDay(sinceMs)).toBe("2026-09-11");
     expect(new Date(sinceMs).getHours()).toBe(0);
-    expect(daysInRange({ sinceMs, untilMs })).toHaveLength(7);
-    expect(daysInRange(rangeBounds("30d", now))).toHaveLength(30);
-    expect(daysInRange(rangeBounds("90d", now))).toHaveLength(90);
+    expect(dayKeysBetween(sinceMs, untilMs)).toHaveLength(7);
+    const thirty = rangeBounds("30d", now);
+    expect(dayKeysBetween(thirty.sinceMs, thirty.untilMs)).toHaveLength(30);
+    const ninety = rangeBounds("90d", now);
+    expect(dayKeysBetween(ninety.sinceMs, ninety.untilMs)).toHaveLength(90);
   });
 });
 
@@ -114,21 +104,19 @@ describe("aggregateUsage", () => {
     [
       bucket({
         hourStartMs: at(days[0], 9),
-        model: "sonnet",
+        model: "sonnet-5",
         tokens: tokens(1_000, 200, 4_000, 800),
       }),
       bucket({
         hourStartMs: at(days[2], 10),
-        model: "sonnet",
+        model: "sonnet-5",
         tokens: tokens(500, 100, 0, 0),
-        requests: 3,
       }),
       bucket({
         hourStartMs: at(days[2], 11),
         model: "mystery",
         provider: "codex",
         tokens: tokens(2_000, 400, 0, 0),
-        requests: 2,
       }),
     ],
     [
@@ -140,7 +128,12 @@ describe("aggregateUsage", () => {
     ],
   );
 
-  const stats = aggregateUsage(full, CATALOG, range, pricing);
+  // The two sonnet-5 buckets sum to 1,500 input, 300 output, 4,000 cache read,
+  // 800 cache write. At the fixture rates (10/10/1/10 per million):
+  const SONNET_COST = (1_500 * 10 + 300 * 10 + 4_000 * 1 + 800 * 10) / 1e6; // 0.030
+  const SONNET_SAVINGS = (4_000 * (10 - 1)) / 1e6; // 0.036
+
+  const stats = aggregateUsage(full, CATALOG, range);
 
   it("sums every token bucket and the processed total", () => {
     expect(stats.totals).toEqual({
@@ -149,7 +142,7 @@ describe("aggregateUsage", () => {
       cacheRead: 4_000,
       cacheWrite: 800,
       processed: 9_000,
-      cacheSavingsUsd: 4_000 * PRICES.sonnet,
+      cacheSavingsUsd: SONNET_SAVINGS,
     });
     expect(stats.totalTokens).toBe(9_000);
     expect(stats.empty).toBe(false);
@@ -157,8 +150,8 @@ describe("aggregateUsage", () => {
   });
 
   it("costs only what the catalog prices", () => {
-    // 6,600 sonnet tokens priced; the 2,400 codex tokens are unpriced.
-    expect(stats.totalCostUsd).toBeCloseTo(6_600 * PRICES.sonnet, 10);
+    // The sonnet-5 buckets are priced; the codex "mystery" tokens are not.
+    expect(stats.totalCostUsd).toBeCloseTo(SONNET_COST, 10);
   });
 
   it("splits by provider with sessions and token share", () => {
@@ -172,10 +165,9 @@ describe("aggregateUsage", () => {
   });
 
   it("reports an unpriced model as null cost and ranks it last", () => {
-    expect(stats.byModel.map((m) => m.model)).toEqual(["sonnet", "mystery"]);
+    expect(stats.byModel.map((m) => m.model)).toEqual(["sonnet-5", "mystery"]);
     const [sonnet, mystery] = stats.byModel;
-    expect(sonnet.costUsd).toBeCloseTo(6_600 * PRICES.sonnet, 10);
-    expect(sonnet.requests).toBe(4);
+    expect(sonnet.costUsd).toBeCloseTo(SONNET_COST, 10);
     expect(mystery.costUsd).toBeNull();
     expect(mystery.tokens).toBe(2_400);
     expect(mystery.share).toBeCloseTo(2_400 / 9_000, 10);
@@ -199,7 +191,7 @@ describe("aggregateUsage", () => {
   });
 
   it("is empty and share-safe with no buckets", () => {
-    const blank = aggregateUsage(scan([]), CATALOG, range, pricing);
+    const blank = aggregateUsage(scan([]), CATALOG, range);
     expect(blank.empty).toBe(true);
     expect(blank.totalTokens).toBe(0);
     expect(blank.totalCostUsd).toBe(0);
@@ -213,7 +205,6 @@ describe("aggregateUsage", () => {
       scan([], [session({ provider: "codex", id: "cx", firstMs: at(days[1], 8) })]),
       CATALOG,
       range,
-      pricing,
     );
     expect(only.providers).toEqual([
       { provider: "codex", sessions: 1, tokens: 0, costUsd: 0, share: 0 },
@@ -226,36 +217,23 @@ describe("aggregateUsage", () => {
 describe("aggregateUsage slicing", () => {
   const days = ["2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17"];
 
-  const wide = scan(
-    days.map((d, i) => bucket({ hourStartMs: at(d, 9), model: "sonnet", requests: i + 1 })),
-  );
+  const wide = scan(days.map((d) => bucket({ hourStartMs: at(d, 9), model: "sonnet-5" })));
 
   it("keeps only the buckets inside the range", () => {
-    const sliced = aggregateUsage(wide, CATALOG, windowOf(days.slice(2)), pricing);
+    const sliced = aggregateUsage(wide, CATALOG, windowOf(days.slice(2)));
     expect(sliced.byDay.map((d) => d.day)).toEqual(["2026-09-17", "2026-09-16"]);
     expect(sliced.totalTokens).toBe(220);
-    expect(sliced.byModel[0].requests).toBe(7);
   });
 
   it("excludes the hour before the range and includes the hour it opens in", () => {
     const one = (hourStartMs: number) =>
-      scan([bucket({ hourStartMs, model: "sonnet" })], []).buckets;
+      scan([bucket({ hourStartMs, model: "sonnet-5" })], []).buckets;
     const from = { sinceMs: at(days[3], 10), untilMs: at(days[3], 20) };
 
-    const before = aggregateUsage(
-      { ...wide, buckets: one(at(days[3], 9)) },
-      CATALOG,
-      from,
-      pricing,
-    );
+    const before = aggregateUsage({ ...wide, buckets: one(at(days[3], 9)) }, CATALOG, from);
     expect(before.empty).toBe(true);
 
-    const opening = aggregateUsage(
-      { ...wide, buckets: one(at(days[3], 10)) },
-      CATALOG,
-      from,
-      pricing,
-    );
+    const opening = aggregateUsage({ ...wide, buckets: one(at(days[3], 10)) }, CATALOG, from);
     expect(opening.empty).toBe(false);
   });
 
@@ -264,10 +242,9 @@ describe("aggregateUsage slicing", () => {
     // that hour, so its tokens belong to it.
     const from = { sinceMs: at(days[3], 10, 42), untilMs: at(days[3], 20) };
     const sliced = aggregateUsage(
-      { ...wide, buckets: [bucket({ hourStartMs: at(days[3], 10), model: "sonnet" })] },
+      { ...wide, buckets: [bucket({ hourStartMs: at(days[3], 10), model: "sonnet-5" })] },
       CATALOG,
       from,
-      pricing,
     );
     expect(sliced.totalTokens).toBe(110);
   });
@@ -275,10 +252,9 @@ describe("aggregateUsage slicing", () => {
   it("excludes a bucket sitting exactly on untilMs", () => {
     const from = { sinceMs: at(days[3], 0), untilMs: at(days[3], 12) };
     const sliced = aggregateUsage(
-      { ...wide, buckets: [bucket({ hourStartMs: at(days[3], 12), model: "sonnet" })] },
+      { ...wide, buckets: [bucket({ hourStartMs: at(days[3], 12), model: "sonnet-5" })] },
       CATALOG,
       from,
-      pricing,
     );
     expect(sliced.empty).toBe(true);
   });
@@ -289,7 +265,7 @@ describe("aggregateUsage session spans", () => {
   const range = { sinceMs: at(day, 10), untilMs: at(day, 14) };
 
   const counted = (sessions: UsageSessionSpan[]) =>
-    aggregateUsage(scan([], sessions), CATALOG, range, pricing).totalSessions;
+    aggregateUsage(scan([], sessions), CATALOG, range).totalSessions;
 
   it("counts a session that straddles either edge of the range", () => {
     expect(counted([session({ firstMs: at(day, 8), lastMs: at(day, 11) })])).toBe(1);
@@ -321,7 +297,6 @@ describe("aggregateUsage session spans", () => {
       ),
       CATALOG,
       range,
-      pricing,
     );
     expect(stats.totalSessions).toBe(3);
     expect(stats.providers.map((p) => [p.provider, p.sessions])).toEqual([

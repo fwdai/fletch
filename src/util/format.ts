@@ -55,6 +55,31 @@ export function localDay(ms: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+const DAY_MS = 86_400_000;
+
+/** Local noon of the day containing `ms`. Stepping whole days from noon can't
+ *  skip or repeat a date across a DST boundary, which is why every calendar
+ *  helper below anchors here first. */
+function localNoon(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(12, 0, 0, 0);
+  return d.getTime();
+}
+
+/** Every local day key from the day of `sinceMs` through the day of `untilMs`,
+ *  inclusive, oldest first. */
+export function dayKeysBetween(sinceMs: number, untilMs: number): string[] {
+  const end = localNoon(untilMs);
+  const out: string[] = [];
+  for (let t = localNoon(sinceMs); t <= end; t += DAY_MS) out.push(localDay(t));
+  return out;
+}
+
+/** The last `n` local day keys, oldest first, ending on the day of `nowMs`. */
+export function recentDays(nowMs: number, n: number): string[] {
+  return dayKeysBetween(localNoon(nowMs) - (n - 1) * DAY_MS, nowMs);
+}
+
 /** The local Monday of the week containing `ms`, as a `localDay` key. Anchored
  *  at noon before stepping whole days, so a DST boundary can't land the result
  *  on the wrong date (the same trick the heatmap grid uses). */
