@@ -4,7 +4,14 @@
 
 import { describe, expect, it } from "vitest";
 import { V2_DEFAULT_OPS } from "@/remote/types";
-import { closedGates, GATES, gateReason, hostSkew, hostVersionLabel } from "./capabilities";
+import {
+  closedGates,
+  GATES,
+  type GateName,
+  gateReason,
+  hostSkew,
+  hostVersionLabel,
+} from "./capabilities";
 import type { EnvironmentEntry } from "./environments";
 
 const local: EnvironmentEntry = {
@@ -168,10 +175,14 @@ describe("closedGates", () => {
     }
   });
 
-  it("leaves only the local-only gate closed on a host that answers everything", () => {
+  it("leaves only the local-only gates closed on a host that answers everything", () => {
     const every = host([...V2_DEFAULT_OPS, ...GATED_OPS]);
 
-    expect(closedGates(every).map((g) => g.name)).toEqual(["addProject"]);
+    // The gates with no op — the blocker is on this side, so no host can open
+    // them — derived from the table so adding one does not silently break this.
+    const localOnly = (Object.keys(GATES) as GateName[]).filter((g) => GATES[g].op === null);
+    expect(localOnly.length).toBeGreaterThan(0);
+    expect(closedGates(every).map((g) => g.name)).toEqual(localOnly);
   });
 });
 
