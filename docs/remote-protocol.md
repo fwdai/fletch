@@ -639,6 +639,7 @@ agent:branch           agent:model            agent:effort
 agent:repo_added       agent:git-action       session:records-appended
 turn:sent              turn:started           workspace:changed
 pr:state_changed       verify:report          publish:approval-requested
+publish:approval-resolved
 ```
 
 `agent:event` is forwarded unfiltered, including the provider's
@@ -655,6 +656,17 @@ agent's publish is blocked on the host until someone answers with
 `answer_publish_approval` (or the host's wait lapses and refuses it). A client
 that does not have that op on `protocol.ops` can show the prompt but not answer
 it.
+
+`publish:approval-resolved` `{ id, outcome: "approved" | "denied" | "expired" }`
+closes one of those prompts. It fires once per `publish:approval-requested`,
+whoever ended it: the device that answered, another device, `fletch-host
+approve`, or nobody at all — `expired` covers both the lapsed
+`publish_approval_wait` and a prompt that could not be delivered. A client drops
+the card or dialog for `id` and needs no other reaction; the verdict itself is
+already the answerer's, and the agent has been told. A host that does not list
+it on `protocol.events` never emits it, and a client that has no handler for it
+behaves as it did before the event existed — the prompt stays until answered,
+which is what every client did until this event.
 
 Never forwarded: `agent:output`, `shell:output` (raw PTY bytes), `run:*`,
 `wf:*`, `roadmap:*`, `dictation:*`, `docker:*`, `agent-install:*`.

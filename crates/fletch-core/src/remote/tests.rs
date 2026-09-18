@@ -841,10 +841,11 @@ async fn pair_then_hello_then_op_then_event_fanout() {
     assert_eq!(hello["ok"], true);
     assert!(hello["result"]["workspace"].is_object());
     assert_eq!(hello["result"]["protocol"]["version"], 2);
-    assert!(hello["result"]["protocol"]["events"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("publish:approval-requested")));
+    let events = hello["result"]["protocol"]["events"].as_array().unwrap();
+    assert!(events.contains(&json!("publish:approval-requested")));
+    // Its closing half: a client that has this can take a card down when
+    // somebody else answered, or when the host's wait lapsed.
+    assert!(events.contains(&json!("publish:approval-resolved")));
 
     ws.request("3", "get_workspace", json!({})).await;
     let reply = ws.next_json().await;
