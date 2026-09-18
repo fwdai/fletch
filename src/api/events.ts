@@ -1,4 +1,4 @@
-import { activeTransport, type UnlistenFn } from "./transport";
+import { activeTransport, localTransport, type UnlistenFn } from "./transport";
 import type {
   AgentBranchEvent,
   AgentEffortEvent,
@@ -45,11 +45,18 @@ import type {
 import type { VerificationReportEvent } from "./types/verify";
 import type { WfEventEnvelope, WfRun } from "./types/workflow";
 
-/** Every `on*` wrapper below goes through here: subscribe to one backend event
- *  on the environment the UI is driving, with the transport's envelope already
- *  unwrapped, and get back the unsubscribe. */
+/** Subscribe to one engine event on the environment the UI is driving, with the
+ *  transport's envelope already unwrapped, and get back the unsubscribe. */
 function on<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   return activeTransport().on<T>(event, cb);
+}
+
+/** Subscribe on this desktop whatever environment is active — for events no
+ *  remote engine has any business emitting: the mic, the provider CLIs
+ *  installed here, a sign-in PTY running in this window. The mirror image of
+ *  `invokeLocal` in ./invoke, and every wrapper below says which one it uses. */
+function onLocal<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
+  return localTransport.on<T>(event, cb);
 }
 
 /** Fires on every journal append for any run. */
@@ -180,7 +187,7 @@ export function onRoadmapQueueNote(cb: (note: RoadmapQueueNote) => void): Promis
 }
 
 export function onAgentInstallState(cb: (e: AgentInstallEvent) => void): Promise<UnlistenFn> {
-  return on<AgentInstallEvent>("agent-install:state", cb);
+  return onLocal<AgentInstallEvent>("agent-install:state", cb);
 }
 
 export function onAgentOutput(cb: (e: AgentOutputEvent) => void): Promise<UnlistenFn> {
@@ -196,7 +203,7 @@ export function onShellOutput(cb: (e: ShellOutputEvent) => void): Promise<Unlist
 export function onDictationTranscript(
   cb: (e: DictationTranscriptEvent) => void,
 ): Promise<UnlistenFn> {
-  return on<DictationTranscriptEvent>("dictation:transcript", cb);
+  return onLocal<DictationTranscriptEvent>("dictation:transcript", cb);
 }
 
 /** Dictation session lifecycle: listening → (transcribing) → stopped, or error
@@ -205,14 +212,14 @@ export function onDictationTranscript(
  *  events, so a consumer that owns one has to ignore the rest (a composer that
  *  unmounted mid-session leaves its terminal event to land on the next one). */
 export function onDictationState(cb: (e: DictationStateEvent) => void): Promise<UnlistenFn> {
-  return on<DictationStateEvent>("dictation:state", cb);
+  return onLocal<DictationStateEvent>("dictation:state", cb);
 }
 
 /** The microphone's loudness while a dictation session listens, about every
  *  90 ms (see `DictationLevelEvent`). App-wide and session-stamped like the
  *  other dictation events. */
 export function onDictationLevel(cb: (e: DictationLevelEvent) => void): Promise<UnlistenFn> {
-  return on<DictationLevelEvent>("dictation:level", cb);
+  return onLocal<DictationLevelEvent>("dictation:level", cb);
 }
 
 /** Progress of the local engine's model download, ending in `installed` or
@@ -222,7 +229,7 @@ export function onDictationLevel(cb: (e: DictationLevelEvent) => void): Promise<
 export function onDictationModelProgress(
   cb: (e: DictationModelProgressEvent) => void,
 ): Promise<UnlistenFn> {
-  return on<DictationModelProgressEvent>("dictation:model_progress", cb);
+  return onLocal<DictationModelProgressEvent>("dictation:model_progress", cb);
 }
 
 export function onAgentEvent(cb: (e: AgentManagedEvent) => void): Promise<UnlistenFn> {
@@ -334,11 +341,11 @@ export function onDockerBuildProgress(cb: (e: DockerBuildEvent) => void): Promis
 export function onProviderLoginOutput(
   cb: (e: ProviderLoginOutputEvent) => void,
 ): Promise<UnlistenFn> {
-  return on<ProviderLoginOutputEvent>("provider-login:output", cb);
+  return onLocal<ProviderLoginOutputEvent>("provider-login:output", cb);
 }
 
 /** A provider's sign-in process ended — cleanly, with an error, or because it
  *  was closed. */
 export function onProviderLoginExit(cb: (e: ProviderLoginExitEvent) => void): Promise<UnlistenFn> {
-  return on<ProviderLoginExitEvent>("provider-login:exit", cb);
+  return onLocal<ProviderLoginExitEvent>("provider-login:exit", cb);
 }
