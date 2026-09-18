@@ -6,7 +6,8 @@
 //! the same supervisor/service functions the commands call and the phone can
 //! reuse the desktop's TypeScript DTOs unchanged.
 //!
-//! Layout: `secure` owns the Noise channel and the host identity, `auth` the
+//! Layout: `secure` re-exports the Noise channel and the host identity from
+//! `fletch-proto` (shared with the mobile app), `auth` the
 //! pairing codes and the device registry, `server` the WebSocket listener,
 //! `relay` the outbound host link that carries off-LAN devices, `session` the
 //! live-connection registry, `dispatch` the op allowlist, `events` the taps on
@@ -196,7 +197,7 @@ impl RemoteState {
     /// written gets the same treatment, since it is the same failure.
     pub fn new(dir: &std::path::Path, dispatch: Arc<dyn Dispatch>) -> Arc<Self> {
         let (events, _) = broadcast::channel(EVENT_BUFFER);
-        let (host, host_error) = match HostKey::load(dir) {
+        let (host, host_error) = match HostKey::load_or_create(dir, secure::HOST_KEY_FILE) {
             Ok(host) => (Some(host), None),
             Err(e) => {
                 tracing::error!(error = %e, "remote: host key unavailable");
@@ -236,7 +237,10 @@ impl RemoteState {
     /// The host ID: this host's public key, base64url without padding. Empty
     /// when the key could not be created, which `status().error` explains.
     pub fn host_id(&self) -> String {
-        self.host.as_ref().map(HostKey::host_id).unwrap_or_default()
+        self.host
+            .as_ref()
+            .map(HostKey::public_base64)
+            .unwrap_or_default()
     }
 
     /// The identity `server` handshakes with. `None` closes the connection.

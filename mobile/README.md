@@ -12,7 +12,9 @@ any relay that later carries it — only sees ciphertext. Both identities are
 static X25519 keys: the phone's is generated on first launch and kept at
 `<app data dir>/device_key`, and the host's public key is the `host=` value in
 the pairing link, which the phone either checks the handshake against or pins on
-first contact. That all lives in `src-tauri/src/remote/` (commands
+first contact. The wire itself — handshake, frame codec, key file, dialer — is
+`crates/fletch-proto`, shared with the host; the phone's connection slot around
+it lives in `src-tauri/src/remote/` (commands
 `remote_connect` / `remote_send` / `remote_close` /
 `remote_device_public_key`), and the webview talks plain JSON to it. Which is
 also why the browser dev loop can only reach the mock host: outside Tauri there

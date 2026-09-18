@@ -91,9 +91,12 @@ tokio-tungstenite = { version = "0.27", default-features = false, features = [
 # anything dials; this direct dependency is only what gives `run()` the path to
 # name it — it enables nothing that was not already on.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-# The remote secure channel (`remote/secure.rs`):
-# `Noise_XX_25519_ChaChaPoly_BLAKE2s`, the pattern the protocol doc fixes.
-snow = "0.10"
+# The wire protocol, shared with the mobile app: the Noise channel
+# (`Noise_XX_25519_ChaChaPoly_BLAKE2s`, the pattern the protocol doc fixes), the
+# host key file, the relay proof and the relay's multiplexing framing. A path
+# dependency rather than a workspace member, so each package keeps its own
+# lockfile and the release workflow needs no change.
+fletch-proto = { path = "../crates/fletch-proto" }
 # `sink` for `SinkExt` on the split WebSocket writer; nothing else in the crate
 # needs the combinator zoo.
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
