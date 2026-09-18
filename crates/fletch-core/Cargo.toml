@@ -21,7 +21,10 @@ dirs = "5"
 tracing = "0.1"
 portable-pty = "0.8"
 parking_lot = "0.12"
-nix = { version = "0.29", features = ["signal"] }
+# `signal` for the process-group teardown; `user` for `getuid`/`getgid`, which
+# the container launch needs to map a Linux host's ownership through a bind
+# mount (`sandbox::container::util::linux_host_user`).
+nix = { version = "0.29", features = ["signal", "user"] }
 chrono = { version = "0.4", features = ["serde"] }
 # Used outside `cfg(test)` too: the sandbox and the git distribution unpack into
 # temp dirs before an atomic rename.

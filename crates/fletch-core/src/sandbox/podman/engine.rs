@@ -161,6 +161,17 @@ impl SandboxEngine for PodmanEngine {
                 borrowed_object_stores: &prep.borrowed_object_stores,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
                 cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
+                // Never mapped, on any platform. Podman is rootless here by
+                // construction — the desktop drives a `podman machine`, and a
+                // Linux host runs as its own unprivileged user — and a rootless
+                // podman already maps the container's root to that user, so
+                // bind-mounted files come back user-owned exactly as they do on
+                // macOS. `--user`/`--userns=keep-id` inside that namespace
+                // would do the opposite: shift every write onto a subordinate
+                // uid the user cannot read. The one case this leaves unmapped
+                // is a host that runs podman *as root*, which the host's
+                // packaging (a systemd **user** unit) does not do.
+                run_as_user: None,
                 // Filled in below, once the preflight has passed.
                 image: "",
                 agent_bin,
@@ -342,6 +353,9 @@ mod tests {
             borrowed_object_stores: &[],
             memory: DEFAULT_MEMORY,
             cpus: DEFAULT_CPUS,
+            // As the engine launches it: rootless podman maps container root
+            // to this user already.
+            run_as_user: None,
             image: "busybox",
             agent_bin: "cat",
             auth_vars: &[],

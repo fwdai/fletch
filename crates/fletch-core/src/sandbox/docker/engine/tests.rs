@@ -11,7 +11,9 @@ use crate::sandbox::container::launch_auth::{
     present_api_keys, NO_CODEX_AUTH_MSG, NO_CONTAINER_AUTH_MSG, NO_CURSOR_AUTH_MSG,
     NO_OPENCODE_AUTH_MSG, NO_PI_AUTH_MSG,
 };
-use crate::sandbox::container::run_args::{prepare_config_mount_dir, ProviderMounts};
+use crate::sandbox::container::run_args::{
+    mount_sources, prepare_config_mount_dir, ProviderMounts,
+};
 
 /// The version-refresh loop guard: exact-pair matching, per-provider
 /// isolation, persistence callback on record, and safe recording before
@@ -107,6 +109,9 @@ fn test_spec<'a>(interactive: bool) -> RunSpec<'a> {
         borrowed_object_stores: &[],
         memory: "4g",
         cpus: "2",
+        // The macOS shape — the desktop's, and what every test below but
+        // `argv_maps_the_host_user_on_linux` asserts.
+        run_as_user: None,
         image: "fletch-agent:abc123def456",
         agent_bin: "claude",
         auth_vars: &[
@@ -141,6 +146,7 @@ fn rw_config_spec<'a>(
         borrowed_object_stores: &[],
         memory: "4g",
         cpus: "2",
+        run_as_user: None,
         image,
         agent_bin,
         auth_vars,
@@ -193,6 +199,56 @@ fn argv_mounts_exactly_the_three_dirs_at_identical_paths() {
         values_of(&args, "-w"),
         vec!["/Users/u/.fletch/worktrees/orkney/repo"],
     );
+}
+
+/// The Linux variant of the mount test above: same four binds at the same
+/// identical host paths, plus what a uid-mapped launch needs and nothing else.
+/// On a rootful Linux daemon a container that ran as the image's root would
+/// write `root:root` into all three read-write binds, leaving the service user
+/// with a checkout it cannot delete and RPC replies it cannot read.
+#[test]
+fn argv_maps_the_host_user_on_linux() {
+    let mut spec = test_spec(false);
+    spec.run_as_user = Some("1000:1000");
+    let args = run_args(&spec);
+
+    assert_eq!(values_of(&args, "--user"), vec!["1000:1000"]);
+    // The binds are unchanged by the mapping — same set, same order, same
+    // identical host paths (invariant 1), `~/.claude` still read-only
+    // (invariant 5).
+    assert_eq!(
+        values_of(&args, "-v"),
+        vec![
+            "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
+            "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
+            "/Users/u/.claude:/Users/u/.claude:ro",
+            "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
+        ],
+    );
+    // A writable `$HOME`: the runtime materializes the real one `root:root` as
+    // the parent of the `~/.claude` bind, so without this the entrypoint's
+    // `~/.claude.json` seed fails under `set -e` and the container never
+    // starts. Mode 1777 because the mapped uid is not in the image's passwd
+    // file; a tmpfs because nothing in a home directory may reach the host.
+    // The two ephemeral overlays need the same mode for the same reason — a
+    // bare `--tmpfs` is `0755 root:root`, which claude cannot `mkdir` into.
+    assert_eq!(
+        values_of(&args, "--tmpfs"),
+        vec![
+            "/Users/u:rw,mode=1777,size=1g",
+            "/Users/u/.claude/session-env:rw,mode=1777",
+            "/Users/u/.claude/shell-snapshots:rw,mode=1777",
+        ],
+    );
+    // Nothing else moved: no extra bind source (podman's preflight vets the
+    // set) and no value in argv (invariant 3).
+    assert!(!mount_sources(&spec).contains(&PathBuf::from("/Users/u")));
+    for arg in &args {
+        assert!(
+            !arg.contains('=') || arg.starts_with("fletch.") || arg.contains("mode=1777"),
+            "argv token `{arg}` carries a value",
+        );
+    }
 }
 
 #[test]
@@ -1259,6 +1315,9 @@ fn docker_run_echo_round_trip() {
         borrowed_object_stores: &[],
         memory: "256m",
         cpus: "1",
+        // What this machine's daemon would really be launched with, so the
+        // round-trip covers the mapping on a Linux runner too.
+        run_as_user: launch_user(),
         image: "busybox",
         agent_bin: "echo",
         auth_vars: &[],
