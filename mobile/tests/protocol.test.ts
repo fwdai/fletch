@@ -17,7 +17,10 @@ import {
   type DeviceInfo,
   HOST_KEY_MISMATCH,
   HOST_KEY_MISMATCH_REASON,
+  type HostProtocol,
+  hostSupports,
   type PairStep,
+  V2_DEFAULT_OPS,
 } from "../src/remote/types";
 
 const DEVICE: DeviceInfo = { name: "test", platform: "web", appVersion: "0.1.0" };
@@ -748,5 +751,72 @@ describe("attempt progress", () => {
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;
     expect(steps).toEqual(["connecting", "lan", "greeting"]);
+  });
+});
+
+describe("capability descriptor", () => {
+  const descriptor = (ops: string[]) => ({ version: 2, ops, events: [], features: [] });
+
+  it("reads a missing protocol as the v2 default set, so an older host keeps working", () => {
+    expect(hostSupports(null, "get_workspace")).toBe(true);
+    expect(hostSupports(undefined, "register_push")).toBe(true);
+    expect(V2_DEFAULT_OPS).toHaveLength(42);
+    // The op Phase 0 added is exactly what an older host does not have.
+    expect(hostSupports(null, "answer_publish_approval")).toBe(false);
+  });
+
+  it("takes a host that reported one at its word, in both directions", () => {
+    const reported = descriptor(["get_workspace", "answer_publish_approval"]);
+    expect(hostSupports(reported, "answer_publish_approval")).toBe(true);
+    // Not a union with the defaults: the descriptor is the whole surface.
+    expect(hostSupports(reported, "register_push")).toBe(false);
+  });
+
+  it("keeps the descriptor from hello, and null from a host that sends none", async () => {
+    const fake = fakeSocket();
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    const hello = helloOk(fake.sent[0].id as string);
+    fake.reply({ ...hello, result: { ...hello.result, protocol: descriptor(["get_workspace"]) } });
+    await expect(connected).resolves.toMatchObject({ protocol: { version: 2 } });
+    expect(client.protocol?.ops).toEqual(["get_workspace"]);
+
+    const bare = fakeSocket();
+    const old = new ProtocolClient({ openSocket: bare.factory, device: DEVICE });
+    const greeted = old.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(bare.sent.length).toBe(1));
+    bare.reply(helloOk(bare.sent[0].id as string));
+    await greeted;
+    expect(old.protocol).toBeNull();
+    expect(hostSupports(old.protocol, "answer_publish_approval")).toBe(false);
+  });
+
+  it("carries the descriptor from pair onto the snapshot, so a first pairing gates too", async () => {
+    const fake = fakeSocket();
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    const seen: (HostProtocol | undefined)[] = [];
+    client.onSnapshot((s) => seen.push(s.protocol));
+    const paired = client.connect({
+      host: "h",
+      port: 1,
+      hostKey: HOST_KEY,
+      pairingToken: "K7PQ2M9X",
+    });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply({
+      id: fake.sent[0].id as string,
+      ok: true,
+      result: {
+        deviceId: "d1",
+        host: { name: "Mac", appVersion: "0.7.23", os: "macos" },
+        protocol: descriptor(["get_workspace", "answer_publish_approval"]),
+      },
+    });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    fake.reply({ id: fake.sent[1].id as string, ok: true, result: null });
+    await paired;
+    expect(seen).toHaveLength(1);
+    expect(hostSupports(seen[0], "answer_publish_approval")).toBe(true);
   });
 });
