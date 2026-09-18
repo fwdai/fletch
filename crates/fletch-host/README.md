@@ -7,23 +7,37 @@ same engine the desktop app runs, booted by the same function
 (`fletch_core::host::boot`); what it does not have is a webview, a tray, a
 microphone or a window.
 
-Unix only, and this first release targets **macOS**. It builds and runs on Linux
-by construction — nothing here is macOS-specific — but Linux packaging (a
-systemd unit, Docker UID mapping, prebuilt binaries in the release job) lands in
-the next change. Until then, on Linux you build it yourself and you need Docker
-or Podman, because there is no `sandbox-exec` to fall back to and the host
-refuses to start rather than run an agent outside the boundary it promised.
+Unix only: **Linux** (x86-64 and arm64) and **macOS** (Apple silicon). On Linux
+you need Docker or Podman — there is no `sandbox-exec` to fall back to, and the
+host refuses to start rather than run an agent outside the boundary it promised.
 
 ## Install
 
-No published binary yet. From a checkout:
+Each release publishes `fletch-host-<version>-<target>.tar.gz` and a matching
+`.sha256`:
+
+```sh
+V=0.7.31; T=x86_64-unknown-linux-gnu          # or aarch64-unknown-linux-gnu, aarch64-apple-darwin
+curl -fsSLO https://github.com/fwdai/fletch/releases/download/v$V/fletch-host-$V-$T.tar.gz
+curl -fsSLO https://github.com/fwdai/fletch/releases/download/v$V/fletch-host-$V-$T.tar.gz.sha256
+sha256sum -c fletch-host-$V-$T.tar.gz.sha256   # shasum -a 256 -c on macOS
+tar xzf fletch-host-$V-$T.tar.gz
+install -Dm755 fletch-host ~/.local/bin/fletch-host
+```
+
+`~/.local/bin` is where the service units below expect it. Make sure it is on
+your `PATH` (`export PATH="$HOME/.local/bin:$PATH"`).
+
+From a checkout instead:
 
 ```sh
 cargo build --release --manifest-path crates/fletch-host/Cargo.toml
-cp src-tauri/target/release/fletch-host ~/.local/bin/   # or anywhere on PATH
+install -Dm755 src-tauri/target/release/fletch-host ~/.local/bin/fletch-host
 ```
 
-(The target directory is shared with the desktop build; `--target-dir` moves it.)
+(The target directory is shared with the desktop build; `--target-dir` moves it.
+`--no-default-features` drops the pairing QR, which is the only dependency
+outside the desktop's own tree.)
 
 ## Run it
 
@@ -44,12 +58,63 @@ database:
 Remote access is always on: serving paired devices is the only reason the
 process exists, so the desktop's `remote.enabled` setting is not consulted.
 Logs go to stderr at `info`; `RUST_LOG` overrides that (`RUST_LOG=debug`,
-`RUST_LOG=info,fletch_core::remote=debug`). Run it under whatever supervises
-services on the machine — `launchd`, systemd, `tmux` — and let that capture
-stderr.
+`RUST_LOG=info,fletch_core::remote=debug`).
 
 `SIGINT` and `SIGTERM` kill the agents' processes and exit 0, so a restart is
 never mistaken for a crash.
+
+## Run it as a service
+
+Both units in `packaging/` run the host **as your own user**, never as root:
+everything it touches is yours, and on Linux the container sandbox maps the
+agent's files back to that same user (see "The sandbox" below).
+
+Linux, systemd:
+
+```sh
+install -Dm644 packaging/fletch-host.service ~/.config/systemd/user/fletch-host.service
+systemctl --user daemon-reload
+systemctl --user enable --now fletch-host
+loginctl enable-linger $USER          # or it stops when you log out of SSH
+journalctl --user -u fletch-host -f   # logs
+```
+
+`enable-linger` is the step people forget: without it systemd tears your user
+session down when the last SSH connection closes, agents and all.
+
+macOS, launchd (`launchd` does not expand `~`, so substitute your user name):
+
+```sh
+sed "s/YOU/$USER/g" packaging/com.fletch.host.plist \
+  > ~/Library/LaunchAgents/com.fletch.host.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.fletch.host.plist
+tail -f ~/Library/Logs/fletch-host.log
+```
+
+Set `QUORUM_GITHUB_CLIENT_ID` in whichever unit you use if you want
+`fletch-host github login` to work (see "GitHub" below); both files have the
+line commented out and ready.
+
+## The sandbox
+
+On macOS an agent runs under `sandbox-exec` by default, exactly as it does on
+the desktop. On Linux there is no such thing, so the host needs **Docker or
+Podman** and refuses to start without one — it will not silently run an agent
+outside the boundary it promised. With no stored preference it picks Docker if
+the daemon answers, else Podman.
+
+Two consequences of running containers on Linux, where (unlike macOS) the
+container's root really is the machine's root:
+
+- With a **rootful Docker daemon** the launch adds `--user <uid>:<gid>` so the
+  agent's checkout, its RPC replies and claude's transcripts come back owned by
+  the service user instead of by root. That also means an agent cannot
+  `apt-get install` inside its own container: bake what your project needs into
+  a custom image (`docker_image` in Settings) instead. The **Cursor** image is
+  the one provider this breaks — its CLI installs under `/root`, which only
+  root can read — so use Cursor on a macOS host, or another provider here.
+- **Rootless Docker and Podman** already map the container's root to your user,
+  so they are left exactly as they are.
 
 ## Pair a phone
 
@@ -59,12 +124,10 @@ With the host running, on the host:
 fletch-host pair
 ```
 
-That prints a `fletch://pair?…` link, the 8-character code inside it, and when
-both expire (5 minutes). On the phone, add a host and paste the link. The link
-carries this host's public key, which the phone pins — the code only authorizes
-one pairing.
-
-> The terminal QR code is not in this release; see "Known gaps" below.
+That prints a `fletch://pair?…` link, that link as a QR code, the 8-character
+code inside it, and when both expire (5 minutes). On the phone, add a host and
+scan the code (or paste the link). The link carries this host's public key,
+which the phone pins — the code only authorizes one pairing.
 
 Then:
 
@@ -132,7 +195,9 @@ claude login        # and whichever others you use
 ```
 
 Those logins persist in each tool's own config, so this is once per host (per
-provider), not once per run.
+provider), not once per run — but they must be the logins of **the user the
+service runs as**, since that is whose home directory the agent (and the
+container sandbox, which mounts `~/.claude`) reads. `ssh` in as that user.
 
 ## The data dir, and who may read it
 
@@ -151,7 +216,10 @@ filesystem instead:
 - the data dir is created `0700` and re-restricted to `0700` on every start;
 - the admin socket is `0600`, and that permission **is** its authentication —
   it takes no credential, because anyone who can open it can already read the
-  database beside it.
+  database beside it;
+- RPC mailboxes are `0700` too, and agent checkouts are whatever your `umask`
+  makes them — on Linux the container writes them as your uid, which is the
+  whole point of the mapping above.
 
 So: **run the host as its own user, and let nothing else read that directory.**
 Anyone who can read it can push as you.
@@ -180,9 +248,8 @@ disk, say); the host only sets them when they are unset.
 
 ## Known gaps
 
-- **No terminal QR code** for the pairing link yet (the `qrcode` crate is not
-  vendored in this change); paste the link or type the code instead.
-- **Linux packaging** — systemd unit, Docker UID mapping, release artifacts —
-  is the next change.
 - **No PTY streaming**: a remote client sees agent status and events, not a live
   terminal. That is Phase 5 of the multi-host plan.
+- **Cursor cannot run in a container on a Linux host** (see "The sandbox").
+- **No `fletch-host update`**: upgrading is downloading the new tarball over
+  the old binary and restarting the service.
