@@ -3,9 +3,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::AppHandle;
 
 use crate::error::{Error, Result};
+use crate::host::EngineCtx;
 use crate::run_session::{self, shell_args, user_shell, RunPhase, RunSession, RunStateSnapshot};
 
 use super::events::{emit_run_output, emit_run_port, emit_run_state};
@@ -23,7 +23,7 @@ impl Supervisor {
     /// If setup is already complete, starts the run command directly.
     ///
     /// No-op if a run is already in progress for this agent.
-    pub fn run_start(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+    pub fn run_start(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
         if record.archive.is_some() {
             return Err(Error::Other("agent is archived".into()));
@@ -65,7 +65,7 @@ impl Supervisor {
                 Ok(p) => p,
                 Err(e) => {
                     let msg = format!("Failed to start command: {e}");
-                    emit_run_state(&app, agent_id, RunPhase::Stopped, Some(msg));
+                    emit_run_state(ctx.sink.as_ref(), agent_id, RunPhase::Stopped, Some(msg));
                     return Err(e);
                 }
             }
@@ -78,12 +78,12 @@ impl Supervisor {
         // store already holds the correct port when the UI reacts to
         // `run:state` — otherwise the link/label briefly shows the old port.
         if let Some(port) = prepared.port {
-            emit_run_port(&app, agent_id, port);
+            emit_run_port(ctx.sink.as_ref(), agent_id, port);
         }
-        emit_run_state(&app, agent_id, plan.first_phase, None);
-        write_header(&app, agent_id, &session, &prepared.cmd);
+        emit_run_state(ctx.sink.as_ref(), agent_id, plan.first_phase, None);
+        write_header(&ctx, agent_id, &session, &prepared.cmd);
         if let Some(note) = &prepared.note {
-            write_note(&app, agent_id, &session, note);
+            write_note(&ctx, agent_id, &session, note);
         }
 
         // begin_phase already flipped the session active. If the spawn fails we
@@ -92,7 +92,7 @@ impl Supervisor {
         // run-phase failure path in handle_run_phase_exit.
         if let Err(e) = spawn_run_phase(
             self.clone(),
-            app.clone(),
+            ctx.clone(),
             agent_id.to_string(),
             session.clone(),
             gen,
@@ -105,14 +105,14 @@ impl Supervisor {
         ) {
             let msg = format!("Failed to start command: {e}");
             session.mark_stopped(Some(msg.clone()));
-            emit_run_state(&app, agent_id, RunPhase::Stopped, Some(msg));
+            emit_run_state(ctx.sink.as_ref(), agent_id, RunPhase::Stopped, Some(msg));
             return Err(e);
         }
         Ok(())
     }
 
     /// Stop the Run-panel process for an agent. Idempotent.
-    pub fn run_stop(&self, app: AppHandle, agent_id: &str) -> Result<()> {
+    pub fn run_stop(&self, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
         let session = {
             let runs = self.runs.lock();
             runs.get(agent_id).cloned()
@@ -122,7 +122,7 @@ impl Supervisor {
         };
         let prior = session.stop();
         if matches!(prior, RunPhase::Setup | RunPhase::Running) {
-            emit_run_state(&app, agent_id, RunPhase::Stopped, None);
+            emit_run_state(ctx.sink.as_ref(), agent_id, RunPhase::Stopped, None);
         }
         Ok(())
     }
@@ -238,22 +238,22 @@ pub struct ProjectRunConfig {
 
 /// Inject a "$ <cmd>" header line into the log so each phase has a
 /// visible boundary, then emit it like any other PTY output.
-fn write_header(app: &AppHandle, agent_id: &str, session: &Arc<RunSession>, cmd: &str) {
+fn write_header(ctx: &Arc<EngineCtx>, agent_id: &str, session: &Arc<RunSession>, cmd: &str) {
     // Dim ANSI for the prompt — the panel renders ANSI, so this shows as a
     // muted prompt line separating each phase.
     let line = format!("\x1b[2m$ {cmd}\x1b[0m\r\n");
     let bytes = line.into_bytes();
     let seq = session.append_log(&bytes);
-    emit_run_output(app, agent_id, bytes, seq);
+    emit_run_output(ctx.sink.as_ref(), agent_id, bytes, seq);
 }
 
 /// Inject a port-safety note (e.g. "Port 3000 in use — using 3001") into the
 /// log so the user understands why the dev server bound a different port.
-fn write_note(app: &AppHandle, agent_id: &str, session: &Arc<RunSession>, note: &str) {
+fn write_note(ctx: &Arc<EngineCtx>, agent_id: &str, session: &Arc<RunSession>, note: &str) {
     let line = format!("\x1b[2m{note}\x1b[0m\r\n");
     let bytes = line.into_bytes();
     let seq = session.append_log(&bytes);
-    emit_run_output(app, agent_id, bytes, seq);
+    emit_run_output(ctx.sink.as_ref(), agent_id, bytes, seq);
 }
 
 /// A dev command prepared for spawn: the (possibly port-rewritten) command,
@@ -362,7 +362,7 @@ fn plan_run_phases(setup_done: bool, setup_cmd: &str, run_cmd: &str) -> Option<R
 #[allow(clippy::too_many_arguments)]
 fn spawn_run_phase(
     sup: Arc<Supervisor>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     session: Arc<RunSession>,
     gen: u64,
@@ -397,11 +397,11 @@ fn spawn_run_phase(
     env.extend(extra_env);
 
     let session_out = session.clone();
-    let app_out = app.clone();
+    let ctx_out = ctx.clone();
     let id_out = agent_id.clone();
 
     let sup_exit = sup.clone();
-    let app_exit = app.clone();
+    let ctx_exit = ctx.clone();
     let id_exit = agent_id.clone();
     let session_exit = session.clone();
     let cwd_exit = cwd.clone();
@@ -413,12 +413,12 @@ fn spawn_run_phase(
         &env,
         move |bytes| {
             let seq = session_out.append_log(&bytes);
-            emit_run_output(&app_out, &id_out, bytes, seq);
+            emit_run_output(ctx_out.sink.as_ref(), &id_out, bytes, seq);
         },
         move |exit| {
             handle_run_phase_exit(
                 sup_exit.clone(),
-                app_exit.clone(),
+                ctx_exit.clone(),
                 id_exit.clone(),
                 session_exit.clone(),
                 gen,
@@ -538,7 +538,7 @@ pub(crate) fn run_target_git_common_dir(cwd: &Path) -> Option<PathBuf> {
 #[allow(clippy::too_many_arguments)]
 fn handle_run_phase_exit(
     sup: Arc<Supervisor>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     session: Arc<RunSession>,
     gen: u64,
@@ -574,7 +574,7 @@ fn handle_run_phase_exit(
                 Err(e) => {
                     let msg = format!("Failed to start run command: {e}");
                     session.mark_stopped(Some(msg.clone()));
-                    emit_run_state(&app, &agent_id, RunPhase::Stopped, Some(msg));
+                    emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, Some(msg));
                     return;
                 }
             };
@@ -582,16 +582,16 @@ fn handle_run_phase_exit(
             // Emit the resolved port before the running state so the store holds
             // it before the UI reacts (see run_start for the same ordering).
             if let Some(port) = prepared.port {
-                emit_run_port(&app, &agent_id, port);
+                emit_run_port(ctx.sink.as_ref(), &agent_id, port);
             }
-            emit_run_state(&app, &agent_id, RunPhase::Running, None);
-            write_header(&app, &agent_id, &session, &prepared.cmd);
+            emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Running, None);
+            write_header(&ctx, &agent_id, &session, &prepared.cmd);
             if let Some(note) = &prepared.note {
-                write_note(&app, &agent_id, &session, note);
+                write_note(&ctx, &agent_id, &session, note);
             }
             if let Err(e) = spawn_run_phase(
                 sup,
-                app.clone(),
+                ctx.clone(),
                 agent_id.clone(),
                 session.clone(),
                 gen,
@@ -604,13 +604,13 @@ fn handle_run_phase_exit(
             ) {
                 let msg = format!("Failed to start run command: {e}");
                 session.mark_stopped(Some(msg.clone()));
-                emit_run_state(&app, &agent_id, RunPhase::Stopped, Some(msg));
+                emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, Some(msg));
             }
             return;
         }
         // No run command to chain into — treat as clean stop.
         session.mark_stopped(None);
-        emit_run_state(&app, &agent_id, RunPhase::Stopped, None);
+        emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, None);
         return;
     }
 
@@ -618,7 +618,7 @@ fn handle_run_phase_exit(
     if matches!(phase, RunPhase::Setup) && !exit.success {
         let msg = format!("Setup failed: {}", exit.message);
         session.mark_stopped(Some(msg.clone()));
-        emit_run_state(&app, &agent_id, RunPhase::Stopped, Some(msg));
+        emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, Some(msg));
         return;
     }
 
@@ -629,7 +629,7 @@ fn handle_run_phase_exit(
         Some(format!("Run exited: {}", exit.message))
     };
     session.mark_stopped(err.clone());
-    emit_run_state(&app, &agent_id, RunPhase::Stopped, err);
+    emit_run_state(ctx.sink.as_ref(), &agent_id, RunPhase::Stopped, err);
 }
 
 #[cfg(test)]

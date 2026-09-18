@@ -7,7 +7,7 @@
 //! `loop.max` is reached. Orchestrate execution arrives in S11 (a block of that
 //! kind fails the run with a clear cause rather than being silently skipped).
 //!
-//! `WorkflowService` (app state) owns the registry of active runs and the
+//! `WorkflowService` (host-managed state) owns the registry of active runs and the
 //! launch / control commands. Panic containment (§6.1): the service awaits each
 //! drive task's `JoinHandle`; a panicked or errored task marks its run
 //! `failed("internal scheduler error")` so a run is never left `running` with no
@@ -21,10 +21,10 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
-use tauri::AppHandle;
 use tokio::task::JoinSet;
 
 use crate::error::{Error, Result};
+use crate::host::EngineCtx;
 use crate::supervisor::Supervisor;
 
 use super::attempt::{self, AttemptOutcome, AttemptParams, Deadlines};
@@ -63,7 +63,7 @@ pub(crate) use steps::*;
 pub struct WorkflowService {
     pub(super) db: Db,
     driver: Arc<dyn AgentDriver>,
-    pub(super) app: AppHandle,
+    pub(super) engine: Arc<EngineCtx>,
     /// Active-run registry. Behind an `Arc` so a drive task can remove its own
     /// entry on exit without borrowing the service.
     pub(super) runs: Arc<Mutex<HashMap<String, RunHandle>>>,
@@ -108,7 +108,7 @@ impl ProjectRunCleanup {
         self.finalized = true;
     }
 
-    fn finish(mut self, app: &AppHandle) {
+    fn finish(mut self, engine: &Arc<EngineCtx>) {
         // The DB commit has happened; never let Drop restore directories for
         // rows that no longer exist. Failed removals are startup-recoverable.
         self.finalized = true;
@@ -116,7 +116,7 @@ impl ProjectRunCleanup {
             dir.remove_staged();
         }
         for run_id in &self.run_ids {
-            journal::emit_run_deleted(app, run_id);
+            journal::emit_run_deleted(engine.sink.as_ref(), run_id);
         }
     }
 }
@@ -130,11 +130,11 @@ impl Drop for ProjectRunCleanup {
 }
 
 impl WorkflowService {
-    pub fn new(db: Db, driver: Arc<dyn AgentDriver>, app: AppHandle) -> Self {
+    pub fn new(db: Db, driver: Arc<dyn AgentDriver>, engine: Arc<EngineCtx>) -> Self {
         Self {
             db,
             driver,
-            app,
+            engine,
             runs: Arc::new(Mutex::new(HashMap::new())),
             lifecycle: tokio::sync::Mutex::new(()),
         }
@@ -298,7 +298,7 @@ impl WorkflowService {
                 // stop any lingering run-owned agent.
                 self.stop_live_step_agents(run_id).await;
                 let conn = self.db.lock();
-                set_status(&conn, Some(&self.app), run_id, "canceled", None, None);
+                set_status(&conn, Some(&self.engine), run_id, "canceled", None, None);
             }
         }
         Ok(())
@@ -394,7 +394,7 @@ impl WorkflowService {
     }
 
     pub(crate) fn finish_project_runs(&self, cleanup: ProjectRunCleanup) {
-        cleanup.finish(&self.app);
+        cleanup.finish(&self.engine);
     }
 
     /// Delete `run_id`'s subtree, children first. Returns whether the whole
@@ -454,7 +454,7 @@ impl WorkflowService {
             errors.push(format!("run {run_id}: {e}"));
             return false;
         }
-        journal::emit_run_deleted(&self.app, run_id);
+        journal::emit_run_deleted(self.engine.sink.as_ref(), run_id);
         true
     }
 
@@ -542,7 +542,7 @@ impl WorkflowService {
             .map_err(|e| Error::Other(e.to_string()))?;
             journal_event(
                 &conn,
-                Some(&self.app),
+                Some(&self.engine),
                 run_id,
                 event_type::DECISION,
                 Some(&exec_id),
@@ -574,7 +574,7 @@ impl WorkflowService {
     pub fn reject(&self, run_id: &str, note: &str) -> Result<()> {
         let re_drive = {
             let conn = self.db.lock();
-            reject_apply(&conn, Some(&self.app), run_id, note)?
+            reject_apply(&conn, Some(&self.engine), run_id, note)?
         };
         if re_drive {
             self.spawn_drive(run_id.to_string());
@@ -640,7 +640,7 @@ impl WorkflowService {
         spawn_drive_task(
             self.db.clone(),
             self.driver.clone(),
-            self.app.clone(),
+            self.engine.clone(),
             self.runs.clone(),
             run_id,
         );

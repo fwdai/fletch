@@ -8,7 +8,7 @@ import { isBusy, providerLabel } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { useStickyScroll } from "../../lib/useStickyScroll";
 import { useStore } from "../../store";
-import { ApprovalCard, ErrorCard } from "./ApprovalCard";
+import { ApprovalCard, ErrorCard, PublishApprovalCard } from "./ApprovalCard";
 import { ToolRow } from "./ToolRow";
 
 type Block =
@@ -95,6 +95,9 @@ export function ChatTab({
   const log = useStore((s) => s.logs[agent.id]);
   const pending = useStore((s) => s.pendingToolUse[agent.id]);
   const startedAt = useStore((s) => s.turnStartedAt[agent.id]);
+  // Selected whole and filtered below: a selector that filters returns a fresh
+  // array every call, which re-renders forever under zustand v5.
+  const publishApprovals = useStore((s) => s.pendingPublishApprovals);
   const busy = isBusy(agent);
   const elapsed = useElapsed(startedAt, busy);
 
@@ -104,6 +107,10 @@ export function ChatTab({
   );
   const blocks = useMemo(() => toBlocks(visible), [visible]);
   const pendingIds = Object.keys(pending ?? {});
+  const publishForAgent = useMemo(
+    () => publishApprovals.filter((r) => r.agent_id === agent.id),
+    [publishApprovals, agent.id],
+  );
   const callById = useMemo(() => {
     const map = new Map<string, Extract<ChatItem, { kind: "tool_call" }>>();
     for (const it of log ?? []) if (it.kind === "tool_call") map.set(it.id, it);
@@ -115,7 +122,7 @@ export function ChatTab({
   // rest are the cards this pane draws as siblings of the log — the approval
   // prompt, the error card, the working indicator.
   const { ref: scroller, onScroll } = useStickyScroll<HTMLDivElement>(
-    [log, pending, agent.status, busy],
+    [log, pending, publishForAgent, agent.status, busy],
     pinRef,
   );
 
@@ -140,6 +147,9 @@ export function ChatTab({
           toolUseId={toolUseId}
           call={callById.get(toolUseId)}
         />
+      ))}
+      {publishForAgent.map((request) => (
+        <PublishApprovalCard key={request.id} request={request} />
       ))}
       {agent.status === "error" && (
         <ErrorCard agentId={agent.id} message={agent.last_error ?? null} />

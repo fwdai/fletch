@@ -103,7 +103,7 @@ pub(crate) fn routes_to_kernel(db: &super::Db, run_id: &str) -> bool {
 pub(crate) async fn run_kernel(ctx: &RunCtx, run_id: &str) {
     if let Err(e) = run_kernel_inner(ctx, run_id).await {
         let conn = ctx.db.lock();
-        fail_run(&conn, ctx.app.as_ref(), run_id, &e.to_string());
+        fail_run(&conn, ctx.engine.as_ref(), run_id, &e.to_string());
     }
 }
 
@@ -148,7 +148,7 @@ async fn run_kernel_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
         let conn = ctx.db.lock();
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             event_type::RUN_LAUNCHED,
             None,
@@ -158,7 +158,7 @@ async fn run_kernel_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
                 "workspace": workspace.to_string_lossy(),
             }),
         );
-        set_status(&conn, ctx.app.as_ref(), run_id, "running", None, None);
+        set_status(&conn, ctx.engine.as_ref(), run_id, "running", None, None);
     }
 
     let steps: Vec<&Step> = spec
@@ -217,7 +217,7 @@ async fn run_kernel_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
             let conn = ctx.db.lock();
             let mut req = build_spawn_req(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 agent_spec,
                 &last_ref,
                 &repo,
@@ -305,7 +305,7 @@ async fn run_kernel_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
             let conn = ctx.db.lock();
             journal_event(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 event_type::BOUNDARY_COMMIT,
                 Some(&exec_id),
@@ -333,13 +333,13 @@ async fn run_kernel_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     let conn = ctx.db.lock();
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type::RUN_DONE,
         None,
         &json!({}),
     );
-    set_status(&conn, ctx.app.as_ref(), run_id, "done", None, None);
+    set_status(&conn, ctx.engine.as_ref(), run_id, "done", None, None);
     Ok(())
 }
 
@@ -552,14 +552,14 @@ async fn fail_step(
     let conn = ctx.db.lock();
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type::ATTEMPT_ERROR,
         Some(exec_id),
         &json!({ "error": error }),
     );
     finish_step_exec(&conn, exec_id, status, None);
-    fail_run(&conn, ctx.app.as_ref(), run_id, error);
+    fail_run(&conn, ctx.engine.as_ref(), run_id, error);
 }
 
 /// Complete a cancel observed while a step was live: stop the agent, abandon its
@@ -572,7 +572,7 @@ async fn cancel_step(ctx: &RunCtx, run_id: &str, exec_id: &str) {
     }
     {
         let conn = ctx.db.lock();
-        abandon_exec(&conn, ctx.app.as_ref(), run_id, exec_id, "canceled");
+        abandon_exec(&conn, ctx.engine.as_ref(), run_id, exec_id, "canceled");
     }
     if let Some(a) = &agent_id {
         let _ = ctx.driver.archive(a).await;
@@ -580,13 +580,13 @@ async fn cancel_step(ctx: &RunCtx, run_id: &str, exec_id: &str) {
     let conn = ctx.db.lock();
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type::RUN_CANCELED,
         None,
         &json!({}),
     );
-    set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
+    set_status(&conn, ctx.engine.as_ref(), run_id, "canceled", None, None);
 }
 
 /// A kernel run found non-terminal at startup: there is no mid-run recovery yet,
@@ -613,10 +613,10 @@ async fn refuse_resume(ctx: &RunCtx, run_id: &str) {
             let _ = ctx.driver.stop(a).await;
         }
         let conn = ctx.db.lock();
-        abandon_exec(&conn, ctx.app.as_ref(), run_id, &exec_id, NO_RESUME);
+        abandon_exec(&conn, ctx.engine.as_ref(), run_id, &exec_id, NO_RESUME);
     }
     let conn = ctx.db.lock();
-    fail_run(&conn, ctx.app.as_ref(), run_id, NO_RESUME);
+    fail_run(&conn, ctx.engine.as_ref(), run_id, NO_RESUME);
 }
 
 /// The agent stamped on an exec row, for the paths that lost the handle to the
@@ -641,7 +641,7 @@ fn journal(
     let conn = ctx.db.lock();
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type,
         Some(exec_id),

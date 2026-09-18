@@ -243,14 +243,14 @@ export class MockHost {
         if (token.length !== MOCK_PAIRING_TOKEN_LEN) throw new Error("invalid pairing token");
         this.authed = true;
         this.later(() => this.bootstrap(), 400);
-        return { deviceId: "mock-device", host: fx.hostInfo };
+        return { deviceId: "mock-device", host: fx.hostInfo, protocol: fx.protocol };
       }
       case "hello": {
         // Device authentication is the handshake, which the mock socket
         // stands in for: anything that gets this far is a known device.
         this.authed = true;
         this.later(() => this.bootstrap(), 400);
-        return { host: fx.hostInfo, workspace: this.state.workspace };
+        return { host: fx.hostInfo, workspace: this.state.workspace, protocol: fx.protocol };
       }
       case "get_workspace":
         return this.state.workspace;
@@ -371,6 +371,11 @@ export class MockHost {
         else this.later(() => this.setStatus(id, "idle"), 200);
         return null;
       }
+      // Nothing on this host is really blocked on an approval, so the answer is
+      // simply accepted — the point of the arm is that the op exists here as it
+      // does on a current Mac.
+      case "answer_publish_approval":
+        return null;
       case "stop_agent":
         this.close();
         this.setStatus(id, "stopped");

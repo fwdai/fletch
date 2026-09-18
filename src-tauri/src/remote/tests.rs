@@ -352,7 +352,7 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 42 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 43 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -363,6 +363,7 @@ fn allowlist_matches_the_protocol_table() {
         "spawn_agent",
         "send_user_message",
         "answer_tool_use",
+        "answer_publish_approval",
         "stop_agent",
         "resume_agent",
         "archive_agent",
@@ -423,6 +424,28 @@ fn register_push_is_on_the_wire_but_not_on_the_dispatcher() {
     );
 }
 
+/// The descriptor the `pair` and `hello` results carry. It is generated from the
+/// two allowlists and the event whitelist, so this pins the shape a client gates
+/// on rather than the contents — except for the op Phase 0 added, which is named
+/// so a revert cannot silently take the phone's Approve button with it.
+#[test]
+fn the_protocol_descriptor_reports_the_whole_wire_surface() {
+    let protocol = super::protocol_descriptor();
+    assert_eq!(protocol.version, 2);
+    for op in dispatch::OPS.iter().chain(dispatch::SESSION_OPS) {
+        assert!(
+            protocol.ops.contains(op),
+            "{op} is missing from the descriptor"
+        );
+    }
+    assert!(protocol.ops.contains(&"answer_publish_approval"));
+    assert_eq!(protocol.events.as_slice(), super::events::FORWARDED_EVENTS);
+    assert!(
+        protocol.features.is_empty(),
+        "no feature flag has been defined yet"
+    );
+}
+
 #[test]
 fn never_exposed_ops_are_not_dispatchable() {
     // One per family from the doc's "never exposed, by design" paragraph.
@@ -463,7 +486,7 @@ fn never_exposed_ops_are_not_dispatchable() {
 // Add-project ops
 //
 // Dispatched in process against a real `Supervisor` — the same code path the
-// socket runs, minus the `AppHandle` none of these five ops touches. Network
+// socket runs, minus the engine ctx none of these five ops touches. Network
 // ops (`gh_status`, `gh_repo_list`, a real clone) are left to manual testing:
 // they need a signed-in `gh`.
 // ---------------------------------------------------------------------------
@@ -767,6 +790,13 @@ async fn pair_then_hello_then_op_then_event_fanout() {
     // `pair` authenticates and opens the event stream; it never pushes a
     // snapshot. The client calls `get_workspace` itself.
     assert!(paired["result"].get("workspace").is_none());
+    // Both results carry the capability descriptor, so a client that only
+    // pairs knows the surface without a second round trip.
+    assert_eq!(paired["result"]["protocol"]["version"], 2);
+    assert!(paired["result"]["protocol"]["ops"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("answer_publish_approval")));
 
     // The pairing token is spent, and the device is now in the census under the
     // key the handshake proved.
@@ -778,8 +808,10 @@ async fn pair_then_hello_then_op_then_event_fanout() {
     assert!(host.state.devices().find_by_key(&phone.public).is_some());
 
     // Events reach the paired connection.
-    host.state
-        .forward_event("agent:status", r#"{"agentId":"arabia","status":"running"}"#);
+    host.state.forward_event(
+        "agent:status",
+        &json!({ "agentId": "arabia", "status": "running" }),
+    );
     let event = ws.next_json().await;
     assert_eq!(event["event"], "agent:status");
     assert_eq!(event["payload"]["agentId"], "arabia");
@@ -799,6 +831,11 @@ async fn pair_then_hello_then_op_then_event_fanout() {
     assert_eq!(hello["id"], "2");
     assert_eq!(hello["ok"], true);
     assert!(hello["result"]["workspace"].is_object());
+    assert_eq!(hello["result"]["protocol"]["version"], 2);
+    assert!(hello["result"]["protocol"]["events"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("publish:approval-requested")));
 
     ws.request("3", "get_workspace", json!({})).await;
     let reply = ws.next_json().await;
@@ -812,6 +849,46 @@ async fn pair_then_hello_then_op_then_event_fanout() {
     assert_eq!(denied["id"], "4");
     assert_eq!(denied["ok"], false);
     assert_eq!(denied["error"], UNKNOWN_OP);
+}
+
+/// The tap *is* the whitelist: it subscribes to the engine's whole event stream
+/// and only the documented names reach a connection. `agent:output` — raw PTY
+/// bytes — is the one that must never.
+#[tokio::test]
+async fn the_event_tap_forwards_only_whitelisted_names() {
+    let host = boot();
+    let (ctx, _recorded, _dir) = crate::host::ctx::test_ctx();
+    let (events, _) = tokio::sync::broadcast::channel(crate::host::sink::EVENT_BUFFER);
+    let _push_tap = super::install_taps(&ctx, host.state.clone(), events.subscribe());
+
+    // Stands in for a paired connection's forwarder: `forward_event` gives up
+    // when nothing is subscribed.
+    let mut frames = host.state.subscribe();
+    events
+        .send((
+            "agent:output".into(),
+            Arc::new(json!({ "agent_id": "arabia", "bytes": "AAAA" })),
+        ))
+        .unwrap();
+    events
+        .send((
+            "agent:status".into(),
+            Arc::new(json!({ "agentId": "arabia", "status": "running" })),
+        ))
+        .unwrap();
+
+    let frame = tokio::time::timeout(Duration::from_secs(2), frames.recv())
+        .await
+        .expect("the tap forwarded nothing")
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&frame).unwrap(),
+        json!({
+            "event": "agent:status",
+            "payload": { "agentId": "arabia", "status": "running" },
+        }),
+        "the first frame should be the status, with the output dropped"
+    );
 }
 
 /// A second `pair` on the same device key is the same device, not a new row —
@@ -1483,7 +1560,7 @@ impl Triggers {
 
 /// One `agent:event` payload holding a `can_use_tool` permission prompt, shaped
 /// as `supervisor::events::emit_agent_event` writes it.
-fn can_use_tool(agent_id: &str) -> String {
+fn can_use_tool(agent_id: &str) -> Value {
     json!({
         "agent_id": agent_id,
         "event": {
@@ -1492,11 +1569,10 @@ fn can_use_tool(agent_id: &str) -> String {
             "request": { "subtype": "can_use_tool", "tool_use_id": "tu-1" },
         },
     })
-    .to_string()
 }
 
-fn status_of(agent_id: &str, status: &str) -> String {
-    json!({ "agent_id": agent_id, "status": status, "last_error": null }).to_string()
+fn status_of(agent_id: &str, status: &str) -> Value {
+    json!({ "agent_id": agent_id, "status": status, "last_error": null })
 }
 
 #[test]
@@ -1614,13 +1690,34 @@ fn transcript_events_and_other_control_requests_are_ignored() {
         json!({ "agent_id": "arabia", "event": null }),
         json!({ "nothing": "recognizable" }),
     ] {
-        h.triggers.on_agent_event(&agents, &payload.to_string());
+        h.triggers.on_agent_event(&agents, &payload);
     }
-    // And the payloads the *taps* hand over deserialize as expected, which is
-    // the other half of the wiring.
     h.triggers.on_agent_event(&agents, &can_use_tool("arabia"));
     assert_eq!(h.kinds(), ["needs_input"], "{:?}", h.sent());
-    assert!(serde_json::from_str::<Value>(&status_of("arabia", "running")).is_ok());
+}
+
+/// The other half of the wiring: the sink hands over an event *name* and the
+/// payload the emitter built, and only these two names are of interest — the
+/// engine emits ~50, and a third one reaching a trigger would be a bug.
+#[test]
+fn the_tap_routes_the_two_event_names_and_ignores_the_rest() {
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+
+    h.triggers
+        .on_event(&agents, "agent:status", &status_of("arabia", "running"));
+    h.triggers
+        .on_event(&agents, "agent:event", &can_use_tool("arabia"));
+    h.triggers
+        .on_event(&agents, "agent:status", &status_of("arabia", "idle"));
+    assert_eq!(h.kinds(), ["needs_input", "turn_complete"]);
+
+    // Anything else, including a payload shaped like a status, is not a trigger.
+    h.triggers
+        .on_event(&agents, "agent:task", &status_of("arabia", "running"));
+    h.triggers
+        .on_event(&agents, "workspace:changed", &json!(null));
+    assert_eq!(h.kinds(), ["needs_input", "turn_complete"]);
 }
 
 /// The user is at the Mac: they already see it. Mirrors `watchingChat` in

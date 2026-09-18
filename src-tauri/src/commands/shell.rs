@@ -1,9 +1,10 @@
 //! Agent shell PTY: open, close, write stdin, and resize.
 
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::error::Result;
+use crate::host::EngineCtx;
 use crate::supervisor::Supervisor;
 
 /// Open an interactive shell PTY in the agent's primary checkout.
@@ -11,11 +12,11 @@ use crate::supervisor::Supervisor;
 #[tauri::command]
 pub fn open_agent_shell(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.open_agent_shell(app, &agent_id)
+    sup.open_agent_shell(ctx.inner().clone(), &agent_id)
 }
 
 /// Kill the shell PTY for an agent.

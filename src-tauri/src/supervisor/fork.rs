@@ -30,11 +30,12 @@
 //! digest into the brief.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_json::Value;
-use tauri::AppHandle;
 
 use crate::error::{Error, Result};
+use crate::host::EngineCtx;
 use crate::workspace::{AgentRecord, SessionRecord, UserTurn};
 
 use super::{SpawnRequest, Supervisor};
@@ -100,7 +101,7 @@ impl Supervisor {
     /// load its transcript immediately.
     pub async fn fork_agent(
         self: std::sync::Arc<Self>,
-        app: AppHandle,
+        ctx: Arc<EngineCtx>,
         parent_id: &str,
         code: ForkCode,
         context: ForkContext,
@@ -172,7 +173,7 @@ impl Supervisor {
             // ordinary agent that carries the parent's conversation forward.
             purpose: None,
         };
-        let child = self.clone().spawn_agent(app, req).await?;
+        let child = self.clone().spawn_agent(ctx, req).await?;
 
         if !carried.is_empty() {
             // Display continuity: copy the parent's records into the fork's

@@ -1,11 +1,13 @@
 //! Answering asks (spec §10.2, §10.4, §14): the shared queue-an-answer path plus
 //! the orchestrator and human answer entrypoints.
 
+use std::sync::Arc;
+
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
-use tauri::AppHandle;
 
 use crate::error::{Error, Result};
+use crate::host::EngineCtx;
 use crate::workflow::scheduler;
 use crate::workflow::types::event_type;
 
@@ -18,7 +20,7 @@ use super::{insert_message, new_msg_id};
 /// (the answering step exec, or `None` for a human).
 fn answer_ask(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     run_id: &str,
     ask_message_id: &str,
     asking_exec: Option<&str>,
@@ -45,7 +47,7 @@ fn answer_ask(
     .map_err(|e| Error::Other(e.to_string()))?;
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         run_id,
         event_type::MESSAGE_ROUTED,
         asking_exec,
@@ -60,7 +62,7 @@ fn answer_ask(
 /// orchestrator or already answered.
 pub(super) fn deliver_orchestrator_answer(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     message_id: &str,
     body: &str,
@@ -89,7 +91,7 @@ pub(super) fn deliver_orchestrator_answer(
     }
     answer_ask(
         conn,
-        app,
+        engine,
         &sender.run_id,
         message_id,
         asking_exec.as_deref(),
@@ -99,11 +101,11 @@ pub(super) fn deliver_orchestrator_answer(
 }
 
 /// Persist a human's answer to a paused `question` run and journal it. Does not
-/// resume — the caller (`WorkflowService::answer`) does that. `app` is `None`
+/// resume — the caller (`WorkflowService::answer`) does that. `engine` is `None`
 /// under test.
 pub(super) fn deliver_answer(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     project_id: &str,
     run_id: &str,
     message_id: &str,
@@ -149,7 +151,7 @@ pub(super) fn deliver_answer(
     // `from = None` → the answer is journaled as coming from the human.
     answer_ask(
         conn,
-        app,
+        engine,
         run_id,
         message_id,
         asking_exec.as_deref(),

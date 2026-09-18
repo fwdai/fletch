@@ -10,10 +10,10 @@
 //! `fletch-proto` (shared with the mobile app), `auth` the
 //! pairing codes and the device registry, `server` the WebSocket listener,
 //! `relay` the outbound host link that carries off-LAN devices, `session` the
-//! live-connection registry, `dispatch` the op allowlist, `events` the Tauri
-//! event taps, `push` the two alert triggers those taps raise. This module owns
-//! the state those eight share and the lifecycle of the listener and the relay
-//! link.
+//! live-connection registry, `dispatch` the op allowlist, `events` the taps on
+//! the engine's event stream, `push` the two alert triggers those taps raise.
+//! This module owns the state those eight share and the lifecycle of the
+//! listener and the relay link.
 
 mod auth;
 mod dispatch;
@@ -45,6 +45,9 @@ use tokio::sync::broadcast;
 use self::relay::{RelayLink, RelayTiming};
 use self::session::{Sessions, CLOSE_DISABLED, CLOSE_RESTARTING, CLOSE_REVOKED};
 use crate::error::{Error, Result};
+// How deep the per-connection fan-out buffers, shared with the engine channel
+// that feeds it: one number for the whole path (see `host::sink`).
+use crate::host::sink::EVENT_BUFFER;
 
 /// `settings` key mirroring whether the listener should run. Read once at
 /// launch and rewritten by `remote_set_enabled`.
@@ -68,11 +71,6 @@ pub const DEFAULT_PORT: u16 = 47285;
 /// The only path the listener serves.
 pub const WS_PATH: &str = "/ws";
 
-/// How many event frames the fan-out buffers per connection. A phone that
-/// stalls past this is told it lagged and refetches, exactly as the desktop
-/// frontend does on focus — events are best effort by contract.
-const EVENT_BUFFER: usize = 256;
-
 /// Same shape as the other `settings`-mirrored booleans in the crate
 /// (`rpc::approval`, `codegraph`): anything but the literal `"true"` is off.
 pub fn parse_enabled(raw: Option<&str>) -> bool {
@@ -94,6 +92,27 @@ pub struct HostInfo {
     pub name: String,
     pub app_version: String,
     pub os: String,
+}
+
+/// The version the `fletch-remote-v2` prologue names. Changes are additive
+/// within a version: a client gates on the lists below, never on this number or
+/// on `HostInfo::app_version`.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// What the host can do, sent in the `pair` and `hello` results so a client can
+/// hide what this host lacks instead of guessing from its version. A result
+/// without it is a host from before the field, which means exactly the v2
+/// default set (`docs/remote-protocol.md`, "Compatibility").
+#[derive(Debug, Clone, Serialize)]
+pub struct Protocol {
+    pub version: u32,
+    /// Every op name a device may send: the dispatcher's allowlist plus the ones
+    /// the session layer answers itself.
+    pub ops: Vec<&'static str>,
+    /// The forwarded-event whitelist.
+    pub events: Vec<&'static str>,
+    /// Named behaviours that are neither an op nor an event. None yet.
+    pub features: Vec<&'static str>,
 }
 
 /// A paired device as Settings renders it.
@@ -541,19 +560,19 @@ impl RemoteState {
             .is_some_and(|link| link.send_notify(payload))
     }
 
-    /// Fan one Tauri event out to every authenticated connection.
+    /// Fan one engine event out to every authenticated connection.
     ///
-    /// `payload_json` is spliced in rather than parsed and re-serialized, so the
-    /// phone receives byte-identical JSON to the desktop webview.
-    pub(super) fn forward_event(&self, name: &str, payload_json: &str) {
+    /// The payload is serialized here and spliced into the frame, so the phone
+    /// receives byte-identical JSON to the desktop webview: both are handed the
+    /// one `Value` the emitter built (see `host::sink::emit`), and Tauri
+    /// serializes it exactly this way on its side.
+    pub(super) fn forward_event(&self, name: &str, payload: &Value) {
         if self.events.receiver_count() == 0 {
             return;
         }
-        let payload = if payload_json.trim().is_empty() {
-            "null"
-        } else {
-            payload_json
-        };
+        // A payload that will not serialize could not have reached the webview
+        // either; `null` keeps the frame well-formed rather than dropping it.
+        let payload = serde_json::to_string(payload).unwrap_or_else(|_| "null".to_string());
         let name = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".to_string());
         let frame = format!("{{\"event\":{name},\"payload\":{payload}}}");
         let _ = self.events.send(Arc::from(frame));
@@ -588,6 +607,19 @@ pub fn host_info() -> HostInfo {
         name: machine_name(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         os: std::env::consts::OS.to_string(),
+    }
+}
+
+/// What this host answers, as the `pair` and `hello` results report it
+/// (docs/remote-protocol.md, "Compatibility"). Read off the two allowlists that
+/// already define the wire surface, so a name can only appear here by being
+/// reachable.
+pub fn protocol_descriptor() -> Protocol {
+    Protocol {
+        version: PROTOCOL_VERSION,
+        ops: [dispatch::OPS, dispatch::SESSION_OPS].concat(),
+        events: events::FORWARDED_EVENTS.to_vec(),
+        features: Vec::new(),
     }
 }
 

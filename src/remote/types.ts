@@ -55,8 +55,7 @@ export interface HostProtocol {
 export interface PairResult {
   deviceId: string;
   host: HostInfo;
-  /** Absent from a host older than the field, which reads as the v2 default
-   *  set — the 41 dispatcher ops plus `register_push`. */
+  /** Absent from a host older than the field; see `hostSupports`. */
   protocol?: HostProtocol;
 }
 
@@ -224,6 +223,9 @@ export interface RemoteClient {
    *  a changed host key) — the difference between "reconnecting" and "stuck". */
   readonly retrying: boolean;
   readonly host: HostInfo | null;
+  /** The connected host's capability descriptor, or null when it sent none (an
+   *  older host) or nothing is connected. Read through `hostSupports`. */
+  readonly protocol: HostProtocol | null;
   /** The host key in use: the one the target carried, or the one pinned on
    *  first contact. */
   readonly hostKey: string | null;

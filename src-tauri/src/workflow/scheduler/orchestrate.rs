@@ -94,7 +94,7 @@ pub(crate) async fn run_orchestrate_stage(
             let conn = ctx.db.lock();
             journal_event(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 event_type::BUDGET_EXCEEDED,
                 None,
@@ -132,7 +132,7 @@ pub(crate) async fn run_orchestrate_stage(
         let conn = ctx.db.lock();
         build_spawn_req(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             orch_agent,
             fork_base,
             repo,
@@ -148,7 +148,7 @@ pub(crate) async fn run_orchestrate_stage(
             finish_step_exec(&conn, &orch_exec, "error", None);
             fail_run(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 &format!("orchestrator spawn failed: {e}"),
             );
@@ -164,7 +164,7 @@ pub(crate) async fn run_orchestrate_stage(
         );
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             event_type::ATTEMPT_SPAWNED,
             Some(&orch_exec),
@@ -182,7 +182,7 @@ pub(crate) async fn run_orchestrate_stage(
         finish_step_exec(&conn, &orch_exec, "error", None);
         fail_run(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             &format!("orchestrator not ready: {e}"),
         );
@@ -192,7 +192,7 @@ pub(crate) async fn run_orchestrate_stage(
         let conn = ctx.db.lock();
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             event_type::ATTEMPT_READY,
             Some(&orch_exec),
@@ -414,7 +414,7 @@ pub(crate) async fn run_orchestrate_stage(
                                 persist_spent(&conn, run_id, ledger);
                                 journal_event(
                                     &conn,
-                                    ctx.app.as_ref(),
+                                    ctx.engine.as_ref(),
                                     run_id,
                                     event_type::SUBRUN_LAUNCHED,
                                     Some(&orch_exec),
@@ -444,7 +444,7 @@ pub(crate) async fn run_orchestrate_stage(
                             let conn = ctx.db.lock();
                             journal_event(
                                 &conn,
-                                ctx.app.as_ref(),
+                                ctx.engine.as_ref(),
                                 run_id,
                                 event_type::COMPOSE_DENIED,
                                 Some(&orch_exec),
@@ -601,7 +601,7 @@ pub(crate) async fn run_orchestrate_stage(
                 persist_spent(&conn, run_id, ledger);
                 fail_run(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     &format!("orchestrate stage failed: {reason}"),
                 );
@@ -626,7 +626,7 @@ pub(crate) async fn run_orchestrate_stage(
                 persist_spent(&conn, run_id, ledger);
                 fail_run(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     "orchestrate stage failed: all children failed",
                 );
@@ -694,7 +694,7 @@ pub(crate) async fn run_orchestrate_stage(
                 let conn = ctx.db.lock();
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::GATE_EVALUATED,
                     Some(&orch_exec),
@@ -767,7 +767,7 @@ pub(crate) async fn run_orchestrate_stage(
             persist_spent(&conn, run_id, ledger);
             journal_event(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 event_type::RUN_PAUSED,
                 Some(&orch_exec),
@@ -775,7 +775,7 @@ pub(crate) async fn run_orchestrate_stage(
             );
             set_status(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 "paused",
                 Some("blocked_gate"),
@@ -834,7 +834,7 @@ pub(crate) async fn run_orchestrate_stage(
                 finish_step_exec(&conn, &orch_exec, "abandoned", None);
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::BUDGET_EXCEEDED,
                     Some(&orch_exec),
@@ -1008,7 +1008,7 @@ fn spawn_subrun(ctx: &RunCtx, sub_run_id: String) {
     let child = RunCtx {
         db: ctx.db.clone(),
         driver: ctx.driver.clone(),
-        app: ctx.app.clone(),
+        engine: ctx.engine.clone(),
         cancel,
         pending_ask,
         deadlines: ctx.deadlines.clone(),
@@ -1153,7 +1153,7 @@ fn reap_sub_runs(
         };
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             event_type::SUBRUN_FINISHED,
             Some(orch_exec),
@@ -1161,7 +1161,7 @@ fn reap_sub_runs(
         );
         crate::workflow::comms::forward_subrun_finished(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             orch_exec,
             sub_id,
@@ -1197,7 +1197,7 @@ async fn cancel_run_by_id(ctx: &RunCtx, run_id: &str) {
         let _ = ctx.driver.stop(&a).await;
     }
     let conn = ctx.db.lock();
-    set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
+    set_status(&conn, ctx.engine.as_ref(), run_id, "canceled", None, None);
 }
 
 /// The sub-run's final line `(ref, exec_id)` — the commit its integration merges.
@@ -1287,7 +1287,7 @@ async fn begin_subrun_merge(
         let conn = ctx.db.lock();
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             event_type::MERGE_STARTED,
             None,
@@ -1355,7 +1355,7 @@ async fn resume_subrun_merge(
         let conn = ctx.db.lock();
         set_status(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             "paused",
             Some("conflict"),
@@ -1386,7 +1386,7 @@ async fn resume_subrun_merge(
                 set_cursor(&conn, run_id, cursor);
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::RUN_PAUSED,
                     None,
@@ -1394,7 +1394,7 @@ async fn resume_subrun_merge(
                 );
                 set_status(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     "paused",
                     Some("conflict"),
@@ -1520,7 +1520,7 @@ fn build_orch_child_ctx(
     ChildCtx {
         db: ctx.db.clone(),
         driver: ctx.driver.clone(),
-        app: ctx.app.clone(),
+        engine: ctx.engine.clone(),
         base_deadlines: ctx.deadlines.clone(),
         eff: eff.clone(),
         run_id: run_id.to_string(),
@@ -1638,7 +1638,7 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
             let conn = c.db.lock();
             build_spawn_req(
                 &conn,
-                c.app.as_ref(),
+                c.engine.as_ref(),
                 &c.agent_spec,
                 &c.fork_base,
                 &c.repo,
@@ -1722,7 +1722,7 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
                 let conn = c.db.lock();
                 build_spawn_req(
                     &conn,
-                    c.app.as_ref(),
+                    c.engine.as_ref(),
                     &c.agent_spec,
                     &c.fork_base,
                     &c.repo,
@@ -1748,7 +1748,7 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
             // stamped with this pre-spawned agent above.
             journal: Some(attempt::AttemptJournal {
                 db: c.db.clone(),
-                app: c.app.clone(),
+                engine: c.engine.clone(),
                 run_id: c.run_id.clone(),
             }),
         };
@@ -1777,7 +1777,7 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
         if crate::workflow::comms::has_unanswered_ask(&c.db.lock(), &exec_id) {
             {
                 let conn = c.db.lock();
-                abandon_exec(&conn, c.app.as_ref(), &c.run_id, &exec_id, "question");
+                abandon_exec(&conn, c.engine.as_ref(), &c.run_id, &exec_id, "question");
             }
             let _ = c.driver.stop(&child_agent_id).await;
             let _ = c.driver.archive(&child_agent_id).await;
@@ -1832,7 +1832,7 @@ async fn drive_orch_child(c: ChildCtx, stage_entry_sha: Option<String>) -> OrchC
             AttemptOutcome::Canceled => {
                 {
                     let conn = c.db.lock();
-                    abandon_exec(&conn, c.app.as_ref(), &c.run_id, &exec_id, "canceled");
+                    abandon_exec(&conn, c.engine.as_ref(), &c.run_id, &exec_id, "canceled");
                 }
                 let _ = c.driver.archive(&child_agent_id).await;
                 return done(
@@ -1991,7 +1991,7 @@ pub(crate) fn handle_orch_child(
             if moved_head {
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::INTEGRATE_SKIPPED,
                     None,
@@ -2000,7 +2000,7 @@ pub(crate) fn handle_orch_child(
             }
             crate::workflow::comms::forward_lifecycle(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 orch_exec,
                 &res.exec_id,
@@ -2017,7 +2017,7 @@ pub(crate) fn handle_orch_child(
         ChildOutcome::Failure { reason } => {
             crate::workflow::comms::forward_lifecycle(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 orch_exec,
                 &res.exec_id,
@@ -2127,7 +2127,7 @@ async fn drive_orch_turn(
         for e in &events {
             journal_event(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 e.event_type,
                 Some(orch_exec),
@@ -2145,7 +2145,7 @@ async fn drive_orch_turn(
         let conn = ctx.db.lock();
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             event_type::BUDGET_TICK,
             None,
@@ -2189,7 +2189,7 @@ async fn finish_orch_turn_failure(
                 let conn = ctx.db.lock();
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::WATCHDOG_STALLED,
                     Some(orch_exec),
@@ -2229,7 +2229,7 @@ async fn finish_orch_turn_failure(
             persist_spent(&conn, run_id, ledger);
             fail_run(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 &format!("orchestrator error: {e}"),
             );

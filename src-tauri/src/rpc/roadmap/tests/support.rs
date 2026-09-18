@@ -37,7 +37,7 @@ pub(super) fn test_db(project_id: &str) -> Db {
 
 pub(super) fn dispatcher(db: &Db, project_id: &str) -> RoadmapDispatcher {
     RoadmapDispatcher {
-        app: None,
+        ctx: None,
         db: db.clone(),
         project_id: project_id.to_string(),
         git: GitDispatcher::new(

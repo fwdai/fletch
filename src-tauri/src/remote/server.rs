@@ -619,6 +619,9 @@ async fn authenticate(
     remote_static: &[u8; 32],
 ) -> Option<(DeviceRecord, Value)> {
     let host = super::host_info();
+    // Same descriptor on both results: what the host answers does not depend on
+    // which frame asked, and a client that only ever pairs must learn it too.
+    let protocol = super::protocol_descriptor();
     match frame.op.as_str() {
         "pair" => {
             let args: PairArgs = serde_json::from_value(frame.args.clone()).ok()?;
@@ -637,6 +640,7 @@ async fn authenticate(
             let result = json!({
                 "deviceId": record.device_id,
                 "host": host,
+                "protocol": protocol,
             });
             Some((record, result))
         }
@@ -649,7 +653,7 @@ async fn authenticate(
                 .dispatch("get_workspace", json!({}))
                 .await
                 .unwrap_or(Value::Null);
-            let result = json!({ "host": host, "workspace": workspace });
+            let result = json!({ "host": host, "workspace": workspace, "protocol": protocol });
             Some((record, result))
         }
         _ => None,
