@@ -10,8 +10,7 @@
 // superseded while its handshake was in flight cannot close or spoof its
 // successor, whatever order the two `invoke`s land in.
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { localTransport, type UnlistenFn } from "@/api/transport";
 import type { Socket, SocketFactory } from "./socket";
 
 export const inTauri = (): boolean =>
@@ -56,20 +55,21 @@ const secureSocket: SocketFactory = async (url, handlers, opts) => {
     else deliver(ev);
   };
   subscriptions.push(
-    await listen<{ connectionId: number; text: string }>("remote:message", (e) =>
-      onEvent({ kind: "message", ...e.payload }),
+    await localTransport.on<{ connectionId: number; text: string }>("remote:message", (p) =>
+      onEvent({ kind: "message", ...p }),
     ),
-    await listen<{ connectionId: number; code: number; reason: string }>("remote:close", (e) =>
-      onEvent({ kind: "close", ...e.payload }),
+    await localTransport.on<{ connectionId: number; code: number; reason: string }>(
+      "remote:close",
+      (p) => onEvent({ kind: "close", ...p }),
     ),
-    await listen<{ connectionId: number; message: string }>("remote:error", (e) =>
-      onEvent({ kind: "error", ...e.payload }),
+    await localTransport.on<{ connectionId: number; message: string }>("remote:error", (p) =>
+      onEvent({ kind: "error", ...p }),
     ),
   );
 
   let result: ConnectResult;
   try {
-    result = await invoke<ConnectResult>("remote_connect", {
+    result = await localTransport.call<ConnectResult>("remote_connect", {
       url,
       hostKey: opts?.hostKey ?? null,
       // One timeout, and it lives in Rust: it bounds the dial and the
@@ -88,11 +88,11 @@ const secureSocket: SocketFactory = async (url, handlers, opts) => {
   const socket: Socket = {
     hostKey: result.hostKey,
     via: opts?.via ?? "lan",
-    send: (text) => invoke<void>("remote_send", { connectionId: id, text }),
+    send: (text) => localTransport.call<void>("remote_send", { connectionId: id, text }),
     close: () => {
       done = true;
       stop();
-      void invoke("remote_close", { connectionId: id }).catch(() => {});
+      void localTransport.call("remote_close", { connectionId: id }).catch(() => {});
     },
   };
   return socket;

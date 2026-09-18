@@ -19,6 +19,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { type ITerminalOptions, Terminal } from "@xterm/xterm";
+import { activeEnvironmentId } from "@/store/environments";
 import { setTerminalCacheHooks } from "./buffers";
 
 export interface LiveTerminal {
@@ -41,8 +42,10 @@ export interface LiveTerminal {
 const cache = new Map<string, LiveTerminal>();
 
 /** Cache key for an agent's native TUI terminal. Namespaced so another cached
- *  surface for the same agent (e.g. its side shell) can never collide with it. */
-export const nativeTerminalKey = (agentId: string) => `native:${agentId}`;
+ *  surface for the same agent (e.g. its side shell) can never collide with it,
+ *  and scoped to the environment so the same agent name on two hosts cannot
+ *  (agent names are recycled place names — docs/multi-host-plan.md §1.3). */
+export const nativeTerminalKey = (agentId: string) => `native:${activeEnvironmentId()}:${agentId}`;
 
 /** Build a Terminal + FitAddon (+ WebGL renderer when available) inside a host
  *  element appended to `parent`.
