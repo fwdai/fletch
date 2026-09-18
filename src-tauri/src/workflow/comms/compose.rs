@@ -4,11 +4,12 @@
 //! fit-checks read.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use tauri::AppHandle;
 
+use crate::host::EngineCtx;
 use crate::rpc::Response;
 use crate::workflow::budget::{EffectiveBudgets, Ledger};
 use crate::workflow::scheduler;
@@ -58,13 +59,13 @@ pub(in crate::workflow) struct ComposePlan {
 /// engine is the authority, never the orchestrator.
 pub(super) fn route_compose(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     id: &str,
     args: &Value,
 ) -> (Response, Poke) {
     let deny = |conn: &Connection, msg: String| -> (Response, Poke) {
-        journal_compose_denied(conn, app, sender, &msg);
+        journal_compose_denied(conn, engine, sender, &msg);
         (Response::err(id, msg), Poke::None)
     };
 
@@ -264,7 +265,7 @@ pub(super) fn route_compose(
     };
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         &sender.run_id,
         event_type::COMPOSE_REQUESTED,
         Some(&sender.step_exec_id),
@@ -481,13 +482,13 @@ fn orch_index(orch_step_id: &str) -> Option<usize> {
 /// Journal a `wf_compose` rejection (spec §10.3): never a silent drop.
 fn journal_compose_denied(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     reason: &str,
 ) {
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         &sender.run_id,
         event_type::COMPOSE_DENIED,
         Some(&sender.step_exec_id),

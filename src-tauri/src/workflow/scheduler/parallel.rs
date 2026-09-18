@@ -139,7 +139,7 @@ pub(crate) async fn run_parallel_stage(
             let conn = ctx.db.lock();
             journal_event(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 event_type::BUDGET_EXCEEDED,
                 None,
@@ -221,7 +221,7 @@ pub(crate) async fn run_parallel_stage(
         queue.push_back(ChildCtx {
             db: ctx.db.clone(),
             driver: ctx.driver.clone(),
-            app: ctx.app.clone(),
+            engine: ctx.engine.clone(),
             base_deadlines: ctx.deadlines.clone(),
             eff: eff.clone(),
             run_id: run_id.to_string(),
@@ -302,7 +302,7 @@ pub(crate) async fn run_parallel_stage(
                     let conn = ctx.db.lock();
                     journal_event(
                         &conn,
-                        ctx.app.as_ref(),
+                        ctx.engine.as_ref(),
                         run_id,
                         event_type::INTEGRATE_SKIPPED,
                         None,
@@ -352,13 +352,13 @@ pub(crate) async fn run_parallel_stage(
         let conn = ctx.db.lock();
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             event_type::RUN_CANCELED,
             None,
             &json!({}),
         );
-        set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
+        set_status(&conn, ctx.engine.as_ref(), run_id, "canceled", None, None);
         return Ok(StageFlow::Stop);
     }
 
@@ -368,7 +368,7 @@ pub(crate) async fn run_parallel_stage(
                 let conn = ctx.db.lock();
                 fail_run(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     &format!("parallel stage failed: {reason}"),
                 );
@@ -411,7 +411,7 @@ pub(crate) async fn run_parallel_stage(
                 let conn = ctx.db.lock();
                 fail_run(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     &format!("all parallel children failed: {}", failures.join("; ")),
                 );
@@ -522,7 +522,7 @@ async fn begin_merge_stage(
         let conn = ctx.db.lock();
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             event_type::MERGE_STARTED,
             None,
@@ -565,7 +565,7 @@ pub(crate) async fn drive_merges(
                 let conn = ctx.db.lock();
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::MERGE_DONE,
                     None,
@@ -589,7 +589,7 @@ pub(crate) async fn drive_merges(
                 set_cursor(&conn, run_id, cursor);
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::MERGE_CONFLICT,
                     None,
@@ -601,7 +601,7 @@ pub(crate) async fn drive_merges(
                 );
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::RUN_PAUSED,
                     None,
@@ -609,7 +609,7 @@ pub(crate) async fn drive_merges(
                 );
                 set_status(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     "paused",
                     Some("conflict"),
@@ -709,7 +709,7 @@ async fn resume_merge_stage(
         let conn = ctx.db.lock();
         set_status(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             "paused",
             Some("conflict"),
@@ -746,7 +746,7 @@ async fn resume_merge_stage(
                 set_cursor(&conn, run_id, cursor);
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::RUN_PAUSED,
                     None,
@@ -754,7 +754,7 @@ async fn resume_merge_stage(
                 );
                 set_status(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     "paused",
                     Some("conflict"),
@@ -965,7 +965,7 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
                 let conn = c.db.lock();
                 build_spawn_req(
                     &conn,
-                    c.app.as_ref(),
+                    c.engine.as_ref(),
                     &c.agent_spec,
                     &c.fork_base,
                     &c.repo,
@@ -994,7 +994,7 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
             // visible while they run rather than only once they finish.
             journal: Some(attempt::AttemptJournal {
                 db: c.db.clone(),
-                app: c.app.clone(),
+                engine: c.engine.clone(),
                 run_id: c.run_id.clone(),
             }),
         };
@@ -1029,7 +1029,7 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
                         let msg = format!("wf: parallel child {}", c.step.id);
                         match ferry_committed(
                             &c.db,
-                            c.app.as_ref(),
+                            c.engine.as_ref(),
                             &c.run_id,
                             &exec_id,
                             &msg,
@@ -1101,7 +1101,7 @@ async fn drive_child(c: ChildCtx, stage_entry_sha: Option<String>) -> ChildResul
                 // Abandon the row and archive the chat.
                 {
                     let conn = c.db.lock();
-                    abandon_exec(&conn, c.app.as_ref(), &c.run_id, &exec_id, "canceled");
+                    abandon_exec(&conn, c.engine.as_ref(), &c.run_id, &exec_id, "canceled");
                 }
                 if let Some(agent_id) = &result.agent_id {
                     let _ = c.driver.archive(agent_id).await;
@@ -1216,7 +1216,7 @@ fn nonblank(value: &Option<String>) -> Option<String> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_spawn_req(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     agent_spec: &AgentSpec,
     fork_base: &str,
     repo: &Path,
@@ -1240,7 +1240,7 @@ pub(crate) fn build_spawn_req(
         if let Some(ca_id) = &deliverables.missing_custom_agent {
             journal_event(
                 conn,
-                app,
+                engine,
                 run_id,
                 event_type::CUSTOM_AGENT_MISSING,
                 Some(exec_id),
@@ -1250,7 +1250,7 @@ pub(crate) fn build_spawn_req(
         if !deliverables.missing_skills.is_empty() {
             journal_event(
                 conn,
-                app,
+                engine,
                 run_id,
                 event_type::SKILLS_MISSING,
                 Some(exec_id),
@@ -1260,7 +1260,7 @@ pub(crate) fn build_spawn_req(
         if !deliverables.missing_mcp_servers.is_empty() {
             journal_event(
                 conn,
-                app,
+                engine,
                 run_id,
                 event_type::MCP_SERVERS_MISSING,
                 Some(exec_id),
@@ -1273,7 +1273,7 @@ pub(crate) fn build_spawn_req(
         if !deliverables.ambiguous_skills.is_empty() {
             journal_event(
                 conn,
-                app,
+                engine,
                 run_id,
                 event_type::SKILLS_AMBIGUOUS,
                 Some(exec_id),
@@ -1283,7 +1283,7 @@ pub(crate) fn build_spawn_req(
         if !deliverables.ambiguous_mcp_servers.is_empty() {
             journal_event(
                 conn,
-                app,
+                engine,
                 run_id,
                 event_type::MCP_SERVERS_AMBIGUOUS,
                 Some(exec_id),

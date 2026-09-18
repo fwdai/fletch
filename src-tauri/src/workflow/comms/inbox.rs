@@ -2,10 +2,12 @@
 //! queued for the orchestrator's attention, auto-forward children's and
 //! sub-runs' terminal outcomes, and queue engine-authored asks/rejections.
 
+use std::sync::Arc;
+
 use rusqlite::{params, Connection};
 use serde_json::json;
-use tauri::AppHandle;
 
+use crate::host::EngineCtx;
 use crate::workflow::now_ms;
 use crate::workflow::scheduler;
 use crate::workflow::types::{event_type, Message, MessageKind};
@@ -110,7 +112,7 @@ pub(in crate::workflow) fn compose_orchestrator_inbox(items: &[InboxItem]) -> St
 /// as a routed message; picked up on the orchestrator's next turn.
 pub(in crate::workflow) fn forward_lifecycle(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     run_id: &str,
     orch_exec: &str,
     child_exec: &str,
@@ -131,7 +133,7 @@ pub(in crate::workflow) fn forward_lifecycle(
     );
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         run_id,
         event_type::MESSAGE_ROUTED,
         Some(child_exec),
@@ -147,7 +149,7 @@ pub(in crate::workflow) fn forward_lifecycle(
 /// sub-run.
 pub(in crate::workflow) fn forward_subrun_finished(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     run_id: &str,
     orch_exec: &str,
     sub_run_id: &str,
@@ -168,7 +170,7 @@ pub(in crate::workflow) fn forward_subrun_finished(
     );
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         run_id,
         event_type::MESSAGE_ROUTED,
         Some(orch_exec),

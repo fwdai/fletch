@@ -21,13 +21,13 @@ pub(crate) async fn cancel_run(ctx: &RunCtx, run_id: &str) {
     let conn = ctx.db.lock();
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type::RUN_CANCELED,
         None,
         &json!({}),
     );
-    set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
+    set_status(&conn, ctx.engine.as_ref(), run_id, "canceled", None, None);
 }
 
 /// Execute one loop block (spec §6.6): run the body sequence once per iteration,
@@ -63,7 +63,7 @@ pub(crate) async fn run_loop(
             let conn = ctx.db.lock();
             journal_event(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 event_type::LOOP_ITERATION,
                 None,
@@ -82,7 +82,7 @@ pub(crate) async fn run_loop(
                 let conn = ctx.db.lock();
                 fail_run(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     "nested non-step blocks inside a loop are not supported yet",
                 );
@@ -155,7 +155,7 @@ pub(crate) async fn run_loop(
     let conn = ctx.db.lock();
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type::LOOP_MAX_REACHED,
         None,
@@ -219,7 +219,7 @@ pub(crate) async fn execute_step(
                 let conn = ctx.db.lock();
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::BUDGET_EXCEEDED,
                     None,
@@ -292,7 +292,7 @@ pub(crate) async fn execute_step(
                 let conn = ctx.db.lock();
                 build_spawn_req(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     agent_spec,
                     fork_ref,
                     env.repo,
@@ -324,7 +324,7 @@ pub(crate) async fn execute_step(
             // as it goes, so the monitor shows this step while it runs.
             journal: Some(attempt::AttemptJournal {
                 db: ctx.db.clone(),
-                app: ctx.app.clone(),
+                engine: ctx.engine.clone(),
                 run_id: run_id.to_string(),
             }),
         };
@@ -393,7 +393,7 @@ pub(crate) async fn execute_step(
                             let conn = ctx.db.lock();
                             journal_event(
                                 &conn,
-                                ctx.app.as_ref(),
+                                ctx.engine.as_ref(),
                                 run_id,
                                 event_type::GATE_EVIDENCE,
                                 Some(&exec_id),
@@ -424,7 +424,7 @@ pub(crate) async fn execute_step(
                             if give_up {
                                 fail_run(
                                     &conn,
-                                    ctx.app.as_ref(),
+                                    ctx.engine.as_ref(),
                                     run_id,
                                     &format!("ferry failed: {e}"),
                                 );
@@ -486,7 +486,7 @@ pub(crate) async fn execute_step(
                 let conn = ctx.db.lock();
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::GATE_EVIDENCE,
                     Some(&exec_id),
@@ -494,7 +494,7 @@ pub(crate) async fn execute_step(
                 );
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::RUN_PAUSED,
                     Some(&exec_id),
@@ -502,7 +502,7 @@ pub(crate) async fn execute_step(
                 );
                 set_status(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     "paused",
                     Some("approval"),
@@ -541,7 +541,7 @@ pub(crate) async fn execute_step(
                 let conn = ctx.db.lock();
                 journal_event(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     event_type::RUN_PAUSED,
                     Some(&exec_id),
@@ -549,7 +549,7 @@ pub(crate) async fn execute_step(
                 );
                 set_status(
                     &conn,
-                    ctx.app.as_ref(),
+                    ctx.engine.as_ref(),
                     run_id,
                     "paused",
                     Some("blocked_gate"),
@@ -570,7 +570,7 @@ pub(crate) async fn execute_step(
                     if error == "stalled" {
                         journal_event(
                             &conn,
-                            ctx.app.as_ref(),
+                            ctx.engine.as_ref(),
                             run_id,
                             event_type::RUN_PAUSED,
                             Some(&exec_id),
@@ -578,14 +578,14 @@ pub(crate) async fn execute_step(
                         );
                         set_status(
                             &conn,
-                            ctx.app.as_ref(),
+                            ctx.engine.as_ref(),
                             run_id,
                             "paused",
                             Some("stalled"),
                             None,
                         );
                     } else {
-                        fail_run(&conn, ctx.app.as_ref(), run_id, &error);
+                        fail_run(&conn, ctx.engine.as_ref(), run_id, &error);
                     }
                     return Ok(StepFlow::Halt);
                 }
@@ -601,7 +601,13 @@ pub(crate) async fn execute_step(
                 }
                 {
                     let conn = ctx.db.lock();
-                    abandon_exec(&conn, ctx.app.as_ref(), run_id, &exec_id, "budget_exceeded");
+                    abandon_exec(
+                        &conn,
+                        ctx.engine.as_ref(),
+                        run_id,
+                        &exec_id,
+                        "budget_exceeded",
+                    );
                 }
                 finish_budget_pause(ctx, run_id, Some(&exec_id), ledger);
                 return Ok(StepFlow::Halt);
@@ -615,16 +621,16 @@ pub(crate) async fn execute_step(
                 // the archive await.
                 {
                     let conn = ctx.db.lock();
-                    abandon_exec(&conn, ctx.app.as_ref(), run_id, &exec_id, "canceled");
+                    abandon_exec(&conn, ctx.engine.as_ref(), run_id, &exec_id, "canceled");
                     journal_event(
                         &conn,
-                        ctx.app.as_ref(),
+                        ctx.engine.as_ref(),
                         run_id,
                         event_type::RUN_CANCELED,
                         None,
                         &json!({}),
                     );
-                    set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
+                    set_status(&conn, ctx.engine.as_ref(), run_id, "canceled", None, None);
                 }
                 if let Some(agent_id) = &result.agent_id {
                     let _ = ctx.driver.archive(agent_id).await;
@@ -809,7 +815,7 @@ pub(crate) fn check_resumable(conn: &Connection, run_id: &str, action: &str) -> 
 /// `false`. Runs entirely under the caller's connection lock.
 pub(crate) fn reject_apply(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     run_id: &str,
     note: &str,
 ) -> Result<bool> {
@@ -835,7 +841,7 @@ pub(crate) fn reject_apply(
     // Record the human decision on the timeline (spec §7.1).
     journal_event(
         conn,
-        app,
+        engine,
         run_id,
         event_type::DECISION,
         Some(&exec_id),
@@ -856,18 +862,18 @@ pub(crate) fn reject_apply(
     // counting as awaiting_approval and its ferried (now discarded) ref is never
     // mistaken for the line's fork source (`resume_line_state` only follows `done`
     // execs).
-    abandon_exec(conn, app, run_id, &exec_id, "rejected");
+    abandon_exec(conn, engine, run_id, &exec_id, "rejected");
 
     if exhausted {
         journal_event(
             conn,
-            app,
+            engine,
             run_id,
             event_type::RUN_PAUSED,
             Some(&exec_id),
             &json!({ "reason": "blocked_gate", "detail": note }),
         );
-        set_status(conn, app, run_id, "paused", Some("blocked_gate"), None);
+        set_status(conn, engine, run_id, "paused", Some("blocked_gate"), None);
         Ok(false)
     } else {
         crate::workflow::comms::queue_rejection(conn, run_id, &exec_id, note);

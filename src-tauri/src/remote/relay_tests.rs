@@ -575,8 +575,10 @@ async fn a_relayed_device_handshakes_and_says_hello() {
         s.devices.first().is_some_and(|d| d.connected)
     })
     .await;
-    host.state
-        .forward_event("agent:status", r#"{"agentId":"arabia","status":"running"}"#);
+    host.state.forward_event(
+        "agent:status",
+        &json!({ "agentId": "arabia", "status": "running" }),
+    );
     let event = conn.next_json(&mut link).await;
     assert_eq!(event["event"], "agent:status");
 

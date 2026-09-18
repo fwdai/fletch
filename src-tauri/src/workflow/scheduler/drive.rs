@@ -39,7 +39,7 @@ pub(crate) fn deregister_driver(m: &mut HashMap<String, RunHandle>, run_id: &str
 pub(crate) fn spawn_drive_task(
     db: Db,
     driver: Arc<dyn AgentDriver>,
-    app: AppHandle,
+    engine: Arc<EngineCtx>,
     runs: Arc<Mutex<HashMap<String, RunHandle>>>,
     run_id: String,
 ) {
@@ -72,14 +72,14 @@ pub(crate) fn spawn_drive_task(
     let ctx = RunCtx {
         db: db.clone(),
         driver: driver.clone(),
-        app: Some(app.clone()),
+        engine: Some(engine.clone()),
         cancel,
         pending_ask,
         deadlines: Deadlines::default(),
         runs: Some(runs.clone()),
     };
     let id = run_id.clone();
-    let join = tauri::async_runtime::spawn(async move {
+    let join = crate::host::spawn(async move {
         // The one routing site (see `docs/workflow-kernel-layers.md`): a flat
         // sequence of steps with only commit/verdict gates runs on the
         // sequential kernel; every richer spec stays on this engine. The
@@ -93,11 +93,11 @@ pub(crate) fn spawn_drive_task(
     });
     // Panic containment (§6.1): a panicked/aborted drive task marks its run
     // failed so it is never left `running` with no live driver.
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         let panicked = join.await.is_err();
         if panicked {
             let conn = db.lock();
-            fail_run(&conn, Some(&app), &run_id, "internal scheduler error");
+            fail_run(&conn, Some(&engine), &run_id, "internal scheduler error");
         }
         // Deregister under the same lock as the respawn-flag read so a request
         // can't slip between the two. The clear always happens here; if a
@@ -112,7 +112,7 @@ pub(crate) fn spawn_drive_task(
             respawn.load(Ordering::SeqCst) && !panicked
         };
         if respawn_requested {
-            spawn_drive_task(db, driver, app, runs, run_id);
+            spawn_drive_task(db, driver, engine, runs, run_id);
         }
     });
 }
@@ -124,7 +124,7 @@ pub(crate) fn spawn_drive_task(
 pub(crate) async fn drive_run(ctx: &RunCtx, run_id: &str) {
     if let Err(e) = drive_run_inner(ctx, run_id).await {
         let conn = ctx.db.lock();
-        fail_run(&conn, ctx.app.as_ref(), run_id, &e.to_string());
+        fail_run(&conn, ctx.engine.as_ref(), run_id, &e.to_string());
     }
 }
 
@@ -169,13 +169,13 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
         };
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             ev,
             None,
             &json!({ "base_sha": run.base_sha }),
         );
-        set_status(&conn, ctx.app.as_ref(), run_id, "running", None, None);
+        set_status(&conn, ctx.engine.as_ref(), run_id, "running", None, None);
     }
 
     // Resume: abandon any attempt left non-terminal by a prior driver (§6.4).
@@ -233,13 +233,13 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
             let conn = ctx.db.lock();
             journal_event(
                 &conn,
-                ctx.app.as_ref(),
+                ctx.engine.as_ref(),
                 run_id,
                 event_type::RUN_CANCELED,
                 None,
                 &json!({}),
             );
-            set_status(&conn, ctx.app.as_ref(), run_id, "canceled", None, None);
+            set_status(&conn, ctx.engine.as_ref(), run_id, "canceled", None, None);
             return Ok(());
         }
 
@@ -371,13 +371,13 @@ async fn drive_run_inner(ctx: &RunCtx, run_id: &str) -> Result<()> {
     let conn = ctx.db.lock();
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type::RUN_DONE,
         None,
         &json!({}),
     );
-    set_status(&conn, ctx.app.as_ref(), run_id, "done", None, None);
+    set_status(&conn, ctx.engine.as_ref(), run_id, "done", None, None);
     Ok(())
 }
 
@@ -393,7 +393,7 @@ pub(crate) async fn ferry_step(
 ) -> Result<String> {
     ferry_committed(
         &ctx.db,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         exec_id,
         message,
@@ -403,12 +403,12 @@ pub(crate) async fn ferry_step(
     .await
 }
 
-/// Boundary-commit + pin + ferry, taking the raw db/app handles so it can also be
-/// called from a parallel child's own task (which owns those handles rather than
-/// a `&RunCtx`). Journals `boundary_commit`.
+/// Boundary-commit + pin + ferry, taking the raw db/engine handles so it can also
+/// be called from a parallel child's own task (which owns those handles rather
+/// than a `&RunCtx`). Journals `boundary_commit`.
 pub(crate) async fn ferry_committed(
     db: &Db,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     run_id: &str,
     exec_id: &str,
     message: &str,
@@ -420,7 +420,7 @@ pub(crate) async fn ferry_committed(
         let conn = db.lock();
         journal_event(
             &conn,
-            app,
+            engine,
             run_id,
             event_type::BOUNDARY_COMMIT,
             Some(exec_id),
@@ -472,7 +472,7 @@ pub(crate) async fn pause_question(
     let conn = ctx.db.lock();
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type::ATTEMPT_ABANDONED,
         Some(exec_id),
@@ -480,7 +480,7 @@ pub(crate) async fn pause_question(
     );
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type::RUN_PAUSED,
         Some(exec_id),
@@ -488,7 +488,7 @@ pub(crate) async fn pause_question(
     );
     set_status(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         "paused",
         Some("question"),
@@ -547,7 +547,7 @@ pub(crate) async fn finalize_run(
     let conn = ctx.db.lock();
     journal_event(
         &conn,
-        ctx.app.as_ref(),
+        ctx.engine.as_ref(),
         run_id,
         event_type::FINALIZE_PUSHED,
         None,
@@ -556,7 +556,7 @@ pub(crate) async fn finalize_run(
     if let Some(url) = outcome.pr_url {
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             event_type::FINALIZE_PR,
             None,
@@ -566,11 +566,11 @@ pub(crate) async fn finalize_run(
         // history; the columns are the queryable fact. The roadmap merge sweep
         // needs the latter — "every `in_review` item's PR number" has to be one
         // read, not a journal scan per run per tick.
-        set_pr(&conn, ctx.app.as_ref(), run_id, outcome.pr_number, &url);
+        set_pr(&conn, ctx.engine.as_ref(), run_id, outcome.pr_number, &url);
     } else if let Some(err) = outcome.pr_error {
         journal_event(
             &conn,
-            ctx.app.as_ref(),
+            ctx.engine.as_ref(),
             run_id,
             event_type::FINALIZE_PR,
             None,
@@ -644,7 +644,7 @@ async fn abandon_stale_attempts(ctx: &RunCtx, run_id: &str) {
             let _ = ctx.driver.stop(a).await;
         }
         let conn = ctx.db.lock();
-        abandon_exec(&conn, ctx.app.as_ref(), run_id, &exec_id, "resume");
+        abandon_exec(&conn, ctx.engine.as_ref(), run_id, &exec_id, "resume");
     }
 }
 

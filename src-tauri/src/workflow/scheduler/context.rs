@@ -1,13 +1,13 @@
 use super::*;
 
 /// Everything the drive loop needs, decoupled from the service so it is testable
-/// with a `MockDriver`, a temp DB, and no `AppHandle`.
+/// with a `MockDriver`, a temp DB, and no engine ctx.
 pub(crate) struct RunCtx {
     pub(crate) db: Db,
     pub(crate) driver: Arc<dyn AgentDriver>,
     /// `None` under test — the DB is the source of truth; frontend emits are
     /// skipped.
-    pub(crate) app: Option<AppHandle>,
+    pub(crate) engine: Option<Arc<EngineCtx>>,
     pub(crate) cancel: Arc<AtomicBool>,
     /// The run's pending-ask flag (§10.4), shared with the [`RunHandle`] so the
     /// comms router can raise it; threaded into each attempt.
@@ -83,7 +83,7 @@ pub(crate) struct ChildResult {
 pub(crate) struct ChildCtx {
     pub(crate) db: Db,
     pub(crate) driver: Arc<dyn AgentDriver>,
-    pub(crate) app: Option<AppHandle>,
+    pub(crate) engine: Option<Arc<EngineCtx>>,
     pub(crate) base_deadlines: Deadlines,
     pub(crate) eff: EffectiveBudgets,
     pub(crate) run_id: String,

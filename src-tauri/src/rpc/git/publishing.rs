@@ -18,7 +18,7 @@ impl GitDispatcher {
         if !approval::enabled() {
             return None;
         }
-        let Some((app, agent_id)) = &self.approval else {
+        let Some((sink, agent_id)) = &self.approval else {
             return Some(format!(
                 "not publishing ({detail}): publish confirmation is enabled but this \
                  session has no window to ask through"
@@ -27,7 +27,7 @@ impl GitDispatcher {
         // `None` for the primary: the frontend keys it unsuffixed, and a mismatched
         // key strands an unattended push on a prompt nobody answers.
         let repo = approval_repo(repo, self.default_subdir.as_deref());
-        approval::refuse_unless_approved(app, agent_id, op, repo, detail).await
+        approval::refuse_unless_approved(sink.as_ref(), agent_id, op, repo, detail).await
     }
 
     pub(super) async fn open_pr(&self, id: &str, args: &Value) -> (Response, Vec<RpcEvent>) {

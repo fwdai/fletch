@@ -3,9 +3,10 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::error::Result;
+use crate::host::EngineCtx;
 use crate::managed_session::ToolUseBehavior;
 use crate::supervisor::{SpawnRequest, Supervisor};
 use crate::workspace::{AgentRecord, AgentView, TrackedRepo};
@@ -16,7 +17,7 @@ use crate::workspace::{AgentRecord, AgentView, TrackedRepo};
 #[tauri::command]
 pub async fn spawn_agent(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     view: Option<AgentView>,
     repo_path: String,
     provider: Option<String>,
@@ -36,7 +37,7 @@ pub async fn spawn_agent(
 ) -> Result<AgentRecord> {
     spawn_agent_impl(
         supervisor.inner().clone(),
-        app,
+        ctx.inner().clone(),
         view,
         repo_path,
         provider,
@@ -61,7 +62,7 @@ pub async fn spawn_agent(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn spawn_agent_impl(
     sup: Arc<Supervisor>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     view: Option<AgentView>,
     repo_path: String,
     provider: Option<String>,
@@ -77,7 +78,7 @@ pub(crate) async fn spawn_agent_impl(
     purpose: Option<String>,
 ) -> Result<AgentRecord> {
     sup.spawn_agent(
-        app,
+        ctx,
         SpawnRequest {
             view: view.unwrap_or_default(),
             repo_path: PathBuf::from(repo_path),
@@ -123,7 +124,7 @@ pub(crate) async fn spawn_agent_impl(
 #[tauri::command]
 pub async fn fork_agent(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     parent_id: String,
     code: crate::supervisor::ForkCode,
     context: crate::supervisor::ForkContext,
@@ -132,7 +133,7 @@ pub async fn fork_agent(
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
     sup.fork_agent(
-        app,
+        ctx.inner().clone(),
         &parent_id,
         code,
         context,
@@ -145,12 +146,12 @@ pub async fn fork_agent(
 #[tauri::command]
 pub fn write_to_agent(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
     data: String,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.write_to_agent(&app, &agent_id, data.as_bytes())
+    sup.write_to_agent(ctx.inner(), &agent_id, data.as_bytes())
 }
 
 /// Returns `true` when the follow-up was enqueued for a later turn boundary
@@ -158,14 +159,14 @@ pub fn write_to_agent(
 #[tauri::command]
 pub fn send_user_message(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
     turn_id: String,
     text: String,
     attachments: Vec<String>,
 ) -> Result<bool> {
     let sup = supervisor.inner().clone();
-    sup.send_user_message(&app, &agent_id, &turn_id, &text, &attachments)
+    sup.send_user_message(ctx.inner(), &agent_id, &turn_id, &text, &attachments)
 }
 
 #[tauri::command]
@@ -195,55 +196,56 @@ pub fn resize_agent(
 #[tauri::command]
 pub async fn resume_agent(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.resume_agent(app, &agent_id).await
+    sup.resume_agent(ctx.inner().clone(), &agent_id).await
 }
 
 #[tauri::command]
 pub async fn switch_view(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
     view: AgentView,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.switch_view(app, &agent_id, view).await
+    sup.switch_view(ctx.inner().clone(), &agent_id, view).await
 }
 
 #[tauri::command]
 pub async fn stop_agent(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.stop_agent(app, &agent_id).await
+    sup.stop_agent(ctx.inner().clone(), &agent_id).await
 }
 
 #[tauri::command]
 pub async fn set_agent_effort(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
     effort: Option<String>,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.set_agent_effort(&app, &agent_id, effort.as_deref())
+    sup.set_agent_effort(ctx.inner(), &agent_id, effort.as_deref())
         .await
 }
 
 #[tauri::command]
 pub async fn set_agent_model(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
     model: Option<String>,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.set_agent_model(&app, &agent_id, model.as_deref()).await
+    sup.set_agent_model(ctx.inner(), &agent_id, model.as_deref())
+        .await
 }
 
 #[tauri::command]
@@ -255,31 +257,31 @@ pub async fn discard_agent(supervisor: State<'_, Arc<Supervisor>>, agent_id: Str
 #[tauri::command]
 pub async fn archive_agent(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.archive_agent(app, &agent_id).await
+    sup.archive_agent(ctx.inner().clone(), &agent_id).await
 }
 
 #[tauri::command]
 pub async fn restore_agent(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.restore_agent(app, &agent_id).await
+    sup.restore_agent(ctx.inner().clone(), &agent_id).await
 }
 
 #[tauri::command]
 pub async fn add_repo_to_agent(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
     repo_path: String,
 ) -> Result<TrackedRepo> {
     let sup = supervisor.inner().clone();
-    sup.add_repo_to_agent(app, &agent_id, PathBuf::from(repo_path))
+    sup.add_repo_to_agent(ctx.inner().clone(), &agent_id, PathBuf::from(repo_path))
         .await
 }

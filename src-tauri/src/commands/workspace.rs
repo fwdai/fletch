@@ -3,9 +3,10 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::error::Result;
+use crate::host::EngineCtx;
 use crate::names;
 use crate::new_project;
 use crate::supervisor::Supervisor;
@@ -49,11 +50,14 @@ pub(crate) fn allocate_draft_name_impl(
 /// agents, checkouts, and history.
 #[tauri::command]
 pub async fn add_workspace_repo(
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     supervisor: State<'_, Arc<Supervisor>>,
     repo_path: String,
 ) -> Result<Workspace> {
-    announce_workspace(&app, add_workspace_repo_impl(&supervisor, repo_path).await)
+    announce_workspace(
+        ctx.sink.as_ref(),
+        add_workspace_repo_impl(&supervisor, repo_path).await,
+    )
 }
 
 /// Shared with the remote dispatcher, so a folder pinned from a phone gets the
@@ -71,13 +75,13 @@ pub(crate) async fn add_workspace_repo_impl(
 /// every other view — the desktop window, each paired phone — reloads it rather
 /// than waiting for its next refresh. The caller still applies the returned
 /// `Workspace` itself; the event is for everyone else. Kept out of the `_impl`
-/// functions so the remote tests can drive those without a Tauri app.
+/// functions so the remote tests can drive those without a sink.
 pub(crate) fn announce_workspace<T, E>(
-    app: &AppHandle,
+    sink: &dyn crate::host::EventSink,
     result: std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
     if result.is_ok() {
-        crate::supervisor::emit_workspace_changed(app);
+        crate::supervisor::emit_workspace_changed(sink);
     }
     result
 }
