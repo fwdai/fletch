@@ -590,7 +590,7 @@ cannot start before 13.
 
 Kept current as PRs open and merge. Status legend: `[x]` merged to `main`,
 `[o]` PR open, `[~]` in progress on a branch, `[ ]` not started. Last update
-2026-09-19.
+2026-09-19 (boot PR #762 open; fletch-core split in progress).
 
 ### 6.1 v1 scope (§5.2)
 
@@ -604,11 +604,11 @@ Kept current as PRs open and merge. Status legend: `[x]` merged to `main`,
 
 **Phase 2: crates**
 - [x] 2a `crates/fletch-proto` (keys, noise, dial, relay framing, test vector); both apps depend by path; no Cargo workspace; CI gate. PR #752.
-- [ ] 2b `crates/fletch-core`: move `database`, `workspace`, `git`, `github`, `agent`, `sandbox`, `codegraph`, `rpc`, `host`, `supervisor`, `workflow`, `roadmap`, `remote` (minus Tauri commands) behind `pub use` shims; platform gates for `seatbelt.rs`/`keychain.rs`; `cargo tree -i tauri` empty; CI gate.
-- [ ] 2c `_impl` split of the 48 `#[tauri::command]` fns in `workflow/` and `roadmap/` (needed by 2b and by any later op registry).
+- [~] 2b `crates/fletch-core`: move `database`, `workspace`, `git`, `github`, `agent`, `sandbox`, `codegraph`, `rpc`, `host`, `supervisor`, `workflow`, `roadmap`, `remote` (minus Tauri commands) behind `pub use` shims; dictation ops via an optional dispatcher extension; platform gates; `cargo tree -i tauri` empty; CI gate. Branch `refactor/fletch-core-crate` off #762 (agent running). Must precede 3b: a binary depending on the Tauri app crate would pull webkit into the Linux build.
+- [~] 2c `_impl` split of the 48 `#[tauri::command]` fns in `workflow/` and `roadmap/` (same PR as 2b).
 
 **Phase 3: fletch-host**
-- [~] 3a `host::boot(BootConfig) -> Engine` extracted from Tauri `setup`; dictation arms decoupled from `AppHandle`. Branch `refactor/engine-boot` off `main` (agent running).
+- [o] 3a `host::boot(BootConfig) -> Engine` extracted from Tauri `setup`; dictation arms read `ctx.db` instead of an `AppHandle`; `BootConfig` hooks for DB recovery dialog, activity monitor, exit path. PR #762 (base `main`).
 - [ ] 3b `crates/fletch-host` binary: `serve [--data-dir] [--port] [--relay|--no-relay] [--name]`, `pair` (URL + QR), `devices list|revoke`, `status`, `approvals list`, `approve <id> [--deny]`, `github login`, `project add|clone`; admin Unix socket `<data_dir>/host.sock` 0600; SIGTERM path shared with desktop.
 - [ ] 3c headless macOS smoke test (free checkpoint): `fletch-host serve` + phone pair on this Mac.
 - [ ] 3d Linux: Docker/Podman default when no setting, UID mapping (`sandbox/docker/engine/mod.rs:53` TODO), `bin_resolve.rs:185` `/bin/zsh` → `$SHELL`/`sh -lc`, Linuxbrew path, XDG data dir, `packaging/fletch-host.service`, release job for `x86_64-unknown-linux-gnu` + `aarch64-unknown-linux-gnu` (+ `aarch64-apple-darwin`).
