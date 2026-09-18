@@ -590,7 +590,9 @@ cannot start before 13.
 
 Kept current as PRs open and merge. Status legend: `[x]` merged to `main`,
 `[o]` PR open, `[~]` in progress on a branch, `[ ]` not started. Last update
-2026-09-19, night: everything in v1 merged except the Linux PR (open) and the follow-ups PR (in progress).
+2026-09-19, late: all v1 code merged (#749–#768). Three hardening PRs open
+(#770, #771, #773). Left in v1: the three verification lines (3c, 3e, manual
+pass), which need a real machine and a phone.
 
 ### 6.1 v1 scope (§5.2)
 
@@ -608,11 +610,18 @@ Kept current as PRs open and merge. Status legend: `[x]` merged to `main`,
 - [x] 2c `_impl` split of the 48 `#[tauri::command]` fns in `workflow/` and `roadmap/` (+18 the remote dispatcher needs); 212 handler names unchanged. PR #764.
 
 **Phase 3: fletch-host**
-- [o] 3a `host::boot(BootConfig) -> Engine` extracted from Tauri `setup`; dictation arms read `ctx.db` instead of an `AppHandle`; `BootConfig` hooks for DB recovery dialog, activity monitor, exit path. PR #762 (base `main`).
+- [x] 3a `host::boot(BootConfig) -> Engine` extracted from Tauri `setup`; dictation arms read `ctx.db` instead of an `AppHandle`; `BootConfig` hooks for DB recovery dialog, activity monitor, exit path. PR #762.
 - [x] 3b `crates/fletch-host` binary: `serve [--data-dir] [--port] [--relay|--no-relay] [--name]` (`RemoteBoot::Headless`, `NullSink` host sink, settings-table secrets, Docker/Podman default off macOS), `pair` (URL + QR), `devices list|revoke`, `status`, `approvals list`, `approve <id> [--deny]`, `github login`, `project add|clone`; admin Unix socket `<data_dir>/host.sock` 0600 with the wire envelope; default data dir `dirs::data_dir()/fletch-host`; e2e test pairs a `fletch-proto` client against a booted headless engine. PR #766.
 - [ ] 3c headless macOS smoke test (free checkpoint): `fletch-host serve` + phone pair on this Mac.
-- [o] 3d Linux: Docker UID mapping (`--user uid:gid` + 1777 tmpfs home, Linux only, skipped for rootless Docker; Podman untouched on purpose) with an opt-in real-Docker acceptance test; login shell from `$SHELL` → `/bin/zsh` → `/bin/sh`; Linuxbrew path; host data dir `dev` split and its own checkout/RPC roots under that data dir; QR for `pair` (feature `qr`, default on); `packaging/fletch-host.service` + `com.fletch.host.plist`; release job `host` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` (arm runner), `aarch64-apple-darwin`. Docker/Podman default when no setting landed in #766. PR: `feat/fletch-host-linux` (base `main`).
+- [o] 3d Linux: Docker UID mapping (`--user uid:gid` + 1777 tmpfs home, Linux only, skipped for rootless Docker; Podman untouched on purpose) with an opt-in real-Docker acceptance test; login shell from `$SHELL` → `/bin/zsh` → `/bin/sh`; Linuxbrew path; host data dir `dev` split and its own checkout/RPC roots under that data dir; QR for `pair` (feature `qr`, default on); `packaging/fletch-host.service` + `com.fletch.host.plist`; release job `host` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` (arm runner), `aarch64-apple-darwin`. Docker/Podman default when no setting landed in #766. Review fixes in the same PR: owned-root sweep via `StateRoots`, state roots per data dir, one product version checked by `scripts/check-version.sh`, rootless probe cached only on success. PR #767.
 - [ ] 3e Acceptance: Ubuntu + Docker + `claude` logged in over SSH; phone pairs (LAN and relay), spawns, approves a push, opens a PR; `kill -TERM` mid-run then restart resumes.
+
+**Hardening after v1 (gaps the merged PRs documented)**
+- [x] Follow-ups: `merge_pr`/`discard_agent`/`restore_agent`/`get_all_git_meta`/`get_pr_threads` on the wire or gated; this Mac's name at pairing; sandbox OAuth commands pinned local; `publish:approval-resolved` event; engine facts in `fletch-host status`. PR #768.
+- [o] Git panel working-tree ops on the wire (commit, push, PR, update-branch, conflicts, checks, comments) gated by op name; `delete_branch_agent` withheld on policy; gate enforced in the dispatch, not only the button. PR #770.
+- [o] Seatbelt denies the headless host's `--data-dir` (DB, host key, devices) and re-allows its own `workspaces`/`rpc` roots and read-only `git-dist`; desktop profile byte-identical. Acceptance test passed under real `sandbox-exec`. PR #771.
+- [o] The ignored `seatbelt_denies_appsupport_auto_exec` test was vacuous (unquoted path with a space in `sh -c`); quoted. Needs one `--ignored` run from a normal shell to confirm invariant 4 enforces. PR #773.
+- [ ] Known small gaps, not started: desktop's own `git-dist` is read-denied inside the agent sandbox (pre-existing); a disabled Git panel button shows no gate reason; `~/.fletch/tools` is shared by every engine on a machine; Cursor's image is unusable in a UID-mapped container on Linux (`/root` is 0700); no passwd entry for a mapped uid ≠ 1000; `refresh_base_freshness` is silent remotely.
 
 **Desktop as client (reduced Phase 6)**
 - [x] Shared TS protocol client moved to `src/remote/`. PR #749.
@@ -624,15 +633,15 @@ Kept current as PRs open and merge. Status legend: `[x]` merged to `main`,
 
 ### 6.2 Deferred (§5.3)
 
-In progress: a follow-ups PR (`feat/remote-followups`) for the small gaps the
-merged PRs documented: `merge_pr`/`discard_agent`/`restore_agent`/`get_all_git_meta`/
-`get_pr_threads` on the wire or gated, this Mac's name at pairing, sandbox OAuth
-commands pinned local, a `publish:approval-resolved` event, engine facts in
-`fletch-host status`.
+- [x] 7 Headless macOS `launchd` plist: shipped as `packaging/com.fletch.host.plist` in PR #767.
 
-Nothing from the deferred table has been started. Item 2 (workflow and
-roadmap ops remotely) is the first to pick up after v1; it becomes table rows
-once 2c exists.
+Nothing else from the deferred table has been started. Suggested order once
+the v1 verification lines pass, by what the two stated goals actually need:
+item 2 (workflow and roadmap ops remotely; the `_impl` split from 2c makes them
+table rows), item 10 (`fletch-host update`, so a cloud host can be upgraded
+without SSH gymnastics), item 6 (Tailscale note, docs only), item 3 (version
+skew notice). Items 13 and 14 (scopes, PTY streams) remain the big parity gap:
+remote agents are structured-view only, with no side shells or Run panel.
 
 ### 6.3 How this work is being run (for whoever picks it up)
 
