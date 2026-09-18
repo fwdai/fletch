@@ -10,22 +10,8 @@ import {
 } from "@/components/RightPanel/primaryActions";
 import { describeMergeGate } from "@/mergeGate";
 import { useAppStore } from "@/store";
-import { type GateName, useGateFor } from "@/store/capabilities";
-
-/** The panel actions that call a git op on the environment's host, by the key
- *  `runAction` dispatches. Everything else the menu offers is either local
- *  (`view-pr`), delegated to the coding agent (`agent-*`), or an op that has
- *  been on the wire since v1 (`push`, `commit-*`, `open-pr`, `archive`) — so
- *  only these can be refused by the host the user is driving. */
-const ACTION_GATES: Partial<Record<string, GateName>> = {
-  merge: "mergePr",
-  pull: "pull",
-  rebase: "rebase",
-  stash: "stash",
-  discard: "discardChanges",
-  abort: "abortMerge",
-  "delete-branch": "deleteBranch",
-};
+import { useGateFor } from "@/store/capabilities";
+import { ACTION_GATES } from "../actionGates";
 
 /** Builds the split-button model for the current state: the action counts, the
  *  primary/secondary actions, the menu `items`, and the selection bookkeeping
