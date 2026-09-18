@@ -22,7 +22,7 @@ import { useAppStore } from "@/store";
 import { usePoll } from "@/util/hooks";
 import { autopilotAgentOn } from "./autopilot";
 import type { AutopilotLogEntry } from "./autopilotLog";
-import { useIsRemoteEnvironment } from "./capabilities";
+import { useGate } from "./capabilities";
 import { checkoutKey, splitCheckoutKey } from "./git";
 
 /** How often to evaluate enrolled checkouts. Slower than the git poll on
@@ -64,16 +64,16 @@ export function autopilotKeys(
 /** Mount once, at the app root. */
 export function useAutopilotSync() {
   // Autopilot is this desktop's loop over this desktop's engine, and it stays
-  // that way while the UI is driving a paired host: its opt-outs live in THIS
-  // Mac's `project_settings` and `settings` rows, keyed by project and agent
-  // ids that mean nothing on another machine, and the rungs it dispatches need
-  // `run_verification` and `fork_agent`, which no host answers
-  // (docs/remote-protocol.md's op table). Left running it would judge a remote
-  // project by a local opt-out and spend the host's agent turns on it.
-  const remote = useIsRemoteEnvironment();
+  // that way while the UI is driving a paired host — a gate like any other
+  // control the active environment cannot offer, with the reason written once
+  // in `GATES.autopilot`. Left running it would judge a remote project by a
+  // local opt-out and spend the host's agent turns on it. The workflow and
+  // roadmap surfaces went on the wire without changing this: the host's own
+  // autonomous loop is the roadmap queue, which runs there.
+  const closed = useGate("autopilot") !== null;
   const keys = useAppStore(
     useShallow((s) =>
-      remote
+      closed
         ? []
         : autopilotKeys(
             s.workspace?.agents ?? [],

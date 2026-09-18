@@ -5,9 +5,12 @@
 //! function that command calls — so a phone and the desktop webview cannot
 //! drift apart in behaviour. Nothing outside [`OPS`] is reachable: `db_*`, the
 //! file mutations, the shell ops, raw PTY input, editor/log/telemetry/provider
-//! ops and the workflow/run surfaces are all off the wire by construction — as
-//! is every roadmap op but the three a phone's planning chat needs (read a
-//! project's items, accept a proposal, discard one).
+//! ops and the `run_*` surface are all off the wire by construction.
+//!
+//! The whole `wf_*` and `roadmap_*` surface is on it (multi-host plan §5.3,
+//! item 2): a paired desktop or phone drives autopilot, workflows and the
+//! roadmap board against a headless host. See [`WITHHELD_WF_ROADMAP_OPS`] for
+//! what the surrounding *flows* still cannot do remotely and why.
 //!
 //! Adding an op is: a row in `docs/remote-protocol.md`, a name in [`OPS`], and
 //! one match arm here — unless it needs to know *which device* is asking, in
@@ -67,6 +70,38 @@ pub const DICTATION_UNAVAILABLE: &str =
 /// maximum of requests outstanding (`server::MAX_IN_FLIGHT`). The request is
 /// answered without being dispatched; the client retries.
 pub const TOO_MANY_IN_FLIGHT: &str = "too many in-flight requests";
+
+/// The error a `wf_*` op gets on a host whose scheduler was never published —
+/// a boot that stopped short, or a test ctx. The ops stay on [`OPS`] (the
+/// scheduler is part of every real boot, desktop or headless), so this is a
+/// failure, not a capability answer like [`DICTATION_UNAVAILABLE`].
+pub const WORKFLOWS_UNAVAILABLE: &str = "this host is not running the workflow scheduler";
+
+/// What the workflow and roadmap *flows* still cannot reach remotely, with the
+/// reason each one stays off. All 48 `wf_*`/`roadmap_*` commands themselves are
+/// exposed — none opens a dialog, touches desktop-only state or is a host
+/// policy decision — so what is left here is the ops those surfaces call from
+/// *other* command families, which keep the exclusions their own family has.
+/// Named rather than merely absent so the withholding is a decision on the
+/// record, as `delete_branch_agent` is. Absence is what makes them unreachable,
+/// so this list drives nothing at runtime — it is the reason, asserted by
+/// `tests::the_withheld_neighbours_of_the_wf_and_roadmap_surface_stay_off`.
+#[cfg(test)]
+pub const WITHHELD_WF_ROADMAP_OPS: &[(&str, &str)] = &[
+    // The workflow composer's `@file` and `#PR` mention sources. Part of the
+    // file/github read surface, which is off the wire as a family.
+    ("list_repo_tree", "file-read surface, withheld as a family"),
+    ("list_repo_prs", "github-read surface, withheld as a family"),
+    // The desktop autopilot ladder's two rungs. `run_verification` runs this
+    // machine's verify scripts and `fork_agent` is a documented follow-up, so
+    // the ladder stays a local loop over the local engine (see
+    // `src/store/autopilotSync.ts`).
+    (
+        "run_verification",
+        "runs the local machine's verify scripts",
+    ),
+    ("fork_agent", "documented follow-up, not yet on the wire"),
+];
 
 /// The ops the generic dispatcher answers, in the order of the protocol doc's
 /// table. Load-bearing: `dispatch` rejects anything absent here before the
@@ -128,9 +163,56 @@ pub const OPS: &[&str] = &[
     "list_project_chats",
     "list_custom_agents",
     "get_agent",
+    "wf_list_runs",
+    "wf_get_run",
+    "wf_events",
+    "wf_run_agents",
+    "wf_launch",
+    "wf_cancel",
+    "wf_resume",
+    "wf_retry",
+    "wf_approve",
+    "wf_reject",
+    "wf_run_diff",
+    "wf_resolve_conflict",
+    "wf_delete_run",
+    "wf_answer",
+    "wf_def_save",
+    "wf_def_list",
+    "wf_def_delete",
+    "wf_def_export_yaml",
+    "wf_def_import_yaml",
     "roadmap_list_items",
+    "roadmap_get_item",
+    "roadmap_create_item",
     "roadmap_update_item",
+    "roadmap_set_rank",
+    "roadmap_hand_off_item",
+    "roadmap_item_review",
+    "roadmap_merge_item_pr",
+    "roadmap_note_review_feedback",
+    "roadmap_hold_item",
+    "roadmap_release_item",
+    "roadmap_hold_project",
+    "roadmap_release_project",
+    "roadmap_get_project_hold",
+    "roadmap_reclaim_item",
+    "roadmap_reject_item",
+    "roadmap_reopen_item",
+    "roadmap_delete_item",
     "roadmap_discard_proposal",
+    "roadmap_list_item_events",
+    "roadmap_latest_events",
+    "roadmap_list_proposals",
+    "roadmap_accept_proposal",
+    "roadmap_reject_proposal",
+    "roadmap_get_order_proposal",
+    "roadmap_accept_order_proposal",
+    "roadmap_reject_order_proposal",
+    "roadmap_get_brief",
+    "roadmap_get_brief_proposal",
+    "roadmap_accept_brief_proposal",
+    "roadmap_reject_brief_proposal",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -599,12 +681,205 @@ impl Dispatch for SupervisorDispatch {
                     ok(sup.agent_record(&a.agent_id))
                 }
 
+                // ── Workflows (spec §13). Reads first, then run control, then
+                // the stored-definition library. Every arm is the same `_impl`
+                // the Tauri command calls, reached through the scheduler the
+                // ctx published at boot.
+                "wf_list_runs" => {
+                    let a: RunsArgs = parse(args)?;
+                    ok(crate::workflow::wf_list_runs_impl(a.project_id, &ctx.db).await?)
+                }
+
+                "wf_get_run" => {
+                    let a: RunArgs = parse(args)?;
+                    ok(crate::workflow::wf_get_run_impl(a.run_id, &ctx.db).await?)
+                }
+
+                "wf_events" => {
+                    let a: WfEventsArgs = parse(args)?;
+                    ok(
+                        crate::workflow::wf_events_impl(a.run_id, a.after_seq, a.limit, &ctx.db)
+                            .await?,
+                    )
+                }
+
+                // A run's step agents are hidden from `get_workspace`, so the
+                // monitor reads them here to render each attempt's chat.
+                "wf_run_agents" => {
+                    let a: RunArgs = parse(args)?;
+                    ok(sup.run_agents(&a.run_id))
+                }
+
+                // `attachments` are host paths, exactly as `send_user_message`
+                // takes them: a remote client uploads through `attachment_*`
+                // first and passes what `attachment_end` answered.
+                "wf_launch" => {
+                    let a: WfLaunchArgs = parse(args)?;
+                    ok(crate::workflow::scheduler::wf_launch_impl(
+                        a.spec,
+                        a.task,
+                        a.project_id,
+                        a.repo_path,
+                        a.definition_id,
+                        a.base_branch,
+                        a.base_sha,
+                        a.attachments,
+                        a.issue_ref,
+                        &workflows(ctx)?,
+                        sup,
+                    )
+                    .await?)
+                }
+
+                "wf_cancel" => {
+                    let a: RunArgs = parse(args)?;
+                    ok(
+                        crate::workflow::scheduler::wf_cancel_impl(a.run_id, &workflows(ctx)?)
+                            .await?,
+                    )
+                }
+
+                "wf_resume" => {
+                    let a: WfResumeArgs = parse(args)?;
+                    ok(crate::workflow::scheduler::wf_resume_impl(
+                        a.run_id,
+                        a.budget_patch,
+                        &workflows(ctx)?,
+                    )
+                    .await?)
+                }
+
+                "wf_retry" => {
+                    let a: RunArgs = parse(args)?;
+                    ok(
+                        crate::workflow::scheduler::wf_retry_impl(a.run_id, &workflows(ctx)?)
+                            .await?,
+                    )
+                }
+
+                "wf_approve" => {
+                    let a: RunArgs = parse(args)?;
+                    ok(
+                        crate::workflow::scheduler::wf_approve_impl(a.run_id, &workflows(ctx)?)
+                            .await?,
+                    )
+                }
+
+                "wf_reject" => {
+                    let a: WfRejectArgs = parse(args)?;
+                    ok(crate::workflow::scheduler::wf_reject_impl(
+                        a.run_id,
+                        a.note,
+                        &workflows(ctx)?,
+                    )
+                    .await?)
+                }
+
+                "wf_run_diff" => {
+                    let a: WfRunDiffArgs = parse(args)?;
+                    ok(crate::workflow::scheduler::wf_run_diff_impl(
+                        a.run_id,
+                        a.from_sha,
+                        a.to_sha,
+                        a.path,
+                        &workflows(ctx)?,
+                    )
+                    .await?)
+                }
+
+                // `mode: "human"` says the conflict was resolved by hand in the
+                // host's own integration worktree, so a remote client without a
+                // shell there sends `"agent"`; the host rules on it either way.
+                "wf_resolve_conflict" => {
+                    let a: WfConflictArgs = parse(args)?;
+                    ok(crate::workflow::scheduler::wf_resolve_conflict_impl(
+                        a.run_id,
+                        a.mode,
+                        &workflows(ctx)?,
+                    )
+                    .await?)
+                }
+
+                // Destructive, like `discard_agent`: the run's step agents,
+                // their chats, its directory and its rows all go. Same method
+                // the command calls, so there is no softer remote variant.
+                "wf_delete_run" => {
+                    let a: RunArgs = parse(args)?;
+                    ok(crate::workflow::scheduler::wf_delete_run_impl(
+                        a.run_id,
+                        &workflows(ctx)?,
+                        sup,
+                    )
+                    .await?)
+                }
+
+                "wf_answer" => {
+                    let a: WfAnswerArgs = parse(args)?;
+                    ok(crate::workflow::comms::wf_answer_impl(
+                        a.project_id,
+                        a.run_id,
+                        a.message_id,
+                        a.body,
+                        &workflows(ctx)?,
+                    )
+                    .await?)
+                }
+
+                "wf_def_save" => {
+                    let a: WfDefSaveArgs = parse(args)?;
+                    ok(
+                        crate::workflow::definition::wf_def_save_impl(a.spec, a.id, a.hue, &ctx.db)
+                            .await?,
+                    )
+                }
+
+                "wf_def_list" => ok(crate::workflow::definition::wf_def_list_impl(&ctx.db).await?),
+
+                "wf_def_delete" => {
+                    let a: ItemIdArgs = parse(args)?;
+                    ok(crate::workflow::definition::wf_def_delete_impl(a.id, &ctx.db).await?)
+                }
+
+                // Both YAML ops deal in *text*: picking the path and touching
+                // the disk is the client's own business, on its own machine, so
+                // neither needs a dialog on the host.
+                "wf_def_export_yaml" => {
+                    let a: ItemIdArgs = parse(args)?;
+                    ok(crate::workflow::definition::wf_def_export_yaml_impl(a.id, &ctx.db).await?)
+                }
+
+                "wf_def_import_yaml" => {
+                    let a: WfDefImportArgs = parse(args)?;
+                    ok(
+                        crate::workflow::definition::wf_def_import_yaml_impl(a.yaml_text, &ctx.db)
+                            .await?,
+                    )
+                }
+
+                // ── Roadmap. The board's whole surface: reads, item writes,
+                // the brakes, and the PM's three proposal kinds.
                 "roadmap_list_items" => {
                     let a: ProjectArgs = parse(args)?;
                     ok(
                         crate::roadmap::commands::roadmap_list_items_impl(a.project_id, &ctx.db)
                             .await?,
                     )
+                }
+
+                "roadmap_get_item" => {
+                    let a: ItemArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_get_item_impl(a.item_id, &ctx.db).await?)
+                }
+
+                "roadmap_create_item" => {
+                    let a: NewItemArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_create_item_impl(
+                        a.project_id,
+                        a.item,
+                        ctx,
+                        &ctx.db,
+                    )
+                    .await?)
                 }
 
                 // Accepting a proposal is an `open` patch guarded by
@@ -623,6 +898,136 @@ impl Dispatch for SupervisorDispatch {
                     .await?)
                 }
 
+                "roadmap_set_rank" => {
+                    let a: RankArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_set_rank_impl(
+                        a.item_id, a.rank, ctx, &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_hand_off_item" => {
+                    let a: HandOffArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_hand_off_item_impl(
+                        a.item_id, a.agent_id, ctx, &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_item_review" => {
+                    let a: ItemArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_item_review_impl(a.item_id, &ctx.db)
+                            .await?,
+                    )
+                }
+
+                // The same credential `push_agent` and `create_pr` already
+                // spend, through the same host path `merge_pr` uses.
+                "roadmap_merge_item_pr" => {
+                    let a: ItemArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_merge_item_pr_impl(a.item_id, &ctx.db)
+                            .await?,
+                    )
+                }
+
+                "roadmap_note_review_feedback" => {
+                    let a: ReviewFeedbackArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_note_review_feedback_impl(
+                        a.item_id, a.threads, ctx, &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_hold_item" => {
+                    let a: ItemReasonArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_hold_item_impl(
+                        a.item_id, a.reason, ctx, &ctx.db,
+                    )
+                    .await?)
+                }
+
+                // Releasing a hold is the user's alone — the PM has an op to
+                // hold and none to release — and a paired client is the user.
+                "roadmap_release_item" => {
+                    let a: ItemArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_release_item_impl(
+                            a.item_id, ctx, &ctx.db,
+                        )
+                        .await?,
+                    )
+                }
+
+                "roadmap_hold_project" => {
+                    let a: ProjectReasonArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_hold_project_impl(
+                        a.project_id,
+                        a.reason,
+                        ctx,
+                        &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_release_project" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_release_project_impl(
+                        a.project_id,
+                        ctx,
+                        &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_get_project_hold" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_get_project_hold_impl(
+                        a.project_id,
+                        &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_reclaim_item" => {
+                    let a: ItemArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_reclaim_item_impl(
+                            a.item_id, ctx, &ctx.db,
+                        )
+                        .await?,
+                    )
+                }
+
+                "roadmap_reject_item" => {
+                    let a: ItemReasonArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_reject_item_impl(
+                        a.item_id, a.reason, ctx, &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_reopen_item" => {
+                    let a: ItemArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_reopen_item_impl(a.item_id, ctx, &ctx.db)
+                            .await?,
+                    )
+                }
+
+                // The board's own Remove: unconditional, and destructive like
+                // `discard_agent` and `wf_delete_run`. It is on the wire so the
+                // one `roadmap` capability gate covers every board control
+                // rather than leaving this one to fail as `unknown op`.
+                "roadmap_delete_item" => {
+                    let a: ItemIdArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_delete_item_impl(a.id, ctx, &ctx.db)
+                            .await?,
+                    )
+                }
+
                 // Discard, not delete: the phone may have held the card since
                 // before another client accepted it, and a stale discard must
                 // not take a row that is already being worked. `applied: false`
@@ -632,6 +1037,127 @@ impl Dispatch for SupervisorDispatch {
                     ok(
                         crate::roadmap::commands::roadmap_discard_proposal_impl(a.id, ctx, &ctx.db)
                             .await?,
+                    )
+                }
+
+                "roadmap_list_item_events" => {
+                    let a: ItemArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_list_item_events_impl(a.item_id, &ctx.db)
+                            .await?,
+                    )
+                }
+
+                "roadmap_latest_events" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_latest_events_impl(a.project_id, &ctx.db)
+                            .await?,
+                    )
+                }
+
+                "roadmap_list_proposals" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_list_proposals_impl(
+                            a.project_id,
+                            &ctx.db,
+                        )
+                        .await?,
+                    )
+                }
+
+                "roadmap_accept_proposal" => {
+                    let a: ProposalArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_accept_proposal_impl(
+                        a.proposal_id,
+                        ctx,
+                        &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_reject_proposal" => {
+                    let a: ProposalArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_reject_proposal_impl(
+                        a.proposal_id,
+                        ctx,
+                        &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_get_order_proposal" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_get_order_proposal_impl(
+                        a.project_id,
+                        &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_accept_order_proposal" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_accept_order_proposal_impl(
+                            a.project_id,
+                            ctx,
+                            &ctx.db,
+                        )
+                        .await?,
+                    )
+                }
+
+                "roadmap_reject_order_proposal" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_reject_order_proposal_impl(
+                            a.project_id,
+                            ctx,
+                            &ctx.db,
+                        )
+                        .await?,
+                    )
+                }
+
+                "roadmap_get_brief" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_get_brief_impl(a.project_id, &ctx.db)
+                            .await?,
+                    )
+                }
+
+                "roadmap_get_brief_proposal" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_get_brief_proposal_impl(
+                        a.project_id,
+                        &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_accept_brief_proposal" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_accept_brief_proposal_impl(
+                            a.project_id,
+                            ctx,
+                            &ctx.db,
+                        )
+                        .await?,
+                    )
+                }
+
+                "roadmap_reject_brief_proposal" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_reject_brief_proposal_impl(
+                            a.project_id,
+                            ctx,
+                            &ctx.db,
+                        )
+                        .await?,
                     )
                 }
 
@@ -683,6 +1209,16 @@ pub(super) async fn add_project_op(sup: &Supervisor, op: &str, args: Value) -> D
 /// would strand an agent in a surface this host does not have.
 fn remote_purpose(purpose: Option<String>) -> Option<String> {
     purpose.filter(|p| p == crate::workspace::PURPOSE_ROADMAP_PM)
+}
+
+/// The scheduler the `wf_*` run-control arms need, or [`WORKFLOWS_UNAVAILABLE`].
+/// The Tauri commands read the same service out of `State`, where boot having
+/// published it is equally assumed.
+fn workflows(
+    ctx: &EngineCtx,
+) -> std::result::Result<Arc<crate::workflow::scheduler::WorkflowService>, String> {
+    ctx.workflows()
+        .ok_or_else(|| WORKFLOWS_UNAVAILABLE.to_string())
 }
 
 fn parse<T: DeserializeOwned>(args: Value) -> std::result::Result<T, String> {
@@ -796,9 +1332,172 @@ struct RoadmapUpdateArgs {
     queue: Option<bool>,
 }
 
+/// `{ id }`, shared by the two roadmap deletes and the three `wf_def_*` ops
+/// that address a stored definition — all of which the frontend calls with a
+/// bare `id`.
 #[derive(Deserialize)]
 struct ItemIdArgs {
     id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ItemArgs {
+    item_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ItemReasonArgs {
+    item_id: String,
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectReasonArgs {
+    project_id: String,
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProposalArgs {
+    proposal_id: String,
+}
+
+/// The `code` is allocated host-side under the connection lock, which is why it
+/// is absent from the payload.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewItemArgs {
+    project_id: String,
+    item: crate::roadmap::types::NewItem,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RankArgs {
+    item_id: String,
+    rank: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HandOffArgs {
+    item_id: String,
+    agent_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewFeedbackArgs {
+    item_id: String,
+    threads: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunArgs {
+    run_id: String,
+}
+
+/// `wf_list_runs` scopes to one project or lists every run; the frontend sends
+/// the key present-and-null for the unscoped call.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunsArgs {
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WfEventsArgs {
+    run_id: String,
+    after_seq: i64,
+    limit: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WfLaunchArgs {
+    spec: crate::workflow::spec::Spec,
+    task: String,
+    project_id: String,
+    repo_path: String,
+    #[serde(default)]
+    definition_id: Option<String>,
+    #[serde(default)]
+    base_branch: Option<String>,
+    #[serde(default)]
+    base_sha: Option<String>,
+    /// Host paths, as `send_user_message` takes them: from `attachment_end`.
+    #[serde(default)]
+    attachments: Vec<String>,
+    #[serde(default)]
+    issue_ref: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WfResumeArgs {
+    run_id: String,
+    /// Additively raises the run-level caps before re-driving; absent resumes
+    /// on the budget the run already has.
+    #[serde(default)]
+    budget_patch: Option<crate::workflow::spec::Budgets>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WfRejectArgs {
+    run_id: String,
+    note: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WfRunDiffArgs {
+    run_id: String,
+    from_sha: String,
+    to_sha: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WfConflictArgs {
+    run_id: String,
+    /// `"agent"` or `"human"`; the host rules on anything else.
+    mode: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WfAnswerArgs {
+    project_id: String,
+    run_id: String,
+    message_id: String,
+    body: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WfDefSaveArgs {
+    spec: crate::workflow::spec::Spec,
+    /// Absent creates; an existing id edits in place.
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    hue: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WfDefImportArgs {
+    yaml_text: String,
 }
 
 #[derive(Deserialize)]

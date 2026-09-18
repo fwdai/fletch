@@ -618,10 +618,10 @@ pass), which need a real machine and a phone.
 
 **Hardening after v1 (gaps the merged PRs documented)**
 - [x] Follow-ups: `merge_pr`/`discard_agent`/`restore_agent`/`get_all_git_meta`/`get_pr_threads` on the wire or gated; this Mac's name at pairing; sandbox OAuth commands pinned local; `publish:approval-resolved` event; engine facts in `fletch-host status`. PR #768.
-- [o] Git panel working-tree ops on the wire (commit, push, PR, update-branch, conflicts, checks, comments) gated by op name; `delete_branch_agent` withheld on policy; gate enforced in the dispatch, not only the button. PR #770.
-- [o] Seatbelt denies the headless host's `--data-dir` (DB, host key, devices) and re-allows its own `workspaces`/`rpc` roots and read-only `git-dist`; desktop profile byte-identical. Acceptance test passed under real `sandbox-exec`. PR #771.
-- [o] The ignored `seatbelt_denies_appsupport_auto_exec` test was vacuous (unquoted path with a space in `sh -c`); quoted. Needs one `--ignored` run from a normal shell to confirm invariant 4 enforces. PR #773.
-- [ ] Known small gaps, not started: desktop's own `git-dist` is read-denied inside the agent sandbox (pre-existing); a disabled Git panel button shows no gate reason; `~/.fletch/tools` is shared by every engine on a machine; Cursor's image is unusable in a UID-mapped container on Linux (`/root` is 0700); no passwd entry for a mapped uid ≠ 1000; `refresh_base_freshness` is silent remotely.
+- [x] Git panel working-tree ops on the wire (commit, push, PR, update-branch, conflicts, checks, comments) gated by op name; `delete_branch_agent` withheld on policy; gate enforced in the dispatch, not only the button. PR #770.
+- [x] Seatbelt denies the headless host's `--data-dir` (DB, host key, devices) and re-allows its own `workspaces`/`rpc` roots and read-only `git-dist`; desktop profile byte-identical. Acceptance test passed under real `sandbox-exec`. PR #771.
+- [x] The ignored `seatbelt_denies_appsupport_auto_exec` test was vacuous (unquoted path with a space in `sh -c`); quoted. PR #773.
+- [ ] Known small gaps, not started: desktop's own `git-dist` is read-denied inside the agent sandbox (pre-existing); `~/.fletch/tools` is shared by every engine on a machine; Cursor's image is unusable in a UID-mapped container on Linux (`/root` is 0700); no passwd entry for a mapped uid ≠ 1000; `refresh_base_freshness` is silent remotely. (The missing gate reason on disabled Git panel buttons is in the polish PR below.)
 
 **Desktop as client (reduced Phase 6)**
 - [x] Shared TS protocol client moved to `src/remote/`. PR #749.
@@ -635,13 +635,43 @@ pass), which need a real machine and a phone.
 
 - [x] 7 Headless macOS `launchd` plist: shipped as `packaging/com.fletch.host.plist` in PR #767.
 
-Nothing else from the deferred table has been started. Suggested order once
-the v1 verification lines pass, by what the two stated goals actually need:
-item 2 (workflow and roadmap ops remotely; the `_impl` split from 2c makes them
-table rows), item 10 (`fletch-host update`, so a cloud host can be upgraded
-without SSH gymnastics), item 6 (Tailscale note, docs only), item 3 (version
-skew notice). Items 13 and 14 (scopes, PTY streams) remain the big parity gap:
-remote agents are structured-view only, with no side shells or Run panel.
+One "remote polish" PR (`feat/remote-polish`) folds the next four deferred
+items plus one hardening gap together. Tailscale (item 6) is dropped on
+purpose: the plan is an own secure pairing procedure later, not a tailnet.
+
+- [o] 2 `wf_*` / `roadmap_*` ops remotely: all 19 `wf_*` (incl. `wf_run_agents`)
+  and 31 `roadmap_*` commands on `dispatch::OPS`, their 16 events on the
+  forwarded list, the `workflows` gate opened by `wf_list_runs` and the
+  `roadmap` gate re-pointed at `roadmap_create_item` (a board *write*, since
+  `roadmap_list_items` has been on the wire since the phone's planning chat),
+  and autopilot moved from a hard `kind === "remote"` rule to a
+  `GATES.autopilot` row with `op: null` (its opt-outs are this Mac's local
+  tables). Nothing withheld inside the two families; what stays off is what
+  those flows borrow from other families (`list_repo_tree`/`list_repo_prs`,
+  `run_verification`, `fork_agent`), recorded in
+  `dispatch::WITHHELD_WF_ROADMAP_OPS`. No protocol version bump: additive.
+- [o] 3 Version skew notice: host `appVersion` kept in memory on the
+  environment entry; `closedGates`/`hostSkew` in `src/store/capabilities.ts`
+  derive "N features unavailable on this host" from op membership only; shown
+  on the paired-host row and the switcher entry with a tooltip listing each
+  reason and both versions. Gate reasons now render as `title` + the panel's
+  notice line on every disabled Git panel action (closes the hardening gap).
+- [o] `fletch-host service install|uninstall`: renders `packaging/*.service`
+  / `*.plist` (now templates, `include_str!`-ed, one copy) with the resolved
+  binary, data dir and serve flags; systemd user unit by default, `--system`
+  with `User=`; launchd bootstrap on macOS; idempotent; prints every file and
+  command.
+- [o] 10 `fletch-host update [version] [--check]`: GitHub release asset for
+  the compile-time target; sha256 AND minisign `.sig` against the desktop
+  updater's public key (test pins it to `tauri.conf.json`); fails closed on a
+  missing or bad signature; SQLite copied to `<data_dir>/backups/` first;
+  atomic rename over the running binary; restart via the installed unit, else
+  a message. The release `host` job now signs the tarball with the existing
+  updater key and uploads `.sig`.
+
+Nothing else from the deferred table has been started. Items 13 and 14
+(scopes, PTY streams) remain the big parity gap: remote agents are
+structured-view only, with no side shells or Run panel on the host.
 
 ### 6.3 How this work is being run (for whoever picks it up)
 
