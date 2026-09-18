@@ -15,12 +15,18 @@ snow = "0.10"
 base64 = "0.22"
 # The relay's host-link proof is a SHA-256 over the DH secret.
 sha2 = "0.10"
-# `sink` for `SinkExt` on the WebSocket the handshake is driven over; nothing
-# here needs the rest of the combinator zoo.
+# `sink` for `SinkExt` on the WebSocket the handshake is driven over, and the
+# stream split the client's read loop needs; nothing here needs the rest of the
+# combinator zoo.
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 # `net` + `time` for the Happy Eyeballs dialer (`dial.rs`), which resolves and
-# races addresses itself.
-tokio = { version = "1", features = ["net", "time"] }
+# races addresses itself; `sync` + `rt` for the client's connection map and its
+# per-connection read task (`client.rs`).
+tokio = { version = "1", features = ["net", "rt", "sync", "time"] }
+# Derive only, and only on the client's result and event payloads: those cross
+# into a webview as JSON, so the `camelCase` naming belongs with the protocol
+# rather than at each app's emit site.
+serde = { version = "1", features = ["derive"] }
 # The transport the protocol rides on. Feature set is the union of what the two
 # apps already asked for: `handshake` for the LAN listener, `connect` +
 # `rustls-tls-webpki-roots` for a `wss://` relay. Pinned to 0.27 for the same
@@ -33,9 +39,10 @@ tokio-tungstenite = { version = "0.27", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-# The known-answer test reads the relay's published vector.
+# The known-answer test reads the relay's published vector, and the client's
+# tests assert the event payload keys the webview reads.
 serde_json = "1"
 tempfile = "3"
-# `rt` + `macros` for the dialer's tests; the runtime features the library
-# needs are already on above.
-tokio = { version = "1", features = ["rt", "macros"] }
+# `macros` for `#[tokio::test]`; the runtime features the library needs are
+# already on above.
+tokio = { version = "1", features = ["macros", "rt"] }
