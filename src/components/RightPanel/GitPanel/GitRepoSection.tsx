@@ -115,19 +115,20 @@ export function GitRepoSection({
     fetchPrState,
   });
 
-  const { primary, items, effectiveKey, tone, mainDisabled, onSelectAction } = useActionBarModel({
-    agentId: agent.id,
-    panelState,
-    gitState,
-    prState,
-    checks,
-    mergeState,
-    prOpen,
-    base,
-    customActive,
-    delegationActive: delegation != null,
-    githubConnected,
-  });
+  const { primary, items, effectiveKey, tone, mainDisabled, mainReason, onSelectAction } =
+    useActionBarModel({
+      agentId: agent.id,
+      panelState,
+      gitState,
+      prState,
+      checks,
+      mergeState,
+      prOpen,
+      base,
+      customActive,
+      delegationActive: delegation != null,
+      githubConnected,
+    });
 
   // Pushed state: link the commit count out to GitHub — a single commit when
   // only one is ahead, otherwise the base..branch compare (commit list + full
@@ -267,6 +268,7 @@ export function GitRepoSection({
           selectedKey={effectiveKey}
           tone={tone}
           mainDisabled={mainDisabled}
+          mainReason={mainReason}
           onSelect={onSelectAction}
           onRun={() => runAction(effectiveKey)}
         />

@@ -27,6 +27,7 @@ export function ActionBar({
   selectedKey,
   tone,
   mainDisabled,
+  mainReason,
   onSelect,
   onRun,
 }: {
@@ -49,6 +50,11 @@ export function ActionBar({
   selectedKey: string;
   tone: ActionTone;
   mainDisabled: boolean;
+  /** Why the selected action can't run here — a capability the environment
+   *  lacks, which nothing the user does in the panel will change. Shown in the
+   *  status slot below the transient states, which still take precedence: what
+   *  is happening right now is more urgent than what cannot happen at all. */
+  mainReason?: string | null;
   onSelect: (key: string) => void;
   onRun: () => void;
 }) {
@@ -84,6 +90,11 @@ export function ActionBar({
           <Icon name="check" size={11} />
           <span>{notice}</span>
         </div>
+      ) : mainReason ? (
+        <div className="git-notice gated iflex-center text-xs">
+          <Icon name="alert" size={11} />
+          <span>{mainReason}</span>
+        </div>
       ) : showIdle ? (
         <div className={`git-act-status flex-center text-xs ${statusKind}`}>
           <span className="d" />
@@ -108,6 +119,7 @@ export function ActionBar({
         selectedKey={selectedKey}
         tone={tone}
         mainDisabled={mainDisabled}
+        mainReason={mainReason}
         busyLabel={busy ?? (delegationLabel ? "Agent working…" : null)}
         onSelect={onSelect}
         onRun={onRun}
