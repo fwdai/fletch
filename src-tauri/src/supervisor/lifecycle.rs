@@ -133,7 +133,7 @@ pub(super) async fn provision_codegraph_index(
         None => git::rev_parse(&checkout, "HEAD").await.ok(),
     };
 
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         let bin = match codegraph::ensure_installed().await {
             Ok(bin) => bin,
             Err(e) => {
@@ -486,7 +486,7 @@ impl Supervisor {
         let provider_for_task = record.provider.clone();
         let mcp_servers_for_task = record.mcp_servers.clone();
         let adopted_for_task = adopted.is_some();
-        tauri::async_runtime::spawn(async move {
+        crate::host::spawn(async move {
             if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                 return;
@@ -1733,7 +1733,7 @@ fn spawn_per_turn_agent(
 }
 
 fn spawn_turn_watchdog(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: String, gen: u64) {
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         loop {
             tokio::time::sleep(WATCHDOG_TICK).await;
 
@@ -1780,7 +1780,7 @@ fn spawn_turn_watchdog(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: Stri
 }
 
 pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: String) {
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         tokio::time::sleep(SPAWN_TIMEOUT).await;
         // Atomically claim the timeout outcome. Only an agent still in the
         // live Spawning state may be timed out; if the swap fails the spawn

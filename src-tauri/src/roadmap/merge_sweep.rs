@@ -147,12 +147,12 @@ struct Watched {
 
 // Background sweep while anything is in_review.
 pub fn spawn(ctx: Arc<EngineCtx>, db: Db) {
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         let seen: Arc<Unanswered> = Arc::new(Mutex::new(HashMap::new()));
         loop {
             let pass = {
                 let (ctx, db, seen) = (ctx.clone(), db.clone(), seen.clone());
-                tauri::async_runtime::spawn(async move {
+                crate::host::spawn(async move {
                     let watching = watch_list(&db);
                     let idle = watching.is_empty();
                     if !idle {

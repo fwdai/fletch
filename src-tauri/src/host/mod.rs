@@ -2,7 +2,9 @@
 //! (today the Tauri desktop, later a headless `fletch-host`).
 
 pub mod ctx;
+pub mod runtime;
 pub mod sink;
 
 pub use ctx::EngineCtx;
-pub use sink::{emit, EventSink, Sink};
+pub use runtime::spawn;
+pub use sink::{emit, Event, EventSink, Sink};

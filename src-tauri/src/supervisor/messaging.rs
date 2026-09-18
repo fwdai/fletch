@@ -194,7 +194,7 @@ impl Supervisor {
     fn revive_and_flush(self: Arc<Self>, ctx: &Arc<EngineCtx>, agent_id: &str) {
         let ctx = ctx.clone();
         let agent_id = agent_id.to_string();
-        tauri::async_runtime::spawn(async move {
+        crate::host::spawn(async move {
             tracing::info!(
                 agent_id,
                 "reviving a resting session to deliver a held message"
@@ -534,7 +534,7 @@ pub(super) fn drain_message_queue(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_
     };
     let ctx = ctx.clone();
     let agent_id = agent_id.to_string();
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         if let Err(e) = flush_queued(&sup_arc, &ctx, &agent_id) {
             tracing::warn!(error = %e, agent_id, "flush queued follow-up messages failed");
         }
@@ -557,7 +557,7 @@ pub(super) fn drain_pending_respawn(sup: &Supervisor, ctx: &Arc<EngineCtx>, agen
     };
     let ctx = ctx.clone();
     let agent_id = agent_id.to_string();
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         // Fire-and-forget at the turn boundary: a failed restart is logged and
         // set on the agent's status inside the call.
         let _ = sup_arc

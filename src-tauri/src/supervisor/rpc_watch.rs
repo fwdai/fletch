@@ -31,7 +31,7 @@ pub(super) fn spawn_rpc_watcher(
     rpc_dir: PathBuf,
     gen: u64,
 ) {
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         loop {
             tokio::time::sleep(RPC_TICK).await;
 
@@ -179,7 +179,7 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
             // set in each PR's body (best-effort, in the background).
             let workspace = sup.workspace.clone();
             let id = agent_id.to_string();
-            tauri::async_runtime::spawn(async move {
+            crate::host::spawn(async move {
                 super::sync_pr_set_links(&workspace, &id).await;
             });
         }

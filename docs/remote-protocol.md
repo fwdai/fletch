@@ -575,9 +575,9 @@ answer through the generic dispatcher.
 ## Events (v1 whitelist)
 
 Forwarded verbatim with the desktop event name and payload (see
-`src/api/events.ts` for payload types). The host taps the Tauri event bus once
-with `Listener::listen_any` and forwards only these names to every
-authenticated connection:
+`src/api/events.ts` for payload types). The host subscribes to the engine's own
+event stream — the same events the desktop webview gets — and forwards only
+these names to every authenticated connection:
 
 ```
 agent:event            agent:status           agent:task

@@ -59,7 +59,7 @@ impl Supervisor {
             .agent(&agent_id)
             .map(|r| is_persistent_runner(&r))
             .unwrap_or(true);
-        tauri::async_runtime::spawn(async move {
+        crate::host::spawn(async move {
             // Immediate attempt, then fine-grained backoff (ms) to ride out flush
             // lag / detect settle. Reads are incremental (O(new)), so polling is
             // cheap even on long transcripts.
@@ -100,7 +100,7 @@ impl Supervisor {
     /// a `pr:state_changed` event. Runs as a background task — never blocks the caller.
     pub fn fetch_and_emit_pr_state(&self, ctx: Arc<EngineCtx>, agent_id: String) {
         let workspace = self.workspace.clone();
-        tauri::async_runtime::spawn(async move {
+        crate::host::spawn(async move {
             // Only bound PRs are emitted app-wide: an unbound merged/closed PR
             // discovered on a recycled branch name is focused-panel display
             // (`get_pr_state`), not this agent's state.
@@ -183,7 +183,7 @@ impl Supervisor {
             .workspace
             .run_env(&project_id, &primary.repo_path, &agent_id, &checkout);
         let inflight = self.verify_inflight.clone();
-        tauri::async_runtime::spawn(async move {
+        crate::host::spawn(async move {
             let report = verifier.verify(&checkout, &env).await;
             inflight.lock().remove(&agent_id);
             emit_verification(ctx.sink.as_ref(), &agent_id, report);
@@ -641,7 +641,7 @@ pub(super) fn spawn_live_transcript_sync(
     agent_id: String,
     gen: u64,
 ) {
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         loop {
             tokio::time::sleep(LIVE_SYNC_TICK).await;
 

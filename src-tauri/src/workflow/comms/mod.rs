@@ -357,7 +357,7 @@ impl WorkflowService {
         // over the inner one and keeps even the back-link read off this thread.)
         if let Some(signal) = signal {
             let (engine, db) = (self.engine.clone(), self.db.clone());
-            tauri::async_runtime::spawn(async move {
+            crate::host::spawn(async move {
                 crate::roadmap::review::midrun(&engine, &db, &signal);
             });
         }

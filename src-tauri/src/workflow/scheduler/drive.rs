@@ -79,7 +79,7 @@ pub(crate) fn spawn_drive_task(
         runs: Some(runs.clone()),
     };
     let id = run_id.clone();
-    let join = tauri::async_runtime::spawn(async move {
+    let join = crate::host::spawn(async move {
         // The one routing site (see `docs/workflow-kernel-layers.md`): a flat
         // sequence of steps with only commit/verdict gates runs on the
         // sequential kernel; every richer spec stays on this engine. The
@@ -93,7 +93,7 @@ pub(crate) fn spawn_drive_task(
     });
     // Panic containment (§6.1): a panicked/aborted drive task marks its run
     // failed so it is never left `running` with no live driver.
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         let panicked = join.await.is_err();
         if panicked {
             let conn = db.lock();

@@ -255,7 +255,7 @@ fn dispatch(ctx: &Arc<EngineCtx>, db: &Db, turn: &PmTurn<'_>, decision: Plan) {
     let prompt = turn.render();
     let undeliverable = turn.undeliverable.clone();
     let (ctx, db) = (ctx.clone(), db.clone());
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         let delivered = match decision {
             Plan::Deliver { agent_id } => deliver(&ctx, &agent_id, &prompt),
             Plan::Off | Plan::NoChat => false,

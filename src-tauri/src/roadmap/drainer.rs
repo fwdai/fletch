@@ -253,7 +253,7 @@ pub fn spawn(
     db: Db,
     service: Arc<crate::workflow::scheduler::WorkflowService>,
 ) {
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         let said: Arc<SaidNotes> = Arc::new(Mutex::new(HashMap::new()));
         loop {
             tokio::select! {
@@ -263,8 +263,7 @@ pub fn spawn(
             let ticked = {
                 let (ctx, db, service, said) =
                     (ctx.clone(), db.clone(), service.clone(), said.clone());
-                tauri::async_runtime::spawn(async move { tick(&ctx, &db, &service, &said).await })
-                    .await
+                crate::host::spawn(async move { tick(&ctx, &db, &service, &said).await }).await
             };
             if ticked.is_err() {
                 tracing::error!("roadmap drainer tick panicked — queue processing continues");

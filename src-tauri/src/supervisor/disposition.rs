@@ -249,7 +249,7 @@ impl Supervisor {
         let sup = self.clone();
         let ctx_for_task = ctx.clone();
         let id_for_task = agent_id.to_string();
-        tauri::async_runtime::spawn(async move {
+        crate::host::spawn(async move {
             if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task, false).await {
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
             }

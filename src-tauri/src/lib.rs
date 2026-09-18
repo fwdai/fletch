@@ -1461,6 +1461,23 @@ pub fn run() {
                 Err(e) => recover_from_db_init_failure(&data_dir, e),
             };
 
+            // The runtime the engine's background tasks belong to: Tauri's own,
+            // which is a tokio runtime. Published before anything below can
+            // spawn, so the engine never has to reach for `tauri::` to start a
+            // task (see `host::runtime`).
+            host::runtime::init(tauri::async_runtime::handle().inner().clone());
+
+            // Where the engine's events go: the webview, as always, plus a
+            // broadcast the host's own subscribers read — today the remote
+            // event taps, which used to be `listen_any` taps on the Tauri bus.
+            // The fanout is kept concrete because the push-alert tap is added
+            // to it further down, once the remote state it needs exists.
+            let (events, _) = tokio::sync::broadcast::channel(host::sink::EVENT_BUFFER);
+            let sink = Arc::new(host::sink::FanoutSink::new(vec![
+                Arc::new(host::sink::TauriSink(app.handle().clone())),
+                Arc::new(host::sink::BroadcastSink(events.clone())),
+            ]));
+
             // What the engine gets instead of an `AppHandle`: where its events
             // go, the DB handle it shares with the commands, and the "is the
             // user looking at this?" question only a host can answer. Built
@@ -1471,7 +1488,7 @@ pub fn run() {
             let engine_ctx = {
                 let focus_app = app.handle().clone();
                 Arc::new(host::EngineCtx::new(
-                    Arc::new(host::sink::TauriSink(app.handle().clone())),
+                    sink.clone(),
                     db.clone(),
                     Box::new(move || {
                         focus_app
@@ -1797,7 +1814,14 @@ pub fn run() {
                 // `remote_status` panics the moment Settings opens. Such a
                 // failure travels as `RemoteStatus::error` instead.
                 let state = remote::RemoteState::new(&data_dir.join("remote"), dispatch);
-                remote::install_taps(app.handle(), &engine_ctx, state.clone());
+                // Forwarding rides the broadcast; the push-alert tap has to run
+                // inside each emit, so it comes back as a sink and joins the
+                // fanout here (see `remote::push`).
+                sink.add(remote::install_taps(
+                    &engine_ctx,
+                    state.clone(),
+                    events.subscribe(),
+                ));
                 let (enabled, port, relay_url) = {
                     let conn = db_for_remote.lock();
                     (

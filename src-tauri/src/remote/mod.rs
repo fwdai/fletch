@@ -9,10 +9,10 @@
 //! Layout: `secure` owns the Noise channel and the host identity, `auth` the
 //! pairing codes and the device registry, `server` the WebSocket listener,
 //! `relay` the outbound host link that carries off-LAN devices, `session` the
-//! live-connection registry, `dispatch` the op allowlist, `events` the Tauri
-//! event taps, `push` the two alert triggers those taps raise. This module owns
-//! the state those eight share and the lifecycle of the listener and the relay
-//! link.
+//! live-connection registry, `dispatch` the op allowlist, `events` the taps on
+//! the engine's event stream, `push` the two alert triggers those taps raise.
+//! This module owns the state those eight share and the lifecycle of the
+//! listener and the relay link.
 
 mod auth;
 mod dispatch;
@@ -44,6 +44,9 @@ use tokio::sync::broadcast;
 use self::relay::{RelayLink, RelayTiming};
 use self::session::{Sessions, CLOSE_DISABLED, CLOSE_RESTARTING, CLOSE_REVOKED};
 use crate::error::{Error, Result};
+// How deep the per-connection fan-out buffers, shared with the engine channel
+// that feeds it: one number for the whole path (see `host::sink`).
+use crate::host::sink::EVENT_BUFFER;
 
 /// `settings` key mirroring whether the listener should run. Read once at
 /// launch and rewritten by `remote_set_enabled`.
@@ -66,11 +69,6 @@ pub const DEFAULT_RELAY_URL: &str = "wss://relay.fletch.sh";
 pub const DEFAULT_PORT: u16 = 47285;
 /// The only path the listener serves.
 pub const WS_PATH: &str = "/ws";
-
-/// How many event frames the fan-out buffers per connection. A phone that
-/// stalls past this is told it lagged and refetches, exactly as the desktop
-/// frontend does on focus — events are best effort by contract.
-const EVENT_BUFFER: usize = 256;
 
 /// Same shape as the other `settings`-mirrored booleans in the crate
 /// (`rpc::approval`, `codegraph`): anything but the literal `"true"` is off.
@@ -537,19 +535,19 @@ impl RemoteState {
             .is_some_and(|link| link.send_notify(payload))
     }
 
-    /// Fan one Tauri event out to every authenticated connection.
+    /// Fan one engine event out to every authenticated connection.
     ///
-    /// `payload_json` is spliced in rather than parsed and re-serialized, so the
-    /// phone receives byte-identical JSON to the desktop webview.
-    pub(super) fn forward_event(&self, name: &str, payload_json: &str) {
+    /// The payload is serialized here and spliced into the frame, so the phone
+    /// receives byte-identical JSON to the desktop webview: both are handed the
+    /// one `Value` the emitter built (see `host::sink::emit`), and Tauri
+    /// serializes it exactly this way on its side.
+    pub(super) fn forward_event(&self, name: &str, payload: &Value) {
         if self.events.receiver_count() == 0 {
             return;
         }
-        let payload = if payload_json.trim().is_empty() {
-            "null"
-        } else {
-            payload_json
-        };
+        // A payload that will not serialize could not have reached the webview
+        // either; `null` keeps the frame well-formed rather than dropping it.
+        let payload = serde_json::to_string(payload).unwrap_or_else(|_| "null".to_string());
         let name = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".to_string());
         let frame = format!("{{\"event\":{name},\"payload\":{payload}}}");
         let _ = self.events.send(Arc::from(frame));

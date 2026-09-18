@@ -5,7 +5,22 @@
 //! a headless host with remote subscribers later. Event names and payloads are
 //! the sink's input, not its concern: it only has to deliver them.
 
+use std::sync::Arc;
+
 use serde_json::Value;
+use tokio::sync::broadcast;
+
+/// One event out of the engine, as [`BroadcastSink`] carries it: the name and
+/// the already-serialized payload, both shared so a fan-out to several
+/// subscribers copies neither.
+pub type Event = (Arc<str>, Arc<Value>);
+
+/// How many events a broadcast buffers per subscriber before the slow one is
+/// told it lagged. One constant for both hops of the path — the engine's own
+/// channel here, and the per-connection fan-out in `remote` — because a deeper
+/// buffer on either end only postpones the same drop, and events are best
+/// effort by contract (the frontend and the phone both refetch).
+pub const EVENT_BUFFER: usize = 256;
 
 /// One event out of the engine.
 ///
@@ -47,6 +62,70 @@ pub struct TauriSink(pub tauri::AppHandle);
 impl EventSink for TauriSink {
     fn emit_value(&self, event: &str, payload: Value) -> Result<(), String> {
         tauri::Emitter::emit(&self.0, event, payload).map_err(|e| e.to_string())
+    }
+}
+
+/// Publishes every event on a broadcast channel, for the host's own
+/// subscribers: today the remote event taps, tomorrow anything a headless host
+/// wants to watch without a webview.
+///
+/// No receivers is success, not failure. A channel nobody has subscribed to is
+/// the normal state of a desktop with no phone paired, and the one caller that
+/// reads the error — the publish-approval gate, which denies when the question
+/// could not be asked — is asking about the *user*, whose sink is
+/// [`TauriSink`].
+pub struct BroadcastSink(pub broadcast::Sender<Event>);
+
+impl EventSink for BroadcastSink {
+    fn emit_value(&self, event: &str, payload: Value) -> Result<(), String> {
+        let _ = self.0.send((Arc::from(event), Arc::new(payload)));
+        Ok(())
+    }
+}
+
+/// Every event to every sink: the desktop webview *and* the host's own
+/// subscribers.
+///
+/// Succeeds when at least one sink took the event, so the publish-approval gate
+/// denies only when nothing could carry the question at all. Since
+/// [`BroadcastSink`] always succeeds, that gate's fast refusal is effectively
+/// retired on the desktop: a webview emit that fails now leaves the request
+/// waiting for its timeout instead of being refused at once. Both outcomes are
+/// a refusal, and a paired phone can answer a question the window could not
+/// show.
+///
+/// The list can grow after the fanout is built, because boot has a cycle: the
+/// push-alert tap is a sink that needs the engine ctx and the remote state,
+/// both of which need the sink. See [`FanoutSink::add`].
+pub struct FanoutSink(parking_lot::RwLock<Vec<Sink>>);
+
+impl FanoutSink {
+    pub fn new(sinks: Vec<Sink>) -> Self {
+        Self(parking_lot::RwLock::new(sinks))
+    }
+
+    /// Add a sink once whatever it needed exists. Events emitted before this
+    /// lands do not reach it — the same gap a `listen_any` tap installed later
+    /// in `setup` had.
+    pub fn add(&self, sink: Sink) {
+        self.0.write().push(sink);
+    }
+}
+
+impl EventSink for FanoutSink {
+    fn emit_value(&self, event: &str, payload: Value) -> Result<(), String> {
+        let mut delivered = false;
+        let mut last_error = None;
+        for sink in self.0.read().iter() {
+            match sink.emit_value(event, payload.clone()) {
+                Ok(()) => delivered = true,
+                Err(e) => last_error = Some(e),
+            }
+        }
+        match last_error {
+            Some(e) if !delivered => Err(e),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -139,5 +218,48 @@ mod tests {
     #[test]
     fn a_failing_sink_is_logged_not_propagated() {
         emit(&FailingSink, "agent:status", &json!({}));
+    }
+
+    /// The seam the remote taps hang off: a subscriber sees the event name and
+    /// the payload the emitter built, with no Tauri event bus in between.
+    #[tokio::test]
+    async fn a_broadcast_subscriber_receives_the_event() {
+        let (tx, mut rx) = broadcast::channel(EVENT_BUFFER);
+        let sink = BroadcastSink(tx);
+
+        // Nobody listening yet is not an error: this is a desktop with no
+        // phone paired, which is the common case.
+        assert!(BroadcastSink(broadcast::channel(EVENT_BUFFER).0)
+            .emit_value("agent:status", json!({}))
+            .is_ok());
+
+        emit(&sink, "agent:status", &json!({ "agent_id": "fuji" }));
+        let (name, payload) = rx.recv().await.unwrap();
+        assert_eq!(name.as_ref(), "agent:status");
+        assert_eq!(*payload, json!({ "agent_id": "fuji" }));
+    }
+
+    #[test]
+    fn a_fanout_delivers_to_every_sink_and_survives_one_failing() {
+        let recorder = Arc::new(RecordingSink::new());
+        let fanout = FanoutSink::new(vec![Arc::new(FailingSink), recorder.clone()]);
+
+        assert!(fanout.emit_value("agent:status", json!({})).is_ok());
+        assert_eq!(recorder.events().len(), 1, "the working sink was skipped");
+
+        // Every sink failing is the only case the caller hears about — that is
+        // what the publish-approval gate reads as "nobody could be asked".
+        let dead = FanoutSink::new(vec![Arc::new(FailingSink), Arc::new(FailingSink)]);
+        assert_eq!(
+            dead.emit_value("agent:status", json!({})),
+            Err("no listener".to_string())
+        );
+
+        // A sink added after the fanout was built gets what comes next.
+        let late = Arc::new(RecordingSink::new());
+        fanout.add(late.clone());
+        emit(&fanout, "roadmap:item-deleted", "item-1");
+        assert_eq!(late.events().len(), 1);
+        assert_eq!(recorder.events().len(), 2);
     }
 }
