@@ -654,12 +654,9 @@ impl WorkflowService {
     }
 }
 
-type Svc<'a> = tauri::State<'a, Arc<WorkflowService>>;
-
 /// Launch a run from a launch-time `spec` snapshot (spec §13).
 #[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn wf_launch(
+pub async fn wf_launch_impl(
     spec: Spec,
     task: String,
     project_id: String,
@@ -672,8 +669,8 @@ pub async fn wf_launch(
     // carried onto the run row so its finalized PR closes the issue. `None` for
     // a normal launch.
     issue_ref: Option<String>,
-    service: Svc<'_>,
-    supervisor: tauri::State<'_, Arc<Supervisor>>,
+    service: &Arc<WorkflowService>,
+    supervisor: &Arc<Supervisor>,
 ) -> std::result::Result<String, String> {
     // A run targets one repo, so its project is authoritatively that repo's.
     // Resolve it from `repo_path` here rather than trusting the caller's
@@ -702,26 +699,29 @@ pub async fn wf_launch(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn wf_cancel(run_id: String, service: Svc<'_>) -> std::result::Result<(), String> {
+pub async fn wf_cancel_impl(
+    run_id: String,
+    service: &Arc<WorkflowService>,
+) -> std::result::Result<(), String> {
     service.cancel(&run_id).await.map_err(|e| e.to_string())
 }
 
 /// Resume a paused run (§13), optionally raising the budget with a patch
 /// ("+N turns / +N tokens / +N minutes") for a `budget_exceeded` pause.
-#[tauri::command]
-pub async fn wf_resume(
+pub async fn wf_resume_impl(
     run_id: String,
     budget_patch: Option<Budgets>,
-    service: Svc<'_>,
+    service: &Arc<WorkflowService>,
 ) -> std::result::Result<(), String> {
     service
         .resume(&run_id, budget_patch)
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn wf_retry(run_id: String, service: Svc<'_>) -> std::result::Result<(), String> {
+pub async fn wf_retry_impl(
+    run_id: String,
+    service: &Arc<WorkflowService>,
+) -> std::result::Result<(), String> {
     service.retry(&run_id).map_err(|e| e.to_string())
 }
 

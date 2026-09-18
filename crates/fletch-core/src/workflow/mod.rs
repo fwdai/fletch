@@ -47,10 +47,9 @@ pub(crate) fn now_ms() -> i64 {
 
 /// Every run, newest-updated first; optionally scoped to one project. Drives the
 /// sidebar's run rows (§14.2).
-#[tauri::command]
-pub async fn wf_list_runs(
+pub async fn wf_list_runs_impl(
     project_id: Option<String>,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Vec<Run>, String> {
     let conn = db.lock();
     let map_err = |e: rusqlite::Error| e.to_string();
@@ -73,10 +72,9 @@ pub async fn wf_list_runs(
 }
 
 /// A run plus its attempts and messages (§7.2). `None` if the run doesn't exist.
-#[tauri::command]
-pub async fn wf_get_run(
+pub async fn wf_get_run_impl(
     run_id: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Option<RunDetail>, String> {
     let conn = db.lock();
     let map_err = |e: rusqlite::Error| e.to_string();
@@ -137,12 +135,11 @@ fn page_bounds(after_seq: i64, limit: i64) -> (i64, i64) {
 
 /// A page of a run's journal (§7.2): events strictly after `after_seq`, oldest
 /// first, bounded by [`page_bounds`].
-#[tauri::command]
-pub async fn wf_events(
+pub async fn wf_events_impl(
     run_id: String,
     after_seq: i64,
     limit: i64,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Vec<Event>, String> {
     let (after_seq, limit) = page_bounds(after_seq, limit);
     let conn = db.lock();

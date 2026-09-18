@@ -62,12 +62,11 @@ fn validate_or_err(spec: &Spec) -> Result<(), String> {
 /// Persist a definition. Validates the spec first; generates an id when none is
 /// supplied. On an existing id, only the mutable columns change — `run_count`
 /// and `created_at` survive the edit.
-#[tauri::command]
-pub async fn wf_def_save(
+pub async fn wf_def_save_impl(
     spec: Spec,
     id: Option<String>,
     hue: Option<i64>,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<Definition, String> {
     validate_or_err(&spec)?;
     let id = id.unwrap_or_else(new_id);
@@ -101,8 +100,7 @@ pub async fn wf_def_save(
 }
 
 /// Every definition, newest-edited first.
-#[tauri::command]
-pub async fn wf_def_list(db: tauri::State<'_, Db>) -> Result<Vec<Definition>, String> {
+pub async fn wf_def_list_impl(db: &Db) -> Result<Vec<Definition>, String> {
     let conn = db.lock();
     let mut stmt = conn
         .prepare(
@@ -122,8 +120,7 @@ pub async fn wf_def_list(db: tauri::State<'_, Db>) -> Result<Vec<Definition>, St
 
 /// Delete a definition by id. In-flight runs are unaffected — they hold their
 /// own launch-time spec snapshot (spec §4).
-#[tauri::command]
-pub async fn wf_def_delete(id: String, db: tauri::State<'_, Db>) -> Result<(), String> {
+pub async fn wf_def_delete_impl(id: String, db: &Db) -> Result<(), String> {
     let conn = db.lock();
     conn.execute("DELETE FROM wf_definition WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
@@ -133,8 +130,7 @@ pub async fn wf_def_delete(id: String, db: tauri::State<'_, Db>) -> Result<(), S
 /// Export a definition as portable YAML (spec §5.3). Any alias backed by a local
 /// custom agent has its base/model/instructions/skill *names* embedded and its
 /// local id stripped, so the file runs on a machine without that custom agent.
-#[tauri::command]
-pub async fn wf_def_export_yaml(id: String, db: tauri::State<'_, Db>) -> Result<String, String> {
+pub async fn wf_def_export_yaml_impl(id: String, db: &Db) -> Result<String, String> {
     let conn = db.lock();
     let spec_json: Option<String> = conn
         .query_row(
@@ -154,10 +150,9 @@ pub async fn wf_def_export_yaml(id: String, db: tauri::State<'_, Db>) -> Result<
 /// against the local library. Missing skills and unknown providers are warnings
 /// in the returned report, never errors — only malformed YAML or a §5.2
 /// violation fails the import.
-#[tauri::command]
-pub async fn wf_def_import_yaml(
+pub async fn wf_def_import_yaml_impl(
     yaml_text: String,
-    db: tauri::State<'_, Db>,
+    db: &Db,
 ) -> Result<ImportReport, String> {
     let spec = yaml::from_yaml(&yaml_text)?;
     validate_or_err(&spec)?;
@@ -678,53 +673,36 @@ mod tests {
         .unwrap()
     }
 
-    // These exercise the command bodies directly. `tauri::State` can't be
-    // constructed in a unit test, so the SQL is factored the same way the
-    // commands run it; here we replicate the persist/read path against the
-    // in-memory contract table.
-    fn save(db: &Db, spec: &Spec, id: Option<&str>) -> Definition {
-        let id = id.map(str::to_string).unwrap_or_else(new_id);
-        let spec_json = serde_json::to_string(spec).unwrap();
-        let now = now_ms();
-        let conn = db.lock();
-        conn.execute(
-            "INSERT INTO wf_definition (id,name,description,hue,spec_json,run_count,created_at,updated_at) \
-             VALUES (?1,?2,?3,?4,?5,0,?6,?6) \
-             ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, \
-               hue=excluded.hue, spec_json=excluded.spec_json, updated_at=excluded.updated_at",
-            rusqlite::params![id, spec.name, spec.description.clone().unwrap_or_default(),
-                Option::<i64>::None, spec_json, now],
-        ).unwrap();
-        conn.query_row(
-            "SELECT id,name,description,hue,spec_json,run_count,created_at,updated_at \
-             FROM wf_definition WHERE id=?1",
-            [&id],
-            row_to_definition,
-        )
-        .unwrap()
+    // These exercise the real command bodies: the `_impl` fns take a plain
+    // `&Db`, so the persist/read path under test is the one the wrapper in
+    // `src-tauri` calls, run against the in-memory contract table.
+    async fn save(db: &Db, spec: &Spec, id: Option<&str>) -> Definition {
+        wf_def_save_impl(spec.clone(), id.map(str::to_string), None, db)
+            .await
+            .unwrap()
     }
 
-    #[test]
-    fn save_persists_and_round_trips_the_spec() {
+    #[tokio::test]
+    async fn save_persists_and_round_trips_the_spec() {
         let db = test_db();
-        let def = save(&db, &sample_spec(), Some("d1"));
+        let def = save(&db, &sample_spec(), Some("d1")).await;
         assert_eq!(def.id, "d1");
         assert_eq!(def.name, "demo");
         assert_eq!(def.run_count, 0);
         assert_eq!(def.spec, sample_spec());
     }
 
-    #[test]
-    fn resaving_preserves_run_count_and_created_at() {
+    #[tokio::test]
+    async fn resaving_preserves_run_count_and_created_at() {
         let db = test_db();
-        let first = save(&db, &sample_spec(), Some("d1"));
+        let first = save(&db, &sample_spec(), Some("d1")).await;
         // Simulate a launch bumping run_count.
         db.lock()
             .execute("UPDATE wf_definition SET run_count=5 WHERE id='d1'", [])
             .unwrap();
         let mut edited = sample_spec();
         edited.name = "renamed".into();
-        let second = save(&db, &edited, Some("d1"));
+        let second = save(&db, &edited, Some("d1")).await;
         assert_eq!(second.name, "renamed");
         assert_eq!(second.run_count, 5, "run_count survives an edit");
         assert_eq!(second.created_at, first.created_at, "created_at survives");

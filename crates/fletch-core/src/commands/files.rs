@@ -1,12 +1,15 @@
 //! File panel — browse the checkout, view & edit file contents — plus the
 //! shared agent → repo → checkout resolution helpers the rest of the command
 //! modules build on.
+//!
+//! The engine half: the path-safety guard, the repo → checkout resolution and
+//! the read surfaces the remote dispatcher calls. The `#[tauri::command]`
+//! wrappers the desktop's file panel invokes live in
+//! `src-tauri/src/commands/files.rs` and reach in here.
 
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
-use tauri::State;
 
 use crate::error::{Error, Result};
 use crate::git;
@@ -133,7 +136,7 @@ fn lang_for(path: &str) -> String {
 /// not-yet-existing leaf with a link between this check and the caller's write.
 /// Closing that needs `O_NOFOLLOW`-per-component `openat` plumbing; the planted
 /// trap this does close is persistent and needs no race to spring.
-fn safe_join(checkout: &Path, rel: &str) -> Result<PathBuf> {
+pub fn safe_join(checkout: &Path, rel: &str) -> Result<PathBuf> {
     let p = Path::new(rel);
     let escapes = p.components().any(|c| {
         matches!(
@@ -222,7 +225,7 @@ fn escapes_via_symlink(root: &Path, checkout: &Path, rel: &Path) -> bool {
 // command bodies stay focused on the git/gh call they actually make.
 
 /// The agent's primary (first) repo, or an error if the agent has no repos.
-pub(super) fn primary_repo(supervisor: &Supervisor, agent_id: &str) -> Result<TrackedRepo> {
+pub fn primary_repo(supervisor: &Supervisor, agent_id: &str) -> Result<TrackedRepo> {
     supervisor
         .workspace
         .agent(agent_id)?
@@ -233,7 +236,7 @@ pub(super) fn primary_repo(supervisor: &Supervisor, agent_id: &str) -> Result<Tr
 }
 
 /// The agent's primary repo paired with its checkout path.
-pub(super) fn primary_repo_checkout(
+pub fn primary_repo_checkout(
     supervisor: &Supervisor,
     agent_id: &str,
 ) -> Result<(TrackedRepo, PathBuf)> {
@@ -245,7 +248,7 @@ pub(super) fn primary_repo_checkout(
 /// The tracked repo a panel command targets: the one whose `subdir` matches,
 /// or the primary when no subdir is given — which keeps every single-repo
 /// caller (and old frontends that don't pass the arg) byte-identical.
-pub(super) fn agent_repo_checkout(
+pub fn agent_repo_checkout(
     supervisor: &Supervisor,
     agent_id: &str,
     subdir: Option<&str>,
@@ -266,7 +269,7 @@ pub(super) fn agent_repo_checkout(
 /// Best-effort variant for read-only lookups (git / PR state): returns `None`
 /// instead of an error when the agent or its repo can't be resolved, so callers
 /// can degrade gracefully rather than surfacing a failure.
-pub(super) fn agent_repo_checkout_opt(
+pub fn agent_repo_checkout_opt(
     supervisor: &Supervisor,
     agent_id: &str,
     subdir: Option<&str>,
@@ -304,12 +307,12 @@ pub(super) fn agent_repo_checkout_opt(
 /// Read-only surfaces only. The git *write* paths (commit / push / PR) resolve
 /// their checkouts through [`agent_repo_checkout`] and must keep working
 /// throughout a spawn, so they deliberately don't consult this.
-pub(super) fn checkout_pending(supervisor: &Supervisor, agent_id: &str) -> bool {
+pub fn checkout_pending(supervisor: &Supervisor, agent_id: &str) -> bool {
     matches!(supervisor.status_of(agent_id), Some(AgentStatus::Spawning))
 }
 
 /// The agent's branch name, or an error if the checkout has no branch yet.
-pub(super) fn repo_branch(repo: &TrackedRepo) -> Result<&str> {
+pub fn repo_branch(repo: &TrackedRepo) -> Result<&str> {
     repo.branch
         .as_deref()
         .ok_or_else(|| Error::Other("agent has no branch yet".into()))
@@ -353,7 +356,7 @@ fn split_repo_path<'a>(repos: &'a [TrackedRepo], path: &str) -> Result<(&'a Trac
 /// checkout with the path unchanged — the exact legacy behavior. For a
 /// multi-repo agent every tree path is prefixed with the repo's `subdir`
 /// (see `list_checkout_tree`), so the first segment picks the checkout.
-async fn checkout_scope_for_path(
+pub async fn checkout_scope_for_path(
     supervisor: &Supervisor,
     agent_id: &str,
     path: &str,
@@ -418,27 +421,8 @@ async fn checkout_tree_files(
         .collect()
 }
 
-/// List the agent's checkout files (tracked + untracked), each tagged with
-/// its git status vs the parent branch. This mirrors what's actually on disk
-/// — like a regular file explorer — so files the agent deleted are dropped
-/// rather than lingering as struck-through entries.
-///
-/// Single-repo agents get today's un-prefixed listing of the primary checkout.
-/// A multi-repo agent gets one virtual root per repo: every path is prefixed
-/// with the checkout's `subdir`, each repo's status computed against its own
-/// fork point — the tree component nests on `/`, so the repos render as
-/// top-level folders. The file read/write commands resolve the same prefix
-/// back to the owning checkout (`checkout_scope_for_path`).
-#[tauri::command]
-pub async fn list_checkout_tree(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-) -> Result<Vec<CheckoutFile>> {
-    list_checkout_tree_impl(&supervisor, &agent_id).await
-}
-
 /// Shared with the remote dispatcher.
-pub(crate) async fn list_checkout_tree_impl(
+pub async fn list_checkout_tree_impl(
     supervisor: &Supervisor,
     agent_id: &str,
 ) -> Result<Vec<CheckoutFile>> {
@@ -465,20 +449,10 @@ pub(crate) async fn list_checkout_tree_impl(
     Ok(out)
 }
 
-/// List a repo's files by path (tracked + non-ignored untracked), for the
-/// draft (new-workspace) composer's "@" mention autocomplete. Unlike
-/// `list_checkout_tree`, this needs no agent — a draft has no checkout yet — so
-/// it reads the base repo directly and returns plain paths (no diff status,
-/// since there's no fork point to diff against).
-#[tauri::command]
-pub async fn list_repo_tree(repo_path: String) -> Result<Vec<String>> {
-    git::list_files(&expand_tilde(&repo_path)).await
-}
-
 /// Expand a leading `~` (or `~/…`) to the user's home directory. Any other
 /// path is returned unchanged. Used to resolve filesystem paths the user
 /// types into the composer's `@` mention.
-pub(super) fn expand_tilde(path: &str) -> PathBuf {
+pub fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix('~') {
         if rest.is_empty() || rest.starts_with('/') {
             if let Some(home) = dirs::home_dir() {
@@ -489,12 +463,8 @@ pub(super) fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// List the entries of an arbitrary directory for the composer's `@`
-/// mention autocomplete (e.g. `@~/Downloads/`). The path may start with
-/// `~`; the resolved absolute directory comes back as `base` so the caller
-/// can attach files by absolute path.
-#[tauri::command]
-pub async fn list_dir(path: String) -> Result<DirListing> {
+/// Shared with the remote dispatcher.
+pub async fn list_dir_impl(path: String) -> Result<DirListing> {
     // Stop reading well above what the picker shows (the frontend filters and
     // caps display at 10) so a huge directory like /usr/lib or node_modules
     // can't stall the read or bloat the IPC payload. Hidden entries are kept
@@ -518,22 +488,8 @@ pub async fn list_dir(path: String) -> Result<DirListing> {
     })
 }
 
-/// Read a checkout file for the viewer/editor: contents, language hint,
-/// git status, and the changed-line numbers driving the gutter. `base_mode`
-/// picks the ref the gutter (and a deleted file's prior contents) diff
-/// against; omitted means the fork point.
-#[tauri::command]
-pub async fn read_checkout_file(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    path: String,
-    base_mode: Option<DiffBaseMode>,
-) -> Result<CheckoutFileContents> {
-    read_checkout_file_impl(&supervisor, &agent_id, &path, base_mode).await
-}
-
 /// Shared with the remote dispatcher.
-pub(crate) async fn read_checkout_file_impl(
+pub async fn read_checkout_file_impl(
     supervisor: &Supervisor,
     agent_id: &str,
     path: &str,
@@ -600,21 +556,8 @@ pub(crate) async fn read_checkout_file_impl(
     })
 }
 
-/// Full unified diff of one checkout file — the data behind the Code panel's
-/// Live view and the editor's Diff toggle. `base_mode` picks the base ref
-/// (fork point when omitted). Returns "" when the file is unchanged.
-#[tauri::command]
-pub async fn get_file_diff(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    path: String,
-    base_mode: Option<DiffBaseMode>,
-) -> Result<String> {
-    get_file_diff_impl(&supervisor, &agent_id, &path, base_mode).await
-}
-
 /// Shared with the remote dispatcher.
-pub(crate) async fn get_file_diff_impl(
+pub async fn get_file_diff_impl(
     supervisor: &Supervisor,
     agent_id: &str,
     path: &str,
@@ -625,28 +568,11 @@ pub(crate) async fn get_file_diff_impl(
     git::file_diff(&checkout, &diff_ref, &path).await
 }
 
-/// Overwrite a checkout file with new contents (the editor's Save / Revert).
-#[tauri::command]
-pub async fn write_checkout_file(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    path: String,
-    contents: String,
-) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
-    let abs = safe_join(&checkout, &path)?;
-    if let Some(dir) = abs.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&abs, contents)?;
-    Ok(())
-}
-
 /// Resolve a not-yet-existing destination inside the checkout: reject path
 /// traversal, refuse to clobber an existing entry, and create its parent
 /// directory. The create / rename / copy commands all share this so the
 /// no-clobber + path-safety contract lives in exactly one place.
-fn resolve_new_path(checkout: &Path, rel: &str) -> Result<PathBuf> {
+pub fn resolve_new_path(checkout: &Path, rel: &str) -> Result<PathBuf> {
     let abs = safe_join(checkout, rel)?;
     if abs.exists() {
         return Err(Error::Other(format!("\"{rel}\" already exists")));
@@ -655,121 +581,6 @@ fn resolve_new_path(checkout: &Path, rel: &str) -> Result<PathBuf> {
         std::fs::create_dir_all(dir)?;
     }
     Ok(abs)
-}
-
-/// Rename/move a checkout path (file or directory). Refuses to clobber an
-/// existing destination so a rename can never silently overwrite a sibling.
-/// Source and destination resolve their repo scope independently, so a move
-/// between a multi-repo agent's checkouts (sibling directories on the same
-/// volume) works like any other rename.
-#[tauri::command]
-pub async fn rename_checkout_path(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    from: String,
-    to: String,
-) -> Result<()> {
-    let (checkout_from, _base, from) =
-        checkout_scope_for_path(&supervisor, &agent_id, &from).await?;
-    let (checkout_to, _base, to) = checkout_scope_for_path(&supervisor, &agent_id, &to).await?;
-    let src = safe_join(&checkout_from, &from)?;
-    let dst = resolve_new_path(&checkout_to, &to)?;
-    std::fs::rename(&src, &dst)?;
-    Ok(())
-}
-
-/// Delete a checkout path. Files are removed directly; directories are
-/// removed recursively (the UI guards this behind a confirm step). Deleting a
-/// path that's already gone is a no-op, so concurrent deletes don't error.
-#[tauri::command]
-pub async fn delete_checkout_path(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    path: String,
-) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
-    let abs = safe_join(&checkout, &path)?;
-    if abs.is_dir() {
-        std::fs::remove_dir_all(&abs)?;
-    } else if abs.exists() {
-        std::fs::remove_file(&abs)?;
-    }
-    Ok(())
-}
-
-/// Create a new empty file, making parent directories as needed. Refuses to
-/// overwrite an existing path.
-#[tauri::command]
-pub async fn create_checkout_file(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    path: String,
-) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
-    let abs = resolve_new_path(&checkout, &path)?;
-    std::fs::write(&abs, "")?;
-    Ok(())
-}
-
-/// Create a new directory. Refuses to clobber an existing path.
-#[tauri::command]
-pub async fn create_checkout_dir(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    path: String,
-) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
-    let abs = resolve_new_path(&checkout, &path)?;
-    std::fs::create_dir_all(&abs)?;
-    Ok(())
-}
-
-/// Copy a checkout file to a new path (the explorer's "Duplicate"). Refuses
-/// to overwrite an existing destination.
-#[tauri::command]
-pub async fn copy_checkout_file(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    from: String,
-    to: String,
-) -> Result<()> {
-    let (checkout_from, _base, from) =
-        checkout_scope_for_path(&supervisor, &agent_id, &from).await?;
-    let (checkout_to, _base, to) = checkout_scope_for_path(&supervisor, &agent_id, &to).await?;
-    let src = safe_join(&checkout_from, &from)?;
-    let dst = resolve_new_path(&checkout_to, &to)?;
-    std::fs::copy(&src, &dst)?;
-    Ok(())
-}
-
-/// Persist a file the user pasted into the composer (a screenshot from the
-/// clipboard, or a file copied in Finder) so it can be attached by path like a
-/// dropped or browsed file. The webview only sees the pasted bytes, never a
-/// path, so the copy lands under `<data_dir>/attachments/<uuid>/<name>` — a
-/// per-paste directory keeps the original name intact without collisions.
-/// Returns the absolute path.
-///
-/// The bytes travel as the raw IPC body (no JSON-encoding a screenshot byte by
-/// byte); the name rides in the `name` header, sanitized by the frontend to a
-/// plain ASCII basename.
-#[tauri::command]
-pub fn save_pasted_attachment(request: tauri::ipc::Request<'_>) -> Result<String> {
-    let bytes = match request.body() {
-        tauri::ipc::InvokeBody::Raw(bytes) => bytes,
-        _ => return Err(Error::Other("expected raw attachment bytes".into())),
-    };
-    let name = request
-        .headers()
-        .get("name")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| crate::attachments::sanitize_name(s, "pasted"))
-        .unwrap_or_else(|| "pasted".to_string());
-    // Stage under the app-data dir; the file is moved into the target agent's
-    // workspace at send time (`attachments::adopt`), since a confined agent
-    // can't read the app-data dir. Dragged/browsed files skip this path
-    // entirely — they keep their original, already-readable location.
-    let path = crate::attachments::save_pasted(&name, bytes)?;
-    Ok(path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
