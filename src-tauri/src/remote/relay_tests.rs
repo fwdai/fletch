@@ -25,8 +25,8 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 use tokio_tungstenite::WebSocketStream;
 
-use super::relay::{self, Frame, RelayState, RelayTiming};
-use super::secure::{self, HostKey, SecureChannel};
+use super::relay::{Frame, RelayState, RelayTiming};
+use super::secure::{Handshake, HostKey, SecureChannel};
 use super::tests::{device, Device, StubDispatch};
 use super::{RemoteState, DEFAULT_RELAY_URL};
 
@@ -97,7 +97,7 @@ impl FakeRelay {
 }
 
 /// The relay's own static key. Fixed rather than random so a failing test can
-/// be replayed, and so the proof vector below is reproducible.
+/// be replayed, and matching the known-answer vector in `fletch_proto::relay`.
 const RELAY_PRIVATE: [u8; 32] = [
     0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
     0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
@@ -302,29 +302,26 @@ impl Phone {
     /// message wrapped in a DATA frame.
     async fn open(link: &mut HostLink, conn: u32, phone: &Device) -> Self {
         link.send(Frame::Open { conn }).await;
-        let mut handshake = secure::initiator(&phone.private).unwrap();
-        let mut buf = [0u8; 65535];
+        let mut handshake = Handshake::new(&phone.key, true).unwrap();
 
-        let n = handshake.write_message(&[], &mut buf).unwrap();
         link.send(Frame::Data {
             conn,
-            payload: Bytes::copy_from_slice(&buf[..n]),
+            payload: Bytes::from(handshake.write().unwrap()),
         })
         .await;
 
         let second = link.data_for(conn).await;
-        handshake.read_message(&second, &mut buf).unwrap();
+        handshake.read(&second).unwrap();
 
-        let n = handshake.write_message(&[], &mut buf).unwrap();
         link.send(Frame::Data {
             conn,
-            payload: Bytes::copy_from_slice(&buf[..n]),
+            payload: Bytes::from(handshake.write().unwrap()),
         })
         .await;
 
         Self {
             conn,
-            channel: SecureChannel::new(handshake.into_transport_mode().unwrap()),
+            channel: handshake.finish().unwrap(),
         }
     }
 
@@ -379,96 +376,11 @@ async fn until(state: &Arc<RemoteState>, what: &str, check: impl Fn(&super::Remo
 // ---------------------------------------------------------------------------
 // Authentication
 // ---------------------------------------------------------------------------
-
-/// The known-answer vector for the host link challenge, from fixed keys, so the
-/// relay implementation can be checked against exactly these bytes:
-///
-/// - host private  `AQEB…` (32 × 0x01)
-/// - relay private `AgIC…` (32 × 0x02)
-/// - nonce         `AwMD…` (32 × 0x03)
-///
-/// `proof = base64url( SHA-256( X25519(hostPrivate, relayPublic) || nonce || hostPublic ) )`.
-///
-/// The relay's own published vector (`relay/test-vector.json`, produced with
-/// Node's crypto and verified in workerd) must come out of this implementation
-/// byte for byte — the one place the two codebases are checked against the
-/// same numbers rather than each against itself. The fixed-key test below it
-/// is the desktop's own vector, printed for comparison.
-#[test]
-fn the_challenge_proof_matches_the_relays_published_vector() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../relay/test-vector.json");
-    let raw = std::fs::read_to_string(path).expect("relay/test-vector.json is in the repo");
-    let vector: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    let field = |name: &str| -> [u8; 32] {
-        B64.decode(vector[name].as_str().unwrap())
-            .unwrap()
-            .try_into()
-            .unwrap_or_else(|_| panic!("{name} is not 32 bytes"))
-    };
-
-    let host = HostKey::from_private(field("hostPrivate")).unwrap();
-    assert_eq!(*host.public_bytes(), field("hostId"), "host public key");
-    let relay_key = field("relayKey");
-    assert_eq!(
-        host.diffie_hellman(&relay_key).unwrap(),
-        field("shared"),
-        "X25519 shared secret"
-    );
-    let proof = relay::challenge_proof(&host, &relay_key, &field("nonce")).unwrap();
-    assert_eq!(proof, field("proof"), "proof");
-}
-
-#[test]
-fn the_challenge_proof_matches_a_known_answer_vector() {
-    let host = HostKey::from_private([0x01; 32]).unwrap();
-    let relay = HostKey::from_private([0x02; 32]).unwrap();
-    let nonce = [0x03u8; 32];
-
-    // Both ends must reach the same secret from opposite sides, which is the
-    // whole point of the challenge: the relay verifies with its own private key
-    // against the host ID it is routing on.
-    let from_host = host.diffie_hellman(relay.public_bytes()).unwrap();
-    let from_relay = relay.diffie_hellman(host.public_bytes()).unwrap();
-    assert_eq!(from_host, from_relay, "X25519 is not symmetric?");
-
-    let proof = relay::challenge_proof(&host, relay.public_bytes(), &nonce).unwrap();
-    println!("host private:  {}", B64.encode([0x01u8; 32]));
-    println!("host public:   {}", B64.encode(host.public_bytes()));
-    println!("relay private: {}", B64.encode([0x02u8; 32]));
-    println!("relay public:  {}", B64.encode(relay.public_bytes()));
-    println!("nonce:         {}", B64.encode(nonce));
-    println!("shared:        {}", B64.encode(from_host));
-    println!("proof:         {}", B64.encode(proof));
-
-    assert_eq!(
-        B64.encode(host.public_bytes()),
-        "pOCSkrZRwni5dyxWn1-puxPZBrRqtoyd-dwrRAn4ogk"
-    );
-    assert_eq!(
-        B64.encode(relay.public_bytes()),
-        "zo060cy2M-x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk"
-    );
-    assert_eq!(
-        B64.encode(from_host),
-        "LtdqtUmx5zwDHrSclEjweYrqgbaYJ5oMPcPkn7_EuVM"
-    );
-    assert_eq!(
-        B64.encode(proof),
-        "BzDo2Jh0uedvZ-WrLiP4wkMcCFhvU9L9REMa8_die2U"
-    );
-}
-
-#[test]
-fn the_host_endpoint_is_the_documented_one() {
-    assert_eq!(
-        relay::host_endpoint("wss://relay.fletch.sh", "abc"),
-        "wss://relay.fletch.sh/v1/host/abc"
-    );
-    assert_eq!(
-        relay::host_endpoint("wss://relay.fletch.sh/", "abc"),
-        "wss://relay.fletch.sh/v1/host/abc"
-    );
-}
+//
+// The proof itself — the known-answer vectors, `relay/test-vector.json` and the
+// endpoint shape — is tested where it lives, in `fletch_proto::relay`. What is
+// left here is the link driving it against a relay that verifies from the other
+// side of the same DH.
 
 /// The link is only up once the relay has verified the proof, and what it
 /// verified against is the host ID in the path.

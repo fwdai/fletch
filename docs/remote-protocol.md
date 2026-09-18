@@ -84,7 +84,8 @@ ciphertext.
   static key from message 3 and either registers it (`pair`) or requires it to
   be registered already (`hello`). Revoking a device deletes its key from the
   host; there is nothing on the phone to invalidate.
-- The secure channel lives in each app's Rust layer (`snow` on both sides).
+- The secure channel lives in each app's Rust layer, and is one shared crate —
+  `crates/fletch-proto` (`snow`) — so both ends cannot drift apart.
   The mobile webview speaks plain JSON to its own Rust layer, which is also why
   the browser dev loop (`bun run dev` outside Tauri) can only reach the mock
   host.
