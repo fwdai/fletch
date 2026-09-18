@@ -48,8 +48,8 @@ pub async fn discard_agent_changes(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    git::discard_all(&checkout).await
+    fletch_core::commands::discard_agent_changes_impl(&supervisor, &agent_id, subdir.as_deref())
+        .await
 }
 
 /// Stash all working-tree changes including untracked files.
@@ -59,8 +59,7 @@ pub async fn stash_agent(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    git::stash_push(&checkout).await
+    fletch_core::commands::stash_agent_impl(&supervisor, &agent_id, subdir.as_deref()).await
 }
 
 /// Abort an in-progress merge in the agent's checkout.
@@ -70,8 +69,7 @@ pub async fn abort_merge_agent(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    git::merge_abort(&checkout).await
+    fletch_core::commands::abort_merge_agent_impl(&supervisor, &agent_id, subdir.as_deref()).await
 }
 
 /// List all local branches in a repo. Used by the new-agent composer to
@@ -94,6 +92,11 @@ pub async fn repo_default_branch(repo_path: String) -> Result<String> {
 /// Force-delete the agent's local branch from its parent repository.
 /// Used by the merged-state UI to clean up after a PR lands. Safe-noops
 /// if the branch is already gone (matches `git::branch_delete` semantics).
+///
+/// Desktop-only on purpose: `repo.repo_path` is the user's real clone, not the
+/// agent's checkout, so this is the one Git-panel action that writes outside the
+/// workspace — and it writes with `branch -D`. It has no `_impl` because the
+/// remote dispatcher must not be able to reach it (`docs/remote-protocol.md`).
 #[tauri::command]
 pub async fn delete_branch_agent(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -112,8 +115,7 @@ pub async fn pull_agent(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    git::pull(&checkout).await
+    fletch_core::commands::pull_agent_impl(&supervisor, &agent_id, subdir.as_deref()).await
 }
 
 /// Rebase the agent's branch onto its parent (base) branch. Used by the
@@ -124,9 +126,5 @@ pub async fn rebase_agent(
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<()> {
-    let (repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    // Onto the base's resolved tip, not its name: the clone's local
-    // `refs/heads/<base>` is a stale snapshot from clone time.
-    let base = repo.resolve_base(&checkout).await;
-    git::rebase_onto(&checkout, &base).await
+    fletch_core::commands::rebase_agent_impl(&supervisor, &agent_id, subdir.as_deref()).await
 }

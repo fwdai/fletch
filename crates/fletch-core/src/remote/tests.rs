@@ -352,7 +352,7 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 54 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 59 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -382,6 +382,11 @@ fn allowlist_matches_the_protocol_table() {
         "get_file_diff",
         "commit_agent",
         "push_agent",
+        "pull_agent",
+        "rebase_agent",
+        "stash_agent",
+        "discard_agent_changes",
+        "abort_merge_agent",
         "create_pr",
         "merge_pr",
         "get_pr_state",
@@ -466,6 +471,13 @@ fn never_exposed_ops_are_not_dispatchable() {
     // the phone's v1 surface did not need, so it is now on the wire beside
     // `push_agent` and `create_pr` and the desktop gates it by op name instead.
     for op in [
+        // The one Git-panel action that stays off the wire, and the only one of
+        // them that writes outside the agent's checkout: `git branch -D` in the
+        // user's real clone (`TrackedRepo.repo_path`). Its five siblings —
+        // `pull_agent`, `rebase_agent`, `stash_agent`,
+        // `discard_agent_changes`, `abort_merge_agent` — act on the checkout
+        // alone and are on the allowlist above.
+        "delete_branch_agent",
         "db_select",
         "db_insert",
         "db_query",

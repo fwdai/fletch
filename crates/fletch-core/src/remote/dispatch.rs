@@ -97,6 +97,11 @@ pub const OPS: &[&str] = &[
     "get_file_diff",
     "commit_agent",
     "push_agent",
+    "pull_agent",
+    "rebase_agent",
+    "stash_agent",
+    "discard_agent_changes",
+    "abort_merge_agent",
     "create_pr",
     "merge_pr",
     "get_pr_state",
@@ -410,6 +415,58 @@ impl Dispatch for SupervisorDispatch {
                         sup,
                         ctx.clone(),
                         a.agent_id,
+                        a.subdir.as_deref(),
+                    )
+                    .await)
+                }
+
+                // The Git panel's working-tree moves. Each one acts inside the
+                // agent's own checkout and nowhere else — the reach
+                // `commit_agent` above already has — and none of them takes a
+                // path, branch or ref from the caller. `delete_branch_agent` is
+                // the one panel action left off the wire: it force-deletes a ref
+                // in the user's real repo, outside every checkout.
+                "pull_agent" => {
+                    let a: AgentSubdirArgs = parse(args)?;
+                    res(
+                        crate::commands::pull_agent_impl(sup, &a.agent_id, a.subdir.as_deref())
+                            .await,
+                    )
+                }
+
+                "rebase_agent" => {
+                    let a: AgentSubdirArgs = parse(args)?;
+                    res(
+                        crate::commands::rebase_agent_impl(sup, &a.agent_id, a.subdir.as_deref())
+                            .await,
+                    )
+                }
+
+                "stash_agent" => {
+                    let a: AgentSubdirArgs = parse(args)?;
+                    res(
+                        crate::commands::stash_agent_impl(sup, &a.agent_id, a.subdir.as_deref())
+                            .await,
+                    )
+                }
+
+                // Destructive, like `discard_agent` above, but only of the
+                // working tree: the checkout and the transcript stay.
+                "discard_agent_changes" => {
+                    let a: AgentSubdirArgs = parse(args)?;
+                    res(crate::commands::discard_agent_changes_impl(
+                        sup,
+                        &a.agent_id,
+                        a.subdir.as_deref(),
+                    )
+                    .await)
+                }
+
+                "abort_merge_agent" => {
+                    let a: AgentSubdirArgs = parse(args)?;
+                    res(crate::commands::abort_merge_agent_impl(
+                        sup,
+                        &a.agent_id,
                         a.subdir.as_deref(),
                     )
                     .await)
