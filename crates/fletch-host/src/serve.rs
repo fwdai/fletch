@@ -27,17 +27,62 @@ pub struct Config {
 
 /// The host's data directory when `--data-dir` says nothing:
 /// `~/Library/Application Support/fletch-host` on macOS,
-/// `$XDG_DATA_HOME/fletch-host` on Linux.
+/// `$XDG_DATA_HOME/fletch-host` on Linux, with a `dev` subfolder under a debug
+/// build.
 ///
 /// Deliberately *not* the desktop's directory (`fletch_core::data_dir`, which
 /// is keyed by the app's bundle id). One machine may well run both — a Mac mini
 /// serving agents that its owner also uses at the keyboard — and two engines
 /// sharing one SQLite database would each sweep the other's live agents as
-/// orphans.
+/// orphans. The `dev` split is the same rule applied to one binary built twice:
+/// `data_dir` does it for the desktop, and a debug host testing a change must
+/// not open the database a release host is serving from.
 pub fn default_data_dir() -> PathBuf {
-    dirs::data_dir()
+    let base = dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("fletch-host")
+        .join("fletch-host");
+    if cfg!(debug_assertions) {
+        base.join("dev")
+    } else {
+        base
+    }
+}
+
+/// Claim the host's own roots for the state that lives *outside* the data dir:
+/// agent checkouts (`~/.fletch/…/workspaces`) and RPC mailboxes
+/// (`~/.fletch/…/rpc`).
+///
+/// The engine already splits those two roots per *build*
+/// (`fletch_core::build_state_subpath`: `dev/` under debug) and the reason is
+/// exclusivity, not tidiness. Agent ids are drawn from a ~300-entry pool of
+/// place names and recycled after archive, with the database as the only
+/// authority — so two engines with two databases on one filesystem will
+/// eventually hand out the same name, land two live agents in one checkout
+/// directory (which provision clears, believing it can only be its own
+/// crash-orphan), and read each other's live mailboxes as orphans to sweep.
+/// A host beside a desktop is exactly two such engines, whether or not the
+/// builds differ.
+///
+/// So the host takes `~/.fletch/fletch-host` as its base, through the overrides
+/// the engine already honours, and the per-build split applies underneath it as
+/// usual. Anything already set — an operator's own layout, a test's temp dir —
+/// is left alone. Called before the engine boots, and before anything else in
+/// the process could be reading the environment.
+fn claim_state_roots() {
+    let Some(home) = dirs::home_dir() else {
+        // No home, no default roots to collide over: the engine will fail its
+        // own way if it needs one.
+        return;
+    };
+    let base = home.join(".fletch").join("fletch-host");
+    for key in [
+        fletch_core::workspace::WORKSPACES_ROOT_ENV,
+        fletch_core::rpc::RPC_ROOT_ENV,
+    ] {
+        if std::env::var_os(key).filter(|v| !v.is_empty()).is_none() {
+            std::env::set_var(key, &base);
+        }
+    }
 }
 
 /// Boot the engine and start answering on the admin socket.
@@ -53,6 +98,7 @@ pub async fn start(config: Config) -> Result<Arc<Admin>, String> {
         name,
         handle_signals,
     } = config;
+    claim_state_roots();
     prepare_data_dir(&data_dir)?;
     let listener = admin::bind(&data_dir).await?;
     let socket = admin::socket_path(&data_dir);
@@ -134,6 +180,40 @@ fn prepare_data_dir(data_dir: &Path) -> Result<(), String> {
             .map_err(|e| format!("cannot restrict {} to this user: {e}", data_dir.display()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two engines on one machine must not share a byte of state. The data dir
+    /// is neither the desktop's nor a release host's, and the checkout and
+    /// mailbox roots are the host's own — the rest of the separation (the
+    /// per-build `dev/` segment under those roots) is the engine's and is
+    /// tested there.
+    #[test]
+    fn the_host_keeps_its_state_to_itself() {
+        let data_dir = default_data_dir();
+        assert!(!data_dir.starts_with(fletch_core::data_dir()));
+        assert!(data_dir.to_string_lossy().contains("fletch-host"));
+        // Tests build in debug, so this run's dir is the debug one.
+        assert_eq!(data_dir.file_name().unwrap(), "dev");
+
+        // Process-global, and this is the only test that touches it — the same
+        // contract the engine's override tests keep.
+        claim_state_roots();
+        let checkouts = fletch_core::workspace::checkouts_root().expect("a checkouts root");
+        let mailboxes = fletch_core::rpc::mailbox_dir("orkney").expect("a mailbox dir");
+        for path in [&checkouts, &mailboxes] {
+            assert!(
+                path.to_string_lossy().contains("fletch-host"),
+                "{} is shared with the desktop",
+                path.display(),
+            );
+        }
+        assert!(checkouts.ends_with("dev/workspaces"), "{checkouts:?}");
+        assert!(mailboxes.ends_with("dev/rpc/orkney"), "{mailboxes:?}");
+    }
 }
 
 /// The one thing an operator needs from the log to get a phone paired: where

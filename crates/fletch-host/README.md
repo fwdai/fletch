@@ -36,7 +36,7 @@ database:
 
 | Flag | Default |
 | --- | --- |
-| `--data-dir PATH` | `~/Library/Application Support/fletch-host`, or `$XDG_DATA_HOME/fletch-host` |
+| `--data-dir PATH` | `~/Library/Application Support/fletch-host`, or `$XDG_DATA_HOME/fletch-host` (`…/fletch-host/dev` from a debug build) |
 | `--port N` | the stored `remote.port`, else `47285` |
 | `--relay URL` / `--no-relay` | the stored `remote.relay_url` |
 | `--name NAME` | the machine's name |
@@ -158,7 +158,25 @@ Anyone who can read it can push as you.
 
 Deliberately not the desktop's data directory. A Mac running both must not have
 two engines on one SQLite database — each would sweep the other's live agents as
-orphans.
+orphans. A debug build takes a `dev` subfolder of it for the same reason: one
+machine, two builds, two databases.
+
+Two more directories are the host's and not in there, because agent checkouts
+and RPC mailboxes have to sit outside the app's data dir for the sandbox to
+reach them:
+
+```
+~/.fletch/fletch-host/workspaces/<agent>/   # checkouts (dev/workspaces from a debug build)
+~/.fletch/fletch-host/rpc/<agent>/          # RPC mailboxes, 0700
+```
+
+The `fletch-host` segment is what keeps a host and a desktop apart: agent names
+come from a pool of place names and are recycled, so two engines with two
+databases *will* eventually both name an agent `fuji` — and sharing a root
+would put both in one checkout directory and make each one's startup sweep
+treat the other's live mailboxes as garbage. `$FLETCH_WORKSPACES_ROOT` and
+`$FLETCH_RPC_ROOT` override the base if you want them elsewhere (on a different
+disk, say); the host only sets them when they are unset.
 
 ## Known gaps
 
