@@ -609,6 +609,7 @@ export const protocol: HostProtocol = {
   ops: [
     ...V2_DEFAULT_OPS,
     "answer_publish_approval",
+    "discard_agent",
     "get_agent",
     "list_project_chats",
     "list_custom_agents",

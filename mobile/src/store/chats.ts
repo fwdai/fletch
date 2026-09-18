@@ -29,6 +29,11 @@ export interface ChatsSlice {
   loadChats(projectId: string): Promise<void>;
   /** Spawn a Project Manager chat for a project and open it on the idea. */
   startPlanningChat(input: PlanningChatInput): Promise<void>;
+  /** Delete a planning chat outright — record, checkout and transcript, as the
+   *  desktop's own `deleteChat` does. Archiving one would strand it: an archived
+   *  chat is in neither the snapshot nor `list_project_chats`, so nothing on the
+   *  phone could ever list it again. Needs `discard_agent`. */
+  deleteChat(agentId: string): Promise<void>;
   /** Apply a live event to a chat record. A no-op for an agent that is not in
    *  the registry, so the event handlers can call it unconditionally. */
   patchChat(agentId: string, fields: Partial<AgentRecord>): void;
@@ -168,6 +173,36 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         // Advisory: the screen stays as it was rather than the open failing,
         // and the next reconnect or open tries again.
       }
+    },
+
+    async deleteChat(agentId) {
+      const chat = agentOf(get(), agentId);
+      return guard(async () => {
+        // Dropped from the registry FIRST, so the agent screen unmounts before
+        // the host tears the transcript down — the desktop does the same: a
+        // still-mounted chat would refetch the history of an agent that is
+        // being deleted under it.
+        if (chat) {
+          set((s) => ({
+            chats: {
+              ...s.chats,
+              [chat.project_id]: (s.chats[chat.project_id] ?? []).filter((c) => c.id !== agentId),
+            },
+          }));
+        }
+        get().closeSheet();
+        const top = get()
+          .nav.filter((i) => i.phase !== "leave")
+          .at(-1);
+        if (top?.screen === "agent" && top.props.agentId === agentId) get().pop();
+        try {
+          await api.discardAgent(agentId);
+        } catch (e) {
+          // The removal was wrong — put the host's truth back on screen.
+          if (chat) await get().loadChats(chat.project_id);
+          throw e;
+        }
+      });
     },
 
     patchChat(agentId, fields) {

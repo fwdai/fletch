@@ -228,7 +228,11 @@ export class MockHost {
   /** Play a scripted turn: live `agent:event` frames, then the canonical
    *  records + `session:records-appended`, exactly as a real host does. */
   private runTurn(id: string, prompt: string) {
-    const provider = this.agent(id).provider;
+    // A turn queued behind a discard has nothing left to run on: the host drops
+    // the session with the record, it does not raise an error at nobody.
+    const agent = this.state.workspace.agents.find((a) => a.id === id);
+    if (!agent) return;
+    const provider = agent.provider;
     const steps = scriptFor(provider, prompt);
     this.event("turn:started", { agent_id: id, started_at: Date.now() });
     this.setStatus(id, "running");
@@ -448,6 +452,17 @@ export class MockHost {
           ...this.state.workspace,
           agents: this.state.workspace.agents.filter((a) => a.id !== id),
         };
+        this.event("workspace:changed", null);
+        return null;
+      // The destructive twin: the record goes for good, so a purpose-tagged
+      // chat drops out of `list_project_chats` the same way a sidebar agent
+      // drops out of the snapshot.
+      case "discard_agent":
+        this.state.workspace = {
+          ...this.state.workspace,
+          agents: this.state.workspace.agents.filter((a) => a.id !== id),
+        };
+        delete this.state.records[id];
         this.event("workspace:changed", null);
         return null;
       case "set_agent_model":

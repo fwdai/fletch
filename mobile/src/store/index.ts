@@ -913,14 +913,16 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async archive(agentId) {
-    const chat = agentOf(get(), agentId);
+    const agent = agentOf(get(), agentId);
     return guard(set, async () => {
+      // An archived purpose chat is in neither the snapshot nor
+      // `list_project_chats`, so archiving one loses it with no way back.
+      // `deleteChat` is the honest gesture for those; refuse here so no other
+      // path can strand one.
+      if (agent?.purpose) throw new Error("a planning chat is deleted, not archived");
       await api.archiveAgent(agentId);
       get().closeSheet();
       get().pop();
-      // A planning chat is absent from the snapshot `refreshWorkspace` re-reads,
-      // so its own list is what has to catch up with it being gone.
-      if (chat?.purpose) await get().loadChats(chat.project_id);
       await get().refreshWorkspace();
     });
   },

@@ -517,6 +517,56 @@ describe("planning chats", () => {
     expect(state().chats).toBe(before);
   });
 
+  it("follows a model or effort change, which the composer reads off the record", async () => {
+    await state().loadChats(projectId);
+    await state().setModel("sakura", "opus");
+    await vi.waitFor(() => expect(agentOf(state(), "sakura")?.model).toBe("opus"));
+    await state().setEffort("sakura", "high");
+    await vi.waitFor(() => expect(agentOf(state(), "sakura")?.effort).toBe("high"));
+  });
+
+  it("deletes a chat outright — the registry first, then the host", async () => {
+    await state().startPlanningChat({ projectId, prompt: "A queue nobody asked for" });
+    const id = state().chats[projectId]?.[0]?.id ?? "";
+    const discard = vi.spyOn(api, "discardAgent");
+    try {
+      await state().deleteChat(id);
+      expect(discard).toHaveBeenCalledWith(id);
+    } finally {
+      discard.mockRestore();
+    }
+    expect(state().chats[projectId]?.some((c) => c.id === id)).toBe(false);
+    // Gone on the host too, not merely hidden: the list read no longer has it.
+    await state().loadChats(projectId);
+    expect(state().chats[projectId]?.some((c) => c.id === id)).toBe(false);
+  });
+
+  it("puts the list back when the host refuses the delete", async () => {
+    await state().loadChats(projectId);
+    const discard = vi.spyOn(api, "discardAgent").mockRejectedValue(new Error("chat is busy"));
+    try {
+      await expect(state().deleteChat("sakura")).rejects.toThrow("chat is busy");
+    } finally {
+      discard.mockRestore();
+    }
+    // The optimistic removal was wrong, so the host's own list is read back.
+    expect(state().chats[projectId]?.map((c) => c.id)).toContain("sakura");
+    expect(state().lastError).toContain("chat is busy");
+  });
+
+  it("refuses to archive a chat — an archived one could never be listed again", async () => {
+    await state().loadChats(projectId);
+    const before = state().chats;
+    const archive = vi.spyOn(api, "archiveAgent");
+    try {
+      await expect(state().archive("sakura")).rejects.toThrow(/deleted, not archived/);
+      expect(archive).not.toHaveBeenCalled();
+    } finally {
+      archive.mockRestore();
+    }
+    expect(state().chats).toBe(before);
+  });
+
   it("resolves a chat from its id alone — all a tapped notification carries", async () => {
     // A cold launch: the snapshot never named the chat and nothing has listed
     // it, so the agent screen has an id and an empty registry behind it.

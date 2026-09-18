@@ -131,6 +131,11 @@ export function createApi(client: RemoteClient) {
     stopAgent: (agentId: string) => call<null>("stop_agent", { agentId }),
     resumeAgent: (agentId: string) => call<null>("resume_agent", { agentId }),
     archiveAgent: (agentId: string) => call<null>("archive_agent", { agentId }),
+    /** The destructive twin of `archiveAgent` — record, checkout and transcript
+     *  all go. What a planning chat is deleted with: an archive would only hide
+     *  it, and nothing on the phone lists an archived chat again. Gated on
+     *  `hostSupports("discard_agent")`. */
+    discardAgent: (agentId: string) => call<null>("discard_agent", { agentId }),
     setAgentModel: (agentId: string, model: string | null) =>
       call<null>("set_agent_model", { agentId, model }),
     setAgentEffort: (agentId: string, effort: string | null) =>

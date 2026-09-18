@@ -137,11 +137,15 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   on<AgentModelEvent>("agent:model", (e) => {
+    // The composer's model picker reads the selection off the record, so a chat
+    // has to be patched in its own registry too — the snapshot never holds it.
+    get().patchChat(e.agent_id, { model: e.model });
     const ws = get().workspace;
     if (ws) set({ workspace: patchAgent(ws, e.agent_id, { model: e.model }) });
   });
 
   on<AgentEffortEvent>("agent:effort", (e) => {
+    get().patchChat(e.agent_id, { effort: e.effort });
     const ws = get().workspace;
     if (ws) set({ workspace: patchAgent(ws, e.agent_id, { effort: e.effort }) });
   });
