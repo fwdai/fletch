@@ -442,7 +442,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 |---|---|---|
 | `get_workspace` | `{}` | `Workspace \| null` |
 | `allocate_draft_name` | `{ drafts: string[] }` | `string` |
-| `spawn_agent` | as command; host forces `view: "custom"`, ignores `purpose`, `skills`, `mcpServers`, `customAgentId` in v1 | `AgentRecord` |
+| `spawn_agent` | as command; host forces `view: "custom"` and ignores `skills` / `mcpServers`. `customAgentId` is honoured; `purpose` is honoured only when it is `"roadmap-pm"` (see "Planning chats from the phone") and dropped otherwise | `AgentRecord` |
 | `send_user_message` | `{ agentId, turnId, text, attachments: string[] }` — paths from `attachment_end` (see "Attachments") | `boolean` |
 | `answer_tool_use` | `{ agentId, requestId, updatedInput, behavior, message? }` | `null` |
 | `answer_publish_approval` | `{ id, approved }` — `id` from the `publish:approval-requested` event; an id the host has already timed out is ignored | `null` |
@@ -482,13 +482,20 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `attachment_chunk` | `{ upload, data: string }` — base64 of the file's next bytes (remote-only) | `null` |
 | `attachment_end` | `{ upload }` (remote-only) | `{ path: string }` |
 | `attachment_cancel` | `{ upload }` (remote-only) | `null` |
+| `list_project_chats` | `{ projectId, purpose }` — `purpose` is `"roadmap-pm"` | `AgentRecord[]` |
+| `list_custom_agents` | `{}` — the stored `custom_agents` rows, newest-edited first; `skill_ids` / `mcp_server_ids` are JSON text as stored | `CustomAgentRow[]` |
+| `roadmap_list_items` | `{ projectId }` | `RoadmapItem[]` |
+| `roadmap_update_item` | `{ id, patch, expectStatus?, queue? }` | `{ applied: boolean, item: RoadmapItem }` |
+| `roadmap_delete_item` | `{ id }` | `null` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
 (`write_checkout_file`, `rename_*`, `delete_*`, `create_*`, `copy_*`), shell
 ops (`open_agent_shell`, `write_to_shell`, …), `write_to_agent` (raw PTY),
-editor/log/telemetry/provider-install ops, workflow, roadmap and run ops.
-Adding an op means adding a row here and a match arm in the dispatcher.
+editor/log/telemetry/provider-install ops, workflow and run ops, and every
+roadmap op but the three listed above (no create, no rank, no hand-off, no
+queue, no proposal or hold ops). Adding an op means adding a row here and a
+match arm in the dispatcher.
 
 The spawn flow is the desktop's: `allocate_draft_name` → `spawn_agent` →
 wait for `agent:status` to leave `spawning` → `send_user_message` with the
@@ -511,6 +518,23 @@ Pinning a folder that is not yet a git repository runs `git init` plus an
 initial commit in it, exactly as the desktop dialog does. The phone remembers
 the last destination parent per host, as the desktop does. Creating a brand-new
 repo from the phone (`create_repo`) is a follow-up.
+
+Planning chats from the phone are the desktop Roadmap tab's Project Manager
+chat, reached through the same commands. `list_custom_agents` returns the
+user's presets so the phone can find the Project Manager one; `spawn_agent`
+then opens the chat with `purpose: "roadmap-pm"`, that preset's
+`customAgentId`, and its `instructions` (the only `purpose` the host accepts —
+any other value is dropped and the spawn lands as an ordinary sidebar agent).
+A PM chat is absent from `get_workspace`, so `list_project_chats` with
+`{ projectId, purpose: "roadmap-pm" }` is how the phone lists them. The chat
+itself is `send_user_message` and `agent:event` like any other. What the PM
+proposes arrives as `roadmap:item` events and is read back with
+`roadmap_list_items`; the user accepts a proposal with `roadmap_update_item`
+(`patch: { status: "open" }`, `expectStatus: "proposed"` so two clients cannot
+both accept the same ghost row, plus `queue: true` to dispatch it straight
+away) and discards one with `roadmap_delete_item`, which comes back as
+`roadmap:item-deleted`. Nothing else roadmap-side is on the wire: the board's
+own editing — creating, ranking, holding, handing off — stays on the desktop.
 
 ## Dictation
 
@@ -628,6 +652,7 @@ agent:branch           agent:model            agent:effort
 agent:repo_added       agent:git-action       session:records-appended
 turn:sent              turn:started           workspace:changed
 pr:state_changed       verify:report          publish:approval-requested
+roadmap:item           roadmap:item-deleted
 ```
 
 `agent:event` is forwarded unfiltered, including the provider's
@@ -645,8 +670,13 @@ agent's publish is blocked on the host until someone answers with
 that does not have that op on `protocol.ops` can show the prompt but not answer
 it.
 
+`roadmap:item` (a row created or changed) and `roadmap:item-deleted` (its id)
+are the two the phone's planning chat renders — the board as the PM moves it.
+Every other `roadmap:*` name stays off the wire.
+
 Never forwarded: `agent:output`, `shell:output` (raw PTY bytes), `run:*`,
-`wf:*`, `roadmap:*`, `dictation:*`, `docker:*`, `agent-install:*`.
+`wf:*`, `dictation:*`, `docker:*`, `agent-install:*`, and all of `roadmap:*`
+apart from the two above.
 
 Delivery is best effort, exactly like the desktop frontend: the phone must
 refetch `get_workspace` on reconnect and on returning to the foreground, and

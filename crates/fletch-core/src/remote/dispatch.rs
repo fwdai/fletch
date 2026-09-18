@@ -5,8 +5,9 @@
 //! function that command calls — so a phone and the desktop webview cannot
 //! drift apart in behaviour. Nothing outside [`OPS`] is reachable: `db_*`, the
 //! file mutations, the shell ops, raw PTY input, editor/log/telemetry/provider
-//! ops and the workflow/roadmap/run surfaces are all off the wire by
-//! construction.
+//! ops and the workflow/run surfaces are all off the wire by construction — as
+//! is every roadmap op but the three a phone's planning chat needs (read a
+//! project's items, accept a proposal, discard one).
 //!
 //! Adding an op is: a row in `docs/remote-protocol.md`, a name in [`OPS`], and
 //! one match arm here — unless it needs to know *which device* is asking, in
@@ -114,6 +115,11 @@ pub const OPS: &[&str] = &[
     "attachment_chunk",
     "attachment_end",
     "attachment_cancel",
+    "list_project_chats",
+    "list_custom_agents",
+    "roadmap_list_items",
+    "roadmap_update_item",
+    "roadmap_delete_item",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -200,9 +206,11 @@ impl Dispatch for SupervisorDispatch {
                     res(crate::commands::allocate_draft_name_impl(sup, a.drafts))
                 }
 
-                // v1 forces the structured chat view and drops the custom-agent
-                // fields: the phone has no UI for a native PTY, and skills / MCP
-                // servers / a custom agent id are resolved by value from desktop
+                // The structured chat view is forced: the phone has no UI for a
+                // native PTY. `customAgentId` and a roadmap-PM `purpose` pass
+                // through so a phone can open the same planning chat the Roadmap
+                // tab does (see [`remote_purpose`]); `skills` / `mcpServers` stay
+                // dropped, since they are snapshots by value out of desktop
                 // storage the phone cannot see.
                 "spawn_agent" => {
                     let a: SpawnArgs = parse(args)?;
@@ -216,12 +224,12 @@ impl Dispatch for SupervisorDispatch {
                         a.effort,
                         a.model,
                         a.instructions,
-                        None,
+                        a.custom_agent_id,
                         None,
                         None,
                         a.fork_base,
                         a.issue_ref,
-                        None,
+                        remote_purpose(a.purpose),
                     )
                     .await)
                 }
@@ -444,6 +452,61 @@ impl Dispatch for SupervisorDispatch {
                     Ok(Value::Null)
                 }
 
+                // The planning surface (protocol doc, "Planning chats from the
+                // phone"). Purpose-scoped chats are absent from the workspace
+                // snapshot, so this is the only listing that surfaces them.
+                "list_project_chats" => {
+                    let a: ProjectChatsArgs = parse(args)?;
+                    ok(sup.project_chats(&a.project_id, &a.purpose))
+                }
+
+                // Read-only, and the one place the phone touches a table
+                // directly: a custom agent is stored rows-only (no command
+                // reads it back), and the phone needs the Project Manager
+                // preset's id to spawn a planning chat against it. Same query
+                // the desktop's `listCustomAgents` runs.
+                "list_custom_agents" => {
+                    let rows = {
+                        let conn = ctx.db.lock();
+                        crate::database::db_select(
+                            &conn,
+                            "custom_agents",
+                            serde_json::json!({ "orderBy": "updated_at", "orderDirection": "desc" }),
+                        )
+                    };
+                    res(rows)
+                }
+
+                "roadmap_list_items" => {
+                    let a: ProjectArgs = parse(args)?;
+                    ok(
+                        crate::roadmap::commands::roadmap_list_items_impl(a.project_id, &ctx.db)
+                            .await?,
+                    )
+                }
+
+                // Accepting a proposal is an `open` patch guarded by
+                // `expectStatus: "proposed"`, so two clients racing on the same
+                // ghost row can't both accept it.
+                "roadmap_update_item" => {
+                    let a: RoadmapUpdateArgs = parse(args)?;
+                    ok(crate::roadmap::commands::roadmap_update_item_impl(
+                        a.id,
+                        a.patch,
+                        a.expect_status,
+                        a.queue,
+                        ctx,
+                        &ctx.db,
+                    )
+                    .await?)
+                }
+
+                "roadmap_delete_item" => {
+                    let a: ItemIdArgs = parse(args)?;
+                    crate::roadmap::commands::roadmap_delete_item_impl(a.id, ctx, &ctx.db).await?;
+                    Ok(Value::Null)
+                }
+
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.
                 _ => Err(UNKNOWN_OP.to_string()),
@@ -483,6 +546,15 @@ pub(super) async fn add_project_op(sup: &Supervisor, op: &str, args: Value) -> D
 
         _ => Err(UNKNOWN_OP.to_string()),
     }
+}
+
+/// The one `purpose` a phone may set on a spawn: a Roadmap PM chat, the single
+/// purpose-scoped surface the remote protocol exposes. Every other value is
+/// dropped rather than refused — `purpose` hides a workspace from the sidebar
+/// and narrows its capability grant, so an unknown one from a future client
+/// would strand an agent in a surface this host does not have.
+fn remote_purpose(purpose: Option<String>) -> Option<String> {
+    purpose.filter(|p| p == crate::workspace::PURPOSE_ROADMAP_PM)
 }
 
 fn parse<T: DeserializeOwned>(args: Value) -> std::result::Result<T, String> {
@@ -561,6 +633,44 @@ struct SpawnArgs {
     fork_base: Option<String>,
     #[serde(default)]
     issue_ref: Option<String>,
+    /// The custom-agent preset this chat runs as, from `list_custom_agents`.
+    #[serde(default)]
+    custom_agent_id: Option<String>,
+    /// Honoured only for `PURPOSE_ROADMAP_PM`; see [`remote_purpose`].
+    #[serde(default)]
+    purpose: Option<String>,
+}
+
+/// One project's purpose-scoped chats (`workspace::PURPOSE_ROADMAP_PM`).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectChatsArgs {
+    project_id: String,
+    purpose: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectArgs {
+    project_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RoadmapUpdateArgs {
+    id: String,
+    patch: crate::roadmap::types::ItemPatch,
+    /// The status the caller believes the item is in; the write is a no-op
+    /// (`applied: false`) when it has moved on.
+    #[serde(default)]
+    expect_status: Option<crate::roadmap::types::ItemStatus>,
+    #[serde(default)]
+    queue: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct ItemIdArgs {
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -660,6 +770,20 @@ mod arg_tests {
     use super::*;
     use serde_json::json;
 
+    /// A phone's planning chat is the one spawn that names a purpose, and
+    /// `roadmap-pm` is the only surface the protocol exposes: anything else —
+    /// a purpose a later desktop adds, or a typo — is dropped, so the spawn
+    /// lands in the sidebar rather than in a surface the phone cannot list.
+    #[test]
+    fn only_the_roadmap_pm_purpose_survives_the_wire() {
+        assert_eq!(
+            remote_purpose(Some(crate::workspace::PURPOSE_ROADMAP_PM.to_string())),
+            Some("roadmap-pm".to_string())
+        );
+        assert_eq!(remote_purpose(Some("something-else".into())), None);
+        assert_eq!(remote_purpose(None), None);
+    }
+
     /// The mobile client sends the desktop's full `spawn_agent` payload, with
     /// the fields v1 does not expose present but null. They must deserialize
     /// away rather than fail the request.
@@ -687,6 +811,20 @@ mod arg_tests {
         assert_eq!(args.fork_base.as_deref(), Some("main"));
         assert!(args.instructions.is_none());
         assert!(args.issue_ref.is_none());
+        assert!(args.custom_agent_id.is_none());
+        assert!(args.purpose.is_none());
+
+        // The planning-chat payload: the preset and the purpose both ride
+        // through to the spawn.
+        let pm: SpawnArgs = parse(json!({
+            "repoPath": "/Users/alex/code/thing",
+            "customAgentId": "ca-1",
+            "purpose": "roadmap-pm",
+            "instructions": "You are the Project Manager.",
+        }))
+        .expect("planning-chat payload");
+        assert_eq!(pm.custom_agent_id.as_deref(), Some("ca-1"));
+        assert_eq!(remote_purpose(pm.purpose).as_deref(), Some("roadmap-pm"));
     }
 
     #[test]

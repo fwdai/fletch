@@ -352,7 +352,7 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 43 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 48 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -400,6 +400,11 @@ fn allowlist_matches_the_protocol_table() {
         "attachment_chunk",
         "attachment_end",
         "attachment_cancel",
+        "list_project_chats",
+        "list_custom_agents",
+        "roadmap_list_items",
+        "roadmap_update_item",
+        "roadmap_delete_item",
         "register_push",
     ];
     assert_eq!(
