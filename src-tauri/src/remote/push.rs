@@ -37,9 +37,10 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::json;
-use tauri::{AppHandle, Listener, Manager};
+use tauri::{AppHandle, Listener};
 
 use super::RemoteState;
+use crate::host::EngineCtx;
 use crate::supervisor::Supervisor;
 use crate::workspace::{AgentStatus, AgentView};
 
@@ -273,45 +274,41 @@ fn clamp(text: &str) -> String {
 /// the same "in unconditionally, short-circuits when nothing is listening"
 /// rule as event forwarding: with no relay link and no registered token,
 /// `alert` gives up before it builds anything.
-pub(super) fn install_taps(app: &AppHandle, state: Arc<RemoteState>) {
-    let triggers = Arc::new(PushTriggers::for_state(state, window_focus(app.clone())));
+pub(super) fn install_taps(app: &AppHandle, ctx: &Arc<EngineCtx>, state: Arc<RemoteState>) {
+    let triggers = Arc::new(PushTriggers::for_state(state, host_focus(ctx.clone())));
 
     let status_triggers = triggers.clone();
-    let status_app = app.clone();
+    let status_ctx = ctx.clone();
     app.listen_any("agent:status", move |event| {
-        with_supervisor(&status_app, |agents| {
+        with_supervisor(&status_ctx, |agents| {
             if let Ok(status) = serde_json::from_str::<StatusPayload>(event.payload()) {
                 status_triggers.on_status(agents, &status.agent_id, &status.status);
             }
         });
     });
 
-    let event_app = app.clone();
+    let event_ctx = ctx.clone();
     app.listen_any("agent:event", move |event| {
-        with_supervisor(&event_app, |agents| {
+        with_supervisor(&event_ctx, |agents| {
             triggers.on_agent_event(agents, event.payload());
         });
     });
 }
 
-/// Run `f` with the managed supervisor, if there is one. Resolved per event
-/// rather than captured, so the taps can be installed before (or without) the
-/// supervisor being managed — the same lookup `supervisor::messaging` does.
-fn with_supervisor(app: &AppHandle, f: impl FnOnce(&Supervisor)) {
-    if let Some(sup) = app.try_state::<Arc<Supervisor>>() {
-        f(sup.inner().as_ref());
+/// Run `f` with the supervisor, if there is one. Resolved per event rather than
+/// captured, so the taps can be installed before (or without) the supervisor
+/// being published on the ctx — the same lookup `supervisor::messaging` does.
+fn with_supervisor(ctx: &EngineCtx, f: impl FnOnce(&Supervisor)) {
+    if let Some(sup) = ctx.supervisor() {
+        f(sup.as_ref());
     }
 }
 
-/// The default focus check: does the main window have focus right now. A window
-/// that is not there (or cannot be asked) counts as unfocused, so a trigger is
-/// sent rather than silently swallowed.
-fn window_focus(app: AppHandle) -> FocusCheck {
-    Box::new(move || {
-        app.get_webview_window("main")
-            .and_then(|window| window.is_focused().ok())
-            .unwrap_or(false)
-    })
+/// The focus check: is the user looking at this host right now. Whatever the
+/// host answers — a desktop asks its main window; a headless host says no, so a
+/// trigger is sent rather than silently swallowed.
+fn host_focus(ctx: Arc<EngineCtx>) -> FocusCheck {
+    Box::new(move || (ctx.focus)())
 }
 
 /// `supervisor::events::AgentStatusPayload`, the part of it this needs.

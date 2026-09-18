@@ -2,9 +2,10 @@
 //! verification, run-config detection, and project env-variable overrides.
 
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::error::Result;
+use crate::host::EngineCtx;
 use crate::run_session::RunStateSnapshot;
 use crate::supervisor::Supervisor;
 
@@ -15,21 +16,21 @@ use super::files::{agent_repo_checkout, expand_tilde};
 #[tauri::command]
 pub fn run_start(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
 ) -> Result<()> {
     let sup = supervisor.inner().clone();
-    sup.run_start(app, &agent_id)
+    sup.run_start(ctx.inner().clone(), &agent_id)
 }
 
 /// Stop the Run-panel process for an agent. Idempotent.
 #[tauri::command]
 pub fn run_stop(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
 ) -> Result<()> {
-    supervisor.run_stop(app, &agent_id)
+    supervisor.run_stop(ctx.inner().clone(), &agent_id)
 }
 
 /// Snapshot of the Run-panel state and accumulated log buffer for

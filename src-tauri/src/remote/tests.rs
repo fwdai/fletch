@@ -463,7 +463,7 @@ fn never_exposed_ops_are_not_dispatchable() {
 // Add-project ops
 //
 // Dispatched in process against a real `Supervisor` — the same code path the
-// socket runs, minus the `AppHandle` none of these five ops touches. Network
+// socket runs, minus the engine ctx none of these five ops touches. Network
 // ops (`gh_status`, `gh_repo_list`, a real clone) are left to manual testing:
 // they need a signed-in `gh`.
 // ---------------------------------------------------------------------------

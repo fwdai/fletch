@@ -297,7 +297,7 @@ fn ctx_with(fx: &Fixture, driver: Arc<dyn AgentDriver>) -> RunCtx {
     RunCtx {
         db: fx.db.clone(),
         driver,
-        app: None,
+        engine: None,
         cancel: fx.cancel.clone(),
         pending_ask: Arc::new(AtomicBool::new(false)),
         deadlines: Deadlines::default(),

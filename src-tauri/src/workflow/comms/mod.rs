@@ -19,10 +19,10 @@
 //! state, and an `ask` is never forwarded (it belongs to the human).
 //!
 //! The routing/persistence/journaling core is written as free functions taking
-//! `Option<&AppHandle>` (mirroring the scheduler's testable seam), so the whole
-//! matrix is exercised against a temp DB with no live app. [`WorkflowService`]
-//! adds only the two things that need the live registry: poking the driver on an
-//! ask, and resuming the run on `wf_answer`.
+//! `Option<&Arc<EngineCtx>>` (mirroring the scheduler's testable seam), so the
+//! whole matrix is exercised against a temp DB with no engine ctx.
+//! [`WorkflowService`] adds only the two things that need the live registry:
+//! poking the driver on an ask, and resuming the run on `wf_answer`.
 //!
 //! Scope (S10): `report` / `ask` / `notify` + human Q&A. The orchestrator role
 //! (`decide` / `compose`, auto-forwarding lifecycle events, routing `ask` to an
@@ -34,9 +34,9 @@ use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
 
 use crate::error::Result;
+use crate::host::EngineCtx;
 use crate::roadmap::review::MidRunSignal;
 use crate::rpc::git::GitDispatcher;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
@@ -329,7 +329,7 @@ impl WorkflowService {
         // DB lock's work).
         let (resp, poke, signal) = {
             let conn = self.db.lock();
-            let (resp, poke) = route(&conn, Some(&self.app), id, run_id, agent_id, op, args);
+            let (resp, poke) = route(&conn, Some(&self.engine), id, run_id, agent_id, op, args);
             // Same lock scope, because attributing the message needs the sending
             // attempt this op just wrote against; a rejected op recorded nothing,
             // so there is nothing to be aware of.
@@ -356,9 +356,9 @@ impl WorkflowService {
         // of its callers get that for free; this outer spawn composes harmlessly
         // over the inner one and keeps even the back-link read off this thread.)
         if let Some(signal) = signal {
-            let (app, db) = (self.app.clone(), self.db.clone());
+            let (engine, db) = (self.engine.clone(), self.db.clone());
             tauri::async_runtime::spawn(async move {
-                crate::roadmap::review::midrun(&app, &db, &signal);
+                crate::roadmap::review::midrun(&engine, &db, &signal);
             });
         }
         (resp, Vec::new())
@@ -376,7 +376,14 @@ impl WorkflowService {
     ) -> Result<()> {
         {
             let conn = self.db.lock();
-            deliver_answer(&conn, Some(&self.app), project_id, run_id, message_id, body)?;
+            deliver_answer(
+                &conn,
+                Some(&self.engine),
+                project_id,
+                run_id,
+                message_id,
+                body,
+            )?;
         }
         // Resume: the drive loop starts a fresh attempt for the asking step (the
         // asking attempt was abandoned at the pause).
@@ -393,7 +400,7 @@ impl WorkflowService {
 /// same local-git surface as any other agent. Constructed in
 /// `supervisor::lifecycle` when an agent has an `owner_run_id`.
 pub struct WorkflowCommsDispatcher {
-    app: AppHandle,
+    engine: Arc<EngineCtx>,
     /// The run that owns this agent (its `owner_run_id`), captured at spawn. Comms
     /// ops resolve the sender by run — `wf_step_exec.agent_id` is stamped only
     /// after the turn, so it can't key resolution during the turn.
@@ -403,9 +410,14 @@ pub struct WorkflowCommsDispatcher {
 }
 
 impl WorkflowCommsDispatcher {
-    pub fn new(app: AppHandle, run_id: String, agent_id: String, git: GitDispatcher) -> Self {
+    pub fn new(
+        engine: Arc<EngineCtx>,
+        run_id: String,
+        agent_id: String,
+        git: GitDispatcher,
+    ) -> Self {
         Self {
-            app,
+            engine,
             run_id,
             agent_id,
             git,
@@ -422,11 +434,8 @@ impl RpcDispatcher for WorkflowCommsDispatcher {
     ) -> RpcFuture<'a, (Response, Vec<RpcEvent>)> {
         Box::pin(async move {
             if is_comms_op(op) {
-                match self.app.try_state::<Arc<WorkflowService>>() {
-                    Some(svc) => {
-                        svc.inner()
-                            .handle_comms_op(id, &self.run_id, &self.agent_id, op, args)
-                    }
+                match self.engine.workflows() {
+                    Some(svc) => svc.handle_comms_op(id, &self.run_id, &self.agent_id, op, args),
                     None => (
                         Response::err(id, "workflow service unavailable"),
                         Vec::new(),

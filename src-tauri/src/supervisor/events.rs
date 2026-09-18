@@ -1,6 +1,6 @@
 //! Every event the supervisor emits, in one place: the payload types and a
 //! typed emit fn per event, each taking the [`EventSink`] the event goes out
-//! on (the desktop's is the `AppHandle`). Emit failures (serialization —
+//! on (the desktop's is the `TauriSink`). Emit failures (serialization —
 //! effectively never) are logged, not surfaced; no event is delivery-guaranteed
 //! and the frontend resyncs on focus rather than trusting delivery.
 

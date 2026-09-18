@@ -2,10 +2,10 @@
 //! follow-up queue drained at turn boundaries.
 
 use std::sync::Arc;
-use tauri::{AppHandle, Manager};
 
 use crate::agent::injection_mode;
 use crate::error::{Error, Result};
+use crate::host::EngineCtx;
 use crate::managed_session::ToolUseBehavior;
 use crate::message_queue::{decide_delivery, Delivery, PendingMsg};
 use crate::workspace::AgentStatus;
@@ -28,7 +28,7 @@ impl Supervisor {
     /// is; any variant that actually delivers returns `false`.
     pub fn send_user_message(
         self: Arc<Self>,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
         turn_id: &str,
         text: &str,
@@ -71,7 +71,14 @@ impl Supervisor {
         // delivery, so it lands ahead of the `agent:status` Running flip that
         // delivery raises — a mirroring client renders a turn-opening bubble
         // for `!busy` and must not be told the turn is running first.
-        emit_turn_sent(app, agent_id, turn_id, text, attachments, busy);
+        emit_turn_sent(
+            ctx.sink.as_ref(),
+            agent_id,
+            turn_id,
+            text,
+            attachments,
+            busy,
+        );
 
         let delivery = decide_delivery(busy, mode, tool_gated, queue_nonempty);
         // Whether the message is genuinely held for a later boundary. A path
@@ -80,7 +87,7 @@ impl Supervisor {
         // also returns `true` (they await the next retry boundary).
         let queued = match delivery {
             Delivery::DeliverNow => {
-                if let Err(e) = deliver_as_turn(&self, app, agent_id, &msg) {
+                if let Err(e) = deliver_as_turn(&self, ctx, agent_id, &msg) {
                     // We classified the agent idle-and-ready, but a teardown
                     // raced our delivery: an idle agent is torn down under the
                     // `agents` lock while its live status still reads Idle (the
@@ -96,14 +103,14 @@ impl Supervisor {
                     // revive below is what picks the message up.
                     tracing::warn!(error = %e, agent_id, "deliver-now raced a teardown; re-queueing");
                     self.persist_and_enqueue(agent_id, msg);
-                    flush_queued(&self, app, agent_id)?
+                    flush_queued(&self, ctx, agent_id)?
                 } else {
                     false
                 }
             }
             Delivery::FlushNow => {
                 self.persist_and_enqueue(agent_id, msg);
-                flush_queued(&self, app, agent_id)?
+                flush_queued(&self, ctx, agent_id)?
             }
             Delivery::WriteLive => {
                 if let Err(e) = self.inject_live(agent_id, &msg) {
@@ -115,7 +122,7 @@ impl Supervisor {
                     // user message (CQ3-A).
                     tracing::warn!(error = %e, agent_id, "live inject failed; delivering as a new turn");
                     self.persist_and_enqueue(agent_id, msg);
-                    flush_queued(&self, app, agent_id)?
+                    flush_queued(&self, ctx, agent_id)?
                 } else {
                     false
                 }
@@ -129,7 +136,7 @@ impl Supervisor {
                 // message sit until the user types again. `flush_queued` drains
                 // under the queue lock, so if the drain did win the race this is
                 // a harmless no-op — never a double send.
-                self.is_busy(agent_id) || flush_queued(&self, app, agent_id)?
+                self.is_busy(agent_id) || flush_queued(&self, ctx, agent_id)?
             }
         };
         // Every arm above holds the message rather than dropping it, but holding
@@ -140,7 +147,7 @@ impl Supervisor {
         // queue until the user gives up: the spinner runs, no turn ever starts,
         // and each retry only grows the backlog.
         if queued && self.needs_revive(agent_id) {
-            self.clone().revive_and_flush(app, agent_id);
+            self.clone().revive_and_flush(ctx, agent_id);
         }
         Ok(queued)
     }
@@ -184,15 +191,15 @@ impl Supervisor {
     /// serializes on `agent_lifecycle` and no-ops once the agent is live, and
     /// `flush_queued` drains under the queue lock, so a second call finds nothing
     /// left to send rather than double-delivering.
-    fn revive_and_flush(self: Arc<Self>, app: &AppHandle, agent_id: &str) {
-        let app = app.clone();
+    fn revive_and_flush(self: Arc<Self>, ctx: &Arc<EngineCtx>, agent_id: &str) {
+        let ctx = ctx.clone();
         let agent_id = agent_id.to_string();
         tauri::async_runtime::spawn(async move {
             tracing::info!(
                 agent_id,
                 "reviving a resting session to deliver a held message"
             );
-            if let Err(e) = self.clone().resume_agent(app.clone(), &agent_id).await {
+            if let Err(e) = self.clone().resume_agent(ctx.clone(), &agent_id).await {
                 // The status is already Error with this reason (set inside the
                 // resume), so the user sees why; the message stays queued and a
                 // later successful revive still delivers it.
@@ -203,7 +210,7 @@ impl Supervisor {
             // Idle, so this is usually a no-op. It still matters when the revive
             // no-oped because a concurrent respawn had already restored the
             // agent — then nobody else owns this message.
-            if let Err(e) = flush_queued(&self, &app, &agent_id) {
+            if let Err(e) = flush_queued(&self, &ctx, &agent_id) {
                 tracing::warn!(error = %e, agent_id, "post-revive queue flush failed");
             }
         });
@@ -359,7 +366,7 @@ impl Supervisor {
 /// `open_pr`/`git_push`).
 pub(super) fn on_first_user_message(
     sup: Arc<Supervisor>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     text: String,
 ) {
@@ -373,7 +380,7 @@ pub(super) fn on_first_user_message(
 
     match sup.workspace.set_agent_task_if_empty(&agent_id, &trimmed) {
         Ok(true) => {
-            emit_task(&app, &agent_id, trimmed.clone());
+            emit_task(ctx.sink.as_ref(), &agent_id, trimmed.clone());
         }
         Ok(false) => {} // task already set
         Err(e) => {
@@ -384,7 +391,7 @@ pub(super) fn on_first_user_message(
 
 pub(super) fn mark_user_turn_started(
     sup: &Supervisor,
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     agent_id: &str,
     turn_id: Option<&str>,
 ) {
@@ -406,8 +413,8 @@ pub(super) fn mark_user_turn_started(
             tracing::warn!(error = %e, agent_id, "stamp user turn start failed");
         }
     }
-    emit_turn_started(app, agent_id, started_at);
-    transition_active(sup, app, agent_id, AgentStatus::Running);
+    emit_turn_started(ctx.sink.as_ref(), agent_id, started_at);
+    transition_active(sup, ctx, agent_id, AgentStatus::Running);
 }
 
 /// Deliver a single message as a fresh turn: persist it durably, hand it to the
@@ -415,7 +422,7 @@ pub(super) fn mark_user_turn_started(
 /// the direct-send and queue-flush routes.
 fn deliver_as_turn(
     sup: &Arc<Supervisor>,
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     agent_id: &str,
     msg: &PendingMsg,
 ) -> Result<()> {
@@ -425,10 +432,10 @@ fn deliver_as_turn(
         return Err(Error::Other("project deletion is in progress".into()));
     }
     sup.deliver_user_message(agent_id, &msg.turn_id, &msg.text, &msg.attachments)?;
-    mark_user_turn_started(sup, app, agent_id, Some(&msg.turn_id));
+    mark_user_turn_started(sup, ctx, agent_id, Some(&msg.turn_id));
     on_first_user_message(
         sup.clone(),
-        app.clone(),
+        ctx.clone(),
         agent_id.to_string(),
         msg.text.clone(),
     );
@@ -445,7 +452,11 @@ fn deliver_as_turn(
 /// (still held for a later boundary); `false` when they were delivered as a
 /// turn or the queue was already empty (drained elsewhere). Callers reporting a
 /// "queued" state to the frontend key off this so the badge tracks reality.
-pub(super) fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &str) -> Result<bool> {
+pub(super) fn flush_queued(
+    sup: &Arc<Supervisor>,
+    ctx: &Arc<EngineCtx>,
+    agent_id: &str,
+) -> Result<bool> {
     let count = sup.message_queue.lock().len(agent_id);
     let Some(coalesced) = sup.message_queue.lock().drain_coalesced(agent_id) else {
         return Ok(false);
@@ -457,7 +468,7 @@ pub(super) fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &st
             "flushing coalesced follow-up messages as one turn"
         );
     }
-    if let Err(e) = deliver_as_turn(sup, app, agent_id, &coalesced) {
+    if let Err(e) = deliver_as_turn(sup, ctx, agent_id, &coalesced) {
         // Delivery raced with teardown/respawn (e.g. AgentNotFound). Put the
         // follow-ups back rather than dropping them; a later boundary or the
         // post-respawn flush retries. Re-queue at the front to preserve order.
@@ -506,9 +517,9 @@ pub(super) fn flush_queued(sup: &Arc<Supervisor>, app: &AppHandle, agent_id: &st
 ///    intact (A2-A: stop never auto-sends).
 ///
 /// Spawns the flush because `transition_active` holds only `&Supervisor`, and
-/// the delivery needs an owned `Arc` (recovered from Tauri state, like
+/// the delivery needs an owned `Arc` (recovered from the engine ctx, like
 /// `drain_pending_respawn`).
-pub(super) fn drain_message_queue(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
+pub(super) fn drain_message_queue(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str) {
     if sup.respawn_pending.lock().contains(agent_id) {
         return;
     }
@@ -518,16 +529,13 @@ pub(super) fn drain_message_queue(sup: &Supervisor, app: &AppHandle, agent_id: &
     if sup.message_queue.lock().is_empty(agent_id) {
         return;
     }
-    let Some(sup_arc) = app
-        .try_state::<Arc<Supervisor>>()
-        .map(|s| s.inner().clone())
-    else {
+    let Some(sup_arc) = ctx.supervisor() else {
         return;
     };
-    let app = app.clone();
+    let ctx = ctx.clone();
     let agent_id = agent_id.to_string();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = flush_queued(&sup_arc, &app, &agent_id) {
+        if let Err(e) = flush_queued(&sup_arc, &ctx, &agent_id) {
             tracing::warn!(error = %e, agent_id, "flush queued follow-up messages failed");
         }
     });
@@ -537,26 +545,23 @@ pub(super) fn drain_message_queue(sup: &Supervisor, app: &AppHandle, agent_id: &
 /// change) was deferred for this agent because it was mid-turn (see
 /// `respawn_agent_preserving_session`), now that it's Idle restart it so it
 /// re-reads the record. No-op unless the agent is flagged. We recover the
-/// managed `Arc<Supervisor>` from Tauri state because `transition_active` only
+/// `Arc<Supervisor>` from the engine ctx because `transition_active` only
 /// holds `&Supervisor`, and the respawn needs an owned `Arc` for its spawned
 /// task.
-pub(super) fn drain_pending_respawn(sup: &Supervisor, app: &AppHandle, agent_id: &str) {
+pub(super) fn drain_pending_respawn(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str) {
     if !sup.respawn_pending.lock().contains(agent_id) {
         return;
     }
-    let Some(sup_arc) = app
-        .try_state::<Arc<Supervisor>>()
-        .map(|s| s.inner().clone())
-    else {
+    let Some(sup_arc) = ctx.supervisor() else {
         return;
     };
-    let app = app.clone();
+    let ctx = ctx.clone();
     let agent_id = agent_id.to_string();
     tauri::async_runtime::spawn(async move {
         // Fire-and-forget at the turn boundary: a failed restart is logged and
         // set on the agent's status inside the call.
         let _ = sup_arc
-            .respawn_agent_preserving_session(&app, &agent_id)
+            .respawn_agent_preserving_session(&ctx, &agent_id)
             .await;
     });
 }

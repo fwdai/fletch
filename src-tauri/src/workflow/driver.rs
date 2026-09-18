@@ -13,10 +13,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use serde_json::Value;
-use tauri::AppHandle;
 use tokio::sync::broadcast;
 
 use crate::error::Result;
+use crate::host::EngineCtx;
 use crate::supervisor::{SpawnRequest, StatusEvent, Supervisor};
 use crate::workspace::{AgentStatus, AgentView};
 
@@ -113,12 +113,12 @@ pub trait AgentDriver: Send + Sync {
 /// The production driver: a thin adapter over the agent [`Supervisor`].
 pub struct SupervisorDriver {
     sup: Arc<Supervisor>,
-    app: AppHandle,
+    engine: Arc<EngineCtx>,
 }
 
 impl SupervisorDriver {
-    pub fn new(sup: Arc<Supervisor>, app: AppHandle) -> Self {
-        Self { sup, app }
+    pub fn new(sup: Arc<Supervisor>, engine: Arc<EngineCtx>) -> Self {
+        Self { sup, engine }
     }
 }
 
@@ -144,7 +144,7 @@ impl AgentDriver for SupervisorDriver {
                 .sup
                 .clone()
                 .spawn_agent(
-                    self.app.clone(),
+                    self.engine.clone(),
                     SpawnRequest {
                         // Step agents render in the structured (Custom) view.
                         view: AgentView::Custom,
@@ -205,7 +205,7 @@ impl AgentDriver for SupervisorDriver {
             let turn_id = uuid::Uuid::new_v4().to_string();
             self.sup
                 .clone()
-                .send_user_message(&self.app, agent_id, &turn_id, &text, &[])?;
+                .send_user_message(&self.engine, agent_id, &turn_id, &text, &[])?;
             Ok(())
         })
     }
@@ -214,7 +214,7 @@ impl AgentDriver for SupervisorDriver {
         Box::pin(async move {
             self.sup
                 .clone()
-                .stop_agent(self.app.clone(), agent_id)
+                .stop_agent(self.engine.clone(), agent_id)
                 .await
         })
     }
@@ -223,7 +223,7 @@ impl AgentDriver for SupervisorDriver {
         Box::pin(async move {
             self.sup
                 .clone()
-                .archive_agent(self.app.clone(), agent_id)
+                .archive_agent(self.engine.clone(), agent_id)
                 .await
         })
     }
@@ -254,7 +254,7 @@ impl AgentDriver for SupervisorDriver {
 
     fn settle_rpc<'a>(&'a self, agent_id: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            self.sup.settle_agent_rpc(&self.app, agent_id).await;
+            self.sup.settle_agent_rpc(&self.engine, agent_id).await;
         })
     }
 }

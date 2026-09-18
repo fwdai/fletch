@@ -41,13 +41,12 @@ pub fn emit<T: serde::Serialize + ?Sized>(sink: &dyn EventSink, event: &str, pay
 }
 
 /// The desktop's sink: events reach the webview exactly as they did when the
-/// engine called `app.emit` itself. Implemented on `AppHandle` directly (rather
-/// than a newtype) so every existing `&app` argument coerces to
-/// `&dyn EventSink` without touching the call site; it becomes a `TauriSink`
-/// newtype once the trait lives in a crate that cannot depend on Tauri.
-impl EventSink for tauri::AppHandle {
+/// engine called `app.emit` itself.
+pub struct TauriSink(pub tauri::AppHandle);
+
+impl EventSink for TauriSink {
     fn emit_value(&self, event: &str, payload: Value) -> Result<(), String> {
-        tauri::Emitter::emit(self, event, payload).map_err(|e| e.to_string())
+        tauri::Emitter::emit(&self.0, event, payload).map_err(|e| e.to_string())
     }
 }
 

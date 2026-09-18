@@ -474,7 +474,7 @@ async fn db_query(
 async fn set_agent_bin_override(
     id: String,
     path: Option<String>,
-    app: tauri::AppHandle,
+    ctx: tauri::State<'_, Arc<host::EngineCtx>>,
     state: tauri::State<'_, DbState>,
     supervisor: tauri::State<'_, Arc<Supervisor>>,
 ) -> Result<(), String> {
@@ -498,7 +498,7 @@ async fn set_agent_bin_override(
     // Restart any live agents on this provider so they exec the new binary.
     // Resolution happens only at spawn time, so without this an already-running
     // agent keeps the old binary (and thus the old account) on its next turn.
-    supervisor.respawn_provider(&app, &id).await;
+    supervisor.respawn_provider(ctx.inner(), &id).await;
     Ok(())
 }
 
@@ -1461,6 +1461,28 @@ pub fn run() {
                 Err(e) => recover_from_db_init_failure(&data_dir, e),
             };
 
+            // What the engine gets instead of an `AppHandle`: where its events
+            // go, the DB handle it shares with the commands, and the "is the
+            // user looking at this?" question only a host can answer. Built
+            // here so everything below is constructed with it; the supervisor
+            // and the workflow service are published onto it as they appear
+            // (they are what the engine used to fetch back out of Tauri's
+            // managed state).
+            let engine_ctx = {
+                let focus_app = app.handle().clone();
+                Arc::new(host::EngineCtx::new(
+                    Arc::new(host::sink::TauriSink(app.handle().clone())),
+                    db.clone(),
+                    Box::new(move || {
+                        focus_app
+                            .get_webview_window("main")
+                            .map(|window| window.is_focused().unwrap_or(false))
+                            .unwrap_or(false)
+                    }),
+                ))
+            };
+            app.manage(engine_ctx.clone());
+
             // Seed the in-memory agent binary override registry so binary
             // resolution (deep in spawn/probe paths, with no DB handle) can
             // honor user-set custom paths without touching the DB each time.
@@ -1704,6 +1726,7 @@ pub fn run() {
 
             let supervisor = Arc::new(Supervisor::new(workspace));
             app.manage(supervisor.clone());
+            engine_ctx.set_supervisor(supervisor.clone());
 
             // Arm the activity monitor (idle-sleep assertion + activity
             // tracking) *before* any work is resumed below, so the run-level
@@ -1722,25 +1745,22 @@ pub fn run() {
             let wf_driver: Arc<dyn crate::workflow::driver::AgentDriver> =
                 Arc::new(crate::workflow::driver::SupervisorDriver::new(
                     supervisor.clone(),
-                    app.handle().clone(),
+                    engine_ctx.clone(),
                 ));
             let wf_service = Arc::new(crate::workflow::scheduler::WorkflowService::new(
                 db_for_wf,
                 wf_driver,
-                app.handle().clone(),
+                engine_ctx.clone(),
             ));
             app.manage(wf_service.clone());
+            engine_ctx.set_workflows(wf_service.clone());
             wf_service.resume_active_runs();
             // The roadmap queue drainer: turns `queued` roadmap items into runs
             // through the service above, and settles finished runs back onto
             // the board. Started after `resume_active_runs` so a run this
             // process is already re-driving is counted against the per-project
             // concurrency cap before the first tick can dispatch anything.
-            crate::roadmap::drainer::spawn(
-                app.handle().clone(),
-                db_for_roadmap,
-                wf_service.clone(),
-            );
+            crate::roadmap::drainer::spawn(engine_ctx.clone(), db_for_roadmap, wf_service.clone());
             // The other end of the same loop: watch the PRs of items already
             // `in_review` and ship them when they merge. Host-side on purpose —
             // the webview's PR polling stops with the window, and a queue whose
@@ -1748,7 +1768,7 @@ pub fn run() {
             // an autonomous queue. Sweeps once now (a PR may well have merged
             // while the app was closed), then sleeps until there is something
             // to watch.
-            crate::roadmap::merge_sweep::spawn(app.handle().clone(), db_for_merge_sweep);
+            crate::roadmap::merge_sweep::spawn(engine_ctx.clone(), db_for_merge_sweep);
             // Reload follow-ups that were queued behind an in-flight turn when a
             // prior run exited, so a mid-turn message survives a restart. They
             // rest in the queue and flush on the user's next send (no auto-spawn).
@@ -1769,6 +1789,7 @@ pub fn run() {
             {
                 let dispatch = Arc::new(remote::SupervisorDispatch::new(
                     app.handle().clone(),
+                    engine_ctx.clone(),
                     supervisor.clone(),
                 ));
                 // `RemoteState::new` cannot fail: the state has to be managed
@@ -1776,7 +1797,7 @@ pub fn run() {
                 // `remote_status` panics the moment Settings opens. Such a
                 // failure travels as `RemoteStatus::error` instead.
                 let state = remote::RemoteState::new(&data_dir.join("remote"), dispatch);
-                remote::install_taps(app.handle(), state.clone());
+                remote::install_taps(app.handle(), &engine_ctx, state.clone());
                 let (enabled, port, relay_url) = {
                     let conn = db_for_remote.lock();
                     (

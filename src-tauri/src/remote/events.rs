@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Listener};
 
 use super::RemoteState;
+use crate::host::EngineCtx;
 
 /// The v1 event whitelist, verbatim from `docs/remote-protocol.md`.
 pub const FORWARDED_EVENTS: &[&str] = &[
@@ -35,7 +36,7 @@ pub const FORWARDED_EVENTS: &[&str] = &[
 /// Install the taps. Safe to call once at launch regardless of whether the
 /// listener is enabled: with no connection subscribed, forwarding short-circuits
 /// before it touches the payload.
-pub fn install_taps(app: &AppHandle, state: Arc<RemoteState>) {
+pub fn install_taps(app: &AppHandle, ctx: &Arc<EngineCtx>, state: Arc<RemoteState>) {
     for name in FORWARDED_EVENTS.iter().copied() {
         let state = state.clone();
         app.listen_any(name, move |event| {
@@ -46,5 +47,5 @@ pub fn install_taps(app: &AppHandle, state: Arc<RemoteState>) {
     // not "mirror this to a phone" but "is this worth waking one". Separate
     // taps rather than a branch in the loop above, because the whitelist is a
     // security boundary and should stay a plain fan-out.
-    super::push::install_taps(app, state);
+    super::push::install_taps(app, ctx, state);
 }

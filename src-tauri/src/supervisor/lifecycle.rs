@@ -5,12 +5,12 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
 
 use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
 use crate::agent::{capabilities, per_turn_descriptor, Agent, PerTurnSpec, SpawnSpec};
 use crate::error::{Error, Result};
 use crate::git;
+use crate::host::EngineCtx;
 use crate::rpc;
 use crate::sandbox::provision::{self, CheckoutSpec};
 use crate::sandbox::{self, EngineKind};
@@ -283,7 +283,7 @@ pub struct SpawnRequest {
 impl Supervisor {
     pub async fn spawn_agent(
         self: Arc<Self>,
-        app: AppHandle,
+        ctx: Arc<EngineCtx>,
         req: SpawnRequest,
     ) -> Result<AgentRecord> {
         let _lifecycle_guard = self.agent_lifecycle.lock().await;
@@ -469,18 +469,18 @@ impl Supervisor {
                 "effort": record.effort,
             }),
         );
-        self.set_status(&app, &agent_id, AgentStatus::Spawning, None);
+        self.set_status(&ctx, &agent_id, AgentStatus::Spawning, None);
         // A new row is a structural change: `agent:status` alone is dropped by
         // any view that doesn't have the agent yet (the desktop window when a
         // paired phone spawned it, and vice versa). Announce it so every other
         // client refetches the workspace now rather than on its next focus. The
         // caller that issued the spawn refetches on its own; the generation
         // guard in `refreshWorkspace` makes the extra fetch harmless.
-        emit_workspace_changed(&app);
-        arm_spawn_timeout(self.clone(), app.clone(), agent_id.clone());
+        emit_workspace_changed(ctx.sink.as_ref());
+        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.clone());
 
         let sup = self.clone();
-        let app_for_task = app.clone();
+        let ctx_for_task = ctx.clone();
         let id_for_task = agent_id.clone();
         let project_id_for_task = record.project_id.clone();
         let provider_for_task = record.provider.clone();
@@ -488,7 +488,7 @@ impl Supervisor {
         let adopted_for_task = adopted.is_some();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
-                fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
+                fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                 return;
             }
 
@@ -546,7 +546,7 @@ impl Supervisor {
                 }
             };
             if let Err(e) = provision_result {
-                fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
+                fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                 return;
             }
             if base_freshness == Some(provision::BaseFreshness::Stale) {
@@ -606,7 +606,7 @@ impl Supervisor {
                 };
                 if let Err(e) = carried {
                     discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
-                    fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
+                    fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                     return;
                 }
             }
@@ -624,13 +624,13 @@ impl Supervisor {
                         continue;
                     }
                     if let Err(e) = sup
-                        .attach_repo_checkout(&app_for_task, &id_for_task, source.clone(), false)
+                        .attach_repo_checkout(&ctx_for_task, &id_for_task, source.clone(), false)
                         .await
                     {
                         discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
                         fail_spawn(
                             &sup,
-                            &app_for_task,
+                            &ctx_for_task,
                             &id_for_task,
                             format!("checkout of {} failed: {e}", source.display()),
                         );
@@ -641,9 +641,9 @@ impl Supervisor {
 
             tokio::time::sleep(Duration::from_millis(350)).await;
 
-            if let Err(e) = sup.start_process(&app_for_task, &id_for_task, true).await {
+            if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task, true).await {
                 discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
-                fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
+                fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
             }
         });
 
@@ -656,7 +656,7 @@ impl Supervisor {
     /// its first push, consistent with the primary repo.
     pub async fn add_repo_to_agent(
         self: Arc<Self>,
-        app: AppHandle,
+        ctx: Arc<EngineCtx>,
         agent_id: &str,
         repo_path: PathBuf,
     ) -> Result<TrackedRepo> {
@@ -669,7 +669,7 @@ impl Supervisor {
         // the container and re-provisions via `--shared` + mount.
         let record = self.workspace.agent(agent_id)?;
         let self_contained = stamped_engine(&record).is_container();
-        self.attach_repo_checkout(&app, agent_id, repo_path, self_contained)
+        self.attach_repo_checkout(&ctx, agent_id, repo_path, self_contained)
             .await
     }
 
@@ -681,7 +681,7 @@ impl Supervisor {
     /// before the container exists, so they always use shared clones.
     async fn attach_repo_checkout(
         self: &Arc<Self>,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
         repo_path: PathBuf,
         self_contained: bool,
@@ -750,7 +750,7 @@ impl Supervisor {
             adopted_checkout: None,
         };
         self.workspace.append_tracked_repo(agent_id, repo.clone())?;
-        emit_repo_added(app, agent_id, repo.clone());
+        emit_repo_added(ctx.sink.as_ref(), agent_id, repo.clone());
 
         // No branch is created here — the new repo's checkout stays detached
         // until its first push, when the agent names its branch (same as the
@@ -760,7 +760,7 @@ impl Supervisor {
 
     pub(super) async fn start_process(
         self: &Arc<Self>,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
         fresh: bool,
     ) -> Result<()> {
@@ -834,7 +834,7 @@ impl Supervisor {
         let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch, caps)
             .with_repos(repo_targets)
             .with_close_issue(agent_id, close_issue)
-            .with_approval(Arc::new(app.clone()), agent_id);
+            .with_approval(ctx.sink.clone(), agent_id);
         // A run-owned step agent also gets the workflow comms ops (wf_report /
         // wf_ask / wf_notify, §10); a roadmap PM chat gets the roadmap ops
         // (roadmap_list / roadmap_propose), scoped to its own project. Both
@@ -843,24 +843,17 @@ impl Supervisor {
         let roadmap_pm = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_ROADMAP_PM);
         let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> = match (&record.owner_run_id, roadmap_pm) {
             (Some(run_id), _) => Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
-                app.clone(),
+                ctx.clone(),
                 run_id.clone(),
                 agent_id.to_string(),
                 git_dispatcher,
             )),
-            (None, true) => match app.try_state::<crate::roadmap::Db>() {
-                Some(db) => Arc::new(rpc::roadmap::RoadmapDispatcher::new(
-                    app.clone(),
-                    db.inner().clone(),
-                    record.project_id.clone(),
-                    git_dispatcher,
-                )),
-                // The connection is managed at setup, before any agent can
-                // spawn, so this is unreachable in the app. Degrade to the
-                // plain dispatcher rather than panicking a spawn: the ops then
-                // answer "unknown op", which is honest.
-                None => Arc::new(git_dispatcher),
-            },
+            (None, true) => Arc::new(rpc::roadmap::RoadmapDispatcher::new(
+                ctx.clone(),
+                ctx.db.clone(),
+                record.project_id.clone(),
+                git_dispatcher,
+            )),
             (None, false) => Arc::new(git_dispatcher),
         };
 
@@ -892,7 +885,7 @@ impl Supervisor {
 
         let agent = self
             .spawn_agent_process(
-                app,
+                ctx,
                 &agent_id_str,
                 &record,
                 ProcessLaunch {
@@ -920,7 +913,7 @@ impl Supervisor {
         // timed out (status Error), the timeout fired before we inserted the
         // process above — so its shutdown was a no-op and we'd leak a live
         // process shown as failed. Tear down what we just started instead.
-        let promoted = self.claim_spawn_outcome(app, &agent_id_str, AgentStatus::Idle, None);
+        let promoted = self.claim_spawn_outcome(ctx, &agent_id_str, AgentStatus::Idle, None);
         if !promoted && matches!(self.live_status(&agent_id_str), Some(AgentStatus::Error)) {
             self.bump_generation(&agent_id_str);
             let taken = self.agents.lock().remove(&agent_id_str);
@@ -944,10 +937,10 @@ impl Supervisor {
         // empty — the common case — and `drain_coalesced` makes it safe against a
         // concurrent FlushNow from a racing second send.
         if promoted {
-            drain_message_queue(self, app, &agent_id_str);
+            drain_message_queue(self, ctx, &agent_id_str);
         }
 
-        spawn_turn_watchdog(self.clone(), app.clone(), agent_id_str.clone(), my_gen);
+        spawn_turn_watchdog(self.clone(), ctx.clone(), agent_id_str.clone(), my_gen);
 
         // A native-view agent drives its own TUI in a PTY, so there's no event
         // stream to render progress from — without this the panel stays a raw
@@ -956,7 +949,7 @@ impl Supervisor {
         // Self-gating: a no-op for the custom view and for providers whose
         // reader can't tail cheaply.
         if should_live_sync(&record.provider, record.view) {
-            spawn_live_transcript_sync(self.clone(), app.clone(), agent_id_str.clone(), my_gen);
+            spawn_live_transcript_sync(self.clone(), ctx.clone(), agent_id_str.clone(), my_gen);
         }
 
         // Register the dispatcher so the mailbox can also be drained on demand
@@ -970,7 +963,7 @@ impl Supervisor {
         // executing allowlisted ops and writing responses back.
         spawn_rpc_watcher(
             self.clone(),
-            app.clone(),
+            ctx.clone(),
             agent_id_str,
             rpc_dispatcher,
             rpc_dir,
@@ -985,7 +978,7 @@ impl Supervisor {
     /// Returns the live `Agent` handle for the supervisor to track.
     async fn spawn_agent_process(
         self: &Arc<Self>,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
         record: &AgentRecord,
         launch: ProcessLaunch,
@@ -1080,16 +1073,14 @@ impl Supervisor {
         // launch path, like every other instruction layer, so a resumed chat
         // whose brief the user changed (or whose board rejected something)
         // comes back with the current memory rather than the one it spawned
-        // with. A read failure (or no DB state, which is unreachable once setup
-        // ran) degrades to no context: an agent with one section missing is
-        // worth more than a spawn that fails.
+        // with. A read failure degrades to no context: an agent with one section
+        // missing is worth more than a spawn that fails.
         let product_context = roadmap_pm
-            .then(|| app.try_state::<crate::roadmap::Db>())
-            .flatten()
-            .and_then(|db| {
-                let conn = db.lock();
+            .then(|| {
+                let conn = ctx.db.lock();
                 crate::roadmap::memory::product_context(&conn, &record.project_id).ok()
             })
+            .flatten()
             .flatten();
         let blocks = crate::agent_profile::Blocks {
             codegraph: codegraph_available,
@@ -1151,7 +1142,7 @@ impl Supervisor {
                     spawn_pty_per_turn_agent(
                         spec,
                         record.provider.clone(),
-                        app.clone(),
+                        ctx.clone(),
                         agent_id_str.clone(),
                         self.clone(),
                         my_gen,
@@ -1177,7 +1168,7 @@ impl Supervisor {
                         engine,
                         blackboard: blackboard.clone(),
                     },
-                    app.clone(),
+                    ctx.clone(),
                     agent_id_str.clone(),
                     self.clone(),
                     my_gen,
@@ -1210,14 +1201,14 @@ impl Supervisor {
             match record.view {
                 AgentView::Native => spawn_pty_agent(
                     spec,
-                    app.clone(),
+                    ctx.clone(),
                     agent_id_str.clone(),
                     self.clone(),
                     my_gen,
                 ),
                 AgentView::Custom => spawn_managed_agent(
                     spec,
-                    app.clone(),
+                    ctx.clone(),
                     agent_id_str.clone(),
                     self.clone(),
                     my_gen,
@@ -1226,7 +1217,7 @@ impl Supervisor {
         }
     }
 
-    pub async fn resume_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+    pub async fn resume_agent(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
         let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = self.workspace.agent(agent_id)?;
         if self.agents.lock().contains_key(agent_id) {
@@ -1240,16 +1231,16 @@ impl Supervisor {
                 "Agent has no session id; remove and respawn.".into(),
             ));
         }
-        self.set_status(&app, agent_id, AgentStatus::Spawning, None);
-        arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
+        self.set_status(&ctx, agent_id, AgentStatus::Spawning, None);
+        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
 
-        self.start_process(&app, agent_id, false).await?;
+        self.start_process(&ctx, agent_id, false).await?;
         Ok(())
     }
 
     pub fn write_to_agent(
         self: Arc<Self>,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
         bytes: &[u8],
     ) -> Result<()> {
@@ -1266,8 +1257,8 @@ impl Supervisor {
             .or_default()
             .observe(bytes);
         for submitted in submitted {
-            mark_user_turn_started(&self, app, agent_id, None);
-            on_first_user_message(self.clone(), app.clone(), agent_id.to_string(), submitted);
+            mark_user_turn_started(&self, ctx, agent_id, None);
+            on_first_user_message(self.clone(), ctx.clone(), agent_id.to_string(), submitted);
         }
         drop(deletion_guard);
         Ok(())
@@ -1279,7 +1270,7 @@ impl Supervisor {
 
     pub async fn switch_view(
         self: Arc<Self>,
-        app: AppHandle,
+        ctx: Arc<EngineCtx>,
         agent_id: &str,
         new_view: AgentView,
     ) -> Result<()> {
@@ -1318,15 +1309,15 @@ impl Supervisor {
         self.native_inputs.lock().remove(agent_id);
 
         self.workspace.update_agent_view(agent_id, new_view)?;
-        emit_view(&app, agent_id, new_view);
-        self.set_status(&app, agent_id, AgentStatus::Spawning, None);
-        arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
+        emit_view(ctx.sink.as_ref(), agent_id, new_view);
+        self.set_status(&ctx, agent_id, AgentStatus::Spawning, None);
+        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        if let Err(e) = self.start_process(&app, agent_id, false).await {
+        if let Err(e) = self.start_process(&ctx, agent_id, false).await {
             let err = e.to_string();
-            self.set_status(&app, agent_id, AgentStatus::Error, Some(err));
+            self.set_status(&ctx, agent_id, AgentStatus::Error, Some(err));
             return Err(e);
         }
         Ok(())
@@ -1338,13 +1329,13 @@ impl Supervisor {
     /// (provider default).
     pub async fn set_agent_effort(
         self: &Arc<Self>,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
         effort: Option<&str>,
     ) -> Result<()> {
         self.workspace.update_agent_effort(agent_id, effort)?;
-        emit_effort(app, agent_id, effort);
-        self.reapply_session_config(app, agent_id).await
+        emit_effort(ctx.sink.as_ref(), agent_id, effort);
+        self.reapply_session_config(ctx, agent_id).await
     }
 
     /// Change a session's model mid-conversation. Persists the new value so
@@ -1352,13 +1343,13 @@ impl Supervisor {
     /// `reapply_session_config`). `None` clears the selection (provider default).
     pub async fn set_agent_model(
         self: &Arc<Self>,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
         model: Option<&str>,
     ) -> Result<()> {
         self.workspace.update_agent_model(agent_id, model)?;
-        emit_model(app, agent_id, model);
-        self.reapply_session_config(app, agent_id).await
+        emit_model(ctx.sink.as_ref(), agent_id, model);
+        self.reapply_session_config(ctx, agent_id).await
     }
 
     /// Make a just-persisted model/effort change take effect.
@@ -1374,11 +1365,11 @@ impl Supervisor {
     /// success when the agent is left without a running process.
     async fn reapply_session_config(
         self: &Arc<Self>,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
     ) -> Result<()> {
         if !is_per_turn_provider(&self.workspace.agent(agent_id)?.provider) {
-            self.respawn_agent_preserving_session(app, agent_id).await?;
+            self.respawn_agent_preserving_session(ctx, agent_id).await?;
         }
         Ok(())
     }
@@ -1393,7 +1384,7 @@ impl Supervisor {
     ///
     /// Only currently-live agents need this; anything not in the `agents` map
     /// will resolve the new binary on its next spawn anyway.
-    pub async fn respawn_provider(self: &Arc<Self>, app: &AppHandle, provider_id: &str) {
+    pub async fn respawn_provider(self: &Arc<Self>, ctx: &Arc<EngineCtx>, provider_id: &str) {
         // Snapshot ids under a short-lived lock; never hold a guard across the
         // `start_process` await in `respawn_agent_preserving_session` (parking_lot
         // guards aren't Send, and `start_process` re-locks these maps → deadlock).
@@ -1405,7 +1396,7 @@ impl Supervisor {
             }
             // Fire-and-forget: a failed restart is logged and reflected in the
             // agent's status inside the call; there's no caller to surface it to.
-            let _ = self.respawn_agent_preserving_session(app, &id).await;
+            let _ = self.respawn_agent_preserving_session(ctx, &id).await;
         }
     }
 
@@ -1434,7 +1425,7 @@ impl Supervisor {
     /// the result and rely on the internal status/logging.
     pub(super) async fn respawn_agent_preserving_session(
         self: &Arc<Self>,
-        app: &AppHandle,
+        ctx: &Arc<EngineCtx>,
         agent_id: &str,
     ) -> Result<()> {
         // Keep the complete idle -> teardown -> Spawning -> restarted
@@ -1487,17 +1478,17 @@ impl Supervisor {
         self.activities.lock().remove(agent_id);
         self.native_inputs.lock().remove(agent_id);
 
-        self.set_status(app, agent_id, AgentStatus::Spawning, None);
-        arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
+        self.set_status(ctx, agent_id, AgentStatus::Spawning, None);
+        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
 
         // Let the old process fully release its session before resuming it
         // (mirrors `switch_view`).
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        if let Err(e) = self.start_process(app, agent_id, false).await {
+        if let Err(e) = self.start_process(ctx, agent_id, false).await {
             let err = e.to_string();
             tracing::warn!(agent_id, error = %err, "session-preserving respawn failed");
-            self.set_status(app, agent_id, AgentStatus::Error, Some(err));
+            self.set_status(ctx, agent_id, AgentStatus::Error, Some(err));
             return Err(e);
         }
 
@@ -1506,20 +1497,20 @@ impl Supervisor {
         // is back, deliver any follow-ups queued during that turn — unless the
         // user stopped (A2-A), which we own the interrupt check for here.
         if !self.interrupted.lock().remove(agent_id) {
-            if let Err(e) = flush_queued(self, app, agent_id) {
+            if let Err(e) = flush_queued(self, ctx, agent_id) {
                 tracing::warn!(agent_id, error = %e, "post-respawn queue flush failed");
             }
         }
         Ok(())
     }
 
-    pub async fn stop_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+    pub async fn stop_agent(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
         // Interrupt the current turn. How it returns to Idle depends on
         // the runner: claude (managed) emits a `result` event and, if it
         // exits, `apply_exit_if_current` moves it to Idle; codex's
         // per-turn `exec` exits on SIGINT and its `on_turn_exit` handler
         // ends the turn (it emits no `turn.completed` when interrupted).
-        let _ = app;
+        let _ = ctx;
         // Mark the stop so the turn-end Idle transition keeps the queue intact
         // instead of auto-flushing it (A2-A). Cleared when a new turn starts.
         self.interrupted.lock().insert(agent_id.to_string());
@@ -1556,7 +1547,7 @@ impl ExitOutcome for crate::managed_session::ManagedExit {
 /// emit `agent:output`.
 fn make_output_handler(
     sup: Arc<Supervisor>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
 ) -> impl Fn(Vec<u8>) + Send + Sync + 'static {
     move |bytes: Vec<u8>| {
@@ -1569,10 +1560,10 @@ fn make_output_handler(
         // that inference was early: restore the live status immediately instead
         // of leaving the sidebar idle while output continues.
         if !bytes.is_empty() && sup.heuristic_idle.lock().remove(&agent_id) {
-            transition_active(&sup, &app, &agent_id, AgentStatus::Running);
+            transition_active(&sup, &ctx, &agent_id, AgentStatus::Running);
         }
 
-        emit_agent_output(&app, &agent_id, bytes);
+        emit_agent_output(ctx.sink.as_ref(), &agent_id, bytes);
     }
 }
 
@@ -1580,7 +1571,7 @@ fn make_output_handler(
 /// record activity, then emit `agent:event`.
 fn make_event_handler(
     sup: Arc<Supervisor>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
 ) -> impl Fn(Value) + Send + Sync + 'static {
     move |event: Value| {
@@ -1588,7 +1579,7 @@ fn make_event_handler(
             activity.observe_event(&event);
         }
 
-        emit_agent_event(&app, &agent_id, event);
+        emit_agent_event(ctx.sink.as_ref(), &agent_id, event);
     }
 }
 
@@ -1596,27 +1587,27 @@ fn make_event_handler(
 /// to `apply_exit_if_current`, which ignores exits from a stale generation.
 fn make_exit_handler<E: ExitOutcome>(
     sup: Arc<Supervisor>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     gen: u64,
 ) -> impl Fn(E) + Send + Sync + 'static {
     move |exit: E| {
         let (success, message) = exit.into_parts();
-        apply_exit_if_current(&sup, &app, &agent_id, gen, success, message);
+        apply_exit_if_current(&sup, &ctx, &agent_id, gen, success, message);
     }
 }
 
 fn spawn_pty_agent(
     spec: SpawnSpec<'_>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     sup: Arc<Supervisor>,
     gen: u64,
 ) -> Result<Agent> {
     Agent::spawn_pty(
         spec,
-        make_output_handler(sup.clone(), app.clone(), agent_id.clone()),
-        make_exit_handler(sup, app, agent_id, gen),
+        make_output_handler(sup.clone(), ctx.clone(), agent_id.clone()),
+        make_exit_handler(sup, ctx, agent_id, gen),
     )
 }
 
@@ -1626,7 +1617,7 @@ fn spawn_pty_agent(
 fn spawn_pty_per_turn_agent(
     spec: SpawnSpec<'_>,
     provider: String,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     sup: Arc<Supervisor>,
     gen: u64,
@@ -1634,22 +1625,22 @@ fn spawn_pty_per_turn_agent(
     Agent::spawn_pty_native(
         spec,
         &provider,
-        make_output_handler(sup.clone(), app.clone(), agent_id.clone()),
-        make_exit_handler(sup, app, agent_id, gen),
+        make_output_handler(sup.clone(), ctx.clone(), agent_id.clone()),
+        make_exit_handler(sup, ctx, agent_id, gen),
     )
 }
 
 fn spawn_managed_agent(
     spec: SpawnSpec<'_>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     sup: Arc<Supervisor>,
     gen: u64,
 ) -> Result<Agent> {
     Agent::spawn_managed(
         spec,
-        make_event_handler(sup.clone(), app.clone(), agent_id.clone()),
-        make_exit_handler(sup, app, agent_id, gen),
+        make_event_handler(sup.clone(), ctx.clone(), agent_id.clone()),
+        make_exit_handler(sup, ctx, agent_id, gen),
     )
 }
 
@@ -1666,18 +1657,18 @@ fn spawn_managed_agent(
 fn spawn_per_turn_agent(
     provider: &str,
     spec: PerTurnSpec,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     sup: Arc<Supervisor>,
     gen: u64,
 ) -> Result<Agent> {
     let id_for_sid = agent_id.clone();
     let sup_for_sid = sup.clone();
-    let app_for_exit = app.clone();
+    let ctx_for_exit = ctx.clone();
     let id_for_exit = agent_id.clone();
     let sup_for_exit = sup.clone();
 
-    let on_event = make_event_handler(sup, app, agent_id);
+    let on_event = make_event_handler(sup, ctx, agent_id);
     let on_session_id = move |sid: String| {
         if let Err(e) = sup_for_sid
             .workspace
@@ -1714,7 +1705,7 @@ fn spawn_per_turn_agent(
         if exit.success || exit.interrupted || turn_ended_in_band {
             transition_active(
                 &sup_for_exit,
-                &app_for_exit,
+                &ctx_for_exit,
                 &id_for_exit,
                 AgentStatus::Idle,
             );
@@ -1726,9 +1717,9 @@ fn spawn_per_turn_agent(
             drop(taken);
             sup_for_exit.activities.lock().remove(&id_for_exit);
             sup_for_exit.native_inputs.lock().remove(&id_for_exit);
-            sup_for_exit.trigger_session_sync(app_for_exit.clone(), id_for_exit.clone());
+            sup_for_exit.trigger_session_sync(ctx_for_exit.clone(), id_for_exit.clone());
             sup_for_exit.set_status(
-                &app_for_exit,
+                &ctx_for_exit,
                 &id_for_exit,
                 AgentStatus::Error,
                 Some(format!("Agent process exited: {}", exit.message)),
@@ -1741,7 +1732,7 @@ fn spawn_per_turn_agent(
     Agent::spawn_per_turn(desc, spec, on_event, on_session_id, on_turn_exit)
 }
 
-fn spawn_turn_watchdog(sup: Arc<Supervisor>, app: AppHandle, agent_id: String, gen: u64) {
+fn spawn_turn_watchdog(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: String, gen: u64) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(WATCHDOG_TICK).await;
@@ -1782,13 +1773,13 @@ fn spawn_turn_watchdog(sup: Arc<Supervisor>, app: AppHandle, agent_id: String, g
                 if native_heuristic {
                     sup.heuristic_idle.lock().insert(agent_id.clone());
                 }
-                transition_active(&sup, &app, &agent_id, AgentStatus::Idle);
+                transition_active(&sup, &ctx, &agent_id, AgentStatus::Idle);
             }
         }
     });
 }
 
-pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: String) {
+pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: String) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(SPAWN_TIMEOUT).await;
         // Atomically claim the timeout outcome. Only an agent still in the
@@ -1798,7 +1789,7 @@ pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: 
         // start_process: if the spawn task inserts its process concurrently,
         // exactly one of us flips the status, and the loser tears down.
         let err = "Spawn timed out after 15s — process did not become ready.".to_string();
-        if !sup.claim_spawn_outcome(&app, &agent_id, AgentStatus::Error, Some(err)) {
+        if !sup.claim_spawn_outcome(&ctx, &agent_id, AgentStatus::Error, Some(err)) {
             return;
         }
         // Invalidate any gen-guarded loop / exit handler from this spawn before
@@ -1812,13 +1803,13 @@ pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, app: AppHandle, agent_id: 
     });
 }
 
-pub(super) fn fail_spawn(sup: &Supervisor, app: &AppHandle, agent_id: &str, err: String) {
-    sup.set_status(app, agent_id, AgentStatus::Error, Some(err));
+pub(super) fn fail_spawn(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, err: String) {
+    sup.set_status(ctx, agent_id, AgentStatus::Error, Some(err));
 }
 
 fn apply_exit_if_current(
     sup: &Supervisor,
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     agent_id: &str,
     gen: u64,
     success: bool,
@@ -1866,9 +1857,9 @@ fn apply_exit_if_current(
         AgentStatus::Running | AgentStatus::Idle | AgentStatus::Spawning
     );
     if was_live {
-        sup.set_status(app, agent_id, status.clone(), err);
+        sup.set_status(ctx, agent_id, status.clone(), err);
         if matches!(status, AgentStatus::Idle) {
-            sup.fetch_and_emit_pr_state(app.clone(), agent_id.to_string());
+            sup.fetch_and_emit_pr_state(ctx.clone(), agent_id.to_string());
         }
     }
 }

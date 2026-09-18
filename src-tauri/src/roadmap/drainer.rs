@@ -16,13 +16,13 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
-use tauri::AppHandle;
 use tokio::sync::Notify;
 
 use super::events::{self, EventActor, EventKind, ItemEvent, TrailEntry};
 use super::review;
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
 use super::{brakes, deps, emit_item, emit_item_event, store, Db};
+use crate::host::EngineCtx;
 use crate::workflow::spec::{self, Spec};
 use crate::workflow::types::RunStatus;
 
@@ -248,7 +248,11 @@ struct Plan {
     brief: String,
 }
 
-pub fn spawn(app: AppHandle, db: Db, service: Arc<crate::workflow::scheduler::WorkflowService>) {
+pub fn spawn(
+    ctx: Arc<EngineCtx>,
+    db: Db,
+    service: Arc<crate::workflow::scheduler::WorkflowService>,
+) {
     tauri::async_runtime::spawn(async move {
         let said: Arc<SaidNotes> = Arc::new(Mutex::new(HashMap::new()));
         loop {
@@ -257,9 +261,9 @@ pub fn spawn(app: AppHandle, db: Db, service: Arc<crate::workflow::scheduler::Wo
                 _ = signal().notified() => {}
             }
             let ticked = {
-                let (app, db, service, said) =
-                    (app.clone(), db.clone(), service.clone(), said.clone());
-                tauri::async_runtime::spawn(async move { tick(&app, &db, &service, &said).await })
+                let (ctx, db, service, said) =
+                    (ctx.clone(), db.clone(), service.clone(), said.clone());
+                tauri::async_runtime::spawn(async move { tick(&ctx, &db, &service, &said).await })
                     .await
             };
             if ticked.is_err() {
@@ -270,22 +274,22 @@ pub fn spawn(app: AppHandle, db: Db, service: Arc<crate::workflow::scheduler::Wo
 }
 
 async fn tick(
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     db: &Db,
     service: &Arc<crate::workflow::scheduler::WorkflowService>,
     said: &SaidNotes,
 ) {
     for project_id in projects_with_work(db) {
-        settle_project(app, db, &project_id, said);
+        settle_project(ctx, db, &project_id, said);
         let cap = {
             let conn = db.lock();
             concurrency_cap(&conn, &project_id)
         };
         for _ in 0..cap {
-            let Some(plan) = claim_next(app, db, &project_id, cap, said) else {
+            let Some(plan) = claim_next(ctx, db, &project_id, cap, said) else {
                 break;
             };
-            dispatch(app, db, service, plan).await;
+            dispatch(ctx, db, service, plan).await;
         }
     }
 }
@@ -309,7 +313,7 @@ struct Settled {
     adopted_run_id: Option<String>,
 }
 
-fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) {
+fn settle_project(ctx: &Arc<EngineCtx>, db: &Db, project_id: &str, said: &SaidNotes) {
     let Some(settled) = collect_settlements(db, project_id) else {
         return;
     };
@@ -322,7 +326,7 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
     {
         if outcome == Settlement::Running {
             write_item(
-                app,
+                ctx,
                 db,
                 &item.id,
                 ItemPatch {
@@ -337,11 +341,11 @@ fn settle_project(app: &AppHandle, db: &Db, project_id: &str, said: &SaidNotes) 
             );
             continue;
         }
-        conclude(app, db, &item, &outcome, pr.as_ref(), None);
+        conclude(ctx, db, &item, &outcome, pr.as_ref(), None);
         match outcome {
             Settlement::Released(why) => {
                 tracing::info!(item = %item.code, %why, "roadmap drainer: released item");
-                say(app, said, &item, &format!("Back on the board — {why}."));
+                say(ctx, said, &item, &format!("Back on the board — {why}."));
             }
             Settlement::InReview => {
                 forget(said, &item.id);
@@ -399,7 +403,7 @@ fn collect_settlements(db: &Db, project_id: &str) -> Option<Vec<Settled>> {
 }
 
 fn conclude(
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     db: &Db,
     item: &RoadmapItem,
     outcome: &Settlement,
@@ -409,16 +413,16 @@ fn conclude(
     let patch = settlement_patch(outcome, pr);
     let landed = match settlement_event(outcome, pr) {
         Some((kind, projected)) => {
-            write_item_with_event(app, db, &item.id, patch, kind, detail.or(projected))
+            write_item_with_event(ctx, db, &item.id, patch, kind, detail.or(projected))
         }
         None => {
-            write_item(app, db, &item.id, patch);
+            write_item(ctx, db, &item.id, patch);
             true
         }
     };
     if landed {
         if let Some(reviewable) = review::outcome_for(outcome, pr) {
-            review::request(app, db, item, &reviewable);
+            review::request(ctx, db, item, &reviewable);
         }
     }
     landed
@@ -493,7 +497,7 @@ impl Claim {
 }
 
 fn claim_next(
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     db: &Db,
     project_id: &str,
     cap: usize,
@@ -510,16 +514,16 @@ fn claim_next(
             text,
             recorded,
         } => {
-            say(app, said, &item, &text);
+            say(ctx, said, &item, &text);
             if let Some(event) = &recorded {
-                emit_item_event(app, event);
+                emit_item_event(ctx.sink.as_ref(), event);
             }
             None
         }
         Claim::Claimed(plan, event) => {
             forget(said, &plan.item.id);
-            emit_item(app, &plan.item);
-            emit_item_event(app, &event);
+            emit_item(ctx.sink.as_ref(), &plan.item);
+            emit_item_event(ctx.sink.as_ref(), &event);
             Some(*plan)
         }
     }
@@ -739,7 +743,7 @@ fn claim_item(
 
 // Drop DB lock before WorkflowService::launch await.
 async fn dispatch(
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     db: &Db,
     service: &Arc<crate::workflow::scheduler::WorkflowService>,
     plan: Plan,
@@ -770,7 +774,7 @@ async fn dispatch(
 
     match launched {
         Ok(run_id) => write_item(
-            app,
+            ctx,
             db,
             &item.id,
             ItemPatch {
@@ -782,7 +786,7 @@ async fn dispatch(
             tracing::warn!(item = %item.code, error = %e, "roadmap drainer: launch failed");
             let reason = format!("Couldn't start a run — {e}");
             conclude(
-                app,
+                ctx,
                 db,
                 &item,
                 &Settlement::Released(RUN_UNLAUNCHABLE),
@@ -790,7 +794,7 @@ async fn dispatch(
                 Some(reason.clone()),
             );
             emit_note(
-                app,
+                ctx.sink.as_ref(),
                 &QueueNote {
                     item_id: item.id.clone(),
                     code: item.code.clone(),
@@ -908,20 +912,20 @@ fn definition_spec(conn: &Connection, definition_id: &str) -> Option<Spec> {
     Some(spec)
 }
 
-pub(crate) fn write_item(app: &AppHandle, db: &Db, id: &str, patch: ItemPatch) {
+pub(crate) fn write_item(ctx: &Arc<EngineCtx>, db: &Db, id: &str, patch: ItemPatch) {
     let updated = {
         let conn = db.lock();
         store::update(&conn, id, &patch)
     };
     match updated {
-        Ok(Some(row)) => emit_item(app, &row),
+        Ok(Some(row)) => emit_item(ctx.sink.as_ref(), &row),
         Ok(None) => {}
         Err(e) => tracing::warn!(id, error = %e, "roadmap drainer: item write failed"),
     }
 }
 
 fn write_item_with_event(
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     db: &Db,
     id: &str,
     patch: ItemPatch,
@@ -932,14 +936,14 @@ fn write_item_with_event(
         let conn = db.lock();
         apply_and_record(&conn, id, None, &patch, EventActor::Drainer, kind, detail)
     };
-    match emit_write(app, id, updated, "roadmap drainer: item write failed") {
+    match emit_write(ctx, id, updated, "roadmap drainer: item write failed") {
         WriteEmit::Wrote => true,
         WriteEmit::Missed | WriteEmit::Failed => false,
     }
 }
 
 pub(crate) fn write_item_where(
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     db: &Db,
     id: &str,
     expected: ItemStatus,
@@ -958,7 +962,7 @@ pub(crate) fn write_item_where(
             entry.detail,
         )
     };
-    match emit_write(app, id, updated, "roadmap: item write failed") {
+    match emit_write(ctx, id, updated, "roadmap: item write failed") {
         WriteEmit::Wrote | WriteEmit::Failed => {}
         WriteEmit::Missed => tracing::debug!(
             id,
@@ -974,15 +978,15 @@ enum WriteEmit {
 }
 
 fn emit_write(
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     id: &str,
     updated: rusqlite::Result<Option<(RoadmapItem, ItemEvent)>>,
     fail_msg: &str,
 ) -> WriteEmit {
     match updated {
         Ok(Some((row, event))) => {
-            emit_item(app, &row);
-            emit_item_event(app, &event);
+            emit_item(ctx.sink.as_ref(), &row);
+            emit_item_event(ctx.sink.as_ref(), &event);
             WriteEmit::Wrote
         }
         Ok(None) => WriteEmit::Missed,
@@ -1024,12 +1028,12 @@ pub(crate) fn emit_note(sink: &dyn crate::host::EventSink, note: &QueueNote) {
     crate::host::emit(sink, "roadmap:queue-note", note);
 }
 
-fn say(app: &AppHandle, said: &SaidNotes, item: &RoadmapItem, note: &str) {
+fn say(ctx: &Arc<EngineCtx>, said: &SaidNotes, item: &RoadmapItem, note: &str) {
     if !record_note(&mut said.lock(), item, note) {
         return;
     }
     emit_note(
-        app,
+        ctx.sink.as_ref(),
         &QueueNote {
             item_id: item.id.clone(),
             code: item.code.clone(),

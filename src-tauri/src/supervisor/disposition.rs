@@ -3,10 +3,10 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use tauri::AppHandle;
 
 use crate::error::{Error, Result};
 use crate::git;
+use crate::host::EngineCtx;
 use crate::sandbox::provision::{self, CheckoutSpec};
 use crate::sandbox::{docker, podman, EngineKind};
 use crate::workspace::{
@@ -36,7 +36,7 @@ impl Supervisor {
     /// to reappear in the sidebar). Cleanup failures are recorded on the row
     /// (`finish_archive`) rather than returned, so the caller never sees an
     /// error for an archive that did happen.
-    pub async fn archive_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+    pub async fn archive_agent(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
         if record.archive.is_some() {
             return Err(Error::Other("agent is already archived".into()));
@@ -51,7 +51,7 @@ impl Supervisor {
         }
 
         self.workspace.begin_archive(agent_id)?;
-        emit_workspace_changed(&app);
+        emit_workspace_changed(ctx.sink.as_ref());
 
         self.detach_runtime(agent_id);
         reap_agent_containers(agent_id, Some(&record), "archive");
@@ -96,7 +96,7 @@ impl Supervisor {
         // The snapshot (diff stats, branch tips) reshapes the record beyond
         // what `agent:status` carries, so ping the frontend to reload the
         // workspace now that History has something to show.
-        emit_workspace_changed(&app);
+        emit_workspace_changed(ctx.sink.as_ref());
         Ok(())
     }
 
@@ -104,7 +104,7 @@ impl Supervisor {
     /// branches and checkouts from snapshot SHAs, clear archive
     /// metadata, transition to Spawning so the supervisor's start path
     /// attaches to the existing claude session.
-    pub async fn restore_agent(self: Arc<Self>, app: AppHandle, agent_id: &str) -> Result<()> {
+    pub async fn restore_agent(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
         let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = self.workspace.agent(agent_id)?;
         let archive = record
@@ -240,18 +240,18 @@ impl Supervisor {
         }
 
         self.workspace.restore_agent(agent_id, restored)?;
-        self.set_status(&app, agent_id, AgentStatus::Spawning, None);
-        emit_workspace_changed(&app);
+        self.set_status(&ctx, agent_id, AgentStatus::Spawning, None);
+        emit_workspace_changed(ctx.sink.as_ref());
 
         // Restore is an explicit user action, so bring the process up now
         // (set_status(Spawning) above lets start_process promote to Idle).
-        arm_spawn_timeout(self.clone(), app.clone(), agent_id.to_string());
+        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
         let sup = self.clone();
-        let app_for_task = app.clone();
+        let ctx_for_task = ctx.clone();
         let id_for_task = agent_id.to_string();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = sup.start_process(&app_for_task, &id_for_task, false).await {
-                fail_spawn(&sup, &app_for_task, &id_for_task, e.to_string());
+            if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task, false).await {
+                fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
             }
         });
 

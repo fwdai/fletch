@@ -6,13 +6,12 @@
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension};
-use tauri::{AppHandle, Manager};
 
 use super::drainer::{project_flag, FinalizedPr, Settlement};
 use super::events::{self, EventActor, EventKind};
 use super::types::RoadmapItem;
 use super::{emit_item_event, Db};
-use crate::supervisor::Supervisor;
+use crate::host::EngineCtx;
 
 pub(super) const SETTLE_REVIEW_KEY: &str = "roadmap.settle_review";
 
@@ -48,7 +47,7 @@ enum Undeliverable {
 }
 
 impl Undeliverable {
-    fn apply(&self, app: &AppHandle, db: &Db) {
+    fn apply(&self, ctx: &Arc<EngineCtx>, db: &Db) {
         let Undeliverable::Note {
             item_id,
             project_id,
@@ -70,7 +69,7 @@ impl Undeliverable {
             )
         };
         match recorded {
-            Ok(event) => emit_item_event(app, &event),
+            Ok(event) => emit_item_event(ctx.sink.as_ref(), &event),
             Err(e) => tracing::warn!(item = %code, error = %e, "roadmap settle review: \
                                       recording the deferred review failed"),
         }
@@ -237,46 +236,43 @@ fn newest_pm_chat(conn: &Connection, project_id: &str) -> Option<String> {
     .flatten()
 }
 
-pub(crate) fn request(app: &AppHandle, db: &Db, item: &RoadmapItem, outcome: &Outcome) {
-    send(app, db, &review_turn(item, outcome));
+pub(crate) fn request(ctx: &Arc<EngineCtx>, db: &Db, item: &RoadmapItem, outcome: &Outcome) {
+    send(ctx, db, &review_turn(item, outcome));
 }
 
-fn send(app: &AppHandle, db: &Db, turn: &PmTurn<'_>) {
+fn send(ctx: &Arc<EngineCtx>, db: &Db, turn: &PmTurn<'_>) {
     let decision = {
         let conn = db.lock();
         plan(&conn, &turn.item.project_id, turn.dial)
     };
-    dispatch(app, db, turn, decision);
+    dispatch(ctx, db, turn, decision);
 }
 
-fn dispatch(app: &AppHandle, db: &Db, turn: &PmTurn<'_>, decision: Plan) {
+fn dispatch(ctx: &Arc<EngineCtx>, db: &Db, turn: &PmTurn<'_>, decision: Plan) {
     if decision == Plan::Off {
         return;
     }
     let prompt = turn.render();
     let undeliverable = turn.undeliverable.clone();
-    let (app, db) = (app.clone(), db.clone());
+    let (ctx, db) = (ctx.clone(), db.clone());
     tauri::async_runtime::spawn(async move {
         let delivered = match decision {
-            Plan::Deliver { agent_id } => deliver(&app, &agent_id, &prompt),
+            Plan::Deliver { agent_id } => deliver(&ctx, &agent_id, &prompt),
             Plan::Off | Plan::NoChat => false,
         };
         if !delivered {
-            undeliverable.apply(&app, &db);
+            undeliverable.apply(&ctx, &db);
         }
     });
 }
 
-fn deliver(app: &AppHandle, agent_id: &str, prompt: &str) -> bool {
-    let Some(sup) = app
-        .try_state::<Arc<Supervisor>>()
-        .map(|s| s.inner().clone())
-    else {
+fn deliver(ctx: &Arc<EngineCtx>, agent_id: &str, prompt: &str) -> bool {
+    let Some(sup) = ctx.supervisor() else {
         tracing::warn!("roadmap PM turn: no supervisor to deliver through");
         return false;
     };
     let turn_id = uuid::Uuid::new_v4().to_string();
-    match sup.send_user_message(app, agent_id, &turn_id, prompt, &[]) {
+    match sup.send_user_message(ctx, agent_id, &turn_id, prompt, &[]) {
         Ok(held) => {
             tracing::info!(agent_id, held, "roadmap PM turn: sent");
             true
@@ -374,7 +370,7 @@ fn run_item(conn: &Connection, run_id: &str) -> Option<RoadmapItem> {
     super::store::get(conn, &item_id).ok().flatten()
 }
 
-pub(crate) fn midrun(app: &AppHandle, db: &Db, signal: &MidRunSignal) {
+pub(crate) fn midrun(ctx: &Arc<EngineCtx>, db: &Db, signal: &MidRunSignal) {
     if signal.body.trim().is_empty() {
         return;
     }
@@ -386,7 +382,7 @@ pub(crate) fn midrun(app: &AppHandle, db: &Db, signal: &MidRunSignal) {
         return;
     };
     dispatch(
-        app,
+        ctx,
         db,
         &midrun_turn(&item, signal),
         Plan::Deliver { agent_id },

@@ -20,10 +20,12 @@ mod ordering;
 #[path = "tests/support.rs"]
 mod test_support;
 
+use std::sync::Arc;
+
 use rusqlite::Connection;
 use serde_json::Value;
-use tauri::AppHandle;
 
+use crate::host::EngineCtx;
 use crate::roadmap::Db;
 use crate::roadmap::{
     emit_brief_proposal, emit_item, emit_item_event, emit_order_proposal, emit_project_hold,
@@ -59,17 +61,18 @@ fn is_roadmap_op(op: &str) -> bool {
 }
 
 pub struct RoadmapDispatcher {
-    /// `None` only in tests, which have no window.
-    app: Option<AppHandle>,
+    /// `None` only in tests, which run without an engine ctx (and so without a
+    /// sink to announce to).
+    ctx: Option<Arc<EngineCtx>>,
     db: Db,
     project_id: String,
     git: GitDispatcher,
 }
 
 impl RoadmapDispatcher {
-    pub fn new(app: AppHandle, db: Db, project_id: String, git: GitDispatcher) -> Self {
+    pub fn new(ctx: Arc<EngineCtx>, db: Db, project_id: String, git: GitDispatcher) -> Self {
         Self {
-            app: Some(app),
+            ctx: Some(ctx),
             db,
             project_id,
             git,
@@ -86,8 +89,8 @@ impl RoadmapDispatcher {
             let conn = self.db.lock();
             op(&conn, &self.project_id)
         };
-        if let (Some(sink), Some(stored)) = (&self.app, &stored) {
-            emit(sink, stored);
+        if let (Some(ctx), Some(stored)) = (&self.ctx, &stored) {
+            emit(ctx.sink.as_ref(), stored);
         }
         (resp, Vec::new())
     }

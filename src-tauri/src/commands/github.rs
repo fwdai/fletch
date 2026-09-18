@@ -3,10 +3,11 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::error::{Error, Result};
 use crate::github::{self as gh, GhRepoSummary, GhStatus, PrState};
+use crate::host::EngineCtx;
 use crate::new_project;
 use crate::supervisor::Supervisor;
 
@@ -31,13 +32,13 @@ pub async fn gh_repo_list() -> Result<Vec<GhRepoSummary>> {
 /// workspace project.
 #[tauri::command]
 pub async fn clone_repo(
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     supervisor: State<'_, Arc<Supervisor>>,
     spec: String,
     dest_parent: String,
 ) -> Result<crate::workspace::Workspace> {
     super::workspace::announce_workspace(
-        &app,
+        ctx.sink.as_ref(),
         clone_repo_impl(&supervisor, &spec, &dest_parent).await,
     )
 }
