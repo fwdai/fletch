@@ -30,10 +30,7 @@ pub async fn wf_list_runs(
 
 /// A run plus its attempts and messages. `None` if the run doesn't exist.
 #[tauri::command]
-pub async fn wf_get_run(
-    run_id: String,
-    db: State<'_, Db>,
-) -> Result<Option<RunDetail>, String> {
+pub async fn wf_get_run(run_id: String, db: State<'_, Db>) -> Result<Option<RunDetail>, String> {
     workflow::wf_get_run_impl(run_id, db.inner()).await
 }
 
@@ -212,6 +209,12 @@ pub async fn wf_answer(
     body: String,
     service: State<'_, Arc<WorkflowService>>,
 ) -> Result<(), String> {
-    fletch_core::workflow::comms::wf_answer_impl(project_id, run_id, message_id, body, service.inner())
-        .await
+    fletch_core::workflow::comms::wf_answer_impl(
+        project_id,
+        run_id,
+        message_id,
+        body,
+        service.inner(),
+    )
+    .await
 }

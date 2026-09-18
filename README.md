@@ -115,14 +115,19 @@ bun tauri dev
 **Toolchain:** [Bun](https://bun.com) 1.3+ and a stable Rust toolchain. React 18 + TypeScript + Zustand + xterm.js frontend; Rust backend via [Tauri 2](https://tauri.app).
 
 ```
-src/                  frontend (store, adapters, workflows, components)
-src-tauri/src/        backend (supervisor, sessions, sandbox, workflow engine, git, github)
-src-tauri/migrations/ SQLite schema
+src/                         frontend (store, adapters, workflows, components)
+crates/fletch-core/src/      the engine (supervisor, sessions, sandbox, workflow
+                             engine, git, github, remote host) — no Tauri
+crates/fletch-core/migrations/  SQLite schema
+crates/fletch-proto/src/     the remote wire protocol, shared with the phone
+src-tauri/src/               the desktop shell (Tauri setup, commands, tray,
+                             dictation, OAuth, updater)
 ```
 
 ```bash
-bun run test                  # frontend (vitest)
-cd src-tauri && cargo test    # backend
+bun run test                                               # frontend (vitest)
+cd src-tauri && cargo test                                 # desktop shell
+cargo test --manifest-path crates/fletch-core/Cargo.toml   # the engine
 ```
 
 ## Contributing

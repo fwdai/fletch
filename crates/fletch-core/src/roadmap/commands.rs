@@ -133,10 +133,7 @@ pub async fn roadmap_item_review_impl(
     Ok(Some(pr_review::fetch(&repo, number).await))
 }
 
-pub async fn roadmap_merge_item_pr_impl(
-    item_id: String,
-    db: &Db,
-) -> Result<(), String> {
+pub async fn roadmap_merge_item_pr_impl(item_id: String, db: &Db) -> Result<(), String> {
     merge_sweep::merge_hold_gate(db, &item_id)?;
     let (repo, number) = pr_review::target(db, &item_id).ok_or(
         "this item has no pull request to merge — it may have shipped or come back to the board",
@@ -439,10 +436,7 @@ pub async fn roadmap_reject_order_proposal_impl(
     Ok(())
 }
 
-pub async fn roadmap_get_brief_impl(
-    project_id: String,
-    db: &Db,
-) -> Result<Option<Brief>, String> {
+pub async fn roadmap_get_brief_impl(project_id: String, db: &Db) -> Result<Option<Brief>, String> {
     let conn = db.lock();
     memory::load(&conn, &project_id).map_err(|e| e.to_string())
 }

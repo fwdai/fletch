@@ -750,3 +750,87 @@ mod arg_tests {
         assert!(explicit.subdir.is_none());
     }
 }
+
+#[cfg(test)]
+mod dictation_tests {
+    use super::*;
+    use crate::host::ctx::test_ctx;
+    use crate::supervisor::Supervisor;
+    use crate::workspace::WorkspaceManager;
+    use serde_json::json;
+
+    fn host_without_a_speech_engine() -> (SupervisorDispatch, tempfile::TempDir) {
+        let (ctx, _sink, dir) = test_ctx();
+        let sup = Arc::new(Supervisor::new(Arc::new(WorkspaceManager::new(
+            ctx.db.clone(),
+        ))));
+        (SupervisorDispatch::new(ctx, sup), dir)
+    }
+
+    /// The five names stay on the wire whatever the host is: the protocol
+    /// descriptor advertises them, so a phone must be able to ask and get a
+    /// real answer rather than `unknown op`.
+    #[test]
+    fn the_five_ops_are_on_the_allowlist_with_or_without_an_engine() {
+        for op in DICTATION_OPS {
+            assert!(OPS.contains(op), "{op} left the allowlist");
+        }
+    }
+
+    /// A host with no local speech engine — the headless Linux case, and the
+    /// non-macOS desktop build — answers the probe instead of erroring, so the
+    /// phone hides its mic button the way it always has.
+    #[tokio::test]
+    async fn status_reports_unavailable_when_no_engine_is_attached() {
+        let (dispatch, _dir) = host_without_a_speech_engine();
+        let reply = dispatch
+            .dispatch("dictation_status", json!({}))
+            .await
+            .expect("status is always answerable");
+        assert_eq!(
+            reply,
+            json!({ "available": false, "reason": DICTATION_UNAVAILABLE })
+        );
+    }
+
+    /// The four capture ops fail with the words the non-macOS build has always
+    /// used, rather than `unknown op` (which would read as a protocol
+    /// mismatch) or a panic.
+    #[tokio::test]
+    async fn the_capture_ops_fail_with_the_unavailable_message() {
+        let (dispatch, _dir) = host_without_a_speech_engine();
+        for op in ["dictation_begin", "dictation_audio", "dictation_end"] {
+            assert_eq!(
+                dispatch.dispatch(op, json!({ "session": "s" })).await,
+                Err(DICTATION_UNAVAILABLE.to_string()),
+                "{op}"
+            );
+        }
+        assert_eq!(
+            dispatch.dispatch("dictation_cancel", json!({})).await,
+            Err(DICTATION_UNAVAILABLE.to_string())
+        );
+    }
+
+    /// With an engine attached the five route straight to it — the desktop's
+    /// whisper dispatcher, here a stub that just names itself.
+    #[tokio::test]
+    async fn an_attached_engine_answers_all_five() {
+        struct Stub;
+        impl Dispatch for Stub {
+            fn dispatch<'a>(&'a self, op: &'a str, _args: Value) -> DispatchFuture<'a> {
+                Box::pin(async move { Ok(Value::String(op.to_string())) })
+            }
+        }
+
+        let (dispatch, _dir) = host_without_a_speech_engine();
+        let dispatch = dispatch.with_dictation(Arc::new(Stub));
+        for op in DICTATION_OPS {
+            assert_eq!(
+                dispatch.dispatch(op, json!({})).await,
+                Ok(Value::String((*op).to_string())),
+                "{op}"
+            );
+        }
+    }
+}

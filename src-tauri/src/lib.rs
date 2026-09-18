@@ -24,7 +24,7 @@ pub use fletch_core::{
     activity, agent, agent_install, agent_profile, attachments, bin_resolve, child_io, codegraph,
     database, download, error, exec_session, git, git_dist, git_state, github, host, instructions,
     issues, keychain, linear, managed_session, message_queue, model_catalog, names, native_input,
-    new_project, power, publish_prefs, pty_session, roadmap, rpc, run_detect, run_env, run_session,
+    new_project, power, pty_session, publish_prefs, roadmap, rpc, run_detect, run_env, run_session,
     sandbox, secrets, slash_commands, supervisor, telemetry, transcripts, usage_scan, verify,
     workflow, workspace,
 };

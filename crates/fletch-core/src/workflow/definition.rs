@@ -150,10 +150,7 @@ pub async fn wf_def_export_yaml_impl(id: String, db: &Db) -> Result<String, Stri
 /// against the local library. Missing skills and unknown providers are warnings
 /// in the returned report, never errors — only malformed YAML or a §5.2
 /// violation fails the import.
-pub async fn wf_def_import_yaml_impl(
-    yaml_text: String,
-    db: &Db,
-) -> Result<ImportReport, String> {
+pub async fn wf_def_import_yaml_impl(yaml_text: String, db: &Db) -> Result<ImportReport, String> {
     let spec = yaml::from_yaml(&yaml_text)?;
     validate_or_err(&spec)?;
 

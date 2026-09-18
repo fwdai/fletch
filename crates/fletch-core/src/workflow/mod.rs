@@ -47,10 +47,7 @@ pub(crate) fn now_ms() -> i64 {
 
 /// Every run, newest-updated first; optionally scoped to one project. Drives the
 /// sidebar's run rows (§14.2).
-pub async fn wf_list_runs_impl(
-    project_id: Option<String>,
-    db: &Db,
-) -> Result<Vec<Run>, String> {
+pub async fn wf_list_runs_impl(project_id: Option<String>, db: &Db) -> Result<Vec<Run>, String> {
     let conn = db.lock();
     let map_err = |e: rusqlite::Error| e.to_string();
     match project_id {
@@ -72,10 +69,7 @@ pub async fn wf_list_runs_impl(
 }
 
 /// A run plus its attempts and messages (§7.2). `None` if the run doesn't exist.
-pub async fn wf_get_run_impl(
-    run_id: String,
-    db: &Db,
-) -> Result<Option<RunDetail>, String> {
+pub async fn wf_get_run_impl(run_id: String, db: &Db) -> Result<Option<RunDetail>, String> {
     let conn = db.lock();
     let map_err = |e: rusqlite::Error| e.to_string();
 

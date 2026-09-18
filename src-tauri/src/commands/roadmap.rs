@@ -55,15 +55,8 @@ pub async fn roadmap_update_item(
     ctx: State<'_, Arc<EngineCtx>>,
     db: State<'_, Db>,
 ) -> Result<ItemUpdate, String> {
-    commands::roadmap_update_item_impl(
-        id,
-        patch,
-        expect_status,
-        queue,
-        ctx.inner(),
-        db.inner()
-    )
-    .await
+    commands::roadmap_update_item_impl(id, patch, expect_status, queue, ctx.inner(), db.inner())
+        .await
 }
 
 #[tauri::command]
@@ -95,10 +88,7 @@ pub async fn roadmap_item_review(
 }
 
 #[tauri::command]
-pub async fn roadmap_merge_item_pr(
-    item_id: String,
-    db: State<'_, Db>,
-) -> Result<(), String> {
+pub async fn roadmap_merge_item_pr(item_id: String, db: State<'_, Db>) -> Result<(), String> {
     commands::roadmap_merge_item_pr_impl(item_id, db.inner()).await
 }
 

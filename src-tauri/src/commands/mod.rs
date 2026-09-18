@@ -34,9 +34,9 @@ pub use git_state::*;
 pub use github::*;
 pub use issues::*;
 pub use provider_login::*;
-pub use roadmap::*;
 #[cfg(desktop)]
 pub use remote::*;
+pub use roadmap::*;
 pub use run::*;
 pub use session::*;
 pub use shell::*;

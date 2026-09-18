@@ -68,8 +68,8 @@ struct RunSessionInner {
     generation: u64,
 }
 
-impl RunSession {
-    pub fn new() -> Self {
+impl Default for RunSession {
+    fn default() -> Self {
         Self {
             inner: Mutex::new(RunSessionInner {
                 phase: RunPhase::Idle,
@@ -79,6 +79,12 @@ impl RunSession {
                 generation: 0,
             }),
         }
+    }
+}
+
+impl RunSession {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn snapshot(&self) -> RunStateSnapshot {

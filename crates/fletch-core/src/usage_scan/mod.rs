@@ -1436,9 +1436,10 @@ mod tests {
             by_model: BTreeMap<String, TokenCounts>,
         }
 
-        let expected: HashMap<String, Expected> =
-            serde_json::from_str(include_str!("../../../../tests/fixtures/usage/expected.json"))
-                .expect("expected.json");
+        let expected: HashMap<String, Expected> = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/usage/expected.json"
+        ))
+        .expect("expected.json");
 
         let td = tempfile::tempdir().unwrap();
         let projects = td.path().join("projects").join("corpus");

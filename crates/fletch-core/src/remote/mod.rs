@@ -30,8 +30,7 @@ mod tests;
 
 pub use auth::{DeviceStore, PairingTokens};
 pub use dispatch::{
-    Dispatch, DispatchFuture, DispatchResult, SupervisorDispatch, DICTATION_UNAVAILABLE,
-    UNKNOWN_OP,
+    Dispatch, DispatchFuture, DispatchResult, SupervisorDispatch, DICTATION_UNAVAILABLE, UNKNOWN_OP,
 };
 pub use events::install_taps;
 pub use relay::RelayStatus;

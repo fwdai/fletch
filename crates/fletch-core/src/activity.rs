@@ -137,13 +137,14 @@ impl Activity for ManagedActivity {
 /// PTY chunks. Claude's TUI animates its "working" state with
 /// frequent redraws, so silence longer than the threshold is our best
 /// available heuristic. The supervisor corrects it if output resumes.
+#[derive(Default)]
 pub struct ClaudeNativeActivity {
     last_byte_at: Option<Instant>,
 }
 
 impl ClaudeNativeActivity {
     pub fn new() -> Self {
-        Self { last_byte_at: None }
+        Self::default()
     }
 }
 

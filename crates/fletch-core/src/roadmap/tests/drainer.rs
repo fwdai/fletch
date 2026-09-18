@@ -420,7 +420,8 @@ fn the_boolean_dials_read_both_answers_and_fall_back() {
 
 #[test]
 fn every_dial_is_declared_on_both_sides_of_the_wire() {
-    const TS: &str = include_str!("../../../../../src/components/ProjectScreen/Roadmap/autonomy.ts");
+    const TS: &str =
+        include_str!("../../../../../src/components/ProjectScreen/Roadmap/autonomy.ts");
     for expected in [
         format!("export const AUTOQUEUE_KEY = {AUTOQUEUE_KEY:?};"),
         format!("export const MAX_CONCURRENT_KEY = {MAX_CONCURRENT_KEY:?};"),
