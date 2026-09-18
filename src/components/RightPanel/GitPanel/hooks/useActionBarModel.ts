@@ -10,7 +10,22 @@ import {
 } from "@/components/RightPanel/primaryActions";
 import { describeMergeGate } from "@/mergeGate";
 import { useAppStore } from "@/store";
-import { useGate } from "@/store/capabilities";
+import { type GateName, useGateFor } from "@/store/capabilities";
+
+/** The panel actions that call a git op on the environment's host, by the key
+ *  `runAction` dispatches. Everything else the menu offers is either local
+ *  (`view-pr`), delegated to the coding agent (`agent-*`), or an op that has
+ *  been on the wire since v1 (`push`, `commit-*`, `open-pr`, `archive`) — so
+ *  only these can be refused by the host the user is driving. */
+const ACTION_GATES: Partial<Record<string, GateName>> = {
+  merge: "mergePr",
+  pull: "pull",
+  rebase: "rebase",
+  stash: "stash",
+  discard: "discardChanges",
+  abort: "abortMerge",
+  "delete-branch": "deleteBranch",
+};
 
 /** Builds the split-button model for the current state: the action counts, the
  *  primary/secondary actions, the menu `items`, and the selection bookkeeping
@@ -45,10 +60,6 @@ export function useActionBarModel(input: {
 
   const gitCommitAction = useAppStore((s) => s.gitCommitAction);
   const setGitCommitAction = useAppStore((s) => s.setGitCommitAction);
-  // `merge_pr` is on the wire, so this is null everywhere except against a host
-  // from before the op — where the button has to be dead rather than dispatch a
-  // call that comes back `unknown op`.
-  const mergePrGate = useGate("mergePr");
 
   const behind = gitState?.behind ?? 0;
   const mergeable = prState?.mergeable ?? "unknown";
@@ -108,10 +119,16 @@ export function useActionBarModel(input: {
   // tone/enabled state, and the dispatched action all stay in agreement.
   const effectiveKey = items.some((i) => i.key === selectedKey) ? selectedKey : primary.key;
 
+  // Whether the environment the user is driving can run the selected action at
+  // all: null locally and on a host that answers its op, a reason against one
+  // that doesn't — where the button has to be dead rather than dispatch a call
+  // that comes back `unknown op`.
+  const actionGate = useGateFor(ACTION_GATES[effectiveKey]);
+
   // The CTA's main button is disabled while loading git state, while the agent
-  // holds a delegation, and when Merge is selected but either the merge gate
-  // isn't open or the environment can't merge at all. Gate semantics live in
-  // describeMergeGate (spec §6).
+  // holds a delegation, when the selected action's op is not on this
+  // environment, and when Merge is selected but the merge gate isn't open.
+  // Gate semantics live in describeMergeGate (spec §6).
   const { mergeAllowed } = describeMergeGate(checks ? mergeState : null, {
     checksFailed,
     mergeable,
@@ -119,7 +136,8 @@ export function useActionBarModel(input: {
   const mainDisabled =
     effectiveKey === "loading" ||
     delegationActive ||
-    (effectiveKey === "merge" && (!mergeAllowed || mergePrGate !== null));
+    actionGate !== null ||
+    (effectiveKey === "merge" && !mergeAllowed);
   // Tone applies only when the selected action is the state's primary; picking
   // an alternate from the menu falls back to the neutral accent fill.
   const tone: ActionTone = effectiveKey === primary.key ? (primary.tone ?? "accent") : "accent";
