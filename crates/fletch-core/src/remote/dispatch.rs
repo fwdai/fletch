@@ -83,7 +83,10 @@ pub const WORKFLOWS_UNAVAILABLE: &str = "this host is not running the workflow s
 /// policy decision — so what is left here is the ops those surfaces call from
 /// *other* command families, which keep the exclusions their own family has.
 /// Named rather than merely absent so the withholding is a decision on the
-/// record, as `delete_branch_agent` is.
+/// record, as `delete_branch_agent` is. Absence is what makes them unreachable,
+/// so this list drives nothing at runtime — it is the reason, asserted by
+/// `tests::the_withheld_neighbours_of_the_wf_and_roadmap_surface_stay_off`.
+#[cfg(test)]
 pub const WITHHELD_WF_ROADMAP_OPS: &[(&str, &str)] = &[
     // The workflow composer's `@file` and `#PR` mention sources. Part of the
     // file/github read surface, which is off the wire as a family.

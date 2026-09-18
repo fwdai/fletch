@@ -31,11 +31,21 @@ describe("gateReason", () => {
 
   it("gates the local-only affordances on any remote host, however capable", () => {
     // `add_workspace_repo` IS on the wire; the native folder picker that feeds
-    // it is not, so this gate ignores the descriptor entirely.
-    const generous = host([...V2_DEFAULT_OPS, "open_agent_shell", "run_start"]);
+    // it is not, so this gate ignores the descriptor entirely. Autopilot is the
+    // same shape: its opt-outs are this Mac's rows and its verify rung is a
+    // local script, so no descriptor opens it.
+    const generous = host([
+      ...V2_DEFAULT_OPS,
+      "open_agent_shell",
+      "run_start",
+      "run_verification",
+      "fork_agent",
+    ]);
 
-    expect(GATES.addProject.op).toBeNull();
-    expect(gateReason(generous, "addProject")).toBe(GATES.addProject.reason);
+    for (const gate of ["addProject", "autopilot"] as const) {
+      expect(GATES[gate].op).toBeNull();
+      expect(gateReason(generous, gate)).toBe(GATES[gate].reason);
+    }
   });
 
   it("reads a host that reported no descriptor as the v2 default set", () => {
@@ -60,6 +70,29 @@ describe("gateReason", () => {
 
     expect(gateReason(current, "mergePr")).toBeNull();
     expect(gateReason(current, "restore")).toBeNull();
+  });
+
+  it("opens workflows and the roadmap on a host that answers their ops", () => {
+    // The whole point of exposing the two families: no client-side rule to
+    // change, just the names arriving in the descriptor.
+    const current = host([...V2_DEFAULT_OPS, "wf_list_runs", "roadmap_create_item"]);
+
+    expect(gateReason(current, "workflows")).toBeNull();
+    expect(gateReason(current, "roadmap")).toBeNull();
+  });
+
+  it("keeps the roadmap closed on a host that only has the planning-chat reads", () => {
+    // `roadmap_list_items` has been on the wire since the phone's planning
+    // chat, so gating the board on it would have opened a tab whose every
+    // write failed as `unknown op`. The gate names a board *write* instead.
+    const planningOnly = host([
+      ...V2_DEFAULT_OPS,
+      "roadmap_list_items",
+      "roadmap_update_item",
+      "roadmap_discard_proposal",
+    ]);
+
+    expect(gateReason(planningOnly, "roadmap")).toBe(GATES.roadmap.reason);
   });
 
   it("opens a gate the host says it answers", () => {

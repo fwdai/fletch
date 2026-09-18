@@ -1,6 +1,6 @@
 // What the UI may offer in the environment the user is driving.
 //
-// A paired host answers a subset of this app's 212 commands — the 48 rows of
+// A paired host answers a subset of this app's 212 commands — the rows of
 // docs/remote-protocol.md's op table — so a control whose op is not on it has
 // to say so rather than fail on click. Gating is by op NAME, never by version
 // (docs/multi-host-plan.md §5.1): `hostSupports` takes a host that reported a
@@ -46,11 +46,25 @@ export const GATES = {
   },
   workflows: {
     op: "wf_list_runs",
-    reason: "Workflows aren't available on a remote host yet.",
+    reason: "This host is too old to run workflows.",
   },
   roadmap: {
-    op: "roadmap_list_items",
-    reason: "The roadmap isn't available on a remote host yet.",
+    op: "roadmap_create_item",
+    reason: "This host is too old to drive a roadmap board.",
+  },
+  /** The desktop's own autopilot ladder (`useAutopilotSync`). `null` for the
+   *  same reason `addProject` is: the blocker is on THIS side. Its opt-outs are
+   *  rows in this Mac's `settings` / `project_settings`, read through the
+   *  local-only `db_*` bridge and keyed by project and agent ids that mean
+   *  nothing on another machine, and the verify rung calls `run_verification`,
+   *  which is off the wire with the rest of the `run_*` family. Left ticking
+   *  against a host it would judge a remote project by a local opt-out and
+   *  spend the host's agent turns on it. The *host's* own autonomous loop — the
+   *  roadmap queue — is unaffected: it runs on the host, and the board above
+   *  drives it. */
+  autopilot: {
+    op: null,
+    reason: "Autopilot runs on this Mac, for this Mac's projects.",
   },
   nativeView: {
     op: "switch_view",
@@ -114,11 +128,4 @@ export const activeEntry = (s: AppState): EnvironmentEntry =>
  *  rendering it disabled, or leaving it out. */
 export function useGate(gate: GateName): string | null {
   return useAppStore((s) => gateReason(activeEntry(s), gate));
-}
-
-/** True while the UI is driving a paired host rather than this Mac — for the
- *  places whose answer is about the environment itself and not about one op:
- *  the local-engine loops that have no business ticking against a host. */
-export function useIsRemoteEnvironment(): boolean {
-  return useAppStore((s) => activeEntry(s).kind === "remote");
 }

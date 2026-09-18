@@ -630,9 +630,19 @@ merged PRs documented: `merge_pr`/`discard_agent`/`restore_agent`/`get_all_git_m
 commands pinned local, a `publish:approval-resolved` event, engine facts in
 `fletch-host status`.
 
-Nothing from the deferred table has been started. Item 2 (workflow and
-roadmap ops remotely) is the first to pick up after v1; it becomes table rows
-once 2c exists.
+- [~] 2 `wf_*` / `roadmap_*` ops remotely: all 18 `wf_*` and 30 `roadmap_*`
+  commands on `dispatch::OPS` plus `wf_run_agents`, their 16 events on the forwarded
+  whitelist, the `workflows` gate opened by `wf_list_runs` and the `roadmap`
+  gate re-pointed at `roadmap_create_item` (a board *write*, since
+  `roadmap_list_items` has been on the wire since the phone's planning chat),
+  and autopilot moved from a hard `kind === "remote"` rule to a
+  `GATES.autopilot` row. Nothing withheld inside the two families; what stays
+  off is what those flows borrow from other families
+  (`list_repo_tree`/`list_repo_prs`, `run_verification`, `fork_agent`),
+  recorded in `dispatch::WITHHELD_WF_ROADMAP_OPS`. Branch
+  `feat/polish-wf-remote`.
+
+Nothing else from the deferred table has been started.
 
 ### 6.3 How this work is being run (for whoever picks it up)
 

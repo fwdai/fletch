@@ -414,7 +414,10 @@ older than the other. The rules that make that safe:
   `features` flags are added; an existing op's name, argument keys or result
   shape is not repurposed. A client may therefore ignore anything it does not
   recognize, in a result or in an event, and a host ignores unknown argument
-  keys.
+  keys. So `protocol.version` stays **2** across an addition: putting the whole
+  `wf_*` / `roadmap_*` surface and its 14 new events on the wire added rows and
+  names and repurposed nothing, and an older client is unaffected because it
+  gates on the names it knows.
 - **`protocol` says what this host answers.** `{ version, ops, events, features }`:
   `ops` is every name the device may send (the dispatcher's allowlist plus the
   ops the session layer answers itself), `events` the forwarded-event whitelist,
@@ -490,24 +493,72 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `list_project_chats` | `{ projectId, purpose }` — `purpose` is `"roadmap-pm"` | `AgentRecord[]` |
 | `list_custom_agents` | `{}` — the stored `custom_agents` rows, newest-edited first; `skill_ids` / `mcp_server_ids` are JSON text as stored | `CustomAgentRow[]` |
 | `get_agent` | `{ agentId }` — one record by id, including the ones `get_workspace` hides (purpose-scoped chats, run-owned steps) | `AgentRecord \| null` |
+| `wf_list_runs` | `{ projectId? }` — every run, newest-updated first; `null` lists them all | `WfRun[]` |
+| `wf_get_run` | `{ runId }` | `WfRunDetail \| null` |
+| `wf_events` | `{ runId, afterSeq, limit }` — a journal page, oldest first; `limit` is clamped host-side to 1000 | `WfEvent[]` |
+| `wf_run_agents` | `{ runId }` — a run's step agents, live and archived; they are hidden from `get_workspace`, so the monitor reads them here | `AgentRecord[]` |
+| `wf_launch` | as command — `attachments` are host paths from `attachment_end`, exactly as `send_user_message` takes them; the host resolves `projectId` from `repoPath` itself | `string` (the new run id) |
+| `wf_cancel` | `{ runId }` | `null` |
+| `wf_resume` | `{ runId, budgetPatch? }` — the patch additively raises the run-level caps | `null` |
+| `wf_retry` | `{ runId }` | `null` |
+| `wf_approve` | `{ runId }` | `null` |
+| `wf_reject` | `{ runId, note }` | `null` |
+| `wf_run_diff` | `{ runId, fromSha, toSha, path? }` — read-only, inside the run's own repo | `string` |
+| `wf_resolve_conflict` | `{ runId, mode: "agent" \| "human" }` — `"human"` says the conflict was already resolved by hand in the host's integration worktree, so a client without a shell there sends `"agent"` | `null` |
+| `wf_delete_run` | `{ runId }` — destructive: the run's step agents and their chats, its directory and its rows all go; refused while any run in the tree is active | `null` |
+| `wf_answer` | `{ projectId, runId, messageId, body }` | `null` |
+| `wf_def_save` | `{ spec, id?, hue? }` — omit `id` to create; an existing id edits in place | `Definition` |
+| `wf_def_list` | `{}` | `Definition[]` |
+| `wf_def_delete` | `{ id }` — in-flight runs keep their own launch snapshot | `null` |
+| `wf_def_export_yaml` | `{ id }` — returns YAML *text*; picking a path and writing the file is the client's own business, on its own machine | `string` |
+| `wf_def_import_yaml` | `{ yamlText }` — resolved against the *host's* library, so missing skills and unknown providers come back as warnings | `ImportReport` |
 | `roadmap_list_items` | `{ projectId }` | `RoadmapItem[]` |
+| `roadmap_get_item` | `{ itemId }` | `RoadmapItem \| null` |
+| `roadmap_create_item` | `{ projectId, item }` — `code` is allocated host-side under the connection lock, so it is not part of the payload | `RoadmapItem` |
 | `roadmap_update_item` | `{ id, patch, expectStatus?, queue? }` | `{ applied: boolean, item: RoadmapItem }` |
+| `roadmap_set_rank` | `{ itemId, rank }` — bookkeeping, writes no history line | `RoadmapItem` |
+| `roadmap_hand_off_item` | `{ itemId, agentId }` | `RoadmapItem` |
+| `roadmap_item_review` | `{ itemId }` — one `in_review` item's live CI rollup and threads; read-only, each field degrades on its own | `RoadmapItemReview \| null` |
+| `roadmap_merge_item_pr` | `{ itemId }` — the same host path and credential `merge_pr` uses; the merge sweep is still what writes `done` | `null` |
+| `roadmap_note_review_feedback` | `{ itemId, threads }` | `RoadmapItemEvent` |
+| `roadmap_hold_item` | `{ itemId, reason }` | `RoadmapItem` |
+| `roadmap_release_item` | `{ itemId }` — the user's alone; the PM has an op to hold and none to release | `RoadmapItem` |
+| `roadmap_hold_project` | `{ projectId, reason }` — stops the whole board; runs already in flight still settle | `RoadmapProjectHold` |
+| `roadmap_release_project` | `{ projectId }` | `null` |
+| `roadmap_get_project_hold` | `{ projectId }` | `RoadmapProjectHold \| null` |
+| `roadmap_reclaim_item` | `{ itemId }` | `RoadmapItem` |
+| `roadmap_reject_item` | `{ itemId, reason }` | `RoadmapItem` |
+| `roadmap_reopen_item` | `{ itemId }` | `RoadmapItem` |
+| `roadmap_delete_item` | `{ id }` — the board's own Remove: unconditional, and it takes the row's history with it | `null` |
 | `roadmap_discard_proposal` | `{ id }` — deletes only while the item is still `proposed` | `{ applied: boolean, item: RoadmapItem \| null }` — `applied` with `item: null` when it was deleted; `applied: false` with the current `item` when it had already been accepted; `applied: false, item: null` when the id is gone |
+| `roadmap_list_item_events` | `{ itemId }` — one item's durable history, newest first | `RoadmapItemEvent[]` |
+| `roadmap_latest_events` | `{ projectId }` — the newest event of every item on the board | `RoadmapItemEvent[]` |
+| `roadmap_list_proposals` | `{ projectId }` | `RoadmapProposal[]` |
+| `roadmap_accept_proposal` | `{ proposalId }` — rejects with a message when the item raced past the gate | `null` |
+| `roadmap_reject_proposal` | `{ proposalId }` | `null` |
+| `roadmap_get_order_proposal` | `{ projectId }` | `RoadmapOrderProposal \| null` |
+| `roadmap_accept_order_proposal` | `{ projectId }` — ranks the whole sequence in one transaction; rejects when the orderable set changed since the ask | `null` |
+| `roadmap_reject_order_proposal` | `{ projectId }` | `null` |
+| `roadmap_get_brief` | `{ projectId }` | `RoadmapBrief \| null` |
+| `roadmap_get_brief_proposal` | `{ projectId }` | `RoadmapBriefProposal \| null` |
+| `roadmap_accept_brief_proposal` | `{ projectId }` — the only thing that writes product memory | `RoadmapBrief` |
+| `roadmap_reject_brief_proposal` | `{ projectId }` | `null` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
 (`write_checkout_file`, `rename_*`, `delete_*`, `create_*`, `copy_*`), shell
 ops (`open_agent_shell`, `write_to_shell`, …), `write_to_agent` (raw PTY),
-editor/log/telemetry/provider-install ops, workflow and run ops, and every
-roadmap op but the three listed above (no create, no rank, no hand-off, no
-queue, no proposal or hold ops). Adding an op means adding a row here and a
-match arm in the dispatcher.
+editor/log/telemetry/provider-install ops, and the `run_*` family (`run_start`,
+`run_stop`, `run_verification` — this machine's own scripts). Adding an op means
+adding a row here and a match arm in the dispatcher.
 
 Not yet exposed, but only for want of a reason to be: `fork_agent`,
-`delete_project` and `create_repo`. These are scope, not policy — a client gates
-each one on its absence from `protocol.ops` and says so, and a later release may
-add the row. `merge_pr` was in this group until it earned its row above: the
-credential it spends is the one `push_agent` and `create_pr` already spend.
+`delete_project`, `create_repo`, and the two mention sources the composers use
+(`list_repo_tree`, `list_repo_prs`, which stay off with their read families).
+These are scope, not policy — a client gates each one on its absence from
+`protocol.ops` and says so, and a later release may add the row. `merge_pr` was
+in this group until it earned its row above: the credential it spends is the one
+`push_agent` and `create_pr` already spend.
 
 The spawn flow is the desktop's: `allocate_draft_name` → `spawn_agent` →
 wait for `agent:status` to leave `spawning` → `send_user_message` with the
@@ -555,10 +606,29 @@ discards one with `roadmap_discard_proposal`, which comes back as
 `roadmap:item-deleted`. Discard is conditional for the same reason accept is: a
 phone can hold a `proposed` card for minutes, so the host refuses it once the
 row has been ruled on and answers `applied: false` with the row as it now
-stands rather than deleting work in flight. The unconditional
-`roadmap_delete_item` stays off the wire, as does everything else roadmap-side:
-the board's own editing — creating, ranking, holding, handing off — stays on
-the desktop.
+stands rather than deleting work in flight. `roadmap_delete_item` is the
+unconditional twin, for the board's own Remove.
+
+Workflows and the roadmap board are on the wire whole, so a paired desktop or
+phone drives autopilot, workflows and planning against a headless host
+(docs/multi-host-plan.md §5.3, item 2). All 18 `wf_*` and 30 `roadmap_*`
+commands have a row above, plus `wf_run_agents` and the remote-only
+`roadmap_discard_proposal`: none of them opens a dialog on the host, touches
+desktop-only state, or is a host policy decision, so there was nothing to
+withhold. The flows around them keep the exclusions of the families they borrow
+from — the composers' `@file` / `#PR` mention sources (`list_repo_tree`,
+`list_repo_prs`) and the desktop autopilot ladder's `run_verification` — and a
+client gates them by name like any other absent op.
+
+Two things a client should know before driving them. `wf_launch`'s
+`attachments` are paths on the *host*, so upload with `attachment_*` first and
+pass what `attachment_end` answered, exactly as for `send_user_message`. And
+the ladder that walks one agent's checkout through commit → push → PR is the
+desktop's own loop over its own engine, not an op: its opt-outs are rows in the
+client's local `settings` / `project_settings`, and its verify rung runs local
+scripts. The host's autonomous loop is the roadmap *queue*, which runs on the
+host and is driven by the board ops above — holding a project or an item is how
+a client stops it.
 
 ## Dictation
 
@@ -676,7 +746,14 @@ agent:branch           agent:model            agent:effort
 agent:repo_added       agent:git-action       session:records-appended
 turn:sent              turn:started           workspace:changed
 pr:state_changed       verify:report          publish:approval-requested
-publish:approval-resolved roadmap:item           roadmap:item-deleted
+publish:approval-resolved
+wf:event               wf:run                 wf:run-deleted
+roadmap:item           roadmap:item-deleted   roadmap:item-event
+roadmap:proposal       roadmap:proposal-deleted
+roadmap:order-proposal roadmap:order-proposal-deleted
+roadmap:project-hold   roadmap:project-hold-released
+roadmap:brief          roadmap:brief-proposal roadmap:brief-proposal-deleted
+roadmap:queue-note
 ```
 
 `agent:event` is forwarded unfiltered, including the provider's
@@ -705,13 +782,23 @@ it on `protocol.events` never emits it, and a client that has no handler for it
 behaves as it did before the event existed — the prompt stays until answered,
 which is what every client did until this event.
 
-`roadmap:item` (a row created or changed) and `roadmap:item-deleted` (its id)
-are the two the phone's planning chat renders — the board as the PM moves it.
-Every other `roadmap:*` name stays off the wire.
+The whole `wf:*` and `roadmap:*` stream is forwarded, so a remote run monitor
+and a remote board stay live instead of rendering once and going stale. Three
+of them carry an id rather than a row and are named for what they address:
+`wf:run-deleted` and `roadmap:item-deleted` fire the deleted row's id, while
+`roadmap:order-proposal-deleted`, `roadmap:project-hold-released` and
+`roadmap:brief-proposal-deleted` fire the *project* id — those three are facts
+about a board, not about a row.
 
-Never forwarded: `agent:output`, `shell:output` (raw PTY bytes), `run:*`,
-`wf:*`, `dictation:*`, `docker:*`, `agent-install:*`, and all of `roadmap:*`
-apart from the two above.
+`wf:event` is an addressing envelope only — `{ run_id, seq, type, ts,
+step_exec_id }` — so nothing transcript-derived is duplicated onto the stream;
+a client that wants the payload pages it back with `wf_events` from the `seq` it
+last saw. `wf:run` carries the full run row, so the sidebar and the monitor
+update without a round-trip. `roadmap:queue-note` is transient and never
+persisted: it explains why an item is not moving, and nothing reads it back.
+
+Never forwarded: `agent:output`, `shell:output`, `run:output` (raw PTY bytes),
+the rest of `run:*`, `dictation:*`, `docker:*` and `agent-install:*`.
 
 Delivery is best effort, exactly like the desktop frontend: the phone must
 refetch `get_workspace` on reconnect and on returning to the foreground, and
