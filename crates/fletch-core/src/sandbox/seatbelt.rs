@@ -43,7 +43,8 @@
 //! `settings` table carries the GitHub token in plaintext plus the host's Noise
 //! identity. Because a host hangs its checkouts and RPC mailboxes off that same
 //! directory, that deny is immediately followed by re-allows for the two roots
-//! this profile is handed — see [`deny_engine_data_dir`].
+//! this profile is handed, plus a read-only one for the portable git a host may
+//! have put on the agent's PATH — see [`deny_engine_data_dir`].
 
 use std::path::{Path, PathBuf};
 
@@ -175,8 +176,15 @@ fn deny_engine_data_dir(home_s: &str, state_roots: &[&Path]) -> String {
 /// `/tmp` → `/private/tmp`, which makes the literal form both the one that would
 /// not match and the one that could be an invalid SBPL subpath.
 ///
-/// `state_roots` are the roots this profile was handed — the agent's writable
-/// checkout parent and its RPC mailbox — which a host derives *under* its data
+/// Two things are given back after the deny. The first is read-only: Fletch's
+/// portable git under `<data dir>/git-dist`, which a host with no usable system
+/// git puts on the agent's own PATH ([`crate::git_dist::child_env`]), so denying
+/// reads there would leave those agents with no `git` at all. It stays
+/// write-denied — the agent executes those binaries, and the host runs the same
+/// ones unsandboxed.
+///
+/// The second is `state_roots`: the roots this profile was handed — the agent's
+/// writable checkout parent and its RPC mailbox — which a host derives under its data
 /// dir (`<data-dir>/workspaces/<agent>`, `<data-dir>/rpc/<agent>`, with a
 /// per-build `dev/` segment; see `fletch_core::build_state_subpath`). Without
 /// giving them back, the deny would take the agent's own working tree and its
@@ -210,6 +218,11 @@ fn engine_data_dir_rules(data_dir: &Path, home_s: &str, state_roots: &[&Path]) -
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let git_dist = sbpl_string(
+        &data_dir
+            .join(crate::git_dist::INSTALL_DIR_NAME)
+            .to_string_lossy(),
+    );
     format!(
         ";; The same carve-out for the data dir THIS engine was configured with\n\
          ;; (`fletch-host --data-dir`, default `~/Library/Application Support/\n\
@@ -218,6 +231,18 @@ fn engine_data_dir_rules(data_dir: &Path, home_s: &str, state_roots: &[&Path]) -
          ;; matches it and the broad grant above leaves it writable. Deny reads and\n\
          ;; writes. Last-match-wins, so this must come after the allow block.\n\
          (deny file-read* file-write* (subpath {}))\n\
+         \n\
+         ;; Exception, read-only: Fletch's own portable git lives here\n\
+         ;; (`<data dir>/git-dist/<dist tag>/bin/git`), and on a host with no usable\n\
+         ;; system git the agent's PATH is pointed at it (`git_dist::child_env`) — so\n\
+         ;; the deny above would take git away from every agent on such a host.\n\
+         ;; Reads only: the agent executes these binaries, so it must not be able to\n\
+         ;; rewrite one and have the host run it unsandboxed on the next `git`\n\
+         ;; invocation. Nothing secret is under it — it is an unpacked upstream\n\
+         ;; tarball. (The desktop's own git-dist sits inside the bundle-id deny above\n\
+         ;; and is read-denied there today; that is pre-existing and out of scope\n\
+         ;; here, which is why this rule rides the host-only block.)\n\
+         (allow file-read* (subpath {git_dist}))\n\
          \n\
          ;; Exception: a host derives the agent checkouts root and the RPC mailbox\n\
          ;; root from that same data dir, so the deny above just took this agent's\n\
@@ -1594,6 +1619,8 @@ mod tests {
     /// mailbox roots one level down under the per-build `dev/` segment. Returns
     /// the symlink-resolved path, which is the form the profile emits.
     fn shared_host_data_dir() -> &'static Path {
+        use std::os::unix::fs::PermissionsExt;
+
         static DIR: std::sync::OnceLock<(tempfile::TempDir, PathBuf)> = std::sync::OnceLock::new();
         DIR.get_or_init(|| {
             let td = tempfile::tempdir().unwrap();
@@ -1606,11 +1633,31 @@ mod tests {
             for d in [&root, &rpc] {
                 std::fs::create_dir_all(d).unwrap();
             }
+            // A stand-in for the portable git dist, at the real layout
+            // (`git-dist/<dist tag>/bin/git`) so the acceptance test can actually
+            // execute it.
+            let bin = portable_git_bin(&resolved);
+            std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+            std::fs::write(&bin, "#!/bin/sh\nprintf 'git version 0.0.0-test\\n'\n").unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
             crate::sandbox::set_data_dir(dir);
             (td, resolved)
         })
         .1
         .as_path()
+    }
+
+    /// Any dist tag will do — the profile grants the whole `git-dist` subtree, so
+    /// an upgrade must not need a policy change.
+    const TEST_DIST_TAG: &str = "v0.0.0-test";
+
+    /// Where [`shared_host_data_dir`] puts its stand-in portable git.
+    fn portable_git_bin(data_dir: &Path) -> PathBuf {
+        data_dir
+            .join(crate::git_dist::INSTALL_DIR_NAME)
+            .join(TEST_DIST_TAG)
+            .join("bin")
+            .join("git")
     }
 
     /// The two roots a host derives under its data dir — `fletch-host`'s
@@ -1693,6 +1740,29 @@ mod tests {
             assert!(at > deny_at, "the re-allow must follow the deny: {allow}");
             reallow_at.push(at);
         }
+        // Fletch's portable git is given back too, but **read-only**: a host with
+        // no usable system git puts it on the agent's own PATH, so a blanket
+        // read-deny would leave those agents with no git at all — while a write
+        // grant would let an agent rewrite a binary the host then runs
+        // unsandboxed.
+        let git_dist = data_dir.join(crate::git_dist::INSTALL_DIR_NAME);
+        let git_allow = format!("(allow file-read* (subpath \"{}\"))", git_dist.display());
+        let git_at = profile
+            .find(&git_allow)
+            .unwrap_or_else(|| panic!("missing portable-git read allow: {git_allow}\n{profile}"));
+        assert!(
+            git_at > deny_at,
+            "the portable-git read allow must follow the deny to take effect"
+        );
+        assert!(
+            !profile.contains(&format!(
+                "(allow file-read* file-write* (subpath \"{}\"))",
+                git_dist.display()
+            )),
+            "portable git must not be writable: the host executes those binaries"
+        );
+        reallow_at.push(git_at);
+
         // Nothing else under the data dir is handed back: the database, the
         // `remote/` dir and the admin socket are covered by the deny alone.
         for opaque in [
@@ -1707,7 +1777,7 @@ mod tests {
                 opaque.display()
             );
         }
-        // Invariant 3 still wins inside the re-allowed checkout: the re-allow is
+        // Invariant 3 still wins inside the re-allowed checkout: the re-allows are
         // positioned before the git-exec-config deny, not after it.
         let git_deny_at = profile.find(r"/\.git/(config").expect("git config deny");
         assert!(
@@ -1734,7 +1804,7 @@ mod tests {
             );
         }
         // A host's dir, by contrast, is denied and its root given back — in that
-        // order.
+        // order — along with the read-only portable-git exception.
         let rules = engine_data_dir_rules(
             Path::new("/srv/fletch-host"),
             home_s,
@@ -1742,8 +1812,16 @@ mod tests {
         );
         let deny = "(deny file-read* file-write* (subpath \"/srv/fletch-host\"))";
         let allow = "(allow file-read* file-write* (subpath \"/srv/fletch-host/workspaces/fuji\"))";
-        assert!(rules.contains(deny) && rules.contains(allow), "{rules}");
-        assert!(rules.find(deny).unwrap() < rules.find(allow).unwrap());
+        let git = "(allow file-read* (subpath \"/srv/fletch-host/git-dist\"))";
+        for rule in [deny, allow, git] {
+            assert!(rules.contains(rule), "missing {rule} in:\n{rules}");
+        }
+        let deny_at = rules.find(deny).unwrap();
+        assert!(deny_at < rules.find(allow).unwrap());
+        assert!(deny_at < rules.find(git).unwrap());
+        // The leaf comes from `git_dist`, so a rename there cannot silently leave
+        // this rule pointing at a directory nothing installs into.
+        assert_eq!(crate::git_dist::INSTALL_DIR_NAME, "git-dist");
     }
 
     /// The Run profile carries the same carve-out (it already carried the
@@ -1807,6 +1885,26 @@ mod tests {
         assert!(
             !write(&data_dir.join("remote").join("devices.json")),
             "the device store was writable"
+        );
+
+        // Fletch's portable git stays *executable*: on a host with no usable
+        // system git this is the `git` on the agent's own PATH, and a blanket
+        // read-deny would leave the agent unable to run git at all.
+        let portable_git = portable_git_bin(data_dir);
+        assert!(
+            allowed(format!("{} --version > /dev/null", portable_git.display())),
+            "the portable git must stay executable — an agent on a host without \
+             system git has no other one"
+        );
+        // …but read-only. An agent that could rewrite one of these binaries would
+        // own the host, which runs the same ones unsandboxed.
+        assert!(
+            !write(&portable_git),
+            "the portable git binary was writable"
+        );
+        assert!(
+            !write(&portable_git.with_file_name("git-upload-pack")),
+            "a new binary could be dropped beside the portable git"
         );
 
         // …while the two roots the host hangs off the same directory stay
