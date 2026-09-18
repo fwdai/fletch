@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { AgentRecord } from "@/api";
 import { Icon, type IconName } from "@/components/Icon";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import type { RightPanelTab as TabId } from "@/store/types";
 import { CodePanel } from "./Code";
 import { GitPanel } from "./GitPanel";
@@ -37,11 +38,18 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
     return phase === "setup" || phase === "running";
   });
 
+  // Both of these stream PTY output, which the protocol has no frames for yet
+  // (docs/multi-host-plan.md §5.3, item 14), so neither `run_start` nor
+  // `open_agent_shell` is on a host's op table. Dropped rather than disabled: a
+  // tab is a place to be, and there is nothing to show inside either one.
+  const runGate = useGate("runScripts");
+  const shellGate = useGate("sideShell");
+
   const tabs: Tab[] = [
     features.code && { id: "code", label: "Code", icon: "code" },
     features.git && { id: "git", label: "Git", icon: "branch", count: gitFiles },
-    features.run && { id: "run", label: "Run", icon: "play", live: runActive },
-    features.terminal && { id: "term", label: "Terminal", icon: "terminal" },
+    features.run && !runGate && { id: "run", label: "Run", icon: "play", live: runActive },
+    features.terminal && !shellGate && { id: "term", label: "Terminal", icon: "terminal" },
   ].filter(Boolean) as Tab[];
 
   // Restore the tab this agent was last viewing (the panel remounts per agent),
@@ -56,6 +64,11 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
     setTab(id);
     setRightPanelTab(agent.id, id);
   };
+  // The panel is keyed by agent id, and agent ids repeat across hosts — so a
+  // switch between two environments whose selected agents share a name does not
+  // remount it, and the tab it was on may no longer be offered here. Fall back
+  // the same way the initial pick does, rather than render an empty body.
+  const shown = tabs.some((t) => t.id === tab) ? tab : (tabs[0]?.id ?? "git");
 
   if (tabs.length === 0) {
     return (
@@ -76,7 +89,7 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
           {tabs.map((t) => (
             <button
               key={t.id}
-              className={`r-tab iflex-center text-sm ${tab === t.id ? "active" : ""}`}
+              className={`r-tab iflex-center text-sm ${shown === t.id ? "active" : ""}`}
               onClick={() => selectTab(t.id)}
             >
               <Icon name={t.icon} />
@@ -88,10 +101,10 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
         </div>
       </div>
       <div className="right-body">
-        {tab === "code" && <CodePanel agent={agent} />}
-        {tab === "git" && <GitPanel agent={agent} />}
-        {tab === "run" && <RunPanel agent={agent} />}
-        {tab === "term" && <TermPanel agent={agent} />}
+        {shown === "code" && <CodePanel agent={agent} />}
+        {shown === "git" && <GitPanel agent={agent} />}
+        {shown === "run" && <RunPanel agent={agent} />}
+        {shown === "term" && <TermPanel agent={agent} />}
       </div>
     </>
   );

@@ -66,6 +66,61 @@ export interface HelloResult {
   protocol?: HostProtocol;
 }
 
+/** What a host that sends no `protocol` answers: the 41 dispatcher ops plus
+ *  `register_push`, the surface every v2 host has had since before the field
+ *  existed. Frozen — a host that gained an op since then reports it itself. */
+export const V2_DEFAULT_OPS: readonly string[] = [
+  "get_workspace",
+  "allocate_draft_name",
+  "spawn_agent",
+  "send_user_message",
+  "answer_tool_use",
+  "stop_agent",
+  "resume_agent",
+  "archive_agent",
+  "set_agent_model",
+  "set_agent_effort",
+  "read_session_records",
+  "read_user_turns",
+  "sync_session",
+  "get_git_state",
+  "get_all_shortstats",
+  "list_checkout_tree",
+  "read_checkout_file",
+  "get_file_diff",
+  "commit_agent",
+  "push_agent",
+  "create_pr",
+  "get_pr_state",
+  "get_pr_checks",
+  "get_pr_live",
+  "list_repo_branches",
+  "repo_default_branch",
+  "discover_supported_models",
+  "list_dir",
+  "add_workspace_repo",
+  "clone_repo",
+  "gh_status",
+  "gh_repo_list",
+  "dictation_status",
+  "dictation_begin",
+  "dictation_audio",
+  "dictation_end",
+  "dictation_cancel",
+  "attachment_begin",
+  "attachment_chunk",
+  "attachment_end",
+  "attachment_cancel",
+  "register_push",
+];
+
+/** Whether the connected host answers `op`. A host that reported a `protocol`
+ *  is taken at its word; one that reported none is an older host, which answers
+ *  exactly the v2 default set. */
+export function hostSupports(protocol: HostProtocol | null | undefined, op: string): boolean {
+  return protocol ? protocol.ops.includes(op) : V2_DEFAULT_OPS.includes(op);
+}
+
 /** Where and how to reach a host. `pairingToken` present = `pair`, otherwise
  *  `hello`; the device's credential is its Noise static key, held in Rust, so
  *  there is nothing token-shaped here for a saved host. */

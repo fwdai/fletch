@@ -4,6 +4,7 @@ import { Icon } from "@/components/Icon";
 import { DropdownItem, DropdownMenu } from "@/components/ui/Dropdown";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 
 /** One entry in a fork menu: a label plus the Code × Context it forks with. */
 export interface ForkOption {
@@ -41,6 +42,10 @@ export function ForkMenu({
   tip: string;
   compact?: boolean;
 }) {
+  // `fork_agent` is not on a host's op table, so on a remote environment there
+  // is nothing to offer. Gated here rather than at the two call sites (the
+  // workspace header and each turn seam) because this is where they meet.
+  const forkGate = useGate("fork");
   const forkAgent = useAppStore((s) => s.forkAgent);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -73,6 +78,8 @@ export function ForkMenu({
       setBusy(false);
     }
   };
+
+  if (forkGate) return null;
 
   return (
     <div className="fork-menu" ref={wrapRef}>

@@ -7,6 +7,7 @@
 
 import { forgetHost as forgetRecord, loadHosts, saveHost } from "@/storage/remoteHosts";
 import { useAppStore } from "@/store";
+import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { ProtocolClient } from "./client";
 import { thisDevice } from "./device";
 import { createHostRegistry, type PairTarget } from "./registry";
@@ -18,9 +19,10 @@ export const hosts = createHostRegistry({
   // reference to the store's first state object.
   writers: {
     upsertEnvironment: (entry) => useAppStore.getState().upsertEnvironment(entry),
-    setEnvironmentConnection: (id, connection, error) =>
-      useAppStore.getState().setEnvironmentConnection(id, connection, error),
+    setEnvironmentConnection: (id, connection, error, retrying) =>
+      useAppStore.getState().setEnvironmentConnection(id, connection, error, retrying),
     removeEnvironment: (id) => useAppStore.getState().removeEnvironment(id),
+    environmentReconnected: (id) => useAppStore.getState().environmentReconnected(id),
   },
   device: thisDevice,
   newClient: (device) => new ProtocolClient({ openSocket: openWebSocket, device }),
@@ -47,8 +49,18 @@ export async function addHost(target: PairTarget): Promise<void> {
   await saveHost({ ...record, pairedAt: new Date().toISOString() });
 }
 
-/** Close the connection and drop the record. Idempotent. */
+/** Close the connection and drop the record. Idempotent.
+ *
+ *  Driving the UI back to This Mac FIRST when the host being forgotten is the
+ *  one on screen: `removeEnvironment` only refuses to strand `activeEnvironmentId`
+ *  on a missing id, it cannot put the local view back — that is
+ *  `switchEnvironment`'s job, and it needs the entry to still be there to park
+ *  the forgotten host's state on. */
 export async function removeHost(hostKey: string): Promise<void> {
+  const store = useAppStore.getState();
+  if (store.activeEnvironmentId === hostKey) {
+    await store.switchEnvironment(LOCAL_ENVIRONMENT_ID);
+  }
   hosts.forget(hostKey);
   await forgetRecord(hostKey);
 }

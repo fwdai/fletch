@@ -3,6 +3,7 @@ import type { AgentRecord, WfRun } from "@/api";
 import { Icon } from "@/components/Icon";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { RunRow } from "@/workflows/run/RunRow";
 import { AgentRow } from "./AgentRow";
 
@@ -56,6 +57,7 @@ export function ProjectGroup({
   const selectRun = useAppStore((s) => s.selectRun);
   const createDraft = useAppStore((s) => s.createDraft);
   const openProjectScreen = useAppStore((s) => s.openProjectScreen);
+  const roadmapGate = useGate("roadmap");
 
   const count = agents.length + drafts.length + runs.length;
 
@@ -103,14 +105,19 @@ export function ProjectGroup({
         <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
-        <button
-          className="padd padd-settings tip"
-          data-tip="Project settings"
-          onClick={onOpenSettings}
-          aria-label="Project settings"
-        >
-          <Icon name="settings" size={14} />
-        </button>
+        {/* The project page is the roadmap, the activity feed and the local
+            `project_settings` table — none of which a host answers for
+            (docs/multi-host-plan.md §5.3, item 2). */}
+        {!roadmapGate && (
+          <button
+            className="padd padd-settings tip"
+            data-tip="Project settings"
+            onClick={onOpenSettings}
+            aria-label="Project settings"
+          >
+            <Icon name="settings" size={14} />
+          </button>
+        )}
         <button
           className="padd tip"
           data-tip="New agent  ⌘N"

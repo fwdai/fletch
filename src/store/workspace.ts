@@ -676,11 +676,15 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   },
 
   discard: async (id) => {
+    // Whose agent this is, resolved before the engine round-trip: the user can
+    // switch environments while it is in flight, and the PTY state to release
+    // is this environment's, not whichever one is active when it returns.
+    const envId = get().activeEnvironmentId;
     try {
       await api.discardAgent(id);
       // The agent is gone for good: release its PTY state (both ring buffers
       // and its cached live terminal) along with the store's side maps below.
-      dropAgentPty(id);
+      dropAgentPty(id, envId);
       // The discard has committed, so drop the agent optimistically: remove its
       // row from the workspace AND its side maps together, and clear the
       // selection. Editing the workspace here (not just the side maps) keeps the
@@ -713,6 +717,8 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     // without clobbering a newer workspace (status/repo/focus events, other
     // actions) that may have landed while archiving was pending.
     const wasSelected = get().selectedAgentId === id;
+    // See `discard`: the owning environment, resolved before the round-trip.
+    const envId = get().activeEnvironmentId;
     markPendingHide(id, "archive");
     set((s) => ({
       workspace: s.workspace ? applyPendingHides(s.workspace) : s.workspace,
@@ -765,7 +771,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
     // Archiving kills the agent's processes, so release its PTY state (both
     // ring buffers and its cached live terminal); a restore starts fresh.
-    dropAgentPty(id);
+    dropAgentPty(id, envId);
     // Drop the agent's side maps ATOMICALLY with the post-commit snapshot that
     // archives (hides) the row, by folding the cleanup into the guarded
     // refresh: the backend stamps `archived_at` before it returns, so this

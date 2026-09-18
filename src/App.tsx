@@ -42,6 +42,10 @@ export function App() {
   const clearError = useAppStore((s) => s.clearError);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
+  // Part of every remount key below: agent ids repeat across hosts, so without
+  // it a switch between two environments whose selected agents share a name
+  // would keep the pane's local state (see docs/multi-host-plan.md §1.3).
+  const environmentId = useAppStore((s) => s.activeEnvironmentId);
   const selectedRunId = useAppStore((s) => s.selectedRunId);
   const workspace = useAppStore((s) => s.workspace);
   const historyOpen = useAppStore((s) => s.historyOpen);
@@ -111,8 +115,10 @@ export function App() {
             </div>
             {!leftCollapsed && <div className="splitter" onMouseDown={onLeftDrag} />}
 
-            {/* Keyed by agent so switching agents clears a stuck error. */}
-            <ErrorBoundary label="the workspace" key={selectedAgentId ?? "none"}>
+            {/* Keyed by agent so switching agents clears a stuck error — and by
+                environment, because agent ids repeat across hosts and two
+                same-named agents are not the same workspace. */}
+            <ErrorBoundary label="the workspace" key={`${environmentId}:${selectedAgentId}`}>
               <Workspace />
             </ErrorBoundary>
 
@@ -137,7 +143,10 @@ export function App() {
                 }}
               >
                 {!rightCollapsed && selectedAgent ? (
-                  <ErrorBoundary label="the side panel" key={selectedAgent.id}>
+                  <ErrorBoundary
+                    label="the side panel"
+                    key={`${environmentId}:${selectedAgent.id}`}
+                  >
                     <RightPanel agent={selectedAgent} />
                   </ErrorBoundary>
                 ) : !rightCollapsed && selectedRunId ? (
