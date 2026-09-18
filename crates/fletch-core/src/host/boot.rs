@@ -57,10 +57,62 @@ pub type DictationHook = Box<dyn FnOnce(Arc<EngineCtx>) -> Arc<dyn crate::remote
 #[cfg(unix)]
 pub type ExitHook = Box<dyn FnOnce() + Send>;
 
+/// Whether this engine owns the state roots it is about to use — the agent
+/// checkouts root (`$FLETCH_WORKSPACES_ROOT`, default `~/.fletch/workspaces`)
+/// and the RPC mailbox root (`$FLETCH_RPC_ROOT`, default `~/.fletch/rpc`).
+///
+/// "Owns" means: this engine's database is the only authority over what lives
+/// under those roots, so [`boot`]'s startup housekeeping may treat anything the
+/// database doesn't account for as garbage. It is the host's answer and not
+/// something the engine can infer from how the roots were configured: a
+/// `fletch-host` derives its own roots and points the env vars at them (see
+/// `fletch_host::serve`), and a root the engine configured itself is exactly a
+/// root it must sweep.
+pub enum StateRoots {
+    /// This engine is the only writer under its roots. The desktop on its
+    /// default `~/.fletch` and every `fletch-host` pass this.
+    Owned,
+    /// The roots were handed down by a *parent* Fletch: the nested-Fletch Run
+    /// (dogfooding) points the child at sandbox-writable temp roots
+    /// (`sandbox::nested_rpc_root`) and reclaims them itself
+    /// (`sandbox::cleanup_nested_rpc_roots`). The child's database knows nothing
+    /// about what else is under them, so it sweeps nothing.
+    Inherited,
+}
+
+impl StateRoots {
+    /// What the desktop passes. The desktop never sets the override env vars
+    /// itself, so finding one set means a parent Fletch redirected this process
+    /// — the one case where the roots are not ours to sweep.
+    pub fn from_env() -> Self {
+        Self::from_overrides(
+            [crate::workspace::WORKSPACES_ROOT_ENV, rpc::RPC_ROOT_ENV].map(std::env::var_os),
+        )
+    }
+
+    /// Pure core of [`Self::from_env`], so the desktop's rule is testable
+    /// without mutating the process-global env vars.
+    fn from_overrides(overrides: [Option<std::ffi::OsString>; 2]) -> Self {
+        if overrides.iter().flatten().any(|v| !v.is_empty()) {
+            Self::Inherited
+        } else {
+            Self::Owned
+        }
+    }
+
+    /// Whether [`boot`] may sweep the orphans it finds under these roots.
+    fn owned(&self) -> bool {
+        matches!(self, Self::Owned)
+    }
+}
+
 /// What the engine needs from its host to start.
 pub struct BootConfig {
     /// Fletch's data directory. Must already exist.
     pub data_dir: PathBuf,
+    /// Whether the checkout and RPC mailbox roots this engine will use are
+    /// this engine's to sweep. See [`StateRoots`].
+    pub state_roots: StateRoots,
     /// Where the engine's events go — the desktop webview, or nothing at all.
     /// [`boot`] wraps it in a fanout with its own broadcast (see
     /// [`Engine::events`]), so the host's sink keeps receiving everything it
@@ -181,6 +233,7 @@ impl std::error::Error for BootError {}
 pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     let BootConfig {
         data_dir,
+        state_roots,
         sink: host_sink,
         focus,
         runtime,
@@ -409,10 +462,17 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // Drop RPC mailboxes left by agents that are gone. Teardown removes them
     // now, but installs predating that carry one leaked dir per agent ever
     // spawned. Runs before anything spawns, so every mailbox present is either a
-    // live agent's or an orphan.
-    match workspace.live_agent_ids() {
-        Ok(live) => rpc::sweep_orphan_mailboxes(&live),
-        Err(e) => tracing::warn!(error = %e, "skipping rpc mailbox sweep"),
+    // live agent's or an orphan — and an orphan can hold a request an
+    // interrupted run never answered, which the poll loop would dispatch against
+    // whichever agent next takes that recycled name. Skipped only for a nested
+    // Fletch, whose roots are the parent's (see `StateRoots`).
+    if state_roots.owned() {
+        match (workspace.live_agent_ids(), rpc::rpc_root()) {
+            (Ok(live), Ok(root)) => rpc::sweep_orphan_mailboxes_in(&root, &live),
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::warn!(error = %e, "skipping rpc mailbox sweep")
+            }
+        }
     }
 
     let supervisor = Arc::new(Supervisor::new(workspace.clone()));
@@ -692,6 +752,11 @@ mod tests {
             let sink = Arc::new(crate::host::sink::RecordingSink::new());
             let engine = boot(BootConfig {
                 data_dir: dir.path().to_path_buf(),
+                // Not `Owned`: this test's database is empty, so an owned boot
+                // would sweep every mailbox under the *real* `~/.fletch` root
+                // of whoever is running the tests. The sweep's own wiring is
+                // covered below.
+                state_roots: StateRoots::Inherited,
                 sink: sink.clone(),
                 focus: Box::new(|| false),
                 runtime: tokio::runtime::Handle::current(),
@@ -743,5 +808,49 @@ mod tests {
                 "the event never reached the boot broadcast"
             );
         });
+    }
+
+    /// The desktop's rule: its own `~/.fletch` roots are its to sweep, and a
+    /// redirect it did not ask for (the nested-Fletch Run's temp roots) is not.
+    #[test]
+    fn only_a_redirected_desktop_disowns_its_roots() {
+        let temp = |s: &str| Some(std::ffi::OsString::from(s));
+        assert!(StateRoots::from_overrides([None, None]).owned());
+        assert!(StateRoots::from_overrides([temp(""), None]).owned());
+        assert!(!StateRoots::from_overrides([temp("/tmp/fletch-worktrees/9/x"), None]).owned());
+        assert!(!StateRoots::from_overrides([None, temp("/tmp/fletch-rpc/9/x")]).owned());
+    }
+
+    /// A host that configured its own RPC root still has to sweep it. The sweep
+    /// used to skip any root set through `$FLETCH_RPC_ROOT`, which is exactly
+    /// how `fletch-host` points the engine at its own — leaving an orphan
+    /// mailbox with a pending request for `process_pending` to dispatch against
+    /// whichever agent next drew that recycled name.
+    #[test]
+    fn an_owned_override_root_is_swept_at_boot() {
+        let td = tempfile::tempdir().unwrap();
+        // The shape `fletch-host` produces: a root of its own, nothing to do
+        // with `~/.fletch`.
+        let root = td.path().join("fletch-host").join("rpc");
+        let orphan = root.join("orkney");
+        rpc::ensure_mailbox(&orphan).unwrap();
+        std::fs::write(
+            orphan.join("requests").join("req-1.json"),
+            r#"{"op":"git_publish"}"#,
+        )
+        .unwrap();
+        let live = std::collections::HashSet::from(["fuji".to_string()]);
+        let alive = root.join("fuji");
+        rpc::ensure_mailbox(&alive).unwrap();
+
+        // What `boot` does with an owned root, whatever configured it.
+        assert!(StateRoots::Owned.owned());
+        rpc::sweep_orphan_mailboxes_in(&root, &live);
+
+        assert!(
+            !orphan.exists(),
+            "a pending request survived in an orphan mailbox under an owned override root"
+        );
+        assert!(alive.is_dir(), "a live agent's mailbox was swept");
     }
 }

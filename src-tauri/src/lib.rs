@@ -1339,6 +1339,11 @@ pub fn run() {
                 ..
             } = host::boot(host::BootConfig {
                 data_dir: data_dir.clone(),
+                // The desktop's checkout and mailbox roots are its own
+                // `~/.fletch` — unless a parent Fletch redirected this process
+                // (the nested-Fletch Run), in which case they are the parent's
+                // and this engine sweeps neither.
+                state_roots: host::StateRoots::from_env(),
                 // Events reach the webview exactly as they did when the engine
                 // held the `AppHandle` itself; `boot` fans this out to its own
                 // broadcast for the remote taps.

@@ -1,6 +1,11 @@
 [package]
 name = "fletch-host"
-version = "0.1.0"
+# Fletch's one product version, shared with `src-tauri/tauri.conf.json`,
+# `src-tauri/Cargo.toml` and `crates/fletch-core/Cargo.toml` — CI asserts all
+# four agree. It is what `fletch-host --version` and `fletch-host status` print,
+# and the release job names this binary's archives from the same number. Bump
+# all four together; see docs/RELEASING.md.
+version = "0.7.32"
 description = "The headless Fletch host: runs the engine with no window, controllable by a paired phone or desktop over LAN or relay"
 authors = ["Alex Chaplinsky", "fwdai.org"]
 license = "AGPL-3.0-only"
@@ -10,6 +15,15 @@ rust-version = "1.77"
 [[bin]]
 name = "fletch-host"
 path = "src/main.rs"
+
+[features]
+default = ["qr"]
+# The pairing QR code `pair` prints (`qrcode`). On by default — scanning is how
+# a phone pairs without typing a link — but behind a flag so the binary still
+# builds where the crate cannot be fetched: this package's lockfile is not
+# committed (see /.gitignore), so an offline or read-only registry has to be
+# able to drop the one dependency that is not already in the desktop's tree.
+qr = ["qrcode"]
 
 [dependencies]
 # The engine. Everything this binary does beyond parsing arguments and serving
@@ -38,6 +52,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # The default data dir, resolved the same way the engine resolves the desktop's.
 dirs = "5"
+# The pairing QR (`pair`), rendered with half-block characters so it fits a
+# terminal. `default-features = false` drops the `image` and `svg` renderers:
+# the unicode one needs no feature and nothing here writes a file.
+qrcode = { version = "0.14", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

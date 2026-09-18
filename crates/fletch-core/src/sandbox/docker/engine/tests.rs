@@ -11,7 +11,9 @@ use crate::sandbox::container::launch_auth::{
     present_api_keys, NO_CODEX_AUTH_MSG, NO_CONTAINER_AUTH_MSG, NO_CURSOR_AUTH_MSG,
     NO_OPENCODE_AUTH_MSG, NO_PI_AUTH_MSG,
 };
-use crate::sandbox::container::run_args::{prepare_config_mount_dir, ProviderMounts};
+use crate::sandbox::container::run_args::{
+    mount_sources, prepare_config_mount_dir, ProviderMounts,
+};
 
 /// The version-refresh loop guard: exact-pair matching, per-provider
 /// isolation, persistence callback on record, and safe recording before
@@ -107,6 +109,9 @@ fn test_spec<'a>(interactive: bool) -> RunSpec<'a> {
         borrowed_object_stores: &[],
         memory: "4g",
         cpus: "2",
+        // The macOS shape — the desktop's, and what every test below but
+        // `argv_maps_the_host_user_on_linux` asserts.
+        run_as_user: None,
         image: "fletch-agent:abc123def456",
         agent_bin: "claude",
         auth_vars: &[
@@ -141,6 +146,7 @@ fn rw_config_spec<'a>(
         borrowed_object_stores: &[],
         memory: "4g",
         cpus: "2",
+        run_as_user: None,
         image,
         agent_bin,
         auth_vars,
@@ -193,6 +199,56 @@ fn argv_mounts_exactly_the_three_dirs_at_identical_paths() {
         values_of(&args, "-w"),
         vec!["/Users/u/.fletch/worktrees/orkney/repo"],
     );
+}
+
+/// The Linux variant of the mount test above: same four binds at the same
+/// identical host paths, plus what a uid-mapped launch needs and nothing else.
+/// On a rootful Linux daemon a container that ran as the image's root would
+/// write `root:root` into all three read-write binds, leaving the service user
+/// with a checkout it cannot delete and RPC replies it cannot read.
+#[test]
+fn argv_maps_the_host_user_on_linux() {
+    let mut spec = test_spec(false);
+    spec.run_as_user = Some("1000:1000");
+    let args = run_args(&spec);
+
+    assert_eq!(values_of(&args, "--user"), vec!["1000:1000"]);
+    // The binds are unchanged by the mapping — same set, same order, same
+    // identical host paths (invariant 1), `~/.claude` still read-only
+    // (invariant 5).
+    assert_eq!(
+        values_of(&args, "-v"),
+        vec![
+            "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
+            "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
+            "/Users/u/.claude:/Users/u/.claude:ro",
+            "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
+        ],
+    );
+    // A writable `$HOME`: the runtime materializes the real one `root:root` as
+    // the parent of the `~/.claude` bind, so without this the entrypoint's
+    // `~/.claude.json` seed fails under `set -e` and the container never
+    // starts. Mode 1777 because the mapped uid is not in the image's passwd
+    // file; a tmpfs because nothing in a home directory may reach the host.
+    // The two ephemeral overlays need the same mode for the same reason — a
+    // bare `--tmpfs` is `0755 root:root`, which claude cannot `mkdir` into.
+    assert_eq!(
+        values_of(&args, "--tmpfs"),
+        vec![
+            "/Users/u:rw,mode=1777,size=1g",
+            "/Users/u/.claude/session-env:rw,mode=1777",
+            "/Users/u/.claude/shell-snapshots:rw,mode=1777",
+        ],
+    );
+    // Nothing else moved: no extra bind source (podman's preflight vets the
+    // set) and no value in argv (invariant 3).
+    assert!(!mount_sources(&spec).contains(&PathBuf::from("/Users/u")));
+    for arg in &args {
+        assert!(
+            !arg.contains('=') || arg.starts_with("fletch.") || arg.contains("mode=1777"),
+            "argv token `{arg}` carries a value",
+        );
+    }
 }
 
 #[test]
@@ -1259,6 +1315,9 @@ fn docker_run_echo_round_trip() {
         borrowed_object_stores: &[],
         memory: "256m",
         cpus: "1",
+        // What this machine's daemon would really be launched with, so the
+        // round-trip covers the mapping on a Linux runner too.
+        run_as_user: launch_user().as_deref(),
         image: "busybox",
         agent_bin: "echo",
         auth_vars: &[],
@@ -1280,6 +1339,84 @@ fn docker_run_echo_round_trip() {
         String::from_utf8_lossy(&out.stdout).trim(),
         "hello-from-container",
     );
+}
+
+/// Integration, and the acceptance test for the uid mapping: with
+/// `--user <uid>:<gid>` the container must still *start* — the mapped uid is in
+/// no passwd file and `$HOME` is only writable because of the tmpfs the argv
+/// adds — and a file it writes into the workspace bind must come back owned by
+/// this user. On a rootful Linux daemon that ownership is the whole point; on
+/// macOS the daemon maps it anyway, so what this proves there is that the argv
+/// the Linux path builds is one Docker accepts and runs.
+/// `FLETCH_DOCKER_TESTS=1 cargo test -- --ignored`
+#[test]
+#[ignore = "requires Docker; opt in via FLETCH_DOCKER_TESTS=1"]
+fn docker_run_as_host_user_writes_user_owned_files() {
+    use std::os::unix::fs::MetadataExt;
+
+    if !crate::sandbox::docker::docker_tests_enabled() {
+        return;
+    }
+    let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
+    let user = format!("{}:{}", uid.as_raw(), gid.as_raw());
+
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path().join("root");
+    let rpc = td.path().join("rpc");
+    let home = td.path().join("home");
+    for d in [&root, &rpc] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    prepare_config_mount_dir(&home.join(".claude")).unwrap();
+    let projects_src = root.join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME);
+    std::fs::create_dir_all(&projects_src).unwrap();
+    let name = container_name("uid-map-test");
+    let mut spec = test_spec(false);
+    spec.name = &name;
+    spec.agent_id = "uid-map-test";
+    spec.writable_root = &root;
+    spec.rpc_dir = &rpc;
+    spec.home = &home;
+    spec.cwd = &root;
+    spec.mounts = ProviderMounts::Claude {
+        config_dir: None,
+        credentials_rw: false,
+        config_dir_credentials_rw: false,
+        projects_src: &projects_src,
+    };
+    spec.memory = "256m";
+    spec.cpus = "1";
+    spec.run_as_user = Some(&user);
+    spec.image = "busybox";
+    spec.agent_bin = "sh";
+    spec.auth_vars = &[];
+
+    let docker = cli::docker_bin().expect("docker installed");
+    let out = std::process::Command::new(docker)
+        .args(run_args(&spec))
+        .arg("-c")
+        // The three things a mapped launch has to get right: a writable home,
+        // a writable workspace bind, and the claude overlay claude `mkdir`s
+        // into every session.
+        .arg("touch \"$HOME/.probe\" && touch ./from-container && mkdir -p \"$HOME/.claude/session-env/s\"")
+        .env("HOME", &home)
+        .env("FLETCH_RPC_DIR", &rpc)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "docker run --user failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let written = std::fs::metadata(root.join("from-container")).expect("the bind-mounted write");
+    assert_eq!(
+        (written.uid(), written.gid()),
+        (uid.as_raw(), gid.as_raw()),
+        "a mapped container's writes must belong to the service user",
+    );
+    // The synthetic home is a tmpfs: nothing an agent puts there reaches the
+    // host, exactly as when the container runs as root.
+    assert!(!home.join(".probe").exists());
 }
 
 /// Integration: kill and liveness against a live container.

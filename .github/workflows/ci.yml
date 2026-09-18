@@ -36,6 +36,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # One product version across `tauri.conf.json` and the three Cargo
+      # manifests. Each manifest is what some binary *reports* — the desktop's
+      # `package_info().version`, `fletch-host --version`, and the
+      # `HostInfo.appVersion` a paired client reads out of `fletch-core` — so a
+      # manifest left behind reports a number no release ever had (which is how
+      # the first `fletch-host` builds shipped as 0.1.0). First step of the job
+      # and pure shell: it needs neither the apt stack below nor a toolchain.
+      - name: Version sync
+        run: ./scripts/check-version.sh
+
       # Plain apt, deliberately not `cache-apt-pkgs-action`. That action cached a
       # *failed* install: when Ubuntu's mirror served 404s for the versions its
       # index advertised, the action installed 0 of 4 packages, exited green, and

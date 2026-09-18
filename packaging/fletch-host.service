@@ -1,0 +1,41 @@
+# A systemd **user** unit: the host runs as you, not as root.
+#
+# Everything it touches is yours — your `~/.local/share/fletch-host` data dir
+# (database, and the checkouts and RPC mailboxes under it), the provider CLI
+# logins in your home directory — and on Linux the container sandbox maps its
+# files back to this same user, which a root-owned service would defeat.
+#
+#   install -Dm644 packaging/fletch-host.service ~/.config/systemd/user/fletch-host.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now fletch-host
+#   loginctl enable-linger $USER     # keep it running when you are logged out
+#
+# Logs: journalctl --user -u fletch-host -f
+# See crates/fletch-host/README.md for the rest.
+
+[Unit]
+Description=Fletch host (headless agent engine)
+Documentation=https://github.com/fwdai/fletch/blob/main/crates/fletch-host/README.md
+# Pairing needs an address to advertise, and the relay needs a route out.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/fletch-host serve
+# Only on failure: `serve` exits 0 on SIGTERM (`systemctl --user stop`), and a
+# clean stop must stay stopped.
+Restart=on-failure
+RestartSec=5
+# Logs go to stderr, which systemd captures into the journal.
+Environment=RUST_LOG=info
+# `fletch-host github login` signs in through GitHub's device flow, which needs
+# the client id of an OAuth app that has it enabled. The desktop bakes its own
+# in at build time; a host reads it from here. Uncomment and set yours.
+#Environment=QUORUM_GITHUB_CLIENT_ID=
+# Agent processes are children of this one, and `serve` kills them itself on
+# SIGTERM; give that a moment before systemd reaches for SIGKILL.
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

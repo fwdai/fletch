@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  A launchd **user agent**: the macOS counterpart of
+  packaging/fletch-host.service, same shape, same reasons — it runs as you, so
+  the database, the checkouts and the provider CLI logins are all yours.
+
+  launchd does not expand `~`, so replace YOU with your short user name:
+
+    sed "s/YOU/$USER/g" packaging/com.fletch.host.plist \
+      > ~/Library/LaunchAgents/com.fletch.host.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.fletch.host.plist
+
+  Stop it with `launchctl bootout gui/$(id -u)/com.fletch.host`.
+  Logs: tail -f ~/Library/Logs/fletch-host.log
+  A Mac that sleeps is a host that answers nothing: `sudo pmset -a sleep 0`
+  (or Energy Saver → "Prevent automatic sleeping").
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.fletch.host</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOU/.local/bin/fletch-host</string>
+        <string>serve</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart on failure only: `serve` exits 0 on SIGTERM, and a stop that
+         was asked for must stay stopped. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+        <!-- `fletch-host github login` needs the client id of an OAuth app
+             with the device flow enabled (see the README).
+        <key>QUORUM_GITHUB_CLIENT_ID</key>
+        <string></string>
+        -->
+    </dict>
+
+    <!-- Logs go to stderr; launchd has no journal, so name a file. -->
+    <key>StandardOutPath</key>
+    <string>/Users/YOU/Library/Logs/fletch-host.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOU/Library/Logs/fletch-host.log</string>
+</dict>
+</plist>
