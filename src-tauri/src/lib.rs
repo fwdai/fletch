@@ -17,6 +17,7 @@ mod git;
 mod git_dist;
 mod git_state;
 mod github;
+mod host;
 mod instructions;
 mod issues;
 mod keychain;

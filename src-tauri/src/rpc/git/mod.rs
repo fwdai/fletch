@@ -54,7 +54,7 @@ pub struct GitDispatcher {
     /// running agent.
     caps: AgentCaps,
     /// `None` (tests) makes an enabled gate refuse rather than pass.
-    approval: Option<(tauri::AppHandle, String)>,
+    approval: Option<(crate::host::Sink, String)>,
 }
 
 impl GitDispatcher {
@@ -78,8 +78,8 @@ impl GitDispatcher {
         self
     }
 
-    pub fn with_approval(mut self, app: tauri::AppHandle, agent_id: &str) -> Self {
-        self.approval = Some((app, agent_id.to_string()));
+    pub fn with_approval(mut self, sink: crate::host::Sink, agent_id: &str) -> Self {
+        self.approval = Some((sink, agent_id.to_string()));
         self
     }
 

@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
+
+use crate::host::EventSink;
 
 /// Anything but `"true"` means off.
 pub const SETTING: &str = "publish_confirmation";
@@ -60,7 +61,7 @@ pub fn wait_secs() -> u64 {
 
 /// `detail` is shown verbatim so the user approves a specific act, not a category.
 pub async fn refuse_unless_approved(
-    app: &AppHandle,
+    sink: &dyn EventSink,
     agent_id: &str,
     op: &str,
     repo: Option<&str>,
@@ -70,8 +71,11 @@ pub async fn refuse_unless_approved(
         return None;
     }
     let (id, answer) = register();
-    if app
-        .emit(
+    // The one emit in the engine whose failure matters: an unasked question is
+    // a denial, so this goes through the sink directly rather than through the
+    // logging `host::emit`.
+    if sink
+        .emit_value(
             EVENT_REQUESTED,
             json!({
                 "id": id,

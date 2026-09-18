@@ -16,7 +16,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::sync::Notify;
 
 use super::events::{self, EventActor, EventKind, ItemEvent, TrailEntry};
@@ -1020,8 +1020,8 @@ fn apply_and_record(
     Ok(Some((row, event)))
 }
 
-pub(crate) fn emit_note(app: &AppHandle, note: &QueueNote) {
-    let _ = app.emit("roadmap:queue-note", note);
+pub(crate) fn emit_note(sink: &dyn crate::host::EventSink, note: &QueueNote) {
+    crate::host::emit(sink, "roadmap:queue-note", note);
 }
 
 fn say(app: &AppHandle, said: &SaidNotes, item: &RoadmapItem, note: &str) {

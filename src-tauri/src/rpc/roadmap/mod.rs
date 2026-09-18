@@ -80,14 +80,14 @@ impl RoadmapDispatcher {
     fn announce<T>(
         &self,
         op: impl FnOnce(&Connection, &str) -> (Response, Option<T>),
-        emit: impl FnOnce(&AppHandle, &T),
+        emit: impl FnOnce(&dyn crate::host::EventSink, &T),
     ) -> (Response, Vec<RpcEvent>) {
         let (resp, stored) = {
             let conn = self.db.lock();
             op(&conn, &self.project_id)
         };
-        if let (Some(app), Some(stored)) = (&self.app, &stored) {
-            emit(app, stored);
+        if let (Some(sink), Some(stored)) = (&self.app, &stored) {
+            emit(sink, stored);
         }
         (resp, Vec::new())
     }
@@ -111,12 +111,12 @@ impl RpcDispatcher for RoadmapDispatcher {
                 }
                 "roadmap_propose" => self.announce(
                     |conn, project| propose_op(conn, project, id, args),
-                    |app, (created, recorded)| {
+                    |sink, (created, recorded)| {
                         for item in created {
-                            emit_item(app, item);
+                            emit_item(sink, item);
                         }
                         for event in recorded {
-                            emit_item_event(app, event);
+                            emit_item_event(sink, event);
                         }
                     },
                 ),
@@ -138,12 +138,12 @@ impl RpcDispatcher for RoadmapDispatcher {
                 ),
                 "roadmap_hold" => self.announce(
                     |conn, project| hold_op(conn, project, id, args),
-                    |app, held| match held {
+                    |sink, held| match held {
                         Held::Item(item, event) => {
-                            emit_item(app, item);
-                            emit_item_event(app, event);
+                            emit_item(sink, item);
+                            emit_item_event(sink, event);
                         }
-                        Held::Project(hold) => emit_project_hold(app, hold),
+                        Held::Project(hold) => emit_project_hold(sink, hold),
                     },
                 ),
                 "roadmap_brief" => {

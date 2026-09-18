@@ -834,7 +834,7 @@ impl Supervisor {
         let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch, caps)
             .with_repos(repo_targets)
             .with_close_issue(agent_id, close_issue)
-            .with_approval(app.clone(), agent_id);
+            .with_approval(Arc::new(app.clone()), agent_id);
         // A run-owned step agent also gets the workflow comms ops (wf_report /
         // wf_ask / wf_notify, §10); a roadmap PM chat gets the roadmap ops
         // (roadmap_list / roadmap_propose), scoped to its own project. Both
