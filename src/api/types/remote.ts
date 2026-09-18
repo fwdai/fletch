@@ -42,6 +42,10 @@ export interface RemoteStatus {
   enabled: boolean;
   listening: boolean;
   port: number;
+  /** What a paired device sees this machine called — the Sharing pane's
+   *  Computer Name on macOS, else the hostname. The same string the pairing
+   *  link and `hello` carry, and the only way the frontend can learn it. */
+  name: string;
   /** This host's Noise static public key, base64url without padding (43
    *  chars) — the identity the pairing link carries and the phone pins. Empty
    *  only when the key could not be created, which `error` then explains. */

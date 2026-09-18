@@ -141,6 +141,19 @@ fletch-host devices list
 fletch-host devices revoke <id>    # also hangs up on the device immediately
 ```
 
+`status` is one document: everything the desktop's Settings pane shows about
+remote access (`enabled`, `listening`, the bound `port`, `name`, `hostId`,
+reachable `addresses`, the paired `devices`, the `relay` link, any standing
+`error`), plus what only this process knows —
+
+- `dataDir`, `pid`, `version` — which host you are talking to.
+- `agents: { total, running }` — live agents (archived ones are not counted)
+  and how many are mid-turn right now.
+- `sandboxEngine` — the selected engine, `sandbox-exec` / `docker` / `podman`.
+  Worth a look on a Linux box, where seatbelt does not exist.
+- `githubConnected` — whether a GitHub token is loaded, i.e. whether pushes and
+  PRs will work. See "GitHub" below if it is `false`.
+
 Everything except `serve` talks to the running host over its admin socket, and
 takes the same `--data-dir` to find it. With no host running they print
 `fletch-host is not running; start it with 'fletch-host serve'` and exit 1.
@@ -157,10 +170,10 @@ fletch-host approve <id>           # or: fletch-host approve <id> --deny
 
 An unanswered question is refused when `publish_approval_wait` elapses (120s by
 default; `0` waits forever), so a host nobody is watching never publishes
-without being asked. Today this CLI is the only way to answer one: the op that
-lets a paired phone do it is Phase 0 of the multi-host plan and is not on the
-wire yet, so on a host with a short wait, answer promptly or set
-`publish_approval_wait` to `0`.
+without being asked. A paired phone or desktop can answer one too
+(`answer_publish_approval`), and whichever side answers — or the wait lapsing —
+takes the prompt down on all of them (`publish:approval-resolved`). So on a host
+with a short wait, answer promptly or set `publish_approval_wait` to `0`.
 
 ## GitHub
 

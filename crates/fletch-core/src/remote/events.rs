@@ -35,6 +35,7 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "pr:state_changed",
     "verify:report",
     "publish:approval-requested",
+    "publish:approval-resolved",
 ];
 
 /// Install the taps and hand back the push-alert one.

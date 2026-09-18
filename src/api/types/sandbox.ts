@@ -65,3 +65,16 @@ export interface PublishApproval {
   repo?: string;
   detail: string;
 }
+
+/** How a `PublishApproval` stopped waiting. `expired` is both a lapsed
+ *  `publish_approval_wait` and a prompt that could not be delivered — from a
+ *  prompt's point of view the same fact, that nobody answered. */
+export type PublishApprovalOutcome = "approved" | "denied" | "expired";
+
+/** One `PublishApproval` is over, whoever ended it — this client, another
+ *  device, `fletch-host approve`, or the wait running out. The only reaction is
+ *  to stop asking about `id`: the verdict has already reached the agent. */
+export interface PublishApprovalResolved {
+  id: string;
+  outcome: PublishApprovalOutcome;
+}

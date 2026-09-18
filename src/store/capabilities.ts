@@ -1,6 +1,6 @@
 // What the UI may offer in the environment the user is driving.
 //
-// A paired host answers a subset of this app's 212 commands — the 42 rows of
+// A paired host answers a subset of this app's 212 commands — the 48 rows of
 // docs/remote-protocol.md's op table — so a control whose op is not on it has
 // to say so rather than fail on click. Gating is by op NAME, never by version
 // (docs/multi-host-plan.md §5.1): `hostSupports` takes a host that reported a
@@ -59,6 +59,17 @@ export const GATES = {
   fork: {
     op: "fork_agent",
     reason: "Forking isn't available on a remote host yet.",
+  },
+  /** Merging a PR is on the wire, so this closes only against a host from
+   *  before the op existed — the same shape as any other added op. */
+  mergePr: {
+    op: "merge_pr",
+    reason: "This host is too old to merge a PR — merge it on GitHub.",
+  },
+  /** Bringing an archived session back. Also only closed by an older host. */
+  restore: {
+    op: "restore_agent",
+    reason: "This host is too old to restore an archived session.",
   },
 } as const satisfies Record<string, Gate>;
 

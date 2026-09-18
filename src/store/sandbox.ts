@@ -5,6 +5,7 @@ import {
   type DockerProbe,
   type PodmanProbe,
   type PublishApproval,
+  type PublishApprovalResolved,
 } from "@/api";
 import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preferences";
 import { checkoutKey } from "./git";
@@ -116,6 +117,10 @@ export interface SandboxSlice {
   receivePublishApproval: (request: PublishApproval) => void;
   /** Answer the queued request `id` and drop it from the queue. */
   answerPublishApproval: (id: string, approved: boolean) => Promise<void>;
+  /** Drop the queued request `id` because the engine says it is over — someone
+   *  else answered it, or nobody did before the host's wait ran out. No call
+   *  back to the engine: the verdict is already made. */
+  resolvePublishApproval: (e: PublishApprovalResolved) => void;
   /** Re-probe Docker availability into `dockerProbe` (settings pane open).
    *  Returns the probe result so callers can poll until the daemon answers. */
   refreshDockerProbe: () => Promise<DockerProbe>;
@@ -210,6 +215,12 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
       pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
     }));
     await api.answerPublishApproval(id, approved);
+  },
+
+  resolvePublishApproval: ({ id }) => {
+    set((s) => ({
+      pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
+    }));
   },
 
   setSandboxEngine: (engine) =>

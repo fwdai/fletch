@@ -352,7 +352,7 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 43 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 48 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -367,6 +367,8 @@ fn allowlist_matches_the_protocol_table() {
         "stop_agent",
         "resume_agent",
         "archive_agent",
+        "restore_agent",
+        "discard_agent",
         "set_agent_model",
         "set_agent_effort",
         "read_session_records",
@@ -374,15 +376,18 @@ fn allowlist_matches_the_protocol_table() {
         "sync_session",
         "get_git_state",
         "get_all_shortstats",
+        "get_all_git_meta",
         "list_checkout_tree",
         "read_checkout_file",
         "get_file_diff",
         "commit_agent",
         "push_agent",
         "create_pr",
+        "merge_pr",
         "get_pr_state",
         "get_pr_checks",
         "get_pr_live",
+        "get_pr_threads",
         "list_repo_branches",
         "repo_default_branch",
         "discover_supported_models",
@@ -448,7 +453,12 @@ fn the_protocol_descriptor_reports_the_whole_wire_surface() {
 
 #[test]
 fn never_exposed_ops_are_not_dispatchable() {
-    // One per family from the doc's "never exposed, by design" paragraph.
+    // One per family from the doc's "never exposed, by design" paragraph, plus
+    // the individual ops the doc lists as follow-ups rather than as a family.
+    // `merge_pr` used to be here: it was never a stated security exclusion (the
+    // doc's paragraph does not name it or any family containing it), only an op
+    // the phone's v1 surface did not need, so it is now on the wire beside
+    // `push_agent` and `create_pr` and the desktop gates it by op name instead.
     for op in [
         "db_select",
         "db_insert",
@@ -469,7 +479,6 @@ fn never_exposed_ops_are_not_dispatchable() {
         "roadmap_enqueue",
         "run_start",
         "fork_agent",
-        "merge_pr",
         "delete_project",
         // Adding a project is exposed; creating a brand-new repo is the
         // documented follow-up, so it stays off the wire.
@@ -832,10 +841,11 @@ async fn pair_then_hello_then_op_then_event_fanout() {
     assert_eq!(hello["ok"], true);
     assert!(hello["result"]["workspace"].is_object());
     assert_eq!(hello["result"]["protocol"]["version"], 2);
-    assert!(hello["result"]["protocol"]["events"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("publish:approval-requested")));
+    let events = hello["result"]["protocol"]["events"].as_array().unwrap();
+    assert!(events.contains(&json!("publish:approval-requested")));
+    // Its closing half: a client that has this can take a card down when
+    // somebody else answered, or when the host's wait lapsed.
+    assert!(events.contains(&json!("publish:approval-resolved")));
 
     ws.request("3", "get_workspace", json!({})).await;
     let reply = ws.next_json().await;

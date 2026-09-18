@@ -449,6 +449,8 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `stop_agent` | `{ agentId }` | `null` |
 | `resume_agent` | `{ agentId }` | `null` |
 | `archive_agent` | `{ agentId }` | `null` |
+| `restore_agent` | `{ agentId }` | `null` |
+| `discard_agent` | `{ agentId }` — destructive: record, checkout and transcript all go | `null` |
 | `set_agent_model` | `{ agentId, model }` | `null` |
 | `set_agent_effort` | `{ agentId, effort }` | `null` |
 | `read_session_records` | `{ agentId }` | `SessionRecord[]` |
@@ -456,15 +458,18 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `sync_session` | `{ agentId }` | `null` |
 | `get_git_state` | `{ agentId }` | `GitState \| null` |
 | `get_all_shortstats` | `{}` — uncommitted working-tree stats for every live agent; archived and still-cloning agents are omitted | `Record<agentId, ShortStats>` |
+| `get_all_git_meta` | `{}` — advisory local-git metadata per checkout (base staleness, changed paths), keyed like the PR maps (`agentId` for the primary repo, `"{agentId}::{subdir}"` for secondaries); no network | `Record<gitKey, GitMeta>` |
 | `list_checkout_tree` | as command | `CheckoutFile[]` |
 | `read_checkout_file` | `{ agentId, path, baseMode? }` | `CheckoutFileContents` |
 | `get_file_diff` | as command | `string` |
 | `commit_agent` | as command | `null` |
 | `push_agent` | as command | `string` |
 | `create_pr` | as command | `PrState` |
+| `merge_pr` | as command — merges the open PR on the targeted repo's branch | `null` |
 | `get_pr_state` | as command | `PrState \| null` |
 | `get_pr_checks` | as command | `PrChecks \| null` |
 | `get_pr_live` | as command | `PrLive \| null` |
+| `get_pr_threads` | as command — unresolved review threads; GraphQL, so polled well below the `get_pr_live` cadence | `PrComments \| null` |
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
 | `discover_supported_models` | as command | `AgentModels[]` |
@@ -489,6 +494,12 @@ Never exposed, by design: the generic `db_*` table bridge, every file mutation
 ops (`open_agent_shell`, `write_to_shell`, …), `write_to_agent` (raw PTY),
 editor/log/telemetry/provider-install ops, workflow, roadmap and run ops.
 Adding an op means adding a row here and a match arm in the dispatcher.
+
+Not yet exposed, but only for want of a reason to be: `fork_agent`,
+`delete_project` and `create_repo`. These are scope, not policy — a client gates
+each one on its absence from `protocol.ops` and says so, and a later release may
+add the row. `merge_pr` was in this group until it earned its row above: the
+credential it spends is the one `push_agent` and `create_pr` already spend.
 
 The spawn flow is the desktop's: `allocate_draft_name` → `spawn_agent` →
 wait for `agent:status` to leave `spawning` → `send_user_message` with the
@@ -628,6 +639,7 @@ agent:branch           agent:model            agent:effort
 agent:repo_added       agent:git-action       session:records-appended
 turn:sent              turn:started           workspace:changed
 pr:state_changed       verify:report          publish:approval-requested
+publish:approval-resolved
 ```
 
 `agent:event` is forwarded unfiltered, including the provider's
@@ -644,6 +656,17 @@ agent's publish is blocked on the host until someone answers with
 `answer_publish_approval` (or the host's wait lapses and refuses it). A client
 that does not have that op on `protocol.ops` can show the prompt but not answer
 it.
+
+`publish:approval-resolved` `{ id, outcome: "approved" | "denied" | "expired" }`
+closes one of those prompts. It fires once per `publish:approval-requested`,
+whoever ended it: the device that answered, another device, `fletch-host
+approve`, or nobody at all — `expired` covers both the lapsed
+`publish_approval_wait` and a prompt that could not be delivered. A client drops
+the card or dialog for `id` and needs no other reaction; the verdict itself is
+already the answerer's, and the agent has been told. A host that does not list
+it on `protocol.events` never emits it, and a client that has no handler for it
+behaves as it did before the event existed — the prompt stays until answered,
+which is what every client did until this event.
 
 Never forwarded: `agent:output`, `shell:output` (raw PTY bytes), `run:*`,
 `wf:*`, `roadmap:*`, `dictation:*`, `docker:*`, `agent-install:*`.
@@ -684,7 +707,7 @@ a phone.
 
 | command | purpose |
 |---|---|
-| `remote_status` | `{ enabled, listening, port, hostId, addresses: string[], devices: RemoteDevice[], relay: RelayStatus, error: string \| null }` — `hostId` is the host public key, base64url |
+| `remote_status` | `{ enabled, listening, port, name, hostId, addresses: string[], devices: RemoteDevice[], relay: RelayStatus, error: string \| null }` — `hostId` is the host public key, base64url; `name` is what a device sees this machine called (the same string `pair`/`hello` and the pairing URL carry), which is also how a desktop acting as a *client* names itself when it pairs with another host |
 | `remote_set_enabled` | `{ enabled }` start/stop the listener and the relay link; persists setting `remote.enabled`; disabling closes live connections with `4004` |
 | `remote_set_port` | `{ port }` persist setting `remote.port`; a running listener moves to it at once (its connections close with `1012`, the relay link stays up), an idle one records it for the next start; refused, with nothing stored, when the port cannot be bound; returns `RemoteStatus` |
 | `remote_set_relay` | `{ url: string \| null }` persist setting `remote.relay_url` (null/empty clears it) and connect or drop the host link accordingly; returns `RemoteStatus` |

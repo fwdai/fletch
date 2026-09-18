@@ -23,6 +23,13 @@ pub const SETTING: &str = "publish_confirmation";
 /// match a standing per-checkout authorization.
 pub const EVENT_REQUESTED: &str = "publish:approval-requested";
 
+/// Payload `{ id, outcome }`, one per [`EVENT_REQUESTED`] that stops waiting —
+/// so a card or a modal on a client that did not answer it (another phone, the
+/// desktop while a terminal answered, anybody at all when the wait lapses)
+/// comes down instead of sitting there asking about a publish that already
+/// resolved. See [`Outcome`].
+pub const EVENT_RESOLVED: &str = "publish:approval-resolved";
+
 /// `0` waits until answered.
 pub const WAIT_SETTING: &str = "publish_approval_wait";
 
@@ -60,6 +67,30 @@ pub struct PendingApproval {
 }
 
 static PENDING: Mutex<Option<HashMap<String, Request>>> = Mutex::new(None);
+
+/// How one request stopped waiting, as [`EVENT_RESOLVED`] reports it.
+///
+/// Only three, because only three matter to a client: somebody said yes,
+/// somebody said no, or nobody did. A dismissed prompt (the sender dropped) is
+/// `Expired` too — from a card's point of view it is the same fact, that the
+/// publish was refused without an answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Approved,
+    Denied,
+    Expired,
+}
+
+impl Outcome {
+    /// The wire spelling, per docs/remote-protocol.md's Events section.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+            Self::Expired => "expired",
+        }
+    }
+}
 
 pub fn parse_enabled(raw: Option<&str>) -> bool {
     raw == Some("true")
@@ -123,19 +154,37 @@ pub async fn refuse_unless_approved(
     } else {
         tokio::time::timeout(Duration::from_secs(wait), answer).await
     };
-    match answered {
-        Ok(Ok(true)) => None,
-        Ok(Ok(false)) => Some(refusal(detail, "you declined it")),
+    // Whatever happened, the question is over: tell every client so the card it
+    // drew comes down. `answer` cannot do this itself — it has no sink, and it
+    // is not the only way a request ends — so the one place that sees every
+    // outcome does it.
+    let (verdict, outcome) = match answered {
+        Ok(Ok(true)) => (None, Outcome::Approved),
+        Ok(Ok(false)) => (Some(refusal(detail, "you declined it")), Outcome::Denied),
         // Dropped sender or expired wait: both are "nobody approved".
         Ok(Err(_)) => {
             forget(&id);
-            Some(refusal(detail, "the approval prompt was dismissed"))
+            (
+                Some(refusal(detail, "the approval prompt was dismissed")),
+                Outcome::Expired,
+            )
         }
         Err(_) => {
             forget(&id);
-            Some(refusal(detail, &format!("nobody answered within {wait}s")))
+            (
+                Some(refusal(detail, &format!("nobody answered within {wait}s"))),
+                Outcome::Expired,
+            )
         }
-    }
+    };
+    // Advisory, unlike the request: a client that never hears it is where it was
+    // before this event existed, so `host::emit`'s logging path is right here.
+    crate::host::emit(
+        sink,
+        EVENT_RESOLVED,
+        &json!({ "id": id, "outcome": outcome.as_str() }),
+    );
+    verdict
 }
 
 /// Unknown ids are ignored: a late answer must not publish anything.
@@ -234,5 +283,20 @@ mod tests {
     #[test]
     fn answering_an_unknown_request_is_a_no_op() {
         answer("never-registered", true);
+    }
+
+    /// The two event names and the three outcome spellings are the wire
+    /// contract (docs/remote-protocol.md, "Events"), read by both clients and
+    /// forwarded to every paired device — so they are pinned here rather than
+    /// left to a grep.
+    #[test]
+    fn the_wire_names_are_the_documented_ones() {
+        assert_eq!(EVENT_REQUESTED, "publish:approval-requested");
+        assert_eq!(EVENT_RESOLVED, "publish:approval-resolved");
+        assert_eq!(Outcome::Approved.as_str(), "approved");
+        assert_eq!(Outcome::Denied.as_str(), "denied");
+        // A dismissed prompt reports as expired too: to a card, "nobody
+        // answered" and "the wait ran out" are the same fact.
+        assert_eq!(Outcome::Expired.as_str(), "expired");
     }
 }

@@ -95,8 +95,16 @@ impl Admin {
         }
     }
 
-    /// `remote_status`, plus the three things only the process itself knows.
-    /// Flattened into one object so `fletch-host status` prints one document.
+    /// `remote_status`, plus what only the process itself knows: where it keeps
+    /// its data, who it is, and what the engine behind the socket is actually
+    /// doing. Flattened into one object so `fletch-host status` prints one
+    /// document.
+    ///
+    /// The engine facts are the three an operator with no window checks first —
+    /// whether any agent is alive, whether the sandbox is the one they meant on
+    /// this box, and whether pushes will work — and each is the cheapest read
+    /// available: the workspace snapshot the `get_workspace` op already serves,
+    /// and two process-global reads.
     fn status(&self) -> Result<Value, String> {
         let mut status = value(&self.remote()?.status())?;
         let Some(object) = status.as_object_mut() else {
@@ -105,7 +113,39 @@ impl Admin {
         object.insert("dataDir".into(), json!(self.data_dir.to_string_lossy()));
         object.insert("pid".into(), json!(std::process::id()));
         object.insert("version".into(), json!(env!("CARGO_PKG_VERSION")));
+        object.insert("agents".into(), self.agent_counts());
+        object.insert(
+            "sandboxEngine".into(),
+            json!(fletch_core::sandbox::selected_engine_kind().as_setting()),
+        );
+        object.insert(
+            "githubConnected".into(),
+            json!(fletch_core::github::client::token().is_some()),
+        );
         Ok(status)
+    }
+
+    /// `{ total, running }` over the live agents — archived ones are history,
+    /// not load. `current_workspace` overlays the supervisor's in-memory status
+    /// on the at-rest record, so `running` is the real count of agents mid-turn
+    /// rather than whatever the database last wrote; `spawning` is counted as
+    /// running, since from outside it is an agent the host is busy with.
+    fn agent_counts(&self) -> Value {
+        let Some(workspace) = self.engine.supervisor.current_workspace() else {
+            return json!({ "total": 0, "running": 0 });
+        };
+        let live = workspace.agents.iter().filter(|a| a.archive.is_none());
+        let total = live.clone().count();
+        let running = live
+            .filter(|a| {
+                matches!(
+                    a.status,
+                    fletch_core::workspace::AgentStatus::Running
+                        | fletch_core::workspace::AgentStatus::Spawning
+                )
+            })
+            .count();
+        json!({ "total": total, "running": running })
     }
 
     fn remote(&self) -> Result<&Arc<RemoteState>, String> {

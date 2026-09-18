@@ -22,6 +22,7 @@ import {
   onDockerBuildProgress,
   onPrStateChanged,
   onPublishApprovalRequested,
+  onPublishApprovalResolved,
   onRunPort,
   onRunState,
   onSessionRecordsAppended,
@@ -550,6 +551,16 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       // The backend blocks on this until it is answered or its timeout denies it —
       // see `receivePublishApproval`, which decides whether to answer or prompt.
       get().receivePublishApproval(request);
+    }),
+  );
+
+  await bind(
+    onPublishApprovalResolved((e) => {
+      // The question is over — answered on another device, answered from a host
+      // terminal, or refused because nobody answered in time. Take the prompt
+      // down; answering it now could not reach the agent anyway. Our own answer
+      // already dropped it, so this is a no-op then.
+      get().resolvePublishApproval(e);
     }),
   );
 
