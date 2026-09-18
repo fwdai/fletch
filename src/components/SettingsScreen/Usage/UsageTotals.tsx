@@ -9,9 +9,10 @@ const SAVINGS_TIP = "List price of the cached input, minus what the cache read c
 export function UsageTotals({ stats, loading }: { stats: UsageStats | null; loading: boolean }) {
   const t = stats?.totals;
   const busy = loading && !stats;
-  // The savings number can only cover the buckets that had a price, so it gets
-  // the same exact / at-least / unpriced treatment as the headline.
-  const savings = t ? costLabel(t.cacheSavingsUsd, t.processed, t.unpricedTokens) : null;
+  // The savings number can only cover the cache reads that had a price, so it
+  // gets the same exact / at-least / unpriced treatment as the headline — but
+  // measured against cache reads, the only tokens it is made of.
+  const savings = t ? costLabel(t.cacheSavingsUsd, t.cacheRead, t.unpricedCacheReadTokens) : null;
 
   return (
     <section className="set-group">

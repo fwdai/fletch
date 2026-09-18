@@ -6,9 +6,14 @@ import { formatAge, formatClockTime, localDay } from "@/util/format";
 import { SetHead, SetSeg } from "../primitives";
 
 const RANGES: { value: UsageRange; label: string; tip?: string }[] = [
-  // Buckets are hourly, so "24h" is 24 whole hours rather than a rolling day —
-  // the tooltip says so, and `rangeText` shows the opening hour.
-  { value: "24h", label: "Past 24h", tip: "The last 24 whole hours" },
+  // Buckets are hourly, so "24h" opens on the hour containing 24 hours ago —
+  // at least the past 24 hours, up to an hour more. The tooltip says so, and
+  // `rangeText` names the opening hour.
+  {
+    value: "24h",
+    label: "Past 24h",
+    tip: "Since this hour yesterday — hourly buckets, so at least the past 24 hours",
+  },
   { value: "7d", label: "7 days" },
   { value: "30d", label: "30 days" },
   { value: "90d", label: "90 days" },
@@ -40,11 +45,11 @@ function scanAge(at: number): string {
 
 /** "Aug 19 to Sep 17" — the window in the same tick form the chart axis uses.
  *  The 24h window is hours rather than days, and saying only its dates would
- *  read as two whole days, so it names the hour it opens on: "Sep 17, 11:00 to
- *  now". */
+ *  read as two whole days, so it says exactly when it opens: "Since Sep 16,
+ *  15:00". */
 function rangeText(range: UsageRange, { sinceMs, untilMs }: UsageRangeBounds): string {
   const from = formatDayTick(localDay(sinceMs));
-  if (range === "24h") return `${from}, ${formatClockTime(sinceMs)} to now`;
+  if (range === "24h") return `Since ${from}, ${formatClockTime(sinceMs)}`;
   return `${from} to ${formatDayTick(localDay(untilMs))}`;
 }
 

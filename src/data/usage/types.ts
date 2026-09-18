@@ -43,9 +43,11 @@ export interface UsageCostCoverage {
 export interface UsageTotals extends UsageTokenTotals {
   /** List-price dollars avoided by cache reads, over the priced buckets only. */
   cacheSavingsUsd: number;
-  /** Processed tokens the savings figure could not account for — a bucket with
-   *  no price has no cache discount to report either. */
-  unpricedTokens: number;
+  /** Cache-read tokens on models with no price — the only part of `cacheRead`
+   *  the savings figure can be missing. Read against `cacheRead`, not
+   *  `processed`: an unpriced model that never read from cache saved nothing
+   *  unknown, whatever else it processed. */
+  unpricedCacheReadTokens: number;
 }
 
 /** One provider's slice of the window. */

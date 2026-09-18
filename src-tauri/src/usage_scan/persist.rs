@@ -105,9 +105,12 @@ impl ScanCache {
     }
 
     /// Write the cache to `path`, returning the bytes written. The write goes
-    /// to a sibling `.tmp` and is renamed into place, so a crash (or a second
-    /// process) can never leave a half-written cache to be loaded — the rename
-    /// is atomic, and the loser of a race simply overwrites.
+    /// to a sibling temporary file and is renamed into place, so a crash can
+    /// never leave a half-written cache to be loaded — the rename is atomic.
+    /// The temporary name is unique per write (pid + nanos), so two processes
+    /// saving at once each rename their own complete file and the later rename
+    /// simply wins; a shared `.tmp` would let them truncate each other's bytes
+    /// before either renamed.
     pub(super) fn save(&self, path: &Path) -> std::io::Result<u64> {
         let mut entries: Vec<PersistedEntryRef<'_>> = self
             .files
@@ -125,8 +128,12 @@ impl ScanCache {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".tmp");
+        tmp.push(format!(".{}-{nanos}.tmp", std::process::id()));
         let tmp = PathBuf::from(tmp);
         let written = (|| -> std::io::Result<u64> {
             let mut file = std::fs::File::create(&tmp)?;
@@ -413,7 +420,8 @@ mod tests {
 
         // The parent dir doesn't exist yet on the first save.
         cache.save(&fx.cache_file).unwrap();
-        // ...and a second save overwrites in place, tmp included.
+        // ...and a second save overwrites in place; its own temporary is gone
+        // too, even though every write uses a fresh name.
         cache.save(&fx.cache_file).unwrap();
 
         let dir = fx.cache_file.parent().unwrap();

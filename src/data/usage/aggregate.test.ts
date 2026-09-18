@@ -71,23 +71,27 @@ const scan = (buckets: UsageBucket[], sessions: UsageSessionSpan[] = []): UsageS
 describe("rangeBounds", () => {
   const now = new Date(2026, 8, 17, 15, 30).getTime(); // Thu Sep 17 2026, 15:30 local
 
-  it("opens 24h on the 24th whole hour back, not a rolling day", () => {
+  it("opens 24h on the hour that contains 24 hours ago, never later", () => {
     const { sinceMs, untilMs } = rangeBounds("24h", now);
     expect(untilMs).toBe(now);
-    // 23 complete hours plus the one in progress: 16:00 yesterday, not 15:30.
-    expect(sinceMs).toBe(at("2026-09-16", 16));
+    // 15:30 now → 15:30 yesterday sits in the 15:00 bucket, so the window
+    // opens there: 24.5 elapsed hours, and nothing from the past 24h is missed.
+    expect(sinceMs).toBe(at("2026-09-16", 15));
     expect(new Date(sinceMs).getMinutes()).toBe(0);
-    expect((now - sinceMs) / 3_600_000).toBeCloseTo(23.5, 10);
+    expect((now - sinceMs) / 3_600_000).toBeCloseTo(24.5, 10);
   });
 
-  it("keeps 24h exactly 24 hour buckets wide whatever the minute", () => {
+  it("covers at least 24 elapsed hours and at most 25, whatever the minute", () => {
     for (const minute of [0, 1, 30, 59]) {
       const from = new Date(2026, 8, 17, 10, minute).getTime();
       const { sinceMs } = rangeBounds("24h", from);
-      expect(sinceMs).toBe(at("2026-09-16", 11));
-      // Hour starts in [sinceMs, from]: 11:00 yesterday through 10:00 today.
+      expect(sinceMs).toBe(at("2026-09-16", 10));
+      const elapsed = (from - sinceMs) / 3_600_000;
+      expect(elapsed).toBeGreaterThanOrEqual(24);
+      expect(elapsed).toBeLessThan(25);
+      // Hour starts in [sinceMs, from]: 10:00 yesterday through 10:00 today.
       const hours = Math.floor((localHourStart(from) - sinceMs) / 3_600_000) + 1;
-      expect(hours).toBe(24);
+      expect(hours).toBe(25);
     }
   });
 
@@ -158,7 +162,9 @@ describe("aggregateUsage", () => {
       cacheWrite: 800,
       processed: 9_000,
       cacheSavingsUsd: SONNET_SAVINGS,
-      unpricedTokens: 2_400,
+      // "mystery" is unpriced but read nothing from cache, so the savings
+      // figure is missing nothing — it is exact even though the cost isn't.
+      unpricedCacheReadTokens: 0,
     });
     expect(stats.totalTokens).toBe(9_000);
     expect(stats.empty).toBe(false);
@@ -194,7 +200,7 @@ describe("aggregateUsage", () => {
       range,
     );
     expect(priced.unpricedTokens).toBe(0);
-    expect(priced.totals.unpricedTokens).toBe(0);
+    expect(priced.totals.unpricedCacheReadTokens).toBe(0);
     expect(priced.providers[0].unpricedTokens).toBe(0);
     expect(priced.byDay[0].unpricedTokens).toBe(0);
   });
@@ -203,7 +209,8 @@ describe("aggregateUsage", () => {
     const blind = aggregateUsage(full, {}, range);
     expect(blind.totalCostUsd).toBe(0);
     expect(blind.unpricedTokens).toBe(blind.totalTokens);
-    expect(blind.totals.unpricedTokens).toBe(9_000);
+    // Every cache read ran unpriced, so the savings coverage is the cache reads.
+    expect(blind.totals.unpricedCacheReadTokens).toBe(4_000);
     expect(blind.totals.cacheSavingsUsd).toBe(0);
     expect(blind.providers.every((p) => p.unpricedTokens === p.tokens)).toBe(true);
     expect(blind.byDay.every((d) => d.unpricedTokens === d.tokens)).toBe(true);
@@ -314,7 +321,7 @@ describe("aggregateUsage slicing", () => {
     expect(sliced.empty).toBe(true);
   });
 
-  it("covers 24 hourly buckets for the 24h range and no more", () => {
+  it("covers the 25 hourly buckets that hold the past 24 hours, and no more", () => {
     const now = at(days[3], 10, 59);
     const hourly = scan(
       // 25 hours back through the current one, one bucket each.
@@ -323,7 +330,9 @@ describe("aggregateUsage slicing", () => {
       ),
     );
     const sliced = aggregateUsage(hourly, CATALOG, rangeBounds("24h", now));
-    expect(sliced.totalTokens).toBe(24 * 110);
+    // 10:59 yesterday is inside yesterday's 10:00 bucket, so that bucket is in;
+    // the one before it (09:00 yesterday) holds nothing from the past 24h.
+    expect(sliced.totalTokens).toBe(25 * 110);
   });
 
   it("excludes a bucket sitting exactly on untilMs", () => {

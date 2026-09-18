@@ -49,13 +49,15 @@ export function localHourStart(ms: number): number {
 /** The window a range control selects, ending now.
  *
  *  Multi-day ranges start at local midnight N−1 days back, so "7 days" is seven
- *  whole calendar columns on the chart rather than six and a fraction. "24h" is
- *  the last 24 *whole* local hours: 23 complete buckets plus the one in
- *  progress. A rolling `now − 24h` would open mid-hour and, since buckets are
- *  hourly, either drop that hour or drag in the whole of it — at 10:59 that
- *  means yesterday's 10:00 traffic inside a window labelled "past 24h". */
+ *  whole calendar columns on the chart rather than six and a fraction. "24h"
+ *  opens on the hour that contains the instant 24 hours ago: buckets are
+ *  hourly, so an exact rolling day is not expressible, and the choice is
+ *  between dropping up to an hour of the oldest usage or admitting up to an
+ *  hour more. It admits more — "past 24h" must never miss usage inside the
+ *  past 24 hours — and the header names the opening hour so the reader can
+ *  see exactly what the window is. */
 export function rangeBounds(range: UsageRange, nowMs: number): UsageRangeBounds {
-  if (range === "24h") return { sinceMs: localHourStart(nowMs) - 23 * HOUR_MS, untilMs: nowMs };
+  if (range === "24h") return { sinceMs: localHourStart(nowMs - 24 * HOUR_MS), untilMs: nowMs };
   // Stepped from noon so a DST boundary can't land the start on the wrong
   // date, then snapped back to that date's midnight.
   const start = new Date(nowMs);
@@ -117,6 +119,10 @@ export function aggregateUsage(
   // as a total — see `costLabel`.
   let unpricedTokens = 0;
   let savingsUsd = 0;
+  // Cache reads on unpriced models — the only tokens a savings figure can be
+  // missing. An unpriced model that read nothing from cache leaves the savings
+  // exact, however many tokens it otherwise processed.
+  let unpricedCacheReadTokens = 0;
 
   const providers = new Map<
     UsageProvider,
@@ -139,6 +145,7 @@ export function aggregateUsage(
     totalCostUsd += cost ?? 0;
     const unpriced = cost === null ? tokens : 0;
     unpricedTokens += unpriced;
+    if (cost === null) unpricedCacheReadTokens += b.tokens.cacheRead;
 
     const prov = providers.get(b.provider) ?? { tokens: 0, costUsd: 0, unpricedTokens: 0 };
     prov.tokens += tokens;
@@ -238,9 +245,7 @@ export function aggregateUsage(
     unpricedTokens,
     totalSessions: sessions.length,
     providers: providerRows,
-    // The savings figure covers exactly the buckets the cost figure does, so it
-    // carries the same coverage number.
-    totals: { ...totals, cacheSavingsUsd: savingsUsd, unpricedTokens },
+    totals: { ...totals, cacheSavingsUsd: savingsUsd, unpricedCacheReadTokens },
     daily,
     byModel,
     byDay,
