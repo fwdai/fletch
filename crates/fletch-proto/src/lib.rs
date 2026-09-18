@@ -13,11 +13,13 @@
 //! - [`noise`] — the `XX` handshake (both roles) and the encrypted frame codec.
 //! - [`dial`] — opening a WebSocket with both address families in the race.
 //! - [`relay`] — the host-link proof and the multiplexing frame codec.
+//! - [`client`] — a client's live connections to many hosts, Tauri-free.
 //!
-//! What is *not* here: the connection state machines. The host's listener, its
-//! op dispatch and its relay link live in the desktop; the phone's connection
-//! slot lives in the mobile app. Those are policy; this is the wire.
+//! What is *not* here: the host's state machine. Its listener, its op dispatch
+//! and its relay link live in the desktop. That is policy; this is the wire and
+//! the client end of it, which the phone and the desktop share.
 
+pub mod client;
 pub mod dial;
 pub mod keys;
 pub mod noise;
@@ -33,5 +35,6 @@ pub mod relay;
 /// carries its own marker string ([`noise::HOST_KEY_MISMATCH`]).
 pub type Result<T> = std::result::Result<T, String>;
 
+pub use client::{ClientEvent, ConnectResult, ConnectionId, Dialer, Target};
 pub use keys::{encode_key, StaticKey, DEVICE_KEY_FILE, HOST_KEY_FILE, KEY_LEN};
 pub use noise::{Channel, Handshake, HOST_KEY_MISMATCH, MAX_CHUNK_PLAINTEXT};
