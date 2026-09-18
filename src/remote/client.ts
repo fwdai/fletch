@@ -19,6 +19,7 @@ import {
   HOST_KEY_MISMATCH_REASON,
   type HostFrame,
   type HostInfo,
+  type HostProtocol,
   type HostTarget,
   isEventFrame,
   type PairResult,
@@ -108,6 +109,7 @@ export class ProtocolClient implements RemoteClient {
   private closedByUs = false;
   private _state: ConnectionState = "disconnected";
   private _host: HostInfo | null = null;
+  private _protocol: HostProtocol | null = null;
   private _via: Via | null = null;
   private readonly newId: () => string;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
@@ -129,6 +131,13 @@ export class ProtocolClient implements RemoteClient {
 
   get host(): HostInfo | null {
     return this._host;
+  }
+
+  /** What the host said it answers, from the last handshake. Null while no host
+   *  has been greeted, and null for a host old enough not to send it — which
+   *  `hostSupports` reads as the v2 default set. */
+  get protocol(): HostProtocol | null {
+    return this._protocol;
   }
 
   /** The host identity this client is bound to — supplied by the pairing link
@@ -216,12 +225,14 @@ export class ProtocolClient implements RemoteClient {
   async pair(token: string, device: DeviceInfo): Promise<PairResult> {
     const result = await this.request<PairResult>("pair", { token, device });
     this._host = result.host;
+    this._protocol = result.protocol ?? null;
     return result;
   }
 
   async hello(client: DeviceInfo): Promise<HelloResult> {
     const result = await this.request<HelloResult>("hello", { client });
     this._host = result.host;
+    this._protocol = result.protocol ?? null;
     return result;
   }
 

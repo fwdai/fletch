@@ -63,6 +63,11 @@ export function createApi(client: RemoteClient) {
         behavior,
         message: message ?? null,
       }),
+    /** Answer a held `publish:approval-requested` prompt. Gated on
+     *  `hostSupports("answer_publish_approval")`: a host from before the op
+     *  answers `unknown op`. */
+    answerPublishApproval: (id: string, approved: boolean) =>
+      call<null>("answer_publish_approval", { id, approved }),
     stopAgent: (agentId: string) => call<null>("stop_agent", { agentId }),
     resumeAgent: (agentId: string) => call<null>("resume_agent", { agentId }),
     archiveAgent: (agentId: string) => call<null>("archive_agent", { agentId }),
