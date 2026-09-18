@@ -150,6 +150,18 @@ impl ScanCache {
         };
         let (len, mtime_ms) = stat;
 
+        // A file last written before the window opened cannot hold an in-window
+        // record, read before or not. Its entry, if it has one, is forgotten
+        // here rather than kept "because it's cheap": the window the app asks
+        // for is only ever the last 90 days, and a cache that remembered every
+        // file it had ever read would quietly grow into lifetime history —
+        // more memory, a bigger persisted file, slower saves and re-folds. A
+        // later, wider window simply reads the file again from the start.
+        if mtime_ms < since_ms {
+            self.files.remove(path);
+            return false;
+        }
+
         match self.files.get(path) {
             // Same bytes as last time: reuse the records, touch no I/O.
             Some(e) if e.len == len && e.mtime_ms == mtime_ms => true,
@@ -161,10 +173,6 @@ impl ScanCache {
             }
             // Truncated, or rewritten in place: nothing cached can be trusted.
             Some(_) => self.read_fully(path, provider, Some(stat), io),
-            // The mtime prefilter only applies to files never read: one last
-            // written before the window opened cannot hold an in-window record.
-            // A file with an entry is always cheap enough to stat and reuse.
-            None if mtime_ms < since_ms => false,
             None => self.read_fully(path, provider, Some(stat), io),
         }
     }

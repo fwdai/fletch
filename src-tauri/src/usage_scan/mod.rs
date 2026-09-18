@@ -84,7 +84,7 @@ impl TokenCounts {
 }
 
 /// One hour/provider/model cell of the usage table.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageBucket {
     /// Epoch ms of the *local* hour containing the record timestamp. Hourly
@@ -242,10 +242,10 @@ pub fn scan_dirs_with(
         }
     }
 
-    // Every walked file that has an entry is in `files` (only a file with no
-    // entry at all can be dropped by the prefilter), so anything else the cache
-    // holds describes a transcript that is gone. Forgetting it here keeps a
-    // long-lived — and persisted — cache the size of the disk it mirrors.
+    // `refresh` has already forgotten every walked file that fell behind the
+    // window, so anything the cache still holds that isn't in `files` describes
+    // a transcript that is gone. Forgetting it too keeps a long-lived — and
+    // persisted — cache the size of the window it serves, not of the disk.
     let walked: HashSet<&PathBuf> = files.iter().collect();
     if walked.len() != cache.files.len() {
         cache.files.retain(|path, _| walked.contains(path));
@@ -994,6 +994,64 @@ mod tests {
     }
 
     // ── cross-cutting ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_cached_file_ages_out_once_it_falls_behind_the_window() {
+        // The frontend only ever asks for the last 90 days. A file that was in
+        // that window when it was first read must leave the cache once the
+        // window has moved past its mtime — otherwise the cache grows into
+        // lifetime history — and must be read afresh if a wider window ever
+        // asks for it again.
+        let td = tempfile::tempdir().unwrap();
+        let line = claude_line(
+            "s1",
+            "m1",
+            "r1",
+            "2026-01-02T10:00:00Z",
+            "claude-opus-4",
+            claude_usage(10, 10, 0, 0),
+        );
+        let projects = claude_file(td.path(), "slug", "s1", &[line]);
+        let file = projects.join("slug").join("s1.jsonl");
+        set_mtime_ms(&file, ms("2026-01-02T10:00:00Z"));
+        let roots = std::slice::from_ref(&projects);
+        let mut cache = ScanCache::default();
+
+        // In the window: read and cached.
+        let jan = scan_dirs_with(
+            &mut cache,
+            roots,
+            &[],
+            ms("2026-01-01T00:00:00Z"),
+            ms("2026-02-01T00:00:00Z"),
+        );
+        assert_eq!((jan.files_read, jan.scanned_files), (1, 1));
+        assert!(cache.files.contains_key(&file));
+
+        // The window moves on past the file's mtime: no read, no entry.
+        let mar = scan_dirs_with(
+            &mut cache,
+            roots,
+            &[],
+            ms("2026-03-01T00:00:00Z"),
+            ms("2026-04-01T00:00:00Z"),
+        );
+        assert_eq!((mar.files_read, mar.scanned_files), (0, 0));
+        assert!(mar.buckets.is_empty());
+        assert!(!cache.files.contains_key(&file));
+
+        // A wider window asks again: read from the start, same answer as before.
+        let again = scan_dirs_with(
+            &mut cache,
+            roots,
+            &[],
+            ms("2026-01-01T00:00:00Z"),
+            ms("2026-02-01T00:00:00Z"),
+        );
+        assert_eq!((again.files_read, again.scanned_files), (1, 1));
+        assert_eq!(again.buckets, jan.buckets);
+        assert!(cache.files.contains_key(&file));
+    }
 
     #[test]
     fn mtime_prefilter_skips_files_last_written_before_the_window() {
