@@ -190,8 +190,10 @@ mod tests {
         let token =
             std::env::var("FLETCH_GITHUB_TOKEN").expect("set FLETCH_GITHUB_TOKEN to a token");
         client::set_token(Some(token));
-        // cargo test runs in src-tauri; the repo root is one up.
+        // cargo test runs in crates/fletch-core; the repo root is two up.
         let repo = std::env::current_dir()
+            .unwrap()
+            .parent()
             .unwrap()
             .parent()
             .unwrap()
