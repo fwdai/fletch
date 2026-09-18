@@ -140,6 +140,12 @@ pub struct RemoteStatus {
     pub enabled: bool,
     pub listening: bool,
     pub port: u16,
+    /// What a device sees this host called: the Sharing pane's Computer Name on
+    /// macOS, else the hostname, or a `--name` override on a headless host.
+    /// The same string [`host_info`] puts in `pair`/`hello` and the pairing
+    /// URL, reported here because it is the only way the frontend can learn
+    /// this machine's own name — `machine_name` is private to Rust.
+    pub name: String,
     /// This host's public key, base64url without padding — the identity the
     /// pairing link carries and the phone pins. Empty only when the key could
     /// not be created, which `error` explains.
@@ -432,6 +438,7 @@ impl RemoteState {
             enabled: inner.enabled,
             listening: inner.server.is_some(),
             port: inner.server.as_ref().map_or(inner.port, |h| h.port),
+            name: machine_name(),
             host_id: self.host_id(),
             addresses: candidate_addresses(),
             relay: match inner.relay.as_ref() {
@@ -643,7 +650,9 @@ pub fn protocol_descriptor() -> Protocol {
 /// The name a user would recognize in a device list. On macOS that is the
 /// Sharing pane's Computer Name ("Alex's MacBook Pro"), not the DNS hostname
 /// ("Alexs-MacBook-Pro.local"), so `scutil` is asked first. Cold path — called
-/// only when pairing or reading status.
+/// only when pairing, when a device says `hello`, and on a status read (the
+/// Settings pane's 4 s poll). Not cached: the user can rename the machine while
+/// the app runs, and one `scutil` is cheaper than a name that has gone stale.
 fn machine_name() -> String {
     if let Some(name) = NAME_OVERRIDE.get() {
         return name.clone();

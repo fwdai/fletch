@@ -695,7 +695,7 @@ a phone.
 
 | command | purpose |
 |---|---|
-| `remote_status` | `{ enabled, listening, port, hostId, addresses: string[], devices: RemoteDevice[], relay: RelayStatus, error: string \| null }` — `hostId` is the host public key, base64url |
+| `remote_status` | `{ enabled, listening, port, name, hostId, addresses: string[], devices: RemoteDevice[], relay: RelayStatus, error: string \| null }` — `hostId` is the host public key, base64url; `name` is what a device sees this machine called (the same string `pair`/`hello` and the pairing URL carry), which is also how a desktop acting as a *client* names itself when it pairs with another host |
 | `remote_set_enabled` | `{ enabled }` start/stop the listener and the relay link; persists setting `remote.enabled`; disabling closes live connections with `4004` |
 | `remote_set_port` | `{ port }` persist setting `remote.port`; a running listener moves to it at once (its connections close with `1012`, the relay link stays up), an idle one records it for the next start; refused, with nothing stored, when the port cannot be bound; returns `RemoteStatus` |
 | `remote_set_relay` | `{ url: string \| null }` persist setting `remote.relay_url` (null/empty clears it) and connect or drop the host link accordingly; returns `RemoteStatus` |
