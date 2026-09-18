@@ -20,7 +20,6 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::Value;
-use tauri::AppHandle;
 
 use crate::commands::DiffBaseMode;
 use crate::host::EngineCtx;
@@ -120,17 +119,15 @@ pub fn is_allowed(op: &str) -> bool {
 }
 
 /// The production dispatcher: the engine ctx and supervisor the Tauri commands
-/// would have received through `State`, plus the app handle the two dictation
-/// ops still need (they drive a desktop-only capture session).
+/// would have received through `State`.
 pub struct SupervisorDispatch {
-    app: AppHandle,
     ctx: Arc<EngineCtx>,
     sup: Arc<Supervisor>,
 }
 
 impl SupervisorDispatch {
-    pub fn new(app: AppHandle, ctx: Arc<EngineCtx>, sup: Arc<Supervisor>) -> Self {
-        Self { app, ctx, sup }
+    pub fn new(ctx: Arc<EngineCtx>, sup: Arc<Supervisor>) -> Self {
+        Self { ctx, sup }
     }
 }
 
@@ -144,7 +141,6 @@ impl Dispatch for SupervisorDispatch {
             }
             let sup = &self.sup;
             let ctx = &self.ctx;
-            let app = &self.app;
             match op {
                 "get_workspace" => ok(sup.current_workspace()),
 
@@ -377,16 +373,19 @@ impl Dispatch for SupervisorDispatch {
 
                 // Remote-only: the phone captures, this Mac transcribes with the
                 // local whisper engine (`dictation::remote`). The transcript is
-                // the reply to `dictation_end`; no event is involved.
-                "dictation_status" => ok(crate::dictation::remote::status(app)),
-                "dictation_begin" => res(crate::dictation::remote::begin(app)),
+                // the reply to `dictation_end`; no event is involved. The engine
+                // settings these read come off the ctx's DB handle — the same
+                // connection the Tauri commands reach through `State`, so a
+                // phone sees exactly what Settings › Dictation shows.
+                "dictation_status" => ok(crate::dictation::remote::status(&ctx.db)),
+                "dictation_begin" => res(crate::dictation::remote::begin(&ctx.db)),
                 "dictation_audio" => {
                     let a: DictationAudioArgs = parse(args)?;
                     res(crate::dictation::remote::append(&a.session, a.rate, &a.pcm))
                 }
                 "dictation_end" => {
                     let a: DictationSessionArgs = parse(args)?;
-                    res(crate::dictation::remote::end(app, &a.session).await)
+                    res(crate::dictation::remote::end(&ctx.db, &a.session).await)
                 }
                 "dictation_cancel" => {
                     let a: DictationSessionArgs = parse(args)?;

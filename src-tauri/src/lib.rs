@@ -63,7 +63,6 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::supervisor::Supervisor;
-use crate::workspace::WorkspaceManager;
 
 /// The managed DB handle every command that reads or writes settings asks for.
 /// `pub(crate)` because those commands don't all live here (see
@@ -1112,50 +1111,6 @@ async fn set_podman_launch_settings(
     Ok(())
 }
 
-/// Startup seed retry pacing for an unavailable secret store: start at 30s
-/// (the realistic case — a login-item launch racing the keychain unlock —
-/// resolves quickly) and back off to a slow probe that never gives up. An
-/// unavailable store must stay distinct from "no token" for the app's whole
-/// lifetime, not just a startup window: a saved login must never read as
-/// signed-out only because the keychain stayed locked past some deadline.
-const SECRET_SEED_RETRY_START: std::time::Duration = std::time::Duration::from_secs(30);
-const SECRET_SEED_RETRY_CAP: std::time::Duration = std::time::Duration::from_secs(300);
-
-/// Seed an in-process secret mirror from the store at startup. A definitive
-/// answer (present or absent) applies immediately; an *unavailable* store
-/// (`Err` — e.g. the keychain is locked) retries in the background until it
-/// gets one. `apply` must be the mirror's `seed_*` variant
-/// (`github::seed_token`, `linear::seed_token`,
-/// `docker::auth::seed_stored_token`), which no-ops once any explicit set
-/// has run — a connect/disconnect that lands while a retry is pending must
-/// win over the (possibly stale) value that retry read.
-fn seed_secret_mirror(db: &DbState, key: &'static str, apply: fn(Option<String>)) {
-    match secrets::get(&db.lock(), key) {
-        Ok(value) => apply(value),
-        Err(e) => {
-            tracing::warn!(key, error = %e, "secret store unavailable at startup; retrying");
-            let db = db.clone();
-            tauri::async_runtime::spawn(async move {
-                let mut delay = SECRET_SEED_RETRY_START;
-                loop {
-                    tokio::time::sleep(delay).await;
-                    match secrets::get(&db.lock(), key) {
-                        // A definitive answer ends the retry either way; the
-                        // seed fn itself refuses to apply over an explicit
-                        // set that happened while we waited (the mirror's
-                        // seal), so a late read can't clobber fresher state.
-                        // Applying a late None is skipped outright — the
-                        // mirror already defaults to empty.
-                        Ok(Some(value)) => return apply(Some(value)),
-                        Ok(None) => return,
-                        Err(_) => delay = (delay * 2).min(SECRET_SEED_RETRY_CAP),
-                    }
-                }
-            });
-        }
-    }
-}
-
 /// Set once the user has confirmed a quit (via the active-work dialog) or a
 /// termination signal has already killed the children — both mean the next
 /// `ExitRequested` must proceed straight to shutdown without re-prompting.
@@ -1236,11 +1191,12 @@ type TrayStatusSlot = Arc<Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>>;
 /// sleep-assertion + activity-tracking half of the menu-bar feature and MUST NOT
 /// depend on the tray: it is called unconditionally and cannot fail, so a
 /// later tray-build error can never leave the monitor unarmed (which would
-/// silently disable idle-sleep prevention mid-fleet). The returned slot is where
-/// the tray, if it builds, publishes its status item for the callback to update.
-fn arm_activity_monitor(supervisor: &Arc<Supervisor>) -> TrayStatusSlot {
-    let status_slot: TrayStatusSlot = Arc::new(Mutex::new(None));
-
+/// silently disable idle-sleep prevention mid-fleet). `status_slot` is where the
+/// tray, if it builds, publishes its status item for the callback to update.
+///
+/// Called from inside `host::boot` (through `BootConfig::on_supervisor`) so the
+/// subscription is live before any run resumes.
+fn arm_activity_monitor(supervisor: &Arc<Supervisor>, status_slot: &TrayStatusSlot) {
     // The status-line callback updates the tray item *only if one has been
     // published*; with no tray it is a no-op, while activity is still tracked
     // and the assertion still toggles.
@@ -1294,8 +1250,6 @@ fn arm_activity_monitor(supervisor: &Arc<Supervisor>) -> TrayStatusSlot {
             }
         }
     });
-
-    status_slot
 }
 
 /// Build the menu-bar tray (best-effort UI). On success, publish its status item
@@ -1457,220 +1411,77 @@ pub fn run() {
             };
             std::fs::create_dir_all(&data_dir)?;
 
-            let db = match database::init(&data_dir) {
-                Ok(db) => db,
-                Err(e) => recover_from_db_init_failure(&data_dir, e),
-            };
+            // Whisper dictation weights live under the data dir; the engine
+            // loads from here and Settings downloads into it. Before `boot`
+            // because `boot` can bring the remote listener up, and a phone's
+            // dictation op reads this root.
+            dictation::whisper::init(data_dir.join("whisper-models"));
 
-            // The runtime the engine's background tasks belong to: Tauri's own,
-            // which is a tokio runtime. Published before anything below can
-            // spawn, so the engine never has to reach for `tauri::` to start a
-            // task (see `host::runtime`).
-            host::runtime::init(tauri::async_runtime::handle().inner().clone());
+            // Where the tray publishes its status item once (and if) it builds.
+            // Created before the engine because the activity monitor — armed
+            // inside `boot`, see `on_supervisor` below — writes through it.
+            let tray_status_slot: TrayStatusSlot = Arc::new(Mutex::new(None));
 
-            // Where the engine's events go: the webview, as always, plus a
-            // broadcast the host's own subscribers read — today the remote
-            // event taps, which used to be `listen_any` taps on the Tauri bus.
-            // The fanout is kept concrete because the push-alert tap is added
-            // to it further down, once the remote state it needs exists.
-            let (events, _) = tokio::sync::broadcast::channel(host::sink::EVENT_BUFFER);
-            let sink = Arc::new(host::sink::FanoutSink::new(vec![
-                Arc::new(host::sink::TauriSink(app.handle().clone())),
-                Arc::new(host::sink::BroadcastSink(events.clone())),
-            ]));
-
-            // What the engine gets instead of an `AppHandle`: where its events
-            // go, the DB handle it shares with the commands, and the "is the
-            // user looking at this?" question only a host can answer. Built
-            // here so everything below is constructed with it; the supervisor
-            // and the workflow service are published onto it as they appear
-            // (they are what the engine used to fetch back out of Tauri's
-            // managed state).
-            let engine_ctx = {
-                let focus_app = app.handle().clone();
-                Arc::new(host::EngineCtx::new(
-                    sink.clone(),
-                    db.clone(),
+            // The engine: everything that is not about a window. The same
+            // function a headless host calls, in-process here (see `host::boot`
+            // for the step order, which is unchanged from when it lived inline).
+            let host::Engine {
+                ctx: engine_ctx,
+                db,
+                supervisor,
+                workflows: wf_service,
+                remote: remote_state,
+                ..
+            } = host::boot(host::BootConfig {
+                data_dir: data_dir.clone(),
+                // Events reach the webview exactly as they did when the engine
+                // held the `AppHandle` itself; `boot` fans this out to its own
+                // broadcast for the remote taps.
+                sink: Arc::new(host::sink::TauriSink(app.handle().clone())),
+                focus: {
+                    let focus_app = app.handle().clone();
                     Box::new(move || {
                         focus_app
                             .get_webview_window("main")
                             .map(|window| window.is_focused().unwrap_or(false))
                             .unwrap_or(false)
-                    }),
-                ))
-            };
-            app.manage(engine_ctx.clone());
-
-            // Seed the in-memory agent binary override registry so binary
-            // resolution (deep in spawn/probe paths, with no DB handle) can
-            // honor user-set custom paths without touching the DB each time.
-            bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&db.lock()));
-
-            // Seed the in-memory sandbox engine selection (mirror of the
-            // `sandbox_engine` setting) so spawn-time engine resolution —
-            // deep in agent code with no DB handle — honors the user's
-            // choice. Missing/unknown values keep the sandbox-exec default.
-            if let Some(kind) = database::get_setting(&db.lock(), sandbox::ENGINE_SETTING)
-                .as_deref()
-                .and_then(sandbox::EngineKind::from_setting)
-            {
-                sandbox::set_selected_engine_kind(kind);
-            }
-
-            // Seed the in-memory code-indexing consent (mirror of the
-            // `code_indexing_enabled` setting, default on) so the spawn path can
-            // read it without a DB handle. If enabled, kick a silent background
-            // install of the codegraph bundle — non-fatal: a failure just means
-            // MCP injection doesn't happen until a later successful install
-            // (retried next launch or when the user re-toggles).
-            {
-                // Seed the publish-approval mirror the same way: the git dispatcher
-                // reads it on the spawn path, where there is no DB handle.
-                rpc::approval::set_enabled(rpc::approval::parse_enabled(
-                    database::get_setting(&db.lock(), rpc::approval::SETTING).as_deref(),
-                ));
-                rpc::approval::set_wait_secs(rpc::approval::parse_wait_secs(
-                    database::get_setting(&db.lock(), rpc::approval::WAIT_SETTING).as_deref(),
-                ));
-                // And the publish preferences the same dispatcher (and the PR
-                // path) read: branch prefix and draft PRs.
-                publish_prefs::set_branch_prefix(
-                    &database::get_setting(&db.lock(), publish_prefs::BRANCH_PREFIX_SETTING)
-                        .unwrap_or_default(),
-                );
-                publish_prefs::set_draft_prs(publish_prefs::parse_draft_prs(
-                    database::get_setting(&db.lock(), publish_prefs::DRAFT_PRS_SETTING).as_deref(),
-                ));
-                // Alert and dictation opt-outs, read off threads with no DB handle.
-                remote::push::set_turn_complete(remote::push::parse_turn_complete(
-                    database::get_setting(&db.lock(), remote::push::TURN_COMPLETE_SETTING)
-                        .as_deref(),
-                ));
-                dictation::set_auto_stop(dictation::parse_auto_stop(
-                    database::get_setting(&db.lock(), dictation::AUTO_STOP_SETTING).as_deref(),
-                ));
-            }
-            {
-                let enabled = codegraph::parse_enabled(
-                    database::get_setting(&db.lock(), codegraph::SETTING).as_deref(),
-                );
-                codegraph::set_enabled(enabled);
-                if enabled {
-                    tauri::async_runtime::spawn(async {
-                        if let Err(e) = codegraph::ensure_installed().await {
-                            tracing::warn!(error = %e, "codegraph startup install failed; continuing");
-                        }
-                    });
-                }
-            }
-
-            // Seed the per-runtime launch knobs (image override + resource
-            // limits) the same way — mirrored in-process for the spawn path,
-            // which has no DB handle. Kept in sync mid-run by
-            // `set_docker_launch_settings` / `set_podman_launch_settings`.
-            {
-                let conn = db.lock();
-                sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
-                    image_override: database::get_setting(&conn, sandbox::docker::IMAGE_SETTING),
-                    memory: database::get_setting(&conn, sandbox::docker::MEMORY_SETTING),
-                    cpus: database::get_setting(&conn, sandbox::docker::CPUS_SETTING),
-                });
-                sandbox::podman::set_launch_settings(sandbox::podman::LaunchSettings {
-                    image_override: database::get_setting(&conn, sandbox::podman::IMAGE_SETTING),
-                    memory: database::get_setting(&conn, sandbox::podman::MEMORY_SETTING),
-                    cpus: database::get_setting(&conn, sandbox::podman::CPUS_SETTING),
-                });
-            }
-
-            // Seed each runtime's version-refresh loop guard (mirrors of the
-            // `docker_version_refresh_guard` / `podman_version_refresh_guard`
-            // settings — private bookkeeping, not user-facing) and wire their
-            // write-backs, so a host CLI pinned away from the registry's latest
-            // triggers at most one version-parity rebuild ever, not one per app
-            // run. Same mirror idiom as the launch knobs above; the guards are
-            // consulted and recorded on spawn/background threads that have no DB
-            // handle. Per runtime because the image stores are separate: a
-            // rebuild that settled docker's mismatch proves nothing about
-            // podman's store.
-            {
-                let seed = |key: &'static str| -> std::collections::HashMap<String, String> {
-                    database::get_setting(&db.lock(), key)
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_default()
-                };
-                let persister = |key: &'static str| {
-                    let guard_db = db.clone();
-                    move |attempted: &std::collections::HashMap<String, String>| {
-                        if let Ok(json) = serde_json::to_string(attempted) {
-                            let _ = database::set_setting(&guard_db.lock(), key, &json);
-                        }
-                    }
-                };
-                sandbox::docker::init_version_refresh_guard(
-                    seed(sandbox::docker::VERSION_GUARD_SETTING),
-                    persister(sandbox::docker::VERSION_GUARD_SETTING),
-                );
-                sandbox::podman::init_version_refresh_guard(
-                    seed(sandbox::podman::VERSION_GUARD_SETTING),
-                    persister(sandbox::podman::VERSION_GUARD_SETTING),
-                );
-            }
-
-            // Seed the in-process container auth token (mirror of the stored
-            // `claude_container_token` secret, same pattern as the GitHub
-            // token below) so the docker auth chain — resolved at spawn time
-            // with no DB handle — sees a token pasted in a previous run.
-            seed_secret_mirror(
-                &db,
-                sandbox::docker::auth::TOKEN_SETTING,
-                sandbox::docker::auth::seed_stored_token,
-            );
-
-            // Unified git resolution: point the portable-install root at app
-            // data, wire the fallback commit identity to the signed-in
-            // profile, and kick off resolve-or-download in the background —
-            // at launch, not at the onboarding readiness screen, so a
-            // git-less machine is usually ready before the user gets there.
-            git_dist::init(data_dir.join("git-dist"));
-            // Whisper dictation weights live next to it; the engine loads
-            // from here and Settings downloads into it.
-            dictation::whisper::init(data_dir.join("whisper-models"));
-            // Seed the in-process GitHub token so API calls and git network
-            // auth work without a DB handle (updated on sign-in).
-            seed_secret_mirror(&db, github::TOKEN_SETTING, github::seed_token);
-            // Same for the Linear API key, so the issue adapters — reached
-            // from poll paths with no DB handle — see a key pasted in a
-            // previous run.
-            seed_secret_mirror(&db, linear::TOKEN_SETTING, linear::seed_token);
-            {
-                let db = db.clone();
-                git_dist::set_identity_source(Box::new(move || {
-                    database::get_account_identity(&db.lock())
-                }));
-            }
-            {
-                use tauri::Emitter;
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(git_dist::startup(move |payload| {
-                    let _ = handle.emit("git-dist:state", payload);
-                }));
-            }
-
-            // Forward container image-build progress to the UI — either
-            // runtime's, through one sink. The build runs deep in the spawn path
-            // (no AppHandle there), so it emits through a process-wide sink
-            // installed here — mirroring the git-dist emitter above. Every phase
-            // carries its `runtime` and the frontend routes on it: with two
-            // runtimes sharing this stream it's the lifecycle key, not
-            // decoration. The `docker:build-progress` event name is the
-            // established wire contract and stays as-is.
-            {
-                use tauri::Emitter;
-                let handle = app.handle().clone();
-                sandbox::docker::set_build_sink(move |event| {
-                    let _ = handle.emit("docker:build-progress", event);
-                });
-            }
+                    })
+                },
+                // Tauri's runtime, which is a tokio runtime: the engine's
+                // background tasks keep running on the same threads as before.
+                runtime: tauri::async_runtime::handle().inner().clone(),
+                remote: host::RemoteBoot::Desktop,
+                // A failed `database::init` is a native dialog and a retry loop
+                // on the main thread, not an error the engine can resolve.
+                recover_db: Some({
+                    let data_dir = data_dir.clone();
+                    Box::new(move |e| recover_from_db_init_failure(&data_dir, e))
+                }),
+                // Arm the activity monitor (idle-sleep assertion + activity
+                // tracking) *before* any work is resumed inside `boot`, so the
+                // run-level signal is tight from the first instant: runs
+                // re-driven by `resume_active_runs` register into an
+                // already-armed monitor (and subscribing before resume means no
+                // resumed agent's status event is missed). Infallible and
+                // independent of the tray — a tray failure can never leave
+                // sleep-prevention disabled. The tray is built below and
+                // late-publishes its status item into this slot.
+                on_supervisor: Some({
+                    let slot = tray_status_slot.clone();
+                    Box::new(move |supervisor| arm_activity_monitor(supervisor, &slot))
+                }),
+                // A signal (logout/shutdown/Ctrl-C) is not a user choice we can
+                // prompt on — once the children are dead, flag the quit as
+                // confirmed so the `ExitRequested` handler skips the active-work
+                // dialog, and let Tauri exit.
+                signals: Some({
+                    let handle = app.handle().clone();
+                    Box::new(move || {
+                        QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
+                        handle.exit(0);
+                    })
+                }),
+            })?;
 
             // Anonymous product telemetry. Mint (or read) the install's random
             // distinct id, read the opt-out consent flag, and detect a version
@@ -1718,140 +1529,30 @@ pub fn run() {
                 }
             }
 
-            app.manage(db.clone());
-
-            // One-time move of the legacy on-disk checkouts root
-            // (`~/.fletch/worktrees` → `~/.fletch/workspaces`) for installs that
-            // predate the rename. Best-effort; runs before the supervisor
-            // provisions any checkout so restores resolve to the new location.
-            crate::workspace::migrate_default_checkouts_root();
-
-            let db_for_wf = db.clone();
-            let db_for_roadmap = db.clone();
-            let db_for_merge_sweep = db.clone();
-            #[cfg(desktop)]
-            let db_for_remote = db.clone();
-            let workspace = Arc::new(WorkspaceManager::new(db));
-
-            // Drop RPC mailboxes left by agents that are gone. Teardown removes
-            // them now, but installs predating that carry one leaked dir per
-            // agent ever spawned. Runs before anything spawns, so every mailbox
-            // present is either a live agent's or an orphan.
-            match workspace.live_agent_ids() {
-                Ok(live) => crate::rpc::sweep_orphan_mailboxes(&live),
-                Err(e) => tracing::warn!(error = %e, "skipping rpc mailbox sweep"),
-            }
-
-            let supervisor = Arc::new(Supervisor::new(workspace));
-            app.manage(supervisor.clone());
-            engine_ctx.set_supervisor(supervisor.clone());
-
-            // Arm the activity monitor (idle-sleep assertion + activity
-            // tracking) *before* any work is resumed below, so the run-level
-            // signal is tight from the first instant: runs re-driven by
-            // `resume_active_runs` register into an already-armed monitor (and
-            // subscribing before resume means no resumed agent's status event
-            // is missed). Infallible and independent of the tray — a tray
-            // failure can never leave sleep-prevention disabled. The tray is
-            // built later and late-publishes its status item into this slot.
-            let tray_status_slot = arm_activity_monitor(&supervisor);
-
-            // Workflow engine (S4): the run scheduler + active-run registry. Its
-            // driver wraps the supervisor; runs left `pending`/`running` by a
-            // prior session are re-driven now (paused runs wait for a user
-            // action).
-            let wf_driver: Arc<dyn crate::workflow::driver::AgentDriver> =
-                Arc::new(crate::workflow::driver::SupervisorDriver::new(
-                    supervisor.clone(),
-                    engine_ctx.clone(),
-                ));
-            let wf_service = Arc::new(crate::workflow::scheduler::WorkflowService::new(
-                db_for_wf,
-                wf_driver,
-                engine_ctx.clone(),
+            // Dictation's auto-stop opt-out, mirrored in-process for the
+            // capture threads that have no DB handle. Desktop-side: it belongs
+            // to a capture session, not to the engine.
+            dictation::set_auto_stop(dictation::parse_auto_stop(
+                database::get_setting(&db.lock(), dictation::AUTO_STOP_SETTING).as_deref(),
             ));
-            app.manage(wf_service.clone());
-            engine_ctx.set_workflows(wf_service.clone());
-            wf_service.resume_active_runs();
-            // The roadmap queue drainer: turns `queued` roadmap items into runs
-            // through the service above, and settles finished runs back onto
-            // the board. Started after `resume_active_runs` so a run this
-            // process is already re-driving is counted against the per-project
-            // concurrency cap before the first tick can dispatch anything.
-            crate::roadmap::drainer::spawn(engine_ctx.clone(), db_for_roadmap, wf_service.clone());
-            // The other end of the same loop: watch the PRs of items already
-            // `in_review` and ship them when they merge. Host-side on purpose —
-            // the webview's PR polling stops with the window, and a queue whose
-            // dependants unblock only while you are looking at the board is not
-            // an autonomous queue. Sweeps once now (a PR may well have merged
-            // while the app was closed), then sleeps until there is something
-            // to watch.
-            crate::roadmap::merge_sweep::spawn(engine_ctx.clone(), db_for_merge_sweep);
-            // Reload follow-ups that were queued behind an in-flight turn when a
-            // prior run exited, so a mid-turn message survives a restart. They
-            // rest in the queue and flush on the user's next send (no auto-spawn).
-            supervisor.rehydrate_pending_messages();
+
+            // Everything the 212 commands read back out of managed state. The
+            // engine reaches these through its `EngineCtx` instead; `manage` is
+            // the desktop's own lookup table.
+            app.manage(db);
+            app.manage(engine_ctx);
+            app.manage(supervisor);
+            app.manage(wf_service);
             // At most one `claude setup-token` capture runs at a time; the
             // code-submit / cancel commands reach it through this slot.
             app.manage(ClaudeSetupState::default());
             // Live provider sign-in PTYs (Settings → Providers), one per
             // provider. Empty until the user starts one.
             app.manage(provider_login::ProviderLoginSessions::default());
-
-            // Paired-device remote access. The event taps go in unconditionally
-            // (with nothing connected, forwarding short-circuits before it
-            // touches a payload); the listener itself only starts when the user
-            // has turned it on. A failure here is never fatal — the app is a
-            // desktop app first.
+            // Paired-device remote access, as `boot` left it: the taps are in
+            // and the listener is running if the user had it on.
             #[cfg(desktop)]
-            {
-                let dispatch = Arc::new(remote::SupervisorDispatch::new(
-                    app.handle().clone(),
-                    engine_ctx.clone(),
-                    supervisor.clone(),
-                ));
-                // `RemoteState::new` cannot fail: the state has to be managed
-                // even when the device store or the host key is unusable, or
-                // `remote_status` panics the moment Settings opens. Such a
-                // failure travels as `RemoteStatus::error` instead.
-                let state = remote::RemoteState::new(&data_dir.join("remote"), dispatch);
-                // Forwarding rides the broadcast; the push-alert tap has to run
-                // inside each emit, so it comes back as a sink and joins the
-                // fanout here (see `remote::push`).
-                sink.add(remote::install_taps(
-                    &engine_ctx,
-                    state.clone(),
-                    events.subscribe(),
-                ));
-                let (enabled, port, relay_url) = {
-                    let conn = db_for_remote.lock();
-                    (
-                        remote::parse_enabled(
-                            database::get_setting(&conn, remote::ENABLED_SETTING).as_deref(),
-                        ),
-                        remote::parse_port(
-                            database::get_setting(&conn, remote::PORT_SETTING).as_deref(),
-                        ),
-                        database::get_setting(&conn, remote::RELAY_URL_SETTING),
-                    )
-                };
-                // The URL is stored before the autostart, so `start` brings the
-                // host link up with the listener. Safe outside the async
-                // runtime: nothing is enabled yet, so this cannot spawn the
-                // link task here.
-                if let Err(e) = state.set_relay(relay_url) {
-                    tracing::warn!(error = %e, "remote: stored relay url rejected");
-                }
-                if enabled {
-                    // `start` binds synchronously but spawns onto the async
-                    // runtime, so it has to run inside it.
-                    let state = state.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(e) = state.start(port) {
-                            tracing::error!(error = %e, "remote: autostart failed");
-                        }
-                    });
-                }
+            if let Some(state) = remote_state {
                 app.manage(state);
             }
 
@@ -1874,53 +1575,6 @@ pub fn run() {
                 tracing::error!(error = %e, "menu-bar tray setup failed; continuing without it");
             }
 
-            // Reclaim nested-Fletch RPC mailbox and checkout roots left in the
-            // temp dir by dead instances (dogfooding runs). Live instances'
-            // roots are pid-keyed and skipped, so a side-by-side Fletch is left
-            // untouched.
-            crate::sandbox::cleanup_nested_rpc_roots();
-            crate::sandbox::cleanup_nested_checkouts_roots();
-            // Same reclamation for containers left by dead instances, one sweep
-            // per container runtime — each probe-gated and on its own thread, so
-            // startup never waits on either.
-            crate::sandbox::docker::sweep_orphans_at_startup();
-            crate::sandbox::podman::sweep_orphans_at_startup();
-
-            // Quitting normally goes through `RunEvent::ExitRequested` (below),
-            // but a SIGINT (Ctrl-C under `tauri dev`) or SIGTERM (sent by the
-            // OS on logout/restart/shutdown) bypasses it. Catch both via an
-            // async listener — safe to do real work here, unlike a raw signal
-            // handler — kill the children, then exit cleanly. SIGKILL/crash
-            // can't be caught; for those the kernel closes our PTY masters on
-            // death, which SIGHUPs each agent's process group as a backstop.
-            #[cfg(unix)]
-            {
-                let supervisor = supervisor.clone();
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    use tokio::signal::unix::{signal, SignalKind};
-                    let mut sigint =
-                        signal(SignalKind::interrupt()).expect("install SIGINT handler");
-                    let mut sigterm =
-                        signal(SignalKind::terminate()).expect("install SIGTERM handler");
-                    tokio::select! {
-                        _ = sigint.recv() => {}
-                        _ = sigterm.recv() => {}
-                    }
-                    tracing::info!("termination signal received; killing child processes");
-                    // A signal (logout/shutdown/Ctrl-C) is not a user choice we
-                    // can prompt on — flag the quit as confirmed so the
-                    // `ExitRequested` handler skips the active-work dialog and
-                    // goes straight through the shutdown path.
-                    QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
-                    supervisor.shutdown();
-                    handle.exit(0);
-                });
-            }
-
-            // Agents rest at Idle on boot — no process is spawned. The
-            // supervisor brings one up lazily on the user's next interaction
-            // (the frontend resumes on send), so nothing auto-spawns here.
             Ok(())
         })
         // Close ≠ quit: closing the main window hides it and the app keeps

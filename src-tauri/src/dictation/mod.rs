@@ -271,10 +271,8 @@ fn model_status(
 
 /// The opt-in and the chosen model, read under one lock — the two settings
 /// always travel together, and the connection isn't reentrant.
-fn engine_settings(
-    state: &tauri::State<'_, DbState>,
-) -> (bool, &'static whisper::models::WhisperModel) {
-    let conn = state.lock();
+fn engine_settings(db: &DbState) -> (bool, &'static whisper::models::WhisperModel) {
+    let conn = db.lock();
     let enabled =
         whisper::parse_enabled(database::get_setting(&conn, whisper::ENGINE_SETTING).as_deref());
     (enabled, whisper::selected(&conn))
