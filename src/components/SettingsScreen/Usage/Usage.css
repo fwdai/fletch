@@ -173,16 +173,19 @@
   margin-top: 4px;
 }
 
-/* ── breakdown table ── */
-.usg-breakdown-h {
+/* ── section heading with a nested switch ──
+   "Overview" carries Cost | Tokens, "Breakdown" carries Model | Day. */
+.usg-group-h {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 10px;
 }
 /* The group heading's own bottom margin is carried by the row above. */
-.usg-breakdown-h .set-group-h {
+.usg-group-h .set-group-h {
   margin-bottom: 0;
 }
+
+/* ── breakdown table ── */
 
 .usg-table {
   display: flex;

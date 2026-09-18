@@ -1,7 +1,7 @@
 import { Icon } from "@/components/Icon";
 import { formatDayTick } from "@/components/Stats";
 import { IconButton } from "@/components/ui";
-import type { UsageMetric, UsageRange, UsageRangeBounds } from "@/data/usage";
+import type { UsageRange, UsageRangeBounds } from "@/data/usage";
 import { formatAge, formatClockTime, localDay } from "@/util/format";
 import { SetHead, SetSeg } from "../primitives";
 
@@ -19,16 +19,9 @@ const RANGES: { value: UsageRange; label: string; tip?: string }[] = [
   { value: "90d", label: "90 days" },
 ];
 
-const METRICS: { value: UsageMetric; label: string }[] = [
-  { value: "cost", label: "Cost" },
-  { value: "tokens", label: "Tokens" },
-];
-
 interface Props {
   range: UsageRange;
   onRange: (r: UsageRange) => void;
-  metric: UsageMetric;
-  onMetric: (m: UsageMetric) => void;
   bounds: UsageRangeBounds;
   /** A scan is running — first load or re-scan. Spins the refresh button. */
   busy: boolean;
@@ -53,16 +46,11 @@ function rangeText(range: UsageRange, { sinceMs, untilMs }: UsageRangeBounds): s
   return `${from} to ${formatDayTick(localDay(untilMs))}`;
 }
 
-export function UsageHeader({
-  range,
-  onRange,
-  metric,
-  onMetric,
-  bounds,
-  busy,
-  scannedAt,
-  onRefresh,
-}: Props) {
+/** The pane header. The period picker and the re-scan button sit on the eyebrow
+ *  row, where the Customize panes keep their section switch: both act on the
+ *  whole page, unlike the Cost / Tokens switch, which only re-reads the top
+ *  section and so lives on that section's own header. */
+export function UsageHeader({ range, onRange, bounds, busy, scannedAt, onRefresh }: Props) {
   // Every range is sliced out of one cached scan, so how old that scan is
   // matters more than which window is selected — say so, quietly.
   const scanned = busy ? "scanning…" : scannedAt === null ? null : scanAge(scannedAt);
@@ -70,18 +58,9 @@ export function UsageHeader({
   return (
     <SetHead
       eyebrow="Settings · Usage"
-      title="Usage"
-      desc={
-        <>
-          <span className="usg-range mono">{rangeText(range, bounds)}</span> · every Claude Code and
-          Codex session on this machine, read straight from their transcripts.
-          {scanned && <span className="usg-scanned mono">{scanned}</span>}
-        </>
-      }
-      actions={
+      eyebrowAside={
         <div className="usg-actions">
           <SetSeg<UsageRange> value={range} options={RANGES} onChange={onRange} />
-          <SetSeg<UsageMetric> value={metric} options={METRICS} onChange={onMetric} />
           <IconButton
             size="sm"
             variant="outline"
@@ -94,6 +73,14 @@ export function UsageHeader({
             <Icon name="refresh" size={13} />
           </IconButton>
         </div>
+      }
+      title="Usage"
+      desc={
+        <>
+          <span className="usg-range mono">{rangeText(range, bounds)}</span> · every Claude Code and
+          Codex session on this machine, read straight from their transcripts.
+          {scanned && <span className="usg-scanned mono">{scanned}</span>}
+        </>
       }
     />
   );

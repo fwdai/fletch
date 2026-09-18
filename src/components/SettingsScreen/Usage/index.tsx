@@ -1,10 +1,17 @@
 import { useMemo, useState } from "react";
 import { rangeBounds, type UsageMetric, type UsageRange, useUsageStats } from "@/data/usage";
+import { SetSeg } from "../primitives";
 import { UsageBreakdown } from "./UsageBreakdown";
 import { UsageChart } from "./UsageChart";
+import { UsageGroupHead } from "./UsageGroupHead";
 import { UsageHeader } from "./UsageHeader";
 import { UsageSummary } from "./UsageSummary";
 import { UsageTotals } from "./UsageTotals";
+
+const METRICS: { value: UsageMetric; label: string }[] = [
+  { value: "cost", label: "Cost" },
+  { value: "tokens", label: "Tokens" },
+];
 
 /** What every Claude Code and Codex session on this machine has burned, read
  *  from the transcripts on disk rather than from anything Fletch itself ran —
@@ -28,8 +35,6 @@ export function UsagePane() {
       <UsageHeader
         range={range}
         onRange={setRange}
-        metric={metric}
-        onMetric={setMetric}
         bounds={bounds}
         busy={loading || refreshing}
         scannedAt={scannedAt}
@@ -65,9 +70,17 @@ export function UsagePane() {
 
         {showContent && !empty && (
           <>
-            <section className="set-group usg-top">
-              <UsageSummary stats={stats} metric={metric} loading={loading} />
-              <UsageChart stats={stats} metric={metric} loading={loading} />
+            {/* Cost / Tokens only re-reads this section — the totals and the
+                breakdown always show both — so the switch sits on its heading,
+                nested under the page-wide period picker in the header. */}
+            <section className="set-group">
+              <UsageGroupHead label="Overview">
+                <SetSeg<UsageMetric> value={metric} options={METRICS} onChange={setMetric} />
+              </UsageGroupHead>
+              <div className="usg-top">
+                <UsageSummary stats={stats} metric={metric} loading={loading} />
+                <UsageChart stats={stats} metric={metric} loading={loading} />
+              </div>
             </section>
 
             <UsageTotals stats={stats} loading={loading} />
