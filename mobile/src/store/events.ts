@@ -15,6 +15,7 @@ import type {
   Workspace,
 } from "@desktop/api/types/agent";
 import type { PrStateChangedEvent } from "@desktop/api/types/pr";
+import type { RoadmapItem } from "@desktop/api/types/roadmap";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
 import type {
   SessionRecordsAppendedEvent,
@@ -181,6 +182,19 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // cover — reload the snapshot.
   on<null>("workspace:changed", () => {
     void get().refreshWorkspace();
+  });
+
+  // A roadmap row that was written, wherever it was written from. The phone
+  // only draws one kind — the PM's `proposed` ghosts, as decision cards in the
+  // planning chat that raised them — and which rows those are is the slice's
+  // call, so the whole row goes to it and a ruled-on one drops out there.
+  on<RoadmapItem>("roadmap:item", (item) => {
+    get().applyRoadmapItem(item);
+  });
+
+  // The payload is the bare item id: a ghost discarded here or on the Mac.
+  on<string>("roadmap:item-deleted", (id) => {
+    get().removeRoadmapItem(id);
   });
 
   // A gated publish the host is blocked on. Control plane, not transcript: it

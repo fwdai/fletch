@@ -397,6 +397,59 @@
   padding-top: 2px;
 }
 
+/* A proposed ticket. It borrows the approval card whole (`.appr.q` is its
+   informational, not alarming, variant) and adds only what a ticket has that a
+   tool prompt doesn't: a title, its acceptance criteria, and a third ruling
+   quiet enough not to compete with the two accepts. */
+.appr.prop .title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg-0);
+  line-height: 1.35;
+  margin-top: -4px;
+}
+.appr.prop .crit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--fg-1);
+  line-height: 1.4;
+}
+.appr.prop .crit li {
+  display: flex;
+  gap: 8px;
+}
+.appr.prop .crit li::before {
+  content: "";
+  flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--bd-strong);
+}
+.appr.prop .crit-more {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  margin-top: -4px;
+}
+.appr.prop .btn.discard {
+  height: 34px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-2);
+  border-radius: 10px;
+  margin-top: -4px;
+}
+
 /* The box sits as far from the bottom as from the sides. The home indicator
    overlays the bottom ~14px of the inset, so on a phone the gap is the inset
    minus that; anywhere without an inset it's just the side margin. */

@@ -13,6 +13,12 @@ import type {
 import type { GitState, ShortStats } from "@desktop/api/types/git";
 import type { PrChecks, PrLive, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
+import type {
+  ItemStatus,
+  RoadmapItem,
+  RoadmapItemPatch,
+  RoadmapItemUpdate,
+} from "@desktop/api/types/roadmap";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import type { CustomAgent } from "@desktop/storage/customAgents";
@@ -145,6 +151,37 @@ export function createApi(client: RemoteClient) {
       call<Workspace>("clone_repo", { spec, destParent }),
     ghStatus: () => call<GhStatus>("gh_status"),
     ghRepoList: () => call<GhRepoSummary[]>("gh_repo_list"),
+
+    /** A project's whole roadmap. The phone reads it for one thing — the PM's
+     *  `proposed` ghosts, which a planning chat draws as decision cards — so the
+     *  filtering is the caller's, not a second op. */
+    roadmapListItems: (projectId: string) =>
+      call<RoadmapItem[]>("roadmap_list_items", { projectId }),
+    /** Patch an item and get the stored row back. `expectStatus` makes it a
+     *  *conditional* transition: the patch lands only while the row still says
+     *  that status, and a miss comes back as `applied: false` with the row as it
+     *  really is. `queue` is the accept-and-dispatch gesture — where the item
+     *  actually lands is the host's call (the project's autoqueue dial, a hold),
+     *  which is why the answer carries the row rather than an assumed status.
+     *
+     *  Both are always sent, present-and-null rather than absent, exactly as the
+     *  desktop's `roadmapUpdateItem` sends them. */
+    roadmapUpdateItem: (
+      id: string,
+      patch: RoadmapItemPatch,
+      expectStatus?: ItemStatus,
+      queue?: boolean,
+    ) =>
+      call<RoadmapItemUpdate>("roadmap_update_item", {
+        id,
+        patch,
+        expectStatus: expectStatus ?? null,
+        queue: queue ?? null,
+      }),
+    /** Drop an item outright — the other half of ruling on a ghost. A row nobody
+     *  accepted was never a roadmap item, so discarding it deletes rather than
+     *  rejects (a rejection is for a row that made the board). */
+    roadmapDeleteItem: (id: string) => call<null>("roadmap_delete_item", { id }),
 
     /** Remote-only (docs/remote-protocol.md, "Push notifications"): where the
      *  host should have the relay send this phone's alerts. A token needs its

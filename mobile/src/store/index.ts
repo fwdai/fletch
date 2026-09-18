@@ -26,6 +26,7 @@ import type { PushFletch } from "../remote/push";
 import { type ChatsSlice, createChatsSlice } from "./chats";
 import { registerRemoteEvents } from "./events";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
+import { createProposalsSlice, type ProposalsSlice } from "./proposals";
 import { forgetPush, startPush, syncPush } from "./push";
 import { applyUserTurns, reduceRecords } from "./transcript";
 
@@ -56,7 +57,7 @@ export interface SheetState {
   open: boolean;
 }
 
-export interface MobileState extends ChatsSlice {
+export interface MobileState extends ChatsSlice, ProposalsSlice {
   ready: boolean;
   connection: ConnectionState;
   connectionError: string | null;
@@ -624,8 +625,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       // on this device for an answer.
       pendingPublishApprovals: [],
       logs: {},
-      // The chats belong to the host that holds their checkouts.
+      // The chats belong to the host that holds their checkouts, and the ghosts
+      // to the boards those chats propose onto.
       chats: {},
+      proposals: {},
       sheet: null,
       nav: [homeItem()],
       // The link that paired this host carried a code that is long spent;
@@ -984,6 +987,8 @@ export const useStore = create<MobileState>()((set, get) => ({
     guard: (fn) => guard(set, fn),
     firstTurn: (input) => firstTurn(set, get, input),
   }),
+
+  ...createProposalsSlice(set, get, { api, guard: (fn) => guard(set, fn) }),
 }));
 
 export type { RawEvent };

@@ -1,6 +1,6 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
-import { type MutableRefObject, useMemo } from "react";
+import { type MutableRefObject, useEffect, useMemo } from "react";
 import { applyPolicy, type ChatItem, getAdapter } from "../../adapters";
 import { SentChips } from "../../attachments";
 import { Md } from "../../components/Md";
@@ -9,6 +9,7 @@ import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { useStickyScroll } from "../../lib/useStickyScroll";
 import { useStore } from "../../store";
 import { ApprovalCard, ErrorCard, PublishApprovalCard } from "./ApprovalCard";
+import { ProposalCard } from "./ProposalCard";
 import { ToolRow } from "./ToolRow";
 
 type Block =
@@ -98,8 +99,22 @@ export function ChatTab({
   // Selected whole and filtered below: a selector that filters returns a fresh
   // array every call, which re-renders forever under zustand v5.
   const publishApprovals = useStore((s) => s.pendingPublishApprovals);
+  // Indexed straight out of the store, like `log` above. Only a planning chat
+  // has any — an agent's project may well have ghosts on its board, but they are
+  // not a decision *this* conversation raised.
+  const proposals = useStore((s) => s.proposals[agent.project_id]);
+  const loadProposals = useStore((s) => s.loadProposals);
+  const connected = useStore((s) => s.connection === "connected");
+  const planning = !!agent.purpose;
   const busy = isBusy(agent);
   const elapsed = useElapsed(startedAt, busy);
+
+  // The ghosts can predate this session — a chat resumed tomorrow has to show
+  // what the PM proposed today — and nothing replays the events that created
+  // them, so the board is read on arrival and again on every reconnect.
+  useEffect(() => {
+    if (planning && connected) void loadProposals(agent.project_id);
+  }, [planning, connected, agent.project_id, loadProposals]);
 
   const visible = useMemo(
     () => applyPolicy(log ?? [], getAdapter(agent.provider).policy),
@@ -122,7 +137,7 @@ export function ChatTab({
   // rest are the cards this pane draws as siblings of the log — the approval
   // prompt, the error card, the working indicator.
   const { ref: scroller, onScroll } = useStickyScroll<HTMLDivElement>(
-    [log, pending, publishForAgent, agent.status, busy],
+    [log, pending, publishForAgent, proposals, agent.status, busy],
     pinRef,
   );
 
@@ -151,6 +166,7 @@ export function ChatTab({
       {publishForAgent.map((request) => (
         <PublishApprovalCard key={request.id} request={request} />
       ))}
+      {planning && proposals?.map((item) => <ProposalCard key={item.id} item={item} />)}
       {agent.status === "error" && (
         <ErrorCard agentId={agent.id} message={agent.last_error ?? null} />
       )}

@@ -5,6 +5,7 @@
 
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
+import type { RoadmapItem, RoadmapItemPatch } from "@desktop/api/types/roadmap";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { Socket, SocketFactory } from "@desktop/remote/socket";
 import {
@@ -38,6 +39,8 @@ interface MockState {
    *  gets its attachments and typed text back from. */
   turns: Record<string, UserTurn[]>;
   pendingToolUse: Record<string, string>;
+  /** The roadmap boards, flat across projects as the host's table is. */
+  roadmapItems: RoadmapItem[];
   nextPrNumber: number;
   /** Mutable, because cloning creates a directory the next clone must trip
    *  over ("a folder already exists at …"). */
@@ -77,6 +80,7 @@ export class MockHost {
       records: structuredClone(fx.records),
       turns: structuredClone(fx.userTurns),
       pendingToolUse: { pamukkale: fx.PENDING_REQUEST_ID },
+      roadmapItems: structuredClone(fx.roadmapItems),
       nextPrNumber: 649,
       filesystem: structuredClone(fx.filesystem),
     };
@@ -270,6 +274,33 @@ export class MockHost {
           .sort((a, b) => b.created_at.localeCompare(a.created_at));
       case "list_custom_agents":
         return fx.customAgents;
+      case "roadmap_list_items":
+        return this.state.roadmapItems.filter((i) => i.project_id === args.projectId);
+      case "roadmap_update_item": {
+        const itemId = String(args.id ?? "");
+        const item = this.state.roadmapItems.find((i) => i.id === itemId);
+        if (!item) throw new Error("item not found");
+        // The host's conditional transition: an expectation that misses changes
+        // nothing and reports the row as it really is.
+        const expect = args.expectStatus ?? null;
+        if (expect && item.status !== expect) return { applied: false, item };
+        const patch = (args.patch as RoadmapItemPatch) ?? {};
+        // Where an accept lands is the host's call — the project's autoqueue
+        // dial, a board hold. The mock's call is the simple one: `queue` sends
+        // an admitted row straight on to the drainer.
+        const status = args.queue === true && patch.status === "open" ? "queued" : patch.status;
+        const next = { ...item, ...patch, status: status ?? item.status, updated_at: Date.now() };
+        this.state.roadmapItems = this.state.roadmapItems.map((i) => (i.id === itemId ? next : i));
+        this.event("roadmap:item", next);
+        return { applied: true, item: next };
+      }
+      case "roadmap_delete_item": {
+        const itemId = String(args.id ?? "");
+        this.state.roadmapItems = this.state.roadmapItems.filter((i) => i.id !== itemId);
+        // The payload is the bare id, as the host forwards it.
+        this.event("roadmap:item-deleted", itemId);
+        return null;
+      }
       case "allocate_draft_name": {
         const used = new Set([
           ...this.state.workspace.agents.map((a) => a.name),

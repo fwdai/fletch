@@ -518,6 +518,76 @@ describe("planning chats", () => {
   });
 });
 
+/** A ticket the PM proposed is a real board row parked at `proposed` — a ghost
+ *  nobody has ruled on. The phone holds those per project and draws them in the
+ *  planning chat that raised them, so the whole surface is: read the board and
+ *  keep the ghosts, fold the live rows, and rule. */
+describe("PM proposals", () => {
+  const projectId = "prj-fletch";
+  const ghosts = () => state().proposals[projectId] ?? [];
+  const ghost = (code: string) => ghosts().find((i) => i.code === code);
+
+  it("keeps only the ghosts off the board, newest first", async () => {
+    await state().loadProposals(projectId);
+    // FLT-198 is already open — an item, not a question.
+    expect(ghosts().map((i) => i.code)).toEqual(["FLT-207", "FLT-209"]);
+  });
+
+  it("accepts as a conditional transition, and the card goes with the ruling", async () => {
+    await state().loadProposals(projectId);
+    const item = ghost("FLT-207");
+    if (!item) throw new Error("no ghost to rule on");
+    const update = vi
+      .spyOn(api, "roadmapUpdateItem")
+      .mockResolvedValue({ applied: true, item: { ...item, status: "queued" } });
+    try {
+      await state().acceptProposal(item, true);
+      // Exactly the desktop board's accept: `proposed → open`, conditional on
+      // the row still being a proposal, with `queue` handing it straight on.
+      expect(update).toHaveBeenCalledWith(item.id, { status: "open" }, "proposed", true);
+    } finally {
+      update.mockRestore();
+    }
+    expect(ghost("FLT-207")).toBeUndefined();
+  });
+
+  it("discards by deleting the row — it never made the board", async () => {
+    await state().loadProposals(projectId);
+    const item = ghost("FLT-209");
+    if (!item) throw new Error("no ghost to rule on");
+    const del = vi.spyOn(api, "roadmapDeleteItem").mockResolvedValue(null);
+    try {
+      await state().discardProposal(item);
+      expect(del).toHaveBeenCalledWith(item.id);
+    } finally {
+      del.mockRestore();
+    }
+    expect(ghost("FLT-209")).toBeUndefined();
+  });
+
+  it("replaces the card when a `roadmap:item` says the row is still proposed", async () => {
+    await state().loadProposals(projectId);
+    // Written on the host, so only the event can carry it here — a PM revising
+    // its own suggestion must replace the card rather than stack a second one.
+    await api.roadmapUpdateItem("itm-offline-queue", { title: "Queue sends made underground" });
+    await vi.waitFor(() => expect(ghost("FLT-207")?.title).toBe("Queue sends made underground"));
+    expect(ghosts()).toHaveLength(2);
+  });
+
+  it("takes the card down when a `roadmap:item` says the row was ruled on", async () => {
+    await state().loadProposals(projectId);
+    await api.roadmapUpdateItem("itm-offline-queue", { status: "open" });
+    await vi.waitFor(() => expect(ghost("FLT-207")).toBeUndefined());
+    expect(ghosts().map((i) => i.code)).toEqual(["FLT-209"]);
+  });
+
+  it("takes the card down on `roadmap:item-deleted`, which carries the bare id", async () => {
+    await state().loadProposals(projectId);
+    await api.roadmapDeleteItem("itm-tunnel-banner");
+    await vi.waitFor(() => expect(ghosts()).toHaveLength(0));
+  });
+});
+
 /** A pairing code is single use and lasts five minutes, so a second delivery
  *  of the same link — the launch URL read from the plugin, and the event it
  *  also emits — must not tear down the attempt already spending it. */
