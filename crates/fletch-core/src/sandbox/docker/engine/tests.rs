@@ -1341,6 +1341,84 @@ fn docker_run_echo_round_trip() {
     );
 }
 
+/// Integration, and the acceptance test for the uid mapping: with
+/// `--user <uid>:<gid>` the container must still *start* — the mapped uid is in
+/// no passwd file and `$HOME` is only writable because of the tmpfs the argv
+/// adds — and a file it writes into the workspace bind must come back owned by
+/// this user. On a rootful Linux daemon that ownership is the whole point; on
+/// macOS the daemon maps it anyway, so what this proves there is that the argv
+/// the Linux path builds is one Docker accepts and runs.
+/// `FLETCH_DOCKER_TESTS=1 cargo test -- --ignored`
+#[test]
+#[ignore = "requires Docker; opt in via FLETCH_DOCKER_TESTS=1"]
+fn docker_run_as_host_user_writes_user_owned_files() {
+    use std::os::unix::fs::MetadataExt;
+
+    if !crate::sandbox::docker::docker_tests_enabled() {
+        return;
+    }
+    let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
+    let user = format!("{}:{}", uid.as_raw(), gid.as_raw());
+
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path().join("root");
+    let rpc = td.path().join("rpc");
+    let home = td.path().join("home");
+    for d in [&root, &rpc] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    prepare_config_mount_dir(&home.join(".claude")).unwrap();
+    let projects_src = root.join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME);
+    std::fs::create_dir_all(&projects_src).unwrap();
+    let name = container_name("uid-map-test");
+    let mut spec = test_spec(false);
+    spec.name = &name;
+    spec.agent_id = "uid-map-test";
+    spec.writable_root = &root;
+    spec.rpc_dir = &rpc;
+    spec.home = &home;
+    spec.cwd = &root;
+    spec.mounts = ProviderMounts::Claude {
+        config_dir: None,
+        credentials_rw: false,
+        config_dir_credentials_rw: false,
+        projects_src: &projects_src,
+    };
+    spec.memory = "256m";
+    spec.cpus = "1";
+    spec.run_as_user = Some(&user);
+    spec.image = "busybox";
+    spec.agent_bin = "sh";
+    spec.auth_vars = &[];
+
+    let docker = cli::docker_bin().expect("docker installed");
+    let out = std::process::Command::new(docker)
+        .args(run_args(&spec))
+        .arg("-c")
+        // The three things a mapped launch has to get right: a writable home,
+        // a writable workspace bind, and the claude overlay claude `mkdir`s
+        // into every session.
+        .arg("touch \"$HOME/.probe\" && touch ./from-container && mkdir -p \"$HOME/.claude/session-env/s\"")
+        .env("HOME", &home)
+        .env("FLETCH_RPC_DIR", &rpc)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "docker run --user failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let written = std::fs::metadata(root.join("from-container")).expect("the bind-mounted write");
+    assert_eq!(
+        (written.uid(), written.gid()),
+        (uid.as_raw(), gid.as_raw()),
+        "a mapped container's writes must belong to the service user",
+    );
+    // The synthetic home is a tmpfs: nothing an agent puts there reaches the
+    // host, exactly as when the container runs as root.
+    assert!(!home.join(".probe").exists());
+}
+
 /// Integration: kill and liveness against a live container.
 /// `FLETCH_DOCKER_TESTS=1 cargo test -- --ignored`
 #[test]

@@ -17,7 +17,8 @@ Each release publishes `fletch-host-<version>-<target>.tar.gz` and a matching
 `.sha256`:
 
 ```sh
-V=0.7.31; T=x86_64-unknown-linux-gnu          # or aarch64-unknown-linux-gnu, aarch64-apple-darwin
+V=<the release version>                       # e.g. 0.7.32, without the leading v
+T=x86_64-unknown-linux-gnu                    # or aarch64-unknown-linux-gnu, aarch64-apple-darwin
 curl -fsSLO https://github.com/fwdai/fletch/releases/download/v$V/fletch-host-$V-$T.tar.gz
 curl -fsSLO https://github.com/fwdai/fletch/releases/download/v$V/fletch-host-$V-$T.tar.gz.sha256
 sha256sum -c fletch-host-$V-$T.tar.gz.sha256   # shasum -a 256 -c on macOS
