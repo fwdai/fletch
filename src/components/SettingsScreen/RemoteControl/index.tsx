@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/Button";
 import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
 import { DeviceRow } from "./DeviceRow";
+import { PairedHosts } from "./PairedHosts";
 import { PairingCard } from "./PairingCard";
 import { PortRow } from "./PortRow";
 import { RelayRow } from "./RelayRow";
@@ -45,7 +46,7 @@ export function RemoteControlPane() {
       <SetHead
         eyebrow="Settings · Remote control"
         title="Remote control"
-        desc="Watch and steer your agents from Fletch on your phone. Turn on the connection, pair a device with a one-time code, and manage the devices that can reach this Mac."
+        desc="Watch and steer your agents from Fletch on your phone. Turn on the connection, pair a device with a one-time code, and manage the devices that can reach this Mac. This Mac can also be paired with another machine running Fletch, so its agents are reachable from here."
       />
 
       <SetGroup label="Connection">
@@ -81,7 +82,7 @@ export function RemoteControlPane() {
         {error && <div className="set-inline-warn">{error}</div>}
       </SetGroup>
 
-      <SetGroup label="Devices" last>
+      <SetGroup label="Devices">
         {listening && !invite && (
           <SetRow
             title="Pair a device"
@@ -123,6 +124,8 @@ export function RemoteControlPane() {
           ))
         )}
       </SetGroup>
+
+      <PairedHosts />
     </div>
   );
 }

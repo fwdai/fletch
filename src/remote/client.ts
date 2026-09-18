@@ -387,7 +387,13 @@ export class ProtocolClient implements RemoteClient {
       // answers, and over a relay it is not instant.
       this.step("workspace");
       const workspace = await this.call<HelloResult["workspace"]>("get_workspace");
-      return this.publishSnapshot({ host: paired.host, workspace });
+      return this.publishSnapshot({
+        host: paired.host,
+        workspace,
+        // `pair` carries the descriptor too, so a first pairing gates its UI
+        // from the same frame a reconnect's `hello` would.
+        protocol: paired.protocol,
+      });
     }
     this.step("greeting");
     const result = await this.hello(this.opts.device);

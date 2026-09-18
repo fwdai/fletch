@@ -40,14 +40,30 @@ export interface HostInfo {
   os: string;
 }
 
+/** What the host says it answers (docs/remote-protocol.md, "Compatibility").
+ *  The whole surface, not a delta: `ops` is every op name this host accepts,
+ *  `events` its forwarded-event whitelist, `features` named behaviours that are
+ *  neither. Gate on membership in these — never on `HostInfo.appVersion` or on
+ *  `version`. */
+export interface HostProtocol {
+  version: number;
+  ops: string[];
+  events: string[];
+  features: string[];
+}
+
 export interface PairResult {
   deviceId: string;
   host: HostInfo;
+  /** Absent from a host older than the field, which reads as the v2 default
+   *  set — the 41 dispatcher ops plus `register_push`. */
+  protocol?: HostProtocol;
 }
 
 export interface HelloResult {
   host: HostInfo;
   workspace: Workspace | null;
+  protocol?: HostProtocol;
 }
 
 /** Where and how to reach a host. `pairingToken` present = `pair`, otherwise
