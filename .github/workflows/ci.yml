@@ -84,6 +84,7 @@ jobs:
             src-tauri
             crates/fletch-core
             crates/fletch-proto
+            crates/fletch-host
 
       - name: Rustfmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
@@ -131,3 +132,19 @@ jobs:
 
       - name: Test (fletch-proto)
         run: cargo test --manifest-path crates/fletch-proto/Cargo.toml
+
+      # `fletch-host` is the headless host binary. It runs on this job's
+      # ubuntu-latest for the same reason the engine does: the Linux host is
+      # what it is for, and its end-to-end test boots an engine, pairs a client
+      # over the real Noise transport and revokes it — none of which may need a
+      # webview, a window or a display.
+      - name: Rustfmt (fletch-host)
+        run: cargo fmt --manifest-path crates/fletch-host/Cargo.toml --check
+
+      - name: Clippy (fletch-host)
+        run: >
+          cargo clippy --manifest-path crates/fletch-host/Cargo.toml --all-targets --
+          -D warnings -A clippy::significant_drop_tightening
+
+      - name: Test (fletch-host)
+        run: cargo test --manifest-path crates/fletch-host/Cargo.toml

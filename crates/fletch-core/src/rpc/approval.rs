@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use serde::Serialize;
 use serde_json::json;
 use tokio::sync::oneshot;
 
@@ -32,7 +33,33 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 
 static WAIT_SECS: AtomicU64 = AtomicU64::new(DEFAULT_WAIT_SECS);
 
-static PENDING: Mutex<Option<HashMap<String, oneshot::Sender<bool>>>> = Mutex::new(None);
+/// A question waiting for an answer: the channel [`answer`] resolves, plus what
+/// was asked. The description travels with the sender rather than in a second
+/// registry so a request cannot be listed after it has been answered — the two
+/// are added and removed together.
+struct Request {
+    answer: oneshot::Sender<bool>,
+    info: PendingApproval,
+}
+
+/// One unanswered publish approval, as a client that was not connected when the
+/// event fired sees it.
+///
+/// The field names mirror the [`EVENT_REQUESTED`] payload (hence `agent_id`, not
+/// `agentId`), so anything that already renders the event's card renders these
+/// with the same code. `requested_at` is the only addition: a list has no
+/// arrival order without it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingApproval {
+    pub id: String,
+    pub agent_id: String,
+    pub op: String,
+    pub repo: Option<String>,
+    pub detail: String,
+    pub requested_at: String,
+}
+
+static PENDING: Mutex<Option<HashMap<String, Request>>> = Mutex::new(None);
 
 pub fn parse_enabled(raw: Option<&str>) -> bool {
     raw == Some("true")
@@ -70,7 +97,7 @@ pub async fn refuse_unless_approved(
     if !enabled() {
         return None;
     }
-    let (id, answer) = register();
+    let (id, answer) = register(agent_id, op, repo, detail);
     // The one emit in the engine whose failure matters: an unasked question is
     // a denial, so this goes through the sink directly rather than through the
     // logging `host::emit`.
@@ -113,26 +140,56 @@ pub async fn refuse_unless_approved(
 
 /// Unknown ids are ignored: a late answer must not publish anything.
 pub fn answer(id: &str, approved: bool) {
-    if let Some(tx) = take(id) {
-        let _ = tx.send(approved);
+    if let Some(request) = take(id) {
+        let _ = request.answer.send(approved);
     }
+}
+
+/// Every question still waiting, oldest first.
+///
+/// The desktop never needs this — its window was listening when the event fired
+/// — but a host serves clients that connect *after* an agent asked, and
+/// `fletch-host approvals list` is how the answer gets in from a terminal. Same
+/// registry `answer` consumes, so a request that resolves while this is being
+/// rendered simply stops being listed.
+pub fn pending() -> Vec<PendingApproval> {
+    let guard = PENDING.lock();
+    let Some(map) = guard.as_ref() else {
+        return Vec::new();
+    };
+    let mut out: Vec<PendingApproval> = map.values().map(|r| r.info.clone()).collect();
+    out.sort_by(|a, b| a.requested_at.cmp(&b.requested_at));
+    out
 }
 
 fn refusal(detail: &str, why: &str) -> String {
     format!("not publishing ({detail}): {why}")
 }
 
-fn register() -> (String, oneshot::Receiver<bool>) {
+fn register(
+    agent_id: &str,
+    op: &str,
+    repo: Option<&str>,
+    detail: &str,
+) -> (String, oneshot::Receiver<bool>) {
     let id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
+    let info = PendingApproval {
+        id: id.clone(),
+        agent_id: agent_id.to_string(),
+        op: op.to_string(),
+        repo: repo.map(str::to_string),
+        detail: detail.to_string(),
+        requested_at: chrono::Utc::now().to_rfc3339(),
+    };
     PENDING
         .lock()
         .get_or_insert_with(HashMap::new)
-        .insert(id.clone(), tx);
+        .insert(id.clone(), Request { answer: tx, info });
     (id, rx)
 }
 
-fn take(id: &str) -> Option<oneshot::Sender<bool>> {
+fn take(id: &str) -> Option<Request> {
     PENDING.lock().as_mut()?.remove(id)
 }
 
@@ -154,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_answer_resolves_its_request_once() {
-        let (id, rx) = register();
+        let (id, rx) = register("fuji", "push", Some("repo"), "push 1 commit");
         answer(&id, true);
         assert_eq!(rx.await, Ok(true));
         answer(&id, true);
@@ -163,8 +220,8 @@ mod tests {
 
     #[tokio::test]
     async fn answers_do_not_cross_requests() {
-        let (first, rx_first) = register();
-        let (second, rx_second) = register();
+        let (first, rx_first) = register("fuji", "push", None, "push 1 commit");
+        let (second, rx_second) = register("etna", "push", None, "push 2 commits");
         answer(&second, true);
         answer(&first, false);
         assert_eq!(rx_first.await, Ok(false));

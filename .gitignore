@@ -13,10 +13,13 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/WixTools/
 
-# Shared Rust libraries (crates/). There is no Cargo workspace: each *binary*
-# package (src-tauri/, mobile/src-tauri/) keeps its own committed lockfile and
-# depends on these by path, so a library's own lockfile is never the one that
-# builds anything — it is a local resolution artifact, like its target dir.
+# Rust packages under crates/. There is no Cargo workspace: the two app
+# packages (src-tauri/, mobile/src-tauri/) keep their own committed lockfiles
+# and depend on these by path, so a library's own lockfile is never the one
+# that builds an app — it is a local resolution artifact, like its target dir.
+# crates/fletch-host is a binary and is deliberately treated the same: it is
+# built from source by whoever runs a host, and pinning it here would mean a
+# second lockfile to keep in step with the desktop's for the shared engine.
 crates/*/target/
 crates/*/Cargo.lock
 

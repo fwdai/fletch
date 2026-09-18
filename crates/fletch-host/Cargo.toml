@@ -1,0 +1,53 @@
+[package]
+name = "fletch-host"
+version = "0.1.0"
+description = "The headless Fletch host: runs the engine with no window, controllable by a paired phone or desktop over LAN or relay"
+authors = ["Alex Chaplinsky", "fwdai.org"]
+license = "AGPL-3.0-only"
+edition = "2021"
+rust-version = "1.77"
+
+[[bin]]
+name = "fletch-host"
+path = "src/main.rs"
+
+[dependencies]
+# The engine. Everything this binary does beyond parsing arguments and serving
+# the admin socket happens in here, through the same `host::boot` the desktop
+# calls — no Tauri anywhere in the graph, which `cargo tree -i tauri` proves.
+fletch-core = { path = "../fletch-core" }
+# The wire protocol. Not used by the binary itself (the engine owns the
+# listener); the end-to-end test dials the host with it, as a client would.
+fletch-proto = { path = "../fletch-proto" }
+# Argument parsing. Pinned to the 4.4 series rather than `4`: this package has
+# no committed lockfile (see /.gitignore), so a narrow range is the only
+# reproducibility the binary's own dependency has, and nothing here needs a
+# later derive surface.
+clap = { version = "~4.4", features = ["derive"] }
+# The runtime the engine's background tasks belong to (`host::runtime`), plus
+# the admin socket and the signal wait. `full` for the same reason the engine
+# asks for it: the engine spawns blocking work, timers, processes and sockets
+# through this one runtime.
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+# One small mutex over the sign-in session (`login.rs`); the same lock the
+# engine uses everywhere.
+parking_lot = "0.12"
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The default data dir, resolved the same way the engine resolves the desktop's.
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"
+# The end-to-end test is a client: it dials the host's WebSocket, runs the
+# Noise handshake and speaks the protocol's JSON frames.
+# Same version and feature set the engine pins, so the test's client and the
+# host's listener share one copy of the transport.
+tokio-tungstenite = { version = "0.27", default-features = false, features = [
+  "handshake",
+  "connect",
+  "rustls-tls-webpki-roots",
+] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
