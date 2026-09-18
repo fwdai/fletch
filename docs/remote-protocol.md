@@ -1,9 +1,10 @@
 # Fletch remote protocol (mobile ↔ desktop)
 
 Status: v2 contract (v1 plus the secure channel). Both the desktop `remote`
-module (`src-tauri/src/remote/`) and the mobile client (`mobile/src/remote/`
-and `mobile/src-tauri/src/remote/`) implement exactly this document.
-Deviations are made here first, then in code.
+module (`src-tauri/src/remote/`) and the client — the shared TypeScript
+protocol client (`src/remote/`, used by the mobile app through `@desktop/*`)
+plus the mobile Rust transport (`mobile/src-tauri/src/remote/`) — implement
+exactly this document. Deviations are made here first, then in code.
 
 ## Concept
 
@@ -83,7 +84,8 @@ ciphertext.
   static key from message 3 and either registers it (`pair`) or requires it to
   be registered already (`hello`). Revoking a device deletes its key from the
   host; there is nothing on the phone to invalidate.
-- The secure channel lives in each app's Rust layer (`snow` on both sides).
+- The secure channel lives in each app's Rust layer, and is one shared crate —
+  `crates/fletch-proto` (`snow`) — so both ends cannot drift apart.
   The mobile webview speaks plain JSON to its own Rust layer, which is also why
   the browser dev loop (`bun run dev` outside Tauri) can only reach the mock
   host.
@@ -608,9 +610,9 @@ answer through the generic dispatcher.
 ## Events (v1 whitelist)
 
 Forwarded verbatim with the desktop event name and payload (see
-`src/api/events.ts` for payload types). The host taps the Tauri event bus once
-with `Listener::listen_any` and forwards only these names to every
-authenticated connection:
+`src/api/events.ts` for payload types). The host subscribes to the engine's own
+event stream — the same events the desktop webview gets — and forwards only
+these names to every authenticated connection:
 
 ```
 agent:event            agent:status           agent:task

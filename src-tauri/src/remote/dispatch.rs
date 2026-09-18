@@ -23,6 +23,7 @@ use serde_json::Value;
 use tauri::AppHandle;
 
 use crate::commands::DiffBaseMode;
+use crate::host::EngineCtx;
 use crate::managed_session::ToolUseBehavior;
 use crate::supervisor::Supervisor;
 use crate::workspace::AgentView;
@@ -118,16 +119,18 @@ pub fn is_allowed(op: &str) -> bool {
     OPS.contains(&op) || SESSION_OPS.contains(&op)
 }
 
-/// The production dispatcher: the supervisor and app handle the Tauri commands
-/// would have received through `State`/`AppHandle`.
+/// The production dispatcher: the engine ctx and supervisor the Tauri commands
+/// would have received through `State`, plus the app handle the two dictation
+/// ops still need (they drive a desktop-only capture session).
 pub struct SupervisorDispatch {
     app: AppHandle,
+    ctx: Arc<EngineCtx>,
     sup: Arc<Supervisor>,
 }
 
 impl SupervisorDispatch {
-    pub fn new(app: AppHandle, sup: Arc<Supervisor>) -> Self {
-        Self { app, sup }
+    pub fn new(app: AppHandle, ctx: Arc<EngineCtx>, sup: Arc<Supervisor>) -> Self {
+        Self { app, ctx, sup }
     }
 }
 
@@ -140,6 +143,7 @@ impl Dispatch for SupervisorDispatch {
                 return Err(UNKNOWN_OP.to_string());
             }
             let sup = &self.sup;
+            let ctx = &self.ctx;
             let app = &self.app;
             match op {
                 "get_workspace" => ok(sup.current_workspace()),
@@ -157,7 +161,7 @@ impl Dispatch for SupervisorDispatch {
                     let a: SpawnArgs = parse(args)?;
                     res(crate::commands::spawn_agent_impl(
                         sup.clone(),
-                        app.clone(),
+                        ctx.clone(),
                         Some(AgentView::Custom),
                         a.repo_path,
                         a.provider,
@@ -178,7 +182,7 @@ impl Dispatch for SupervisorDispatch {
                 "send_user_message" => {
                     let a: SendMessageArgs = parse(args)?;
                     res(sup.clone().send_user_message(
-                        app,
+                        ctx,
                         &a.agent_id,
                         &a.turn_id,
                         &a.text,
@@ -210,30 +214,30 @@ impl Dispatch for SupervisorDispatch {
 
                 "stop_agent" => {
                     let a: AgentArgs = parse(args)?;
-                    res(sup.clone().stop_agent(app.clone(), &a.agent_id).await)
+                    res(sup.clone().stop_agent(ctx.clone(), &a.agent_id).await)
                 }
 
                 "resume_agent" => {
                     let a: AgentArgs = parse(args)?;
-                    res(sup.clone().resume_agent(app.clone(), &a.agent_id).await)
+                    res(sup.clone().resume_agent(ctx.clone(), &a.agent_id).await)
                 }
 
                 "archive_agent" => {
                     let a: AgentArgs = parse(args)?;
-                    res(sup.clone().archive_agent(app.clone(), &a.agent_id).await)
+                    res(sup.clone().archive_agent(ctx.clone(), &a.agent_id).await)
                 }
 
                 "set_agent_model" => {
                     let a: ModelArgs = parse(args)?;
                     res(sup
-                        .set_agent_model(app, &a.agent_id, a.model.as_deref())
+                        .set_agent_model(ctx, &a.agent_id, a.model.as_deref())
                         .await)
                 }
 
                 "set_agent_effort" => {
                     let a: EffortArgs = parse(args)?;
                     res(sup
-                        .set_agent_effort(app, &a.agent_id, a.effort.as_deref())
+                        .set_agent_effort(ctx, &a.agent_id, a.effort.as_deref())
                         .await)
                 }
 
@@ -305,7 +309,7 @@ impl Dispatch for SupervisorDispatch {
                     let a: AgentSubdirArgs = parse(args)?;
                     res(crate::commands::push_agent_impl(
                         sup,
-                        app.clone(),
+                        ctx.clone(),
                         a.agent_id,
                         a.subdir.as_deref(),
                     )
@@ -366,9 +370,10 @@ impl Dispatch for SupervisorDispatch {
 
                 // The two that change the project list also tell every other
                 // view about it, exactly as the Tauri commands do.
-                "add_workspace_repo" | "clone_repo" => {
-                    crate::commands::announce_workspace(app, add_project_op(sup, op, args).await)
-                }
+                "add_workspace_repo" | "clone_repo" => crate::commands::announce_workspace(
+                    ctx.sink.as_ref(),
+                    add_project_op(sup, op, args).await,
+                ),
 
                 // Remote-only: the phone captures, this Mac transcribes with the
                 // local whisper engine (`dictation::remote`). The transcript is
@@ -421,11 +426,11 @@ impl Dispatch for SupervisorDispatch {
 
 /// The "add a project" ops (protocol doc, "Adding a project from the phone"):
 /// browse the Mac's folders, pin one, or clone a GitHub repo into one. Split out
-/// of the match above because none of them needs the `AppHandle` to do its work
+/// of the match above because none of them needs the engine ctx to do its work
 /// — a bare `Supervisor` is the whole host state they touch, which is what lets
 /// the remote tests dispatch them for real without a Tauri app. The
 /// `workspace:changed` the two mutating ones owe everyone else is added by the
-/// caller, which has the handle.
+/// caller, which has the sink.
 pub(super) async fn add_project_op(sup: &Supervisor, op: &str, args: Value) -> DispatchResult {
     match op {
         "list_dir" => {

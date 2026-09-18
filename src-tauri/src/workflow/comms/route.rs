@@ -1,12 +1,14 @@
 //! The routing core (spec §10.1, §10.2): validate one comms op against its
 //! sender's caps, persist and journal it, and hand the caller the resulting
-//! poke. Free of the run registry and `AppHandle` so the whole matrix is
+//! poke. Free of the run registry and the engine ctx so the whole matrix is
 //! unit-testable against a temp DB.
+
+use std::sync::Arc;
 
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use tauri::AppHandle;
 
+use crate::host::EngineCtx;
 use crate::rpc::Response;
 use crate::workflow::now_ms;
 use crate::workflow::scheduler;
@@ -21,11 +23,11 @@ use super::sender::{
 use super::{check_cap, insert_message, load_spec, new_msg_id};
 
 /// The validated, persisted, journaled handling of one comms op. Free of the run
-/// registry and `AppHandle` so it is unit-testable; the caller performs the
-/// `Poke`. `app` is `None` under test.
+/// registry and the engine ctx so it is unit-testable; the caller performs the
+/// `Poke`. `engine` is `None` under test.
 pub(super) fn route(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     id: &str,
     run_id: &str,
     agent_id: &str,
@@ -42,10 +44,10 @@ pub(super) fn route(
     if op == "wf_decide" {
         if !sender_is_orchestrator(&sender) {
             let e = "wf_decide is available to the orchestrator only".to_string();
-            journal_denied(conn, app, &sender, op, &e);
+            journal_denied(conn, engine, &sender, op, &e);
             return (Response::err(id, e), Poke::None);
         }
-        return route_decide(conn, app, &sender, id, args);
+        return route_decide(conn, engine, &sender, id, args);
     }
 
     // `wf_compose` is likewise orchestrator-only (spec §10.3) and additionally
@@ -53,26 +55,26 @@ pub(super) fn route(
     if op == "wf_compose" {
         if !sender_is_orchestrator(&sender) {
             let e = "wf_compose is available to the orchestrator only".to_string();
-            journal_denied(conn, app, &sender, op, &e);
+            journal_denied(conn, engine, &sender, op, &e);
             return (Response::err(id, e), Poke::None);
         }
-        return route_compose(conn, app, &sender, id, args);
+        return route_compose(conn, engine, &sender, id, args);
     }
 
     if let Err(e) = check_cap(op, &sender.caps) {
         // Journaled, never a silent drop (§10.1): the timeline shows the denied
         // attempt.
-        journal_denied(conn, app, &sender, op, &e);
+        journal_denied(conn, engine, &sender, op, &e);
         return (Response::err(id, e), Poke::None);
     }
 
     match op {
-        "wf_report" => (route_report(conn, app, &sender, id, args), Poke::None),
-        "wf_ask" => route_ask(conn, app, &sender, id, args),
+        "wf_report" => (route_report(conn, engine, &sender, id, args), Poke::None),
+        "wf_ask" => route_ask(conn, engine, &sender, id, args),
         // `wf_notify` is orchestrator-only — `check_cap` already rejected it for a
         // child (no step is granted `notify`, §5.2), so only the orchestrator
         // reaches here.
-        "wf_notify" => (route_notify(conn, app, &sender, id, args), Poke::None),
+        "wf_notify" => (route_notify(conn, engine, &sender, id, args), Poke::None),
         other => (
             Response::err(id, format!("unknown op: {other}")),
             Poke::None,
@@ -87,7 +89,7 @@ fn sender_is_orchestrator(sender: &Sender) -> bool {
 
 fn route_report(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     id: &str,
     args: &Value,
@@ -124,7 +126,7 @@ fn route_report(
     ) {
         return Response::err(id, e.to_string());
     }
-    journal_routed(conn, app, sender, &msg_id, "report", to);
+    journal_routed(conn, engine, sender, &msg_id, "report", to);
     Response::ok(id, 0, msg_id, String::new())
 }
 
@@ -139,7 +141,7 @@ fn child_orchestrator(conn: &Connection, sender: &Sender) -> Option<(String, Str
 
 fn route_ask(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     id: &str,
     args: &Value,
@@ -176,7 +178,7 @@ fn route_ask(
     ) {
         return (Response::err(id, e.to_string()), Poke::None);
     }
-    journal_routed(conn, app, sender, &msg_id, "ask", to);
+    journal_routed(conn, engine, sender, &msg_id, "ask", to);
     // Routed to the orchestrator: the orchestrate loop polls its inbox, so no
     // human pause. Routed to the human: raise the pending-ask flag so the run
     // pauses `question` at turn end.
@@ -197,7 +199,7 @@ fn route_ask(
 /// no-op, journaled with `to: null`.
 fn route_notify(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     id: &str,
     args: &Value,
@@ -219,7 +221,7 @@ fn route_notify(
         if to == "all-children" { None } else { Some(to) },
     );
     if recipients.is_empty() {
-        journal_routed(conn, app, sender, &new_msg_id(), "notify", None);
+        journal_routed(conn, engine, sender, &new_msg_id(), "notify", None);
         return Response::ok(id, 0, String::new(), String::new());
     }
     let body = json!({ "message": message });
@@ -236,7 +238,7 @@ fn route_notify(
             "queued",
             false,
         );
-        journal_routed(conn, app, sender, &msg_id, "notify", Some(child_exec));
+        journal_routed(conn, engine, sender, &msg_id, "notify", Some(child_exec));
     }
     Response::ok(id, 0, String::new(), String::new())
 }
@@ -343,7 +345,7 @@ fn reject_unknown_child(
 
 fn route_decide(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     id: &str,
     args: &Value,
@@ -365,11 +367,11 @@ fn route_decide(
                     Poke::None,
                 );
             }
-            match deliver_orchestrator_answer(conn, app, sender, message_id, body) {
+            match deliver_orchestrator_answer(conn, engine, sender, message_id, body) {
                 Ok(()) => {
                     journal_decision(
                         conn,
-                        app,
+                        engine,
                         sender,
                         &json!({ "decision": "answer", "message_id": message_id }),
                     );
@@ -381,7 +383,7 @@ fn route_decide(
                 Err(e) => (Response::err(id, e.to_string()), Poke::None),
             }
         }
-        "spawn_child" => route_spawn_child(conn, app, sender, id, args),
+        "spawn_child" => route_spawn_child(conn, engine, sender, id, args),
         "skip_child" => {
             let step_id = args.get("step_id").and_then(|v| v.as_str()).unwrap_or("");
             if step_id.is_empty() {
@@ -400,7 +402,7 @@ fn route_decide(
                 .to_string();
             queue_decision(
                 conn,
-                app,
+                engine,
                 sender,
                 id,
                 json!({ "decision": "skip_child", "step_id": step_id, "reason": reason }),
@@ -424,13 +426,19 @@ fn route_decide(
                 .to_string();
             queue_decision(
                 conn,
-                app,
+                engine,
                 sender,
                 id,
                 json!({ "decision": "retry_child", "step_id": step_id, "guidance": guidance }),
             )
         }
-        "stage_done" => queue_decision(conn, app, sender, id, json!({ "decision": "stage_done" })),
+        "stage_done" => queue_decision(
+            conn,
+            engine,
+            sender,
+            id,
+            json!({ "decision": "stage_done" }),
+        ),
         "escalate" => {
             let question = args.get("question").and_then(|v| v.as_str()).unwrap_or("");
             if question.trim().is_empty() {
@@ -457,8 +465,8 @@ fn route_decide(
             ) {
                 return (Response::err(id, e.to_string()), Poke::None);
             }
-            journal_decision(conn, app, sender, &json!({ "decision": "escalate" }));
-            journal_routed(conn, app, sender, &msg_id, "ask", None);
+            journal_decision(conn, engine, sender, &json!({ "decision": "escalate" }));
+            journal_routed(conn, engine, sender, &msg_id, "ask", None);
             (
                 Response::ok(id, 0, msg_id, String::new()),
                 Poke::AskQueued {
@@ -477,7 +485,7 @@ fn route_decide(
 /// orchestrate stage to execute (spec §10.2).
 fn queue_decision(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     id: &str,
     body: Value,
@@ -496,7 +504,7 @@ fn queue_decision(
     ) {
         return (Response::err(id, e.to_string()), Poke::None);
     }
-    journal_decision(conn, app, sender, &body);
+    journal_decision(conn, engine, sender, &body);
     (Response::ok(id, 0, msg_id, String::new()), Poke::None)
 }
 
@@ -506,7 +514,7 @@ fn queue_decision(
 /// error and a `child_spawn_denied` journal entry.
 fn route_spawn_child(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     id: &str,
     args: &Value,
@@ -524,7 +532,7 @@ fn route_spawn_child(
     let template = orchestrate_block(&spec, &sender.step_id).and_then(|o| o.children.clone());
     let Some(template) = template else {
         let e = "this stage has no dynamic-child template (spawn_child unavailable)".to_string();
-        journal_spawn_denied(conn, app, sender, &e);
+        journal_spawn_denied(conn, engine, sender, &e);
         return (Response::err(id, e), Poke::None);
     };
     let agent = args
@@ -536,7 +544,7 @@ fn route_spawn_child(
             "spawn_child agent must be the template's child agent '{}'",
             template.agent
         );
-        journal_spawn_denied(conn, app, sender, &e);
+        journal_spawn_denied(conn, engine, sender, &e);
         return (Response::err(id, e), Poke::None);
     }
     let spawned = spawn_child_count(conn, &sender.run_id, &sender.step_id);
@@ -545,14 +553,14 @@ fn route_spawn_child(
             "spawn_child denied: already at the children.max of {} for this stage",
             template.max
         );
-        journal_spawn_denied(conn, app, sender, &e);
+        journal_spawn_denied(conn, engine, sender, &e);
         return (Response::err(id, e), Poke::None);
     }
     // Approved: journal the request + approval, then queue the decision for the
     // orchestrate stage to actually spawn.
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         &sender.run_id,
         event_type::CHILD_SPAWN_REQUESTED,
         Some(&sender.step_exec_id),
@@ -560,7 +568,7 @@ fn route_spawn_child(
     );
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         &sender.run_id,
         event_type::CHILD_SPAWN_APPROVED,
         Some(&sender.step_exec_id),
@@ -674,7 +682,7 @@ pub(in crate::workflow) fn take_orchestrator_decisions(
 
 fn journal_routed(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     message_id: &str,
     kind: &str,
@@ -682,7 +690,7 @@ fn journal_routed(
 ) {
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         &sender.run_id,
         event_type::MESSAGE_ROUTED,
         Some(&sender.step_exec_id),
@@ -697,14 +705,14 @@ fn journal_routed(
 
 fn journal_denied(
     conn: &Connection,
-    app: Option<&AppHandle>,
+    engine: Option<&Arc<EngineCtx>>,
     sender: &Sender,
     op: &str,
     reason: &str,
 ) {
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         &sender.run_id,
         event_type::MESSAGE_ROUTED,
         Some(&sender.step_exec_id),
@@ -717,10 +725,15 @@ fn journal_denied(
     );
 }
 
-fn journal_decision(conn: &Connection, app: Option<&AppHandle>, sender: &Sender, payload: &Value) {
+fn journal_decision(
+    conn: &Connection,
+    engine: Option<&Arc<EngineCtx>>,
+    sender: &Sender,
+    payload: &Value,
+) {
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         &sender.run_id,
         event_type::DECISION,
         Some(&sender.step_exec_id),
@@ -728,10 +741,15 @@ fn journal_decision(conn: &Connection, app: Option<&AppHandle>, sender: &Sender,
     );
 }
 
-fn journal_spawn_denied(conn: &Connection, app: Option<&AppHandle>, sender: &Sender, reason: &str) {
+fn journal_spawn_denied(
+    conn: &Connection,
+    engine: Option<&Arc<EngineCtx>>,
+    sender: &Sender,
+    reason: &str,
+) {
     scheduler::journal_event(
         conn,
-        app,
+        engine,
         &sender.run_id,
         event_type::CHILD_SPAWN_DENIED,
         Some(&sender.step_exec_id),

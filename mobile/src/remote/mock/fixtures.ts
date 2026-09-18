@@ -9,7 +9,7 @@ import type { PrChecks, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
-import { type HostProtocol, V2_DEFAULT_OPS } from "../types";
+import { type HostProtocol, V2_DEFAULT_OPS } from "@desktop/remote/types";
 
 export const FLETCH_REPO = "/Users/alex/.fletch/workspaces/fletch";
 export const ATLAS_REPO = "/Users/alex/.fletch/workspaces/atlas";

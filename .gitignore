@@ -13,6 +13,13 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/WixTools/
 
+# Shared Rust libraries (crates/). There is no Cargo workspace: each *binary*
+# package (src-tauri/, mobile/src-tauri/) keeps its own committed lockfile and
+# depends on these by path, so a library's own lockfile is never the one that
+# builds anything — it is a local resolution artifact, like its target dir.
+crates/*/target/
+crates/*/Cargo.lock
+
 # Bundled binaries (fetched by scripts/download-tart.sh)
 src-tauri/binaries/
 src-tauri/resources/tart/

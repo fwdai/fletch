@@ -9,7 +9,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use tauri::AppHandle;
 use tokio::sync::Notify;
 
 use super::drainer::{self, QueueNote};
@@ -18,6 +17,7 @@ use super::store;
 use super::types::{ItemPatch, ItemStatus, RoadmapItem};
 use super::{brakes, Db};
 use crate::github::PrStatus;
+use crate::host::EngineCtx;
 
 /// Fail closed: user merge must not bypass an item/project hold.
 pub(super) fn merge_hold_gate(db: &Db, item_id: &str) -> Result<(), String> {
@@ -146,17 +146,17 @@ struct Watched {
 }
 
 // Background sweep while anything is in_review.
-pub fn spawn(app: AppHandle, db: Db) {
-    tauri::async_runtime::spawn(async move {
+pub fn spawn(ctx: Arc<EngineCtx>, db: Db) {
+    crate::host::spawn(async move {
         let seen: Arc<Unanswered> = Arc::new(Mutex::new(HashMap::new()));
         loop {
             let pass = {
-                let (app, db, seen) = (app.clone(), db.clone(), seen.clone());
-                tauri::async_runtime::spawn(async move {
+                let (ctx, db, seen) = (ctx.clone(), db.clone(), seen.clone());
+                crate::host::spawn(async move {
                     let watching = watch_list(&db);
                     let idle = watching.is_empty();
                     if !idle {
-                        sweep(&app, &db, watching, &seen).await;
+                        sweep(&ctx, &db, watching, &seen).await;
                     }
                     idle
                 })
@@ -210,7 +210,7 @@ fn watch_list(db: &Db) -> Vec<Watched> {
         .collect()
 }
 
-async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>, seen: &Unanswered) {
+async fn sweep(ctx: &Arc<EngineCtx>, db: &Db, watching: Vec<Watched>, seen: &Unanswered) {
     let mut repos: HashMap<String, Option<PathBuf>> = HashMap::new();
     for w in watching {
         if !still_watching(&seen.lock(), &w.id, w.updated_at) {
@@ -229,7 +229,7 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>, seen: &Unanswer
         };
         if state.is_none() {
             if record_miss(&mut seen.lock(), &w.id, w.updated_at) {
-                unreachable(app, db, &w);
+                unreachable(ctx, db, &w);
             }
             continue;
         }
@@ -242,7 +242,7 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>, seen: &Unanswer
         let (kind, detail) = event_for(&outcome, held).expect("a verdict that writes also records");
         tracing::info!(item = %w.code, pr = w.number, ?outcome, held, "roadmap merge sweep");
         drainer::write_item_where(
-            app,
+            ctx,
             db,
             &w.id,
             ItemStatus::InReview,
@@ -262,7 +262,7 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>, seen: &Unanswer
                 drainer::nudge();
             }
             Verdict::Abandoned => drainer::emit_note(
-                app,
+                ctx.sink.as_ref(),
                 &QueueNote {
                     item_id: w.id.clone(),
                     code: w.code.clone(),
@@ -274,7 +274,7 @@ async fn sweep(app: &AppHandle, db: &Db, watching: Vec<Watched>, seen: &Unanswer
     }
 }
 
-fn unreachable(app: &AppHandle, db: &Db, w: &Watched) {
+fn unreachable(ctx: &Arc<EngineCtx>, db: &Db, w: &Watched) {
     let text = unreachable_note(w.number);
     tracing::warn!(
         item = %w.code,
@@ -293,10 +293,10 @@ fn unreachable(app: &AppHandle, db: &Db, w: &Watched) {
         }
     };
     if let Some(event) = &recorded {
-        super::emit_item_event(app, event);
+        super::emit_item_event(ctx.sink.as_ref(), event);
     }
     drainer::emit_note(
-        app,
+        ctx.sink.as_ref(),
         &QueueNote {
             item_id: w.id.clone(),
             code: w.code.clone(),

@@ -2,10 +2,10 @@
 //! fetch/emit for an agent's primary repo.
 
 use std::time::{Duration, Instant};
-use tauri::AppHandle;
 
 use crate::agent::per_turn_descriptor;
 use crate::github::{MergeableState, PrState, PrStatus};
+use crate::host::EngineCtx;
 use crate::workspace::{AgentRecord, AgentStatus, AgentView, TrackedRepo, WorkspaceManager};
 
 use super::events::{
@@ -52,14 +52,14 @@ impl Supervisor {
     /// - **Claude / native-view agents** keep the transcript file open, so the
     ///   final line can still be flushing. We poll until the file settles (two
     ///   consecutive reads add nothing) before trusting the turn is fully on disk.
-    pub fn trigger_session_sync(&self, app: AppHandle, agent_id: String) {
+    pub fn trigger_session_sync(&self, ctx: Arc<EngineCtx>, agent_id: String) {
         let workspace = self.workspace.clone();
         let health_map = self.sync_health.clone();
         let persistent = workspace
             .agent(&agent_id)
             .map(|r| is_persistent_runner(&r))
             .unwrap_or(true);
-        tauri::async_runtime::spawn(async move {
+        crate::host::spawn(async move {
             // Immediate attempt, then fine-grained backoff (ms) to ride out flush
             // lag / detect settle. Reads are incremental (O(new)), so polling is
             // cheap even on long transcripts.
@@ -75,7 +75,7 @@ impl Supervisor {
                 }
             }
             if poll.should_emit() {
-                emit_session_records_appended(&app, &agent_id);
+                emit_session_records_appended(ctx.sink.as_ref(), &agent_id);
             }
             // Classify only now, after the retry loop is exhausted — earlier the
             // transcript may just be mid-flush, which must never read as drift.
@@ -85,7 +85,7 @@ impl Supervisor {
                     .map(|r| r.provider)
                     .unwrap_or_default();
                 report_sync_health(
-                    &app,
+                    &ctx,
                     &health_map,
                     &agent_id,
                     &provider,
@@ -98,9 +98,9 @@ impl Supervisor {
 
     /// Fetch the current PR state for an agent's primary repo and emit
     /// a `pr:state_changed` event. Runs as a background task — never blocks the caller.
-    pub fn fetch_and_emit_pr_state(&self, app: AppHandle, agent_id: String) {
+    pub fn fetch_and_emit_pr_state(&self, ctx: Arc<EngineCtx>, agent_id: String) {
         let workspace = self.workspace.clone();
-        tauri::async_runtime::spawn(async move {
+        crate::host::spawn(async move {
             // Only bound PRs are emitted app-wide: an unbound merged/closed PR
             // discovered on a recycled branch name is focused-panel display
             // (`get_pr_state`), not this agent's state.
@@ -109,7 +109,7 @@ impl Supervisor {
             let state = resolve_pr_state(&workspace, &agent_id, None, Discovery::Forced)
                 .await
                 .and_then(|(pr, bound)| bound.then_some(pr));
-            emit_pr_state(&app, &agent_id, state);
+            emit_pr_state(ctx.sink.as_ref(), &agent_id, state);
         });
     }
 
@@ -124,7 +124,7 @@ impl Supervisor {
     /// step agent has gates — `owner_run_id` set → skip), only when the flag is
     /// on, and never two at once for the same agent (they'd race on the
     /// checkout). Called only on a normal Idle transition (not stop/archive).
-    pub fn trigger_turn_end_verification(&self, app: AppHandle, agent_id: String) {
+    pub fn trigger_turn_end_verification(&self, ctx: Arc<EngineCtx>, agent_id: String) {
         let Ok(record) = self.workspace.agent(&agent_id) else {
             return;
         };
@@ -183,10 +183,10 @@ impl Supervisor {
             .workspace
             .run_env(&project_id, &primary.repo_path, &agent_id, &checkout);
         let inflight = self.verify_inflight.clone();
-        tauri::async_runtime::spawn(async move {
+        crate::host::spawn(async move {
             let report = verifier.verify(&checkout, &env).await;
             inflight.lock().remove(&agent_id);
-            emit_verification(&app, &agent_id, report);
+            emit_verification(ctx.sink.as_ref(), &agent_id, report);
         });
     }
 }
@@ -637,11 +637,11 @@ pub(super) fn should_live_sync(provider: &str, view: AgentView) -> bool {
 ///   classifies.
 pub(super) fn spawn_live_transcript_sync(
     sup: Arc<Supervisor>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     gen: u64,
 ) {
-    tauri::async_runtime::spawn(async move {
+    crate::host::spawn(async move {
         loop {
             tokio::time::sleep(LIVE_SYNC_TICK).await;
 
@@ -668,7 +668,7 @@ pub(super) fn spawn_live_transcript_sync(
             // record list on this event, so firing it every tick would turn a
             // thinking agent into a 1 Hz refetch loop over the conversation.
             if inserted > 0 {
-                emit_session_records_appended(&app, &agent_id);
+                emit_session_records_appended(ctx.sink.as_ref(), &agent_id);
             }
         }
     });
@@ -888,7 +888,7 @@ impl SyncPoll {
 /// turn. `Healthy` is emitted solely to clear a prior degraded state; `NoFiles`
 /// is logged but never emitted (ambiguous — slow flush or empty session).
 fn report_sync_health(
-    app: &AppHandle,
+    ctx: &Arc<EngineCtx>,
     health_map: &Mutex<HashMap<String, SyncHealth>>,
     agent_id: &str,
     provider: &str,
@@ -930,7 +930,7 @@ fn report_sync_health(
             if map.remove(agent_id).is_some() {
                 // Clearing a previously-degraded status.
                 emit_session_sync_health(
-                    app,
+                    ctx.sink.as_ref(),
                     agent_id,
                     provider,
                     "healthy",
@@ -943,7 +943,7 @@ fn report_sync_health(
                 map.insert(agent_id.to_string(), degraded);
                 if let Some(status) = degraded.wire() {
                     emit_session_sync_health(
-                        app,
+                        ctx.sink.as_ref(),
                         agent_id,
                         provider,
                         status,

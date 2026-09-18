@@ -4,6 +4,7 @@
 // alert is routed by the store's own `openFromPush`, because navigation is the
 // router's business, not the plugin's.
 
+import { inTauri } from "@desktop/remote/ws";
 import type { Api } from "../api";
 import { ignore } from "../lib/ignore";
 import { withTimeout } from "../lib/timeout";
@@ -16,7 +17,6 @@ import {
   registerPush,
   requestPushPermission,
 } from "../remote/push";
-import { inTauri } from "../remote/ws";
 import type { MobileState } from "./index";
 import { loadSettings, saveSettings } from "./persist";
 

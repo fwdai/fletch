@@ -1,13 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { backoffDelay } from "../src/remote/backoff";
-import {
-  candidatesFor,
-  LAN_OPEN_TIMEOUT_MS,
-  RELAY_OPEN_TIMEOUT_MS,
-} from "../src/remote/candidates";
-import { HANDSHAKE_TIMEOUT_MS, ProtocolClient } from "../src/remote/client";
-import { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "../src/remote/pairing";
-import type { Socket, SocketHandlers, SocketOptions } from "../src/remote/socket";
+import { backoffDelay } from "./backoff";
+import { candidatesFor, LAN_OPEN_TIMEOUT_MS, RELAY_OPEN_TIMEOUT_MS } from "./candidates";
+import { HANDSHAKE_TIMEOUT_MS, ProtocolClient } from "./client";
+import { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
+import type { Socket, SocketHandlers, SocketOptions } from "./socket";
 import {
   CLOSE_HOST_OFFLINE,
   CLOSE_REASONS,
@@ -21,7 +17,7 @@ import {
   hostSupports,
   type PairStep,
   V2_DEFAULT_OPS,
-} from "../src/remote/types";
+} from "./types";
 
 const DEVICE: DeviceInfo = { name: "test", platform: "web", appVersion: "0.1.0" };
 /** Stands in for the base64url key a real handshake would authenticate. */

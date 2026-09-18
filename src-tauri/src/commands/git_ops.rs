@@ -3,10 +3,11 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::error::Result;
 use crate::git;
+use crate::host::EngineCtx;
 use crate::supervisor::Supervisor;
 
 use super::files::{agent_repo_checkout, repo_branch};
@@ -15,18 +16,24 @@ use super::files::{agent_repo_checkout, repo_branch};
 #[tauri::command]
 pub async fn push_agent(
     supervisor: State<'_, Arc<Supervisor>>,
-    app: AppHandle,
+    ctx: State<'_, Arc<EngineCtx>>,
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<String> {
-    push_agent_impl(supervisor.inner(), app, agent_id, subdir.as_deref()).await
+    push_agent_impl(
+        supervisor.inner(),
+        ctx.inner().clone(),
+        agent_id,
+        subdir.as_deref(),
+    )
+    .await
 }
 
 /// Shared with the remote dispatcher, so a push from the phone triggers the
 /// same background PR-state fetch the desktop push does.
 pub(crate) async fn push_agent_impl(
     supervisor: &Arc<Supervisor>,
-    app: AppHandle,
+    ctx: Arc<EngineCtx>,
     agent_id: String,
     subdir: Option<&str>,
 ) -> Result<String> {
@@ -34,7 +41,7 @@ pub(crate) async fn push_agent_impl(
     let branch = repo_branch(&repo)?.to_string();
     let summary = git::push(&checkout, &branch, false).await?;
     // After successful push, fetch PR state in background
-    supervisor.fetch_and_emit_pr_state(app, agent_id);
+    supervisor.fetch_and_emit_pr_state(ctx, agent_id);
     Ok(summary)
 }
 
