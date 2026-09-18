@@ -1,7 +1,8 @@
+import { HostGateNote } from "@/components/HostGateNote";
 import { Icon } from "@/components/Icon";
 import { Scrim } from "@/components/ui/Scrim";
 import { useAppStore } from "@/store";
-import { connectionLabel } from "@/store/capabilities";
+import { connectionLabel, hostVersionLabel } from "@/store/capabilities";
 import type { EnvironmentEntry } from "@/store/environments";
 import { EnvironmentDot } from "./EnvironmentDot";
 
@@ -10,6 +11,15 @@ import { EnvironmentDot } from "./EnvironmentDot";
  *  and go. */
 const order = (a: EnvironmentEntry, b: EnvironmentEntry) =>
   a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "local" ? -1 : 1;
+
+/** An entry's second line: how its connection is doing — the thing that decides
+ *  whether switching is worth it — and, for a host that has reported one, the
+ *  version it is running. What it cannot do is the line below (`HostGateNote`). */
+const subLine = (env: EnvironmentEntry) => {
+  const version = hostVersionLabel(env);
+  const state = connectionLabel(env);
+  return version ? `${state} · ${version}` : state;
+};
 
 /** The environment list. Selecting one is the whole interaction: the host
  *  picker for spawning is this, and nothing else — a new agent always lands on
@@ -44,7 +54,8 @@ export function EnvironmentMenu({ onClose }: { onClose: () => void }) {
             <EnvironmentDot env={env} />
             <span className="env-item-text">
               <span className="env-item-name text-base">{env.name}</span>
-              <span className="env-item-sub text-sm">{connectionLabel(env)}</span>
+              <span className="env-item-sub text-sm">{subLine(env)}</span>
+              <HostGateNote env={env} className="env-item-sub text-sm" />
             </span>
             {env.id === activeId && <Icon name="check" size={13} />}
           </button>

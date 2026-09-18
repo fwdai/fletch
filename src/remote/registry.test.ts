@@ -152,7 +152,7 @@ describe("the paired-host lifecycle", () => {
     expect(client.targets[0]).toMatchObject({ host: "10.0.0.4", port: 47285, hostKey: HOST_KEY });
   });
 
-  it("maps the client's states onto the entry, and its handshake onto name and protocol", async () => {
+  it("maps the client's states onto the entry, and its handshake onto name, version and protocol", async () => {
     const { registry, entry, client } = harness();
     await registry.adopt(RECORD);
 
@@ -160,6 +160,9 @@ describe("the paired-host lifecycle", () => {
 
     expect(entry()).toMatchObject({ connection: "connected", name: "Cloud box" });
     expect(entry()?.protocol).toEqual(PROTOCOL);
+    // The version the host reported, for the rows that name it. In memory only,
+    // and never what capability is judged by.
+    expect(entry()?.appVersion).toBe(HOST.appVersion);
     expect(entry()?.error).toBeUndefined();
 
     // A dropped link: the client reports the reason and retries on its own.
