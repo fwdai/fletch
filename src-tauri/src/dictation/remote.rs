@@ -33,9 +33,9 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use parking_lot::Mutex;
 use serde::Serialize;
-use tauri::AppHandle;
 
 use crate::error::{Error, Result};
+use crate::DbState;
 
 /// Sessions that may be open at once, across every paired phone. A dictation is
 /// one utterance from one person; this is a bound on abuse, not on use.
@@ -63,7 +63,7 @@ pub struct Status {
 }
 
 impl Status {
-    /// Split from [`status`] so the tests can build one without an `AppHandle`.
+    /// Split from [`status`] so the tests can build one without a DB handle.
     fn new(readiness: Result<()>) -> Self {
         Self {
             available: readiness.is_ok(),
@@ -244,14 +244,14 @@ fn decode(pcm_base64: &str) -> Result<Vec<u8>> {
 
 /// Whether a phone can dictate through this Mac right now, and if not, what the
 /// user has to do about it. Cheap — two settings reads and a metadata stat.
-pub fn status(app: &AppHandle) -> Status {
-    Status::new(readiness(app))
+pub fn status(db: &DbState) -> Status {
+    Status::new(readiness(db))
 }
 
-pub fn begin(app: &AppHandle) -> Result<Begun> {
+pub fn begin(db: &DbState) -> Result<Begun> {
     // Checked up front so the phone learns before it opens its mic, not after
     // the user has spoken a paragraph.
-    readiness(app)?;
+    readiness(db)?;
     Ok(Begun {
         session: store().begin(Instant::now())?,
         // The mirror, not the DB: `set_dictation_auto_stop` keeps it current
@@ -272,9 +272,9 @@ pub fn cancel(session: &str) {
 
 /// Close the session and transcribe what it holds. The buffer is consumed
 /// whatever happens next, so a failed transcription doesn't leave audio behind.
-pub async fn end(app: &AppHandle, session: &str) -> Result<Ended> {
+pub async fn end(db: &DbState, session: &str) -> Result<Ended> {
     let clip = store().take(session)?;
-    transcribe(app, clip).await.map(|text| Ended { text })
+    transcribe(db, clip).await.map(|text| Ended { text })
 }
 
 /// The local engine has to be chosen *and* have its weights on disk — the
@@ -282,9 +282,8 @@ pub async fn end(app: &AppHandle, session: &str) -> Result<Ended> {
 /// uses it. There is no fallback to the platform recognizer here: it needs a
 /// microphone this Mac doesn't have.
 #[cfg(target_os = "macos")]
-fn readiness(app: &AppHandle) -> Result<()> {
-    use tauri::Manager;
-    let (enabled, model) = super::engine_settings(&app.state::<crate::DbState>());
+fn readiness(db: &DbState) -> Result<()> {
+    let (enabled, model) = super::engine_settings(db);
     if !enabled {
         return Err(Error::Other(
             "Local dictation is off on your Mac. Turn on the Whisper engine in Settings › Dictation."
@@ -302,11 +301,10 @@ fn readiness(app: &AppHandle) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-async fn transcribe(app: &AppHandle, clip: Clip) -> Result<String> {
-    use tauri::Manager;
+async fn transcribe(db: &DbState, clip: Clip) -> Result<String> {
     // Read at the end, like the desktop's stop: the model a session transcribes
     // with is the one Settings showed when it ended.
-    let (_, model) = super::engine_settings(&app.state::<crate::DbState>());
+    let (_, model) = super::engine_settings(db);
     let Clip { rate, samples } = clip;
     let samples = tokio::task::spawn_blocking(move || {
         let samples: Vec<f32> = samples.iter().map(|s| f32::from(*s) / 32768.0).collect();
@@ -318,14 +316,14 @@ async fn transcribe(app: &AppHandle, clip: Clip) -> Result<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn readiness(_app: &AppHandle) -> Result<()> {
+fn readiness(_db: &DbState) -> Result<()> {
     Err(Error::Other(
         "Dictation from a phone needs a Mac host: whisper.cpp is only built there.".into(),
     ))
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn transcribe(_app: &AppHandle, _clip: Clip) -> Result<String> {
+async fn transcribe(_db: &DbState, _clip: Clip) -> Result<String> {
     Err(Error::Other(
         "Dictation from a phone needs a Mac host: whisper.cpp is only built there.".into(),
     ))
@@ -439,7 +437,7 @@ mod tests {
         assert!(begun(store().begin(Instant::now()).unwrap()).auto_stop);
     }
 
-    /// The shape `begin` builds, minus the readiness check an `AppHandle` would
+    /// The shape `begin` builds, minus the readiness check a DB handle would
     /// be needed for.
     fn begun(session: String) -> Begun {
         Begun {
