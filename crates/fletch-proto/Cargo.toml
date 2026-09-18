@@ -1,0 +1,41 @@
+[package]
+name = "fletch-proto"
+version = "0.1.0"
+description = "The Fletch remote protocol: Noise channel, dialer and relay framing, shared by every Fletch host and client"
+authors = ["Alex Chaplinsky", "fwdai.org"]
+license = "AGPL-3.0-only"
+edition = "2021"
+rust-version = "1.77"
+
+[dependencies]
+# `Noise_XX_25519_ChaChaPoly_BLAKE2s`, the pattern docs/remote-protocol.md
+# fixes, plus the bare X25519 the key files and the relay proof need.
+snow = "0.10"
+# base64url without padding: how every key travels in this protocol.
+base64 = "0.22"
+# The relay's host-link proof is a SHA-256 over the DH secret.
+sha2 = "0.10"
+# `sink` for `SinkExt` on the WebSocket the handshake is driven over; nothing
+# here needs the rest of the combinator zoo.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# `net` + `time` for the Happy Eyeballs dialer (`dial.rs`), which resolves and
+# races addresses itself.
+tokio = { version = "1", features = ["net", "time"] }
+# The transport the protocol rides on. Feature set is the union of what the two
+# apps already asked for: `handshake` for the LAN listener, `connect` +
+# `rustls-tls-webpki-roots` for a `wss://` relay. Pinned to 0.27 for the same
+# reason the desktop pins it — 0.30 would add a second copy of the hashing and
+# RNG stack next to sha2 0.10.
+tokio-tungstenite = { version = "0.27", default-features = false, features = [
+  "handshake",
+  "connect",
+  "rustls-tls-webpki-roots",
+] }
+
+[dev-dependencies]
+# The known-answer test reads the relay's published vector.
+serde_json = "1"
+tempfile = "3"
+# `rt` + `macros` for the dialer's tests; the runtime features the library
+# needs are already on above.
+tokio = { version = "1", features = ["rt", "macros"] }

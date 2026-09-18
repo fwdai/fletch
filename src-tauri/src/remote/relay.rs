@@ -7,9 +7,10 @@
 //! transport: a virtual connection is handed to the same `server::serve` a LAN
 //! socket is, and that state machine cannot tell the difference.
 //!
-//! Three pieces:
+//! Two pieces, on top of `fletch_proto::relay` (the multiplexing codec, the
+//! endpoint and the challenge proof — the parts the relay Worker and the phone
+//! have to agree with byte for byte):
 //!
-//! - [`Frame`], the multiplexing codec (`type || connId || payload`).
 //! - [`VirtualConn`], a `server::WsTransport` whose inbound side is fed by the
 //!   demux and whose outbound side writes DATA/CLOSE frames onto the link's
 //!   shared queue.
@@ -31,7 +32,6 @@ use futures_util::stream::SplitSink;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -43,125 +43,10 @@ use super::secure::HostKey;
 use super::server;
 use super::RemoteState;
 
-// ---------------------------------------------------------------------------
-// The multiplexing codec
-// ---------------------------------------------------------------------------
-
-const TYPE_OPEN: u8 = 0x01;
-const TYPE_DATA: u8 = 0x02;
-const TYPE_CLOSE: u8 = 0x03;
-const TYPE_TEXT: u8 = 0x04;
-const TYPE_NOTIFY: u8 = 0x05;
-
-/// The `connId` a NOTIFY frame carries. It belongs to no virtual connection —
-/// the doc fixes it at 0 so the header stays one shape for every frame type.
-const NOTIFY_CONN: u32 = 0;
-
-/// Length of the fixed header: `type (1) || connId (u32 big-endian)`.
-const HEADER_LEN: usize = 5;
-
-/// One frame on the host link. `OPEN` and `TEXT` only ever arrive; `DATA` and
-/// `CLOSE` travel both ways.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Frame {
-    /// A device link attached; payload is empty.
-    Open { conn: u32 },
-    /// One device WebSocket binary message, verbatim.
-    Data { conn: u32, payload: Bytes },
-    /// The virtual connection is over: `code (u16 big-endian) || reason`.
-    Close {
-        conn: u32,
-        code: u16,
-        reason: String,
-    },
-    /// One device WebSocket *text* message, verbatim, so the host can apply its
-    /// own 4001 rule to it rather than the relay guessing.
-    Text { conn: u32, text: String },
-    /// A push request for the relay itself to forward to APNs: UTF-8 JSON on
-    /// `connId` 0. Host → relay only, and fire and forget — the relay sends no
-    /// result frame, and one that does not know this type ignores it.
-    Notify { payload: Bytes },
-}
-
-impl Frame {
-    pub(super) fn conn(&self) -> u32 {
-        match self {
-            Frame::Open { conn }
-            | Frame::Data { conn, .. }
-            | Frame::Close { conn, .. }
-            | Frame::Text { conn, .. } => *conn,
-            Frame::Notify { .. } => NOTIFY_CONN,
-        }
-    }
-
-    pub(super) fn encode(&self) -> Bytes {
-        let mut out = Vec::with_capacity(HEADER_LEN + 32);
-        out.push(match self {
-            Frame::Open { .. } => TYPE_OPEN,
-            Frame::Data { .. } => TYPE_DATA,
-            Frame::Close { .. } => TYPE_CLOSE,
-            Frame::Text { .. } => TYPE_TEXT,
-            Frame::Notify { .. } => TYPE_NOTIFY,
-        });
-        out.extend_from_slice(&self.conn().to_be_bytes());
-        match self {
-            Frame::Open { .. } => {}
-            Frame::Data { payload, .. } => out.extend_from_slice(payload),
-            Frame::Close { code, reason, .. } => {
-                out.extend_from_slice(&code.to_be_bytes());
-                out.extend_from_slice(reason.as_bytes());
-            }
-            Frame::Text { text, .. } => out.extend_from_slice(text.as_bytes()),
-            Frame::Notify { payload } => out.extend_from_slice(payload),
-        }
-        Bytes::from(out)
-    }
-
-    /// Decode one frame. `Err` carries what was wrong with it, for the log; a
-    /// frame the host cannot parse is dropped, not fatal, since the relay is
-    /// free to add frame types the host does not know yet.
-    pub(super) fn decode(bytes: &[u8]) -> std::result::Result<Self, String> {
-        if bytes.len() < HEADER_LEN {
-            return Err(format!("frame of {} bytes has no header", bytes.len()));
-        }
-        let conn = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
-        let body = &bytes[HEADER_LEN..];
-        match bytes[0] {
-            TYPE_OPEN => Ok(Frame::Open { conn }),
-            TYPE_DATA => Ok(Frame::Data {
-                conn,
-                payload: Bytes::copy_from_slice(body),
-            }),
-            TYPE_CLOSE => {
-                if body.len() < 2 {
-                    return Err("close frame without a code".to_string());
-                }
-                Ok(Frame::Close {
-                    conn,
-                    code: u16::from_be_bytes([body[0], body[1]]),
-                    reason: String::from_utf8_lossy(&body[2..]).into_owned(),
-                })
-            }
-            TYPE_TEXT => Ok(Frame::Text {
-                conn,
-                text: String::from_utf8_lossy(body).into_owned(),
-            }),
-            // Decoded for the round-trip tests and for symmetry; the host never
-            // receives one (see `route`). `conn` is not checked against 0: a
-            // frame this side only ever writes cannot arrive with another value
-            // unless the relay invented it, and dropping it in `route` is
-            // already the answer to that.
-            TYPE_NOTIFY => Ok(Frame::Notify {
-                payload: Bytes::copy_from_slice(body),
-            }),
-            other => Err(format!("unknown frame type {other:#04x}")),
-        }
-    }
-
-    fn into_message(self) -> Message {
-        Message::Binary(self.encode())
-    }
-}
+/// The multiplexing codec (`type || connId || payload`), the endpoint and the
+/// host-link proof. Shared with the phone and the relay Worker through
+/// `fletch-proto`, since all three have to agree on these bytes.
+pub(super) use fletch_proto::relay::{challenge_proof, host_endpoint, Frame};
 
 // ---------------------------------------------------------------------------
 // Status
@@ -338,11 +223,6 @@ impl Drop for RelayLink {
     }
 }
 
-/// `<base>/v1/host/<hostId>`, per the doc's endpoint table.
-pub(super) fn host_endpoint(base: &str, host_id: &str) -> String {
-    format!("{}/v1/host/{host_id}", base.trim_end_matches('/'))
-}
-
 /// Reconnect forever: dial, authenticate, demultiplex, back off, repeat.
 async fn run(
     state: Arc<RemoteState>,
@@ -405,7 +285,7 @@ async fn attempt(
     outbound: &Outgoing,
     shutdown: &mut broadcast::Receiver<()>,
 ) -> Outcome {
-    let Some(host_id) = state.host_key().map(HostKey::host_id) else {
+    let Some(host_id) = state.host_key().map(HostKey::public_base64) else {
         // No identity: nothing to route on and nothing to prove. The same
         // condition already stands in `RemoteStatus::error`.
         return retry("this host has no key, so it cannot attach to a relay");
@@ -501,21 +381,6 @@ where
         RelayHello::Ready => Ok(()),
         RelayHello::Challenge { .. } => Err("the relay challenged twice".to_string()),
     }
-}
-
-/// `SHA-256( X25519(hostPrivate, relayKey) || nonce || hostKey )`, raw bytes
-/// throughout (`docs/remote-protocol.md` → "Relay").
-pub(super) fn challenge_proof(
-    host: &HostKey,
-    relay_key: &[u8; 32],
-    nonce: &[u8],
-) -> crate::error::Result<[u8; 32]> {
-    let shared = host.diffie_hellman(relay_key)?;
-    let mut digest = Sha256::new();
-    digest.update(shared);
-    digest.update(nonce);
-    digest.update(host.public_bytes());
-    Ok(digest.finalize().into())
 }
 
 /// The next JSON text frame of the authentication exchange. Ping/pong are the
@@ -957,106 +822,5 @@ impl Sink<Message> for VirtualConn {
         self.done = true;
         self.out = Outbound::Gone;
         Poll::Ready(Ok(()))
-    }
-}
-
-#[cfg(test)]
-mod codec_tests {
-    use super::*;
-
-    fn roundtrip(frame: Frame) {
-        let encoded = frame.encode();
-        assert_eq!(Frame::decode(&encoded).unwrap(), frame, "{frame:?}");
-    }
-
-    #[test]
-    fn every_frame_type_roundtrips() {
-        roundtrip(Frame::Open { conn: 0 });
-        roundtrip(Frame::Open { conn: u32::MAX });
-        roundtrip(Frame::Data {
-            conn: 7,
-            payload: Bytes::from_static(&[0, 1, 2, 255]),
-        });
-        roundtrip(Frame::Data {
-            conn: 7,
-            payload: Bytes::new(),
-        });
-        roundtrip(Frame::Close {
-            conn: 9,
-            code: 4004,
-            reason: "remote access disabled".to_string(),
-        });
-        roundtrip(Frame::Close {
-            conn: 9,
-            code: 1000,
-            reason: String::new(),
-        });
-        roundtrip(Frame::Text {
-            conn: 3,
-            text: "{\"op\":\"hello\"}".to_string(),
-        });
-        roundtrip(Frame::Notify {
-            payload: Bytes::from_static(br#"{"kind":"turn_complete"}"#),
-        });
-        roundtrip(Frame::Notify {
-            payload: Bytes::new(),
-        });
-    }
-
-    /// The header the doc fixes: `type (1) || connId (u32 big-endian)`, then the
-    /// payload, and for CLOSE a `u16` big-endian code before the reason.
-    #[test]
-    fn the_wire_layout_is_the_documented_one() {
-        assert_eq!(
-            Frame::Data {
-                conn: 0x01020304,
-                payload: Bytes::from_static(b"hi"),
-            }
-            .encode()
-            .as_ref(),
-            &[0x02, 0x01, 0x02, 0x03, 0x04, b'h', b'i']
-        );
-        assert_eq!(
-            Frame::Close {
-                conn: 1,
-                code: 4004,
-                reason: "x".to_string(),
-            }
-            .encode()
-            .as_ref(),
-            &[0x03, 0, 0, 0, 1, 0x0f, 0xa4, b'x']
-        );
-        assert_eq!(
-            Frame::Open { conn: 1 }.encode().as_ref(),
-            &[0x01, 0, 0, 0, 1]
-        );
-        // NOTIFY is `0x05` on connId 0 — it belongs to no virtual connection.
-        assert_eq!(
-            Frame::Notify {
-                payload: Bytes::from_static(b"{}"),
-            }
-            .encode()
-            .as_ref(),
-            &[0x05, 0, 0, 0, 0, b'{', b'}']
-        );
-    }
-
-    #[test]
-    fn malformed_frames_are_rejected_not_guessed() {
-        for bytes in [
-            vec![],
-            vec![0x02],
-            vec![0x02, 0, 0, 0],
-            // CLOSE without room for a code.
-            vec![0x03, 0, 0, 0, 1],
-            vec![0x03, 0, 0, 0, 1, 0x0f],
-            // A type the host does not know.
-            vec![0x09, 0, 0, 0, 1],
-        ] {
-            assert!(
-                Frame::decode(&bytes).is_err(),
-                "{bytes:?} should not decode"
-            );
-        }
     }
 }
