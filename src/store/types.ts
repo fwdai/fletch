@@ -15,6 +15,8 @@ import type { AutopilotLogSlice } from "./autopilotLog";
 import type { ComposerSlice } from "./composer";
 import type { CustomAgentsSlice } from "./customAgents";
 import type { DraftsSlice } from "./drafts";
+import type { EnvironmentSwitchSlice } from "./environmentSwitch";
+import type { EnvironmentEntry, EnvironmentId, EnvironmentsSlice } from "./environments";
 import type { GitSlice } from "./git";
 import type { LocalCommandsSlice } from "./localCommands";
 import type { McpServersSlice } from "./mcpServers";
@@ -36,6 +38,10 @@ export type {
   CustomAgentsSlice,
   DockerBuildProgress,
   DraftsSlice,
+  EnvironmentEntry,
+  EnvironmentId,
+  EnvironmentSwitchSlice,
+  EnvironmentsSlice,
   GitSlice,
   InstallState,
   LocalCommandsSlice,
@@ -52,6 +58,8 @@ export type {
 };
 
 export type AppState = AppSlice &
+  EnvironmentsSlice &
+  EnvironmentSwitchSlice &
   WorkspaceSlice &
   ReposSlice &
   GitSlice &

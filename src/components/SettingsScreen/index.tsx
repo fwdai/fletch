@@ -2,6 +2,7 @@ import { lazy, Suspense, useMemo } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import type { SettingsSection } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { IS_MAC } from "@/util/platform";
 import { WorkflowsPane } from "@/workflows/builder";
 import pkg from "../../../package.json";
@@ -65,8 +66,6 @@ const NAV: NavItem[] = [
     order: 40,
     subsections: CUSTOMIZE_IDS,
   },
-  // Right after Customize — workflows chain those custom agents.
-  { id: "workflows", label: "Workflows", icon: "combine", order: 41 },
   { id: "remote", label: "Remote control", icon: "phone", order: 45 },
   { id: "experimental", label: "Experimental", icon: "flask", order: 50 },
 ];
@@ -81,6 +80,13 @@ const DICTATION_NAV: NavItem = { id: "dictation", label: "Dictation", icon: "mic
 // so it slots by `order` among the base entries above.
 const DEVELOPER_NAV: NavItem = { id: "developer", label: "Developer", icon: "wrench", order: 60 };
 
+// Right after Customize — workflows chain those custom agents. Added at render
+// because a host answers no `wf_*` op (docs/multi-host-plan.md §5.3, item 2):
+// on a remote environment a run launched from here could not start, so the
+// section is not offered. Everything else in Settings is about this desktop and
+// stays put whatever environment is active.
+const WORKFLOWS_NAV: NavItem = { id: "workflows", label: "Workflows", icon: "combine", order: 41 };
+
 /** Dedicated full-screen settings surface. Rendered in place of the workspace
  *  panes while `settingsScreenOpen` is true. The quick-settings popover stays
  *  for fast access; this is the comprehensive surface. */
@@ -89,15 +95,19 @@ export function SettingsScreen() {
   const setSection = useAppStore((s) => s.setSettingsSection);
   const close = useAppStore((s) => s.closeSettingsScreen);
   const admin = useAppStore((s) => s.admin);
+  const workflowGate = useGate("workflows");
 
   // Dev builds always expose Developer; production unlocks it only for admins.
   const showDeveloper = import.meta.env.DEV || admin;
   const nav = useMemo(
     () =>
-      [...NAV, ...(IS_MAC ? [DICTATION_NAV] : []), ...(showDeveloper ? [DEVELOPER_NAV] : [])].sort(
-        (a, b) => a.order - b.order,
-      ),
-    [showDeveloper],
+      [
+        ...NAV,
+        ...(workflowGate ? [] : [WORKFLOWS_NAV]),
+        ...(IS_MAC ? [DICTATION_NAV] : []),
+        ...(showDeveloper ? [DEVELOPER_NAV] : []),
+      ].sort((a, b) => a.order - b.order),
+    [showDeveloper, workflowGate],
   );
 
   // A section with no nav entry (a stale "developer" after the admin flag

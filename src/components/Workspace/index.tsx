@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { providerLabel } from "@/data/providers";
 import { EMPTY_AGENTS, useAppStore } from "@/store";
+import { activeEntry, connectionLabel } from "@/store/capabilities";
 import { RunView } from "@/workflows/run/RunView";
 import { ChatView } from "./ChatView";
 import { EmptyWorkspace } from "./EmptyWorkspace";
@@ -20,6 +21,7 @@ import { WorkspaceHeader } from "./WorkspaceHeader";
  *  placeholder. Listens to the global `viewMode` from the store. */
 export function Workspace() {
   const workspace = useAppStore((s) => s.workspace);
+  const environment = useAppStore(activeEntry);
   const agents = useAppStore((s) => s.workspace?.agents ?? EMPTY_AGENTS);
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const selectedRunId = useAppStore((s) => s.selectedRunId);
@@ -46,12 +48,20 @@ export function Workspace() {
   // "Loading…" placeholder stands only until the workspace connects.
   const agent = agents.find((a) => a.id === selectedId);
   if (!workspace) {
+    // A paired host that is not reachable has nothing to show and no reason to
+    // pretend it is still loading — the switcher says which host this is, so
+    // this says what is wrong with it. Never a spinner the user waits out.
+    const offline = environment.kind === "remote" && environment.connection !== "connected";
     return (
       <div className="pane center">
         <div className="center-h flex-center">
           <PanelToggle side="left" />
         </div>
-        <Placeholder title="Loading…" body="Connecting to Fletch…" />
+        {offline ? (
+          <Placeholder title={environment.name} body={connectionLabel(environment)} />
+        ) : (
+          <Placeholder title="Loading…" body="Connecting to Fletch…" />
+        )}
       </div>
     );
   }

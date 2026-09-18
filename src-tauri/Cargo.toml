@@ -68,9 +68,13 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # This crate is the desktop *shell* around it — Tauri setup, the command
 # wrappers, the tray, dictation, OAuth and the updater. A path dependency rather
 # than a workspace member, so each binary package keeps its own lockfile and the
-# release workflow needs no change. The wire protocol (`fletch-proto`) arrives
-# transitively through it.
+# release workflow needs no change.
 fletch-core = { path = "../crates/fletch-core" }
+# The wire protocol, shared with the mobile app. It also arrives transitively
+# through `fletch-core`, but `client/` — this Mac as a client of other hosts —
+# names `fletch_proto::client::Dialer` directly, and a transitive dependency is
+# not in scope by name.
+fletch-proto = { path = "../crates/fletch-proto" }
 
 # Window state (size/position/maximized) persistence — desktop only.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

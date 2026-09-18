@@ -15,6 +15,7 @@ import type {
   Workspace,
 } from "@desktop/api/types/agent";
 import type { PrStateChangedEvent } from "@desktop/api/types/pr";
+import type { PublishApproval } from "@desktop/api/types/sandbox";
 import type {
   SessionRecordsAppendedEvent,
   TurnSentEvent,
@@ -175,7 +176,14 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     void get().refreshWorkspace();
   });
 
-  // `verify:report` and `publish:approval-requested` are forwarded by the host
-  // but have no v1 surface on the phone (no verification card, and publish
-  // approval is a desktop-side setting), so they are intentionally unhandled.
+  // A gated publish the host is blocked on. Control plane, not transcript: it
+  // goes to its own list, which the agent's chat draws as an Approve / Deny
+  // card. Answering needs `answer_publish_approval`, which a host older than
+  // the op does not have — the card handles that, not this tap.
+  on<PublishApproval>("publish:approval-requested", (request) => {
+    get().receivePublishApproval(request);
+  });
+
+  // `verify:report` is forwarded by the host but has no v1 surface on the phone
+  // (no verification card), so it is intentionally unhandled.
 }

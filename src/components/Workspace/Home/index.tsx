@@ -2,6 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import { PanelToggle } from "@/components/PanelToggle";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { ActionCard } from "./ActionCard";
 import { greeting } from "./greeting";
 
@@ -23,6 +24,7 @@ export function Home() {
   const setLastError = useAppStore((s) => s.setLastError);
 
   const [adding, setAdding] = useState(false);
+  const addProjectGate = useGate("addProject");
 
   const repos = workspace?.repos ?? [];
   const projects = workspace?.projects ?? [];
@@ -55,7 +57,7 @@ export function Home() {
   // Same flow as the sidebar's "Open a folder" (NewProjectPopover): native
   // directory picker → pin the repo → remember it as the next New-agent target.
   const addProject = async () => {
-    if (adding) return;
+    if (adding || addProjectGate) return;
     setAdding(true);
     try {
       const picked = await open({
@@ -117,14 +119,16 @@ export function Home() {
                 tone="primary"
                 icon="folder"
                 title="Add your first project"
-                sub="Open a local git repository on your machine"
+                // The picker is this Mac's, so on a remote environment the card
+                // says where projects come from instead of opening it.
+                sub={addProjectGate ?? "Open a local git repository on your machine"}
                 onClick={() => void addProject()}
                 busy={adding}
               />
             )}
 
             <div className="home-grid">
-              {hasProjects && (
+              {hasProjects && !addProjectGate && (
                 <ActionCard
                   icon="folder"
                   title="Add a project"

@@ -212,6 +212,28 @@ describe("answering a tool-use prompt", () => {
   });
 });
 
+describe("answering a gated publish", () => {
+  const request = {
+    id: "pub-1",
+    agent_id: "arabia",
+    op: "git_push",
+    detail: "push fix/onboarding-flicker",
+  };
+
+  it("gates on what the host reported it answers, not on its version", () => {
+    expect(state().protocol?.version).toBe(2);
+    expect(state().hostSupports("answer_publish_approval")).toBe(true);
+    expect(state().hostSupports("open_agent_shell")).toBe(false);
+  });
+
+  it("holds the prompt until it is answered, then drops it", async () => {
+    state().receivePublishApproval(request);
+    expect(state().pendingPublishApprovals).toContainEqual(request);
+    await state().answerPublishApproval(request.id, true);
+    expect(state().pendingPublishApprovals).toHaveLength(0);
+  });
+});
+
 describe("spawn flow", () => {
   it("spawns under the name the sheet showed, waits for spawning to clear, then sends the prompt", async () => {
     const before = state().workspace?.agents.length ?? 0;

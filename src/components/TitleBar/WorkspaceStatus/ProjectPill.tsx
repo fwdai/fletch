@@ -1,4 +1,5 @@
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import type { DotStatus } from "./derive";
 import { StatusDot } from "./StatusDot";
 
@@ -15,12 +16,17 @@ export function ProjectPill({
   status: DotStatus;
 }) {
   const openProjectScreen = useAppStore((s) => s.openProjectScreen);
+  // The page behind this pill is the roadmap, which a host does not answer for.
+  // The pill stays — it is how the user knows which project they are in — but
+  // it stops being a door, and says why.
+  const roadmapGate = useGate("roadmap");
   return (
     <>
       <button
         type="button"
         className="ws-cap ws-cap-proj"
-        title="Open project page"
+        title={roadmapGate ?? "Open project page"}
+        disabled={roadmapGate !== null}
         onClick={() => openProjectScreen(repoPath)}
       >
         <StatusDot status={status} />

@@ -1,4 +1,4 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { activeTransport, localTransport, type UnlistenFn } from "./transport";
 import type {
   AgentBranchEvent,
   AgentEffortEvent,
@@ -45,33 +45,47 @@ import type {
 import type { VerificationReportEvent } from "./types/verify";
 import type { WfEventEnvelope, WfRun } from "./types/workflow";
 
+/** Subscribe to one engine event on the environment the UI is driving, with the
+ *  transport's envelope already unwrapped, and get back the unsubscribe. */
+function on<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
+  return activeTransport().on<T>(event, cb);
+}
+
+/** Subscribe on this desktop whatever environment is active — for events no
+ *  remote engine has any business emitting: the mic, the provider CLIs
+ *  installed here, a sign-in PTY running in this window. The mirror image of
+ *  `invokeLocal` in ./invoke, and every wrapper below says which one it uses. */
+function onLocal<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
+  return localTransport.on<T>(event, cb);
+}
+
 /** Fires on every journal append for any run. */
 export function onWfEvent(cb: (e: WfEventEnvelope) => void): Promise<UnlistenFn> {
-  return listen<WfEventEnvelope>("wf:event", (event) => cb(event.payload));
+  return on<WfEventEnvelope>("wf:event", cb);
 }
 
 /** Fires whenever a run row changes; carries the full row. */
 export function onWfRun(cb: (e: WfRun) => void): Promise<UnlistenFn> {
-  return listen<WfRun>("wf:run", (event) => cb(event.payload));
+  return on<WfRun>("wf:run", cb);
 }
 
 /** `wf:run-deleted` fires the deleted run's id after `wf_delete_run` removes its
  *  rows, so the sidebar drops the row instead of upserting it. */
 export function onWfRunDeleted(cb: (runId: string) => void): Promise<UnlistenFn> {
-  return listen<string>("wf:run-deleted", (event) => cb(event.payload));
+  return on<string>("wf:run-deleted", cb);
 }
 
 /** Fires whenever a roadmap item is created or changed; carries the full row so
  *  the board upserts by id without a refetch. Fires for every project — a
  *  listener scoped to one board filters on `project_id`. */
 export function onRoadmapItem(cb: (item: RoadmapItem) => void): Promise<UnlistenFn> {
-  return listen<RoadmapItem>("roadmap:item", (event) => cb(event.payload));
+  return on<RoadmapItem>("roadmap:item", cb);
 }
 
 /** `roadmap:item-deleted` fires the deleted item's id, so the board drops the
  *  row instead of upserting it. */
 export function onRoadmapItemDeleted(cb: (id: string) => void): Promise<UnlistenFn> {
-  return listen<string>("roadmap:item-deleted", (event) => cb(event.payload));
+  return on<string>("roadmap:item-deleted", cb);
 }
 
 /** `roadmap:item-event` fires when a durable history row lands — one per status
@@ -80,7 +94,7 @@ export function onRoadmapItemDeleted(cb: (id: string) => void): Promise<Unlisten
  *  (`roadmap_list_item_events`), so a listener that wasn't mounted loses
  *  nothing. */
 export function onRoadmapItemEvent(cb: (e: RoadmapItemEvent) => void): Promise<UnlistenFn> {
-  return listen<RoadmapItemEvent>("roadmap:item-event", (event) => cb(event.payload));
+  return on<RoadmapItemEvent>("roadmap:item-event", cb);
 }
 
 /** `roadmap:proposal` fires when the PM parks (or revises — same id, new
@@ -88,14 +102,14 @@ export function onRoadmapItemEvent(cb: (e: RoadmapItemEvent) => void): Promise<U
  *  the card grows its proposal bar without a refetch. Fires for every project —
  *  a listener scoped to one board filters on `project_id`. */
 export function onRoadmapProposal(cb: (proposal: RoadmapProposal) => void): Promise<UnlistenFn> {
-  return listen<RoadmapProposal>("roadmap:proposal", (event) => cb(event.payload));
+  return on<RoadmapProposal>("roadmap:proposal", cb);
 }
 
 /** `roadmap:proposal-deleted` fires the proposal's id once it has been ruled on
  *  (accepted, declined, or found stale) — the item's own fate arrives
  *  separately on `roadmap:item` / `roadmap:item-deleted`. */
 export function onRoadmapProposalDeleted(cb: (id: string) => void): Promise<UnlistenFn> {
-  return listen<string>("roadmap:proposal-deleted", (event) => cb(event.payload));
+  return on<string>("roadmap:proposal-deleted", cb);
 }
 
 /** `roadmap:order-proposal` fires when the PM parks (or replaces) a whole-board
@@ -105,7 +119,7 @@ export function onRoadmapProposalDeleted(cb: (id: string) => void): Promise<Unli
 export function onRoadmapOrderProposal(
   cb: (proposal: RoadmapOrderProposal) => void,
 ): Promise<UnlistenFn> {
-  return listen<RoadmapOrderProposal>("roadmap:order-proposal", (event) => cb(event.payload));
+  return on<RoadmapOrderProposal>("roadmap:order-proposal", cb);
 }
 
 /** `roadmap:order-proposal-deleted` fires the *project id* once the order ask has
@@ -114,7 +128,7 @@ export function onRoadmapOrderProposal(
 export function onRoadmapOrderProposalDeleted(
   cb: (projectId: string) => void,
 ): Promise<UnlistenFn> {
-  return listen<string>("roadmap:order-proposal-deleted", (event) => cb(event.payload));
+  return on<string>("roadmap:order-proposal-deleted", cb);
 }
 
 /** `roadmap:project-hold` fires when the whole board is stopped, or when the
@@ -125,7 +139,7 @@ export function onRoadmapOrderProposalDeleted(
  *  An *item's* hold has no event of its own: it lives on the row, so it arrives
  *  on `roadmap:item` like every other change to that row. */
 export function onRoadmapProjectHold(cb: (hold: RoadmapProjectHold) => void): Promise<UnlistenFn> {
-  return listen<RoadmapProjectHold>("roadmap:project-hold", (event) => cb(event.payload));
+  return on<RoadmapProjectHold>("roadmap:project-hold", cb);
 }
 
 /** `roadmap:project-hold-released` fires the *project id* once the user lets the
@@ -133,7 +147,7 @@ export function onRoadmapProjectHold(cb: (hold: RoadmapProjectHold) => void): Pr
  *  address it by. Only the user can produce this event: the PM has an op to hold
  *  and none to release. */
 export function onRoadmapProjectHoldReleased(cb: (projectId: string) => void): Promise<UnlistenFn> {
-  return listen<string>("roadmap:project-hold-released", (event) => cb(event.payload));
+  return on<string>("roadmap:project-hold-released", cb);
 }
 
 /** `roadmap:brief` fires when the project's product brief changes — which only
@@ -141,7 +155,7 @@ export function onRoadmapProjectHoldReleased(cb: (projectId: string) => void): P
  *  Carries the whole document, so the tab re-renders without a refetch. Fires for
  *  every project — a listener scoped to one board filters on `project_id`. */
 export function onRoadmapBrief(cb: (brief: RoadmapBrief) => void): Promise<UnlistenFn> {
-  return listen<RoadmapBrief>("roadmap:brief", (event) => cb(event.payload));
+  return on<RoadmapBrief>("roadmap:brief", cb);
 }
 
 /** `roadmap:brief-proposal` fires when the PM parks (or replaces) an ask to
@@ -150,7 +164,7 @@ export function onRoadmapBrief(cb: (brief: RoadmapBrief) => void): Promise<Unlis
 export function onRoadmapBriefProposal(
   cb: (proposal: RoadmapBriefProposal) => void,
 ): Promise<UnlistenFn> {
-  return listen<RoadmapBriefProposal>("roadmap:brief-proposal", (event) => cb(event.payload));
+  return on<RoadmapBriefProposal>("roadmap:brief-proposal", cb);
 }
 
 /** `roadmap:brief-proposal-deleted` fires the *project id* once the brief ask has
@@ -159,7 +173,7 @@ export function onRoadmapBriefProposal(
 export function onRoadmapBriefProposalDeleted(
   cb: (projectId: string) => void,
 ): Promise<UnlistenFn> {
-  return listen<string>("roadmap:brief-proposal-deleted", (event) => cb(event.payload));
+  return on<string>("roadmap:brief-proposal-deleted", cb);
 }
 
 /** `roadmap:queue-note` explains why an item isn't moving — no workflow to run
@@ -169,19 +183,19 @@ export function onRoadmapBriefProposalDeleted(
  *  nothing persists it, so a listener that wasn't mounted simply didn't hear it
  *  (the drainer repeats itself when the reason changes). */
 export function onRoadmapQueueNote(cb: (note: RoadmapQueueNote) => void): Promise<UnlistenFn> {
-  return listen<RoadmapQueueNote>("roadmap:queue-note", (event) => cb(event.payload));
+  return on<RoadmapQueueNote>("roadmap:queue-note", cb);
 }
 
 export function onAgentInstallState(cb: (e: AgentInstallEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentInstallEvent>("agent-install:state", (event) => cb(event.payload));
+  return onLocal<AgentInstallEvent>("agent-install:state", cb);
 }
 
 export function onAgentOutput(cb: (e: AgentOutputEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentOutputEvent>("agent:output", (event) => cb(event.payload));
+  return on<AgentOutputEvent>("agent:output", cb);
 }
 
 export function onShellOutput(cb: (e: ShellOutputEvent) => void): Promise<UnlistenFn> {
-  return listen<ShellOutputEvent>("shell:output", (event) => cb(event.payload));
+  return on<ShellOutputEvent>("shell:output", cb);
 }
 
 /** The running transcript of the active dictation session (see
@@ -189,7 +203,7 @@ export function onShellOutput(cb: (e: ShellOutputEvent) => void): Promise<Unlist
 export function onDictationTranscript(
   cb: (e: DictationTranscriptEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<DictationTranscriptEvent>("dictation:transcript", (event) => cb(event.payload));
+  return onLocal<DictationTranscriptEvent>("dictation:transcript", cb);
 }
 
 /** Dictation session lifecycle: listening → (transcribing) → stopped, or error
@@ -198,14 +212,14 @@ export function onDictationTranscript(
  *  events, so a consumer that owns one has to ignore the rest (a composer that
  *  unmounted mid-session leaves its terminal event to land on the next one). */
 export function onDictationState(cb: (e: DictationStateEvent) => void): Promise<UnlistenFn> {
-  return listen<DictationStateEvent>("dictation:state", (event) => cb(event.payload));
+  return onLocal<DictationStateEvent>("dictation:state", cb);
 }
 
 /** The microphone's loudness while a dictation session listens, about every
  *  90 ms (see `DictationLevelEvent`). App-wide and session-stamped like the
  *  other dictation events. */
 export function onDictationLevel(cb: (e: DictationLevelEvent) => void): Promise<UnlistenFn> {
-  return listen<DictationLevelEvent>("dictation:level", (event) => cb(event.payload));
+  return onLocal<DictationLevelEvent>("dictation:level", cb);
 }
 
 /** Progress of the local engine's model download, ending in `installed` or
@@ -215,13 +229,11 @@ export function onDictationLevel(cb: (e: DictationLevelEvent) => void): Promise<
 export function onDictationModelProgress(
   cb: (e: DictationModelProgressEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<DictationModelProgressEvent>("dictation:model_progress", (event) =>
-    cb(event.payload),
-  );
+  return onLocal<DictationModelProgressEvent>("dictation:model_progress", cb);
 }
 
 export function onAgentEvent(cb: (e: AgentManagedEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentManagedEvent>("agent:event", (event) => cb(event.payload));
+  return on<AgentManagedEvent>("agent:event", cb);
 }
 
 /** Fires when a turn's transcript has been ingested into session_records, so
@@ -229,113 +241,111 @@ export function onAgentEvent(cb: (e: AgentManagedEvent) => void): Promise<Unlist
 export function onSessionRecordsAppended(
   cb: (e: SessionRecordsAppendedEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<SessionRecordsAppendedEvent>("session:records-appended", (event) =>
-    cb(event.payload),
-  );
+  return on<SessionRecordsAppendedEvent>("session:records-appended", cb);
 }
 
 /** Fires when an agent's turn-end transcript ingest changes health — drift
  *  detected, or a prior drift cleared. Emitted on change only. */
 export function onSessionSyncHealth(cb: (e: SessionSyncHealthEvent) => void): Promise<UnlistenFn> {
-  return listen<SessionSyncHealthEvent>("session:sync-health", (event) => cb(event.payload));
+  return on<SessionSyncHealthEvent>("session:sync-health", cb);
 }
 
 /** Fires when the host accepts a user message for an agent, from any client.
  *  Mirror it into the log unless it is this client's own send (same turn id). */
 export function onTurnSent(cb: (e: TurnSentEvent) => void): Promise<UnlistenFn> {
-  return listen<TurnSentEvent>("turn:sent", (event) => cb(event.payload));
+  return on<TurnSentEvent>("turn:sent", cb);
 }
 
 /** Fires when a turn flips to Running, carrying the backend's own start
  *  timestamp so the live timer shares the persisted duration's clock. */
 export function onTurnStarted(cb: (e: TurnStartedEvent) => void): Promise<UnlistenFn> {
-  return listen<TurnStartedEvent>("turn:started", (event) => cb(event.payload));
+  return on<TurnStartedEvent>("turn:started", cb);
 }
 
 export function onAgentStatus(cb: (e: AgentStatusEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentStatusEvent>("agent:status", (event) => cb(event.payload));
+  return on<AgentStatusEvent>("agent:status", cb);
 }
 
 export function onAgentView(cb: (e: AgentViewEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentViewEvent>("agent:view", (event) => cb(event.payload));
+  return on<AgentViewEvent>("agent:view", cb);
 }
 
 /** Fires when a session's reasoning effort is changed mid-conversation, so the
  *  composer's effort chip reflects the new value without a full resync. */
 export function onAgentEffort(cb: (e: AgentEffortEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentEffortEvent>("agent:effort", (event) => cb(event.payload));
+  return on<AgentEffortEvent>("agent:effort", cb);
 }
 
 /** Fires when a session's model is changed mid-conversation, so the composer's
  *  model picker reflects the new value without a full resync. */
 export function onAgentModel(cb: (e: AgentModelEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentModelEvent>("agent:model", (event) => cb(event.payload));
+  return on<AgentModelEvent>("agent:model", cb);
 }
 
 export function onAgentTask(cb: (e: AgentTaskEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentTaskEvent>("agent:task", (event) => cb(event.payload));
+  return on<AgentTaskEvent>("agent:task", cb);
 }
 
 export function onAgentBranch(cb: (e: AgentBranchEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentBranchEvent>("agent:branch", (event) => cb(event.payload));
+  return on<AgentBranchEvent>("agent:branch", cb);
 }
 
 export function onAgentRepoAdded(cb: (e: AgentRepoAddedEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentRepoAddedEvent>("agent:repo_added", (event) => cb(event.payload));
+  return on<AgentRepoAddedEvent>("agent:repo_added", cb);
 }
 
 export function onAgentGitAction(cb: (e: AgentGitActionEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentGitActionEvent>("agent:git-action", (event) => cb(event.payload));
+  return on<AgentGitActionEvent>("agent:git-action", cb);
 }
 
 export function onWorkspaceChanged(cb: () => void): Promise<UnlistenFn> {
-  return listen<unknown>("workspace:changed", () => cb());
+  return on<unknown>("workspace:changed", () => cb());
 }
 
 export function onPrStateChanged(cb: (e: PrStateChangedEvent) => void): Promise<UnlistenFn> {
-  return listen<PrStateChangedEvent>("pr:state_changed", (event) => cb(event.payload));
+  return on<PrStateChangedEvent>("pr:state_changed", cb);
 }
 
 export function onVerificationReport(
   cb: (e: VerificationReportEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<VerificationReportEvent>("verify:report", (event) => cb(event.payload));
+  return on<VerificationReportEvent>("verify:report", cb);
 }
 
 export function onRunOutput(cb: (e: RunOutputEvent) => void): Promise<UnlistenFn> {
-  return listen<RunOutputEvent>("run:output", (event) => cb(event.payload));
+  return on<RunOutputEvent>("run:output", cb);
 }
 
 export function onRunState(cb: (e: RunStateEvent) => void): Promise<UnlistenFn> {
-  return listen<RunStateEvent>("run:state", (event) => cb(event.payload));
+  return on<RunStateEvent>("run:state", cb);
 }
 
 export function onRunPort(cb: (e: RunPortEvent) => void): Promise<UnlistenFn> {
-  return listen<RunPortEvent>("run:port", (event) => cb(event.payload));
+  return on<RunPortEvent>("run:port", cb);
 }
 
 /** An agent is waiting for the user to approve one publish. Only fires when the
  *  `publish_confirmation` setting is on; unanswered requests are denied backend
  *  side after a timeout, so ignoring one is safe. */
 export function onPublishApprovalRequested(cb: (e: PublishApproval) => void): Promise<UnlistenFn> {
-  return listen<PublishApproval>("publish:approval-requested", (event) => cb(event.payload));
+  return on<PublishApproval>("publish:approval-requested", cb);
 }
 
 /** Fires per line (and at start/finish/failure) while the embedded docker agent
  *  image builds on a cold first spawn — feeds the build progress toast. */
 export function onDockerBuildProgress(cb: (e: DockerBuildEvent) => void): Promise<UnlistenFn> {
-  return listen<DockerBuildEvent>("docker:build-progress", (event) => cb(event.payload));
+  return on<DockerBuildEvent>("docker:build-progress", cb);
 }
 
 /** Raw PTY bytes from a provider's in-app sign-in (Settings → Providers). */
 export function onProviderLoginOutput(
   cb: (e: ProviderLoginOutputEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<ProviderLoginOutputEvent>("provider-login:output", (event) => cb(event.payload));
+  return onLocal<ProviderLoginOutputEvent>("provider-login:output", cb);
 }
 
 /** A provider's sign-in process ended — cleanly, with an error, or because it
  *  was closed. */
 export function onProviderLoginExit(cb: (e: ProviderLoginExitEvent) => void): Promise<UnlistenFn> {
-  return listen<ProviderLoginExitEvent>("provider-login:exit", (event) => cb(event.payload));
+  return onLocal<ProviderLoginExitEvent>("provider-login:exit", cb);
 }

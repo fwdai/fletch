@@ -1059,6 +1059,11 @@
   width: 90px;
   font-variant-numeric: tabular-nums;
 }
+/* A pairing link is long and pasted rather than typed, so it gets more room
+   than the relay URL it borrows its look from. */
+.set-pair-link {
+  width: 320px;
+}
 .set-relay-url:focus {
   border-color: var(--accent);
 }
@@ -1145,6 +1150,18 @@
 }
 .set-dev-dot[data-on="1"] {
   background: var(--success);
+}
+/* Same dot for a paired *host*, which has states a device socket does not: a
+   client connection can be mid-dial, or stopped on a reason only the user can
+   clear. */
+.set-dev-dot[data-state="connected"] {
+  background: var(--success);
+}
+.set-dev-dot[data-state="connecting"] {
+  background: var(--warn);
+}
+.set-dev-dot[data-state="error"] {
+  background: var(--danger);
 }
 
 /* ── quick-popover "All settings" footer button ──────────────────────── */

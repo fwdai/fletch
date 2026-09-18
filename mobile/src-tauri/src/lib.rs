@@ -1,6 +1,8 @@
 // The mobile shell registers plugins and the secure channel to the paired Mac.
 // Code and agents run on the host; the only Rust the phone needs of its own is
-// `remote`, because the Noise handshake and the socket cannot live in a webview.
+// `remote`, because the Noise handshake and the socket cannot live in a webview
+// — and that is four commands over the shared dialer in fletch-proto, the same
+// one the desktop uses to reach a host.
 
 mod remote;
 
@@ -45,17 +47,19 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_push::init())
-        .setup(|_app| {
+        .setup(|app| {
+            use tauri::Manager;
             #[cfg(target_os = "ios")]
-            {
-                use tauri::Manager;
-                for webview in _app.webview_windows().values() {
-                    webview.with_webview(own_the_whole_screen)?;
-                }
+            for webview in app.webview_windows().values() {
+                webview.with_webview(own_the_whole_screen)?;
             }
+            // The dialer holds every live connection to a host, and its device
+            // key lives in the app data dir — which is why it is built here,
+            // where the app handle can resolve that dir, rather than at
+            // `Builder::manage` time.
+            app.manage(remote::dialer(app.handle())?);
             Ok(())
         })
-        .manage(remote::Remote::default())
         .invoke_handler(tauri::generate_handler![
             remote::remote_connect,
             remote::remote_send,
