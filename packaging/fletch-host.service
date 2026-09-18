@@ -1,9 +1,9 @@
 # A systemd **user** unit: the host runs as you, not as root.
 #
-# Everything it touches is yours — your `~/.local/share/fletch-host` database,
-# your `~/.fletch/fletch-host` checkouts, the provider CLI logins in your home
-# directory — and on Linux the container sandbox maps its files back to this
-# same user, which a root-owned service would defeat.
+# Everything it touches is yours — your `~/.local/share/fletch-host` data dir
+# (database, and the checkouts and RPC mailboxes under it), the provider CLI
+# logins in your home directory — and on Linux the container sandbox maps its
+# files back to this same user, which a root-owned service would defeat.
 #
 #   install -Dm644 packaging/fletch-host.service ~/.config/systemd/user/fletch-host.service
 #   systemctl --user daemon-reload

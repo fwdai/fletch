@@ -233,22 +233,25 @@ two engines on one SQLite database — each would sweep the other's live agents 
 orphans. A debug build takes a `dev` subfolder of it for the same reason: one
 machine, two builds, two databases.
 
-Two more directories are the host's and not in there, because agent checkouts
-and RPC mailboxes have to sit outside the app's data dir for the sandbox to
-reach them:
+Agent checkouts and RPC mailboxes hang off the same directory, one level down:
 
 ```
-~/.fletch/fletch-host/workspaces/<agent>/   # checkouts (dev/workspaces from a debug build)
-~/.fletch/fletch-host/rpc/<agent>/          # RPC mailboxes, 0700
+<data-dir>/workspaces/<agent>/   # checkouts (dev/workspaces from a debug build)
+<data-dir>/rpc/<agent>/          # RPC mailboxes, 0700
 ```
 
-The `fletch-host` segment is what keeps a host and a desktop apart: agent names
-come from a pool of place names and are recycled, so two engines with two
-databases *will* eventually both name an agent `fuji` — and sharing a root
-would put both in one checkout directory and make each one's startup sweep
-treat the other's live mailboxes as garbage. `$FLETCH_WORKSPACES_ROOT` and
-`$FLETCH_RPC_ROOT` override the base if you want them elsewhere (on a different
-disk, say); the host only sets them when they are unset.
+So `--data-dir` is the whole of a host's state, and two hosts with two data dirs
+share none of it. That matters beyond tidiness: agent names come from a pool of
+place names and are recycled, so two engines with two databases *will*
+eventually both name an agent `fuji` — and a shared root would put both in one
+checkout directory and make each one's startup sweep treat the other's live
+mailboxes as garbage. The desktop keeps its own two roots under `~/.fletch`,
+and a debug host takes the `dev/` subfolder of these for the same reason it
+takes one of the data dir.
+
+`$FLETCH_WORKSPACES_ROOT` and `$FLETCH_RPC_ROOT` override the base if you want
+these elsewhere (on a disk with room for checkouts, say); the host only sets
+them when they are unset, and then keeping them unique per host is yours to do.
 
 ## Known gaps
 
