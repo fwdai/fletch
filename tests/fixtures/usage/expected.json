@@ -1,0 +1,16 @@
+{
+  "claude": {
+    "input": 21,
+    "output": 721,
+    "cacheRead": 51986,
+    "cacheWrite": 19277,
+    "calls": 7
+  },
+  "codex": {
+    "input": 8186,
+    "output": 1708,
+    "cacheRead": 89960,
+    "cacheWrite": 900,
+    "calls": 3
+  }
+}

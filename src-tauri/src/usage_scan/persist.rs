@@ -24,7 +24,10 @@ pub(super) const CACHE_FILE: &str = "usage-scan-cache.json";
 /// file is then dropped rather than reinterpreted, and the next scan rebuilds
 /// it. (A changed *parser* matters as much as a changed struct — cached records
 /// were produced by the parser of the build that wrote them.)
-const CACHE_VERSION: u32 = 1;
+/// 2: Claude records now keep a model-less call, skip `<synthetic>`, prefer the
+/// `cache_creation` TTL breakdown and only dedupe on a `message.id`; Codex no
+/// longer subtracts cache writes from fresh input.
+const CACHE_VERSION: u32 = 2;
 
 /// Where [`scan_all`](super::scan_all) keeps its cache: the app data dir, which
 /// is already split per build (`…/<bundle id>/dev` in debug), so a debug run
@@ -86,12 +89,16 @@ impl ScanCache {
                 return Self::default();
             }
         };
+        // `..default()` is redundant in a release build and required in a test
+        // one, where `ScanCache` also carries an injectable I/O source.
+        #[allow(clippy::needless_update)]
         Self {
             files: parsed
                 .entries
                 .into_iter()
                 .map(|e| (e.path, e.entry))
                 .collect(),
+            ..Self::default()
         }
     }
 

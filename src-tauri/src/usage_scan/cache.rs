@@ -15,9 +15,16 @@
 //! whole on the following scan. [`scan_all`](super::scan_all) uses one
 //! process-lifetime cache; tests and callers that want isolation use
 //! [`scan_dirs_with`](super::scan_dirs_with).
+//!
+//! The `(len, mtime)` fingerprint is what says "this file is done", so it is
+//! only ever written after a read that reached the end of the file. An I/O
+//! error part-way through keeps the records and the offset it did reach — the
+//! progress is real — but leaves the fingerprint unmatchable, so the next scan
+//! picks the file back up instead of trusting a half-read entry forever. See
+//! [`ReadOutcome`].
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -29,7 +36,10 @@ use super::Provider;
 /// What one file contributed, plus enough metadata to resume it.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct FileEntry {
-    /// File length when `records`/`offset` were last brought up to date.
+    /// File length when `records`/`offset` were last brought up to date — i.e.
+    /// when a read last reached the end of the file. Left at the
+    /// [`UNREAD_LEN`]/[`UNREAD_MTIME_MS`] sentinels while the entry is only
+    /// part-read, which no real `stat` can match, so the next scan resumes it.
     pub(super) len: u64,
     pub(super) mtime_ms: i64,
     /// Bytes consumed, always just past a `\n`: a trailing partial line is left
@@ -41,11 +51,17 @@ pub(super) struct FileEntry {
     pub(super) codex: Option<CodexState>,
 }
 
+/// Fingerprint of an entry no read has finished yet. A real file of length 0
+/// has nothing to parse, and no `stat` reports [`UNREAD_MTIME_MS`], so an entry
+/// carrying these can never be mistaken for up to date.
+const UNREAD_LEN: u64 = 0;
+const UNREAD_MTIME_MS: i64 = i64::MIN;
+
 impl FileEntry {
     fn new(provider: Provider) -> Self {
         Self {
-            len: 0,
-            mtime_ms: i64::MIN,
+            len: UNREAD_LEN,
+            mtime_ms: UNREAD_MTIME_MS,
             offset: 0,
             records: Vec::new(),
             // Also picks what per-file state has to survive between scans:
@@ -68,6 +84,17 @@ impl FileEntry {
     }
 }
 
+/// A transcript opened for reading. Boxed rather than generic so the cache can
+/// be handed a different source in tests without infecting every caller with a
+/// type parameter.
+pub(super) trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
+/// How a scan gets at a transcript's bytes. Only tests ever set one; production
+/// opens the real file.
+#[cfg(test)]
+pub(super) type Opener = Box<dyn Fn(&Path) -> std::io::Result<Box<dyn ReadSeek>> + Send + Sync>;
+
 /// Per-path parse cache. Lives for the process in
 /// [`scan_all`](super::scan_all); tests own theirs. Change detection is
 /// `(len, mtime-in-ms)`, which cannot see an in-place rewrite that preserves
@@ -76,6 +103,10 @@ impl FileEntry {
 #[derive(Default)]
 pub struct ScanCache {
     pub(super) files: HashMap<PathBuf, FileEntry>,
+    /// Test-only override for [`ScanCache::open`], so a scan can be made to
+    /// fail at open, at seek, or part-way through a file.
+    #[cfg(test)]
+    pub(super) opener: Option<Opener>,
 }
 
 #[derive(Default)]
@@ -85,8 +116,17 @@ pub(super) struct IoStats {
 }
 
 impl ScanCache {
+    fn open(&self, path: &Path) -> std::io::Result<Box<dyn ReadSeek>> {
+        #[cfg(test)]
+        if let Some(opener) = &self.opener {
+            return opener(path);
+        }
+        Ok(Box::new(std::fs::File::open(path)?))
+    }
+
     /// Bring `path`'s entry up to date, reading as little as possible. Returns
-    /// whether the file has an entry to aggregate (`false` = prefiltered away).
+    /// whether the file has an entry to aggregate (`false` = prefiltered away,
+    /// or unreadable with nothing cached).
     pub(super) fn refresh(
         &mut self,
         path: &Path,
@@ -94,67 +134,99 @@ impl ScanCache {
         since_ms: i64,
         io: &mut IoStats,
     ) -> bool {
-        let Some((len, mtime_ms)) = file_stat(path) else {
+        let Some(stat) = file_stat(path) else {
             // Size/mtime unknown (racing deletion, odd permissions): read the
-            // whole thing, as the pre-cache scanner did. The sentinel len/mtime
-            // make the next scan resume from the offset or start over.
-            self.read_fully(path, provider, 0, i64::MIN, io);
-            return true;
+            // whole thing, as the pre-cache scanner did, and leave the entry
+            // unfingerprinted so the next scan does it again.
+            return self.read_fully(path, provider, None, io);
         };
+        let (len, mtime_ms) = stat;
 
         match self.files.get(path) {
             // Same bytes as last time: reuse the records, touch no I/O.
-            Some(e) if e.len == len && e.mtime_ms == mtime_ms => {}
-            // Appended to: read from where the last scan stopped.
-            Some(e) if len > e.len => {
-                let entry = self.files.get_mut(path).expect("just matched");
-                let from = entry.offset;
-                read_into(entry, path, from, io);
-                entry.len = len;
-                entry.mtime_ms = mtime_ms;
+            Some(e) if e.len == len && e.mtime_ms == mtime_ms => true,
+            // Appended to, with the cached offset still inside the file: read
+            // from where the last scan stopped.
+            Some(e) if len > e.len && e.offset <= len => {
+                self.read_tail(path, len, mtime_ms, io);
+                true
             }
             // Truncated, or rewritten in place: nothing cached can be trusted.
-            Some(_) => self.read_fully(path, provider, len, mtime_ms, io),
+            Some(_) => self.read_fully(path, provider, Some(stat), io),
             // The mtime prefilter only applies to files never read: one last
             // written before the window opened cannot hold an in-window record.
             // A file with an entry is always cheap enough to stat and reuse.
-            None if mtime_ms < since_ms => return false,
-            None => self.read_fully(path, provider, len, mtime_ms, io),
+            None if mtime_ms < since_ms => false,
+            None => self.read_fully(path, provider, Some(stat), io),
         }
-        true
     }
 
-    /// Replace `path`'s entry with one parsed from the first byte.
+    /// Parse the bytes appended since the last scan into `path`'s entry.
+    fn read_tail(&mut self, path: &Path, len: u64, mtime_ms: i64, io: &mut IoStats) {
+        // Opened before the entry is borrowed; a failure here leaves the entry
+        // exactly as it was, fingerprint included, so the next scan retries.
+        let Ok(reader) = self.open(path) else { return };
+        let entry = self.files.get_mut(path).expect("caller matched an entry");
+        let from = entry.offset;
+        if let Ok(ReadOutcome::Complete { .. }) = read_into(entry, reader, from, io) {
+            entry.len = len;
+            entry.mtime_ms = mtime_ms;
+        }
+    }
+
+    /// Replace `path`'s entry with one parsed from the first byte. `stat` is
+    /// the fingerprint to record once the read reaches the end of the file, or
+    /// `None` when the file couldn't be stat-ed at all. Returns whether `path`
+    /// has an entry to aggregate afterwards.
     fn read_fully(
         &mut self,
         path: &Path,
         provider: Provider,
-        len: u64,
-        mtime_ms: i64,
+        stat: Option<(u64, i64)>,
         io: &mut IoStats,
-    ) {
+    ) -> bool {
+        let Ok(reader) = self.open(path) else {
+            // Nothing was read, so nothing is known: keep whatever earlier
+            // scans cached (it still describes bytes that are still on disk)
+            // rather than replacing it with an empty entry, and don't invent
+            // one where there was none.
+            return self.files.contains_key(path);
+        };
         let mut entry = FileEntry::new(provider);
-        read_into(&mut entry, path, 0, io);
-        entry.len = len;
-        entry.mtime_ms = mtime_ms;
+        // Only a read that reached the end of the file may claim the
+        // fingerprint; an interrupted one keeps its records and offset under
+        // the unread sentinels, so the next scan resumes from there.
+        if let (Ok(ReadOutcome::Complete { .. }), Some((len, mtime_ms))) =
+            (read_into(&mut entry, reader, 0, io), stat)
+        {
+            entry.len = len;
+            entry.mtime_ms = mtime_ms;
+        }
         self.files.insert(path.to_path_buf(), entry);
+        true
     }
 }
 
-/// Parse `path` from `start` into `entry`, advancing its consumed offset.
-fn read_into(entry: &mut FileEntry, path: &Path, start: u64, io: &mut IoStats) {
+/// Parse `reader` from `start` into `entry`, advancing its consumed offset.
+fn read_into(
+    entry: &mut FileEntry,
+    reader: impl Read + Seek,
+    start: u64,
+    io: &mut IoStats,
+) -> std::io::Result<ReadOutcome> {
     let FileEntry { records, codex, .. } = entry;
-    let consumed = match codex {
-        Some(state) => read_lines_from(path, start, io, |line| {
+    let outcome = match codex {
+        Some(state) => read_lines_from(reader, start, io, |line| {
             parse_codex_line(line, state, records)
         }),
-        None => read_lines_from(path, start, io, |line| {
+        None => read_lines_from(reader, start, io, |line| {
             if let Some(record) = parse_claude_line(line) {
                 records.push(record);
             }
         }),
-    };
-    entry.offset = consumed;
+    }?;
+    entry.offset = outcome.offset();
+    Ok(outcome)
 }
 
 /// Size and mtime in one syscall — the cache's change detector, and the input
@@ -171,21 +243,47 @@ fn file_stat(path: &Path) -> Option<(u64, i64)> {
     Some((meta.len(), mtime_ms))
 }
 
-/// Stream a file line by line from `start`, reusing one buffer, and return the
-/// offset consumed — always just past a `\n`, so a half-written trailing line
-/// is left for the next scan to read whole. Never loads the whole file: real
-/// transcripts reach hundreds of megabytes. Unreadable files are skipped
-/// silently — a scan is best-effort reporting, not a correctness boundary.
-fn read_lines_from(path: &Path, start: u64, io: &mut IoStats, mut f: impl FnMut(&str)) -> u64 {
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return start;
-    };
-    if start > 0 && file.seek(SeekFrom::Start(start)).is_err() {
-        return start;
+/// Why a streaming read stopped, and how far it got. The distinction is the
+/// cache's correctness hinge: `Complete` means the bytes up to `offset` are
+/// everything the file had, so the file's `(len, mtime)` may be recorded as
+/// processed; `Interrupted` means an I/O error cut the stream short, so the
+/// records parsed so far are kept but the fingerprint must not advance, or the
+/// missing usage would be invisible until the transcript changed again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReadOutcome {
+    Complete { offset: u64 },
+    Interrupted { offset: u64 },
+}
+
+impl ReadOutcome {
+    /// Bytes consumed, always just past a `\n` — the last *complete* line.
+    fn offset(self) -> u64 {
+        match self {
+            ReadOutcome::Complete { offset } | ReadOutcome::Interrupted { offset } => offset,
+        }
+    }
+}
+
+/// Stream `reader` line by line from `start`, reusing one buffer. Never loads
+/// the whole file: real transcripts reach hundreds of megabytes. A half-written
+/// trailing line (no `\n` yet) is not consumed and is not an interruption — the
+/// file simply ends there for now, and the next scan reads it whole.
+///
+/// `Err` only for a seek that fails outright, i.e. nothing was read at all;
+/// a failure part-way through is [`ReadOutcome::Interrupted`], which keeps the
+/// lines that did parse.
+fn read_lines_from(
+    mut reader: impl Read + Seek,
+    start: u64,
+    io: &mut IoStats,
+    mut f: impl FnMut(&str),
+) -> std::io::Result<ReadOutcome> {
+    if start > 0 {
+        reader.seek(SeekFrom::Start(start))?;
     }
     io.files_read += 1;
 
-    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let mut reader = BufReader::with_capacity(64 * 1024, reader);
     let mut buf = Vec::with_capacity(8 * 1024);
     let mut consumed = start;
     loop {
@@ -193,7 +291,9 @@ fn read_lines_from(path: &Path, start: u64, io: &mut IoStats, mut f: impl FnMut(
         let read = match reader.read_until(b'\n', &mut buf) {
             Ok(0) => break,
             Ok(n) => n,
-            Err(_) => break,
+            // Mid-file I/O error: whatever this call half-read is unusable, but
+            // every line before it is real.
+            Err(_) => return Ok(ReadOutcome::Interrupted { offset: consumed }),
         };
         io.bytes_read += read as u64;
         if buf.last() != Some(&b'\n') {
@@ -209,14 +309,14 @@ fn read_lines_from(path: &Path, start: u64, io: &mut IoStats, mut f: impl FnMut(
             f(line);
         }
     }
-    consumed
+    Ok(ReadOutcome::Complete { offset: consumed })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::usage_scan::test_support::*;
-    use crate::usage_scan::{scan_dirs, scan_dirs_with};
+    use crate::usage_scan::{scan_dirs, scan_dirs_with, UsageScan};
 
     #[test]
     fn a_second_scan_of_unchanged_files_reads_nothing_and_answers_the_same() {
@@ -597,5 +697,215 @@ mod tests {
         // still wins and slug-b's session contributes nothing.
         assert_eq!(session_ids(&warm, "claude"), vec!["s1"]);
         assert_eq!(answer(&warm), answer(&cold));
+    }
+
+    // ── recovery from a failed read ─────────────────────────────────────────
+    //
+    // A transcript that couldn't be read now is not a transcript with no usage.
+    // The fingerprint that says "this file is done" is therefore only written
+    // after a read that reached the end of the file — otherwise the next scan
+    // would see an unchanged `(len, mtime)`, skip the file, and lose the
+    // missing spend until the transcript happened to change again (and, since
+    // the entry is persisted, across restarts too).
+
+    /// Three lines, so an interrupted read can land in the middle, plus the
+    /// clean cold answer every recovery has to converge on.
+    fn three_record_projects(td: &tempfile::TempDir) -> (PathBuf, Vec<String>) {
+        let lines: Vec<String> = [
+            ("m1", "2026-01-02T10:00:00Z", 10u64),
+            ("m2", "2026-01-02T10:05:00Z", 20),
+            ("m3", "2026-01-02T10:10:00Z", 30),
+        ]
+        .iter()
+        .map(|(id, ts, input)| {
+            claude_line(
+                "s1",
+                id,
+                id,
+                ts,
+                "claude-opus-4",
+                claude_usage(*input, 1, 0, 0),
+            )
+        })
+        .collect();
+        (claude_file(td.path(), "slug", "s1", &lines), lines)
+    }
+
+    /// The scan a healthy machine would produce for [`three_record_projects`].
+    fn clean_scan(projects: &PathBuf) -> UsageScan {
+        let (since, until) = wide_window();
+        scan_dirs(std::slice::from_ref(projects), &[], since, until)
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_opened_is_read_in_full_by_the_next_scan() {
+        let td = tempfile::tempdir().unwrap();
+        let (projects, _) = three_record_projects(&td);
+        let (since, until) = wide_window();
+
+        let mut cache = cache_failing_once(Fail::Open);
+        let failed = scan_dirs_with(
+            &mut cache,
+            std::slice::from_ref(&projects),
+            &[],
+            since,
+            until,
+        );
+        assert_eq!(
+            (failed.files_read, failed.bytes_read),
+            (0, 0),
+            "nothing was read, so nothing may be counted as read"
+        );
+        assert!(failed.buckets.is_empty());
+        assert_eq!(
+            failed.scanned_files, 0,
+            "a file we learned nothing about did not contribute"
+        );
+        assert!(
+            cache.files.is_empty(),
+            "no entry may be invented for a file that never opened"
+        );
+
+        let retry = scan_dirs_with(
+            &mut cache,
+            std::slice::from_ref(&projects),
+            &[],
+            since,
+            until,
+        );
+        assert_eq!(retry.files_read, 1);
+        assert_eq!(answer(&retry), answer(&clean_scan(&projects)));
+    }
+
+    #[test]
+    fn a_failed_seek_leaves_the_entry_alone_and_the_next_scan_resumes_it() {
+        // Seeking only happens on a resumed read, so this is the append path:
+        // the cached records are good, the appended ones were never reached.
+        let td = tempfile::tempdir().unwrap();
+        let (projects, _) = three_record_projects(&td);
+        let file = claude_path(&projects, "slug", "s1");
+        let (since, until) = wide_window();
+
+        let mut cache = ScanCache::default();
+        let cold = scan_dirs_with(
+            &mut cache,
+            std::slice::from_ref(&projects),
+            &[],
+            since,
+            until,
+        );
+        assert_eq!(cold.buckets[0].requests, 3);
+        let before = cache
+            .files
+            .get(&file)
+            .map(|e| (e.len, e.mtime_ms, e.offset));
+
+        let added = append(
+            &file,
+            &format!(
+                "{}\n",
+                claude_line(
+                    "s1",
+                    "m4",
+                    "m4",
+                    "2026-01-02T10:15:00Z",
+                    "claude-opus-4",
+                    claude_usage(40, 1, 0, 0),
+                )
+            ),
+        );
+
+        fail_once(&mut cache, Fail::Seek);
+        let failed = scan_dirs_with(
+            &mut cache,
+            std::slice::from_ref(&projects),
+            &[],
+            since,
+            until,
+        );
+        assert_eq!(
+            (failed.files_read, failed.bytes_read),
+            (0, 0),
+            "a read that never started is not a read"
+        );
+        assert_eq!(failed.buckets[0].requests, 3, "the cached records survive");
+        assert_eq!(
+            cache
+                .files
+                .get(&file)
+                .map(|e| (e.len, e.mtime_ms, e.offset)),
+            before,
+            "and the entry is untouched, so the grown file is still pending"
+        );
+
+        let retry = scan_dirs_with(
+            &mut cache,
+            std::slice::from_ref(&projects),
+            &[],
+            since,
+            until,
+        );
+        assert_eq!(
+            (retry.files_read, retry.bytes_read),
+            (1, added),
+            "the retry reads exactly the bytes the failed scan missed"
+        );
+        assert_eq!(retry.buckets[0].requests, 4);
+        assert_eq!(answer(&retry), answer(&clean_scan(&projects)));
+    }
+
+    #[test]
+    fn a_read_that_dies_mid_file_keeps_its_progress_and_the_next_scan_finishes_it() {
+        let td = tempfile::tempdir().unwrap();
+        let (projects, lines) = three_record_projects(&td);
+        let file = claude_path(&projects, "slug", "s1");
+        let total = std::fs::metadata(&file).unwrap().len();
+        let first = (lines[0].len() + 1) as u64;
+        let (since, until) = wide_window();
+
+        // The stream dies just after the first line's newline.
+        let mut cache = cache_failing_once(Fail::AfterBytes(first));
+        let partial = scan_dirs_with(
+            &mut cache,
+            std::slice::from_ref(&projects),
+            &[],
+            since,
+            until,
+        );
+        assert_eq!(
+            (partial.files_read, partial.bytes_read),
+            (1, first),
+            "the bytes that did arrive were read"
+        );
+        assert_eq!(
+            partial.buckets[0].requests, 1,
+            "and the line they held is kept — progress is not thrown away"
+        );
+        let entry = cache.files.get(&file).expect("an entry");
+        assert_eq!(entry.offset, first);
+        assert_eq!(
+            (entry.len, entry.mtime_ms),
+            (UNREAD_LEN, UNREAD_MTIME_MS),
+            "a part-read file must not look processed"
+        );
+
+        let retry = scan_dirs_with(
+            &mut cache,
+            std::slice::from_ref(&projects),
+            &[],
+            since,
+            until,
+        );
+        assert_eq!(
+            (retry.files_read, retry.bytes_read),
+            (1, total - first),
+            "only the bytes the failed read never got to"
+        );
+        assert_eq!(retry.buckets[0].requests, 3);
+        assert_eq!(answer(&retry), answer(&clean_scan(&projects)));
+
+        // And the finished entry is now fingerprinted, so a third scan is free.
+        let warm = scan_dirs_with(&mut cache, &[projects], &[], since, until);
+        assert_eq!((warm.files_read, warm.bytes_read), (0, 0));
     }
 }

@@ -594,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_skips_api_errors_zero_token_and_modelless_records() {
+    fn claude_skips_api_errors_synthetic_and_zero_token_records() {
         let td = tempfile::tempdir().unwrap();
         let mut err: Value = serde_json::from_str(&claude_line(
             "s1",
@@ -614,20 +614,44 @@ mod tests {
             "claude-opus-4",
             claude_usage(0, 0, 0, 0),
         );
-        let no_model = claude_line(
+        // The CLI talking to itself, not a billed call.
+        let synthetic = claude_line(
             "s1",
             "m2",
             "r2",
             "2026-01-02T10:00:00Z",
-            "",
+            "<synthetic>",
             claude_usage(5, 5, 0, 0),
         );
-        let projects = claude_file(td.path(), "slug", "s1", &[err.to_string(), zero, no_model]);
+        let projects = claude_file(td.path(), "slug", "s1", &[err.to_string(), zero, synthetic]);
 
         let (since, until) = wide_window();
         let out = scan_dirs(&[projects], &[], since, until);
         assert!(out.buckets.is_empty());
         assert!(out.sessions.is_empty());
+    }
+
+    #[test]
+    fn claude_keeps_a_record_whose_transcript_never_named_a_model() {
+        // The TS adapter keeps the call with `model` undefined and the fold
+        // keys it as ""; dropping it here would lose spend that happened.
+        let td = tempfile::tempdir().unwrap();
+        let no_model = claude_line(
+            "s1",
+            "m1",
+            "r1",
+            "2026-01-02T10:00:00Z",
+            "",
+            claude_usage(5, 5, 0, 0),
+        );
+        let projects = claude_file(td.path(), "slug", "s1", &[no_model]);
+
+        let (since, until) = wide_window();
+        let out = scan_dirs(&[projects], &[], since, until);
+        assert_eq!(out.buckets.len(), 1);
+        assert_eq!(out.buckets[0].model, "");
+        assert_eq!(out.buckets[0].tokens.input, 5);
+        assert_eq!(session_ids(&out, "claude"), vec!["s1"]);
     }
 
     // ── codex ───────────────────────────────────────────────────────────────
@@ -665,8 +689,10 @@ mod tests {
         assert_eq!(
             b.tokens,
             TokenCounts {
-                // (100-60-10) + (200-150-0)
-                input: 30 + 50,
+                // Fresh input is the total minus the cached prefix only —
+                // cache writes are reported beside it, not carved out of it.
+                // (100-60) + (200-150)
+                input: 40 + 50,
                 output: 60,
                 cache_read: 210,
                 cache_write: 10,
@@ -1110,6 +1136,85 @@ mod tests {
         assert!(out.sessions.is_empty());
         // The window is echoed back even when nothing matched.
         assert_eq!((out.since_ms, out.until_ms), (0, i64::MAX));
+    }
+
+    // ── the shared corpus ───────────────────────────────────────────────────
+
+    /// The corpus is read by two parsers — this one and the TS adapters under
+    /// `src/adapters/{claude,codex}/usage.ts`, whose test is
+    /// `tests/adapters/usageCorpus.test.ts` — so `expected.json` is the one
+    /// place their semantics are pinned to each other. Change a rule in either
+    /// parser and one of the two tests fails until all three agree.
+    #[test]
+    fn the_shared_corpus_folds_to_the_expected_totals() {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Expected {
+            input: u64,
+            output: u64,
+            cache_read: u64,
+            cache_write: u64,
+            calls: u32,
+        }
+
+        let expected: HashMap<String, Expected> =
+            serde_json::from_str(include_str!("../../../tests/fixtures/usage/expected.json"))
+                .expect("expected.json");
+
+        let td = tempfile::tempdir().unwrap();
+        let projects = td.path().join("projects").join("corpus");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::write(
+            projects.join("7f3c9d21-0b64-4f0a-9c2e-1d5b7a4e8c30.jsonl"),
+            include_str!("../../../tests/fixtures/usage/claude.jsonl"),
+        )
+        .unwrap();
+        let day = td
+            .path()
+            .join("sessions")
+            .join("2026")
+            .join("03")
+            .join("04");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("rollout-2026-03-04T09-00-00-019e4448-78a8-7203-a078-981c1d34c547.jsonl"),
+            include_str!("../../../tests/fixtures/usage/codex.jsonl"),
+        )
+        .unwrap();
+
+        let (since, until) = wide_window();
+        let out = scan_dirs(
+            &[td.path().join("projects")],
+            &[td.path().join("sessions")],
+            since,
+            until,
+        );
+
+        for (provider, want) in &expected {
+            let mut tokens = TokenCounts::default();
+            let mut calls = 0;
+            for b in out.buckets.iter().filter(|b| &b.provider == provider) {
+                tokens.add(&b.tokens);
+                calls += b.requests;
+            }
+            assert_eq!(
+                (
+                    tokens.input,
+                    tokens.output,
+                    tokens.cache_read,
+                    tokens.cache_write,
+                    calls
+                ),
+                (
+                    want.input,
+                    want.output,
+                    want.cache_read,
+                    want.cache_write,
+                    want.calls
+                ),
+                "{provider} totals"
+            );
+        }
     }
 
     /// Sanity check against this machine's real transcripts — not part of the
