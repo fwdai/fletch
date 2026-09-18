@@ -1,4 +1,7 @@
-import { invoke } from "../invoke";
+// Dictation runs on the machine the user is talking to: the mic, the platform
+// recognizer and the local Whisper weights are all this desktop's, so these go
+// down the local transport whatever environment is active.
+import { invokeLocal } from "../invoke";
 import type {
   DictationAvailability,
   DictationModelStatus,
@@ -8,7 +11,7 @@ import type {
 export const dictationApi = {
   /** Whether native dictation exists on this platform and what the user has
    *  authorized so far. Cheap; safe to call on every composer mount. */
-  dictationAvailability: () => invoke<DictationAvailability>("dictation_availability"),
+  dictationAvailability: () => invokeLocal<DictationAvailability>("dictation_availability"),
   /** Start listening. Requests whatever permission the chosen engine needs on
    *  first use — mic + speech for `apple`, mic alone for `whisper`. Rejects
    *  with a message if permission is denied or the recognizer can't start.
@@ -21,7 +24,7 @@ export const dictationApi = {
    *  event will arrive — either a session was already active (only one runs at
    *  a time) or a `dictationStop` issued while a permission prompt was up
    *  cancelled this one. Callers must not wait for an event on `null`. */
-  dictationStart: () => invoke<DictationSessionId | null>("dictation_start"),
+  dictationStart: () => invokeLocal<DictationSessionId | null>("dictation_start"),
   /** Stop listening and let the recognizer flush its final result: normally
    *  one last `dictation:transcript` with `is_final: true`, then
    *  `dictation:state` `stopped`. The final transcript is best-effort — a
@@ -30,33 +33,35 @@ export const dictationApi = {
    *  whatever text was last received. The `whisper` engine has nothing to
    *  flush and everything to compute: it emits `transcribing` first, then the
    *  one final transcript, then `stopped`. No-op when not listening. */
-  dictationStop: () => invoke<void>("dictation_stop"),
+  dictationStop: () => invokeLocal<void>("dictation_stop"),
 
   /** The local (Whisper) engine's opt-in, its model choice and the state of
    *  every candidate's weights. Cheap — a metadata stat per entry — so the
    *  Settings pane calls it on mount. */
-  dictationModelStatus: () => invoke<DictationModelStatus>("dictation_model_status"),
+  dictationModelStatus: () => invokeLocal<DictationModelStatus>("dictation_model_status"),
   /** Pick the dictation engine. Persists `dictation_engine` and, when enabling
    *  without the weights on disk, starts the download in the background —
    *  resolves immediately either way, with progress arriving via
    *  `onDictationModelProgress`. Backend-owned, like `setCodeIndexingEnabled`. */
-  setDictationEngine: (enabled: boolean) => invoke<void>("set_dictation_engine", { enabled }),
+  setDictationEngine: (enabled: boolean) => invokeLocal<void>("set_dictation_engine", { enabled }),
   /** Whether a session ends itself after a pause. Backend-owned
    *  (`dictation_auto_stop`): the silence monitor reads it off the audio thread. */
-  setDictationAutoStop: (enabled: boolean) => invoke<void>("set_dictation_auto_stop", { enabled }),
+  setDictationAutoStop: (enabled: boolean) =>
+    invokeLocal<void>("set_dictation_auto_stop", { enabled }),
   /** Pick which catalog model the local engine uses. Persists
    *  `dictation_model` and, when the engine is on and the choice isn't
    *  downloaded, starts fetching it in the background. Rejects an id the
    *  catalog doesn't have. The previous model is left on disk. */
-  setDictationModel: (id: string) => invoke<DictationModelStatus>("set_dictation_model", { id }),
+  setDictationModel: (id: string) =>
+    invokeLocal<DictationModelStatus>("set_dictation_model", { id }),
   /** Retry a failed (or never-started) download of the selected model.
    *  Resolves at once with the state the call left things in; a no-op while any
    *  download is already running. */
-  dictationModelDownload: () => invoke<DictationModelStatus>("dictation_model_download"),
+  dictationModelDownload: () => invokeLocal<DictationModelStatus>("dictation_model_download"),
   /** Delete a model's downloaded weights — the selected one unless `id` names
    *  another. Turn the engine off first when removing the selected model: an
    *  enabled engine with no model silently falls back to the platform
    *  recognizer. */
   dictationModelRemove: (id?: string) =>
-    invoke<DictationModelStatus>("dictation_model_remove", { id }),
+    invokeLocal<DictationModelStatus>("dictation_model_remove", { id }),
 };

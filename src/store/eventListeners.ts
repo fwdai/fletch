@@ -32,6 +32,7 @@ import {
   onVerificationReport,
   onWorkspaceChanged,
 } from "@/api";
+import type { UnlistenFn } from "@/api/transport";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import {
   agentRecord,
@@ -226,323 +227,402 @@ export const hydrateAccount = async (set: AppSet) => {
   }
 };
 
+// Every engine-event subscription this module holds, in the order it was made.
+// Each one binds to whichever transport was active when `on(...)` resolved it
+// (see api/events), so switching environments has to drop them and make them
+// again against the new one — `detachEventListeners` below.
+//
+// The `onLocal` subscription in here (`onAgentInstallState`) is deliberately
+// NOT collected: it is pinned to this desktop's own engine and is unaffected by
+// which environment the UI is driving.
+let attached: UnlistenFn[] = [];
+
 // Subscribe to every backend event stream, folding each into store state.
 export const registerEventListeners = async (set: AppSet, get: AppGet) => {
-  await onAgentOutput((e) => {
-    pushAgentOutput(e.agent_id, decodeBase64(e.bytes));
-  });
+  // Each subscription is still awaited in order — the transport's `on` resolves
+  // once the stream is live, and an event arriving before the next listener is
+  // registered would otherwise be missed.
+  const bind = async (subscribe: Promise<UnlistenFn>) => {
+    attached.push(await subscribe);
+  };
 
-  await onShellOutput((e) => {
-    pushShellOutput(e.agent_id, decodeBase64(e.bytes));
-  });
+  await bind(
+    onAgentOutput((e) => {
+      pushAgentOutput(e.agent_id, decodeBase64(e.bytes));
+    }),
+  );
 
-  await onAgentEvent((e) => {
-    const ev = e.event as RawEvent;
-    // A held permission prompt the backend forwarded for a human to answer
-    // (Claude's AskUserQuestion / ExitPlanMode). Record request_id ↔
-    // tool_use_id so the widget can answer it; this is control plane, not a
-    // transcript event, so don't feed the reducer. The agent is paused awaiting input — the
-    // composer stays disabled (busy) and ChatView hides the "thinking" dots.
-    if (ev?.type === "control_request") {
-      const req = (ev as { request?: Record<string, unknown> }).request;
-      const requestId = (ev as { request_id?: string }).request_id;
-      const toolUseId = req?.tool_use_id;
-      if (req?.subtype === "can_use_tool" && typeof toolUseId === "string" && requestId) {
-        // Only signal on the transition into "blocked": a turn can forward
-        // several prompts at once (parallel tool calls), and one notification
-        // for the batch beats one per prompt.
-        const wasIdle = !Object.keys(get().pendingToolUse[e.agent_id] ?? {}).length;
-        set((state) => ({
-          pendingToolUse: {
-            ...state.pendingToolUse,
-            [e.agent_id]: {
-              ...(state.pendingToolUse[e.agent_id] ?? {}),
-              [toolUseId]: requestId,
-            },
-          },
-        }));
-        // The only out-of-app signal this widget has ever had.
-        if (wasIdle) signalAway(get, e.agent_id, "Needs your input");
-      }
-      return;
-    }
-    let turnEnded = false;
-    set((state) => {
-      const result = applyEvent(state, e.agent_id, e.event as RawEvent);
-      turnEnded = result.turnEnded;
-      return result.patch;
-    });
-    // Capture usage that lives only on the live stream (cursor) into
-    // session_records so it folds like every other agent (see persistLiveUsage).
-    void persistLiveUsage(get, set, e.agent_id, e.event as RawEvent);
-    // Codex rollout files encrypt reasoning text, so retain the readable live
-    // event as a compiled record and merge it back at its rollout item on replay.
-    void persistLiveReasoning(get, e.agent_id, e.event as RawEvent);
-    // A turn can't end with prompts still held — clear any stale entries
-    // (e.g. an interrupt that denied a pending question).
-    if (turnEnded && get().pendingToolUse[e.agent_id]) {
-      set((state) => ({
-        pendingToolUse: { ...state.pendingToolUse, [e.agent_id]: {} },
-      }));
-    }
-    // Side effect lives here, at the call-site, rather than inside the pure
-    // updater: chime when an agent turn lands successfully. Skip it if the
-    // user stopped this agent — the turn_end is just the killed process
-    // flushing its final event, not a real completion.
-    if (turnEnded) {
-      // `delete` returns true when the agent was interrupted; consume the
-      // flag once and gate both the chime and the unseen-results marker on
-      // a genuine completion (a manual stop is neither).
-      if (!interruptedAgents.delete(e.agent_id)) {
-        // Notify (chime + native) when you're NOT watching this agent —
-        // skipped when you already are, see signalAway. "Needs your input"
-        // always signals; a finished turn only if the user kept that alert on.
-        if (get().notifyTurnComplete) signalAway(get, e.agent_id, "Turn complete");
-        // Flag results for review on any agent the user isn't currently
-        // looking at — this is the only signal for research-only turns that
-        // leave no diff behind. Cleared when the agent is selected. Never set
-        // for a purpose-tagged chat: it has no sidebar row to show the dot on,
-        // and the only clearing paths (`selectAgent`, discard) are unreachable
-        // from its surface — the key would pin the dock badge forever.
-        if (get().selectedAgentId !== e.agent_id && !agentRecord(get(), e.agent_id)?.purpose) {
+  await bind(
+    onShellOutput((e) => {
+      pushShellOutput(e.agent_id, decodeBase64(e.bytes));
+    }),
+  );
+
+  await bind(
+    onAgentEvent((e) => {
+      const ev = e.event as RawEvent;
+      // A held permission prompt the backend forwarded for a human to answer
+      // (Claude's AskUserQuestion / ExitPlanMode). Record request_id ↔
+      // tool_use_id so the widget can answer it; this is control plane, not a
+      // transcript event, so don't feed the reducer. The agent is paused awaiting input — the
+      // composer stays disabled (busy) and ChatView hides the "thinking" dots.
+      if (ev?.type === "control_request") {
+        const req = (ev as { request?: Record<string, unknown> }).request;
+        const requestId = (ev as { request_id?: string }).request_id;
+        const toolUseId = req?.tool_use_id;
+        if (req?.subtype === "can_use_tool" && typeof toolUseId === "string" && requestId) {
+          // Only signal on the transition into "blocked": a turn can forward
+          // several prompts at once (parallel tool calls), and one notification
+          // for the batch beats one per prompt.
+          const wasIdle = !Object.keys(get().pendingToolUse[e.agent_id] ?? {}).length;
           set((state) => ({
-            unseenResults: { ...state.unseenResults, [e.agent_id]: true },
+            pendingToolUse: {
+              ...state.pendingToolUse,
+              [e.agent_id]: {
+                ...(state.pendingToolUse[e.agent_id] ?? {}),
+                [toolUseId]: requestId,
+              },
+            },
           }));
+          // The only out-of-app signal this widget has ever had.
+          if (wasIdle) signalAway(get, e.agent_id, "Needs your input");
+        }
+        return;
+      }
+      let turnEnded = false;
+      set((state) => {
+        const result = applyEvent(state, e.agent_id, e.event as RawEvent);
+        turnEnded = result.turnEnded;
+        return result.patch;
+      });
+      // Capture usage that lives only on the live stream (cursor) into
+      // session_records so it folds like every other agent (see persistLiveUsage).
+      void persistLiveUsage(get, set, e.agent_id, e.event as RawEvent);
+      // Codex rollout files encrypt reasoning text, so retain the readable live
+      // event as a compiled record and merge it back at its rollout item on replay.
+      void persistLiveReasoning(get, e.agent_id, e.event as RawEvent);
+      // A turn can't end with prompts still held — clear any stale entries
+      // (e.g. an interrupt that denied a pending question).
+      if (turnEnded && get().pendingToolUse[e.agent_id]) {
+        set((state) => ({
+          pendingToolUse: { ...state.pendingToolUse, [e.agent_id]: {} },
+        }));
+      }
+      // Side effect lives here, at the call-site, rather than inside the pure
+      // updater: chime when an agent turn lands successfully. Skip it if the
+      // user stopped this agent — the turn_end is just the killed process
+      // flushing its final event, not a real completion.
+      if (turnEnded) {
+        // `delete` returns true when the agent was interrupted; consume the
+        // flag once and gate both the chime and the unseen-results marker on
+        // a genuine completion (a manual stop is neither).
+        if (!interruptedAgents.delete(e.agent_id)) {
+          // Notify (chime + native) when you're NOT watching this agent —
+          // skipped when you already are, see signalAway. "Needs your input"
+          // always signals; a finished turn only if the user kept that alert on.
+          if (get().notifyTurnComplete) signalAway(get, e.agent_id, "Turn complete");
+          // Flag results for review on any agent the user isn't currently
+          // looking at — this is the only signal for research-only turns that
+          // leave no diff behind. Cleared when the agent is selected. Never set
+          // for a purpose-tagged chat: it has no sidebar row to show the dot on,
+          // and the only clearing paths (`selectAgent`, discard) are unreachable
+          // from its surface — the key would pin the dock badge forever.
+          if (get().selectedAgentId !== e.agent_id && !agentRecord(get(), e.agent_id)?.purpose) {
+            set((state) => ({
+              unseenResults: { ...state.unseenResults, [e.agent_id]: true },
+            }));
+          }
         }
       }
-    }
-  });
+    }),
+  );
 
   // A turn's transcript was ingested into session_records: replace the
   // ephemeral live render with the canonical one (richer — e.g. tool results
   // the live stream dropped). No-op if nothing was stored.
-  await onSessionRecordsAppended((e) => {
-    const id = e.agent_id;
-    void (async () => {
-      try {
-        const [records, turns] = await Promise.all([
-          api.readSessionRecords(id),
-          api.readUserTurns(id),
-        ]);
-        if (records.length === 0) return;
-        const provider = providerFor(get(), id);
-        const rebuilt = applyUserTurns(reduceRecords(provider, records), turns);
-        // Re-attach store-only items the rebuild would drop: optimistic
-        // follow-ups (until the transcript catches up) and command output
-        // (/doctor, /cost, blocked-command notices — which persist). See
-        // carryForwardStoreOnly.
-        const items = carryForwardStoreOnly(rebuilt, get().managedLogs[id] ?? []);
-        const usage = usageFromRecords(provider, records);
-        set((state) => ({
-          managedLogs: { ...state.managedLogs, [id]: items },
-          // Only overwrite when records carried usage — cursor folds usage
-          // live, so an empty records result must not wipe it.
-          usage: hasUsage(usage) ? { ...state.usage, [id]: usage } : state.usage,
-        }));
-        if (hasUsage(usage)) {
-          // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
-          // spend belongs to its project like anyone else's.
-          recordUsageSnapshot(id, agentRecord(get(), id)?.project_id, usage);
+  await bind(
+    onSessionRecordsAppended((e) => {
+      const id = e.agent_id;
+      void (async () => {
+        try {
+          const [records, turns] = await Promise.all([
+            api.readSessionRecords(id),
+            api.readUserTurns(id),
+          ]);
+          if (records.length === 0) return;
+          const provider = providerFor(get(), id);
+          const rebuilt = applyUserTurns(reduceRecords(provider, records), turns);
+          // Re-attach store-only items the rebuild would drop: optimistic
+          // follow-ups (until the transcript catches up) and command output
+          // (/doctor, /cost, blocked-command notices — which persist). See
+          // carryForwardStoreOnly.
+          const items = carryForwardStoreOnly(rebuilt, get().managedLogs[id] ?? []);
+          const usage = usageFromRecords(provider, records);
+          set((state) => ({
+            managedLogs: { ...state.managedLogs, [id]: items },
+            // Only overwrite when records carried usage — cursor folds usage
+            // live, so an empty records result must not wipe it.
+            usage: hasUsage(usage) ? { ...state.usage, [id]: usage } : state.usage,
+          }));
+          if (hasUsage(usage)) {
+            // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
+            // spend belongs to its project like anyone else's.
+            recordUsageSnapshot(id, agentRecord(get(), id)?.project_id, usage);
+          }
+          // The first turn captures the agent's session id in the DB; pull it
+          // into the live workspace so the Native toggle unblocks without a
+          // reload. Only when still missing locally — avoids per-turn re-fetch.
+          if (needsSessionIdRefresh(get().workspace, id)) {
+            await refreshWorkspace(set);
+          }
+        } catch {
+          // Non-critical refresh; the next load picks up the records.
         }
-        // The first turn captures the agent's session id in the DB; pull it
-        // into the live workspace so the Native toggle unblocks without a
-        // reload. Only when still missing locally — avoids per-turn re-fetch.
-        if (needsSessionIdRefresh(get().workspace, id)) {
-          await refreshWorkspace(set);
-        }
-      } catch {
-        // Non-critical refresh; the next load picks up the records.
-      }
-    })();
-  });
+      })();
+    }),
+  );
 
   // Transcript-ingest health changed for an agent. A degraded status
   // (no_root / format_drift) is stored per-agent and surfaced as a
   // non-blocking banner in the chat view; `healthy` clears it (deletes the
   // key, mirroring how `unseenResults` treats an absent key as the good state).
-  await onSessionSyncHealth((e) => {
-    set((state) => {
-      const syncHealth = { ...state.syncHealth };
-      if (e.status === "healthy") {
-        delete syncHealth[e.agent_id];
-      } else {
-        syncHealth[e.agent_id] = {
-          status: e.status,
-          provider: e.provider,
-          version: e.version,
-        };
-      }
-      return { syncHealth };
-    });
-  });
+  await bind(
+    onSessionSyncHealth((e) => {
+      set((state) => {
+        const syncHealth = { ...state.syncHealth };
+        if (e.status === "healthy") {
+          delete syncHealth[e.agent_id];
+        } else {
+          syncHealth[e.agent_id] = {
+            status: e.status,
+            provider: e.provider,
+            version: e.version,
+          };
+        }
+        return { syncHealth };
+      });
+    }),
+  );
 
-  await onAgentBranch((e) => {
-    patchAgent(get, set, e.agent_id, (a) => ({
-      repos: a.repos.map((r) => (r.subdir === e.subdir ? { ...r, branch: e.branch } : r)),
-    }));
-  });
+  await bind(
+    onAgentBranch((e) => {
+      patchAgent(get, set, e.agent_id, (a) => ({
+        repos: a.repos.map((r) => (r.subdir === e.subdir ? { ...r, branch: e.branch } : r)),
+      }));
+    }),
+  );
 
-  await onAgentRepoAdded((e) => {
-    patchAgent(get, set, e.agent_id, (a) => ({ repos: [...a.repos, e.repo] }));
-  });
+  await bind(
+    onAgentRepoAdded((e) => {
+      patchAgent(get, set, e.agent_id, (a) => ({ repos: [...a.repos, e.repo] }));
+    }),
+  );
 
   // Ground-truth that the agent ran a git mutation this turn — the delegation
   // lifecycle resolves on this (paired with the target snapshot) instead of
   // inferring success from polled state, which can't attribute causality.
-  await onAgentGitAction((e) => {
-    get().markDelegationActed(e.agent_id, e.op);
-  });
+  await bind(
+    onAgentGitAction((e) => {
+      get().markDelegationActed(e.agent_id, e.op);
+    }),
+  );
 
-  await onAgentTask((e) => {
-    patchAgent(get, set, e.agent_id, { task: e.task });
-  });
+  await bind(
+    onAgentTask((e) => {
+      patchAgent(get, set, e.agent_id, { task: e.task });
+    }),
+  );
 
-  await onAgentView((e) => {
-    patchAgent(get, set, e.agent_id, { view: e.view });
-  });
+  await bind(
+    onAgentView((e) => {
+      patchAgent(get, set, e.agent_id, { view: e.view });
+    }),
+  );
 
-  await onAgentEffort((e) => {
-    patchAgent(get, set, e.agent_id, { effort: e.effort });
-  });
+  await bind(
+    onAgentEffort((e) => {
+      patchAgent(get, set, e.agent_id, { effort: e.effort });
+    }),
+  );
 
-  await onAgentModel((e) => {
-    patchAgent(get, set, e.agent_id, { model: e.model });
-  });
+  await bind(
+    onAgentModel((e) => {
+      patchAgent(get, set, e.agent_id, { model: e.model });
+    }),
+  );
 
-  await onAgentStatus((e) => {
-    const ws = get().workspace;
-    if (!ws) return;
-    // A new turn starting clears any stale stop-suppression flag: if the
-    // killed process never flushed a turn_end, this ensures the next genuine
-    // completion still chimes.
-    if (e.status === "running") interruptedAgents.delete(e.agent_id);
-    const next = {
-      ...ws,
-      agents: mapAgents(ws, e.agent_id, (a) => ({
-        status: e.status,
-        last_error: e.last_error ?? a.last_error,
-      })),
-    };
-    set((state) => {
-      // Clear the live-timer anchor at turn end so the next turn's send→running
-      // gap can't show a stale one. The anchor itself is set from the
-      // `turn:started` event (the backend's own timestamp), not here.
-      const turnStartedAt = { ...state.turnStartedAt };
-      if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
-        delete turnStartedAt[e.agent_id];
-      }
-      return {
-        workspace: next,
-        managedLogs:
-          e.status === "stopped" && (state.managedBusy[e.agent_id] ?? false)
-            ? {
-                ...state.managedLogs,
-                [e.agent_id]: [
-                  ...(state.managedLogs[e.agent_id] ?? []),
-                  {
-                    kind: "notice",
-                    subtype: "info",
-                    text: "Agent was interrupted.",
-                  },
-                ],
-              }
-            : state.managedLogs,
-        // `running` is the backend's authoritative "a turn is in flight"
-        // signal — re-assert busy here so a stale `idle` (e.g. the one
-        // start_process emits just before the first turn lands) can't
-        // leave the spinner off. `idle`/`error`/`stopped` clear it.
-        managedBusy:
-          e.status === "running"
-            ? { ...state.managedBusy, [e.agent_id]: true }
-            : e.status === "error" || e.status === "stopped" || e.status === "idle"
-              ? { ...state.managedBusy, [e.agent_id]: false }
-              : state.managedBusy,
-        turnStartedAt,
+  await bind(
+    onAgentStatus((e) => {
+      const ws = get().workspace;
+      if (!ws) return;
+      // A new turn starting clears any stale stop-suppression flag: if the
+      // killed process never flushed a turn_end, this ensures the next genuine
+      // completion still chimes.
+      if (e.status === "running") interruptedAgents.delete(e.agent_id);
+      const next = {
+        ...ws,
+        agents: mapAgents(ws, e.agent_id, (a) => ({
+          status: e.status,
+          last_error: e.last_error ?? a.last_error,
+        })),
       };
-    });
-  });
+      set((state) => {
+        // Clear the live-timer anchor at turn end so the next turn's send→running
+        // gap can't show a stale one. The anchor itself is set from the
+        // `turn:started` event (the backend's own timestamp), not here.
+        const turnStartedAt = { ...state.turnStartedAt };
+        if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
+          delete turnStartedAt[e.agent_id];
+        }
+        return {
+          workspace: next,
+          managedLogs:
+            e.status === "stopped" && (state.managedBusy[e.agent_id] ?? false)
+              ? {
+                  ...state.managedLogs,
+                  [e.agent_id]: [
+                    ...(state.managedLogs[e.agent_id] ?? []),
+                    {
+                      kind: "notice",
+                      subtype: "info",
+                      text: "Agent was interrupted.",
+                    },
+                  ],
+                }
+              : state.managedLogs,
+          // `running` is the backend's authoritative "a turn is in flight"
+          // signal — re-assert busy here so a stale `idle` (e.g. the one
+          // start_process emits just before the first turn lands) can't
+          // leave the spinner off. `idle`/`error`/`stopped` clear it.
+          managedBusy:
+            e.status === "running"
+              ? { ...state.managedBusy, [e.agent_id]: true }
+              : e.status === "error" || e.status === "stopped" || e.status === "idle"
+                ? { ...state.managedBusy, [e.agent_id]: false }
+                : state.managedBusy,
+          turnStartedAt,
+        };
+      });
+    }),
+  );
 
   // A user message the host accepted, from whichever client sent it — this
   // window, a paired phone, a git-action trigger. Mirror it so the chat reads
   // the same on every device; our own send is already in the log under its
   // turnId (see workspace.sendMessage) and is skipped. A turn-opening message
   // asserts busy the way the sender did; the Running status lands right after.
-  await onTurnSent((e) => {
-    set((state) => {
-      const prev = state.managedLogs[e.agent_id] ?? [];
-      const next = mirrorSentTurn(prev, e);
-      if (next === prev) return {};
-      return {
-        managedLogs: { ...state.managedLogs, [e.agent_id]: next },
-        ...(e.follow_up ? {} : { managedBusy: { ...state.managedBusy, [e.agent_id]: true } }),
-      };
-    });
-  });
+  await bind(
+    onTurnSent((e) => {
+      set((state) => {
+        const prev = state.managedLogs[e.agent_id] ?? [];
+        const next = mirrorSentTurn(prev, e);
+        if (next === prev) return {};
+        return {
+          managedLogs: { ...state.managedLogs, [e.agent_id]: next },
+          ...(e.follow_up ? {} : { managedBusy: { ...state.managedBusy, [e.agent_id]: true } }),
+        };
+      });
+    }),
+  );
 
   // The turn's start timestamp from the backend — the live-timer anchor, shared
   // with the persisted duration so the strip and footer measure from the same
   // instant (no off-by-the-delivery-latency drift).
-  await onTurnStarted((e) => {
-    set((state) => ({
-      turnStartedAt: { ...state.turnStartedAt, [e.agent_id]: e.started_at },
-    }));
-  });
+  await bind(
+    onTurnStarted((e) => {
+      set((state) => ({
+        turnStartedAt: { ...state.turnStartedAt, [e.agent_id]: e.started_at },
+      }));
+    }),
+  );
 
   // Archive / restore reshape `repos` and `archive` on the record,
   // which `agent:status` alone doesn't cover. The backend emits this
   // small ping after either operation; we reload the workspace.
-  await onWorkspaceChanged(async () => {
-    await refreshWorkspace(set);
-  });
+  await bind(
+    onWorkspaceChanged(async () => {
+      await refreshWorkspace(set);
+    }),
+  );
 
-  await onPublishApprovalRequested((request) => {
-    // The backend blocks on this until it is answered or its timeout denies it —
-    // see `receivePublishApproval`, which decides whether to answer or prompt.
-    get().receivePublishApproval(request);
-  });
+  await bind(
+    onPublishApprovalRequested((request) => {
+      // The backend blocks on this until it is answered or its timeout denies it —
+      // see `receivePublishApproval`, which decides whether to answer or prompt.
+      get().receivePublishApproval(request);
+    }),
+  );
 
-  await onPrStateChanged((e) => {
-    // A backend-pushed change is the freshest thing we have. Stamp it so a poll
-    // already in flight — which observed the PR before this transition — can't
-    // land afterwards and roll the badge back (merged flipping to open).
-    stampPrWrite("prStates", e.agent_id);
-    set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
-  });
+  await bind(
+    onPrStateChanged((e) => {
+      // A backend-pushed change is the freshest thing we have. Stamp it so a poll
+      // already in flight — which observed the PR before this transition — can't
+      // land afterwards and roll the badge back (merged flipping to open).
+      stampPrWrite("prStates", e.agent_id);
+      set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
+    }),
+  );
 
   // Turn-end verification result (opt-in per project) — stored per agent to
   // feed the Mission Control card's tests chip.
-  await onVerificationReport((e) => {
-    set((s) => ({
-      verificationReports: { ...s.verificationReports, [e.agent_id]: e.report },
-    }));
-  });
+  await bind(
+    onVerificationReport((e) => {
+      set((s) => ({
+        verificationReports: { ...s.verificationReports, [e.agent_id]: e.report },
+      }));
+    }),
+  );
 
   // App-wide run-phase tracking. The RunPanel unmounts when its tab isn't
   // active, so its own subscription can't keep the Run tab's "app is running"
   // dot lit from another tab — this always-on listener owns `runPhases`.
-  await onRunState((e) => {
-    set((s) => ({ runPhases: { ...s.runPhases, [e.agent_id]: e.phase } }));
-  });
+  await bind(
+    onRunState((e) => {
+      set((s) => ({ runPhases: { ...s.runPhases, [e.agent_id]: e.phase } }));
+    }),
+  );
 
   // The actual (possibly port-safety-bumped) port the dev server bound. Owns
   // `runPorts` so the sidebar indicator and Run pane link reflect the real port
   // even after a bump, and survive the RunPanel unmounting on a tab switch.
-  await onRunPort((e) => {
-    set((s) => ({ runPorts: { ...s.runPorts, [e.agent_id]: String(e.port) } }));
-  });
+  await bind(
+    onRunPort((e) => {
+      set((s) => ({ runPorts: { ...s.runPorts, [e.agent_id]: String(e.port) } }));
+    }),
+  );
 
   // Container image-build progress (first spawn under a runtime). Drives the
   // build toast; `applyBuildEvent` (store/sandbox) owns the per-runtime routing.
-  await onDockerBuildProgress((e) => {
-    set((s) => ({ containerBuilds: applyBuildEvent(s.containerBuilds, e) }));
-  });
+  await bind(
+    onDockerBuildProgress((e) => {
+      set((s) => ({ containerBuilds: applyBuildEvent(s.containerBuilds, e) }));
+    }),
+  );
+};
 
-  // One-click agent CLI install progress. Registered app-wide (not per
-  // surface) so onboarding's agents step and Settings › Providers read the
-  // same run — and so a pane unmounting mid-install doesn't lose its output.
+/** The subscriptions pinned to this desktop, registered once and never taken
+ *  down: which agent CLIs are installing is a property of this machine, not of
+ *  the engine the UI happens to be driving (see `onLocal` in api/events).
+ *
+ *  Registered app-wide (not per surface) so onboarding's agents step and
+ *  Settings › Providers read the same run — and so a pane unmounting
+ *  mid-install doesn't lose its output. */
+export const registerLocalListeners = async (set: AppSet) => {
   await onAgentInstallState((e) => {
     set((s) => ({ installs: reduceInstallEvent(s.installs, e) }));
   });
+};
+
+/** Drop every engine-event subscription. The local-pinned ones stay: they are
+ *  this desktop's mic, its provider CLIs and its own installs, and nothing
+ *  about a switch changes which engine answers for them. */
+export const detachEventListeners = async () => {
+  const off = attached;
+  attached = [];
+  // A transport's unsubscribe is synchronous for a remote client and a round
+  // trip for Tauri; awaiting them together keeps the re-subscribe below from
+  // racing a stream that is still being taken down.
+  await Promise.all(off.map((fn) => Promise.resolve(fn()).catch(() => {})));
 };
 
 // Reconcile against the backend's authoritative status when the window comes

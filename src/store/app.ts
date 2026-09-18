@@ -3,6 +3,7 @@ import {
   hydrateAccount,
   hydrateSettings,
   registerEventListeners,
+  registerLocalListeners,
   setupResync,
 } from "./eventListeners";
 import { refreshWorkspace } from "./refreshWorkspace";
@@ -71,6 +72,10 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     void get().refreshGithub();
     void get().refreshLinear();
 
+    // The desktop-pinned streams first, since nothing ever takes them down;
+    // the engine ones are re-made against the new transport on every
+    // environment switch (see `switchEnvironment`).
+    await registerLocalListeners(set);
     await registerEventListeners(set, get);
     setupResync(set);
 

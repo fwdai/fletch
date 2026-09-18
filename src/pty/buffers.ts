@@ -11,7 +11,22 @@
 // ./terminals, because "an agent's PTY state" is one thing: the ring buffer and
 // the terminal rendering it are cleared, reset and released together.
 
+import { activeEnvironmentId, type EnvironmentId } from "@/store/environments";
 import { createPtyChannel, type OutputHandler } from "./channel";
+
+// Every buffer and cached terminal is keyed by environment as well as agent.
+// Agent ids are place names from a small recycled pool, so two hosts will both
+// have an agent called `fuji` (docs/multi-host-plan.md §1.3) and one's
+// scrollback must never be replayed into the other's view.
+//
+// The environment defaults to the active one, which is right for everything
+// that runs while its view is on screen (a chunk arriving, a view mounting).
+// The cleanup functions take it explicitly instead: archiving or discarding an
+// agent awaits the engine, and the user is free to switch environments during
+// that await — resolving the key afterwards would then release some other
+// host's agent and leave this one's buffers behind for the life of the session.
+const scoped = (agentId: string, envId?: EnvironmentId) =>
+  `${envId ?? activeEnvironmentId()}:${agentId}`;
 
 // ---- Agent PTY ----------------------------------------------------------------
 const agentPty = createPtyChannel();
@@ -21,12 +36,13 @@ const shellPty = createPtyChannel();
 
 // ---- Live terminal cache ------------------------------------------------------
 
-/** The bits of the ./terminals cache this module drives. */
+/** The bits of the ./terminals cache this module drives. Both take the owning
+ *  environment for the same reason the cleanup functions below do. */
 export interface TerminalCacheHooks {
   /** Wipe a cached terminal's screen, keeping it cached and its sink live. */
-  reset: (agentId: string) => void;
+  reset: (agentId: string, envId?: EnvironmentId) => void;
   /** Dispose a cached terminal for good. */
-  evict: (agentId: string) => void;
+  evict: (agentId: string, envId?: EnvironmentId) => void;
 }
 
 // Installed by ./terminals when it loads, rather than imported from here.
@@ -42,29 +58,30 @@ export function setTerminalCacheHooks(hooks: TerminalCacheHooks) {
 
 /** Buffer an agent-output chunk and forward it to the live view sink (if any). */
 export function pushAgentOutput(agentId: string, chunk: Uint8Array) {
-  agentPty.push(agentId, chunk);
+  agentPty.push(scoped(agentId), chunk);
 }
 
 export function getOutputBuffer(agentId: string): Uint8Array | undefined {
-  return agentPty.get(agentId);
+  return agentPty.get(scoped(agentId));
 }
 
 /** Drop an agent's replay history because its PTY restarted (view switch,
  *  resume). Any cached terminal is displaying exactly the history being
  *  dropped, so wipe its screen too — otherwise the next mount would re-attach a
  *  dead session's frame instead of the blank one a restart used to produce. */
-export function clearOutputBuffer(agentId: string) {
-  agentPty.clear(agentId);
-  terminalCache?.reset(agentId);
+export function clearOutputBuffer(agentId: string, envId?: EnvironmentId) {
+  agentPty.clear(scoped(agentId, envId));
+  terminalCache?.reset(agentId, envId);
 }
 
 /** Release everything held for an agent that is gone (discarded, archived).
  *  Nothing else clears the shell buffer or the terminal cache, so without this
  *  both grow for the life of the app session. */
-export function dropAgentPty(agentId: string) {
-  agentPty.drop(agentId);
-  shellPty.drop(agentId);
-  terminalCache?.evict(agentId);
+export function dropAgentPty(agentId: string, envId?: EnvironmentId) {
+  const key = scoped(agentId, envId);
+  agentPty.drop(key);
+  shellPty.drop(key);
+  terminalCache?.evict(agentId, envId);
 }
 
 /** Point an agent's live output at `handler`, replacing any previous one — a
@@ -74,18 +91,18 @@ export function dropAgentPty(agentId: string) {
  *  native view keeps feeding its cached screen in the background and no second
  *  view can ever be contending for the same slot. */
 export function registerOutputSink(agentId: string, handler: OutputHandler): () => void {
-  return agentPty.registerSink(agentId, handler);
+  return agentPty.registerSink(scoped(agentId), handler);
 }
 
 /** Buffer a shell-output chunk and forward it to the live TermPanel sink. */
 export function pushShellOutput(agentId: string, chunk: Uint8Array) {
-  shellPty.push(agentId, chunk);
+  shellPty.push(scoped(agentId), chunk);
 }
 
 export function getShellBuffer(agentId: string): Uint8Array | undefined {
-  return shellPty.get(agentId);
+  return shellPty.get(scoped(agentId));
 }
 
 export function registerShellSink(agentId: string, handler: OutputHandler): () => void {
-  return shellPty.registerSink(agentId, handler);
+  return shellPty.registerSink(scoped(agentId), handler);
 }

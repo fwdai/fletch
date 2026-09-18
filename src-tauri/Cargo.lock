@@ -1358,6 +1358,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "fletch-core",
+ "fletch-proto",
  "objc2",
  "objc2-av-foundation",
  "objc2-avf-audio",
@@ -1427,6 +1428,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
+ "serde",
  "sha2",
  "snow",
  "tokio",

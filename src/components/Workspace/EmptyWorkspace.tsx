@@ -9,6 +9,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import {
   type ComposerMode,
   loadPipelinePrefs,
@@ -102,7 +103,12 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
     setMode(next);
     rememberComposerMode(projectId, next);
   };
-  const workflowMode = mode === "workflow";
+  // A host answers no `wf_*` op (docs/multi-host-plan.md §5.3, item 2), so on a
+  // remote environment the pipeline half of this page does not exist: the
+  // toggle is dropped and the quick-agent path — which is all a host can run —
+  // is the whole page, whatever the project remembered.
+  const workflowGate = useGate("workflows");
+  const workflowMode = mode === "workflow" && !workflowGate;
 
   return (
     <div className="pane center">
@@ -130,19 +136,24 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
       </div>
 
       <div className="empty-wrap flex-center fade-in">
-        <div className="empty-modeswitch">
-          <div className="set-seg">
-            <button className={mode === "agent" ? "active" : ""} onClick={() => pickMode("agent")}>
-              <Icon name="bot" size={13} /> Quick agent
-            </button>
-            <button
-              className={mode === "workflow" ? "active" : ""}
-              onClick={() => pickMode("workflow")}
-            >
-              <Icon name="combine" size={13} /> Pipeline
-            </button>
+        {!workflowGate && (
+          <div className="empty-modeswitch">
+            <div className="set-seg">
+              <button
+                className={mode === "agent" ? "active" : ""}
+                onClick={() => pickMode("agent")}
+              >
+                <Icon name="bot" size={13} /> Quick agent
+              </button>
+              <button
+                className={mode === "workflow" ? "active" : ""}
+                onClick={() => pickMode("workflow")}
+              >
+                <Icon name="combine" size={13} /> Pipeline
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Everything but the switcher — identity, the mode-variable heading +
             composer, and the pickers — centered as one unit and keyed by mode so

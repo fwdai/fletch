@@ -9,6 +9,7 @@ import type { PrChecks, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
+import { type HostProtocol, V2_DEFAULT_OPS } from "@desktop/remote/types";
 
 export const FLETCH_REPO = "/Users/alex/.fletch/workspaces/fletch";
 export const ATLAS_REPO = "/Users/alex/.fletch/workspaces/atlas";
@@ -492,6 +493,33 @@ export const supportedModels: AgentModels[] = [
 ];
 
 export const hostInfo = { name: "Alex's MacBook Pro", appVersion: "0.7.23", os: "macos" };
+
+/** What the mock host reports in `pair` and `hello` (docs/remote-protocol.md,
+ *  "Compatibility"): a current host, so the mock exercises the capability gating
+ *  rather than the older-host fallback. Spelled out rather than derived, like
+ *  the rest of this file — it is the host's answer, not the client's belief. */
+export const protocol: HostProtocol = {
+  version: 2,
+  ops: [...V2_DEFAULT_OPS, "answer_publish_approval"],
+  events: [
+    "agent:event",
+    "agent:status",
+    "agent:task",
+    "agent:branch",
+    "agent:model",
+    "agent:effort",
+    "agent:repo_added",
+    "agent:git-action",
+    "session:records-appended",
+    "turn:sent",
+    "turn:started",
+    "workspace:changed",
+    "pr:state_changed",
+    "verify:report",
+    "publish:approval-requested",
+  ],
+  features: [],
+};
 
 /** What `~` expands to on the fake host. */
 export const HOME = "/Users/alex";

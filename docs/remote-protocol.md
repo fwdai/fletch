@@ -369,8 +369,12 @@ Client request (first encrypted frame after the handshake):
 Result:
 
 ```json
-{ "deviceId": "uuid", "host": { "name": "Alex's MacBook Pro", "appVersion": "0.7.23", "os": "macos" } }
+{ "deviceId": "uuid", "host": { "name": "Alex's MacBook Pro", "appVersion": "0.7.23", "os": "macos" }, "protocol": { "version": 2, "ops": [ … ], "events": [ … ], "features": [] } }
 ```
+
+`protocol` is what this host answers — see "Compatibility". It is on `pair` as
+well as `hello` because a client that has only ever paired must know the
+surface without a second round trip.
 
 The frame carries no credential: the device's identity is the static key the
 handshake delivered. The host persists
@@ -390,13 +394,42 @@ forwarding events. The host does NOT push a snapshot; the client issues
 Result:
 
 ```json
-{ "host": { "name": "…", "appVersion": "…", "os": "macos" }, "workspace": <Workspace | null> }
+{ "host": { "name": "…", "appVersion": "…", "os": "macos" }, "workspace": <Workspace | null>, "protocol": { "version": 2, "ops": [ … ], "events": [ … ], "features": [] } }
 ```
 
 The host looks up the handshake's remote static key in `devices.json`; a key
 it does not know closes with `4003`. `workspace` is the exact `get_workspace`
-result. After the response the host starts forwarding events for this
+result. `protocol` is the same descriptor `pair` answers with (see
+"Compatibility"). After the response the host starts forwarding events for this
 connection.
+
+## Compatibility
+
+Hosts and clients are released on their own schedules, so either side may be
+older than the other. The rules that make that safe:
+
+- **The prologue stays `fletch-remote-v2`.** It is the transport's version, not
+  the surface's, and it does not change for an added op, event or feature.
+- **Changes within v2 are additive.** New ops, new forwarded events and new
+  `features` flags are added; an existing op's name, argument keys or result
+  shape is not repurposed. A client may therefore ignore anything it does not
+  recognize, in a result or in an event, and a host ignores unknown argument
+  keys.
+- **`protocol` says what this host answers.** `{ version, ops, events, features }`:
+  `ops` is every name the device may send (the dispatcher's allowlist plus the
+  ops the session layer answers itself), `events` the forwarded-event whitelist,
+  `features` named behaviours that are neither — none defined yet. It is the
+  whole surface, not a delta.
+- **A missing `protocol` means the v2 default set**: the ops and events this doc
+  listed when the field was introduced (42 ops, 15 events). Only a host from
+  before the field omits it, and that is exactly what those hosts answer.
+- **Clients gate on membership in `ops`, `events` and `features`** — never on
+  `host.appVersion` or on `protocol.version`. A feature whose op is absent is
+  hidden or disabled with a reason; it is not attempted and it is not offered.
+- **`"unknown op"` means unsupported, not broken.** It is an ordinary error
+  response on a healthy connection: the client must treat it as "this host
+  cannot do that", show it as such, and not reconnect, retry or report a
+  transport fault.
 
 ## Operations (v1 allowlist)
 
@@ -412,6 +445,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `spawn_agent` | as command; host forces `view: "custom"`, ignores `purpose`, `skills`, `mcpServers`, `customAgentId` in v1 | `AgentRecord` |
 | `send_user_message` | `{ agentId, turnId, text, attachments: string[] }` — paths from `attachment_end` (see "Attachments") | `boolean` |
 | `answer_tool_use` | `{ agentId, requestId, updatedInput, behavior, message? }` | `null` |
+| `answer_publish_approval` | `{ id, approved }` — `id` from the `publish:approval-requested` event; an id the host has already timed out is ignored | `null` |
 | `stop_agent` | `{ agentId }` | `null` |
 | `resume_agent` | `{ agentId }` | `null` |
 | `archive_agent` | `{ agentId }` | `null` |
@@ -605,6 +639,11 @@ on every device; a client skips the one whose `turn_id` matches its own
 optimistic bubble.
 On the `error` status transition, `agent:status` must carry the real
 `last_error`, since both clients keep the previous error when it is null.
+`publish:approval-requested` is a held prompt like a tool-use approval: the
+agent's publish is blocked on the host until someone answers with
+`answer_publish_approval` (or the host's wait lapses and refuses it). A client
+that does not have that op on `protocol.ops` can show the prompt but not answer
+it.
 
 Never forwarded: `agent:output`, `shell:output` (raw PTY bytes), `run:*`,
 `wf:*`, `roadmap:*`, `dictation:*`, `docker:*`, `agent-install:*`.
