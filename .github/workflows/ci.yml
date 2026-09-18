@@ -73,10 +73,15 @@ jobs:
         # rustup installs the pinned toolchain named there, with its components.
         run: rustup toolchain install
 
+      # Two separate packages, deliberately not a Cargo workspace (see
+      # /.gitignore): `src-tauri` depends on `crates/fletch-proto` by path, and
+      # each has its own lockfile, so each needs its own cache entry.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            crates/fletch-proto
 
       - name: Rustfmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
@@ -94,3 +99,17 @@ jobs:
 
       - name: Test
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # `fletch-proto` is the wire protocol both apps share, and it has no Tauri
+      # in its dependency graph — which is the point of it, and why it gets its
+      # own gate rather than riding along on the desktop's.
+      - name: Rustfmt (fletch-proto)
+        run: cargo fmt --manifest-path crates/fletch-proto/Cargo.toml --check
+
+      - name: Clippy (fletch-proto)
+        run: >
+          cargo clippy --manifest-path crates/fletch-proto/Cargo.toml --all-targets --
+          -D warnings -A clippy::significant_drop_tightening
+
+      - name: Test (fletch-proto)
+        run: cargo test --manifest-path crates/fletch-proto/Cargo.toml

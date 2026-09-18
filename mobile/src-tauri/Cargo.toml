@@ -26,9 +26,14 @@ tauri-plugin-notification = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-push = { path = "plugins/push" }
 
-# Secure channel: Noise over a plain WebSocket. rustls (not native-tls) so a
-# wss:// relay works on iOS without an OpenSSL build.
-snow = "0.10"
+# The wire protocol, shared with the host (`src-tauri/`): the Noise channel, the
+# device key file, the chunked frame codec and the address-racing dialer. A path
+# dependency rather than a workspace member, so this package keeps its own
+# lockfile and its own iOS toolchain story (including the `[patch.crates-io]`
+# below, which fletch-proto's own graph never touches).
+fletch-proto = { path = "../../crates/fletch-proto" }
+# rustls (not native-tls) so a wss:// relay works on iOS without an OpenSSL
+# build.
 tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 # tokio-tungstenite's rustls feature brings no crypto backend of its own, and
 # rustls panics at the first `wss://` dial unless exactly one is compiled in or
@@ -38,10 +43,10 @@ tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 # cmake. `run()` also installs it explicitly, so a future dependency that
 # drags in aws-lc-rs cannot reintroduce the ambiguity.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-# `net`: the relay dial resolves and races addresses itself (src/remote/dial.rs).
-tokio = { version = "1", features = ["sync", "time", "net"] }
+# The connection slot's lock and the connect budget. The dial's own `net` need
+# comes with fletch-proto.
+tokio = { version = "1", features = ["sync", "time"] }
 futures-util = "0.3"
-base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 # `generate_context!` expands to serde_json for the capability scopes.
 serde_json = "1"

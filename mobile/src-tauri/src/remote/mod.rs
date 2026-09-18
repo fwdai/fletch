@@ -9,13 +9,14 @@
 // is connected right now": a wrapper that was superseded while its handshake
 // was in flight cannot close its successor, send on it, or hear its events.
 
-mod dial;
-mod secure;
-
-use dial::Ws;
+// The wire itself — the Noise handshake, the frame codec, the device key file
+// and the Happy Eyeballs dialer — is `fletch-proto`, shared with the host
+// (`src-tauri/`). This module is only the phone's connection slot around it.
+use fletch_proto::dial::{self, Ws};
+use fletch_proto::keys::{StaticKey, DEVICE_KEY_FILE};
+use fletch_proto::noise::{initiate, Channel};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use secure::{Channel, DeviceKey, Handshake, HOST_KEY_MISMATCH};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -59,13 +60,13 @@ pub struct Remote {
     /// commands racing on first use cannot each generate a key and fight over
     /// the file, and whichever one runs first hands the same identity to the
     /// rest. A failed load is not cached, so a fixed disk is retried.
-    identity: std::sync::Mutex<Option<Arc<DeviceKey>>>,
+    identity: std::sync::Mutex<Option<Arc<StaticKey>>>,
 }
 
 impl Remote {
     /// The device key from `dir`, creating it on first use. Serialized by the
     /// lock for the whole load, so concurrent callers see one identity.
-    fn identity(&self, dir: &std::path::Path) -> Result<Arc<DeviceKey>, String> {
+    fn identity(&self, dir: &std::path::Path) -> Result<Arc<StaticKey>, String> {
         let mut cached = self
             .identity
             .lock()
@@ -73,7 +74,7 @@ impl Remote {
         if let Some(key) = cached.as_ref() {
             return Ok(key.clone());
         }
-        let key = Arc::new(DeviceKey::load_or_create(dir)?);
+        let key = Arc::new(StaticKey::load_or_create(dir, DEVICE_KEY_FILE)?);
         *cached = Some(key.clone());
         Ok(key)
     }
@@ -133,7 +134,7 @@ pub async fn remote_connect(
     close_current(&state.slot).await;
     let key = device_key(&app, &state)?;
     let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
-    // Both address families race inside `dial::connect` (see dial.rs), so one
+    // Both address families race inside `dial::connect` (fletch-proto), so one
     // that blackholes cannot spend the budget on behalf of the other.
     let dialled = within(deadline, dial::connect(&url))
         .await
@@ -141,7 +142,7 @@ pub async fn remote_connect(
     let mut ws = dialled.map_err(|e| format!("cannot reach {url}: {e}"))?;
     // The borrow of `ws` ends with the statement, so the socket is ours again
     // whether the handshake finished, failed or ran out of time.
-    let handshaken = within(deadline, handshake(&mut ws, &key, host_key.as_deref())).await;
+    let handshaken = within(deadline, initiate(&mut ws, &key, host_key.as_deref())).await;
     let channel = match handshaken {
         Some(Ok(channel)) => channel,
         Some(Err(e)) => {
@@ -191,7 +192,7 @@ pub async fn remote_send(
         .as_mut()
         .filter(|conn| conn.id == connection_id)
         .ok_or_else(|| "not connected".to_string())?;
-    let frame = conn.channel.encrypt(text.as_bytes())?;
+    let frame = conn.channel.encrypt_frame(text.as_bytes())?;
     conn.writer
         .send(Message::binary(frame))
         .await
@@ -250,61 +251,12 @@ fn timed_out(url: &str, timeout_ms: Option<u64>) -> String {
 }
 
 /// The process-wide device identity (see `Remote::identity`).
-fn device_key(app: &AppHandle, state: &Remote) -> Result<Arc<DeviceKey>, String> {
+fn device_key(app: &AppHandle, state: &Remote) -> Result<Arc<StaticKey>, String> {
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("no app data dir: {e}"))?;
     state.identity(&dir)
-}
-
-/// `-> e`, `<- e, ee, s, es`, `-> s, se`, all as binary messages with empty
-/// payloads. The phone is the initiator.
-///
-/// `expected` is the host key the caller insists on. It is checked as soon as
-/// message 2 delivers it, which is before message 3 reveals this device's own
-/// identity — an impostor learns nothing.
-async fn handshake(
-    ws: &mut Ws,
-    key: &DeviceKey,
-    expected: Option<&str>,
-) -> Result<Channel, String> {
-    let mut hs = Handshake::new(key, true)?;
-    let first = hs.write()?;
-    send(ws, first).await?;
-    let response = next_binary(ws).await?;
-    hs.read(&response)?;
-    let seen = hs.remote_static_base64()?;
-    if let Some(expected) = expected {
-        if expected != seen {
-            return Err(format!(
-                "{HOST_KEY_MISMATCH}: expected {expected}, host presented {seen}"
-            ));
-        }
-    }
-    let third = hs.write()?;
-    send(ws, third).await?;
-    hs.finish()
-}
-
-async fn send(ws: &mut Ws, bytes: Vec<u8>) -> Result<(), String> {
-    ws.send(Message::binary(bytes))
-        .await
-        .map_err(|e| format!("handshake failed: {e}"))
-}
-
-/// The next binary message. Anything else at handshake time is a protocol
-/// violation, which the caller turns into a 4001.
-async fn next_binary(ws: &mut Ws) -> Result<Vec<u8>, String> {
-    while let Some(message) = ws.next().await {
-        match message.map_err(|e| format!("handshake failed: {e}"))? {
-            Message::Binary(bytes) => return Ok(bytes.to_vec()),
-            Message::Text(_) => return Err("the host sent a cleartext frame".into()),
-            Message::Close(_) => break,
-            _ => {}
-        }
-    }
-    Err("the host closed during the handshake".into())
 }
 
 /// Decrypt every binary message onto the event bus until the socket ends, then
@@ -321,7 +273,7 @@ fn spawn_reader(app: AppHandle, slot: Slot, mut reader: Reader, id: ConnectionId
                     let plaintext = {
                         let mut guard = slot.lock().await;
                         match guard.as_mut() {
-                            Some(conn) if conn.id == id => conn.channel.decrypt(&bytes),
+                            Some(conn) if conn.id == id => conn.channel.decrypt_frame(&bytes),
                             // Replaced or closed while this frame was in
                             // flight: stay quiet, the live socket is someone
                             // else's.
@@ -469,7 +421,9 @@ mod tests {
             workers.into_iter().map(|w| w.join().unwrap()).collect();
 
         assert_eq!(seen.len(), 1, "every caller got the same identity");
-        let persisted = DeviceKey::load_or_create(&dir).unwrap().public_base64();
+        let persisted = StaticKey::load_or_create(&dir, DEVICE_KEY_FILE)
+            .unwrap()
+            .public_base64();
         assert!(seen.contains(&persisted), "and it is the one on disk");
         assert!(!dir.join("device_key.tmp").exists());
     }

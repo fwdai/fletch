@@ -11,7 +11,7 @@ use tokio_tungstenite::WebSocketStream;
 use super::auth::DeviceRecord;
 use super::dispatch::{self, Dispatch, DispatchFuture, TOO_MANY_IN_FLIGHT, UNKNOWN_OP};
 use super::push::{AgentLookup, PushTriggers};
-use super::secure::{self, SecureChannel};
+use super::secure::{self, Handshake, SecureChannel};
 use super::{DeviceStore, PairingTokens, RemoteState};
 use crate::workspace::AgentStatus;
 
@@ -633,15 +633,15 @@ fn boot_with(dispatch: Arc<dyn Dispatch>) -> Host {
 /// One phone's static identity: the keypair whose public half the host records
 /// and whose private half proves it in the handshake.
 pub(super) struct Device {
-    pub(super) private: Vec<u8>,
+    pub(super) key: secure::HostKey,
     pub(super) public: [u8; 32],
 }
 
 pub(super) fn device() -> Device {
-    let keypair = secure::generate_keypair().unwrap();
+    let key = secure::HostKey::generate().unwrap();
     Device {
-        public: keypair.public.clone().try_into().unwrap(),
-        private: keypair.private,
+        public: *key.public_bytes(),
+        key,
     }
 }
 
@@ -668,23 +668,20 @@ struct SecureWs {
 /// three binary messages, empty payloads, `-> e`, `<- e, ee, s, es`, `-> s, se`.
 async fn secure_connect(port: u16, device: &Device) -> SecureWs {
     let mut ws = connect_plain(port).await;
-    let mut handshake = secure::initiator(&device.private).unwrap();
-    let mut buf = [0u8; 65535];
+    let mut handshake = Handshake::new(&device.key, true).unwrap();
 
-    let n = handshake.write_message(&[], &mut buf).unwrap();
-    ws.send(Message::Binary(Bytes::copy_from_slice(&buf[..n])))
+    ws.send(Message::Binary(Bytes::from(handshake.write().unwrap())))
         .await
         .unwrap();
 
     let second = next_binary(&mut ws).await;
-    handshake.read_message(&second, &mut buf).unwrap();
+    handshake.read(&second).unwrap();
 
-    let n = handshake.write_message(&[], &mut buf).unwrap();
-    ws.send(Message::Binary(Bytes::copy_from_slice(&buf[..n])))
+    ws.send(Message::Binary(Bytes::from(handshake.write().unwrap())))
         .await
         .unwrap();
 
-    let channel = SecureChannel::new(handshake.into_transport_mode().unwrap());
+    let channel = handshake.finish().unwrap();
     SecureWs { ws, channel }
 }
 
@@ -949,10 +946,8 @@ async fn disabling_during_the_handshake_closes_4004_at_once() {
     let host = boot();
     let phone = device();
     let mut ws = connect_plain(host.port).await;
-    let mut handshake = secure::initiator(&phone.private).unwrap();
-    let mut buf = [0u8; 65535];
-    let n = handshake.write_message(&[], &mut buf).unwrap();
-    ws.send(Message::Binary(Bytes::copy_from_slice(&buf[..n])))
+    let mut handshake = Handshake::new(&phone.key, true).unwrap();
+    ws.send(Message::Binary(Bytes::from(handshake.write().unwrap())))
         .await
         .unwrap();
     // Message 2 arrives: the host is now parked waiting for message 3.
