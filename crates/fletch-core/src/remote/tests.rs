@@ -352,7 +352,7 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 54 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 101 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -408,9 +408,56 @@ fn allowlist_matches_the_protocol_table() {
         "list_project_chats",
         "list_custom_agents",
         "get_agent",
+        "wf_list_runs",
+        "wf_get_run",
+        "wf_events",
+        "wf_run_agents",
+        "wf_launch",
+        "wf_cancel",
+        "wf_resume",
+        "wf_retry",
+        "wf_approve",
+        "wf_reject",
+        "wf_run_diff",
+        "wf_resolve_conflict",
+        "wf_delete_run",
+        "wf_answer",
+        "wf_def_save",
+        "wf_def_list",
+        "wf_def_delete",
+        "wf_def_export_yaml",
+        "wf_def_import_yaml",
         "roadmap_list_items",
+        "roadmap_get_item",
+        "roadmap_create_item",
         "roadmap_update_item",
+        "roadmap_set_rank",
+        "roadmap_hand_off_item",
+        "roadmap_item_review",
+        "roadmap_merge_item_pr",
+        "roadmap_note_review_feedback",
+        "roadmap_hold_item",
+        "roadmap_release_item",
+        "roadmap_hold_project",
+        "roadmap_release_project",
+        "roadmap_get_project_hold",
+        "roadmap_reclaim_item",
+        "roadmap_reject_item",
+        "roadmap_reopen_item",
+        "roadmap_delete_item",
         "roadmap_discard_proposal",
+        "roadmap_list_item_events",
+        "roadmap_latest_events",
+        "roadmap_list_proposals",
+        "roadmap_accept_proposal",
+        "roadmap_reject_proposal",
+        "roadmap_get_order_proposal",
+        "roadmap_accept_order_proposal",
+        "roadmap_reject_order_proposal",
+        "roadmap_get_brief",
+        "roadmap_get_brief_proposal",
+        "roadmap_accept_brief_proposal",
+        "roadmap_reject_brief_proposal",
         "register_push",
     ];
     assert_eq!(
@@ -465,6 +512,10 @@ fn never_exposed_ops_are_not_dispatchable() {
     // doc's paragraph does not name it or any family containing it), only an op
     // the phone's v1 surface did not need, so it is now on the wire beside
     // `push_agent` and `create_pr` and the desktop gates it by op name instead.
+    // The made-up `wf_start_run` / `roadmap_enqueue` placeholders and
+    // `roadmap_delete_item` left with them when the whole `wf_*`/`roadmap_*`
+    // surface went on the wire; what is still withheld around those two
+    // families is asserted by name below.
     for op in [
         "db_select",
         "db_insert",
@@ -481,13 +532,8 @@ fn never_exposed_ops_are_not_dispatchable() {
         "reveal_logs",
         "track_event",
         "install_agent",
-        "wf_start_run",
-        "roadmap_enqueue",
-        // The unconditional delete: a phone gets `roadmap_discard_proposal`,
-        // which refuses once the row has been accepted.
-        "roadmap_delete_item",
         "run_start",
-        "fork_agent",
+        "run_stop",
         "delete_project",
         // Adding a project is exposed; creating a brand-new repo is the
         // documented follow-up, so it stays off the wire.
@@ -497,6 +543,372 @@ fn never_exposed_ops_are_not_dispatchable() {
         "pair",
     ] {
         assert!(!dispatch::is_allowed(op), "{op} must not be dispatchable");
+    }
+}
+
+/// The ops the workflow and roadmap *surfaces* call from other command families
+/// and that stay off the wire with their family. Asserted by name so removing a
+/// row from the constant cannot quietly widen the surface, and so the reason is
+/// somewhere a reader of the test finds it.
+#[test]
+fn the_withheld_neighbours_of_the_wf_and_roadmap_surface_stay_off() {
+    assert!(
+        !dispatch::WITHHELD_WF_ROADMAP_OPS.is_empty(),
+        "the withheld list is the record of the decision; do not empty it"
+    );
+    for (op, reason) in dispatch::WITHHELD_WF_ROADMAP_OPS {
+        assert!(
+            !dispatch::is_allowed(op),
+            "{op} must not be dispatchable ({reason})"
+        );
+        assert!(!reason.is_empty(), "{op} is withheld without a reason");
+    }
+}
+
+/// Every `wf_*` and `roadmap_*` command the desktop registers is on the wire —
+/// the point of multi-host plan §5.3 item 2. Written as the two prefixes rather
+/// than a second copy of the list so an op added to `workflow/` or `roadmap/`
+/// later is a deliberate choice: either it gets a row, or it gets a line in
+/// `WITHHELD_WF_ROADMAP_OPS`.
+#[test]
+fn the_whole_wf_and_roadmap_surface_is_exposed() {
+    let wf = dispatch::OPS
+        .iter()
+        .filter(|op| op.starts_with("wf_"))
+        .count();
+    let roadmap = dispatch::OPS
+        .iter()
+        .filter(|op| op.starts_with("roadmap_"))
+        .count();
+    // 18 `wf_*` commands + `wf_run_agents`; 30 `roadmap_*` commands +
+    // `roadmap_discard_proposal`, which is remote-only.
+    assert_eq!((wf, roadmap), (19, 31));
+    for op in dispatch::WITHHELD_WF_ROADMAP_OPS {
+        assert!(
+            !op.0.starts_with("wf_") && !op.0.starts_with("roadmap_"),
+            "{} is withheld, so it must not be one of the two families",
+            op.0
+        );
+    }
+}
+
+/// The workflow and roadmap events the desktop UI listens to all reach a remote
+/// client, and the descriptor advertises them — otherwise a remote run monitor
+/// or board would render once and then go stale.
+#[test]
+fn the_wf_and_roadmap_events_are_forwarded_and_advertised() {
+    let protocol = super::protocol_descriptor();
+    for event in [
+        "wf:event",
+        "wf:run",
+        "wf:run-deleted",
+        "roadmap:item",
+        "roadmap:item-deleted",
+        "roadmap:item-event",
+        "roadmap:proposal",
+        "roadmap:proposal-deleted",
+        "roadmap:order-proposal",
+        "roadmap:order-proposal-deleted",
+        "roadmap:project-hold",
+        "roadmap:project-hold-released",
+        "roadmap:brief",
+        "roadmap:brief-proposal",
+        "roadmap:brief-proposal-deleted",
+        "roadmap:queue-note",
+    ] {
+        assert!(
+            super::events::FORWARDED_EVENTS.contains(&event),
+            "{event} is not forwarded"
+        );
+        assert!(
+            protocol.events.contains(&event),
+            "{event} is missing from the descriptor"
+        );
+    }
+    // Raw PTY output stays off whatever else is added.
+    for event in ["agent:output", "shell:output", "run:output"] {
+        assert!(
+            !super::events::FORWARDED_EVENTS.contains(&event),
+            "{event} must never be forwarded"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Workflow and roadmap ops
+//
+// Dispatched in process against a real engine ctx over a throwaway DB — the
+// same code path the socket runs. The roadmap arms need nothing but the ctx, so
+// they go end to end here; the `wf_*` run-control arms need the scheduler boot
+// publishes, so what is asserted for those is that they are reachable and
+// answer with the scheduler's absence rather than `unknown op`.
+// ---------------------------------------------------------------------------
+
+/// A dispatcher over a fresh temp DB holding one project (`roadmap_items` has a
+/// foreign key onto `projects`), with no workflow scheduler published.
+fn wf_roadmap_dispatch() -> (dispatch::SupervisorDispatch, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::database::init(dir.path()).unwrap();
+    db.lock()
+        .execute(
+            "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'fletch', 0)",
+            [],
+        )
+        .unwrap();
+    let ctx = Arc::new(crate::host::EngineCtx::new(
+        Arc::new(crate::host::sink::NullSink),
+        db.clone(),
+        Box::new(|| false),
+    ));
+    let sup = Arc::new(crate::supervisor::Supervisor::new(Arc::new(
+        crate::workspace::WorkspaceManager::new(db),
+    )));
+    (dispatch::SupervisorDispatch::new(ctx, sup), dir)
+}
+
+/// The board end to end over the wire arms: create, patch, rank, hold, release,
+/// history, and the three read-only proposal lists. One test rather than ten
+/// because the point is that the arms are wired to the same `_impl` the command
+/// calls, not that the roadmap store works (that has its own tests).
+#[tokio::test]
+async fn the_roadmap_board_is_drivable_through_the_dispatcher() {
+    let (d, _dir) = wf_roadmap_dispatch();
+
+    let item = d
+        .dispatch(
+            "roadmap_create_item",
+            json!({ "projectId": "p1", "item": { "title": "ship it", "why": "because" } }),
+        )
+        .await
+        .expect("create");
+    let id = item["id"].as_str().expect("an id").to_string();
+
+    let listed: Vec<Value> = serde_json::from_value(
+        d.dispatch("roadmap_list_items", json!({ "projectId": "p1" }))
+            .await
+            .expect("list"),
+    )
+    .unwrap();
+    assert_eq!(listed.len(), 1);
+
+    assert_eq!(
+        d.dispatch("roadmap_get_item", json!({ "itemId": id }))
+            .await
+            .expect("get")["id"],
+        json!(id)
+    );
+
+    let update = d
+        .dispatch(
+            "roadmap_update_item",
+            json!({ "id": id, "patch": { "status": "open" }, "expectStatus": null, "queue": null }),
+        )
+        .await
+        .expect("update");
+    assert_eq!(update["applied"], json!(true));
+
+    assert_eq!(
+        d.dispatch("roadmap_set_rank", json!({ "itemId": id, "rank": 2.5 }))
+            .await
+            .expect("rank")["rank"],
+        json!(2.5)
+    );
+
+    let held = d
+        .dispatch(
+            "roadmap_hold_item",
+            json!({ "itemId": id, "reason": "waiting on design" }),
+        )
+        .await
+        .expect("hold");
+    assert_eq!(held["hold_reason"], json!("waiting on design"));
+    assert!(d
+        .dispatch("roadmap_release_item", json!({ "itemId": id }))
+        .await
+        .expect("release")["hold_reason"]
+        .is_null());
+
+    let hold = d
+        .dispatch(
+            "roadmap_hold_project",
+            json!({ "projectId": "p1", "reason": "shipping week" }),
+        )
+        .await
+        .expect("hold project");
+    assert_eq!(hold["reason"], json!("shipping week"));
+    assert!(!d
+        .dispatch("roadmap_get_project_hold", json!({ "projectId": "p1" }))
+        .await
+        .expect("read hold")
+        .is_null());
+    d.dispatch("roadmap_release_project", json!({ "projectId": "p1" }))
+        .await
+        .expect("release project");
+    assert!(d
+        .dispatch("roadmap_get_project_hold", json!({ "projectId": "p1" }))
+        .await
+        .expect("read hold")
+        .is_null());
+
+    // The durable trail the card renders, and the board-wide read behind the
+    // "Needs you" strip.
+    for (op, args) in [
+        ("roadmap_list_item_events", json!({ "itemId": id })),
+        ("roadmap_latest_events", json!({ "projectId": "p1" })),
+        ("roadmap_list_proposals", json!({ "projectId": "p1" })),
+    ] {
+        assert!(
+            d.dispatch(op, args).await.expect(op).is_array(),
+            "{op} answers a list"
+        );
+    }
+    for op in [
+        "roadmap_get_order_proposal",
+        "roadmap_get_brief",
+        "roadmap_get_brief_proposal",
+    ] {
+        assert!(
+            d.dispatch(op, json!({ "projectId": "p1" }))
+                .await
+                .expect(op)
+                .is_null(),
+            "{op} answers null on an untouched project"
+        );
+    }
+
+    // Ruling an item off the board and putting it back, then the board's own
+    // Remove — the unconditional delete that used to be off the wire.
+    assert_eq!(
+        d.dispatch(
+            "roadmap_reject_item",
+            json!({ "itemId": id, "reason": "not now" })
+        )
+        .await
+        .expect("reject")["status"],
+        json!("rejected")
+    );
+    assert_eq!(
+        d.dispatch("roadmap_reopen_item", json!({ "itemId": id }))
+            .await
+            .expect("reopen")["status"],
+        json!("open")
+    );
+    d.dispatch("roadmap_delete_item", json!({ "id": id }))
+        .await
+        .expect("delete");
+    assert!(d
+        .dispatch("roadmap_get_item", json!({ "itemId": id }))
+        .await
+        .expect("get after delete")
+        .is_null());
+}
+
+/// The definition library and the run reads need only the DB, so they go end to
+/// end here: an empty host answers with empty lists and `null`, not an error.
+#[tokio::test]
+async fn the_workflow_reads_and_definition_library_answer_on_an_empty_host() {
+    let (d, _dir) = wf_roadmap_dispatch();
+
+    assert_eq!(
+        d.dispatch("wf_list_runs", json!({ "projectId": null }))
+            .await
+            .expect("list runs"),
+        json!([])
+    );
+    assert_eq!(
+        d.dispatch("wf_def_list", json!({}))
+            .await
+            .expect("def list"),
+        json!([])
+    );
+    assert!(d
+        .dispatch("wf_get_run", json!({ "runId": "nope" }))
+        .await
+        .expect("get run")
+        .is_null());
+    assert_eq!(
+        d.dispatch(
+            "wf_events",
+            json!({ "runId": "nope", "afterSeq": 0, "limit": 50 })
+        )
+        .await
+        .expect("events"),
+        json!([])
+    );
+    assert_eq!(
+        d.dispatch("wf_run_agents", json!({ "runId": "nope" }))
+            .await
+            .expect("run agents"),
+        json!([])
+    );
+    // A definition round-trips through save → export → delete. The spec is
+    // built from YAML and re-serialized, so the arm is fed exactly the JSON the
+    // frontend's `wfDefSave` sends.
+    let spec = serde_json::to_value(
+        crate::workflow::yaml::from_yaml(
+            "version: 1\nname: smoke\nagents: { coder: { base: claude } }\n\
+             workflow:\n  - step: build\n    agent: coder\n    goal: go\n",
+        )
+        .expect("a valid spec"),
+    )
+    .unwrap();
+    let def = d
+        .dispatch(
+            "wf_def_save",
+            json!({ "spec": spec, "id": null, "hue": 210 }),
+        )
+        .await
+        .expect("def save");
+    let def_id = def["id"].as_str().expect("an id").to_string();
+    assert!(d
+        .dispatch("wf_def_export_yaml", json!({ "id": def_id }))
+        .await
+        .expect("export")
+        .as_str()
+        .expect("yaml text")
+        .contains("smoke"));
+    d.dispatch("wf_def_delete", json!({ "id": def_id }))
+        .await
+        .expect("def delete");
+    assert_eq!(
+        d.dispatch("wf_def_list", json!({}))
+            .await
+            .expect("def list"),
+        json!([])
+    );
+}
+
+/// The run-control arms are reachable — the failure a host without a published
+/// scheduler gives is the scheduler's absence, never `unknown op`, which a
+/// client is told to read as "this host cannot do that".
+#[tokio::test]
+async fn run_control_reaches_the_scheduler_rather_than_answering_unknown_op() {
+    let (d, _dir) = wf_roadmap_dispatch();
+    for (op, args) in [
+        ("wf_cancel", json!({ "runId": "r1" })),
+        ("wf_retry", json!({ "runId": "r1" })),
+        ("wf_approve", json!({ "runId": "r1" })),
+        ("wf_resume", json!({ "runId": "r1", "budgetPatch": null })),
+        ("wf_reject", json!({ "runId": "r1", "note": "no" })),
+        ("wf_delete_run", json!({ "runId": "r1" })),
+        (
+            "wf_resolve_conflict",
+            json!({ "runId": "r1", "mode": "agent" }),
+        ),
+        (
+            "wf_run_diff",
+            json!({ "runId": "r1", "fromSha": "a", "toSha": "b", "path": null }),
+        ),
+        (
+            "wf_answer",
+            json!({ "projectId": "p1", "runId": "r1", "messageId": "m1", "body": "yes" }),
+        ),
+    ] {
+        assert_eq!(
+            d.dispatch(op, args).await,
+            Err(dispatch::WORKFLOWS_UNAVAILABLE.to_string()),
+            "{op}"
+        );
     }
 }
 
