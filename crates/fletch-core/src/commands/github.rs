@@ -66,6 +66,18 @@ pub async fn create_pr_impl(
     Ok(pr)
 }
 
+/// Merge the open PR for the targeted repo's current branch.
+///
+/// Shared with the remote dispatcher.
+pub async fn merge_pr_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<()> {
+    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    gh::pr_merge(&checkout).await
+}
+
 /// Fetch and return the current PR state for the agent's primary repo: by
 /// bound number when one is recorded (with the persisted snapshot as the
 /// fallback when GitHub is unreachable), else discovered by branch. Unbound
@@ -162,4 +174,46 @@ pub async fn get_pr_live_impl(
         .await
         .unwrap_or(None);
     Ok(Some(gh::PrLive { state, checks }))
+}
+
+/// The Git panel's slow tick: unresolved review threads (Greptile / other bots
+/// / humans), flattened to each thread's root comment.
+///
+/// Stays on GraphQL because thread resolution (`isResolved`/`isOutdated`) has
+/// no REST equivalent — so unlike `get_pr_live_impl` this one does spend
+/// points, 1 per call by PR number. Polled well below the state/CI cadence to
+/// match.
+///
+/// Shared with the remote dispatcher.
+pub async fn get_pr_threads_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<Option<gh::PrComments>> {
+    // Same resolver as `get_pr_live_impl`, so this shares its adoption and
+    // throttling rather than running a second branch scan of its own. Its live
+    // lookup is a conditional REST read the fast tick has already warmed, so
+    // reaching for the PR number here is free.
+    let Some((state, _bound)) = crate::supervisor::resolve_pr_state(
+        &supervisor.workspace,
+        agent_id,
+        subdir,
+        crate::supervisor::Discovery::Throttled,
+    )
+    .await
+    else {
+        return Ok(None);
+    };
+    // Only an open PR has threads worth polling.
+    if !matches!(state.state, gh::PrStatus::Open) {
+        return Ok(None);
+    }
+    let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
+        return Ok(None);
+    };
+    Ok(
+        gh::pr_threads_number(&checkout, Some(&repo.repo_path), state.number)
+            .await
+            .unwrap_or(None),
+    )
 }

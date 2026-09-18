@@ -13,6 +13,7 @@ import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { appActionMessage } from "@/delegation";
 import { type LadderContext, nextRung } from "@/readiness";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { checkoutKey } from "@/store/git";
 import type { ReviewItem } from "./queue";
 
@@ -63,6 +64,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
   const delegateAction = useAppStore((s) => s.delegateAction);
   const setLastError = useAppStore((s) => s.setLastError);
   const dismissReviewItem = useAppStore((s) => s.dismissReviewItem);
+  const mergePrGate = useGate("mergePr");
 
   // Send the user to the agent's Git tab — the honest fallback whenever an
   // action can't be mapped to a single clean gesture.
@@ -110,6 +112,12 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
           );
           return;
         case "merge":
+          // A host from before `merge_pr` says so instead of dispatching a call
+          // that comes back `unknown op`.
+          if (mergePrGate) {
+            setLastError(mergePrGate);
+            return;
+          }
           await mergePr(agentId, subdir);
           return;
         default:
@@ -118,7 +126,7 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
           openAgentGit(agentId);
       }
     },
-    [fetchGitState, delegateAction, mergePr, openAgentGit],
+    [fetchGitState, delegateAction, mergePr, mergePrGate, setLastError, openAgentGit],
   );
 
   // Fan-out "Update all": dispatch the existing `update-branch` delegation to

@@ -49,6 +49,17 @@ describe("gateReason", () => {
     expect(gateReason(old, "roadmap")).toBe(GATES.roadmap.reason);
     expect(gateReason(old, "nativeView")).toBe(GATES.nativeView.reason);
     expect(gateReason(old, "fork")).toBe(GATES.fork.reason);
+    // Added after the descriptor existed, so a host that reports none is too
+    // old for them — which is the whole reason they are gates and not calls.
+    expect(gateReason(old, "mergePr")).toBe(GATES.mergePr.reason);
+    expect(gateReason(old, "restore")).toBe(GATES.restore.reason);
+  });
+
+  it("opens the newly exposed ops on a host that advertises them", () => {
+    const current = host([...V2_DEFAULT_OPS, "merge_pr", "restore_agent"]);
+
+    expect(gateReason(current, "mergePr")).toBeNull();
+    expect(gateReason(current, "restore")).toBeNull();
   });
 
   it("opens a gate the host says it answers", () => {

@@ -4,12 +4,17 @@ import { Icon } from "@/components/Icon";
 import { Loader } from "@/components/ui/Loader";
 import { ModalSheet } from "@/components/ui/Modal";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { basename, firstLine } from "@/util/format";
 
 export function History() {
   const workspace = useAppStore((s) => s.workspace);
   const toggleHistory = useAppStore((s) => s.toggleHistory);
   const restore = useAppStore((s) => s.restore);
+  // `restore_agent` is on the wire, so this is null everywhere except against a
+  // host from before the op — where the list stays browsable and only the
+  // gesture is off, with the reason in the footer.
+  const restoreGate = useGate("restore");
   const [query, setQuery] = useState("");
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [focusedIndex, setFocusedIndex] = useState(0);
@@ -21,6 +26,7 @@ export function History() {
   const filteredRef = useRef<AgentRecord[]>([]);
   const focusedIndexRef = useRef(0);
   const restoringIdRef = useRef<string | null>(null);
+  const restoreGateRef = useRef<string | null>(null);
 
   const archived = useMemo(() => {
     const list = (workspace?.agents ?? []).filter((a) => a.archive);
@@ -52,6 +58,7 @@ export function History() {
   filteredRef.current = filtered;
   focusedIndexRef.current = focusedIndex;
   restoringIdRef.current = restoringId;
+  restoreGateRef.current = restoreGate;
 
   // Reset cursor when filter results change
   useEffect(() => {
@@ -88,6 +95,7 @@ export function History() {
         // is honored immediately, with nothing swallowed.
         if (!sheetRef.current?.contains(e.target as Node)) return;
         e.preventDefault();
+        if (restoreGateRef.current) return;
         const item = f[idx];
         if (item && !restoring) {
           setRestoringId(item.id);
@@ -100,7 +108,7 @@ export function History() {
   }, [restore]);
 
   const onRowClick = async (id: string) => {
-    if (restoringId) return;
+    if (restoringId || restoreGate) return;
     setRestoringId(id);
     try {
       await restore(id); // restore already sets historyOpen: false in the store
@@ -161,7 +169,7 @@ export function History() {
                       className={`hrow flex-center archived text-base${isFocused ? " focused" : ""}`}
                       onClick={() => onRowClick(a.id)}
                       onMouseEnter={() => setFocusedIndex(myIdx)}
-                      disabled={!!restoringId}
+                      disabled={!!restoringId || !!restoreGate}
                       // Dim the other rows during a restore, but keep the active
                       // row at full opacity so its spinner stays visible (a
                       // parent opacity would otherwise cap the child rule).
@@ -227,9 +235,13 @@ export function History() {
         <span>
           <kbd className="kbd">Esc</kbd> <span className="dim">to close</span>
         </span>
-        <span>
-          <kbd className="kbd">↵</kbd> <span className="dim">to restore</span>
-        </span>
+        {restoreGate ? (
+          <span className="dim">{restoreGate}</span>
+        ) : (
+          <span>
+            <kbd className="kbd">↵</kbd> <span className="dim">to restore</span>
+          </span>
+        )}
       </div>
     </ModalSheet>
   );

@@ -81,6 +81,8 @@ pub const OPS: &[&str] = &[
     "stop_agent",
     "resume_agent",
     "archive_agent",
+    "restore_agent",
+    "discard_agent",
     "set_agent_model",
     "set_agent_effort",
     "read_session_records",
@@ -88,15 +90,18 @@ pub const OPS: &[&str] = &[
     "sync_session",
     "get_git_state",
     "get_all_shortstats",
+    "get_all_git_meta",
     "list_checkout_tree",
     "read_checkout_file",
     "get_file_diff",
     "commit_agent",
     "push_agent",
     "create_pr",
+    "merge_pr",
     "get_pr_state",
     "get_pr_checks",
     "get_pr_live",
+    "get_pr_threads",
     "list_repo_branches",
     "repo_default_branch",
     "discover_supported_models",
@@ -274,6 +279,19 @@ impl Dispatch for SupervisorDispatch {
                     res(sup.clone().archive_agent(ctx.clone(), &a.agent_id).await)
                 }
 
+                "restore_agent" => {
+                    let a: AgentArgs = parse(args)?;
+                    res(sup.clone().restore_agent(ctx.clone(), &a.agent_id).await)
+                }
+
+                // The destructive twin of `archive_agent`: record, checkout and
+                // transcript all go. Same supervisor method the command calls,
+                // so there is no softer remote variant of it.
+                "discard_agent" => {
+                    let a: AgentArgs = parse(args)?;
+                    res(sup.clone().discard_agent(&a.agent_id).await)
+                }
+
                 "set_agent_model" => {
                     let a: ModelArgs = parse(args)?;
                     res(sup
@@ -316,6 +334,8 @@ impl Dispatch for SupervisorDispatch {
                 }
 
                 "get_all_shortstats" => res(crate::commands::get_all_shortstats_impl(sup).await),
+
+                "get_all_git_meta" => res(crate::commands::get_all_git_meta_impl(sup).await),
 
                 "list_checkout_tree" => {
                     let a: AgentArgs = parse(args)?;
@@ -375,6 +395,11 @@ impl Dispatch for SupervisorDispatch {
                     .await)
                 }
 
+                "merge_pr" => {
+                    let a: AgentSubdirArgs = parse(args)?;
+                    res(crate::commands::merge_pr_impl(sup, &a.agent_id, a.subdir.as_deref()).await)
+                }
+
                 "get_pr_state" => {
                     let a: AgentSubdirArgs = parse(args)?;
                     res(
@@ -395,6 +420,14 @@ impl Dispatch for SupervisorDispatch {
                     let a: AgentSubdirArgs = parse(args)?;
                     res(
                         crate::commands::get_pr_live_impl(sup, &a.agent_id, a.subdir.as_deref())
+                            .await,
+                    )
+                }
+
+                "get_pr_threads" => {
+                    let a: AgentSubdirArgs = parse(args)?;
+                    res(
+                        crate::commands::get_pr_threads_impl(sup, &a.agent_id, a.subdir.as_deref())
                             .await,
                     )
                 }

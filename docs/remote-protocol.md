@@ -449,6 +449,8 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `stop_agent` | `{ agentId }` | `null` |
 | `resume_agent` | `{ agentId }` | `null` |
 | `archive_agent` | `{ agentId }` | `null` |
+| `restore_agent` | `{ agentId }` | `null` |
+| `discard_agent` | `{ agentId }` — destructive: record, checkout and transcript all go | `null` |
 | `set_agent_model` | `{ agentId, model }` | `null` |
 | `set_agent_effort` | `{ agentId, effort }` | `null` |
 | `read_session_records` | `{ agentId }` | `SessionRecord[]` |
@@ -456,15 +458,18 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `sync_session` | `{ agentId }` | `null` |
 | `get_git_state` | `{ agentId }` | `GitState \| null` |
 | `get_all_shortstats` | `{}` — uncommitted working-tree stats for every live agent; archived and still-cloning agents are omitted | `Record<agentId, ShortStats>` |
+| `get_all_git_meta` | `{}` — advisory local-git metadata per checkout (base staleness, changed paths), keyed like the PR maps (`agentId` for the primary repo, `"{agentId}::{subdir}"` for secondaries); no network | `Record<gitKey, GitMeta>` |
 | `list_checkout_tree` | as command | `CheckoutFile[]` |
 | `read_checkout_file` | `{ agentId, path, baseMode? }` | `CheckoutFileContents` |
 | `get_file_diff` | as command | `string` |
 | `commit_agent` | as command | `null` |
 | `push_agent` | as command | `string` |
 | `create_pr` | as command | `PrState` |
+| `merge_pr` | as command — merges the open PR on the targeted repo's branch | `null` |
 | `get_pr_state` | as command | `PrState \| null` |
 | `get_pr_checks` | as command | `PrChecks \| null` |
 | `get_pr_live` | as command | `PrLive \| null` |
+| `get_pr_threads` | as command — unresolved review threads; GraphQL, so polled well below the `get_pr_live` cadence | `PrComments \| null` |
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
 | `discover_supported_models` | as command | `AgentModels[]` |
@@ -489,6 +494,12 @@ Never exposed, by design: the generic `db_*` table bridge, every file mutation
 ops (`open_agent_shell`, `write_to_shell`, …), `write_to_agent` (raw PTY),
 editor/log/telemetry/provider-install ops, workflow, roadmap and run ops.
 Adding an op means adding a row here and a match arm in the dispatcher.
+
+Not yet exposed, but only for want of a reason to be: `fork_agent`,
+`delete_project` and `create_repo`. These are scope, not policy — a client gates
+each one on its absence from `protocol.ops` and says so, and a later release may
+add the row. `merge_pr` was in this group until it earned its row above: the
+credential it spends is the one `push_agent` and `create_pr` already spend.
 
 The spawn flow is the desktop's: `allocate_draft_name` → `spawn_agent` →
 wait for `agent:status` to leave `spawning` → `send_user_message` with the
