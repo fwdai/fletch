@@ -410,6 +410,196 @@ describe("codexAdapter", () => {
     ]);
   });
 
+  // Sub-agents (codex-cli 0.153.4 `collaboration` tools). Shapes below are
+  // verbatim from a real parent rollout and its child's rollout; the child's
+  // lines carry the `parent_tool_use_id` the transcript sync stamps on them.
+  const SPAWN_ID = "call_ktWbh2ks7kS8GdiX50dnyPHn";
+  const spawnLines = [
+    {
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        id: "fc_1",
+        name: "spawn_agent",
+        namespace: "collaboration",
+        arguments:
+          '{"task_name":"done_reply","fork_turns":"all","message":"gAAAAABqroSG76nmoqXPy-kYZsYU7DqY-IZg2cDonAjq7ZjhBsywqFlejJ70Zcs3qO1U92agb02fpH1hfpCBD6TO1h2c7C9ToBzZsvWhEIOoDM_TJu5UjrfNzKHqgoUc4xMclXRupjJNa1zyfcPTknUwcfbtZ4kTAQ=="}',
+        call_id: SPAWN_ID,
+      },
+    },
+    {
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        item: {
+          type: "SubAgentActivity",
+          id: SPAWN_ID,
+          kind: "started",
+          agent_thread_id: "01a0b9b5-ae11-77e1-9951-d3e243846b37",
+          agent_path: "/root/done_reply",
+        },
+      },
+    },
+    {
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: SPAWN_ID,
+        output: '{"task_name":"/root/done_reply"}',
+      },
+    },
+  ];
+  const waitLines = [
+    {
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "wait_agent",
+        namespace: "collaboration",
+        arguments: '{"timeout_ms":3600000}',
+        call_id: "call_wait",
+      },
+    },
+    {
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        item: {
+          type: "CollabAgentToolCall",
+          id: "call_wait",
+          tool: "wait",
+          status: "completed",
+          sender_thread_id: "01a0b9b5-95d8-7bc0-9c23-2f9c6d854357",
+          receiver_thread_ids: [],
+          receiver_agents: [],
+          agents_states: {},
+        },
+      },
+    },
+    {
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: "call_wait",
+        output: '{"message":"Wait completed.","timed_out":false}',
+      },
+    },
+  ];
+  const childLines = [
+    { type: "session_meta", parent_tool_use_id: SPAWN_ID, payload: { id: "child" } },
+    {
+      type: "event_msg",
+      parent_tool_use_id: SPAWN_ID,
+      payload: {
+        type: "item_completed",
+        item: {
+          type: "AgentMessage",
+          id: "msg_child",
+          content: [{ type: "text", text: "done" }],
+          phase: "final_answer",
+        },
+      },
+    },
+    { type: "event_msg", parent_tool_use_id: SPAWN_ID, payload: { type: "task_complete" } },
+  ];
+
+  it("replays spawn_agent as the Agent tool, omitting the encrypted message", () => {
+    const items = run(codexAdapter.normalizeTranscript(spawnLines));
+    expect(items).toEqual([
+      {
+        kind: "tool_call",
+        id: SPAWN_ID,
+        name: "Agent",
+        input: { description: "done_reply", subagent_type: "/root/done_reply" },
+        streaming: false,
+      },
+      {
+        kind: "tool_result",
+        tool_use_id: SPAWN_ID,
+        content: '{"task_name":"/root/done_reply"}',
+        is_error: false,
+      },
+    ]);
+  });
+
+  it("keeps a readable spawn message as the Agent prompt", () => {
+    const lines = [
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "spawn_agent",
+          namespace: "collaboration",
+          arguments: '{"task_name":"review","message":"Review PR #7"}',
+          call_id: "c",
+        },
+      },
+    ];
+    const call = run(codexAdapter.normalizeTranscript(lines)).find((i) => i.kind === "tool_call");
+    expect(call).toMatchObject({ input: { description: "review", prompt: "Review PR #7" } });
+  });
+
+  it("nests a tagged child rollout under the spawn call, with the wait as a collab row", () => {
+    // The sync appends the child's records after the parent's, each tagged.
+    const items = run(
+      codexAdapter.normalizeTranscript([...spawnLines, ...waitLines, ...childLines]),
+    );
+    expect(items.map((i) => i.kind)).toEqual([
+      "tool_call",
+      "tool_result",
+      "tool_call",
+      "tool_result",
+    ]);
+    expect(items[0]).toMatchObject({
+      id: SPAWN_ID,
+      name: "Agent",
+      children: [
+        { kind: "agent_message", text: "done" },
+        { kind: "notice", subtype: "turn_end" },
+      ],
+    });
+    expect(items[2]).toMatchObject({
+      id: "call_wait",
+      name: "collab.wait",
+      input: { timeout_ms: 3600000 },
+    });
+    // The SubAgentActivity / CollabAgentToolCall event_msg items add no rows.
+    expect(items.filter((i) => i.kind === "tool_call")).toHaveLength(2);
+  });
+
+  it("drops a tagged child record whose spawn call is absent, rather than leaking it", () => {
+    expect(run(codexAdapter.normalizeTranscript(childLines))).toEqual([]);
+  });
+
+  it("renders the live collab_tool_call as a streaming-then-settled collab row", () => {
+    // Verbatim from `codex exec --json` (0.153.4) for a turn that waited on a
+    // sub-agent; nothing else about the sub-agent reaches stdout.
+    const live = {
+      id: "item_0",
+      type: "collab_tool_call",
+      tool: "wait",
+      sender_thread_id: "01a0b9b5-95d8-7bc0-9c23-2f9c6d854357",
+      receiver_thread_ids: [],
+      prompt: null,
+      agents_states: {},
+    };
+    const started = codexAdapter.reduce([], {
+      type: "item.started",
+      item: { ...live, status: "in_progress" },
+    } as RawEvent);
+    expect(started).toEqual([
+      { kind: "tool_call", id: "item_0", name: "collab.wait", input: {}, streaming: true },
+    ]);
+    const done = codexAdapter.reduce(started, {
+      type: "item.completed",
+      item: { ...live, status: "completed" },
+    } as RawEvent);
+    expect(done).toEqual([
+      { kind: "tool_call", id: "item_0", name: "collab.wait", input: {}, streaming: false },
+      { kind: "tool_result", tool_use_id: "item_0", content: "", is_error: false },
+    ]);
+  });
+
   it("merges readable live reasoning into its encrypted rollout position", () => {
     const events = codexAdapter.normalizeTranscript([
       {

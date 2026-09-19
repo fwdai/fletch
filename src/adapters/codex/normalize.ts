@@ -20,11 +20,73 @@
 // is a `TurnItem` envelope — PascalCase `item.type`, text in content blocks,
 // and `phase: "commentary" | "final_answer"` on agent messages. Only the two
 // message variants are read from it; tool variants (McpToolCall,
-// CommandExecution, …) still duplicate the `response_item` calls we already
-// render, so they're ignored to avoid double rows.
+// CommandExecution, SubAgentActivity, CollabAgentToolCall, …) still duplicate
+// the `response_item` calls we already render, so they're ignored to avoid
+// double rows.
+//
+// Sub-agents (0.153.4 `collaboration` tools): the parent's rollout holds the
+// `spawn_agent` function_call (`arguments` `{task_name, fork_turns, message}`,
+// the message an encrypted blob) and its output `{"task_name": "<agent_path>"}`;
+// the child's turns are in a rollout of their own, which the sync ingests with
+// a top-level `parent_tool_use_id` = the spawn `call_id`. The spawn replays as
+// the `Agent` tool so the existing presenter renders it, and every event made
+// from a tagged line inherits the tag so the reducer nests it underneath.
 
 import { asRecord } from "@/adapters/shared/json";
 import type { RawEvent } from "@/adapters/types";
+
+/** Fernet token (what codex stores for `spawn_agent.message` and reasoning):
+ *  version byte 0x80 base64-encodes to this prefix. Not prose — don't show it. */
+function isEncryptedBlob(text: string): boolean {
+  return /^gAAAAA[A-Za-z0-9_-]+=*$/.test(text);
+}
+
+/** A `collaboration`-namespace call as a live-shaped item. `spawn_agent`
+ *  becomes the `Agent` tool (inputs named for the shared presenter: the task
+ *  as `description`, the message as `prompt` when readable, the spawned agent's
+ *  path — the output's `task_name`, e.g. `/root/review` — as `subagent_type`).
+ *  The rest (`wait_agent`, `send_input`, `close_agent`, `interrupt_agent`,
+ *  `list_agents`) replay as the stream's `collab_tool_call`, keyed by the
+ *  tool's short name (`wait`, `send_input`, …) exactly as it is live. */
+function collabCall(
+  id: string,
+  name: string,
+  args: Record<string, unknown>,
+  output: string,
+): RawEvent {
+  if (name === "spawn_agent") {
+    const message = typeof args.message === "string" ? args.message : "";
+    const spawned = asRecord(parseArgs(output));
+    const input: Record<string, unknown> = {
+      description: typeof args.task_name === "string" ? args.task_name : "",
+      subagent_type: typeof spawned.task_name === "string" ? spawned.task_name : "",
+    };
+    if (message && !isEncryptedBlob(message)) input.prompt = message;
+    return {
+      type: "item.completed",
+      item: {
+        id,
+        type: "mcp_tool_call",
+        server: "",
+        tool: "Agent",
+        arguments: input,
+        result: output,
+        status: "completed",
+      },
+    };
+  }
+  return {
+    type: "item.completed",
+    item: {
+      id,
+      type: "collab_tool_call",
+      tool: name.replace(/_agents?$/, ""),
+      arguments: args,
+      result: output,
+      status: "completed",
+    },
+  };
+}
 
 function parseArgs(v: unknown): unknown {
   if (typeof v === "string") {
@@ -105,6 +167,10 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
     const env = asRecord(raw);
     const p = asRecord(env.payload);
     const ptype = typeof p.type === "string" ? p.type : "";
+    // A sub-agent's record is tagged with its spawn call id by the sync;
+    // every event made from it carries the tag so the reducer nests it.
+    const parent = typeof env.parent_tool_use_id === "string" ? env.parent_tool_use_id : "";
+    const emit = (ev: RawEvent) => out.push(parent ? { ...ev, parent_tool_use_id: parent } : ev);
 
     if (env.type === "turn_context") {
       const m = p.model;
@@ -115,11 +181,11 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
     if (env.type === "event_msg") {
       if (ptype === "user_message") {
         const text = typeof p.message === "string" ? p.message : "";
-        if (text) out.push({ type: "user", text });
+        if (text) emit({ type: "user", text });
       } else if (ptype === "agent_message") {
         const text = typeof p.message === "string" ? p.message : "";
         if (text) {
-          out.push({
+          emit({
             type: "item.completed",
             item: { id: `msg_${out.length}`, type: "agent_message", text, model: currentModel },
           });
@@ -130,27 +196,27 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
         // reason survives the post-turn rebuild from this file.
         const err = asRecord(p.error);
         if (typeof err.message === "string" && err.message) {
-          out.push({ type: "turn.failed", error: { message: err.message } });
+          emit({ type: "turn.failed", error: { message: err.message } });
         } else {
-          out.push({ type: "turn.completed" });
+          emit({ type: "turn.completed" });
         }
       } else if (ptype === "error") {
         // Pre-0.153 rollouts record the failure as its own event_msg (no
         // `task_complete` follows); same live shape, so the reducer handles it.
         const text = typeof p.message === "string" ? p.message : "";
-        if (text) out.push({ type: "error", message: text });
+        if (text) emit({ type: "error", message: text });
       } else if (ptype === "item_completed") {
         const item = asRecord(p.item);
         if (item.type === "UserMessage") {
           const text = outputText(item.content);
-          if (text) out.push({ type: "user", text });
+          if (text) emit({ type: "user", text });
         } else if (item.type === "AgentMessage") {
           // Both phases (commentary preamble and final_answer) are prose the
           // user saw live, so both replay as agent messages.
           const text = outputText(item.content);
           if (text) {
             const id = typeof item.id === "string" ? item.id : `msg_${out.length}`;
-            out.push({
+            emit({
               type: "item.completed",
               item: { id, type: "agent_message", text, model: currentModel },
             });
@@ -164,7 +230,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
       const id = String(p.id ?? "");
       const text = liveReasoning.get(id) ?? reasoningSummary(p.summary);
       if (id && text) {
-        out.push({ type: "item.completed", item: { id, type: "reasoning", text } });
+        emit({ type: "item.completed", item: { id, type: "reasoning", text } });
       }
       continue;
     }
@@ -181,9 +247,11 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
       const output = outputs.get(id) ?? "";
 
       const argRec = asRecord(args);
-      if (namespace) {
+      if (namespace === "collaboration") {
+        emit(collabCall(id, name, argRec, output));
+      } else if (namespace) {
         // MCP tool call (namespace e.g. "mcp__server_name").
-        out.push({
+        emit({
           type: "item.completed",
           item: {
             id,
@@ -201,7 +269,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
         const m = output.match(/exited with code (\d+)/);
         const code = m ? Number(m[1]) : undefined;
         const command = typeof argRec.cmd === "string" ? argRec.cmd : name;
-        out.push({
+        emit({
           type: "item.completed",
           item: {
             id,
@@ -216,7 +284,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
         // Other built-in tool (apply_patch, update_plan, …): render as a
         // named tool call preserving its arguments rather than mislabeling
         // it as a shell command and dropping the args.
-        out.push({
+        emit({
           type: "item.completed",
           item: {
             id,

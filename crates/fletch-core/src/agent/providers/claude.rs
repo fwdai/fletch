@@ -99,6 +99,7 @@ fn claude_subagent_parent(body: &Value, id: &str) -> Option<String> {
 const CLAUDE_SUBAGENTS: SubagentLayout = SubagentLayout {
     files: claude_subagent_files,
     parent_tool_use: claude_subagent_parent,
+    id_field: Some("uuid"),
 };
 
 pub(crate) static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {

@@ -14,6 +14,13 @@
 // ({server, tool, arguments, result, error, status}). There are no
 // token-level text deltas in exec mode — items arrive whole, so assistant
 // text and tool calls render on their `item.completed`.
+//
+// Multi-agent (`collaboration` tools, 0.153.4): the live stream carries ONLY
+// `collab_tool_call` ({tool: "wait" | …, sender_thread_id, receiver_thread_ids,
+// prompt, agents_states, status}) — the parent blocking on its sub-agents.
+// The `spawn_agent` call and every sub-agent turn are absent from stdout; they
+// exist only on disk, where the sync tags the child rollout's records with
+// the spawn call's id (`parent_tool_use_id`) so replay nests them under it.
 
 import { asRecord } from "@/adapters/shared/json";
 import {
@@ -22,6 +29,7 @@ import {
   finalizeStreamingItems,
   upsertToolCall,
 } from "@/adapters/shared/reducer-helpers";
+import { withSubagentRouting } from "@/adapters/shared/subagents";
 import type { ChatItem, RawEvent } from "@/adapters/types";
 
 /** Human label for a tool-call item. */
@@ -33,6 +41,8 @@ function toolName(item: Record<string, unknown>): string {
     const tool = typeof item.tool === "string" ? item.tool : "tool";
     return server ? `${server}.${tool}` : tool;
   }
+  // `collab.wait` / `collab.send_input` / …: the presenter matches the prefix.
+  if (type === "collab_tool_call") return `collab.${item.tool ?? "tool"}`;
   return type || "tool";
 }
 
@@ -40,7 +50,22 @@ function toolName(item: Record<string, unknown>): string {
 function toolInput(item: Record<string, unknown>): unknown {
   if (item.type === "command_execution") return item.command ?? "";
   if (item.type === "mcp_tool_call") return item.arguments ?? {};
+  if (item.type === "collab_tool_call") return collabInput(item);
   return {};
+}
+
+/** What a collab call was asked to do: the replayed function_call's arguments
+ *  when there are any, else the live item's target/prompt fields — only those
+ *  that carry something, since the live `wait` sets them all empty. */
+function collabInput(item: Record<string, unknown>): unknown {
+  if (item.arguments != null) return item.arguments;
+  const out: Record<string, unknown> = {};
+  for (const key of ["prompt", "receiver_thread_ids", "receiver_agents"]) {
+    const v = item[key];
+    if (v == null || (Array.isArray(v) && v.length === 0)) continue;
+    out[key] = v;
+  }
+  return out;
 }
 
 /** Did a finished tool item fail? */
@@ -59,10 +84,11 @@ function isToolError(item: Record<string, unknown>): boolean {
 function toolResult(item: Record<string, unknown>): unknown {
   if (item.type === "command_execution") return item.aggregated_output ?? "";
   if (item.type === "mcp_tool_call") return item.error ?? item.result ?? "";
+  if (item.type === "collab_tool_call") return item.result ?? "";
   return "";
 }
 
-const TOOL_TYPES = new Set(["command_execution", "mcp_tool_call"]);
+const TOOL_TYPES = new Set(["command_execution", "mcp_tool_call", "collab_tool_call"]);
 
 /** The human-readable message of an `error` / `turn.failed` event. Codex
  *  relays API failures as the raw response body serialized into `message`
@@ -98,7 +124,11 @@ function appendErrorNotice(items: ChatItem[], text: string): ChatItem[] {
   return [...items, { kind: "notice", subtype: "error", text, is_error: true }];
 }
 
-export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
+// A replayed sub-agent record carries the spawn call's id; it reduces into
+// that tool_call's children rather than the main timeline.
+export const reduce = withSubagentRouting(reduceTop);
+
+function reduceTop(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const type = typeof ev.type === "string" ? ev.type : undefined;
 
   switch (type) {

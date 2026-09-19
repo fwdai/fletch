@@ -14,7 +14,7 @@ use super::providers::antigravity::{
 };
 use super::providers::claude::CLAUDE_TRANSCRIPT;
 use super::providers::codex::{
-    codex_build_args, codex_locate, codex_pty_args, codex_read, codex_session_id,
+    codex_build_args, codex_locate, codex_pty_args, codex_read, codex_session_id, CODEX_SUBAGENTS,
 };
 use super::providers::cursor::{
     cursor_build_args, cursor_locate, cursor_pty_args, cursor_read, cursor_session_id,
@@ -139,7 +139,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             locate: codex_locate,
             read: codex_read,
             tail: None, // multiple rollout files
-            subagents: None,
+            subagents: Some(CODEX_SUBAGENTS),
         }),
     },
     PerTurnDescriptor {

@@ -1133,11 +1133,19 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
         }
     }
 
-    // Sub-agent transcripts live in files of their own (claude). Ingested after
-    // the main batch so the spawning `tool_use` record always precedes its
+    // Sub-agent transcripts live in files of their own (claude, codex). Ingested
+    // after the main batch so the spawning `tool_use` record always precedes its
     // sub-agent's records in `seq` — replay nests them only in that order.
-    let inserted = match paths.as_slice() {
-        [path] => {
+    //
+    // The FIRST located path, not the only one: a resumed codex session splits
+    // into several rollouts and requiring exactly one would skip its sub-agents
+    // entirely. The earliest file yields the superset of children, because
+    // `codex_subagent_files` keys off the thread id on that file's first line —
+    // which every path the locator returned shares, it being what their
+    // filenames are matched on — and returns every descendant rollout sorting
+    // after it. Claude locates a single file, so nothing changes there.
+    let inserted = match paths.first() {
+        Some(path) => {
             inserted
                 + ingest_subagents(
                     workspace,
@@ -1148,7 +1156,7 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
                     &mut diagnostics,
                 )
         }
-        _ => inserted,
+        None => inserted,
     };
 
     // Link any pending outgoing user turns to the canonical transcript
@@ -1164,11 +1172,13 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
 }
 
 /// Read cursor for one sub-agent transcript file: the tool_use id it was linked
-/// to, and the byte offset ingested so far.
+/// to, the byte offset ingested so far, and how many records that was (the
+/// start index for the next positional id, where the layout has no id field).
 ///
 /// Process-lifetime rather than persisted: after a restart each file is
 /// re-read once from the top and `append_session_records` ignores the rows
-/// already stored (native ids are the records' own `uuid`s), so the cost is one
+/// already stored (native ids are the records' own `uuid`s, or positional ids
+/// that a re-read from the top re-derives identically), so the cost is one
 /// full read per file per process — the trade `tail: None` readers make on
 /// *every* pass. Persisting it would need a schema migration for a per-file
 /// offset the main transcript keeps on its session row; not worth it for a
@@ -1178,6 +1188,7 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
 struct SubagentCursor {
     parent_tool_use_id: String,
     offset: u64,
+    records: usize,
 }
 
 fn subagent_cursors() -> &'static Mutex<HashMap<PathBuf, SubagentCursor>> {
@@ -1185,11 +1196,12 @@ fn subagent_cursors() -> &'static Mutex<HashMap<PathBuf, SubagentCursor>> {
     CURSORS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Ingest the new lines of every sub-agent transcript beside `main_path`, each
-/// record tagged with a top-level `parent_tool_use_id` — the shape the live
-/// stream already uses, so the frontend's reducer nests a replayed sub-agent
-/// under its Task/Agent tool call with no special casing. Returns the rows
-/// inserted. No-op for readers without a `subagents` layout.
+/// Ingest the new lines of every sub-agent transcript of the session whose
+/// main transcript is `main_path`, each record tagged with a top-level
+/// `parent_tool_use_id` — the shape the live stream already uses, so the
+/// frontend's reducer nests a replayed sub-agent under its Task/Agent tool
+/// call with no special casing. Returns the rows inserted. No-op for readers
+/// without a `subagents` layout.
 ///
 /// A file whose spawning tool_use can't be found in the stored records yet is
 /// skipped this pass and retried on the next: for a foreground sub-agent the
@@ -1204,7 +1216,7 @@ fn ingest_subagents(
     main_path: &Path,
     diag: &mut crate::agent::ReadDiagnostics,
 ) -> usize {
-    let (Some(tail), Some(layout)) = (reader.tail, reader.subagents) else {
+    let Some(layout) = reader.subagents else {
         return 0;
     };
     let agent_id = record.id.as_str();
@@ -1215,8 +1227,8 @@ fn ingest_subagents(
         let known = subagent_cursors()
             .lock()
             .get(&path)
-            .map(|c| (c.parent_tool_use_id.clone(), c.offset));
-        let (parent, offset) = match known {
+            .map(|c| (c.parent_tool_use_id.clone(), c.offset, c.records));
+        let (parent, offset, start_index) = match known {
             Some(known) => known,
             None => {
                 let found = workspace
@@ -1227,25 +1239,39 @@ fn ingest_subagents(
                 let Some(parent) = found else {
                     continue;
                 };
-                (parent, 0)
+                (parent, 0, 0)
             }
         };
 
         diag.files_matched += 1;
-        let (records, next) =
-            crate::agent::read_jsonl_tail(&path, offset, 0, tail.id_field, consume_trailing, diag);
+        let (records, next) = crate::agent::read_jsonl_tail(
+            &path,
+            offset,
+            start_index,
+            layout.id_field,
+            consume_trailing,
+            diag,
+        );
+        let parsed = start_index + records.len();
         let tagged: Vec<(String, serde_json::Value)> = records
             .into_iter()
             .filter_map(|mut r| {
-                // Lines without the id field are metadata the UI never renders;
-                // their positional `ln:{i}` ids would also collide across files.
-                if tail.id_field.is_some_and(|f| r.body.get(f).is_none()) {
-                    return None;
-                }
+                let native_id = match layout.id_field {
+                    // Lines without the id field are metadata the UI never
+                    // renders; their positional `ln:{i}` ids would also
+                    // collide across files.
+                    Some(field) => {
+                        r.body.get(field)?;
+                        r.native_id
+                    }
+                    // Positional ids restart at `ln:0` in every file, so they
+                    // are namespaced by the sub-agent's id.
+                    None => format!("{sub_id}:{}", r.native_id),
+                };
                 r.body
                     .as_object_mut()?
                     .insert("parent_tool_use_id".into(), parent.clone().into());
-                Some((r.native_id, r.body))
+                Some((native_id, r.body))
             })
             .collect();
         let batch: Vec<(&str, &serde_json::Value)> = tagged
@@ -1267,6 +1293,7 @@ fn ingest_subagents(
                     SubagentCursor {
                         parent_tool_use_id: parent,
                         offset: next,
+                        records: parsed,
                     },
                 );
             }
@@ -1977,6 +2004,251 @@ mod tests {
         assert!(recs[1..]
             .iter()
             .all(|r| r.body["parent_tool_use_id"] == "toolu_bg"));
+    }
+
+    /// A codex rollout's `session_meta` line; `parent` set = a sub-agent
+    /// thread spawned by that thread.
+    fn codex_meta(id: &str, parent: Option<&str>) -> String {
+        let source = match parent {
+            Some(p) => {
+                serde_json::json!({ "subagent": { "thread_spawn": { "parent_thread_id": p } } })
+            }
+            None => serde_json::json!("exec"),
+        };
+        serde_json::json!({ "type": "session_meta", "payload": { "id": id, "source": source } })
+            .to_string()
+    }
+
+    /// The spawner's persisted `SubAgentActivity` / `started` record: the
+    /// spawn call `call` started thread `thread`.
+    fn codex_spawn_started(call: &str, thread: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "event_msg", "payload": { "type": "item_completed",
+            "item": { "type": "SubAgentActivity", "kind": "started", "id": call, "agent_thread_id": thread } } })
+    }
+
+    /// One codex rollout line: the sub-agent said something.
+    fn codex_said(text: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "event_msg", "payload": { "type": "item_completed",
+            "item": { "type": "AgentMessage", "id": "m", "content": [{ "type": "text", "text": text }] } } })
+    }
+
+    #[test]
+    fn subagent_ingest_namespaces_positional_ids_for_id_less_layouts() {
+        // Codex: child rollouts live elsewhere in the date tree, the main
+        // reader has no `tail`, and rollout lines carry no id — so records get
+        // `ln:{i}` ids namespaced by the child thread id, which can't collide
+        // with the main transcript's bare `ln:{i}` or another child's.
+        let db = crate::workspace::tests::test_db();
+        let (agent_id, wm) = crate::workspace::tests::make_workspace_with_session(&db);
+        let mut record = wm.agent(&agent_id).unwrap();
+        record.provider = "codex".into();
+        let reader = crate::agent::transcript_reader("codex").unwrap();
+        assert!(reader.tail.is_none() && reader.subagents.is_some());
+
+        let td = tempfile::tempdir().unwrap();
+        let day = td.path().join("sessions/2026/09/19");
+        std::fs::create_dir_all(&day).unwrap();
+        let main = day.join("rollout-2026-09-19T20-48-00-parent.jsonl");
+        std::fs::write(&main, format!("{}\n", codex_meta("parent", None))).unwrap();
+        let child = day.join("rollout-2026-09-19T20-48-06-child.jsonl");
+        let said = codex_said("done");
+        std::fs::write(
+            &child,
+            format!("{}\n{}\n", codex_meta("child", Some("parent")), said),
+        )
+        .unwrap();
+
+        // The main ingest already stored the parent's rows (positional ids).
+        let started = codex_spawn_started("call_spawn", "child");
+        wm.append_session_records(
+            &agent_id,
+            "codex",
+            "transcript",
+            None,
+            &[
+                ("ln:0", &serde_json::json!({ "type": "session_meta" })),
+                ("ln:1", &started),
+            ],
+        )
+        .unwrap();
+
+        let mut diag = ReadDiagnostics::default();
+        assert_eq!(
+            ingest_subagents(&wm, &record, None, reader, &main, &mut diag),
+            2
+        );
+        let recs = wm.read_session_records(&agent_id).unwrap();
+        assert_eq!(
+            recs.iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ln:0", "ln:1", "child:ln:0", "child:ln:1"]
+        );
+        assert!(recs[2..]
+            .iter()
+            .all(|r| r.body["parent_tool_use_id"] == "call_spawn"));
+
+        // A line appended later continues the numbering rather than restarting
+        // at `ln:0` and being dropped as a duplicate.
+        use std::io::Write as _;
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&child)
+                .unwrap(),
+            "{}",
+            serde_json::json!({ "type": "event_msg", "payload": { "type": "task_complete" } })
+        )
+        .unwrap();
+        assert_eq!(
+            ingest_subagents(&wm, &record, None, reader, &main, &mut diag),
+            1
+        );
+        let recs = wm.read_session_records(&agent_id).unwrap();
+        assert_eq!(recs.last().unwrap().native_id, "child:ln:2");
+
+        // A restart re-reads from the top and re-derives the same ids: no dupes.
+        subagent_cursors().lock().remove(&child);
+        assert_eq!(
+            ingest_subagents(&wm, &record, None, reader, &main, &mut diag),
+            0
+        );
+        assert_eq!(wm.read_session_records(&agent_id).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn nested_codex_subagents_are_ingested_in_one_pass() {
+        // A sub-agent that spawns a sub-agent of its own. The grandchild's
+        // rollout names the *child* as its parent thread, and the record that
+        // links it to a spawn call lives in the child's rollout — which this
+        // same pass ingested a moment earlier, children being walked in
+        // creation order. One pass has to reach every depth.
+        let db = crate::workspace::tests::test_db();
+        let (agent_id, wm) = crate::workspace::tests::make_workspace_with_session(&db);
+        let mut record = wm.agent(&agent_id).unwrap();
+        record.provider = "codex".into();
+        let reader = crate::agent::transcript_reader("codex").unwrap();
+
+        let td = tempfile::tempdir().unwrap();
+        let day = td.path().join("sessions/2026/09/19");
+        std::fs::create_dir_all(&day).unwrap();
+        let main = day.join("rollout-2026-09-19T20-48-00-root.jsonl");
+        std::fs::write(&main, format!("{}\n", codex_meta("root", None))).unwrap();
+        // The child's rollout carries the grandchild's spawn activity.
+        std::fs::write(
+            day.join("rollout-2026-09-19T20-49-00-child.jsonl"),
+            format!(
+                "{}\n{}\n",
+                codex_meta("child", Some("root")),
+                codex_spawn_started("call_nested", "grand")
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            day.join("rollout-2026-09-19T20-50-00-grand.jsonl"),
+            format!(
+                "{}\n{}\n",
+                codex_meta("grand", Some("child")),
+                codex_said("nested")
+            ),
+        )
+        .unwrap();
+
+        // The main ingest stored the root's rows, including the activity that
+        // links the child to its spawn call.
+        wm.append_session_records(
+            &agent_id,
+            "codex",
+            "transcript",
+            None,
+            &[
+                ("ln:0", &serde_json::json!({ "type": "session_meta" })),
+                ("ln:1", &codex_spawn_started("call_top", "child")),
+            ],
+        )
+        .unwrap();
+
+        let mut diag = ReadDiagnostics::default();
+        assert_eq!(
+            ingest_subagents(&wm, &record, None, reader, &main, &mut diag),
+            4,
+            "both the child's and the grandchild's lines land"
+        );
+        let recs = wm.read_session_records(&agent_id).unwrap();
+        let tag = |id: &str| {
+            recs.iter()
+                .find(|r| r.native_id == id)
+                .unwrap_or_else(|| panic!("{id} not ingested"))
+                .body["parent_tool_use_id"]
+                .clone()
+        };
+        assert_eq!(tag("child:ln:1"), "call_top");
+        // The grandchild hangs off the spawn call in the CHILD's rollout, not
+        // off the root's — that is what nests it under the right tool call.
+        assert_eq!(tag("grand:ln:0"), "call_nested");
+        assert_eq!(tag("grand:ln:1"), "call_nested");
+        assert_eq!(diag.files_matched, 2);
+    }
+
+    #[test]
+    fn a_split_codex_session_still_ingests_its_subagents() {
+        // A resumed codex thread writes several rollouts, all named by the same
+        // thread id, so `locate` returns more than one path. Sub-agents are
+        // found off the first of them rather than being skipped.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("CODEX_HOME", home.path());
+
+        let db = crate::workspace::tests::test_db();
+        let (agent_id, wm) = crate::workspace::tests::make_workspace_with_session_for(&db, "codex");
+        wm.set_agent_session_id(&agent_id, "thread-main").unwrap();
+
+        let day = home.path().join("sessions/2026/09/19");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("rollout-2026-09-19T20-48-00-thread-main.jsonl"),
+            format!("{}\n", codex_meta("thread-main", None)),
+        )
+        .unwrap();
+        let child = day.join("rollout-2026-09-19T20-59-00-child.jsonl");
+        std::fs::write(
+            &child,
+            format!(
+                "{}\n{}\n",
+                codex_meta("child", Some("thread-main")),
+                codex_said("done")
+            ),
+        )
+        .unwrap();
+        // The resume: a second rollout for the same thread, holding the spawn
+        // activity that links the child.
+        std::fs::write(
+            day.join("rollout-2026-09-19T21-00-00-thread-main.jsonl"),
+            format!("{}\n", codex_spawn_started("call_spawn", "child")),
+        )
+        .unwrap();
+
+        let outcome = sync_session_records(&wm, &agent_id).expect("codex has a reader");
+        std::env::remove_var("CODEX_HOME");
+        subagent_cursors().lock().remove(&child);
+
+        assert_eq!(
+            outcome.inserted, 4,
+            "two main rollouts plus the child's two"
+        );
+        let recs = wm.read_session_records(&agent_id).unwrap();
+        assert_eq!(
+            recs.iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ln:0", "ln:1", "child:ln:0", "child:ln:1"]
+        );
+        assert!(
+            recs[2..]
+                .iter()
+                .all(|r| r.body["parent_tool_use_id"] == "call_spawn"),
+            "the child's records are tagged with the spawn call"
+        );
     }
 
     #[test]

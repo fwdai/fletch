@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { bashPresenter } from "@/components/Workspace/messages/presenters/Bash";
 import { codegraphPresenter } from "@/components/Workspace/messages/presenters/Codegraph";
+import { collabPresenter } from "@/components/Workspace/messages/presenters/Collab";
 import { defaultPresenter } from "@/components/Workspace/messages/presenters/default";
 import { getPresenter, PRESENTERS } from "@/components/Workspace/messages/presenters/index";
 import type { ToolCall } from "@/components/Workspace/messages/presenters/types";
@@ -46,6 +47,31 @@ describe("getPresenter", () => {
 
   it("falls back to the default presenter for unknown tools", () => {
     expect(getPresenter("someNovelTool")).toBe(defaultPresenter);
+  });
+
+  it("routes codex's collab.* coordination calls to the collab presenter", () => {
+    expect(getPresenter("collab.wait")).toBe(collabPresenter);
+    expect(getPresenter("collab.send_input")).toBe(collabPresenter);
+    expect(getPresenter("collaborate")).toBe(defaultPresenter);
+  });
+});
+
+describe("collabPresenter.summary", () => {
+  const collab = (tool: string): ToolCall =>
+    ({ kind: "tool_call", id: "x", name: `collab.${tool}`, input: {} }) as ToolCall;
+
+  it("says what the parent is doing about its sub-agents", () => {
+    expect(collabPresenter.summary(collab("wait"), null)).toBe("Waiting for sub-agents");
+    expect(collabPresenter.summary(collab("send_input"), null)).toBe("Sending to sub-agent");
+    expect(collabPresenter.summary(collab("close"), null)).toBe("Closing sub-agent");
+  });
+
+  it("degrades to the tool's own name for one it doesn't know", () => {
+    expect(collabPresenter.summary(collab("resume_agent"), null)).toBe("Sub-agent resume agent");
+  });
+
+  it("titles the row Sub-agents instead of the raw collab.* name", () => {
+    expect(collabPresenter.title).toBe("Sub-agents");
   });
 });
 
