@@ -13,17 +13,19 @@
 //   task_started            {task_id, tool_use_id, description, task_type,
 //                            subagent_type?, is_backgrounded, spawn_depth?,
 //                            prompt?, owned_by_subagent?}
-//   task_progress           {task_id, description (current activity), usage,
-//                            last_tool_name}   — once per sub-agent tool use
+//   task_progress           {task_id, description (current activity),
+//                            subagent_type, usage, last_tool_name}
+//                            — once per sub-agent tool use; Bash sends none
 //   task_updated            {task_id, patch: {status, end_time}}
 //   task_notification       {task_id, status, summary, output_file, usage?}
+//                            — `usage` only for sub-agents; no task_type
 //   background_tasks_changed {tasks: [{task_id, task_type, description}]}
 //                            — the authoritative live list
 // A completed task_id can `task_started` again (the sub-agent was resumed by a
 // message); that is a fresh run.
 
 import type { RawEvent } from "@/adapters/types";
-import { asRecord } from "./json";
+import { asRecord, isRecord } from "./json";
 
 export type BackgroundTaskStatus = "running" | "completed" | "failed";
 
@@ -33,7 +35,11 @@ export type BackgroundTask = {
   toolUseId: string;
   /** The task's name as given at launch (not the latest progress activity). */
   description: string;
-  taskType: "local_agent" | "local_bash" | string;
+  /** `unknown` when the task was first seen through an event that names no
+   *  type (a progress/notification with no prior start, e.g. after a
+   *  reconnect) and carried nothing that gives the type away. Upgraded in
+   *  place by a later `task_started` or `background_tasks_changed`. */
+  taskType: "local_agent" | "local_bash" | "unknown" | string;
   subagentType?: string;
   backgrounded: boolean;
   /** True when a sub-agent (not the main agent) launched this task. */
@@ -85,6 +91,19 @@ function withUsage(task: BackgroundTask, usage: unknown): BackgroundTask {
   };
 }
 
+/** The type an event gives away when it names none: only sub-agents report a
+ *  `subagent_type` or cumulative `usage`. A Bash notification carries neither,
+ *  and its `summary` wording is not evidence — that stays `unknown` rather
+ *  than being guessed, so a missed-start Bash failure never reads as a
+ *  failed sub-agent. */
+function taskTypeFrom(ev: RawEvent, prev?: BackgroundTask): string {
+  const named = str(ev.task_type);
+  if (named) return named;
+  if (prev && prev.taskType !== "unknown") return prev.taskType;
+  if (str(ev.subagent_type) || isRecord(ev.usage)) return "local_agent";
+  return "unknown";
+}
+
 /** A running task built from whatever identifying fields `ev` carries — used
  *  both for `task_started` and as the fallback when a later event names a task
  *  we never saw start (e.g. the client attached mid-run). */
@@ -93,7 +112,7 @@ function startedFrom(ev: RawEvent, now: number, prev?: BackgroundTask): Backgrou
     taskId: String(ev.task_id),
     toolUseId: str(ev.tool_use_id) ?? prev?.toolUseId ?? "",
     description: str(ev.description) ?? prev?.description ?? "",
-    taskType: str(ev.task_type) ?? prev?.taskType ?? "local_agent",
+    taskType: taskTypeFrom(ev, prev),
     subagentType: str(ev.subagent_type) ?? prev?.subagentType,
     backgrounded: ev.is_backgrounded === true || (prev?.backgrounded ?? false),
     ownedBySubagent: ev.owned_by_subagent === true || (prev?.ownedBySubagent ?? false),
@@ -192,9 +211,19 @@ function reconcile(prev: BackgroundTaskMap, ev: RawEvent, now: number): Backgrou
   }
   for (const t of live) {
     const id = str(t.task_id);
-    if (!id || prev[id]?.status === "running") continue;
+    if (!id) continue;
+    const cur = prev[id];
+    if (cur?.status === "running") {
+      // Already tracked; the only news the list can bring is the type a
+      // start-less adoption could not tell.
+      const type = str(t.task_type);
+      if (cur.taskType !== "unknown" || !type) continue;
+      next ??= { ...prev };
+      next[id] = { ...cur, taskType: type };
+      continue;
+    }
     next ??= { ...prev };
-    next[id] = startedFrom({ ...t, is_backgrounded: true }, now, prev[id]);
+    next[id] = startedFrom({ ...t, is_backgrounded: true }, now, cur);
   }
   return next ?? prev;
 }
@@ -220,14 +249,20 @@ export type SubagentActivity = {
   quietest: number | undefined;
 };
 
-/** A cheap summary for a sidebar row: how many tasks are running, how many have
- *  failed, and how long the quietest running one has been silent. Counts every
- *  task type; filter the map first to restrict to sub-agents. */
+/** A sub-agent, as opposed to background Bash or a task whose type we could
+ *  not tell. Consumers that count or list sub-agents should start from this
+ *  (and add their own `ownedBySubagent` filter for top-level only). */
+export const isSubagentTask = (t: BackgroundTask): boolean => t.taskType === "local_agent";
+
+/** A cheap summary for a sidebar row: how many sub-agents are running, how
+ *  many have failed, and how long the quietest running one has been silent.
+ *  Background Bash and `unknown`-typed tasks are not counted. */
 export function subagentActivity(tasks: BackgroundTaskMap, now: number): SubagentActivity {
   let running = 0;
   let failed = 0;
   let quietest: number | undefined;
   for (const t of Object.values(tasks)) {
+    if (!isSubagentTask(t)) continue;
     if (t.status === "failed") failed += 1;
     if (t.status !== "running") continue;
     running += 1;

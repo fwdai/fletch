@@ -203,6 +203,128 @@ describe("applyTaskEvent", () => {
     expect(tasks.a74d5be.failureStatus).toBeUndefined();
   });
 
+  describe("a task whose start was missed (e.g. the client reconnected mid-run)", () => {
+    const bashNotified: RawEvent = {
+      type: "system",
+      subtype: "task_notification",
+      task_id: "bash1",
+      tool_use_id: "toolu_bash",
+      status: "failed",
+      output_file: "/tmp/tasks/bash1.output",
+      summary: 'Background command "sleep 25" failed (exit code 1)',
+    };
+
+    it("types a task_progress as a sub-agent from its subagent_type", () => {
+      const tasks = applyTaskEvent({}, progress, T0);
+      expect(tasks.a74d5be).toMatchObject({
+        status: "running",
+        taskType: "local_agent",
+        subagentType: "general-purpose",
+        toolUseId: "toolu_01RK",
+        description: "",
+        toolUses: 1,
+        lastToolName: "Bash",
+      });
+      expect(subagentActivity(tasks, T0)).toEqual({ running: 1, failed: 0, quietest: 0 });
+    });
+
+    it("types a sub-agent's task_notification from its usage", () => {
+      const tasks = applyTaskEvent({}, notified("failed"), T0);
+      expect(tasks.a74d5be).toMatchObject({
+        status: "failed",
+        failureStatus: "failed",
+        taskType: "local_agent",
+        totalTokens: 14345,
+      });
+      expect(subagentActivity(tasks, T0)).toEqual({ running: 0, failed: 1, quietest: undefined });
+    });
+
+    it("leaves a bash task_notification unknown rather than calling it a sub-agent", () => {
+      const tasks = applyTaskEvent({}, bashNotified, T0);
+      expect(tasks.bash1).toMatchObject({
+        status: "failed",
+        failureStatus: "failed",
+        taskType: "unknown",
+        ownedBySubagent: false,
+        summary: 'Background command "sleep 25" failed (exit code 1)',
+      });
+      // Neither a running nor a failed sub-agent, whatever the summary says.
+      expect(subagentActivity(tasks, T0)).toEqual({ running: 0, failed: 0, quietest: undefined });
+    });
+
+    it("upgrades an unknown type from a later background_tasks_changed", () => {
+      const bashProgress: RawEvent = {
+        type: "system",
+        subtype: "task_progress",
+        task_id: "bash1",
+        tool_use_id: "toolu_bash",
+        description: "still sleeping",
+      };
+      let tasks = applyTaskEvent({}, bashProgress, T0);
+      expect(tasks.bash1).toMatchObject({ status: "running", taskType: "unknown" });
+
+      tasks = applyTaskEvent(
+        tasks,
+        {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{ task_id: "bash1", task_type: "local_bash", description: "Sleep" }],
+        },
+        T0 + 100,
+      );
+      // Typed in place: still the same running task, not a fresh start.
+      expect(tasks.bash1).toMatchObject({
+        status: "running",
+        taskType: "local_bash",
+        startedAt: T0,
+      });
+      expect(subagentActivity(tasks, T0 + 100)).toEqual({
+        running: 0,
+        failed: 0,
+        quietest: undefined,
+      });
+
+      // A list that repeats what we know changes nothing.
+      const same = applyTaskEvent(
+        tasks,
+        {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{ task_id: "bash1", task_type: "local_bash", description: "Sleep" }],
+        },
+        T0 + 200,
+      );
+      expect(same).toBe(tasks);
+    });
+
+    it("upgrades an unknown type from a later task_started", () => {
+      let tasks = applyTaskEvent({}, bashNotified, T0);
+      expect(tasks.bash1.taskType).toBe("unknown");
+
+      tasks = applyTaskEvent(
+        tasks,
+        {
+          type: "system",
+          subtype: "task_started",
+          task_id: "bash1",
+          tool_use_id: "toolu_bash2",
+          description: "Sleep again",
+          is_backgrounded: true,
+          task_type: "local_bash",
+          owned_by_subagent: true,
+        },
+        T0 + 500,
+      );
+      expect(tasks.bash1).toMatchObject({
+        status: "running",
+        taskType: "local_bash",
+        ownedBySubagent: true,
+        description: "Sleep again",
+        startedAt: T0 + 500,
+      });
+    });
+  });
+
   it("tracks a background bash task owned by a sub-agent", () => {
     let tasks = applyTaskEvent(
       {},
@@ -265,5 +387,16 @@ describe("selectors", () => {
     expect(liveBackgroundTasks(tasks).map((t) => t.taskId)).toEqual(["a74d5be", "b"]);
     expect(subagentActivity(tasks, T0 + 500)).toEqual({ running: 2, failed: 1, quietest: 500 });
     expect(subagentActivity({}, T0)).toEqual({ running: 0, failed: 0, quietest: undefined });
+  });
+
+  it("count only sub-agents, not background bash", () => {
+    let tasks = applyTaskEvent({}, started, T0);
+    tasks = applyTaskEvent(
+      tasks,
+      { ...started, task_id: "bash", tool_use_id: "toolu_bash", task_type: "local_bash" },
+      T0,
+    );
+    expect(liveBackgroundTasks(tasks).map((t) => t.taskId)).toEqual(["a74d5be", "bash"]);
+    expect(subagentActivity(tasks, T0)).toEqual({ running: 1, failed: 0, quietest: 0 });
   });
 });
