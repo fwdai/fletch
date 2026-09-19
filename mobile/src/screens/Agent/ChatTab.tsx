@@ -44,10 +44,8 @@ export function ChatTab({
     if (planning && connected) void loadProposals(agent.project_id);
   }, [planning, connected, agent.project_id, loadProposals]);
 
-  const visible = useMemo(
-    () => applyPolicy(log ?? [], getAdapter(agent.provider).policy),
-    [log, agent.provider],
-  );
+  const policy = getAdapter(agent.provider).policy;
+  const visible = useMemo(() => applyPolicy(log ?? [], policy), [log, policy]);
   const pendingIds = Object.keys(pending ?? {});
   const publishForAgent = useMemo(
     () => publishApprovals.filter((r) => r.agent_id === agent.id),
@@ -84,7 +82,7 @@ export function ChatTab({
     <>
       <SubagentStrip tasks={tasks} onJump={jumpTo} />
       <div className="scroll chat" ref={scroller} onScroll={onScroll}>
-        <Transcript items={visible} tasks={tasksByToolUse} />
+        <Transcript items={visible} tasks={tasksByToolUse} policy={policy} />
         {pendingIds.map((toolUseId) => (
           <ApprovalCard
             key={toolUseId}

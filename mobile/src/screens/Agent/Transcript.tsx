@@ -6,7 +6,7 @@
 import type { BackgroundTask } from "@desktop/adapters/shared/backgroundTasks";
 import { Icon } from "@desktop/components/Icon";
 import { useMemo, useState } from "react";
-import type { ChatItem } from "../../adapters";
+import { applyPolicy, type ChatItem, type DisplayPolicy } from "../../adapters";
 import { SentChips } from "../../attachments";
 import { Md } from "../../components/Md";
 import { resultSummary, resultText, TOOL_HUE, TOOL_ICON, toolArg } from "../../lib/tools";
@@ -96,15 +96,19 @@ function ToolRow({
   call,
   result,
   tasks,
+  policy,
 }: {
   call: ToolCall;
   result: ToolResult | null;
   tasks?: TasksByToolUse;
+  policy: DisplayPolicy;
 }) {
   const [open, setOpen] = useState(false);
   const out = result ? resultText(result.content) : "";
   const task = tasks?.[call.id];
-  const children = call.children ?? [];
+  // The sub-agent's turns go through the same display policy as the main
+  // log, so its turn_end divider and other hidden notices stay hidden here too.
+  const children = useMemo(() => applyPolicy(call.children ?? [], policy), [call.children, policy]);
   const running = !!call.streaming || task?.status === "running";
   const failed = task?.status === "failed";
   const expandable = !!out || children.length > 0;
@@ -135,7 +139,7 @@ function ToolRow({
       </button>
       {open && children.length > 0 && (
         <div className="tool-sub">
-          <Transcript items={children} tasks={tasks} />
+          <Transcript items={children} tasks={tasks} policy={policy} />
         </div>
       )}
       {open && out && <div className="tool-out">{out}</div>}
@@ -143,7 +147,18 @@ function ToolRow({
   );
 }
 
-export function Transcript({ items, tasks }: { items: ChatItem[]; tasks?: TasksByToolUse }) {
+/** `items` are expected to have been through `policy` already (the chat tab
+ *  does that once for the main log); the policy is carried for the nested
+ *  sub-agent logs, which are filtered on the way in. */
+export function Transcript({
+  items,
+  tasks,
+  policy,
+}: {
+  items: ChatItem[];
+  tasks?: TasksByToolUse;
+  policy: DisplayPolicy;
+}) {
   const blocks = useMemo(() => toBlocks(items), [items]);
   return (
     <>
@@ -151,7 +166,7 @@ export function Transcript({ items, tasks }: { items: ChatItem[]; tasks?: TasksB
         b.kind === "tools" ? (
           <div key={b.key} className="tools rise">
             {b.calls.map(({ call, result }) => (
-              <ToolRow key={call.id} call={call} result={result} tasks={tasks} />
+              <ToolRow key={call.id} call={call} result={result} tasks={tasks} policy={policy} />
             ))}
           </div>
         ) : (
