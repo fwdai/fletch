@@ -20,9 +20,17 @@
 //!   call's `call_id` (the later `completed`/`interrupted` activities carry
 //!   ids of their own).
 //!
+//! A sub-agent can spawn sub-agents of its own: the grandchild's `session_meta`
+//! names its *immediate* spawner as `parent_thread_id` (with `depth: 2`), and
+//! its `SubAgentActivity` / `started` record lives in the child's rollout, not
+//! the top-level one. So the child rollouts of a session are the transitive
+//! closure, not just the threads naming the top-level id.
+//!
 //! The sync ingests child rollouts via [`CODEX_SUBAGENTS`], tagged with that
-//! call id, so the frontend nests them under the spawn call on replay.
+//! call id, so the frontend nests them under the spawn call on replay — at any
+//! depth, since the reducer routes a record to a child thread recursively.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -68,17 +76,42 @@ fn rollout_session_meta(path: &Path) -> Option<Value> {
     (v.get("type").and_then(Value::as_str) == Some("session_meta")).then_some(v)
 }
 
-/// Child rollouts of the session whose rollout is `main`, as
-/// `(child thread id, path)` in creation order.
+/// `(this thread's id, the id of the thread that spawned it)` from a rollout's
+/// first line, if that line is a sub-agent `session_meta`. Only the first line
+/// identifies a file: a child forked with `fork_turns` replays its parent's
+/// early records, second `session_meta` line and all.
+fn rollout_spawned_by(path: &Path) -> Option<(String, String)> {
+    let line = rollout_first_line(path)?;
+    // Rejected on the substring before parsing what is a ~20 KB record (it
+    // carries the base instructions).
+    if !line.contains("\"subagent\"") {
+        return None;
+    }
+    let meta: Value = serde_json::from_str(&line).ok()?;
+    let spawned_by = meta
+        .pointer("/payload/source/subagent/thread_spawn/parent_thread_id")?
+        .as_str()?
+        .to_string();
+    let id = meta.pointer("/payload/id")?.as_str()?.to_string();
+    Some((id, spawned_by))
+}
+
+/// Descendant rollouts of the session whose rollout is `main` — the transitive
+/// closure, so a sub-agent's own sub-agents are included — as
+/// `(thread id, path)` in creation order.
+///
+/// One ordered pass suffices: a thread is spawned only after its spawner's
+/// rollout exists, and paths sort chronologically, so every rollout is reached
+/// *after* the one that spawned it. Carrying the set of ids admitted so far is
+/// therefore enough to decide each file on sight, with no second sweep. That
+/// order is also what the sync needs — a spawner's records (which carry the
+/// `SubAgentActivity` linking its children) are ingested before its children's.
 ///
 /// Cost: one listing of the `YYYY/MM/DD` tree plus one first-line read per
-/// rollout created *after* the parent's — a child is spawned after its parent's
-/// file exists and paths sort chronologically, so everything up to `main` is
-/// skipped without being opened. A first line that doesn't mention `subagent`
-/// is rejected on the substring, before parsing what is a ~20 KB record (it
-/// carries the base instructions).
+/// rollout created after `main` — everything up to it is skipped without being
+/// opened.
 fn codex_subagent_files(main: &Path) -> Vec<(String, PathBuf)> {
-    let Some(parent_id) = rollout_session_meta(main)
+    let Some(top_id) = rollout_session_meta(main)
         .and_then(|meta| meta.pointer("/payload/id")?.as_str().map(str::to_string))
     else {
         return Vec::new();
@@ -87,25 +120,22 @@ fn codex_subagent_files(main: &Path) -> Vec<(String, PathBuf)> {
     let Some(sessions) = main.ancestors().nth(4) else {
         return Vec::new();
     };
-    crate::transcripts::codex_rollout_files(sessions)
-        .into_iter()
-        .filter(|path| path.as_path() > main)
-        .filter_map(|path| {
-            let line = rollout_first_line(&path)?;
-            if !line.contains("\"subagent\"") {
-                return None;
-            }
-            let meta: Value = serde_json::from_str(&line).ok()?;
-            let spawned_by = meta
-                .pointer("/payload/source/subagent/thread_spawn/parent_thread_id")?
-                .as_str()?;
-            if spawned_by != parent_id {
-                return None;
-            }
-            let id = meta.pointer("/payload/id")?.as_str()?.to_string();
-            Some((id, path))
-        })
-        .collect()
+    let mut included: HashSet<String> = HashSet::from([top_id]);
+    let mut out = Vec::new();
+    for path in crate::transcripts::codex_rollout_files(sessions) {
+        if path.as_path() <= main {
+            continue;
+        }
+        let Some((id, spawned_by)) = rollout_spawned_by(&path) else {
+            continue;
+        };
+        if !included.contains(&spawned_by) {
+            continue;
+        }
+        included.insert(id.clone());
+        out.push((id, path));
+    }
+    out
 }
 
 /// The spawn call's id, if `body` is the parent's `SubAgentActivity` /
@@ -197,11 +227,21 @@ mod tests {
     use serde_json::json;
 
     /// A rollout's `session_meta` line in the on-disk shape (codex 0.153.4).
-    /// `parent` set = a sub-agent child of that thread.
+    /// `parent` set = a sub-agent spawned by that thread, at `depth` (1 for a
+    /// child of the top-level thread, 2 for a child of a child, …).
+    fn spawned_meta(id: &str, parent: &str, depth: u64) -> String {
+        session_meta_at(id, Some(parent), depth)
+    }
+
+    /// `session_meta` for a thread at depth 1 (or a top-level one).
     fn session_meta(id: &str, parent: Option<&str>) -> String {
+        session_meta_at(id, parent, 1)
+    }
+
+    fn session_meta_at(id: &str, parent: Option<&str>, depth: u64) -> String {
         let source = match parent {
             Some(p) => json!({ "subagent": { "thread_spawn": {
-                "parent_thread_id": p, "depth": 1,
+                "parent_thread_id": p, "depth": depth,
                 "agent_path": "/root/task", "agent_nickname": "Hypatia", "agent_role": null,
             } } }),
             None => json!("exec"),
@@ -224,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_files_are_the_later_rollouts_naming_this_thread_as_parent() {
+    fn subagent_files_are_the_later_rollouts_descending_from_this_thread() {
         let td = tempfile::tempdir().unwrap();
         let sessions = td.path().join("sessions");
         let main = write_rollout(
@@ -234,14 +274,22 @@ mod tests {
             "parent",
             &[session_meta("parent", None)],
         );
-        // Two children (one written on the next day), a sibling top-level
-        // session, another parent's child, an earlier file, and junk.
+        // Two children (one written on the next day), a grandchild spawned by
+        // the first child, a sibling top-level session, another parent's child
+        // and *its* child, an earlier file, and junk.
         let c1 = write_rollout(
             &sessions,
             "2026/09/19",
             "2026-09-19T20-48-06",
             "child-1",
             &[session_meta("child-1", Some("parent"))],
+        );
+        let grand = write_rollout(
+            &sessions,
+            "2026/09/19",
+            "2026-09-19T20-48-30",
+            "grandchild",
+            &[spawned_meta("grandchild", "child-1", 2)],
         );
         let c2 = write_rollout(
             &sessions,
@@ -266,6 +314,13 @@ mod tests {
         );
         write_rollout(
             &sessions,
+            "2026/09/19",
+            "2026-09-19T20-51-00",
+            "other-grandchild",
+            &[spawned_meta("other-grandchild", "other-child", 2)],
+        );
+        write_rollout(
+            &sessions,
             "2026/09/18",
             "2026-09-18T10-00-00",
             "early",
@@ -273,9 +328,16 @@ mod tests {
         );
         std::fs::write(sessions.join("2026/09/19/notes.txt"), "\"subagent\"").unwrap();
 
+        // The closure, in creation order — so a spawner always precedes the
+        // threads it spawned. `other-grandchild` descends from a foreign
+        // top-level session and stays out at every depth.
         assert_eq!(
             codex_subagent_files(&main),
-            vec![("child-1".to_string(), c1), ("child-2".to_string(), c2)]
+            vec![
+                ("child-1".to_string(), c1),
+                ("grandchild".to_string(), grand),
+                ("child-2".to_string(), c2)
+            ]
         );
     }
 
