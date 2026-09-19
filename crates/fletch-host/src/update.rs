@@ -249,7 +249,7 @@ pub async fn run(
             let binary = extract_binary(&tarball)?;
             swap(&exe, &binary)?;
             println!("installed {} at {}", assets.version, exe.display());
-            restart(Some(data_dir), None).await;
+            restart(&exe, Some(data_dir), None).await;
         }
         // The one step that needs root, handed to root as a single command
         // over a file this user has just verified. Not an error: everything
@@ -315,7 +315,7 @@ async fn install_from(tarball_path: &Path) -> Result<(), String> {
     swap(&exe, &binary)?;
     println!("installed {version} at {}", exe.display());
 
-    restart(None, service::sudoer().as_ref()).await;
+    restart(&exe, None, service::sudoer().as_ref()).await;
     Ok(())
 }
 
@@ -595,31 +595,37 @@ fn ensure_writable(dir: &Path) -> Result<(), String> {
 /// returned — the new binary is already installed, and an update that says
 /// "installed, but the restart failed" is more useful than one that looks like
 /// it failed entirely.
-/// The system unit is looked for first: it is the one `sudo` most plainly
-/// means, and where both it and a user unit exist (a `--system --user fletch`
-/// install done from an account that also tried a user unit once), restarting
-/// the sudoer's own unit would leave the service actually serving on the old
-/// binary. Then the sudoer's user unit, restarted as them (root has no
-/// `systemctl --user` session of theirs), then their launchd agent in their
-/// `gui/<uid>` domain.
+/// Only a unit that runs *this* binary — the file just replaced — is
+/// restarted. A system unit and a user unit can coexist on one machine (an
+/// operator's `--system --user fletch` beside their own), and restarting by
+/// precedence would bounce the wrong one either way round. Each unit names
+/// its executable (`ExecStart=` / `ProgramArguments`), so the match is on
+/// that path, and every unit that matches is restarted. The sudoer's user
+/// unit is restarted as them (root has no `systemctl --user` session of
+/// theirs), their launchd agent in their `gui/<uid>` domain.
 ///
 /// `data_dir` is where a bare `serve`'s admin socket would be; phase two has
 /// none to offer (it opens no data dir) and so only knows about installed
 /// units.
-async fn restart(data_dir: Option<&Path>, sudoer: Option<&nix::unistd::User>) {
-    if Path::new("/etc/systemd/system")
-        .join(service::UNIT_NAME)
-        .exists()
-    {
+async fn restart(exe: &Path, data_dir: Option<&Path>, sudoer: Option<&nix::unistd::User>) {
+    let mut restarted = false;
+
+    let system_unit = Path::new("/etc/systemd/system").join(service::UNIT_NAME);
+    if unit_runs(&system_unit, exe, service::systemd_unit_exec) {
         report(service::run("systemctl", &["restart", service::UNIT_NAME]));
-        return;
+        restarted = true;
     }
+
     let user_unit_dir = match sudoer {
         Some(user) => Some(service::systemd_user_dir_in(&user.dir)),
         None => service::systemd_user_dir().ok(),
     };
-    if let Some(path) = user_unit_dir {
-        if path.join(service::UNIT_NAME).exists() {
+    if let Some(dir) = user_unit_dir {
+        if unit_runs(
+            &dir.join(service::UNIT_NAME),
+            exe,
+            service::systemd_unit_exec,
+        ) {
             report(match sudoer {
                 Some(user) => {
                     let runtime_dir = format!("XDG_RUNTIME_DIR=/run/user/{}", user.uid.as_raw());
@@ -638,9 +644,10 @@ async fn restart(data_dir: Option<&Path>, sudoer: Option<&nix::unistd::User>) {
                 }
                 None => service::run("systemctl", &["--user", "restart", service::UNIT_NAME]),
             });
-            return;
+            restarted = true;
         }
     }
+
     let (plist, uid) = match sudoer {
         Some(user) => (
             Some(service::launchd_plist_path_in(&user.dir)),
@@ -652,11 +659,15 @@ async fn restart(data_dir: Option<&Path>, sudoer: Option<&nix::unistd::User>) {
         ),
     };
     if let Some(plist) = plist {
-        if plist.exists() {
+        if unit_runs(&plist, exe, service::launchd_plist_exec) {
             let target = format!("gui/{uid}/{}", service::LAUNCHD_LABEL);
             report(service::run("launchctl", &["kickstart", "-k", &target]));
-            return;
+            restarted = true;
         }
+    }
+
+    if restarted {
+        return;
     }
     let Some(data_dir) = data_dir else {
         println!();
@@ -674,6 +685,21 @@ async fn restart(data_dir: Option<&Path>, sudoer: Option<&nix::unistd::User>) {
              would let updates restart it for you."
         );
     }
+}
+
+/// Whether the unit file at `unit`, if there is one, runs `exe`. `exec_of`
+/// reads the executable out of the unit's text. Both sides are compared
+/// resolved: the unit was written from a resolved path, and a symlink put in
+/// front of the binary later must not hide the match.
+fn unit_runs(unit: &Path, exe: &Path, exec_of: fn(&str) -> Option<PathBuf>) -> bool {
+    let Ok(text) = std::fs::read_to_string(unit) else {
+        return false;
+    };
+    let Some(unit_exe) = exec_of(&text) else {
+        return false;
+    };
+    let resolve = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    resolve(&unit_exe) == resolve(exe)
 }
 
 fn report(result: Result<(), String>) {
@@ -942,6 +968,47 @@ mod tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
         assert!(!directory_is_private_to(dir.path(), me).unwrap());
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    /// A unit is "this binary's" when its executable resolves to the file
+    /// just replaced — through a symlink too — and not otherwise.
+    #[test]
+    fn a_unit_is_restarted_only_when_it_runs_the_replaced_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("fletch-host");
+        std::fs::write(&exe, b"bin").unwrap();
+        let other = dir.path().join("other-fletch-host");
+        std::fs::write(&other, b"bin").unwrap();
+        let link = dir.path().join("link-to-exe");
+        std::os::unix::fs::symlink(&exe, &link).unwrap();
+
+        let unit = dir.path().join("fletch-host.service");
+        std::fs::write(
+            &unit,
+            format!("[Service]\nExecStart={} serve --port 1\n", exe.display()),
+        )
+        .unwrap();
+        assert!(unit_runs(&unit, &exe, service::systemd_unit_exec));
+        assert!(unit_runs(&unit, &link, service::systemd_unit_exec));
+        assert!(!unit_runs(&unit, &other, service::systemd_unit_exec));
+        assert!(!unit_runs(
+            &dir.path().join("missing.service"),
+            &exe,
+            service::systemd_unit_exec
+        ));
+
+        let plist = dir.path().join("com.fletch.host.plist");
+        std::fs::write(
+            &plist,
+            format!(
+                "<plist><dict><key>ProgramArguments</key><array><string>{}</string>\
+                 <string>serve</string></array></dict></plist>",
+                other.display()
+            ),
+        )
+        .unwrap();
+        assert!(unit_runs(&plist, &other, service::launchd_plist_exec));
+        assert!(!unit_runs(&plist, &exe, service::launchd_plist_exec));
     }
 
     #[test]

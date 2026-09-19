@@ -256,6 +256,57 @@ fn finish(rendered: String) -> Result<String, String> {
 /// One `ExecStart=` word. systemd splits on whitespace and understands double
 /// quotes, so anything with a space in it (a data dir under "Application
 /// Support", say) has to be quoted.
+/// The executable a systemd unit runs: the first word of its `ExecStart=`,
+/// unquoted the way [`systemd_quote`] quoted it (or as a hand-written unit
+/// would: a bare word, or one in double quotes with `\"` and `\\`). What
+/// `update` matches against the binary it replaced.
+pub fn systemd_unit_exec(unit: &str) -> Option<PathBuf> {
+    let line = unit
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("ExecStart="))?
+        .trim_start();
+    // systemd's `ExecStart=@path`, `-path`, `+path` etc. prefixes name the
+    // same file; strip them so a hand-edited unit still matches.
+    let line = line.trim_start_matches(['@', '-', '+', '!', ':']);
+    let word = if let Some(rest) = line.strip_prefix('"') {
+        let mut out = String::new();
+        let mut chars = rest.chars();
+        loop {
+            match chars.next()? {
+                '\\' => out.push(chars.next()?),
+                '"' => break,
+                c => out.push(c),
+            }
+        }
+        out
+    } else {
+        line.split_whitespace().next()?.to_string()
+    };
+    (!word.is_empty()).then(|| PathBuf::from(word))
+}
+
+/// The executable a launchd plist runs: the first `<string>` of its
+/// `ProgramArguments`, XML-unescaped the way [`render_launchd`] escaped it.
+pub fn launchd_plist_exec(plist: &str) -> Option<PathBuf> {
+    let after_key = plist.split("<key>ProgramArguments</key>").nth(1)?;
+    let first = after_key
+        .split("<string>")
+        .nth(1)?
+        .split("</string>")
+        .next()?;
+    let word = xml_unescape(first.trim());
+    (!word.is_empty()).then(|| PathBuf::from(word))
+}
+
+fn xml_unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
 fn systemd_quote(word: &str) -> String {
     if word
         .chars()
@@ -704,5 +755,64 @@ mod tests {
         }
         let e = default_data_dir_of("no-such-user-fletch-test").unwrap_err();
         assert!(e.contains("no such user"), "{e}");
+    }
+}
+
+/// The executable a rendered unit names round-trips through the parser
+/// `update` uses to decide which unit to restart — including the paths the
+/// renderers have to quote or escape.
+#[cfg(test)]
+mod exec_tests {
+    use super::*;
+
+    fn spec_with_exec(exec: &str) -> Spec {
+        Spec {
+            exec: PathBuf::from(exec),
+            data_dir: PathBuf::from("/srv/fletch-host"),
+            port: None,
+            name: None,
+            user: None,
+            system: false,
+            log_path: PathBuf::from("/var/log/fletch-host.log"),
+        }
+    }
+
+    #[test]
+    fn a_rendered_systemd_unit_names_its_executable_back() {
+        for exec in [
+            "/usr/local/bin/fletch-host",
+            "/opt/my tools/fletch-host",
+            "/odd/\"quoted\"/fletch-host",
+        ] {
+            let unit = render_systemd(&spec_with_exec(exec)).unwrap();
+            assert_eq!(
+                systemd_unit_exec(&unit).as_deref(),
+                Some(Path::new(exec)),
+                "{exec}\n{unit}"
+            );
+        }
+        // Hand-written variants systemd accepts.
+        assert_eq!(
+            systemd_unit_exec("[Service]\nExecStart=-/usr/bin/fletch-host serve\n").as_deref(),
+            Some(Path::new("/usr/bin/fletch-host"))
+        );
+        assert_eq!(systemd_unit_exec("[Service]\nType=simple\n"), None);
+    }
+
+    #[test]
+    fn a_rendered_launchd_plist_names_its_executable_back() {
+        for exec in [
+            "/Users/me/.local/bin/fletch-host",
+            "/Users/me/Tools & Co/fletch-host",
+            "/Users/me/<odd>/fletch-host",
+        ] {
+            let plist = render_launchd(&spec_with_exec(exec)).unwrap();
+            assert_eq!(
+                launchd_plist_exec(&plist).as_deref(),
+                Some(Path::new(exec)),
+                "{exec}\n{plist}"
+            );
+        }
+        assert_eq!(launchd_plist_exec("<plist><dict></dict></plist>"), None);
     }
 }

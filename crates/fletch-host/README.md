@@ -183,8 +183,10 @@ What it does, in order — and it stops at the first thing that does not hold:
    different `fletch-host`, and it is this one, the one the service runs, that
    is being replaced. That step reads the tarball and its `.sig`, verifies the
    signature again (it trusts the signature, not the caller), replaces the
-   binary, and restarts the service — a system unit first if there is one,
-   else your user unit as you, else a launchd agent in your session. It opens no data dir at all, and it refuses a binary
+   binary, and restarts every installed unit whose `ExecStart` /
+   `ProgramArguments` names that binary — a system unit directly, your user
+   unit as you, a launchd agent in your session. A unit that runs some other
+   `fletch-host` is left alone. It opens no data dir at all, and it refuses a binary
    directory that is not root's alone (owned by root, writable by nobody
    else), since root renaming a file someone else staged over its own binary
    would hand them root.
