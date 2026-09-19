@@ -115,8 +115,9 @@ enum ServiceCommand {
         /// The name paired devices show for this host.
         #[arg(long)]
         name: Option<String>,
-        /// Linux, with `--system`: the user the unit runs as. Defaults to
-        /// whoever runs this command.
+        /// Linux, with `--system`: the user the unit runs as, and whose
+        /// `~/.local/share/fletch-host` it serves unless `--data-dir` says
+        /// otherwise. Defaults to whoever ran `sudo`; never root.
         #[arg(long, value_name = "NAME")]
         user: Option<String>,
         /// Linux: install to /etc/systemd/system (needs sudo) instead of your
@@ -175,7 +176,10 @@ enum ProjectCommand {
 
 fn main() {
     let cli = Cli::parse();
-    let data_dir = cli.data_dir.unwrap_or_else(serve::default_data_dir);
+    // `service install` wants to know whether `--data-dir` was given at all:
+    // its default is not this process's (see `service_command`).
+    let data_dir_arg = cli.data_dir;
+    let data_dir = data_dir_arg.clone().unwrap_or_else(serve::default_data_dir);
 
     // One runtime for both halves: the engine's background tasks belong to it
     // (`serve`), and the client subcommands use it for the socket.
@@ -206,7 +210,7 @@ fn main() {
         }
         // Neither of these goes over the admin socket: they act on this
         // machine's init system and on this binary's own file.
-        Command::Service { command } => service_command(&data_dir, command),
+        Command::Service { command } => service_command(data_dir_arg, command),
         Command::Update { version, check } => {
             runtime.block_on(update::run(&data_dir, version, check))
         }
@@ -327,7 +331,13 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
 /// here, from this binary's own absolute path and against the data dir this
 /// command resolved — an init system's environment is not the operator's
 /// shell, so both are written into the unit rather than re-derived by it.
-fn service_command(data_dir: &std::path::Path, command: ServiceCommand) -> Result<(), String> {
+///
+/// Two things about that data dir the unit must not inherit from this
+/// process: a *relative* `--data-dir` (relative to this shell's directory,
+/// which the unit does not have) is made absolute first; and for `--system`,
+/// which is run through `sudo`, the default is not this process's — root's —
+/// but the one the service user would get, looked up from their passwd entry.
+fn service_command(data_dir: Option<PathBuf>, command: ServiceCommand) -> Result<(), String> {
     match command {
         ServiceCommand::Install {
             port,
@@ -335,12 +345,26 @@ fn service_command(data_dir: &std::path::Path, command: ServiceCommand) -> Resul
             user,
             system,
         } => {
+            let given = data_dir.as_deref().map(absolute_path).transpose()?;
+            let (user, data_dir) = if system {
+                let user = service::system_user(user, std::env::var("SUDO_USER").ok())?;
+                let data_dir = match given {
+                    Some(dir) => dir,
+                    None => service::default_data_dir_of(&user)?,
+                };
+                (Some(user), data_dir)
+            } else {
+                (
+                    user.or_else(|| std::env::var("USER").ok()),
+                    given.unwrap_or_else(serve::default_data_dir),
+                )
+            };
             let spec = service::Spec {
                 exec: update::current_exe()?,
-                data_dir: data_dir.to_path_buf(),
+                data_dir,
                 port,
                 name,
-                user: user.or_else(|| std::env::var("USER").ok()),
+                user,
                 system,
                 log_path: service::launchd_log_path()?,
             };
@@ -415,14 +439,18 @@ async fn github_login(data_dir: &std::path::Path) -> Result<(), String> {
 /// directory than the shell that is talking to it — so send an absolute one and
 /// let a relative path mean "relative to where I typed this".
 fn absolute(path: &std::path::Path) -> Result<String, String> {
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| format!("cannot resolve {}: {e}", path.display()))?
-            .join(path)
-    };
-    Ok(path.to_string_lossy().to_string())
+    Ok(absolute_path(path)?.to_string_lossy().to_string())
+}
+
+/// `path` anchored at this process's working directory if it is relative;
+/// untouched otherwise. Not canonicalized: the target need not exist yet.
+fn absolute_path(path: &std::path::Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    Ok(std::env::current_dir()
+        .map_err(|e| format!("cannot resolve {}: {e}", path.display()))?
+        .join(path))
 }
 
 fn print_json(value: &Value) {

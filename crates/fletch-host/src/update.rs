@@ -169,6 +169,13 @@ pub async fn run(data_dir: &Path, version: Option<String>, check: bool) -> Resul
         return Ok(());
     }
 
+    // Before anything is written anywhere: can the binary be replaced at all?
+    // An update that cannot land must fail here, with nothing downloaded into
+    // the data dir and no database copy made — not after both. (`swap` checks
+    // again; the directory can change under us and the probe is cheap.)
+    let exe = current_exe()?;
+    ensure_replaceable(&exe)?;
+
     // Where the three downloads live. Kept after the swap: they are the
     // evidence for what is now installed, and re-verifying them needs no
     // network.
@@ -210,7 +217,6 @@ pub async fn run(data_dir: &Path, version: Option<String>, check: bool) -> Resul
         println!("database copied to {}", backup.display());
     }
 
-    let exe = current_exe()?;
     let binary = extract_binary(&tarball)?;
     swap(&exe, &binary)?;
     println!("installed {} at {}", assets.version, exe.display());
@@ -400,10 +406,7 @@ pub fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
 /// old inode keeps running it, which is why an installed service is restarted
 /// afterwards and a bare `serve` is only told to restart.
 pub fn swap(exe: &Path, binary: &[u8]) -> Result<(), String> {
-    let dir = exe
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", exe.display()))?;
-    ensure_writable(dir)?;
+    let dir = ensure_replaceable(exe)?;
     let staged = dir.join(format!(
         "{}.new",
         exe.file_name()
@@ -422,6 +425,16 @@ pub fn swap(exe: &Path, binary: &[u8]) -> Result<(), String> {
         let _ = std::fs::remove_file(&staged);
         format!("cannot replace {}: {e}", exe.display())
     })
+}
+
+/// The directory `exe` sits in, once it is known to be writable — the one
+/// precondition `run` checks before it downloads or copies anything.
+pub fn ensure_replaceable(exe: &Path) -> Result<PathBuf, String> {
+    let dir = exe
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", exe.display()))?;
+    ensure_writable(dir)?;
+    Ok(dir.to_path_buf())
 }
 
 /// Refuse before downloading nothing useful: an update that cannot land is
@@ -682,6 +695,17 @@ mod tests {
             let mode = std::fs::metadata(&exe).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o755);
         }
+    }
+
+    #[test]
+    fn the_preflight_names_the_directory_the_swap_will_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("fletch-host");
+        assert_eq!(ensure_replaceable(&exe).unwrap(), dir.path());
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+            "the probe file must not be left behind"
+        );
     }
 
     #[test]

@@ -86,10 +86,10 @@ definition and restarts the host, so it is also how you change the flags:
 
 | Flag | Meaning |
 | --- | --- |
-| `--data-dir PATH` | the data dir to serve (global flag; defaults to the same one every other subcommand uses) |
+| `--data-dir PATH` | the data dir to serve (global flag; defaults to the same one every other subcommand uses). A relative path is taken from the directory you run this in and written absolute |
 | `--port N` | port for paired devices |
 | `--name NAME` | the name paired devices show |
-| `--user NAME` | Linux, with `--system`: the user the unit runs as. Defaults to you |
+| `--user NAME` | Linux, with `--system`: the user the unit runs as. Defaults to whoever ran `sudo`; root is refused |
 | `--system` | Linux: `/etc/systemd/system` instead of your own user unit. Needs `sudo`; not a thing on macOS |
 
 The resolved data dir and this binary's absolute path are written into the
@@ -97,6 +97,12 @@ definition rather than left to be re-derived, because an init system's
 environment is not your shell's — `$HOME` and `$XDG_DATA_HOME` may be unset or
 different, and the service has to open the same data dir the CLI subcommands
 talk to.
+
+With `--system` the command itself runs as root, so its own default data dir
+would be root's. Instead the unit gets the service user's:
+`<their home>/.local/share/fletch-host`, from their passwd entry. If that user
+keeps a custom `$XDG_DATA_HOME`, pass `--data-dir` explicitly; the unit cannot
+see their environment.
 
 **Linux.** The unit is `~/.config/systemd/user/fletch-host.service`
 (`/etc/systemd/system/fletch-host.service` with `--system`). One step is left
@@ -141,7 +147,10 @@ fletch-host update 0.7.32      # install (or reinstall) one version
 What it does, in order — and it stops at the first thing that does not hold:
 
 1. Resolves the release through the GitHub API and picks the asset for this
-   build's target triple, `fletch-host-<version>-<target>.tar.gz`.
+   build's target triple, `fletch-host-<version>-<target>.tar.gz`. Then, before
+   anything is written anywhere, checks that the running binary's directory is
+   writable; if not it stops here and tells you to re-run with `sudo` or to
+   install into `~/.local/bin` instead.
 2. Downloads the tarball, its `.sha256` and its `.sig` into
    `<data-dir>/updates/<version>/`, and leaves them there.
 3. Checks the sha256, **and** verifies the minisign signature against the key
@@ -155,9 +164,7 @@ What it does, in order — and it stops at the first thing that does not hold:
    in that copy, so stop the host first if you want a clean one.
 5. Extracts `fletch-host` next to the running executable as `fletch-host.new`,
    chmods it 755 and `rename`s it over the current path — atomic, so the path
-   never resolves to half a binary. If that directory is not writable it says
-   so before touching anything, and tells you to re-run with `sudo` or to
-   install into `~/.local/bin` instead.
+   never resolves to half a binary.
 6. Restarts the service from `service install` if there is one
    (`systemctl restart` / `launchctl kickstart -k`). If instead a bare `serve`
    is running — the admin socket answers — it says that it has to be restarted
