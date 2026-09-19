@@ -60,6 +60,24 @@ pub struct JsonlTail {
     pub id_field: Option<&'static str>,
 }
 
+/// Where a provider keeps the transcripts of the sub-agents a session spawns,
+/// when it writes them as separate files beside the session's own (Claude's
+/// `<session-id>/subagents/agent-<id>.jsonl`) rather than into the main
+/// transcript. The sync ingests those files too, tagging every record with the
+/// spawning tool_use id — the same top-level `parent_tool_use_id` the live
+/// stream carries — so a replay nests the sub-agent's turns under that tool
+/// call exactly as the live render did.
+#[derive(Clone, Copy)]
+pub struct SubagentLayout {
+    /// Sub-agent transcript files of the session whose main transcript is
+    /// `main`, as `(sub-agent id, path)` in a deterministic order. Empty when
+    /// the session spawned none.
+    pub files: fn(main: &Path) -> Vec<(String, PathBuf)>,
+    /// The tool_use id that spawned sub-agent `id`, if `body` is the
+    /// main-transcript record that links the two; `None` for any other record.
+    pub parent_tool_use: fn(body: &Value, id: &str) -> Option<String>,
+}
+
 /// How to find and parse a provider's on-disk transcript into ordered records.
 pub struct TranscriptReader {
     /// Ordered transcript artifact paths for a session (empty if none / not
@@ -73,6 +91,10 @@ pub struct TranscriptReader {
     /// `None` for multi-file (codex) / blob-dir (opencode) readers, which fall
     /// back to a full read + idempotent batched insert.
     pub tail: Option<JsonlTail>,
+    /// Set when the provider writes sub-agent transcripts to separate files
+    /// (claude). Only honored together with `tail`, since those files are
+    /// ingested by the same incremental byte-offset read.
+    pub subagents: Option<SubagentLayout>,
 }
 
 // ── Transcript readers ──────────────────────────────────────────────────────

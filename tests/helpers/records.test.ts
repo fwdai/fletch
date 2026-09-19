@@ -5,10 +5,10 @@ import { reduceRecords } from "@/helpers";
 // Canonical session_records hold verbatim per-provider transcript bodies.
 // reduceRecords renders them the same way on-disk replay does:
 // normalizeTranscript → reduce.
-function rec(body: Record<string, unknown>): SessionRecord {
+function rec(body: Record<string, unknown>, provider = "pi"): SessionRecord {
   return {
     seq: 0,
-    provider: "pi",
+    provider,
     source: "transcript",
     native_id: "x",
     agent_version: null,
@@ -30,6 +30,64 @@ describe("reduceRecords", () => {
       { kind: "user_message", text: "hi" },
       { kind: "agent_message", text: "yo" },
     ]);
+  });
+
+  it("nests persisted Claude sub-agent records under the spawning tool call", () => {
+    // The sync ingests a sub-agent's transcript file with a top-level
+    // `parent_tool_use_id` (the live-wire shape), appended after the parent's
+    // tool_use record. Replay must thread those under the tool_call's
+    // `children`, not the main timeline — the same as the live render.
+    const sub = { isSidechain: true, agentId: "abc", parent_tool_use_id: "toolu_task" };
+    const records = [
+      rec(
+        {
+          type: "assistant",
+          uuid: "m1",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "tool_use", id: "toolu_task", name: "Agent", input: { prompt: "look" } },
+            ],
+          },
+        },
+        "claude",
+      ),
+      rec(
+        { type: "user", uuid: "s1", ...sub, message: { role: "user", content: "look" } },
+        "claude",
+      ),
+      rec(
+        {
+          type: "assistant",
+          uuid: "s2",
+          ...sub,
+          message: { role: "assistant", content: [{ type: "text", text: "found it" }] },
+        },
+        "claude",
+      ),
+      rec(
+        {
+          type: "user",
+          uuid: "m2",
+          toolUseResult: { status: "completed", agentId: "abc" },
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "toolu_task", content: "found it" }],
+          },
+        },
+        "claude",
+      ),
+    ];
+    const items = reduceRecords("claude", records);
+    expect(items.map((i) => i.kind)).toEqual(["tool_call", "tool_result"]);
+    expect(items[0]).toMatchObject({
+      kind: "tool_call",
+      id: "toolu_task",
+      children: [
+        { kind: "user_message", text: "look" },
+        { kind: "agent_message", text: "found it" },
+      ],
+    });
   });
 
   it("is defensive against malformed bodies", () => {

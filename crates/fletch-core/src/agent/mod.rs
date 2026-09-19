@@ -41,7 +41,7 @@ pub use probe::{
 };
 pub use probe::{parse_semver, resolve_agent_bin};
 pub use spawn::{PerTurnSpec, SpawnSpec};
-pub use transcript::{read_jsonl_tail, ReadDiagnostics};
+pub use transcript::{read_jsonl_tail, ReadDiagnostics, SubagentLayout, TranscriptReader};
 
 pub enum Agent {
     Pty(PtyAgent),

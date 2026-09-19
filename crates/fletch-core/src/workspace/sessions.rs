@@ -150,6 +150,36 @@ impl WorkspaceManager {
         .flatten()
     }
 
+    /// Bodies of the current session's records whose JSON text contains
+    /// `needle`, in seq order. A cheap prefilter for a lookup keyed on a field
+    /// deep inside the body (e.g. the sub-agent id a Claude tool result names):
+    /// SQL scans the stored text and only the hits are deserialized, instead of
+    /// every record in the conversation. Plain substring match, no wildcards.
+    pub fn session_record_bodies_containing(
+        &self,
+        workspace_id: &str,
+        needle: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT body FROM session_records
+             WHERE session_id = (SELECT id FROM sessions WHERE workspace_id = ?1
+                                 ORDER BY created_at DESC LIMIT 1)
+               AND instr(body, ?2) > 0
+             ORDER BY seq ASC",
+        )?;
+        let bodies: Vec<String> = stmt
+            .query_map(rusqlite::params![workspace_id, needle], |r| r.get(0))?
+            .collect::<std::result::Result<_, rusqlite::Error>>()?;
+        bodies
+            .iter()
+            .map(|text| {
+                serde_json::from_str(text)
+                    .map_err(|e| Error::Other(format!("deserialize record body: {e}")))
+            })
+            .collect()
+    }
+
     /// All canonical records for the workspace's current session, in seq order.
     pub fn read_session_records(&self, workspace_id: &str) -> Result<Vec<SessionRecord>> {
         let conn = self.db.lock();

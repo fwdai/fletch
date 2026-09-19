@@ -82,7 +82,7 @@ fn migrate_is_noop_when_new_already_exists() {
     );
 }
 
-fn test_db() -> Arc<Mutex<Connection>> {
+pub(crate) fn test_db() -> Arc<Mutex<Connection>> {
     let dir = tempfile::tempdir().unwrap();
     crate::database::init(dir.path()).unwrap()
 }
@@ -1833,7 +1833,9 @@ fn archived_agents_survive_reload_without_reconcile() {
 // ── session event log ─────────────────────────────────────────────────
 
 /// Seed a minimal workspace+session row and return (workspace_id, wm).
-fn make_workspace_with_session(db: &Arc<Mutex<Connection>>) -> (String, WorkspaceManager) {
+pub(crate) fn make_workspace_with_session(
+    db: &Arc<Mutex<Connection>>,
+) -> (String, WorkspaceManager) {
     let td = tempfile::tempdir().unwrap();
     let repo = init_repo(td.path());
     let repo_str = repo.to_str().unwrap().to_string();
