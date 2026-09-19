@@ -20,6 +20,20 @@
 //! SQLite database has been copied aside. Nothing more: the prepared/committed
 //! handoff and the DB rollback are deferred item 17 in
 //! docs/multi-host-plan.md §5.3, and deliberately not started here.
+//!
+//! Privilege is the one thing this module is careful about. A binary that
+//! lives in a root-owned directory needs root to replace it, but nothing else
+//! about an update needs root — and root writing into a user's data dir is a
+//! root-owned-file-overwrite waiting for a planted symlink. So the work is
+//! split: [`run`] without `--from` is phase one, run **as the user the host
+//! runs as**, which downloads, verifies and backs up into that user's own data
+//! dir, and then either swaps the binary itself or prints the one `sudo`
+//! command that does. `sudo fletch-host update --from <tarball>` is phase two:
+//! it reads the already-verified file (and verifies it again — it trusts the
+//! signature, not the caller), writes only its own executable's directory,
+//! and restarts the service. It never opens a data dir. Phase one refuses to
+//! run under sudo at all, so there is no path on which root's default data dir
+//! — or a guess at whose data dir it should be — is ever used.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -58,6 +72,15 @@ const UA: &str = concat!("fletch-host/", env!("CARGO_PKG_VERSION"));
 /// The asset this build can install, for a given version.
 pub fn asset_name(version: &str) -> String {
     format!("fletch-host-{version}-{TARGET}.tar.gz")
+}
+
+/// The version an asset name carries, if it is this build's asset at all —
+/// the inverse of [`asset_name`]. Another target's tarball is `None`: a binary
+/// for the wrong triple must not be installed over this one.
+pub fn version_in_asset_name(name: &str) -> Option<&str> {
+    name.strip_prefix("fletch-host-")?
+        .strip_suffix(&format!("-{TARGET}.tar.gz"))
+        .filter(|version| !version.is_empty() && !version.contains('/'))
 }
 
 /// The three URLs an install needs, and the version they belong to.
@@ -121,8 +144,33 @@ pub fn pick_assets(release: &Value) -> Result<Assets, String> {
     })
 }
 
-/// `update`, the whole subcommand.
-pub async fn run(data_dir: &Path, version: Option<String>, check: bool) -> Result<(), String> {
+/// `update`, the whole subcommand. `from` selects phase two (see the module
+/// docs); everything else is phase one.
+pub async fn run(
+    data_dir: &Path,
+    version: Option<String>,
+    check: bool,
+    from: Option<PathBuf>,
+) -> Result<(), String> {
+    if let Some(tarball) = from {
+        return install_from(&tarball).await;
+    }
+
+    // Phase one is the host's own user's. Under sudo this process's data dir
+    // is root's (no host there), and whose it *should* be is a guess — the
+    // sudoer's for a user unit, the service user's for `--system --user
+    // fletch` — that a wrong answer turns into the wrong database backed up
+    // while the right one is migrated unbacked. So: not a guess, a refusal.
+    if let Some(sudoer) = service::sudoer() {
+        return Err(format!(
+            "`update` downloads, verifies and backs up as the user the host runs as, and sudo \
+             is only for the final swap.\nRun `fletch-host update` as that user first — as \
+             {}, or e.g. `sudo -u fletch fletch-host update` for a `--system --user fletch` \
+             install. It prints the one sudo command that installs the verified file.",
+            sudoer.name
+        ));
+    }
+
     let client = reqwest::Client::builder()
         .user_agent(UA)
         .build()
@@ -169,18 +217,11 @@ pub async fn run(data_dir: &Path, version: Option<String>, check: bool) -> Resul
         return Ok(());
     }
 
-    // Before anything is written anywhere: can the binary be replaced at all?
-    // An update that cannot land must fail here, with nothing downloaded into
-    // the data dir and no database copy made — not after both. (`swap` checks
-    // again; the directory can change under us and the probe is cheap.)
-    let exe = current_exe()?;
-    ensure_replaceable(&exe)?;
-
-    // Where the three downloads live. Kept after the swap: they are the
-    // evidence for what is now installed, and re-verifying them needs no
-    // network.
-    let updates = data_dir.join("updates");
-    let dir = updates.join(&assets.version);
+    // Where the three downloads live: this user's own data dir, written as this
+    // user. Kept after the swap: they are the evidence for what is now
+    // installed, re-verifying them needs no network, and the tarball is what
+    // phase two installs when the swap needs root.
+    let dir = data_dir.join("updates").join(&assets.version);
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
 
     println!("Downloading {} ...", asset_name(&assets.version));
@@ -198,36 +239,73 @@ pub async fn run(data_dir: &Path, version: Option<String>, check: bool) -> Resul
     verify_signature(&tarball, &sig_text, UPDATER_PUBKEY)?;
     println!("signature ok (minisign, the desktop updater's key)");
 
-    let mut written = vec![updates, dir, tarball_path, sha_path, sig_path];
     if let Some(backup) = backup_db(data_dir, CURRENT_VERSION)? {
         println!("database copied to {}", backup.display());
-        written.push(data_dir.join("backups"));
-        written.push(backup);
     }
 
-    // Under sudo everything above was written as root into the sudoer's data
-    // dir. Hand it back, or their next non-sudo run cannot write next to it
-    // and the backup is a file they cannot remove.
-    let sudoer = service::sudoer();
-    if let Some(owner) = &sudoer {
-        give_back(owner, &written)?;
+    let exe = current_exe()?;
+    match ensure_replaceable(&exe) {
+        Ok(_) => {
+            let binary = extract_binary(&tarball)?;
+            swap(&exe, &binary)?;
+            println!("installed {} at {}", assets.version, exe.display());
+            restart(Some(data_dir), None).await;
+        }
+        // The one step that needs root, handed to root as a single command
+        // over a file this user has just verified. Not an error: everything
+        // phase one is for has happened.
+        Err(why) => {
+            println!();
+            println!("{why}");
+            println!("The download is verified and the database is copied aside. To install it:");
+            println!();
+            println!(
+                "    sudo fletch-host update --from {}",
+                tarball_path.display()
+            );
+        }
     }
-
-    let binary = extract_binary(&tarball)?;
-    swap(&exe, &binary)?;
-    println!("installed {} at {}", assets.version, exe.display());
-
-    restart(data_dir, sudoer.as_ref()).await;
     Ok(())
 }
 
-/// `chown` the paths an update wrote while running as root to the user whose
-/// data dir they are in.
-fn give_back(owner: &nix::unistd::User, paths: &[PathBuf]) -> Result<(), String> {
-    for path in paths {
-        nix::unistd::chown(path, Some(owner.uid), Some(owner.gid))
-            .map_err(|e| format!("cannot hand {} back to {}: {e}", path.display(), owner.name))?;
-    }
+/// Phase two, the one `sudo` runs: install a tarball phase one downloaded.
+///
+/// Verified again here — this process trusts the signature, not the caller or
+/// the file's location. It reads that file and its `.sig`, writes only its own
+/// executable's directory, and restarts the service. It opens no data dir, so
+/// there is nothing for root to leave behind in one, and no symlink in one it
+/// could be made to follow.
+async fn install_from(tarball_path: &Path) -> Result<(), String> {
+    let name = tarball_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("{} is not a file name", tarball_path.display()))?;
+    let version = version_in_asset_name(name).ok_or_else(|| {
+        format!(
+            "{name} is not a fletch-host tarball for this build: expected \
+             fletch-host-<version>-{TARGET}.tar.gz"
+        )
+    })?;
+    let tarball = std::fs::read(tarball_path)
+        .map_err(|e| format!("cannot read {}: {e}", tarball_path.display()))?;
+    let sig_path = tarball_path.with_file_name(format!("{name}.sig"));
+    let sig_text = std::fs::read_to_string(&sig_path).map_err(|e| {
+        format!(
+            "cannot read {}: {e}\nThe .sig `fletch-host update` downloaded must sit next to \
+             the tarball.",
+            sig_path.display()
+        )
+    })?;
+    verify_signature(&tarball, &sig_text, UPDATER_PUBKEY)?;
+    println!("signature ok (minisign, the desktop updater's key)");
+
+    let exe = current_exe()?;
+    ensure_replaceable(&exe)?;
+    let binary = extract_binary(&tarball)?;
+    swap(&exe, &binary)?;
+    println!("installed {version} at {}", exe.display());
+
+    restart(None, service::sudoer().as_ref()).await;
     Ok(())
 }
 
@@ -412,6 +490,8 @@ pub fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
 /// old inode keeps running it, which is why an installed service is restarted
 /// afterwards and a bare `serve` is only told to restart.
 pub fn swap(exe: &Path, binary: &[u8]) -> Result<(), String> {
+    use std::io::Write as _;
+
     let dir = ensure_replaceable(exe)?;
     let staged = dir.join(format!(
         "{}.new",
@@ -419,13 +499,29 @@ pub fn swap(exe: &Path, binary: &[u8]) -> Result<(), String> {
             .and_then(|n| n.to_str())
             .unwrap_or(BINARY_IN_TARBALL)
     ));
-    std::fs::write(&staged, binary)
-        .map_err(|e| format!("cannot write {}: {e}", staged.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("cannot chmod {}: {e}", staged.display()))?;
+    // `remove_file` unlinks a symlink rather than following it, and
+    // `create_new` (O_EXCL) refuses a path that exists — so a `.new` someone
+    // planted here, a link out of this directory say, is neither written
+    // through nor renamed over the binary. The permissions go through the
+    // handle for the same reason.
+    let _ = std::fs::remove_file(&staged);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged)
+        .map_err(|e| format!("cannot create {}: {e}", staged.display()))?;
+    let written = file.write_all(binary).and_then(|()| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
+        }
+        file.sync_all()
+    });
+    drop(file);
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("cannot write {}: {e}", staged.display()));
     }
     std::fs::rename(&staged, exe).map_err(|e| {
         let _ = std::fs::remove_file(&staged);
@@ -433,28 +529,50 @@ pub fn swap(exe: &Path, binary: &[u8]) -> Result<(), String> {
     })
 }
 
-/// The directory `exe` sits in, once it is known to be writable — the one
-/// precondition `run` checks before it downloads or copies anything.
+/// The directory `exe` sits in, once it is known to be one this process may
+/// replace a file in: writable, and — when this process is root — root's own
+/// and nobody else's to write, since a directory another user can write is one
+/// they can stage a rename in, and root renaming their file over its own
+/// binary is the takeover the signature check exists to prevent.
 pub fn ensure_replaceable(exe: &Path) -> Result<PathBuf, String> {
     let dir = exe
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", exe.display()))?;
+    let me = nix::unistd::Uid::effective();
+    if me.is_root() && !directory_is_private_to(dir, me.as_raw())? {
+        return Err(format!(
+            "{} is not root's alone (owned by root, writable by nobody else), so root will \
+             not replace a binary in it. Install fletch-host into a root-owned directory \
+             such as /usr/local/bin, or into your own and update it as yourself.",
+            dir.display()
+        ));
+    }
     ensure_writable(dir)?;
     Ok(dir.to_path_buf())
 }
 
-/// Refuse before downloading nothing useful: an update that cannot land is
-/// better said now, with the two ways out.
+/// Owned by `uid`, and writable by no one else (no group or other write bit).
+fn directory_is_private_to(dir: &Path, uid: u32) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(dir).map_err(|e| format!("cannot stat {}: {e}", dir.display()))?;
+    Ok(meta.uid() == uid && meta.mode() & 0o022 == 0)
+}
+
+/// The fact, stated once; what to do about it depends on who is asking (phase
+/// one prints the `sudo` command, phase two has no further way out).
 fn ensure_writable(dir: &Path) -> Result<(), String> {
     let probe = dir.join(".fletch-host-update-probe");
-    match std::fs::write(&probe, b"") {
-        Ok(()) => {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
             let _ = std::fs::remove_file(&probe);
             Ok(())
         }
         Err(e) => Err(format!(
-            "{} is not writable ({e}).\nRe-run this with sudo, or install fletch-host somewhere \
-             that is yours (`install -Dm755 fletch-host ~/.local/bin/`) and update that copy.",
+            "{} is not writable by this user ({e}).",
             dir.display()
         )),
     }
@@ -470,7 +588,11 @@ fn ensure_writable(dir: &Path) -> Result<(), String> {
 /// Under sudo the unit and the agent are the sudoer's, not root's: their user
 /// unit is restarted as them (root has no `systemctl --user` session of theirs),
 /// and their launchd agent lives in their `gui/<uid>` domain.
-async fn restart(data_dir: &Path, sudoer: Option<&nix::unistd::User>) {
+///
+/// `data_dir` is where a bare `serve`'s admin socket would be; phase two has
+/// none to offer (it opens no data dir) and so only knows about installed
+/// units.
+async fn restart(data_dir: Option<&Path>, sudoer: Option<&nix::unistd::User>) {
     let user_unit_dir = match sudoer {
         Some(user) => Some(service::systemd_user_dir_in(&user.dir)),
         None => service::systemd_user_dir().ok(),
@@ -522,6 +644,14 @@ async fn restart(data_dir: &Path, sudoer: Option<&nix::unistd::User>) {
             return;
         }
     }
+    let Some(data_dir) = data_dir else {
+        println!();
+        println!(
+            "No installed service found. If a host is running from the old binary, restart it \
+             to pick this version up."
+        );
+        return;
+    };
     if admin::call(data_dir, "status", json!({})).await.is_ok() {
         println!();
         println!(
@@ -742,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unwritable_directory_is_refused_with_the_way_out() {
+    fn an_unwritable_directory_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         #[cfg(unix)]
         {
@@ -751,11 +881,70 @@ mod tests {
         }
         let e = swap(&dir.path().join("fletch-host"), b"new").unwrap_err();
         assert!(e.contains("not writable"), "{e}");
-        assert!(e.contains("sudo"), "{e}");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         }
+    }
+
+    /// A `.new` planted as a symlink out of the directory is unlinked, not
+    /// written through and not renamed over the binary — the file it pointed
+    /// at is untouched and the binary is the new bytes.
+    #[test]
+    fn a_planted_staging_symlink_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("fletch-host");
+        std::fs::write(&exe, b"old").unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("fletch-host.new")).unwrap();
+
+        swap(&exe, b"new").unwrap();
+
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+        assert!(
+            std::fs::symlink_metadata(&exe)
+                .unwrap()
+                .file_type()
+                .is_file(),
+            "the binary must be a regular file, not the planted link"
+        );
+    }
+
+    /// What root demands of the directory before it will replace a file in
+    /// it. Exercised for this user's uid: the predicate is the same.
+    #[test]
+    fn a_private_directory_is_owned_and_writable_by_its_owner_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let me = nix::unistd::getuid().as_raw();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(directory_is_private_to(dir.path(), me).unwrap());
+        assert!(!directory_is_private_to(dir.path(), me + 1).unwrap());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(!directory_is_private_to(dir.path(), me).unwrap());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!directory_is_private_to(dir.path(), me).unwrap());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn the_version_comes_out_of_this_builds_asset_name_only() {
+        assert_eq!(version_in_asset_name(&asset_name("0.7.32")), Some("0.7.32"));
+        assert_eq!(
+            version_in_asset_name("fletch-host-0.7.32-riscv64gc-unknown-none.tar.gz"),
+            None
+        );
+        assert_eq!(
+            version_in_asset_name(&format!("fletch-host--{TARGET}.tar.gz")),
+            None
+        );
+        assert_eq!(version_in_asset_name("fletch-host.tar.gz"), None);
+        assert_eq!(
+            version_in_asset_name(&format!("not-a-host-1.0-{TARGET}.tar.gz")),
+            None
+        );
     }
 }

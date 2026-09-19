@@ -144,13 +144,15 @@ fletch-host update             # install the latest release
 fletch-host update 0.7.32      # install (or reinstall) one version
 ```
 
+Run it **as the user the host runs as** — yourself for a user unit or a bare
+`serve`, `sudo -u fletch fletch-host update` for a `--system --user fletch`
+install. Not under `sudo`: it refuses, because everything below but the final
+swap belongs in that user's data dir, and root has no business writing there.
+
 What it does, in order — and it stops at the first thing that does not hold:
 
 1. Resolves the release through the GitHub API and picks the asset for this
-   build's target triple, `fletch-host-<version>-<target>.tar.gz`. Then, before
-   anything is written anywhere, checks that the running binary's directory is
-   writable; if not it stops here and tells you to re-run with `sudo` or to
-   install into `~/.local/bin` instead.
+   build's target triple, `fletch-host-<version>-<target>.tar.gz`.
 2. Downloads the tarball, its `.sha256` and its `.sig` into
    `<data-dir>/updates/<version>/`, and leaves them there.
 3. Checks the sha256, **and** verifies the minisign signature against the key
@@ -162,23 +164,28 @@ What it does, in order — and it stops at the first thing that does not hold:
 4. Copies the SQLite database to
    `<data-dir>/backups/data.db.<old-version>.bak`. A running host's WAL is not
    in that copy, so stop the host first if you want a clean one.
-5. Extracts `fletch-host` next to the running executable as `fletch-host.new`,
-   chmods it 755 and `rename`s it over the current path — atomic, so the path
-   never resolves to half a binary.
-6. Restarts the service from `service install` if there is one
+5. If the running binary's directory is yours to write: extracts `fletch-host`
+   next to it as `fletch-host.new`, chmods it 755 and `rename`s it over the
+   current path — atomic, so the path never resolves to half a binary — and
+   restarts the service from `service install` if there is one
    (`systemctl restart` / `launchctl kickstart -k`). If instead a bare `serve`
    is running — the admin socket answers — it says that it has to be restarted
    and does **not** kill it: a host with agents mid-run is not something an
    update gets to end.
+6. If that directory needs root (`/usr/local/bin`, say), it stops with the
+   download verified and the database copied, and prints the one command left:
 
-Running it as `sudo fletch-host update` (the binary sits in a root-owned
-directory) changes none of this: the data dir defaults to *yours* — the one
-`$SUDO_USER`'s home gives, not root's — so the database that is copied, the
-socket that is asked and the unit that is restarted are your host's. What the
-update wrote into your data dir as root is chowned back to you, and a user
-unit is restarted as you (`sudo -u you systemctl --user restart`). Every
-subcommand except `serve` resolves its default data dir this way under sudo;
-`serve` never should be run as root.
+   ```sh
+   sudo fletch-host update --from <data-dir>/updates/<version>/fletch-host-<version>-<target>.tar.gz
+   ```
+
+   That step reads the tarball and its `.sig`, verifies the signature again
+   (it trusts the signature, not the caller), replaces the binary, and restarts
+   the service — a system unit directly, your user unit as you, a launchd agent
+   in your session. It opens no data dir at all, and it refuses a binary
+   directory that is not root's alone (owned by root, writable by nobody
+   else), since root renaming a file someone else staged over its own binary
+   would hand them root.
 
 There is no rollback and no unattended upgrade path: that is deferred item 17
 in `docs/multi-host-plan.md` §5.3. The database copy from step 4 is what a

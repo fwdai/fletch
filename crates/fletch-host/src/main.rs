@@ -92,7 +92,9 @@ enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
-    /// Replace this binary with a published release's.
+    /// Replace this binary with a published release's. Run it as the user
+    /// the host runs as; if the binary's directory needs root, it prints the
+    /// one `sudo … --from` command that installs what it verified.
     Update {
         /// The version to install, e.g. 0.7.32. Defaults to the latest
         /// release. Naming the version this binary already is reinstalls it.
@@ -100,6 +102,10 @@ enum Command {
         /// Print what is available and stop; change nothing.
         #[arg(long)]
         check: bool,
+        /// Install this already-downloaded tarball (its `.sig` beside it) —
+        /// the step `sudo` runs. Re-verifies the signature; opens no data dir.
+        #[arg(long, value_name = "TARBALL", conflicts_with_all = ["version", "check"])]
+        from: Option<PathBuf>,
     },
 }
 
@@ -179,22 +185,12 @@ fn main() {
     // `service install` wants to know whether `--data-dir` was given at all:
     // its default is not this process's (see `service_command`).
     let data_dir_arg = cli.data_dir;
-    // Under sudo — `sudo fletch-host update` is how a binary in a root-owned
-    // directory gets replaced — this process's default data dir is root's,
-    // which holds no host. The host belongs to whoever ran sudo, so the
-    // default is theirs: the database that gets backed up, the socket that
-    // gets asked, and the unit that gets restarted are then the real ones.
-    // `serve` is the exception: root must not run the engine against a user's
-    // data dir (every file it wrote would be root's), so it keeps the plain
-    // default and the README says never to run it as root.
-    let data_dir = match (&data_dir_arg, service::sudoer()) {
-        (Some(dir), _) => dir.clone(),
-        (None, Some(sudoer)) => match service::default_data_dir_of(&sudoer.name) {
-            Ok(dir) => dir,
-            Err(e) => fail(&e),
-        },
-        (None, None) => serve::default_data_dir(),
-    };
+    // This process's own default, always — never a guess at whose data dir a
+    // `sudo` was meant for. The two subcommands that meet sudo say what they
+    // do about it themselves: `service install --system` resolves the service
+    // user's (`service_command`), and `update` refuses to touch a data dir as
+    // root at all (`update::run`).
+    let data_dir = data_dir_arg.clone().unwrap_or_else(serve::default_data_dir);
 
     // One runtime for both halves: the engine's background tasks belong to it
     // (`serve`), and the client subcommands use it for the socket.
@@ -212,7 +208,7 @@ fn main() {
         } => {
             init_logging();
             runtime.block_on(serve::run(serve::Config {
-                data_dir: data_dir_arg.unwrap_or_else(serve::default_data_dir),
+                data_dir,
                 port,
                 relay: match (relay, no_relay) {
                     (Some(url), _) => HeadlessRelay::Url(url),
@@ -226,9 +222,11 @@ fn main() {
         // Neither of these goes over the admin socket: they act on this
         // machine's init system and on this binary's own file.
         Command::Service { command } => service_command(data_dir_arg, command),
-        Command::Update { version, check } => {
-            runtime.block_on(update::run(&data_dir, version, check))
-        }
+        Command::Update {
+            version,
+            check,
+            from,
+        } => runtime.block_on(update::run(&data_dir, version, check, from)),
         command => runtime.block_on(client(&data_dir, command)),
     };
     if let Err(e) = result {
