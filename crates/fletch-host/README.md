@@ -89,7 +89,7 @@ definition and restarts the host, so it is also how you change the flags:
 | `--data-dir PATH` | the data dir to serve (global flag; defaults to the same one every other subcommand uses). A relative path is taken from the directory you run this in and written absolute |
 | `--port N` | port for paired devices |
 | `--name NAME` | the name paired devices show |
-| `--user NAME` | Linux, with `--system`: the user the unit runs as. Defaults to whoever ran `sudo`; root is refused |
+| `--user NAME` | Linux, with `--system`: the user the unit runs as, by name or uid. Defaults to whoever ran `sudo`; root (by any spelling) is refused |
 | `--system` | Linux: `/etc/systemd/system` instead of your own user unit. Needs `sudo`; not a thing on macOS |
 
 The resolved data dir and this binary's absolute path are written into the
@@ -170,6 +170,15 @@ What it does, in order — and it stops at the first thing that does not hold:
    is running — the admin socket answers — it says that it has to be restarted
    and does **not** kill it: a host with agents mid-run is not something an
    update gets to end.
+
+Running it as `sudo fletch-host update` (the binary sits in a root-owned
+directory) changes none of this: the data dir defaults to *yours* — the one
+`$SUDO_USER`'s home gives, not root's — so the database that is copied, the
+socket that is asked and the unit that is restarted are your host's. What the
+update wrote into your data dir as root is chowned back to you, and a user
+unit is restarted as you (`sudo -u you systemctl --user restart`). Every
+subcommand except `serve` resolves its default data dir this way under sudo;
+`serve` never should be run as root.
 
 There is no rollback and no unattended upgrade path: that is deferred item 17
 in `docs/multi-host-plan.md` §5.3. The database copy from step 4 is what a

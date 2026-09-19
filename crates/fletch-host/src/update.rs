@@ -179,49 +179,55 @@ pub async fn run(data_dir: &Path, version: Option<String>, check: bool) -> Resul
     // Where the three downloads live. Kept after the swap: they are the
     // evidence for what is now installed, and re-verifying them needs no
     // network.
-    let dir = data_dir.join("updates").join(&assets.version);
+    let updates = data_dir.join("updates");
+    let dir = updates.join(&assets.version);
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
 
     println!("Downloading {} ...", asset_name(&assets.version));
-    let tarball = fetch_to(
-        &client,
-        &assets.tarball,
-        &dir.join(asset_name(&assets.version)),
-    )
-    .await?;
-    let sha_text = String::from_utf8(
-        fetch_to(
-            &client,
-            &assets.sha256,
-            &dir.join(format!("{}.sha256", asset_name(&assets.version))),
-        )
-        .await?,
-    )
-    .map_err(|_| "the .sha256 file is not text".to_string())?;
-    let sig_text = String::from_utf8(
-        fetch_to(
-            &client,
-            &assets.sig,
-            &dir.join(format!("{}.sig", asset_name(&assets.version))),
-        )
-        .await?,
-    )
-    .map_err(|_| "the .sig file is not text".to_string())?;
+    let tarball_path = dir.join(asset_name(&assets.version));
+    let sha_path = dir.join(format!("{}.sha256", asset_name(&assets.version)));
+    let sig_path = dir.join(format!("{}.sig", asset_name(&assets.version)));
+    let tarball = fetch_to(&client, &assets.tarball, &tarball_path).await?;
+    let sha_text = String::from_utf8(fetch_to(&client, &assets.sha256, &sha_path).await?)
+        .map_err(|_| "the .sha256 file is not text".to_string())?;
+    let sig_text = String::from_utf8(fetch_to(&client, &assets.sig, &sig_path).await?)
+        .map_err(|_| "the .sig file is not text".to_string())?;
 
     verify_sha256(&tarball, &sha_text)?;
     println!("checksum ok");
     verify_signature(&tarball, &sig_text, UPDATER_PUBKEY)?;
     println!("signature ok (minisign, the desktop updater's key)");
 
+    let mut written = vec![updates, dir, tarball_path, sha_path, sig_path];
     if let Some(backup) = backup_db(data_dir, CURRENT_VERSION)? {
         println!("database copied to {}", backup.display());
+        written.push(data_dir.join("backups"));
+        written.push(backup);
+    }
+
+    // Under sudo everything above was written as root into the sudoer's data
+    // dir. Hand it back, or their next non-sudo run cannot write next to it
+    // and the backup is a file they cannot remove.
+    let sudoer = service::sudoer();
+    if let Some(owner) = &sudoer {
+        give_back(owner, &written)?;
     }
 
     let binary = extract_binary(&tarball)?;
     swap(&exe, &binary)?;
     println!("installed {} at {}", assets.version, exe.display());
 
-    restart(data_dir).await;
+    restart(data_dir, sudoer.as_ref()).await;
+    Ok(())
+}
+
+/// `chown` the paths an update wrote while running as root to the user whose
+/// data dir they are in.
+fn give_back(owner: &nix::unistd::User, paths: &[PathBuf]) -> Result<(), String> {
+    for path in paths {
+        nix::unistd::chown(path, Some(owner.uid), Some(owner.gid))
+            .map_err(|e| format!("cannot hand {} back to {}: {e}", path.display(), owner.name))?;
+    }
     Ok(())
 }
 
@@ -461,13 +467,34 @@ fn ensure_writable(dir: &Path) -> Result<(), String> {
 /// returned — the new binary is already installed, and an update that says
 /// "installed, but the restart failed" is more useful than one that looks like
 /// it failed entirely.
-async fn restart(data_dir: &Path) {
-    if let Ok(path) = service::systemd_user_dir() {
+/// Under sudo the unit and the agent are the sudoer's, not root's: their user
+/// unit is restarted as them (root has no `systemctl --user` session of theirs),
+/// and their launchd agent lives in their `gui/<uid>` domain.
+async fn restart(data_dir: &Path, sudoer: Option<&nix::unistd::User>) {
+    let user_unit_dir = match sudoer {
+        Some(user) => Some(service::systemd_user_dir_in(&user.dir)),
+        None => service::systemd_user_dir().ok(),
+    };
+    if let Some(path) = user_unit_dir {
         if path.join(service::UNIT_NAME).exists() {
-            report(service::run(
-                "systemctl",
-                &["--user", "restart", service::UNIT_NAME],
-            ));
+            report(match sudoer {
+                Some(user) => {
+                    let runtime_dir = format!("XDG_RUNTIME_DIR=/run/user/{}", user.uid.as_raw());
+                    service::run(
+                        "sudo",
+                        &[
+                            "-u",
+                            &user.name,
+                            &runtime_dir,
+                            "systemctl",
+                            "--user",
+                            "restart",
+                            service::UNIT_NAME,
+                        ],
+                    )
+                }
+                None => service::run("systemctl", &["--user", "restart", service::UNIT_NAME]),
+            });
             return;
         }
     }
@@ -478,13 +505,19 @@ async fn restart(data_dir: &Path) {
         report(service::run("systemctl", &["restart", service::UNIT_NAME]));
         return;
     }
-    if let Ok(plist) = service::launchd_plist_path() {
+    let (plist, uid) = match sudoer {
+        Some(user) => (
+            Some(service::launchd_plist_path_in(&user.dir)),
+            user.uid.as_raw(),
+        ),
+        None => (
+            service::launchd_plist_path().ok(),
+            nix::unistd::getuid().as_raw(),
+        ),
+    };
+    if let Some(plist) = plist {
         if plist.exists() {
-            let target = format!(
-                "gui/{}/{}",
-                nix::unistd::getuid().as_raw(),
-                service::LAUNCHD_LABEL
-            );
+            let target = format!("gui/{uid}/{}", service::LAUNCHD_LABEL);
             report(service::run("launchctl", &["kickstart", "-k", &target]));
             return;
         }

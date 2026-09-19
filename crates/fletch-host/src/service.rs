@@ -21,6 +21,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use nix::unistd::{Uid, User};
+
 /// The systemd unit's file name, and the name `systemctl` takes.
 pub const UNIT_NAME: &str = "fletch-host.service";
 
@@ -94,11 +96,20 @@ pub fn systemd_user_dir() -> Result<PathBuf, String> {
     Ok(base.join("systemd").join("user"))
 }
 
+/// The same, for another user's home — whose `$XDG_CONFIG_HOME` this process
+/// cannot see, so it is the XDG default.
+pub fn systemd_user_dir_in(home: &Path) -> PathBuf {
+    home.join(".config").join("systemd").join("user")
+}
+
 pub fn launchd_plist_path() -> Result<PathBuf, String> {
-    Ok(home()?
-        .join("Library")
+    Ok(launchd_plist_path_in(&home()?))
+}
+
+pub fn launchd_plist_path_in(home: &Path) -> PathBuf {
+    home.join("Library")
         .join("LaunchAgents")
-        .join(format!("{LAUNCHD_LABEL}.plist")))
+        .join(format!("{LAUNCHD_LABEL}.plist"))
 }
 
 pub fn launchd_log_path() -> Result<PathBuf, String> {
@@ -115,34 +126,67 @@ fn home() -> Result<PathBuf, String> {
 /// user whose agents these are, never as root (the README's invariant; the
 /// container UID mapping and every file it writes assume it).
 pub fn system_user(flag: Option<String>, sudo_user: Option<String>) -> Result<String, String> {
-    let user = flag.or(sudo_user).ok_or_else(|| {
+    let spec = flag.or(sudo_user).ok_or_else(|| {
         "`--system` needs the user the host runs as: pass `--user NAME`, or run this \
          through sudo (which says who you are)."
             .to_string()
     })?;
-    if user == "root" {
+    let user = lookup_user(&spec)?;
+    if user.uid.is_root() {
         return Err(
             "the host does not run as root: pass `--user NAME` for the account whose agents \
              these are."
                 .to_string(),
         );
     }
-    Ok(user)
+    Ok(user.name)
 }
 
-/// The data dir a `--system` unit serves when `--data-dir` was not given: what
-/// [`crate::serve::default_data_dir`] would pick if *that* user ran the CLI,
-/// `<their home>/.local/share/fletch-host`, with the home taken from their
-/// passwd entry rather than from this process (under sudo, this process's home
-/// is root's). Their `$XDG_DATA_HOME`, if they set one, is not visible from
-/// here; `--data-dir` is the way to honour it.
+/// A user from passwd, by name or by numeric uid — systemd reads `User=0` as
+/// root exactly like `User=root`, so a check on the *entry* is the only one
+/// that holds, and the name it returns is the one written into the unit.
+pub fn lookup_user(spec: &str) -> Result<User, String> {
+    let lookup_err = |e| format!("cannot look up user {spec}: {e}");
+    if let Some(user) = User::from_name(spec).map_err(lookup_err)? {
+        return Ok(user);
+    }
+    if let Ok(uid) = spec.parse::<u32>() {
+        if let Some(user) = User::from_uid(Uid::from_raw(uid)).map_err(lookup_err)? {
+            return Ok(user);
+        }
+    }
+    Err(format!("no such user: {spec}"))
+}
+
+/// Whoever ran `sudo`, when this process is root because of it: the person the
+/// host belongs to, whose data dir, unit and socket every subcommand but
+/// `serve` should mean. `None` outside sudo, and when sudo was run by root.
+pub fn sudoer() -> Option<User> {
+    if !Uid::effective().is_root() {
+        return None;
+    }
+    let name = std::env::var("SUDO_USER").ok()?;
+    lookup_user(&name).ok().filter(|user| !user.uid.is_root())
+}
+
+/// The data dir the CLI would default to if `user` ran it: what
+/// [`crate::serve::default_data_dir`] picks, under the platform's data root
+/// in *their* home from passwd rather than this process's (under sudo, this
+/// process's home is root's). Their `$XDG_DATA_HOME`, if they set one, is not
+/// visible from here; `--data-dir` is the way to honour it.
 pub fn default_data_dir_of(user: &str) -> Result<PathBuf, String> {
-    let entry = nix::unistd::User::from_name(user)
-        .map_err(|e| format!("cannot look up user {user}: {e}"))?
-        .ok_or_else(|| format!("no such user: {user}"))?;
-    Ok(crate::serve::data_dir_under(
-        entry.dir.join(".local").join("share"),
-    ))
+    Ok(crate::serve::data_dir_under(platform_data_root(
+        &lookup_user(user)?.dir,
+    )))
+}
+
+/// `dirs::data_dir()`'s answer for a home this process does not live in.
+fn platform_data_root(home: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        home.join("Library").join("Application Support")
+    } else {
+        home.join(".local").join("share")
+    }
 }
 
 /// Render the systemd unit.
@@ -596,30 +640,68 @@ mod tests {
     /// still run as the person, so root is never derived and never accepted.
     #[test]
     fn a_system_unit_runs_as_the_sudoer_or_the_named_user_never_root() {
+        // Names are resolved through passwd, so the one user every machine
+        // running this suite has is the one running it.
+        let me = User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .expect("the current user has a passwd entry")
+            .name;
         assert_eq!(
-            system_user(Some("alice".into()), Some("bob".into())).unwrap(),
-            "alice"
+            system_user(Some(me.clone()), Some("root".into())).unwrap(),
+            me,
+            "an explicit --user wins over the sudoer"
         );
-        assert_eq!(system_user(None, Some("bob".into())).unwrap(), "bob");
+        assert_eq!(system_user(None, Some(me.clone())).unwrap(), me);
         let e = system_user(None, None).unwrap_err();
         assert!(e.contains("--user"), "{e}");
         let e = system_user(Some("root".into()), None).unwrap_err();
         assert!(e.contains("root"), "{e}");
         let e = system_user(None, Some("root".into())).unwrap_err();
         assert!(e.contains("root"), "{e}");
+        // `User=0` is root to systemd; a string compare would let it through.
+        let e = system_user(Some("0".into()), None).unwrap_err();
+        assert!(e.contains("root"), "{e}");
+        let e = system_user(None, Some("no-such-user-fletch-test".into())).unwrap_err();
+        assert!(e.contains("no such user"), "{e}");
+    }
+
+    /// A numeric uid resolves to its passwd entry, so the unit carries the
+    /// name and the root check sees the uid.
+    #[test]
+    fn users_resolve_by_name_or_uid_to_the_same_entry() {
+        let me = User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .expect("the current user has a passwd entry");
+        assert_eq!(lookup_user(&me.name).unwrap().uid, me.uid);
+        assert_eq!(
+            lookup_user(&me.uid.as_raw().to_string()).unwrap().name,
+            me.name
+        );
+        assert!(lookup_user("0").unwrap().uid.is_root());
+        assert_eq!(
+            system_user(Some(me.uid.as_raw().to_string()), None).unwrap(),
+            me.name
+        );
     }
 
     /// The service user's default data dir comes from *their* passwd home, by
     /// the same rule `default_data_dir` applies to this process's.
     #[test]
-    fn a_system_units_default_data_dir_is_the_service_users_not_this_process() {
-        let me = nix::unistd::User::from_uid(nix::unistd::getuid())
+    fn a_users_default_data_dir_comes_from_their_passwd_home_not_this_process() {
+        let me = User::from_uid(nix::unistd::getuid())
             .unwrap()
             .expect("the current user has a passwd entry");
         assert_eq!(
             default_data_dir_of(&me.name).unwrap(),
-            crate::serve::data_dir_under(me.dir.join(".local").join("share"))
+            crate::serve::data_dir_under(platform_data_root(&me.dir))
         );
+        // Same root `dirs` would pick for this process, when the homes agree.
+        if dirs::home_dir().as_deref() == Some(me.dir.as_path()) {
+            assert_eq!(
+                default_data_dir_of(&me.name).unwrap(),
+                crate::serve::default_data_dir()
+            );
+        }
         let e = default_data_dir_of("no-such-user-fletch-test").unwrap_err();
         assert!(e.contains("no such user"), "{e}");
     }

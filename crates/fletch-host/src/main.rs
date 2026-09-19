@@ -179,7 +179,22 @@ fn main() {
     // `service install` wants to know whether `--data-dir` was given at all:
     // its default is not this process's (see `service_command`).
     let data_dir_arg = cli.data_dir;
-    let data_dir = data_dir_arg.clone().unwrap_or_else(serve::default_data_dir);
+    // Under sudo — `sudo fletch-host update` is how a binary in a root-owned
+    // directory gets replaced — this process's default data dir is root's,
+    // which holds no host. The host belongs to whoever ran sudo, so the
+    // default is theirs: the database that gets backed up, the socket that
+    // gets asked, and the unit that gets restarted are then the real ones.
+    // `serve` is the exception: root must not run the engine against a user's
+    // data dir (every file it wrote would be root's), so it keeps the plain
+    // default and the README says never to run it as root.
+    let data_dir = match (&data_dir_arg, service::sudoer()) {
+        (Some(dir), _) => dir.clone(),
+        (None, Some(sudoer)) => match service::default_data_dir_of(&sudoer.name) {
+            Ok(dir) => dir,
+            Err(e) => fail(&e),
+        },
+        (None, None) => serve::default_data_dir(),
+    };
 
     // One runtime for both halves: the engine's background tasks belong to it
     // (`serve`), and the client subcommands use it for the socket.
@@ -197,7 +212,7 @@ fn main() {
         } => {
             init_logging();
             runtime.block_on(serve::run(serve::Config {
-                data_dir,
+                data_dir: data_dir_arg.unwrap_or_else(serve::default_data_dir),
                 port,
                 relay: match (relay, no_relay) {
                     (Some(url), _) => HeadlessRelay::Url(url),
