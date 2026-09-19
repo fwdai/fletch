@@ -1569,7 +1569,7 @@ fn make_output_handler(
 
 /// Parsed-JSON event callback shared by the managed + per-turn spawners:
 /// record activity, then emit `agent:event`.
-fn make_event_handler(
+pub(super) fn make_event_handler(
     sup: Arc<Supervisor>,
     ctx: Arc<EngineCtx>,
     agent_id: String,
@@ -1578,6 +1578,12 @@ fn make_event_handler(
         if let Some(activity) = sup.activities.lock().get_mut(&agent_id) {
             activity.observe_event(&event);
         }
+
+        // Claude keeps streaming after a turn's `result` when a background
+        // task is still running, and starts a turn of its own once that task
+        // finishes. Neither moves the agent off Idle, so the transcript they
+        // write would otherwise wait for the next user turn to be ingested.
+        sup.settle_after_idle_event(&ctx, &agent_id, &event);
 
         emit_agent_event(ctx.sink.as_ref(), &agent_id, event);
     }

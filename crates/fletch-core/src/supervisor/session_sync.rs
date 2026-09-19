@@ -675,6 +675,66 @@ pub(super) fn spawn_live_transcript_sync(
     });
 }
 
+/// A top-level (main-thread) Claude event that means the transcript grew after
+/// the agent went Idle:
+///
+/// - `system` / `task_notification`: a background task (sub-agent, background
+///   bash) finished. Its file is final, but it kept writing after the main
+///   turn's `result`, past the point where the turn-end poll settled and the
+///   live poller stopped reading.
+/// - `result`: Claude answers that notification with a turn of its own — no
+///   user message, so nothing marked the agent Running and the watchdog sees a
+///   flag it already acted on. The reply (the injected `<task-notification>`
+///   user record and the assistant's answer) is only now on disk.
+///
+/// Sidechain events (tagged `parent_tool_use_id`) never count: a sub-agent's
+/// own `result` is mid-stream for the main transcript.
+pub(super) fn grows_transcript_while_idle(event: &serde_json::Value) -> bool {
+    if event
+        .get("parent_tool_use_id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        return false;
+    }
+    match event.get("type").and_then(|v| v.as_str()) {
+        Some("result") => true,
+        Some("system") => {
+            event.get("subtype").and_then(|v| v.as_str()) == Some("task_notification")
+        }
+        _ => false,
+    }
+}
+
+impl Supervisor {
+    /// Settle the transcript after an event that grew it while the agent is
+    /// Idle (see [`grows_transcript_while_idle`]). Without this, records a
+    /// background sub-agent wrote after the main turn settled — and the turn
+    /// Claude starts on its own to answer its notification — reach
+    /// `session_records` only at the *next* user turn's end, so a reload in
+    /// between loses the nested thread. Running agents are left alone: the live
+    /// poller is already reading and the turn-end sync will settle the file.
+    ///
+    /// Re-uses the turn-end poll as is. Two triggers a couple of seconds apart
+    /// (notification, then the reply's `result`) mean two short polls, which is
+    /// intended: a poll that had already settled cannot see what the second
+    /// event announces. Overlap is serialized by `agent_sync_lock`, and a pass
+    /// that finds nothing new emits nothing.
+    pub(super) fn settle_after_idle_event(
+        &self,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+        event: &serde_json::Value,
+    ) {
+        if !matches!(self.live_status(agent_id), Some(AgentStatus::Idle)) {
+            return;
+        }
+        if grows_transcript_while_idle(event) {
+            self.trigger_session_sync(ctx.clone(), agent_id.to_string());
+        }
+    }
+}
+
 /// Per-agent lock serializing [`sync_session_records`].
 ///
 /// The ingest is `read offset → read file → append rows → write offset` with no
@@ -1973,5 +2033,182 @@ mod tests {
         }
         // A provider with no transcript reader at all is likewise skipped.
         assert!(!should_live_sync("nonesuch", AgentView::Native));
+    }
+
+    // ── Background work finishing after the main turn settled ──
+
+    #[test]
+    fn only_main_thread_terminal_events_grow_the_transcript_while_idle() {
+        use serde_json::json;
+        assert!(grows_transcript_while_idle(&json!({
+            "type": "system", "subtype": "task_notification", "task_id": "abc",
+            "tool_use_id": "toolu_bg", "status": "completed", "summary": "done"
+        })));
+        assert!(grows_transcript_while_idle(&json!({
+            "type": "result", "subtype": "success"
+        })));
+        // A sub-agent's own result is mid-stream for the main transcript.
+        assert!(!grows_transcript_while_idle(&json!({
+            "type": "result", "subtype": "success", "parent_tool_use_id": "toolu_bg"
+        })));
+        for subtype in [
+            "task_started",
+            "task_progress",
+            "task_updated",
+            "background_tasks_changed",
+        ] {
+            assert!(
+                !grows_transcript_while_idle(&json!({ "type": "system", "subtype": subtype })),
+                "{subtype} changes nothing on disk"
+            );
+        }
+        assert!(!grows_transcript_while_idle(&json!({
+            "type": "assistant", "message": { "content": [] }
+        })));
+    }
+
+    /// The turn-end poll settles about two seconds after the main `result`,
+    /// and the live poller reads only while Running — so a background
+    /// sub-agent that kept writing after that had no sync until the next user
+    /// turn ended, and a reload in between lost the nested thread. Its
+    /// terminal task event now settles the transcript through the same
+    /// turn-end machinery: the late records land, tagged, and are announced.
+    ///
+    /// Not `#[tokio::test]`: `ENV_LOCK` (a std mutex) must be held for the
+    /// whole sync, since the reader consults `CLAUDE_CONFIG_DIR` on every pass,
+    /// and holding it across an `.await` is what `await_holding_lock` forbids.
+    /// The sync runs on a multi-thread runtime this test enters, and the wait is
+    /// a blocking one.
+    #[test]
+    fn a_background_subagent_finishing_after_the_turn_settled_is_ingested() {
+        use serde_json::json;
+        use std::io::Write as _;
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", cfg.path());
+        let sid = "44444444-4444-4444-8444-444444444444";
+        let slug = cfg.path().join("projects").join("-tmp-slug");
+        let subagents = slug.join(sid).join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let sub = subagents.join("agent-abc.jsonl");
+        let sidechain = |uuid: &str, ty: &str, content: serde_json::Value| {
+            claude_line(
+                uuid,
+                json!({
+                    "type": ty, "isSidechain": true, "agentId": "abc",
+                    "message": { "role": ty, "content": content }
+                }),
+            )
+        };
+
+        // The main turn: launch a background sub-agent, get its
+        // `async_launched` tool_result (the link), answer the user, `result`.
+        std::fs::write(
+            slug.join(format!("{sid}.jsonl")),
+            format!(
+                "{}\n{}\n{}\n",
+                claude_line(
+                    "m1",
+                    json!({ "type": "assistant", "message": { "role": "assistant", "content": [
+                        { "type": "tool_use", "id": "toolu_bg", "name": "Agent",
+                          "input": { "prompt": "look", "run_in_background": true } }
+                    ] } })
+                ),
+                claude_line(
+                    "m2",
+                    json!({ "type": "user",
+                        "toolUseResult": { "status": "async_launched", "agentId": "abc" },
+                        "message": { "role": "user", "content": [
+                            { "type": "tool_result", "tool_use_id": "toolu_bg",
+                              "content": "Async agent launched.\nagentId: abc" }
+                        ] } })
+                ),
+                claude_line(
+                    "m3",
+                    json!({ "type": "assistant", "message": { "role": "assistant", "content": [
+                        { "type": "text", "text": "Started it in the background." }
+                    ] } })
+                ),
+            ),
+        )
+        .unwrap();
+        // The sub-agent had written its first line by the time the turn ended.
+        std::fs::write(
+            &sub,
+            format!("{}\n", sidechain("s1", "user", "look".into())),
+        )
+        .unwrap();
+
+        let db = crate::workspace::tests::test_db();
+        let (agent_id, wm) = crate::workspace::tests::make_workspace_with_session(&db);
+        wm.set_agent_session_id(&agent_id, sid).unwrap();
+        let sup = Arc::new(Supervisor::new(Arc::new(wm)));
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+
+        // The turn-end sync ran and settled: everything on disk is stored and
+        // the agent is Idle, so no poll reads the transcript any more.
+        sup.statuses
+            .lock()
+            .insert(agent_id.clone(), AgentStatus::Idle);
+        assert_eq!(sup.sync_session(&agent_id), Some(4));
+        assert!(sink.events().is_empty());
+
+        // The sub-agent finishes later and writes its answer.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&sub).unwrap();
+        writeln!(
+            f,
+            "{}",
+            sidechain(
+                "s2",
+                "assistant",
+                json!([{ "type": "text", "text": "found it" }])
+            )
+        )
+        .unwrap();
+        drop(f);
+
+        // Claude reports the task on the main stream; the managed handler
+        // turns it into a settling sync. `host::spawn` falls back to
+        // `tokio::spawn` before boot, so the handler needs a runtime context.
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _enter = runtime.enter();
+        let on_event =
+            super::super::lifecycle::make_event_handler(sup.clone(), ctx.clone(), agent_id.clone());
+        on_event(json!({
+            "type": "system", "subtype": "task_notification", "task_id": "abc",
+            "tool_use_id": "toolu_bg", "status": "completed", "summary": "found it"
+        }));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let announced = sink.events().iter().any(|(name, payload)| {
+                name == "session:records-appended" && payload["agent_id"] == agent_id
+            });
+            if announced {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no settling sync after the task notification: {:?}",
+                sink.events()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let recs = sup.workspace.read_session_records(&agent_id).unwrap();
+        assert_eq!(
+            recs.iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m1", "m2", "m3", "s1", "s2"]
+        );
+        let late = &recs[4];
+        assert_eq!(late.body["parent_tool_use_id"], "toolu_bg");
+        assert_eq!(late.body["message"]["content"][0]["text"], "found it");
+        // A settle, not a turn: the agent never left Idle.
+        assert_eq!(sup.live_status(&agent_id), Some(AgentStatus::Idle));
+
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
     }
 }
