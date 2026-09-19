@@ -1,6 +1,7 @@
 import { agentPresenter } from "./Agent";
 import { bashPresenter } from "./Bash";
 import { codegraphPresenter } from "./Codegraph";
+import { collabPresenter } from "./Collab";
 import { defaultPresenter } from "./default";
 import { editPresenter } from "./Edit";
 import { globPresenter } from "./Glob";
@@ -53,6 +54,8 @@ function isCodegraphTool(key: string): boolean {
 // entry is a predicate over the lowercased name rather than a literal prefix.
 const FUZZY: { match: (key: string) => boolean; presenter: ToolPresenter }[] = [
   { match: isCodegraphTool, presenter: codegraphPresenter },
+  // Codex's multi-agent coordination calls: `collab.wait`, `collab.send_input`, …
+  { match: (key) => key.startsWith("collab."), presenter: collabPresenter },
 ];
 
 export function getPresenter(toolName: string): ToolPresenter {
