@@ -18,6 +18,7 @@ use super::providers::codex::{
 };
 use super::providers::cursor::{
     cursor_build_args, cursor_locate, cursor_pty_args, cursor_read, cursor_session_id,
+    CURSOR_SUBAGENTS,
 };
 use super::providers::opencode::{
     opencode_build_args, opencode_locate, opencode_pty_args, opencode_read, opencode_session_id,
@@ -160,7 +161,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             locate: cursor_locate,
             read: cursor_read,
             tail: Some(JsonlTail { id_field: None }), // single jsonl, positional ids
-            subagents: None,
+            subagents: Some(CURSOR_SUBAGENTS),
         }),
     },
     PerTurnDescriptor {

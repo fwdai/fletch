@@ -98,6 +98,7 @@ fn claude_subagent_parent(body: &Value, id: &str) -> Option<String> {
 
 const CLAUDE_SUBAGENTS: SubagentLayout = SubagentLayout {
     files: claude_subagent_files,
+    needle: None, // the agent id is verbatim in the linking record
     parent_tool_use: claude_subagent_parent,
     id_field: Some("uuid"),
 };

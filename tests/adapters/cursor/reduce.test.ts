@@ -182,6 +182,129 @@ describe("cursorAdapter", () => {
     ]);
   });
 
+  // A sub-agent is a `taskToolCall`. Field names follow cursor-agent's bundled
+  // protos (agent.v1.TaskToolCall / TaskArgs / TaskResult, 2026.06.19) under
+  // the camelCase serialization every captured Cursor payload uses; no live
+  // Task event has been captured, so the reads are exercised with fallbacks.
+  describe("Task tool_call (sub-agent)", () => {
+    const started: RawEvent = {
+      type: "tool_call",
+      subtype: "started",
+      call_id: "task_1",
+      tool_call: {
+        taskToolCall: {
+          args: {
+            description: "Find seams",
+            prompt: "Explore src/ for duplication.",
+            subagentType: { explore: {} },
+            model: "inherit",
+          },
+        },
+      },
+    };
+
+    it("renders as a streaming `Task` call with Claude's field names", () => {
+      expect(run([started])).toEqual([
+        {
+          kind: "tool_call",
+          id: "task_1",
+          name: "Task",
+          input: {
+            description: "Find seams",
+            prompt: "Explore src/ for duplication.",
+            subagentType: { explore: {} },
+            subagent_type: "explore",
+            model: "inherit",
+          },
+          streaming: true,
+        },
+      ]);
+    });
+
+    it("pairs completion with the sub-agent's final message as the result", () => {
+      const completed: RawEvent = {
+        ...started,
+        subtype: "completed",
+        tool_call: {
+          taskToolCall: {
+            args: {
+              description: "Find seams",
+              prompt: "Explore src/ for duplication.",
+              subagentType: { custom: { name: "ci-investigator" } },
+            },
+            result: {
+              success: {
+                conversationSteps: [
+                  { thinkingMessage: { text: "hm" } },
+                  { assistantMessage: { text: "Looking…" } },
+                  { toolCall: { readToolCall: {} } },
+                  { assistantMessage: { text: "Two seams found." } },
+                ],
+                durationMs: "4200",
+              },
+            },
+          },
+        },
+      };
+      const items = run([started, completed]);
+      expect(items).toEqual([
+        {
+          kind: "tool_call",
+          id: "task_1",
+          name: "Task",
+          input: expect.objectContaining({ subagent_type: "ci-investigator" }),
+          streaming: false,
+        },
+        {
+          kind: "tool_result",
+          tool_use_id: "task_1",
+          content: "Two seams found.",
+          is_error: false,
+        },
+      ]);
+    });
+
+    it("flags a Task error and falls back to the raw result for unknown shapes", () => {
+      const failed = run([
+        {
+          type: "tool_call",
+          subtype: "completed",
+          call_id: "task_2",
+          tool_call: {
+            taskToolCall: {
+              args: { description: "x", prompt: "y", subagent_type: "explore" },
+              result: { error: { error: "sub-agent aborted" } },
+            },
+          },
+        },
+      ] as RawEvent[]);
+      expect(failed[1]).toEqual({
+        kind: "tool_result",
+        tool_use_id: "task_2",
+        content: "sub-agent aborted",
+        is_error: true,
+      });
+
+      const odd = run([
+        {
+          type: "tool_call",
+          subtype: "completed",
+          call_id: "task_3",
+          tool_call: { taskToolCall: { args: {}, result: { success: { something: 1 } } } },
+        },
+      ] as RawEvent[]);
+      expect(odd).toEqual([
+        { kind: "tool_call", id: "task_3", name: "Task", input: {}, streaming: false },
+        {
+          kind: "tool_result",
+          tool_use_id: "task_3",
+          content: { success: { something: 1 } },
+          is_error: false,
+        },
+      ]);
+    });
+  });
+
   it("exposes id and reuses Claude's policy", () => {
     expect(cursorAdapter.id).toBe("cursor");
     expect(cursorAdapter.policy["notice:turn_end"]).toBe("hide");

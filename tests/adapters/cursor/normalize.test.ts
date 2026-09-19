@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cursorAdapter } from "@/adapters/cursor/index";
+import { cursorTaskId } from "@/adapters/cursor/normalize";
 import type { ChatItem, RawEvent } from "@/adapters/types";
 
 function render(lines: unknown[]): ChatItem[] {
@@ -43,6 +44,80 @@ describe("cursorAdapter.normalizeTranscript", () => {
       ["cursor-tool-0", "Glob"],
       ["cursor-tool-1", "Read"],
     ]);
+  });
+
+  // A Task block gets its id from its prompt — the same id the sync tags the
+  // sub-agent's records with (`cursor_task_id` in providers/cursor.rs) — so the
+  // Claude reducer nests those records under the call. Other blocks keep the
+  // positional ids.
+  it("gives a Task block a prompt-derived id and nests its tagged sub-agent records", () => {
+    const prompt = "Explore src/ for seams.\n\nReport back.";
+    const taskId = cursorTaskId(prompt);
+    const items = render([
+      {
+        role: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", name: "Read", input: { path: "a.ts" } },
+            {
+              type: "tool_use",
+              name: "Task",
+              input: { description: "Find seams", subagent_type: "explore", prompt },
+            },
+          ],
+        },
+      },
+      // The sub-agent's own file, ingested with the tag. Its user turn wears
+      // Cursor's envelope, which the shared sanitizer strips.
+      {
+        role: "user",
+        parent_tool_use_id: taskId,
+        message: {
+          content: [
+            {
+              type: "text",
+              text: `<timestamp>Fri</timestamp>\n<user_query>\n${prompt}\n</user_query>`,
+            },
+          ],
+        },
+      },
+      {
+        role: "assistant",
+        parent_tool_use_id: taskId,
+        message: {
+          content: [
+            { type: "tool_use", name: "Grep", input: { pattern: "emit" } },
+            { type: "text", text: "Two seams." },
+          ],
+        },
+      },
+      { type: "turn_ended", status: "success", parent_tool_use_id: taskId },
+      { role: "assistant", message: { content: [{ type: "text", text: "Thanks." }] } },
+    ]);
+    expect(items).toEqual([
+      { kind: "tool_call", id: "cursor-tool-0", name: "Read", input: { path: "a.ts" } },
+      {
+        kind: "tool_call",
+        id: taskId,
+        name: "Task",
+        input: { description: "Find seams", subagent_type: "explore", prompt },
+        children: [
+          { kind: "user_message", text: prompt },
+          { kind: "tool_call", id: "cursor-tool-1", name: "Grep", input: { pattern: "emit" } },
+          { kind: "agent_message", text: "Two seams.", streaming: false },
+        ],
+      },
+      { kind: "agent_message", text: "Thanks.", streaming: false },
+    ]);
+  });
+
+  it("derives a stable Task id that matches the sync's (FNV-1a over UTF-16 units)", () => {
+    // Pinned against `task_id_is_a_stable_fnv1a_of_the_prompt` in
+    // crates/fletch-core/src/agent/providers/cursor.rs.
+    expect(cursorTaskId("")).toBe("cursor-task-811c9dc5");
+    expect(cursorTaskId("look")).toBe(cursorTaskId("look"));
+    expect(cursorTaskId("look")).not.toBe(cursorTaskId("look "));
+    expect(cursorTaskId("look")).toMatch(/^cursor-task-[0-9a-f]{8}$/);
   });
 
   it("is defensive against malformed lines", () => {

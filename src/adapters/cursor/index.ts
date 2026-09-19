@@ -2,16 +2,20 @@ import type { ChatAdapter } from "@/adapters/types";
 import { normalizeTranscript } from "./normalize";
 import { cursorPolicy } from "./policy";
 import { reduce } from "./reduce";
+import { taskEvents } from "./task";
 import { usageEvents } from "./usage";
 
 // Cursor Agent's stream-json is Claude Code's schema except for tool calls
 // (see ./reduce.ts), so most of the adapter delegates to the Claude reducer.
 // Usage isn't on disk — it's on the live `result` event, which the store
 // persists into session_records so it folds like the rest (see ./usage.ts).
+// Sub-agents have no `system` task events of their own; their Task tool_call
+// is translated into Claude's (see ./task.ts).
 export const cursorAdapter: ChatAdapter = {
   id: "cursor",
   reduce,
   normalizeTranscript,
+  taskEvents,
   policy: cursorPolicy,
   persistLiveUsage: true,
   // Live-only usage means a turn that ran while Fletch wasn't listening is gone

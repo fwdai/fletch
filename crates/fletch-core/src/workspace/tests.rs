@@ -1832,7 +1832,8 @@ fn archived_agents_survive_reload_without_reconcile() {
 
 // ── session event log ─────────────────────────────────────────────────
 
-/// Seed a minimal workspace+session row and return (workspace_id, wm).
+/// Seed a minimal workspace+session row for a claude agent and return
+/// (workspace_id, wm).
 pub(crate) fn make_workspace_with_session(
     db: &Arc<Mutex<Connection>>,
 ) -> (String, WorkspaceManager) {

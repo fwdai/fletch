@@ -115,6 +115,14 @@ export interface ChatAdapter {
   readonly id: string;
   reduce(prevItems: ChatItem[], rawEvent: RawEvent): ChatItem[];
   normalizeTranscript(transcriptLines: unknown[]): RawEvent[];
+  /** Claude-shaped `system` task events (`task_started` / `task_notification`,
+   *  see shared/backgroundTasks) derived from ONE live event of a provider that
+   *  has no such events of its own — Cursor's Task `tool_call`. The store folds
+   *  them through the same reducer as Claude's, so no background-task surface
+   *  needs a provider branch. Absent for providers that emit the events
+   *  natively (claude) or have no sub-agents. The event itself still goes to
+   *  `reduce` afterwards. */
+  taskEvents?(rawEvent: RawEvent): RawEvent[];
   readonly policy: DisplayPolicy;
   /** True when the agent emits usage ONLY on its live stream and never persists
    *  it on disk (cursor, and opencode in `run` mode). The store writes that

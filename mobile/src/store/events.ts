@@ -24,7 +24,7 @@ import type {
   TurnStartedEvent,
 } from "@desktop/api/types/session";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
-import type { RawEvent } from "../adapters";
+import { getAdapter, type RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
@@ -77,6 +77,12 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
       return;
     }
     const provider = agentOf(get(), e.agent_id)?.provider;
+    // A provider without those events (cursor) derives the same lifecycle from
+    // its own tool events — same fold, and the event still reaches the chat
+    // below as the tool call it is. Mirrors the desktop's eventListeners.
+    for (const task of getAdapter(provider).taskEvents?.(raw) ?? []) {
+      set((s) => foldTaskEvent(s, e.agent_id, task));
+    }
     const { items, turnEnded } = applyLiveEvent(provider, get().logs[e.agent_id] ?? [], raw);
     set((s) => ({
       logs: { ...s.logs, [e.agent_id]: items },
