@@ -71,16 +71,28 @@ pub struct JsonlTail {
 #[derive(Clone, Copy)]
 pub struct SubagentLayout {
     /// Sub-agent transcript files of the session whose main transcript is
-    /// `main`, as `(sub-agent id, path)` in a deterministic order. Empty when
-    /// the session spawned none.
+    /// `main`, as `(link key, path)` in a deterministic order. The key is
+    /// whatever the main transcript names the sub-agent by: Claude's agent id
+    /// (from the file name), Cursor's Task prompt (from the file's first
+    /// record). Empty when the session spawned none.
     pub files: fn(main: &Path) -> Vec<(String, PathBuf)>,
-    /// The tool_use id that spawned sub-agent `id`, if `body` is the
-    /// main-transcript record that links the two; `None` for any other record.
-    pub parent_tool_use: fn(body: &Value, id: &str) -> Option<String>,
+    /// Substring that prefilters the stored main-transcript records handed to
+    /// `parent_tool_use` (see `session_record_bodies_containing`). `None` uses
+    /// the link key itself (Claude's agent id and Codex's thread id appear
+    /// verbatim in the linking record); a provider whose key is not a
+    /// substring of the record (Cursor: the prompt is JSON-escaped in the
+    /// body) names a fixed marker.
+    pub needle: Option<&'static str>,
+    /// The tool_use id that spawned the sub-agent with link key `key`, if
+    /// `body` is the main-transcript record that links the two; `None` for any
+    /// other record. The id must be the one the frontend gives that tool call
+    /// on replay, since the reducer nests by it.
+    pub parent_tool_use: fn(body: &Value, key: &str) -> Option<String>,
     /// Per-line native-id field of a sub-agent file (claude's `uuid`); lines
     /// without it are metadata and are dropped. `None` when the lines carry no
-    /// id (codex): they get positional ids, namespaced by the sub-agent id so
-    /// two files' `ln:0` never collide with each other or the main transcript.
+    /// id (codex, cursor): they get positional ids, namespaced by the file's
+    /// stem so two files' `ln:0` never collide with each other or the main
+    /// transcript.
     pub id_field: Option<&'static str>,
 }
 
@@ -98,8 +110,8 @@ pub struct TranscriptReader {
     /// back to a full read + idempotent batched insert.
     pub tail: Option<JsonlTail>,
     /// Set when the provider writes sub-agent transcripts to separate files
-    /// (claude, codex). Independent of `tail`: a sub-agent file is always a
-    /// single JSONL, so it is tailed by byte offset even when the main
+    /// (claude, codex, cursor). Independent of `tail`: a sub-agent file is
+    /// always a single JSONL, so it is tailed by byte offset even when the main
     /// transcript can't be (codex's multi-file locate).
     pub subagents: Option<SubagentLayout>,
 }

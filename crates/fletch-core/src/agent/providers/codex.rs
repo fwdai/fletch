@@ -157,8 +157,9 @@ fn codex_subagent_parent(body: &Value, id: &str) -> Option<String> {
 
 pub(crate) const CODEX_SUBAGENTS: SubagentLayout = SubagentLayout {
     files: codex_subagent_files,
+    needle: None, // the child thread id is verbatim in the linking record
     parent_tool_use: codex_subagent_parent,
-    // Rollout lines carry no id: positional, namespaced by the child id.
+    // Rollout lines carry no id: positional, namespaced by the file's stem.
     id_field: None,
 };
 

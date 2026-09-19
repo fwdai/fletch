@@ -3,8 +3,9 @@
 // sub-agent turn end to end (jsdom URL in vite.config.ts puts this in mock
 // mode).
 
-import type { BackgroundTask } from "@desktop/adapters/shared/backgroundTasks";
+import { type BackgroundTask, isTaskEvent } from "@desktop/adapters/shared/backgroundTasks";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { getAdapter } from "../src/adapters";
 import {
   QUIET_HINT_MS,
   quietHint,
@@ -105,6 +106,40 @@ describe("store helpers", () => {
     expect(foldTaskEvent(s1, "a", { type: "assistant" }, NOW)).toEqual({});
     expect(dropTasks(s1, "a")).toEqual({ backgroundTasks: {} });
     expect(dropTasks(s1, "other")).toEqual({});
+  });
+
+  it("folds a Cursor Task tool_call through the adapter's taskEvents (not a system event)", () => {
+    // Cursor emits no `system` task events; `registerRemoteEvents` derives
+    // them from the Task tool_call via the adapter, the way the desktop does.
+    const taskCall = (subtype: string, result?: unknown) => ({
+      type: "tool_call",
+      subtype,
+      call_id: "task_1",
+      tool_call: {
+        taskToolCall: {
+          args: { description: "Audit", prompt: "audit the store", subagentType: { explore: {} } },
+          ...(result === undefined ? {} : { result }),
+        },
+      },
+    });
+    expect(isTaskEvent(taskCall("started"))).toBe(false);
+    const { taskEvents } = getAdapter("cursor");
+    expect(taskEvents).toBeDefined();
+    expect(getAdapter("claude").taskEvents).toBeUndefined();
+
+    const s0 = { backgroundTasks: {} } as MobileState;
+    const [started] = taskEvents?.(taskCall("started")) ?? [];
+    const s1 = { ...s0, ...foldTaskEvent(s0, "a", started, NOW) } as MobileState;
+    expect(s1.backgroundTasks.a.task_1).toMatchObject({
+      status: "running",
+      toolUseId: "task_1",
+      description: "Audit",
+      subagentType: "explore",
+      backgrounded: false,
+    });
+    const [completed] = taskEvents?.(taskCall("completed", { error: { error: "aborted" } })) ?? [];
+    const s2 = { ...s1, ...foldTaskEvent(s1, "a", completed, NOW + 1) } as MobileState;
+    expect(s2.backgroundTasks.a.task_1).toMatchObject({ status: "failed", summary: "aborted" });
   });
 });
 

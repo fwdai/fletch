@@ -25,6 +25,10 @@ describe("getPresenter", () => {
     expect(getPresenter("shell")).toBe(PRESENTERS.Bash);
   });
 
+  it("renders a sub-agent Task (cursor, legacy Claude) with the Agent presenter", () => {
+    expect(getPresenter("Task")).toBe(PRESENTERS.Agent);
+  });
+
   it("routes codegraph tools across every adapter naming convention", () => {
     // Claude: raw mcp__<server>__<tool> passed through (case-insensitive).
     expect(getPresenter("mcp__codegraph__codegraph_explore")).toBe(codegraphPresenter);

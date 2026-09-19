@@ -3,7 +3,7 @@
 // into store state), and the foreground resync. Split out of app.ts so that
 // module stays just the slice (state + actions); these run once from `init`.
 
-import type { RawEvent } from "@/adapters";
+import { getAdapter, type RawEvent } from "@/adapters";
 import { isTaskEvent } from "@/adapters/shared/backgroundTasks";
 import { hasUsage, usageFromRecords } from "@/adapters/usage";
 import type { AgentRecord, Workspace } from "@/api";
@@ -298,6 +298,11 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
         get().applyBackgroundTaskEvent(e.agent_id, ev);
         return;
       }
+      // A provider without those events (cursor) derives the same lifecycle
+      // from its own tool events — fed through the same reducer, and the event
+      // still reaches the chat below as the tool call it is.
+      const derived = getAdapter(providerFor(get(), e.agent_id)).taskEvents?.(ev) ?? [];
+      for (const task of derived) get().applyBackgroundTaskEvent(e.agent_id, task);
       let turnEnded = false;
       set((state) => {
         const result = applyEvent(state, e.agent_id, e.event as RawEvent);
