@@ -176,13 +176,15 @@ What it does, in order — and it stops at the first thing that does not hold:
    download verified and the database copied, and prints the one command left:
 
    ```sh
-   sudo fletch-host update --from <data-dir>/updates/<version>/fletch-host-<version>-<target>.tar.gz
+   sudo '/usr/local/bin/fletch-host' update --from '<data-dir>/updates/<version>/fletch-host-<version>-<target>.tar.gz'
    ```
 
-   That step reads the tarball and its `.sig`, verifies the signature again
-   (it trusts the signature, not the caller), replaces the binary, and restarts
-   the service — a system unit directly, your user unit as you, a launchd agent
-   in your session. It opens no data dir at all, and it refuses a binary
+   The binary is named by its absolute path — root's `PATH` may find a
+   different `fletch-host`, and it is this one, the one the service runs, that
+   is being replaced. That step reads the tarball and its `.sig`, verifies the
+   signature again (it trusts the signature, not the caller), replaces the
+   binary, and restarts the service — a system unit first if there is one,
+   else your user unit as you, else a launchd agent in your session. It opens no data dir at all, and it refuses a binary
    directory that is not root's alone (owned by root, writable by nobody
    else), since root renaming a file someone else staged over its own binary
    would hand them root.

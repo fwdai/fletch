@@ -259,13 +259,23 @@ pub async fn run(
             println!("{why}");
             println!("The download is verified and the database is copied aside. To install it:");
             println!();
+            // This binary by its absolute path, not `fletch-host`: root's PATH
+            // may resolve that name to another installation, and it is *this*
+            // one — the one the service runs — that is to be replaced.
             println!(
-                "    sudo fletch-host update --from {}",
-                tarball_path.display()
+                "    sudo {} update --from {}",
+                shell_quote(&exe),
+                shell_quote(&tarball_path)
             );
         }
     }
     Ok(())
+}
+
+/// A path as one shell word, for a command the user copies: single-quoted,
+/// with any `'` in it closed, escaped and reopened.
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
 /// Phase two, the one `sudo` runs: install a tarball phase one downloaded.
@@ -585,14 +595,25 @@ fn ensure_writable(dir: &Path) -> Result<(), String> {
 /// returned — the new binary is already installed, and an update that says
 /// "installed, but the restart failed" is more useful than one that looks like
 /// it failed entirely.
-/// Under sudo the unit and the agent are the sudoer's, not root's: their user
-/// unit is restarted as them (root has no `systemctl --user` session of theirs),
-/// and their launchd agent lives in their `gui/<uid>` domain.
+/// The system unit is looked for first: it is the one `sudo` most plainly
+/// means, and where both it and a user unit exist (a `--system --user fletch`
+/// install done from an account that also tried a user unit once), restarting
+/// the sudoer's own unit would leave the service actually serving on the old
+/// binary. Then the sudoer's user unit, restarted as them (root has no
+/// `systemctl --user` session of theirs), then their launchd agent in their
+/// `gui/<uid>` domain.
 ///
 /// `data_dir` is where a bare `serve`'s admin socket would be; phase two has
 /// none to offer (it opens no data dir) and so only knows about installed
 /// units.
 async fn restart(data_dir: Option<&Path>, sudoer: Option<&nix::unistd::User>) {
+    if Path::new("/etc/systemd/system")
+        .join(service::UNIT_NAME)
+        .exists()
+    {
+        report(service::run("systemctl", &["restart", service::UNIT_NAME]));
+        return;
+    }
     let user_unit_dir = match sudoer {
         Some(user) => Some(service::systemd_user_dir_in(&user.dir)),
         None => service::systemd_user_dir().ok(),
@@ -619,13 +640,6 @@ async fn restart(data_dir: Option<&Path>, sudoer: Option<&nix::unistd::User>) {
             });
             return;
         }
-    }
-    if Path::new("/etc/systemd/system")
-        .join(service::UNIT_NAME)
-        .exists()
-    {
-        report(service::run("systemctl", &["restart", service::UNIT_NAME]));
-        return;
     }
     let (plist, uid) = match sudoer {
         Some(user) => (
@@ -928,6 +942,19 @@ mod tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
         assert!(!directory_is_private_to(dir.path(), me).unwrap());
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn the_printed_command_quotes_its_paths_as_shell_words() {
+        assert_eq!(
+            shell_quote(Path::new("/usr/local/bin/fletch-host")),
+            "'/usr/local/bin/fletch-host'"
+        );
+        assert_eq!(
+            shell_quote(Path::new("/Users/me/Application Support/x.tar.gz")),
+            "'/Users/me/Application Support/x.tar.gz'"
+        );
+        assert_eq!(shell_quote(Path::new("/it's/here")), "'/it'\\''s/here'");
     }
 
     #[test]
