@@ -22,6 +22,7 @@ export const TOOL_ICON: Record<string, IconName> = {
   WebFetch: "fetch",
   WebSearch: "fetch",
   Task: "zap",
+  Agent: "zap",
   TodoWrite: "task",
   exec_command: "terminal",
   shell: "terminal",
@@ -38,6 +39,7 @@ export const TOOL_HUE: Record<string, string> = {
   Glob: "var(--info)",
   WebFetch: "var(--info)",
   Task: "var(--merged)",
+  Agent: "var(--merged)",
   exec_command: "var(--accent)",
   apply_patch: "var(--accent)",
 };

@@ -3,6 +3,7 @@
 // docs/remote-protocol.md. Every event the doc forwards is either handled here
 // or deliberately ignored (see the tail of `registerRemoteEvents`).
 
+import { isTaskEvent } from "@desktop/adapters/shared/backgroundTasks";
 import type {
   AgentBranchEvent,
   AgentEffortEvent,
@@ -26,6 +27,7 @@ import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import type { RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
+import { dropTasks, foldTaskEvent } from "./backgroundTasks";
 import { agentOf, type MobileState } from "./index";
 import { applyLiveEvent } from "./transcript";
 
@@ -67,6 +69,13 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   on<AgentManagedEvent>("agent:event", (e) => {
     const raw = e.event as RawEvent;
     if (foldControlRequest(set, e.agent_id, raw)) return;
+    // Background sub-agent bookkeeping (`system` task events). The chat
+    // reducers ignore `system` anyway; these go to their own map, and keep
+    // arriving after the turn's `result` while a sub-agent is still working.
+    if (isTaskEvent(raw)) {
+      set((s) => foldTaskEvent(s, e.agent_id, raw));
+      return;
+    }
     const provider = agentOf(get(), e.agent_id)?.provider;
     const { items, turnEnded } = applyLiveEvent(provider, get().logs[e.agent_id] ?? [], raw);
     set((s) => ({
@@ -105,6 +114,9 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
             ? { ...s.busy, [e.agent_id]: true }
             : { ...s.busy, [e.agent_id]: false },
         turnStartedAt,
+        // `idle` is not a clear: sub-agents outlive the turn. A stopped or
+        // errored process takes its tasks with it.
+        ...(e.status === "stopped" || e.status === "error" ? dropTasks(s, e.agent_id) : {}),
       };
     });
   });

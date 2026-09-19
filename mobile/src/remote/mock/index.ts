@@ -234,6 +234,11 @@ export class MockHost {
     if (!agent) return;
     const provider = agent.provider;
     const steps = scriptFor(provider, prompt);
+    // The turn ends at its last persisted step. Anything after is the
+    // background tail — sub-agent frames a real host keeps forwarding once the
+    // agent has gone idle — and lands with no record and no status change.
+    let end = steps.length - 1;
+    while (end > 0 && !steps[end].record) end -= 1;
     this.event("turn:started", { agent_id: id, started_at: Date.now() });
     this.setStatus(id, "running");
     steps.forEach((step, i) => {
@@ -241,7 +246,7 @@ export class MockHost {
         () => {
           this.event("agent:event", { agent_id: id, event: step.live });
           if (step.record) this.appendRecord(id, provider, step.record);
-          if (i === steps.length - 1) {
+          if (i === end) {
             this.event("session:records-appended", { agent_id: id });
             this.setStatus(id, "idle");
           }

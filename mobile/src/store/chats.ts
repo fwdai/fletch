@@ -9,6 +9,7 @@
 import { type AgentRecord, ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
 import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import type { Api } from "../api";
+import { dropTasks } from "./backgroundTasks";
 import { agentOf, type MobileState } from "./index";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
@@ -188,6 +189,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
               ...s.chats,
               [chat.project_id]: (s.chats[chat.project_id] ?? []).filter((c) => c.id !== agentId),
             },
+            ...dropTasks(s, agentId),
           }));
         }
         get().closeSheet();

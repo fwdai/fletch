@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Nav, ProviderMark, Segmented } from "../../components/ui";
 import { baseOf, branchOf, isBusy, STATUS_LABEL } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
+import { subagentCounts, subagentLabel } from "../../lib/subagents";
 import { agentOf, projectOf, useStore } from "../../store";
 import { ChangesTab } from "./ChangesTab";
 import { ChatTab } from "./ChatTab";
@@ -38,6 +39,7 @@ function Subtitle({ agentId }: { agentId: string }) {
   const pending = useStore((s) => Object.keys(s.pendingToolUse[agentId] ?? {}).length);
   const git = useStore((s) => s.gitStates[agentId]);
   const pr = useStore((s) => s.prStates[agentId]);
+  const tasks = useStore((s) => s.backgroundTasks[agentId]);
   const elapsed = useElapsed(startedAt, !!agent && isBusy(agent));
   if (!agent) return null;
   if (pending > 0) {
@@ -62,6 +64,17 @@ function Subtitle({ agentId }: { agentId: string }) {
       <>
         <span className="dot error" style={{ width: 6, height: 6 }} />
         Paused · error
+      </>
+    );
+  }
+  // The turn is over but its sub-agents are not: the header keeps saying so
+  // rather than dropping to the diff line.
+  const subagents = subagentCounts(tasks, Date.now());
+  if (subagents.running > 0) {
+    return (
+      <>
+        <span className="dot running" style={{ width: 6, height: 6 }} />
+        {subagentLabel(subagents.running)} working
       </>
     );
   }

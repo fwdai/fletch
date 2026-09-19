@@ -3,6 +3,7 @@ import { Icon } from "@desktop/components/Icon";
 import type { MouseEvent } from "react";
 import { isBusy, STATUS_LABEL } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
+import { subagentCounts, subagentLabel } from "../../lib/subagents";
 import { useStore } from "../../store";
 import { ProviderMark, PrPill, StatusDot } from "../ui";
 
@@ -24,8 +25,13 @@ export function AgentRow({
   const startedAt = useStore((s) => s.turnStartedAt[agent.id]);
   const diff = useStore((s) => s.shortstats[agent.id]);
   const pr = useStore((s) => s.prStates[agent.id]);
+  const tasks = useStore((s) => s.backgroundTasks[agent.id]);
+  const subagents = subagentCounts(tasks, Date.now());
   const busy = isBusy(agent);
-  const elapsed = useElapsed(startedAt, busy);
+  // The row reads as working while sub-agents are: the main agent goes idle
+  // the moment its own turn ends, while they keep going under it.
+  const working = busy || subagents.running > 0;
+  const elapsed = useElapsed(startedAt, working);
 
   const badge =
     agent.status === "error" ? (
@@ -38,6 +44,11 @@ export function AgentRow({
         <Icon name="hand" size={11} strokeWidth={1.8} />
         needs you
       </span>
+    ) : subagents.failed > 0 ? (
+      <span className="hand err">
+        <Icon name="alert" size={11} strokeWidth={1.8} />
+        sub-agent failed
+      </span>
     ) : null;
 
   const changes = diff ?? { additions: 0, deletions: 0 };
@@ -49,24 +60,26 @@ export function AgentRow({
   return (
     <button type="button" className="ag" onClick={onClick}>
       <span className="st">
-        <StatusDot status={agent.status} />
+        <StatusDot status={working && !busy ? "running" : agent.status} />
       </span>
       <div className="main">
         <div className="name">
           {agent.name}
           <ProviderMark id={agent.provider} />
           {badge}
-          {busy && (
+          {working && (
             <span className="sl live">
               {agent.status === "spawning"
                 ? "starting"
-                : startedAt
-                  ? fmtElapsed(elapsed)
-                  : "working"}
+                : !busy
+                  ? subagentLabel(subagents.running)
+                  : startedAt
+                    ? fmtElapsed(elapsed)
+                    : "working"}
             </span>
           )}
           {showProject && project && <span className="sl">{project.name}</span>}
-          {pr && !busy && !badge && <PrPill pr={pr} />}
+          {pr && !working && !badge && <PrPill pr={pr} />}
         </div>
         <div className="ex">{excerpt}</div>
       </div>
@@ -79,7 +92,7 @@ export function AgentRow({
         ) : (
           <span />
         )}
-        <span>{STATUS_LABEL[agent.status]}</span>
+        <span>{working ? STATUS_LABEL.running : STATUS_LABEL[agent.status]}</span>
       </div>
     </button>
   );
