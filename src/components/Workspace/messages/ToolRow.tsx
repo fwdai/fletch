@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
+import { revealToolRow } from "./revealToolRow";
 
 /** Shared chrome for every tool presenter: icon, name, one-line summary,
  *  click-to-expand. Presenters supply the summary and expanded bodies.
@@ -40,16 +41,16 @@ export function ToolRow({
   );
   const clearChatFocus = useAppStore((s) => s.clearChatFocus);
 
+  // Open, scroll on the next frame, then consume the request (in that order —
+  // see revealToolRow). The cleanup cancels the frame only if the row unmounts
+  // before it fires.
   useEffect(() => {
     if (!focused) return;
-    setOpen(true);
-    // Next frame: the transcript's own bottom-pin effect runs after this one
-    // (parent effects follow children's) and would otherwise win the scroll.
-    const frame = requestAnimationFrame(() => {
-      rootRef.current?.scrollIntoView({ block: "center" });
-    });
-    clearChatFocus();
-    return () => cancelAnimationFrame(frame);
+    return revealToolRow(
+      () => rootRef.current,
+      () => setOpen(true),
+      clearChatFocus,
+    );
   }, [focused, clearChatFocus]);
 
   const dangerColor = isError ? "var(--danger)" : undefined;
