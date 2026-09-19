@@ -97,8 +97,11 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   // once the agent is gone, keeping it would leave a lookup resolving to a
   // workspace that no longer exists.
   const { [id]: _offSidebar, ...offSidebarAgents } = state.offSidebarAgents;
+  // Background tasks (sub-agents, background bash) die with the agent's process.
+  const { [id]: _tasks, ...backgroundTasks } = state.backgroundTasks;
   return {
     offSidebarAgents,
+    backgroundTasks,
     managedLogs,
     transcriptLoading,
     transcriptLoaded,
