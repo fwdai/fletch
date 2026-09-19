@@ -180,4 +180,5 @@ const EMPTY_MAPS = {
   unseenResults: {},
   rightPanelTabs: {},
   offSidebarAgents: {},
+  backgroundTasks: {},
 };

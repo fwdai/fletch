@@ -53,6 +53,7 @@ const EMPTY_MAPS = {
   unseenResults: {},
   rightPanelTabs: {},
   offSidebarAgents: {},
+  backgroundTasks: {},
 };
 
 const NOW = 100_000;

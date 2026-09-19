@@ -6,6 +6,7 @@ import { createAppSlice } from "./app";
 import { createAppearanceSlice } from "./appearance";
 import { createAutopilotSlice } from "./autopilot";
 import { createAutopilotLogSlice } from "./autopilotLog";
+import { createBackgroundTasksSlice } from "./backgroundTasks";
 import { createComposerSlice } from "./composer";
 import { createCustomAgentsSlice } from "./customAgents";
 import { createDraftsSlice } from "./drafts";
@@ -38,6 +39,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createAppearanceSlice(...a),
   ...createAutopilotSlice(...a),
   ...createAutopilotLogSlice(...a),
+  ...createBackgroundTasksSlice(...a),
   ...createProvidersSlice(...a),
   ...createAgentInstallSlice(...a),
   ...createCustomAgentsSlice(...a),
@@ -52,6 +54,12 @@ export const useAppStore = create<AppState>()((...a) => ({
 setEnvironmentsSource(useAppStore.getState);
 
 export type { ChatItem } from "@/adapters";
+export type { BackgroundTask, BackgroundTaskMap } from "@/adapters/shared/backgroundTasks";
+export {
+  liveBackgroundTasks,
+  quietForMs,
+  subagentActivity,
+} from "@/adapters/shared/backgroundTasks";
 export type { UsageSnapshot } from "@/adapters/usage";
 export type { DraftAgent } from "./drafts";
 export type { AppState } from "./types";

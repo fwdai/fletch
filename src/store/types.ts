@@ -12,6 +12,7 @@ import type { AppSlice } from "./app";
 import type { AppearanceSlice } from "./appearance";
 import type { AutopilotSlice } from "./autopilot";
 import type { AutopilotLogSlice } from "./autopilotLog";
+import type { BackgroundTasksSlice } from "./backgroundTasks";
 import type { ComposerSlice } from "./composer";
 import type { CustomAgentsSlice } from "./customAgents";
 import type { DraftsSlice } from "./drafts";
@@ -34,6 +35,7 @@ export type {
   AppSlice,
   AutopilotLogSlice,
   AutopilotSlice,
+  BackgroundTasksSlice,
   ComposerSlice,
   CustomAgentsSlice,
   DockerBuildProgress,
@@ -70,6 +72,7 @@ export type AppState = AppSlice &
   AppearanceSlice &
   AutopilotSlice &
   AutopilotLogSlice &
+  BackgroundTasksSlice &
   ProvidersSlice &
   AgentInstallSlice &
   CustomAgentsSlice &

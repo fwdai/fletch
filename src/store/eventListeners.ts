@@ -4,6 +4,7 @@
 // module stays just the slice (state + actions); these run once from `init`.
 
 import type { RawEvent } from "@/adapters";
+import { isTaskEvent } from "@/adapters/shared/backgroundTasks";
 import { hasUsage, usageFromRecords } from "@/adapters/usage";
 import type { AgentRecord, Workspace } from "@/api";
 import {
@@ -290,6 +291,13 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
         }
         return;
       }
+      // Background task lifecycle (sub-agents, background Bash) — `system`
+      // events that keep arriving after the turn ends. Control plane like the
+      // above: the chat reducer ignores `system`, so they never reach it.
+      if (ev?.type === "system" && isTaskEvent(ev)) {
+        get().applyBackgroundTaskEvent(e.agent_id, ev);
+        return;
+      }
       let turnEnded = false;
       set((state) => {
         const result = applyEvent(state, e.agent_id, e.event as RawEvent);
@@ -460,6 +468,12 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       // killed process never flushed a turn_end, this ensures the next genuine
       // completion still chimes.
       if (e.status === "running") interruptedAgents.delete(e.agent_id);
+      // The process is gone, and its sub-agents with it: whatever tasks we held
+      // as running can no longer report, so drop them rather than strand them.
+      // `idle` is NOT a clear — background tasks outlive the main turn.
+      if (e.status === "stopped" || e.status === "error") {
+        get().clearBackgroundTasks(e.agent_id);
+      }
       const next = {
         ...ws,
         agents: mapAgents(ws, e.agent_id, (a) => ({
