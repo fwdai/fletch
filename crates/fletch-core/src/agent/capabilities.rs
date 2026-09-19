@@ -139,6 +139,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             locate: codex_locate,
             read: codex_read,
             tail: None, // multiple rollout files
+            subagents: None,
         }),
     },
     PerTurnDescriptor {
@@ -159,6 +160,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             locate: cursor_locate,
             read: cursor_read,
             tail: Some(JsonlTail { id_field: None }), // single jsonl, positional ids
+            subagents: None,
         }),
     },
     PerTurnDescriptor {
@@ -177,6 +179,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             locate: opencode_locate,
             read: opencode_read,
             tail: None, // blob-store directory, not a single file
+            subagents: None,
         }),
     },
     PerTurnDescriptor {
@@ -198,6 +201,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             tail: Some(JsonlTail {
                 id_field: Some("id"),
             }), // single jsonl when one file
+            subagents: None,
         }),
     },
     PerTurnDescriptor {
@@ -221,6 +225,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             locate: antigravity_locate,
             read: antigravity_read,
             tail: None, // per-turn agent; full read on exit is bounded
+            subagents: None,
         }),
     },
 ];

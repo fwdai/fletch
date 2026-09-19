@@ -23,7 +23,7 @@ mod query;
 mod repos;
 mod sessions;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod turns;
 
 pub use factory::{is_per_turn_provider, new_agent_record};

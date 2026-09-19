@@ -1,9 +1,10 @@
 //! Turn-end transcript ingestion into `session_records`, plus PR-state
 //! fetch/emit for an agent's primary repo.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::agent::per_turn_descriptor;
+use crate::agent::{per_turn_descriptor, TranscriptReader};
 use crate::github::{MergeableState, PrState, PrStatus};
 use crate::host::EngineCtx;
 use crate::workspace::{AgentRecord, AgentStatus, AgentView, TrackedRepo, WorkspaceManager};
@@ -674,6 +675,66 @@ pub(super) fn spawn_live_transcript_sync(
     });
 }
 
+/// A top-level (main-thread) Claude event that means the transcript grew after
+/// the agent went Idle:
+///
+/// - `system` / `task_notification`: a background task (sub-agent, background
+///   bash) finished. Its file is final, but it kept writing after the main
+///   turn's `result`, past the point where the turn-end poll settled and the
+///   live poller stopped reading.
+/// - `result`: Claude answers that notification with a turn of its own — no
+///   user message, so nothing marked the agent Running and the watchdog sees a
+///   flag it already acted on. The reply (the injected `<task-notification>`
+///   user record and the assistant's answer) is only now on disk.
+///
+/// Sidechain events (tagged `parent_tool_use_id`) never count: a sub-agent's
+/// own `result` is mid-stream for the main transcript.
+pub(super) fn grows_transcript_while_idle(event: &serde_json::Value) -> bool {
+    if event
+        .get("parent_tool_use_id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        return false;
+    }
+    match event.get("type").and_then(|v| v.as_str()) {
+        Some("result") => true,
+        Some("system") => {
+            event.get("subtype").and_then(|v| v.as_str()) == Some("task_notification")
+        }
+        _ => false,
+    }
+}
+
+impl Supervisor {
+    /// Settle the transcript after an event that grew it while the agent is
+    /// Idle (see [`grows_transcript_while_idle`]). Without this, records a
+    /// background sub-agent wrote after the main turn settled — and the turn
+    /// Claude starts on its own to answer its notification — reach
+    /// `session_records` only at the *next* user turn's end, so a reload in
+    /// between loses the nested thread. Running agents are left alone: the live
+    /// poller is already reading and the turn-end sync will settle the file.
+    ///
+    /// Re-uses the turn-end poll as is. Two triggers a couple of seconds apart
+    /// (notification, then the reply's `result`) mean two short polls, which is
+    /// intended: a poll that had already settled cannot see what the second
+    /// event announces. Overlap is serialized by `agent_sync_lock`, and a pass
+    /// that finds nothing new emits nothing.
+    pub(super) fn settle_after_idle_event(
+        &self,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+        event: &serde_json::Value,
+    ) {
+        if !matches!(self.live_status(agent_id), Some(AgentStatus::Idle)) {
+            return;
+        }
+        if grows_transcript_while_idle(event) {
+            self.trigger_session_sync(ctx.clone(), agent_id.to_string());
+        }
+    }
+}
+
 /// Per-agent lock serializing [`sync_session_records`].
 ///
 /// The ingest is `read offset → read file → append rows → write offset` with no
@@ -1072,6 +1133,24 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
         }
     }
 
+    // Sub-agent transcripts live in files of their own (claude). Ingested after
+    // the main batch so the spawning `tool_use` record always precedes its
+    // sub-agent's records in `seq` — replay nests them only in that order.
+    let inserted = match paths.as_slice() {
+        [path] => {
+            inserted
+                + ingest_subagents(
+                    workspace,
+                    &record,
+                    version.as_deref(),
+                    reader,
+                    path,
+                    &mut diagnostics,
+                )
+        }
+        _ => inserted,
+    };
+
     // Link any pending outgoing user turns to the canonical transcript
     // user-message rows just ingested (fills in their `native_id`).
     if let Err(e) = workspace.associate_pending_user_turns(agent_id) {
@@ -1082,6 +1161,122 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
         inserted,
         diagnostics,
     })
+}
+
+/// Read cursor for one sub-agent transcript file: the tool_use id it was linked
+/// to, and the byte offset ingested so far.
+///
+/// Process-lifetime rather than persisted: after a restart each file is
+/// re-read once from the top and `append_session_records` ignores the rows
+/// already stored (native ids are the records' own `uuid`s), so the cost is one
+/// full read per file per process — the trade `tail: None` readers make on
+/// *every* pass. Persisting it would need a schema migration for a per-file
+/// offset the main transcript keeps on its session row; not worth it for a
+/// cursor that is only an optimization. Keyed by path, so nothing is shared
+/// across agents, and only touched under `agent_sync_lock`, which serializes
+/// passes per agent.
+struct SubagentCursor {
+    parent_tool_use_id: String,
+    offset: u64,
+}
+
+fn subagent_cursors() -> &'static Mutex<HashMap<PathBuf, SubagentCursor>> {
+    static CURSORS: OnceLock<Mutex<HashMap<PathBuf, SubagentCursor>>> = OnceLock::new();
+    CURSORS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Ingest the new lines of every sub-agent transcript beside `main_path`, each
+/// record tagged with a top-level `parent_tool_use_id` — the shape the live
+/// stream already uses, so the frontend's reducer nests a replayed sub-agent
+/// under its Task/Agent tool call with no special casing. Returns the rows
+/// inserted. No-op for readers without a `subagents` layout.
+///
+/// A file whose spawning tool_use can't be found in the stored records yet is
+/// skipped this pass and retried on the next: for a foreground sub-agent the
+/// link only lands when it finishes (see `claude_subagent_parent`). An
+/// unlinked record is never ingested — the reducer routes only tagged events,
+/// so an untagged one would leak into the main timeline.
+fn ingest_subagents(
+    workspace: &WorkspaceManager,
+    record: &AgentRecord,
+    version: Option<&str>,
+    reader: &TranscriptReader,
+    main_path: &Path,
+    diag: &mut crate::agent::ReadDiagnostics,
+) -> usize {
+    let (Some(tail), Some(layout)) = (reader.tail, reader.subagents) else {
+        return 0;
+    };
+    let agent_id = record.id.as_str();
+    let consume_trailing = !is_persistent_runner(record);
+    let mut inserted = 0;
+
+    for (sub_id, path) in (layout.files)(main_path) {
+        let known = subagent_cursors()
+            .lock()
+            .get(&path)
+            .map(|c| (c.parent_tool_use_id.clone(), c.offset));
+        let (parent, offset) = match known {
+            Some(known) => known,
+            None => {
+                let found = workspace
+                    .session_record_bodies_containing(agent_id, &sub_id)
+                    .unwrap_or_default()
+                    .iter()
+                    .find_map(|body| (layout.parent_tool_use)(body, &sub_id));
+                let Some(parent) = found else {
+                    continue;
+                };
+                (parent, 0)
+            }
+        };
+
+        diag.files_matched += 1;
+        let (records, next) =
+            crate::agent::read_jsonl_tail(&path, offset, 0, tail.id_field, consume_trailing, diag);
+        let tagged: Vec<(String, serde_json::Value)> = records
+            .into_iter()
+            .filter_map(|mut r| {
+                // Lines without the id field are metadata the UI never renders;
+                // their positional `ln:{i}` ids would also collide across files.
+                if tail.id_field.is_some_and(|f| r.body.get(f).is_none()) {
+                    return None;
+                }
+                r.body
+                    .as_object_mut()?
+                    .insert("parent_tool_use_id".into(), parent.clone().into());
+                Some((r.native_id, r.body))
+            })
+            .collect();
+        let batch: Vec<(&str, &serde_json::Value)> = tagged
+            .iter()
+            .map(|(id, body)| (id.as_str(), body))
+            .collect();
+
+        match workspace.append_session_records(
+            agent_id,
+            &record.provider,
+            "transcript",
+            version,
+            &batch,
+        ) {
+            Ok(n) => {
+                inserted += n;
+                subagent_cursors().lock().insert(
+                    path,
+                    SubagentCursor {
+                        parent_tool_use_id: parent,
+                        offset: next,
+                    },
+                );
+            }
+            // Cursor left as it was, so the same range is re-read next pass.
+            Err(e) => {
+                tracing::warn!(error = %e, agent_id, sub_id, "append sub-agent records failed")
+            }
+        }
+    }
+    inserted
 }
 
 #[cfg(test)]
@@ -1596,6 +1791,207 @@ mod tests {
         assert!(pr_snapshot(&bad_state).is_none());
     }
 
+    // ── Sub-agent transcripts: linked, tagged, ordered after the parent ──
+
+    /// One claude transcript line: a `uuid` (the native id) plus `extra`.
+    fn claude_line(uuid: &str, extra: serde_json::Value) -> String {
+        let mut v = serde_json::json!({ "uuid": uuid, "sessionId": "sess", "timestamp": "2026-01-02T10:00:00Z" });
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        v.to_string()
+    }
+
+    /// A workspace with a claude agent, its transcript reader, and an on-disk
+    /// main transcript path with one sub-agent file (`agent-abc.jsonl`) beside
+    /// it holding two content lines and one id-less metadata line.
+    fn subagent_fixture() -> (
+        WorkspaceManager,
+        AgentRecord,
+        &'static TranscriptReader,
+        tempfile::TempDir,
+        PathBuf,
+        PathBuf,
+    ) {
+        let db = crate::workspace::tests::test_db();
+        let (agent_id, wm) = crate::workspace::tests::make_workspace_with_session(&db);
+        let record = wm.agent(&agent_id).unwrap();
+        let reader = crate::agent::transcript_reader("claude").unwrap();
+
+        let td = tempfile::tempdir().unwrap();
+        let main = td.path().join("sess.jsonl");
+        std::fs::write(&main, "").unwrap();
+        let nested = td.path().join("sess").join("subagents");
+        std::fs::create_dir_all(&nested).unwrap();
+        let sub = nested.join("agent-abc.jsonl");
+        let sidechain = |uuid: &str, ty: &str, content: serde_json::Value| {
+            claude_line(
+                uuid,
+                serde_json::json!({
+                    "type": ty, "isSidechain": true, "agentId": "abc",
+                    "message": { "role": ty, "content": content }
+                }),
+            )
+        };
+        std::fs::write(
+            &sub,
+            format!(
+                "{}\n{{\"type\":\"permission-mode\",\"mode\":\"default\"}}\n{}\n",
+                sidechain("s1", "user", "look".into()),
+                sidechain(
+                    "s2",
+                    "assistant",
+                    serde_json::json!([{ "type": "text", "text": "found it" }])
+                ),
+            ),
+        )
+        .unwrap();
+        (wm, record, reader, td, main, sub)
+    }
+
+    #[test]
+    fn subagent_records_are_ingested_tagged_after_the_parent_links_them() {
+        let (wm, record, reader, _td, main, sub) = subagent_fixture();
+        let agent_id = record.id.clone();
+        let mut diag = ReadDiagnostics::default();
+        let pass =
+            |diag: &mut ReadDiagnostics| ingest_subagents(&wm, &record, None, reader, &main, diag);
+
+        // The parent's tool_result hasn't landed (a foreground sub-agent still
+        // running): unlinkable, so nothing is ingested — and never untagged.
+        assert_eq!(pass(&mut diag), 0);
+        assert!(wm.read_session_records(&agent_id).unwrap().is_empty());
+        assert_eq!(diag.files_matched, 0);
+
+        // The main ingest stores the spawning tool_use and, later, the
+        // tool_result whose `toolUseResult.agentId` names the sub-agent.
+        let tool_use = serde_json::json!({
+            "type": "assistant",
+            "message": { "role": "assistant", "content": [
+                { "type": "tool_use", "id": "toolu_1", "name": "Agent", "input": { "prompt": "look" } }
+            ] }
+        });
+        let tool_result = serde_json::json!({
+            "type": "user",
+            "toolUseResult": { "status": "completed", "agentId": "abc" },
+            "message": { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "toolu_1", "content": "found it" }
+            ] }
+        });
+        wm.append_session_records(
+            &agent_id,
+            "claude",
+            "transcript",
+            None,
+            &[("m1", &tool_use), ("m2", &tool_result)],
+        )
+        .unwrap();
+
+        // Linked now: both content lines land, tagged with the tool_use id,
+        // original fields intact, after the parent's records. The id-less
+        // metadata line is dropped.
+        assert_eq!(pass(&mut diag), 2);
+        let recs = wm.read_session_records(&agent_id).unwrap();
+        assert_eq!(
+            recs.iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m1", "m2", "s1", "s2"]
+        );
+        for r in &recs[2..] {
+            assert_eq!(r.body["parent_tool_use_id"], "toolu_1");
+            assert_eq!(r.body["agentId"], "abc");
+            assert_eq!(r.body["isSidechain"], true);
+        }
+        assert_eq!(recs[3].body["message"]["content"][0]["text"], "found it");
+        assert_eq!(diag.files_matched, 1);
+
+        // Idempotent: a settled file adds nothing; an appended line adds one.
+        assert_eq!(pass(&mut diag), 0);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&sub).unwrap();
+        use std::io::Write as _;
+        writeln!(
+            f,
+            "{}",
+            claude_line(
+                "s3",
+                serde_json::json!({ "type": "assistant", "isSidechain": true, "agentId": "abc",
+                    "message": { "role": "assistant", "content": [{ "type": "text", "text": "more" }] } })
+            )
+        )
+        .unwrap();
+        assert_eq!(pass(&mut diag), 1);
+
+        // A restart forgets the in-memory cursor: the file is re-read from the
+        // top and every row is already stored, so nothing is duplicated.
+        subagent_cursors().lock().remove(&sub);
+        assert_eq!(pass(&mut diag), 0);
+        assert_eq!(wm.read_session_records(&agent_id).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn subagent_ingest_skips_files_no_stored_record_links() {
+        // A second file whose sub-agent id no parent record names — e.g. a
+        // sub-agent of a *different* tool call still running — stays out even
+        // while a linked sibling is ingested.
+        let (wm, record, reader, _td, main, sub) = subagent_fixture();
+        let orphan = sub.with_file_name("agent-zzz.jsonl");
+        std::fs::write(
+            &orphan,
+            format!(
+                "{}\n",
+                claude_line(
+                    "z1",
+                    serde_json::json!({ "type": "user", "isSidechain": true, "agentId": "zzz",
+                        "message": { "role": "user", "content": "other" } })
+                )
+            ),
+        )
+        .unwrap();
+        let tool_result = serde_json::json!({
+            "type": "user",
+            "toolUseResult": { "status": "async_launched", "agentId": "abc" },
+            "message": { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "toolu_bg", "content": "Async agent launched.\nagentId: abc" }
+            ] }
+        });
+        wm.append_session_records(
+            &record.id,
+            "claude",
+            "transcript",
+            None,
+            &[("m2", &tool_result)],
+        )
+        .unwrap();
+
+        let mut diag = ReadDiagnostics::default();
+        assert_eq!(
+            ingest_subagents(&wm, &record, None, reader, &main, &mut diag),
+            2
+        );
+        let recs = wm.read_session_records(&record.id).unwrap();
+        assert!(
+            recs.iter().all(|r| r.body["agentId"] != "zzz"),
+            "the unlinked sub-agent must not leak into the session"
+        );
+        assert!(recs[1..]
+            .iter()
+            .all(|r| r.body["parent_tool_use_id"] == "toolu_bg"));
+    }
+
+    #[test]
+    fn subagent_ingest_is_a_no_op_for_readers_without_a_layout() {
+        let (wm, record, _claude, _td, main, _sub) = subagent_fixture();
+        let pi = crate::agent::transcript_reader("pi").unwrap();
+        assert!(pi.subagents.is_none());
+        let mut diag = ReadDiagnostics::default();
+        assert_eq!(
+            ingest_subagents(&wm, &record, None, pi, &main, &mut diag),
+            0
+        );
+        assert!(wm.read_session_records(&record.id).unwrap().is_empty());
+    }
+
     // ── Live-poll gate: native view AND a reader that can tail ──
 
     #[test]
@@ -1637,5 +2033,182 @@ mod tests {
         }
         // A provider with no transcript reader at all is likewise skipped.
         assert!(!should_live_sync("nonesuch", AgentView::Native));
+    }
+
+    // ── Background work finishing after the main turn settled ──
+
+    #[test]
+    fn only_main_thread_terminal_events_grow_the_transcript_while_idle() {
+        use serde_json::json;
+        assert!(grows_transcript_while_idle(&json!({
+            "type": "system", "subtype": "task_notification", "task_id": "abc",
+            "tool_use_id": "toolu_bg", "status": "completed", "summary": "done"
+        })));
+        assert!(grows_transcript_while_idle(&json!({
+            "type": "result", "subtype": "success"
+        })));
+        // A sub-agent's own result is mid-stream for the main transcript.
+        assert!(!grows_transcript_while_idle(&json!({
+            "type": "result", "subtype": "success", "parent_tool_use_id": "toolu_bg"
+        })));
+        for subtype in [
+            "task_started",
+            "task_progress",
+            "task_updated",
+            "background_tasks_changed",
+        ] {
+            assert!(
+                !grows_transcript_while_idle(&json!({ "type": "system", "subtype": subtype })),
+                "{subtype} changes nothing on disk"
+            );
+        }
+        assert!(!grows_transcript_while_idle(&json!({
+            "type": "assistant", "message": { "content": [] }
+        })));
+    }
+
+    /// The turn-end poll settles about two seconds after the main `result`,
+    /// and the live poller reads only while Running — so a background
+    /// sub-agent that kept writing after that had no sync until the next user
+    /// turn ended, and a reload in between lost the nested thread. Its
+    /// terminal task event now settles the transcript through the same
+    /// turn-end machinery: the late records land, tagged, and are announced.
+    ///
+    /// Not `#[tokio::test]`: `ENV_LOCK` (a std mutex) must be held for the
+    /// whole sync, since the reader consults `CLAUDE_CONFIG_DIR` on every pass,
+    /// and holding it across an `.await` is what `await_holding_lock` forbids.
+    /// The sync runs on a multi-thread runtime this test enters, and the wait is
+    /// a blocking one.
+    #[test]
+    fn a_background_subagent_finishing_after_the_turn_settled_is_ingested() {
+        use serde_json::json;
+        use std::io::Write as _;
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", cfg.path());
+        let sid = "44444444-4444-4444-8444-444444444444";
+        let slug = cfg.path().join("projects").join("-tmp-slug");
+        let subagents = slug.join(sid).join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let sub = subagents.join("agent-abc.jsonl");
+        let sidechain = |uuid: &str, ty: &str, content: serde_json::Value| {
+            claude_line(
+                uuid,
+                json!({
+                    "type": ty, "isSidechain": true, "agentId": "abc",
+                    "message": { "role": ty, "content": content }
+                }),
+            )
+        };
+
+        // The main turn: launch a background sub-agent, get its
+        // `async_launched` tool_result (the link), answer the user, `result`.
+        std::fs::write(
+            slug.join(format!("{sid}.jsonl")),
+            format!(
+                "{}\n{}\n{}\n",
+                claude_line(
+                    "m1",
+                    json!({ "type": "assistant", "message": { "role": "assistant", "content": [
+                        { "type": "tool_use", "id": "toolu_bg", "name": "Agent",
+                          "input": { "prompt": "look", "run_in_background": true } }
+                    ] } })
+                ),
+                claude_line(
+                    "m2",
+                    json!({ "type": "user",
+                        "toolUseResult": { "status": "async_launched", "agentId": "abc" },
+                        "message": { "role": "user", "content": [
+                            { "type": "tool_result", "tool_use_id": "toolu_bg",
+                              "content": "Async agent launched.\nagentId: abc" }
+                        ] } })
+                ),
+                claude_line(
+                    "m3",
+                    json!({ "type": "assistant", "message": { "role": "assistant", "content": [
+                        { "type": "text", "text": "Started it in the background." }
+                    ] } })
+                ),
+            ),
+        )
+        .unwrap();
+        // The sub-agent had written its first line by the time the turn ended.
+        std::fs::write(
+            &sub,
+            format!("{}\n", sidechain("s1", "user", "look".into())),
+        )
+        .unwrap();
+
+        let db = crate::workspace::tests::test_db();
+        let (agent_id, wm) = crate::workspace::tests::make_workspace_with_session(&db);
+        wm.set_agent_session_id(&agent_id, sid).unwrap();
+        let sup = Arc::new(Supervisor::new(Arc::new(wm)));
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+
+        // The turn-end sync ran and settled: everything on disk is stored and
+        // the agent is Idle, so no poll reads the transcript any more.
+        sup.statuses
+            .lock()
+            .insert(agent_id.clone(), AgentStatus::Idle);
+        assert_eq!(sup.sync_session(&agent_id), Some(4));
+        assert!(sink.events().is_empty());
+
+        // The sub-agent finishes later and writes its answer.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&sub).unwrap();
+        writeln!(
+            f,
+            "{}",
+            sidechain(
+                "s2",
+                "assistant",
+                json!([{ "type": "text", "text": "found it" }])
+            )
+        )
+        .unwrap();
+        drop(f);
+
+        // Claude reports the task on the main stream; the managed handler
+        // turns it into a settling sync. `host::spawn` falls back to
+        // `tokio::spawn` before boot, so the handler needs a runtime context.
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _enter = runtime.enter();
+        let on_event =
+            super::super::lifecycle::make_event_handler(sup.clone(), ctx.clone(), agent_id.clone());
+        on_event(json!({
+            "type": "system", "subtype": "task_notification", "task_id": "abc",
+            "tool_use_id": "toolu_bg", "status": "completed", "summary": "found it"
+        }));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let announced = sink.events().iter().any(|(name, payload)| {
+                name == "session:records-appended" && payload["agent_id"] == agent_id
+            });
+            if announced {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no settling sync after the task notification: {:?}",
+                sink.events()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let recs = sup.workspace.read_session_records(&agent_id).unwrap();
+        assert_eq!(
+            recs.iter()
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m1", "m2", "m3", "s1", "s2"]
+        );
+        let late = &recs[4];
+        assert_eq!(late.body["parent_tool_use_id"], "toolu_bg");
+        assert_eq!(late.body["message"]["content"][0]["text"], "found it");
+        // A settle, not a turn: the agent never left Idle.
+        assert_eq!(sup.live_status(&agent_id), Some(AgentStatus::Idle));
+
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
     }
 }
