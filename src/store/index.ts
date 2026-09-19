@@ -56,6 +56,7 @@ setEnvironmentsSource(useAppStore.getState);
 export type { ChatItem } from "@/adapters";
 export type { BackgroundTask, BackgroundTaskMap } from "@/adapters/shared/backgroundTasks";
 export {
+  isSubagentTask,
   liveBackgroundTasks,
   quietForMs,
   subagentActivity,
