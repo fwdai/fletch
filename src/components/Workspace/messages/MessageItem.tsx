@@ -5,7 +5,16 @@ import { Markdown } from "@/components/Markdown";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { APP_ACTION_PREFIX } from "@/delegation";
 import { expandedCommandInvocation } from "@/helpers";
-import type { ChatItem } from "@/store";
+import {
+  type BackgroundTask,
+  type ChatItem,
+  QUIET_AFTER_MS,
+  quietForMs,
+  taskForToolUse,
+  useAppStore,
+} from "@/store";
+import { formatDuration } from "@/util/format";
+import { useMinuteClock } from "@/util/hooks";
 import {
   isSystemTurn,
   stripInjectedInstructions,
@@ -48,6 +57,15 @@ export const MessageItem = memo(function MessageItem({
    *  DOM. Set only for top-level navigable user prompts. */
   turnId?: number;
 }) {
+  // The background task this row launched, if any (a backgrounded sub-agent or
+  // background Bash). It keeps reporting after the launch result lands and the
+  // agent goes idle, so it — not `busy` — says whether the row is still live.
+  // The per-agent map is selected whole (a stable reference); the lookup runs
+  // outside the selector.
+  const tasks = useAppStore((s) => (agentId ? s.backgroundTasks[agentId] : undefined));
+  const toolUseId = item.kind === "tool_pair" ? item.call.id : undefined;
+  const task = useMemo(() => taskForToolUse(tasks, toolUseId), [tasks, toolUseId]);
+
   switch (item.kind) {
     case "user_message": {
       // App-sent git-action triggers fold into a quiet chip (like slash
@@ -108,19 +126,31 @@ export const MessageItem = memo(function MessageItem({
       const presenter = getPresenter(item.call.name);
       const children = item.call.children ?? [];
       // In flight: the agent is busy and this call has no result yet (a long
-      // Bash, or a subagent still working). Kept collapsed — the spinner plus a
-      // live subagent step count signal activity without expanding the row.
-      const running = Boolean(busy) && !item.result;
+      // Bash, or a subagent still working), or the backgrounded task it
+      // launched is still running — its launch result ("Async agent launched…")
+      // lands at once, so `busy && !result` alone would settle the row too
+      // early. Kept collapsed — the spinner plus a live subagent step count
+      // signal activity without expanding the row.
+      const taskRunning = task?.status === "running";
+      const taskFailed = task?.status === "failed";
+      const running = (Boolean(busy) && !item.result) || taskRunning;
       return (
         <ToolRow
           name={presenter.title ?? item.call.name}
           icon={presenter.icon}
-          isError={item.result?.is_error}
+          isError={item.result?.is_error || taskFailed}
           running={running}
+          toolUseId={item.call.id}
+          agentId={agentId}
           summary={
             <>
               {presenter.summary(item.call, item.result)}
-              {running && <SubagentProgress items={children} />}
+              {running && <SubagentProgress items={children} task={task} />}
+              {taskFailed && (
+                <span style={{ color: "var(--danger)", marginLeft: 8 }}>
+                  · {task.failureStatus ?? "failed"}
+                </span>
+              )}
             </>
           }
           expanded={
@@ -215,19 +245,25 @@ function UserBubble({
   );
 }
 
-/** Live progress badge for a running tool call that has spawned a subagent.
- *  Counts the subagent's meaningful steps so far (assistant messages + tool
- *  calls) and shows a dim "· N steps" hint next to the collapsed row summary,
- *  so activity is visible without expanding the thread. Renders nothing for
- *  ordinary tool calls (no children) — those just get the spinner. */
-function SubagentProgress({ items }: { items: ChatItem[] }) {
+/** Live progress hint for a running tool call that has spawned a subagent:
+ *  a dim "· N steps · Bash · quiet 4m" next to the collapsed row summary, so
+ *  activity is visible without expanding the thread. Steps count the
+ *  subagent's meaningful rows so far (assistant messages + tool calls); the
+ *  last tool name and the quiet hint come from the background task's own
+ *  reports, so they hold up after the main turn has ended. "Quiet" is a
+ *  heuristic — a long step goes quiet too. Renders nothing for an ordinary
+ *  tool call (no children, no task) — that just gets the spinner. */
+function SubagentProgress({ items, task }: { items: ChatItem[]; task?: BackgroundTask }) {
+  // Only live rows mount this, so the minute tick stays a handful of timers.
+  const now = useMinuteClock();
   const steps = items.filter((c) => c.kind === "tool_call" || c.kind === "agent_message").length;
-  if (steps === 0) return null;
-  return (
-    <span style={{ color: "var(--fg-3)", marginLeft: 8 }}>
-      · {steps} step{steps === 1 ? "" : "s"}
-    </span>
-  );
+  const parts: string[] = [];
+  if (steps > 0) parts.push(`${steps} step${steps === 1 ? "" : "s"}`);
+  if (task?.lastToolName) parts.push(task.lastToolName);
+  const quiet = task?.status === "running" ? quietForMs(task, now) : 0;
+  if (quiet > QUIET_AFTER_MS) parts.push(`quiet ${formatDuration(quiet)}`);
+  if (parts.length === 0) return null;
+  return <span style={{ color: "var(--fg-3)", marginLeft: 8 }}>· {parts.join(" · ")}</span>;
 }
 
 /** A subagent's threaded sub-conversation, rendered inside its spawning

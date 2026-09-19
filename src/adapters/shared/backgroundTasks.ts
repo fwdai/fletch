@@ -230,6 +230,35 @@ function reconcile(prev: BackgroundTaskMap, ev: RawEvent, now: number): Backgrou
 
 // ── selectors ────────────────────────────────────────────────────────────
 
+/** Silence past this earns a "quiet for …" hint. A heuristic, not a verdict:
+ *  a sub-agent on one long Bash step goes just as quiet as a hung one. */
+export const QUIET_AFTER_MS = 3 * 60_000;
+
+/** How long an ended task keeps feeding live surfaces (a sidebar chip, a child
+ *  row) before they settle. Long enough to notice a failure after the fact. */
+export const ENDED_TTL_MS = 10 * 60_000;
+
+/** True while the task is running or ended within `ENDED_TTL_MS`. */
+export function isRecentTask(task: BackgroundTask, now: number): boolean {
+  return task.status === "running" || (task.endedAt ?? task.lastActivityAt) > now - ENDED_TTL_MS;
+}
+
+/** The task a chat tool_call launched, by the call's id. A resumed task keeps
+ *  its id, so at most one entry matches; a running one wins over a stale
+ *  duplicate should the map ever hold both. */
+export function taskForToolUse(
+  tasks: BackgroundTaskMap | undefined,
+  toolUseId: string | undefined,
+): BackgroundTask | undefined {
+  if (!tasks || !toolUseId) return undefined;
+  let found: BackgroundTask | undefined;
+  for (const t of Object.values(tasks)) {
+    if (t.toolUseId !== toolUseId) continue;
+    if (!found || (t.status === "running" && found.status !== "running")) found = t;
+  }
+  return found;
+}
+
 /** Running tasks, oldest start first. */
 export function liveBackgroundTasks(tasks: BackgroundTaskMap): BackgroundTask[] {
   return Object.values(tasks)

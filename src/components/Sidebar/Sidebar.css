@@ -570,6 +570,31 @@
   }
 }
 
+/* sub-agent child rows (SubagentRow) — a run-step row whose name is a task
+ * description rather than an agent name, so it can run long: clip it instead
+ * of pushing the meta slot out of the row. */
+.agent.run-step.subagent .ag-name {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* "quiet 4m" — a heuristic (a long step goes quiet too), so muted like a-time,
+ * never a warning color */
+.ag-quiet {
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+/* failed sub-agent mark, in the meta slot where a loader would be */
+.ag-failed {
+  display: inline-flex;
+  align-items: center;
+  color: var(--danger);
+}
+
 /* working indicator — three grey dots, smooth bounce + fade, synced */
 .ag-loader {
   --d: 3.5px;

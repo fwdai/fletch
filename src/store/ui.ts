@@ -69,6 +69,11 @@ export interface UiSlice {
    *  whichever board next happened to hold that code. A refusal is said out loud
    *  on that board's error bar instead — see `useRoadmap`. */
   roadmapFocusCode: string | null;
+  /** A chat tool row to reveal — scrolled into view and expanded — once the
+   *  agent's transcript has rendered it (the sidebar's sub-agent child rows
+   *  set this together with the agent selection). Consumed and cleared by the
+   *  matching `ToolRow`, so it survives a lazy history load and fires once. */
+  chatFocus: { agentId: string; toolUseId: string } | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   /** Show the structured transcript rail beside the native view's terminal.
@@ -124,6 +129,9 @@ export interface UiSlice {
   focusRoadmapItem: (repoPath: string, code: string) => void;
   /** Drop a consumed (or abandoned) focus request. */
   clearRoadmapFocus: () => void;
+  /** Select `agentId` and reveal the tool row for `toolUseId` in its chat. */
+  focusToolCall: (agentId: string, toolUseId: string) => void;
+  clearChatFocus: () => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   toggleTranscriptRail: () => void;
@@ -157,6 +165,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   projectScreenRepoPath: null,
   projectScreenTab: "roadmap",
   roadmapFocusCode: null,
+  chatFocus: null,
   leftCollapsed: false,
   rightCollapsed: false,
   transcriptRailOpen: true,
@@ -229,6 +238,11 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     set({ roadmapFocusCode: code });
   },
   clearRoadmapFocus: () => set({ roadmapFocusCode: null }),
+  focusToolCall: (agentId, toolUseId) => {
+    get().selectAgent(agentId);
+    set({ chatFocus: { agentId, toolUseId } });
+  },
+  clearChatFocus: () => set({ chatFocus: null }),
   toggleLeft: () =>
     set((s) => {
       const leftCollapsed = !s.leftCollapsed;
