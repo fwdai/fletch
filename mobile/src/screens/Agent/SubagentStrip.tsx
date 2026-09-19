@@ -1,7 +1,8 @@
 import type { BackgroundTaskMap } from "@desktop/adapters/shared/backgroundTasks";
 import { Icon } from "@desktop/components/Icon";
-import { fmtElapsed, useTick } from "../../lib/hooks";
+import { fmtElapsed } from "../../lib/hooks";
 import { quietHint, subagentName, visibleSubagents } from "../../lib/subagents";
+import { useSubagentClock } from "../../lib/useSubagentClock";
 
 /** Sub-agents still working after the turn (or failed lately), pinned above
  *  the transcript so they stay in view while the log scrolls. Tapping one
@@ -13,9 +14,7 @@ export function SubagentStrip({
   tasks: BackgroundTaskMap | undefined;
   onJump: (toolUseId: string) => void;
 }) {
-  const running = Object.values(tasks ?? {}).some((t) => t.status === "running");
-  useTick(1000, running);
-  const now = Date.now();
+  const { now } = useSubagentClock(tasks);
   const list = visibleSubagents(tasks, now);
   if (list.length === 0) return null;
   return (

@@ -29,11 +29,14 @@ export const fmtElapsed = (sec: number) => {
   return m ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
 };
 
+/** Whole seconds from `startedAt` (epoch millis) to `now`; 0 when not started. */
+export const elapsedSec = (startedAt: number | undefined, now: number) =>
+  startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+
 /** Seconds since `startedAt` (epoch millis), ticking while `active`. */
 export function useElapsed(startedAt: number | undefined, active: boolean) {
   useTick(1000, active);
-  if (!startedAt) return 0;
-  return Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  return elapsedSec(startedAt, Date.now());
 }
 
 /** The OS colour scheme, kept live. */

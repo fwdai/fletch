@@ -42,6 +42,17 @@ export function subagentCounts(tasks: BackgroundTaskMap | undefined, now: number
   return counts;
 }
 
+/** How often a surface showing these sub-agents must re-render on its own, or
+ *  `undefined` for not at all. Every second while one runs (elapsed timers and
+ *  quiet hints) or the surface has its own live timer; once a minute while only
+ *  a recent failure is left, so it still drops off after RECENT_FAILURE_MS when
+ *  nothing else moves. */
+export function subagentTickMs(counts: SubagentCounts, live = false): number | undefined {
+  if (live || counts.running > 0) return 1_000;
+  if (counts.failed > 0) return 60_000;
+  return undefined;
+}
+
 export const subagentLabel = (n: number) => `${n} sub-agent${n === 1 ? "" : "s"}`;
 
 export const subagentName = (t: BackgroundTask) => t.description || t.subagentType || "sub-agent";
