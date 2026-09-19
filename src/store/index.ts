@@ -58,8 +58,10 @@ export type { BackgroundTask, BackgroundTaskMap } from "@/adapters/shared/backgr
 export {
   isSubagentTask,
   liveBackgroundTasks,
+  QUIET_AFTER_MS,
   quietForMs,
   subagentActivity,
+  taskForToolUse,
 } from "@/adapters/shared/backgroundTasks";
 export type { UsageSnapshot } from "@/adapters/usage";
 export type { DraftAgent } from "./drafts";

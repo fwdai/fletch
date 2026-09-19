@@ -8,10 +8,13 @@ import { describe, expect, it } from "vitest";
 import {
   applyTaskEvent,
   type BackgroundTaskMap,
+  ENDED_TTL_MS,
+  isRecentTask,
   isTaskEvent,
   liveBackgroundTasks,
   quietForMs,
   subagentActivity,
+  taskForToolUse,
 } from "@/adapters/shared/backgroundTasks";
 import type { RawEvent } from "@/adapters/types";
 
@@ -398,5 +401,29 @@ describe("selectors", () => {
     );
     expect(liveBackgroundTasks(tasks).map((t) => t.taskId)).toEqual(["a74d5be", "bash"]);
     expect(subagentActivity(tasks, T0)).toEqual({ running: 1, failed: 0, quietest: 0 });
+  });
+
+  it("find the task a tool_call launched, preferring a running one", () => {
+    let tasks = applyTaskEvent({}, started, T0);
+    tasks = applyTaskEvent(tasks, { ...started, task_id: "b", tool_use_id: "toolu_b" }, T0 + 10);
+    tasks = applyTaskEvent(tasks, notified("failed"), T0 + 20);
+    // A stale duplicate under the same tool_use (never seen live, but the map
+    // is permissive) must not shadow the running entry.
+    tasks = applyTaskEvent(tasks, { ...started, task_id: "b2", tool_use_id: "toolu_b" }, T0 + 30);
+    tasks = applyTaskEvent(tasks, { ...notified("failed"), task_id: "b" }, T0 + 40);
+
+    expect(taskForToolUse(tasks, "toolu_01RK")?.status).toBe("failed");
+    expect(taskForToolUse(tasks, "toolu_b")?.taskId).toBe("b2");
+    expect(taskForToolUse(tasks, "toolu_none")).toBeUndefined();
+    expect(taskForToolUse(undefined, "toolu_b")).toBeUndefined();
+    expect(taskForToolUse(tasks, undefined)).toBeUndefined();
+  });
+
+  it("keep an ended task recent until the TTL passes", () => {
+    let tasks = applyTaskEvent({}, started, T0);
+    expect(isRecentTask(tasks.a74d5be, T0 + ENDED_TTL_MS * 5)).toBe(true);
+    tasks = applyTaskEvent(tasks, notified("completed"), T0 + 100);
+    expect(isRecentTask(tasks.a74d5be, T0 + 100 + ENDED_TTL_MS - 1)).toBe(true);
+    expect(isRecentTask(tasks.a74d5be, T0 + 100 + ENDED_TTL_MS)).toBe(false);
   });
 });

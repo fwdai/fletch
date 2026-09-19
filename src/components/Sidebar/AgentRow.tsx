@@ -16,6 +16,8 @@ import { useMinuteClock } from "@/util/hooks";
 import { type AgentPr, useAgentPrs } from "@/util/prState";
 import { type AgentStats, AgentStatsPopover } from "./AgentStatsPopover";
 import { type AutopilotSignal, autopilotSignal, autopilotTip } from "./autopilotSignal";
+import { SubagentRow } from "./SubagentRow";
+import { deriveSubagentChildren, failedTip, runningTip } from "./subagentChildren";
 
 /** The agent rows carry nested buttons (stop/archive/discard), so they can't be
  *  a `<button>`; they use `role="button"` + this handler to stay keyboard
@@ -97,12 +99,21 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const workflowGate = useGate("workflows");
   const now = useMinuteClock();
   const [statsOpen, setStatsOpen] = useState(false);
+  // Backgrounded sub-agents outlive the main turn: the agent reads `idle` while
+  // they keep working, and a failure among them is otherwise invisible from
+  // here. Same read pattern as autopilot — the per-agent map is selected whole
+  // (a stable reference) and the derivation runs outside the selector.
+  const tasks = useAppStore((s) => s.backgroundTasks[agent.id]);
+  const subagents = deriveSubagentChildren(tasks, now);
+  const subRunning = subagents.filter((c) => c.running).length;
+  const subFailed = subagents.filter((c) => c.failed).length;
 
   const branch = agent.repos[0]?.branch ?? null;
   const taskOrBranch = firstShort(agent.task) || branch || "—";
   const age = formatAge(agent.created_at, now);
-  // spawning is the start of a run — show it as "working" too, not a dead row
-  const working = agent.status === "running" || agent.status === "spawning";
+  // spawning is the start of a run — show it as "working" too, not a dead row;
+  // so is an idle agent whose sub-agents are still at it.
+  const working = agent.status === "running" || agent.status === "spawning" || subRunning > 0;
   // The agent has paused on a question/plan tool and is waiting for a human
   // answer (AskUserQuestion / ExitPlanMode). Status stays `running`, so this
   // separate signal is what distinguishes "the ball's in your court" from
@@ -165,113 +176,142 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   };
 
   return (
-    <div
-      className={`agent ${active ? "active" : ""} ${awaiting ? "awaiting" : ""}`}
-      role="button"
-      tabIndex={0}
-      aria-current={active ? "page" : undefined}
-      onClick={onClick}
-      onKeyDown={(e) => activateOnKey(e, onClick)}
-    >
-      <span className={`ag-rail ${railClass}`} />
-      <div className="agent-row flex-center">
-        <span className={`ag-name ${working && !awaiting ? "shimmer" : ""}`}>{agent.name}</span>
-        <AgentIdentityChip agent={agent} size={14} />
-        {runLive && (
+    <>
+      <div
+        className={`agent ${active ? "active" : ""} ${awaiting ? "awaiting" : ""}`}
+        role="button"
+        tabIndex={0}
+        aria-current={active ? "page" : undefined}
+        onClick={onClick}
+        onKeyDown={(e) => activateOnKey(e, onClick)}
+      >
+        <span className={`ag-rail ${railClass}`} />
+        <div className="agent-row flex-center">
+          <span className={`ag-name ${working && !awaiting ? "shimmer" : ""}`}>{agent.name}</span>
+          <AgentIdentityChip agent={agent} size={14} />
+          {runLive && (
+            <span
+              className="ag-run tip"
+              data-tip={runPort ? `Dev server running on :${runPort}` : "Dev server running"}
+              aria-label={runPort ? `Dev server running on port ${runPort}` : "Dev server running"}
+            >
+              <Icon name="play" size={9} />
+            </span>
+          )}
+          <span className="ag-slot iflex-center">
+            <span className={`ag-meta ${agent.status === "error" ? "wide" : ""}`}>
+              {awaiting ? (
+                <span
+                  className="ag-waiting tip"
+                  data-tip="Waiting for user input"
+                  aria-label="Waiting for user input"
+                >
+                  <Icon name="hand" size={12} />
+                </span>
+              ) : (
+                working && <span className="ag-loader" aria-label="Working" />
+              )}
+              {agent.status === "idle" && !active && unseen && (
+                <span
+                  className="ag-unseen tip"
+                  data-tip="New results to review"
+                  aria-label="New results to review"
+                />
+              )}
+              {agent.status === "error" && <Badge variant="err">error</Badge>}
+            </span>
+            <span className="ag-actions">
+              {!workflowGate && (
+                <button
+                  className="ag-act iflex-center tip"
+                  data-tip="Promote to workflow"
+                  onClick={onPromote}
+                  aria-label="Promote to workflow"
+                >
+                  <Icon name="combine" size={11} />
+                </button>
+              )}
+              {stoppable && !awaiting && (
+                <button
+                  className="ag-act iflex-center tip"
+                  data-tip="Stop"
+                  onClick={onStop}
+                  aria-label="Stop"
+                >
+                  <Icon name="stop" size={11} />
+                </button>
+              )}
+              {archivable && (
+                <button
+                  className="ag-act iflex-center tip"
+                  data-tip="Archive"
+                  onClick={onArchive}
+                  aria-label="Archive"
+                >
+                  <Icon name="archive" size={11} />
+                </button>
+              )}
+            </span>
+          </span>
+        </div>
+        <div className="agent-sub flex-center">
+          <span className="a-task">{taskOrBranch}</span>
+          {agentPrs.length === 1 ? (
+            <PrBadge pr={agentPrs[0].pr} checks={agentPrs[0].checks} />
+          ) : agentPrs.length > 1 ? (
+            <MultiPrBadge prs={agentPrs} />
+          ) : hasChanges ? (
+            <DiffStat stats={shortstats} />
+          ) : null}
+          {behind != null && behind > 0 && (
+            <span
+              className="a-stale tip"
+              data-tip={`Base has moved ${behind} commit(s) ahead`}
+              aria-label={`Base moved ${behind} commits ahead`}
+            >
+              <Icon name="branch" size={9} />
+              {behind}
+            </span>
+          )}
+          <AutopilotMark signal={autopilot} />
+          {subRunning > 0 && (
+            <span
+              className="a-subagents tip"
+              data-tip={runningTip(subagents)}
+              aria-label={`${subRunning} sub-agent${subRunning === 1 ? "" : "s"} running`}
+            >
+              <Icon name="zap" size={9} />
+              {subRunning}
+            </span>
+          )}
+          {subFailed > 0 && (
+            <Badge
+              variant="err"
+              tip={failedTip(subagents)}
+              label={`${subFailed} sub-agent${subFailed === 1 ? "" : "s"} failed`}
+            >
+              <Icon name="close" size={10} />
+              {subFailed}
+            </Badge>
+          )}
           <span
-            className="ag-run tip"
-            data-tip={runPort ? `Dev server running on :${runPort}` : "Dev server running"}
-            aria-label={runPort ? `Dev server running on port ${runPort}` : "Dev server running"}
+            className="a-time"
+            onMouseEnter={() => setStatsOpen(true)}
+            onMouseLeave={() => setStatsOpen(false)}
           >
-            <Icon name="play" size={9} />
+            {age}
+            {statsOpen && <AgentStatsPopover stats={stats} />}
           </span>
-        )}
-        <span className="ag-slot iflex-center">
-          <span className={`ag-meta ${agent.status === "error" ? "wide" : ""}`}>
-            {awaiting ? (
-              <span
-                className="ag-waiting tip"
-                data-tip="Waiting for user input"
-                aria-label="Waiting for user input"
-              >
-                <Icon name="hand" size={12} />
-              </span>
-            ) : (
-              working && <span className="ag-loader" aria-label="Working" />
-            )}
-            {agent.status === "idle" && !active && unseen && (
-              <span
-                className="ag-unseen tip"
-                data-tip="New results to review"
-                aria-label="New results to review"
-              />
-            )}
-            {agent.status === "error" && <Badge variant="err">error</Badge>}
-          </span>
-          <span className="ag-actions">
-            {!workflowGate && (
-              <button
-                className="ag-act iflex-center tip"
-                data-tip="Promote to workflow"
-                onClick={onPromote}
-                aria-label="Promote to workflow"
-              >
-                <Icon name="combine" size={11} />
-              </button>
-            )}
-            {stoppable && !awaiting && (
-              <button
-                className="ag-act iflex-center tip"
-                data-tip="Stop"
-                onClick={onStop}
-                aria-label="Stop"
-              >
-                <Icon name="stop" size={11} />
-              </button>
-            )}
-            {archivable && (
-              <button
-                className="ag-act iflex-center tip"
-                data-tip="Archive"
-                onClick={onArchive}
-                aria-label="Archive"
-              >
-                <Icon name="archive" size={11} />
-              </button>
-            )}
-          </span>
-        </span>
+        </div>
       </div>
-      <div className="agent-sub flex-center">
-        <span className="a-task">{taskOrBranch}</span>
-        {agentPrs.length === 1 ? (
-          <PrBadge pr={agentPrs[0].pr} checks={agentPrs[0].checks} />
-        ) : agentPrs.length > 1 ? (
-          <MultiPrBadge prs={agentPrs} />
-        ) : hasChanges ? (
-          <DiffStat stats={shortstats} />
-        ) : null}
-        {behind != null && behind > 0 && (
-          <span
-            className="a-stale tip"
-            data-tip={`Base has moved ${behind} commit(s) ahead`}
-            aria-label={`Base moved ${behind} commits ahead`}
-          >
-            <Icon name="branch" size={9} />
-            {behind}
-          </span>
-        )}
-        <AutopilotMark signal={autopilot} />
-        <span
-          className="a-time"
-          onMouseEnter={() => setStatsOpen(true)}
-          onMouseLeave={() => setStatsOpen(false)}
-        >
-          {age}
-          {statsOpen && <AgentStatsPopover stats={stats} />}
-        </span>
-      </div>
-    </div>
+      {subagents.length > 0 && (
+        <div className="run-steps">
+          {subagents.map((child) => (
+            <SubagentRow key={child.task.taskId} agentId={agent.id} child={child} />
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 

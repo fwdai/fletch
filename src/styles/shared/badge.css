@@ -112,8 +112,11 @@
   color: var(--danger);
 }
 /* "base moved" cue — quiet information, not an alarm (a moved base is normal in
- * a parallel fleet), so it's muted like a-time, never a warning color. */
-.agent-sub .a-stale {
+ * a parallel fleet), so it's muted like a-time, never a warning color. The
+ * running sub-agents count shares its metrics (a zap + count) but takes the
+ * accent: it is live activity, the reason the row is still working. */
+.agent-sub .a-stale,
+.agent-sub .a-subagents {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -121,6 +124,9 @@
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
   flex-shrink: 0;
+}
+.agent-sub .a-subagents {
+  color: var(--accent);
 }
 /* autopilot mark — same weight and metrics as the a-stale cue, because it is the
  * same kind of thing: a hint on an existing row, not an announcement. Rendered
