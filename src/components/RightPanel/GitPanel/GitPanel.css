@@ -583,6 +583,13 @@
   background: color-mix(in oklch, var(--success), transparent 90%);
   border-radius: var(--r-sm);
 }
+/* the standing variant: the selected action cannot run in this environment.
+   Muted, not green — nothing happened, and nothing is going to. */
+.git-notice.gated {
+  color: var(--fg-2);
+  border-color: var(--bd-soft);
+  background: transparent;
+}
 .git-notice svg {
   flex-shrink: 0;
 }

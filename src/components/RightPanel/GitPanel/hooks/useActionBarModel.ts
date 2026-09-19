@@ -12,6 +12,7 @@ import { describeMergeGate } from "@/mergeGate";
 import { useAppStore } from "@/store";
 import { useGateFor } from "@/store/capabilities";
 import { ACTION_GATES } from "../actionGates";
+import { mainActionState } from "../mainAction";
 
 /** Builds the split-button model for the current state: the action counts, the
  *  primary/secondary actions, the menu `items`, and the selection bookkeeping
@@ -113,17 +114,19 @@ export function useActionBarModel(input: {
 
   // The CTA's main button is disabled while loading git state, while the agent
   // holds a delegation, when the selected action's op is not on this
-  // environment, and when Merge is selected but the merge gate isn't open.
-  // Gate semantics live in describeMergeGate (spec §6).
+  // environment, and when Merge is selected but the merge gate isn't open. Gate
+  // semantics live in describeMergeGate (spec §6); which of the four is worth
+  // explaining to the user lives in `mainActionState`.
   const { mergeAllowed } = describeMergeGate(checks ? mergeState : null, {
     checksFailed,
     mergeable,
   });
-  const mainDisabled =
-    effectiveKey === "loading" ||
-    delegationActive ||
-    actionGate !== null ||
-    (effectiveKey === "merge" && !mergeAllowed);
+  const { disabled: mainDisabled, reason: mainReason } = mainActionState({
+    effectiveKey,
+    delegationActive,
+    mergeAllowed,
+    actionGate,
+  });
   // Tone applies only when the selected action is the state's primary; picking
   // an alternate from the menu falls back to the neutral accent fill.
   const tone: ActionTone = effectiveKey === primary.key ? (primary.tone ?? "accent") : "accent";
@@ -135,5 +138,5 @@ export function useActionBarModel(input: {
     if (isCommitAction(key)) setGitCommitAction(key);
   };
 
-  return { primary, items, effectiveKey, tone, mainDisabled, onSelectAction };
+  return { primary, items, effectiveKey, tone, mainDisabled, mainReason, onSelectAction };
 }

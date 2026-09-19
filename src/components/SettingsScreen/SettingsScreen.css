@@ -223,6 +223,9 @@
   letter-spacing: -0.005em;
 }
 .set-row-s {
+  /* a line in the row's sub stack whether the caller uses a div or a span —
+     `HostGateNote` is a span, so its own margin has to apply */
+  display: block;
   color: var(--fg-2);
   line-height: var(--lh-normal);
   margin-top: 3px;

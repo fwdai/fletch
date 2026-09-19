@@ -4,8 +4,8 @@
 //! The stream is the engine's own broadcast (`host::sink::BroadcastSink`), which
 //! carries *every* event the engine emits — so this filters by name, and that
 //! filter is the whitelist the protocol doc describes: nothing outside
-//! `FORWARDED_EVENTS` can reach a phone, and raw PTY output (`agent:output`,
-//! `shell:output`) in particular never does.
+//! `FORWARDED_EVENTS` can reach a remote client, and raw PTY output
+//! (`agent:output`, `shell:output`, `run:output`) in particular never does.
 //!
 //! One subscriber task for the whole stream, where the Tauri event bus needed
 //! one `listen_any` per name: the name is in the event now, not in the
@@ -36,10 +36,26 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "verify:report",
     "publish:approval-requested",
     "publish:approval-resolved",
-    // The two rows a phone's planning chat renders: a PM proposal arriving and
-    // an item leaving the board. The rest of `roadmap:*` stays off the wire.
+    // The whole workflow and roadmap stream (multi-host plan §5.3, item 2): the
+    // run monitor, the board and the PM's three proposal kinds all update live
+    // on a remote host, as they do locally. `wf:event` carries addressing only
+    // (run id, seq, type) — the payload is read back with `wf_events`.
+    "wf:event",
+    "wf:run",
+    "wf:run-deleted",
     "roadmap:item",
     "roadmap:item-deleted",
+    "roadmap:item-event",
+    "roadmap:proposal",
+    "roadmap:proposal-deleted",
+    "roadmap:order-proposal",
+    "roadmap:order-proposal-deleted",
+    "roadmap:project-hold",
+    "roadmap:project-hold-released",
+    "roadmap:brief",
+    "roadmap:brief-proposal",
+    "roadmap:brief-proposal-deleted",
+    "roadmap:queue-note",
 ];
 
 /// Install the taps and hand back the push-alert one.

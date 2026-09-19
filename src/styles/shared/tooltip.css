@@ -17,5 +17,8 @@
   color: var(--fg-0);
   font-size: var(--fs-xs);
   line-height: 1.4;
+  /* a tip may be a short list (one closed capability per line); runs of spaces
+     still collapse, so single-line tips are unaffected */
+  white-space: pre-line;
   pointer-events: none;
 }

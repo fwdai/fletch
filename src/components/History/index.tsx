@@ -170,6 +170,9 @@ export function History() {
                       onClick={() => onRowClick(a.id)}
                       onMouseEnter={() => setFocusedIndex(myIdx)}
                       disabled={!!restoringId || !!restoreGate}
+                      // The footer already carries the gate's reason; the row
+                      // repeats it where the dead click happens.
+                      title={restoreGate ?? undefined}
                       // Dim the other rows during a restore, but keep the active
                       // row at full opacity so its spinner stays visible (a
                       // parent opacity would otherwise cap the child rule).

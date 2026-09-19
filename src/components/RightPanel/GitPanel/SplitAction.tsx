@@ -25,6 +25,7 @@ export function SplitAction({
   selectedKey,
   tone,
   mainDisabled,
+  mainReason,
   busyLabel,
   onSelect,
   onRun,
@@ -33,6 +34,11 @@ export function SplitAction({
   selectedKey: string;
   tone: ActionTone;
   mainDisabled: boolean;
+  /** Why the main click is dead, when that is worth saying. A plain `title`
+   *  rather than the app's `data-tip`: a disabled button gets no pointer events
+   *  in the WebView, so the hover-driven bubble would never fire. The same
+   *  sentence is printed in the bar, which is what the user actually reads. */
+  mainReason?: string | null;
   busyLabel: string | null;
   onSelect: (key: string) => void;
   onRun: () => void;
@@ -47,7 +53,12 @@ export function SplitAction({
 
   return (
     <div className={`git-split ${toneClass} ${busy ? "busy" : ""}`}>
-      <button className="gsa-main text-base" disabled={mainDisabled || busy} onClick={onRun}>
+      <button
+        className="gsa-main text-base"
+        disabled={mainDisabled || busy}
+        title={mainReason ?? undefined}
+        onClick={onRun}
+      >
         {busy ? <Spinner /> : <Icon name={selected.icon} />}
         <span className="gsa-label">{busy ? busyLabel : selected.label}</span>
       </button>

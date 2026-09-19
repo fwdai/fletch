@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use fletch_core::host::HeadlessRelay;
-use fletch_host::{admin, serve};
+use fletch_host::{admin, serve, service, update};
 use serde_json::{json, Value};
 
 #[derive(Parser)]
@@ -87,6 +87,56 @@ enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    /// Run `serve` under this machine's init system (systemd or launchd).
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
+    /// Replace this binary with a published release's. Run it as the user
+    /// the host runs as; if the binary's directory needs root, it prints the
+    /// one `sudo … --from` command that installs what it verified.
+    Update {
+        /// The version to install, e.g. 0.7.32. Defaults to the latest
+        /// release. Naming the version this binary already is reinstalls it.
+        version: Option<String>,
+        /// Print what is available and stop; change nothing.
+        #[arg(long)]
+        check: bool,
+        /// Install this already-downloaded tarball (its `.sig` beside it) —
+        /// the step `sudo` runs. Re-verifies the signature; opens no data dir.
+        #[arg(long, value_name = "TARBALL", conflicts_with_all = ["version", "check"])]
+        from: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Write the service definition, enable it and start it. Running this
+    /// again rewrites it and restarts the host, so it is how flags are
+    /// changed.
+    Install {
+        /// Port for paired devices, written into the service definition.
+        #[arg(long)]
+        port: Option<u16>,
+        /// The name paired devices show for this host.
+        #[arg(long)]
+        name: Option<String>,
+        /// Linux, with `--system`: the user the unit runs as, and whose
+        /// `~/.local/share/fletch-host` it serves unless `--data-dir` says
+        /// otherwise. Defaults to whoever ran `sudo`; never root.
+        #[arg(long, value_name = "NAME")]
+        user: Option<String>,
+        /// Linux: install to /etc/systemd/system (needs sudo) instead of your
+        /// own systemd user directory.
+        #[arg(long)]
+        system: bool,
+    },
+    /// Stop the service, disable it and remove its definition.
+    Uninstall {
+        /// Linux: the unit in /etc/systemd/system rather than your own.
+        #[arg(long)]
+        system: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -132,7 +182,15 @@ enum ProjectCommand {
 
 fn main() {
     let cli = Cli::parse();
-    let data_dir = cli.data_dir.unwrap_or_else(serve::default_data_dir);
+    // `service install` wants to know whether `--data-dir` was given at all:
+    // its default is not this process's (see `service_command`).
+    let data_dir_arg = cli.data_dir;
+    // This process's own default, always — never a guess at whose data dir a
+    // `sudo` was meant for. The two subcommands that meet sudo say what they
+    // do about it themselves: `service install --system` resolves the service
+    // user's (`service_command`), and `update` refuses to touch a data dir as
+    // root at all (`update::run`).
+    let data_dir = data_dir_arg.clone().unwrap_or_else(serve::default_data_dir);
 
     // One runtime for both halves: the engine's background tasks belong to it
     // (`serve`), and the client subcommands use it for the socket.
@@ -161,6 +219,14 @@ fn main() {
                 handle_signals: true,
             }))
         }
+        // Neither of these goes over the admin socket: they act on this
+        // machine's init system and on this binary's own file.
+        Command::Service { command } => service_command(data_dir_arg, command),
+        Command::Update {
+            version,
+            check,
+            from,
+        } => runtime.block_on(update::run(&data_dir, version, check, from)),
         command => runtime.block_on(client(&data_dir, command)),
     };
     if let Err(e) = result {
@@ -172,7 +238,9 @@ fn main() {
 async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), String> {
     match command {
         // Handled by the caller; listed so this match stays exhaustive.
-        Command::Serve { .. } => unreachable!("serve does not go over the socket"),
+        Command::Serve { .. } | Command::Service { .. } | Command::Update { .. } => {
+            unreachable!("these do not go over the socket")
+        }
         Command::Status => {
             print_json(&admin::call(data_dir, "status", json!({})).await?);
         }
@@ -272,6 +340,53 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
     Ok(())
 }
 
+/// `service install|uninstall`. The service runs `serve` with the flags given
+/// here, from this binary's own absolute path and against the data dir this
+/// command resolved — an init system's environment is not the operator's
+/// shell, so both are written into the unit rather than re-derived by it.
+///
+/// Two things about that data dir the unit must not inherit from this
+/// process: a *relative* `--data-dir` (relative to this shell's directory,
+/// which the unit does not have) is made absolute first; and for `--system`,
+/// which is run through `sudo`, the default is not this process's — root's —
+/// but the one the service user would get, looked up from their passwd entry.
+fn service_command(data_dir: Option<PathBuf>, command: ServiceCommand) -> Result<(), String> {
+    match command {
+        ServiceCommand::Install {
+            port,
+            name,
+            user,
+            system,
+        } => {
+            let given = data_dir.as_deref().map(absolute_path).transpose()?;
+            let (user, data_dir) = if system {
+                let user = service::system_user(user, std::env::var("SUDO_USER").ok())?;
+                let data_dir = match given {
+                    Some(dir) => dir,
+                    None => service::default_data_dir_of(&user)?,
+                };
+                (Some(user), data_dir)
+            } else {
+                (
+                    user.or_else(|| std::env::var("USER").ok()),
+                    given.unwrap_or_else(serve::default_data_dir),
+                )
+            };
+            let spec = service::Spec {
+                exec: update::current_exe()?,
+                data_dir,
+                port,
+                name,
+                user,
+                system,
+                log_path: service::launchd_log_path()?,
+            };
+            service::install(&spec)
+        }
+        ServiceCommand::Uninstall { system } => service::uninstall(system),
+    }
+}
+
 /// The pairing link as a QR code, in half-block characters so a 33×33 symbol
 /// fits an 80×24 terminal. The phone's pairing screen has a scanner; the link
 /// carries this host's public key, and typing that by hand is not an option.
@@ -337,14 +452,18 @@ async fn github_login(data_dir: &std::path::Path) -> Result<(), String> {
 /// directory than the shell that is talking to it — so send an absolute one and
 /// let a relative path mean "relative to where I typed this".
 fn absolute(path: &std::path::Path) -> Result<String, String> {
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| format!("cannot resolve {}: {e}", path.display()))?
-            .join(path)
-    };
-    Ok(path.to_string_lossy().to_string())
+    Ok(absolute_path(path)?.to_string_lossy().to_string())
+}
+
+/// `path` anchored at this process's working directory if it is relative;
+/// untouched otherwise. Not canonicalized: the target need not exist yet.
+fn absolute_path(path: &std::path::Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    Ok(std::env::current_dir()
+        .map_err(|e| format!("cannot resolve {}: {e}", path.display()))?
+        .join(path))
 }
 
 fn print_json(value: &Value) {

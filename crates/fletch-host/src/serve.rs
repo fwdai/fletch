@@ -38,9 +38,15 @@ pub struct Config {
 /// `data_dir` does it for the desktop, and a debug host testing a change must
 /// not open the database a release host is serving from.
 pub fn default_data_dir() -> PathBuf {
-    let base = dirs::data_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("fletch-host");
+    data_dir_under(dirs::data_dir().unwrap_or_else(std::env::temp_dir))
+}
+
+/// The host's data dir under a platform data root (`~/.local/share`,
+/// `~/Library/Application Support`): `fletch-host`, plus the `dev` split for a
+/// debug build. Split out so `service install --system` can pick the same dir
+/// for *another* user's home without re-deriving the rule.
+pub fn data_dir_under(base: PathBuf) -> PathBuf {
+    let base = base.join("fletch-host");
     if cfg!(debug_assertions) {
         base.join("dev")
     } else {
