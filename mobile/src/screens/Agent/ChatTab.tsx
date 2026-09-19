@@ -1,87 +1,14 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
-import { Icon } from "@desktop/components/Icon";
 import { type MutableRefObject, useEffect, useMemo } from "react";
 import { applyPolicy, type ChatItem, getAdapter } from "../../adapters";
-import { SentChips } from "../../attachments";
-import { Md } from "../../components/Md";
 import { isBusy, providerLabel } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { useStickyScroll } from "../../lib/useStickyScroll";
 import { useStore } from "../../store";
 import { ApprovalCard, ErrorCard, PublishApprovalCard } from "./ApprovalCard";
 import { ProposalCard } from "./ProposalCard";
-import { ToolRow } from "./ToolRow";
-
-type Block =
-  | { kind: "item"; key: string; item: ChatItem }
-  | {
-      kind: "tools";
-      key: string;
-      calls: {
-        call: Extract<ChatItem, { kind: "tool_call" }>;
-        result: Extract<ChatItem, { kind: "tool_result" }> | null;
-      }[];
-    };
-
-/** Group the flat item list the way the design does: consecutive tool calls in
- *  one card, each paired with its result, and results never rendered alone. */
-function toBlocks(items: ChatItem[]): Block[] {
-  const results = new Map<string, Extract<ChatItem, { kind: "tool_result" }>>();
-  for (const it of items) if (it.kind === "tool_result") results.set(it.tool_use_id, it);
-  const blocks: Block[] = [];
-  items.forEach((item, i) => {
-    if (item.kind === "tool_result") return;
-    if (item.kind === "tool_call") {
-      const entry = { call: item, result: results.get(item.id) ?? null };
-      const last = blocks[blocks.length - 1];
-      if (last?.kind === "tools") last.calls.push(entry);
-      else blocks.push({ kind: "tools", key: `t${i}`, calls: [entry] });
-      return;
-    }
-    blocks.push({ kind: "item", key: `i${i}`, item });
-  });
-  return blocks;
-}
-
-function Item({ item }: { item: ChatItem }) {
-  switch (item.kind) {
-    case "user_message":
-      return (
-        <div className="msg-user rise">
-          {item.text}
-          <SentChips paths={item.attachments} />
-        </div>
-      );
-    case "queued_message":
-      return (
-        <div className="msg-user queued rise">
-          {item.text}
-          <SentChips paths={item.attachments} />
-        </div>
-      );
-    case "agent_message":
-      return (
-        <div className="msg-text rise">
-          <Md text={item.text} />
-        </div>
-      );
-    case "notice":
-      if (item.subtype === "turn_end") {
-        return (
-          <div className="turn-end rise">
-            <i />
-            <Icon name="checkCircle" size={13} style={{ color: "var(--success)" }} />
-            {item.text === "success" ? "Turn complete" : item.text}
-            <i />
-          </div>
-        );
-      }
-      if (item.subtype === "reasoning") return <div className="reasoning rise">{item.text}</div>;
-      return <div className={`notice rise${item.is_error ? " err" : ""}`}>{item.text}</div>;
-    default:
-      return null;
-  }
-}
+import { SubagentStrip } from "./SubagentStrip";
+import { type TasksByToolUse, Transcript } from "./Transcript";
 
 export function ChatTab({
   agent,
@@ -96,6 +23,7 @@ export function ChatTab({
   const log = useStore((s) => s.logs[agent.id]);
   const pending = useStore((s) => s.pendingToolUse[agent.id]);
   const startedAt = useStore((s) => s.turnStartedAt[agent.id]);
+  const tasks = useStore((s) => s.backgroundTasks[agent.id]);
   // Selected whole and filtered below: a selector that filters returns a fresh
   // array every call, which re-renders forever under zustand v5.
   const publishApprovals = useStore((s) => s.pendingPublishApprovals);
@@ -116,11 +44,8 @@ export function ChatTab({
     if (planning && connected) void loadProposals(agent.project_id);
   }, [planning, connected, agent.project_id, loadProposals]);
 
-  const visible = useMemo(
-    () => applyPolicy(log ?? [], getAdapter(agent.provider).policy),
-    [log, agent.provider],
-  );
-  const blocks = useMemo(() => toBlocks(visible), [visible]);
+  const policy = getAdapter(agent.provider).policy;
+  const visible = useMemo(() => applyPolicy(log ?? [], policy), [log, policy]);
   const pendingIds = Object.keys(pending ?? {});
   const publishForAgent = useMemo(
     () => publishApprovals.filter((r) => r.agent_id === agent.id),
@@ -131,6 +56,13 @@ export function ChatTab({
     for (const it of log ?? []) if (it.kind === "tool_call") map.set(it.id, it);
     return map;
   }, [log]);
+  // A task's `toolUseId` is the id of the Agent/Bash tool_call that launched
+  // it — the key a tool row looks itself up by.
+  const tasksByToolUse = useMemo(() => {
+    const map: TasksByToolUse = {};
+    for (const t of Object.values(tasks ?? {})) if (t.toolUseId) map[t.toolUseId] = t;
+    return map;
+  }, [tasks]);
 
   // `log` is the signal that matters: a streaming message is extended in
   // place, so the item count stays put while the rendered height grows. The
@@ -141,52 +73,50 @@ export function ChatTab({
     pinRef,
   );
 
+  const jumpTo = (toolUseId: string) =>
+    scroller.current
+      ?.querySelector(`[data-tool-use-id="${toolUseId}"]`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+
   return (
-    <div className="scroll chat" ref={scroller} onScroll={onScroll}>
-      {blocks.map((b) =>
-        b.kind === "tools" ? (
-          <div key={b.key} className="tools rise">
-            {b.calls.map(({ call, result }) => (
-              <ToolRow key={call.id} call={call} result={result} />
-            ))}
+    <>
+      <SubagentStrip tasks={tasks} onJump={jumpTo} />
+      <div className="scroll chat" ref={scroller} onScroll={onScroll}>
+        <Transcript items={visible} tasks={tasksByToolUse} policy={policy} />
+        {pendingIds.map((toolUseId) => (
+          <ApprovalCard
+            key={toolUseId}
+            agentId={agent.id}
+            provider={agent.provider}
+            toolUseId={toolUseId}
+            call={callById.get(toolUseId)}
+          />
+        ))}
+        {publishForAgent.map((request) => (
+          <PublishApprovalCard key={request.id} request={request} />
+        ))}
+        {planning && proposals?.map((item) => <ProposalCard key={item.id} item={item} />)}
+        {agent.status === "error" && (
+          <ErrorCard agentId={agent.id} message={agent.last_error ?? null} />
+        )}
+        {busy && pendingIds.length === 0 && (
+          <div className="working rise">
+            <span className="working-dots">
+              <i />
+              <i />
+              <i />
+            </span>
+            {providerLabel(agent.provider)} is working
+            {startedAt && <span className="el">{fmtElapsed(elapsed)}</span>}
           </div>
-        ) : (
-          <Item key={b.key} item={b.item} />
-        ),
-      )}
-      {pendingIds.map((toolUseId) => (
-        <ApprovalCard
-          key={toolUseId}
-          agentId={agent.id}
-          provider={agent.provider}
-          toolUseId={toolUseId}
-          call={callById.get(toolUseId)}
-        />
-      ))}
-      {publishForAgent.map((request) => (
-        <PublishApprovalCard key={request.id} request={request} />
-      ))}
-      {planning && proposals?.map((item) => <ProposalCard key={item.id} item={item} />)}
-      {agent.status === "error" && (
-        <ErrorCard agentId={agent.id} message={agent.last_error ?? null} />
-      )}
-      {busy && pendingIds.length === 0 && (
-        <div className="working rise">
-          <span className="working-dots">
-            <i />
-            <i />
-            <i />
-          </span>
-          {providerLabel(agent.provider)} is working
-          {startedAt && <span className="el">{fmtElapsed(elapsed)}</span>}
-        </div>
-      )}
-      {blocks.length === 0 && !busy && (
-        <div className="empty">
-          <b>No conversation yet</b>
-          Send the first message below.
-        </div>
-      )}
-    </div>
+        )}
+        {visible.length === 0 && !busy && (
+          <div className="empty">
+            <b>No conversation yet</b>
+            Send the first message below.
+          </div>
+        )}
+      </div>
+    </>
   );
 }

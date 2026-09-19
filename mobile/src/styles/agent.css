@@ -282,8 +282,81 @@
 .tool .mt.run {
   color: var(--merged);
 }
+.tool.failed .ic,
+.tool.failed .nm {
+  color: var(--danger);
+}
 .tool .chev {
   transition: transform 0.25s var(--ease-out);
+}
+/* A sub-agent's own turns, threaded under the tool row that launched it. */
+.tool-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px 8px 12px;
+  border-top: 1px solid var(--bd-soft);
+  border-left: 2px solid color-mix(in oklch, var(--merged), transparent 50%);
+  background: var(--tool-out);
+  animation: fade 0.25s var(--ease-out);
+}
+.tool-sub .tools {
+  border-radius: 10px;
+}
+.tool-sub .msg-text {
+  font-size: 13px;
+}
+/* Sub-agents still working after the turn (or failed lately), pinned above
+   the transcript. Each entry jumps to the tool row that launched it. */
+.subagents {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--bd-soft);
+  background: var(--bg-0);
+}
+.subagent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-1);
+  transition: background 0.15s;
+}
+.subagent:active {
+  background: var(--bg-3);
+}
+.subagent .nm {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagent .mt {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+.subagent .quiet {
+  color: var(--warn);
+}
+.subagent.err {
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger), transparent 60%);
+}
+.subagent.err .mt {
+  color: var(--danger);
 }
 .tool.open .chev {
   transform: rotate(90deg);

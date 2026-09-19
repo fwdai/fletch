@@ -1,3 +1,4 @@
+import type { BackgroundTaskMap } from "@desktop/adapters/shared/backgroundTasks";
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
 import type { GitState, ShortStats } from "@desktop/api/types/git";
@@ -103,6 +104,9 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  each one until it is answered or its wait lapses. */
   pendingPublishApprovals: PublishApproval[];
   turnStartedAt: Record<string, number>;
+  /** Claude's background sub-agents per agent, keyed by task id. Live only:
+   *  never persisted, empty after every handshake. See store/backgroundTasks. */
+  backgroundTasks: Record<string, BackgroundTaskMap>;
   gitStates: Record<string, GitState | null>;
   /** Uncommitted working-tree stats for the whole fleet, from the app-wide
    *  poll — the same numbers the desktop sidebar shows. */
@@ -436,6 +440,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   pendingToolUse: {},
   pendingPublishApprovals: [],
   turnStartedAt: {},
+  backgroundTasks: {},
   gitStates: {},
   shortstats: {},
   prStates: {},
@@ -489,6 +494,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       // the path that clears them after a reconnect.
       if (ws) set((s) => ({ workspace: ws, busy: reconcileBusy(s.busy, ws) }));
       else void get().refreshWorkspace();
+      // Task events missed while the socket was down are gone for good — a
+      // task held as running could never be seen ending — so the maps start
+      // over on every handshake and refill from whatever the host emits next.
+      set({ backgroundTasks: {} });
       // The snapshot carries no stats, so the rows get their numbers from the
       // first poll of every handshake rather than waiting out its interval.
       void get().loadShortstats();
@@ -629,6 +638,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // on this device for an answer.
       pendingPublishApprovals: [],
       logs: {},
+      backgroundTasks: {},
       // The chats belong to the host that holds their checkouts, and the ghosts
       // to the boards those chats propose onto.
       chats: {},
