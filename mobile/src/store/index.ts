@@ -150,7 +150,10 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  finishing late, which must not dismiss whatever the user opened since. */
   closeSheetIf(name: SheetName): void;
 
-  refreshWorkspace(): Promise<void>;
+  /** Re-read the workspace snapshot. Resolves to whether the host answered:
+   *  the foreground probe reads that, everything else ignores it. Never
+   *  rejects — a failed read is best effort and the next resync recovers. */
+  refreshWorkspace(): Promise<boolean>;
   openAgent(agentId: string): void;
   loadAgent(agentId: string): Promise<void>;
   rebuildLog(agentId: string): Promise<void>;
@@ -522,18 +525,13 @@ export const useStore = create<MobileState>()((set, get) => ({
     // socket has shown it is still alive. iOS freezes a suspended app's
     // socket, and when the app returns it can read as connected for a while
     // longer with every request on it hanging. So the refresh doubles as the
-    // probe: a workspace read the host does not answer in time means the
-    // socket is dead, and the reconnect it triggers does the refreshing
-    // instead, through the handshake's snapshot. The transport's own pings
-    // catch the same death for an idle foreground app, more slowly.
+    // probe: a workspace read the host does not answer in time, or that the
+    // socket refuses outright, means the socket is dead, and the reconnect it
+    // triggers does the refreshing instead, through the handshake's snapshot.
+    // The transport's own pings catch the same death for an idle foreground
+    // app, more slowly.
     const resume = async () => {
-      const alive = await withTimeout(
-        get()
-          .refreshWorkspace()
-          .then(() => true),
-        RESUME_PROBE_TIMEOUT_MS,
-        false,
-      );
+      const alive = await withTimeout(get().refreshWorkspace(), RESUME_PROBE_TIMEOUT_MS, false);
       if (!alive) {
         void get().reconnect().catch(ignore);
         return;
@@ -757,8 +755,10 @@ export const useStore = create<MobileState>()((set, get) => ({
     try {
       const workspace = await api.getWorkspace();
       if (workspace) set((s) => ({ workspace, busy: reconcileBusy(s.busy, workspace) }));
+      return true;
     } catch {
       // Best effort; the next event or resync recovers.
+      return false;
     }
   },
 
@@ -889,7 +889,9 @@ export const useStore = create<MobileState>()((set, get) => ({
         record,
         prompt,
         attachments,
-        recover: () => get().refreshWorkspace(),
+        recover: async () => {
+          await get().refreshWorkspace();
+        },
       });
     });
   },

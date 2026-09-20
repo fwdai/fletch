@@ -47,6 +47,18 @@ describe("returning to the foreground", () => {
     expect(reconnect).toHaveBeenCalledTimes(1);
   });
 
+  it("reconnects when the socket refuses the probe outright", async () => {
+    // The other way a dead socket shows: the write itself fails, at once.
+    vi.spyOn(api, "getWorkspace").mockRejectedValue(new Error("not connected"));
+    const reconnect = vi.spyOn(client, "reconnect").mockResolvedValue({
+      host: client.host ?? { name: "", appVersion: "", os: "" },
+      workspace: state().workspace,
+      protocol: client.protocol ?? undefined,
+    });
+    foreground();
+    await vi.waitFor(() => expect(reconnect).toHaveBeenCalledTimes(1));
+  });
+
   it("does nothing while not connected", async () => {
     const read = vi.spyOn(api, "getWorkspace");
     const connected = vi.spyOn(client, "state", "get").mockReturnValue("connecting");
