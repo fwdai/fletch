@@ -87,16 +87,34 @@ fn dialer() -> (
     mpsc::UnboundedReceiver<ClientEvent>,
     tempfile::TempDir,
 ) {
+    dialer_with(Keepalive::default())
+}
+
+fn dialer_with(
+    keepalive: Keepalive,
+) -> (
+    Arc<Dialer>,
+    mpsc::UnboundedReceiver<ClientEvent>,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().unwrap();
     let (tx, rx) = mpsc::unbounded_channel();
-    let dialer = Dialer::new(
+    let dialer = Dialer::with_keepalive(
         dir.path(),
         Box::new(move |event| {
             let _ = tx.send(event);
         }),
+        keepalive,
     );
     (dialer, rx, dir)
 }
+
+/// A ping schedule fast enough for a test: a dead socket is declared within a
+/// few hundred milliseconds.
+const FAST: Keepalive = Keepalive {
+    interval: Duration::from_millis(40),
+    max_missed: 2,
+};
 
 fn target(url: &str, host_key: Option<String>) -> Target {
     Target {
@@ -351,4 +369,76 @@ fn event_names_and_payload_keys_are_the_ones_the_app_listens_for() {
         .unwrap(),
         serde_json::json!({ "hostKey": "k", "connectionId": 7 })
     );
+}
+
+/// The keepalive: a peer that has stopped answering pings — here a host end
+/// that is never read, so the socket's automatic pongs never go out — is closed
+/// as abnormal with the reserved reason, and the app hears about it. This is
+/// how a socket iOS froze in the background is noticed, rather than every
+/// request on it hanging until TCP gives up.
+#[tokio::test]
+async fn a_peer_that_stops_answering_pings_is_closed_and_reported() {
+    let key = Arc::new(StaticKey::generate().unwrap());
+    let (url, mut accepted) = host(key.clone()).await;
+    let (dialer, mut events, _dir) = dialer_with(FAST);
+
+    let opened = dialer.connect(target(&url, None)).await.unwrap();
+    // Held, not polled: nothing on this end reads, so nothing pongs.
+    let _silent = accepted.recv().await.unwrap();
+
+    let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("the dialer gave up on the silent peer")
+        .unwrap();
+    let ClientEvent::Close(payload) = event else {
+        panic!("expected a close event");
+    };
+    assert_eq!(payload.connection_id, opened.connection_id);
+    assert_eq!(payload.code, CLOSE_ABNORMAL);
+    assert_eq!(payload.reason, PONG_TIMEOUT);
+    // And the connection is gone for the app too, as after any other close.
+    assert_eq!(
+        dialer
+            .send(opened.connection_id, "hello?")
+            .await
+            .unwrap_err(),
+        "not connected"
+    );
+}
+
+/// A peer that does answer keeps the connection open indefinitely: pongs reset
+/// the count, so a quiet-but-alive link is never mistaken for a dead one.
+#[tokio::test]
+async fn a_peer_that_pongs_stays_connected() {
+    let key = Arc::new(StaticKey::generate().unwrap());
+    let (url, mut accepted) = host(key.clone()).await;
+    let (dialer, mut events, _dir) = dialer_with(FAST);
+
+    let opened = dialer.connect(target(&url, None)).await.unwrap();
+    let mut alive = accepted.recv().await.unwrap();
+    // Reading is what answers the pings: the socket pongs on the peer's behalf.
+    let reader = tokio::spawn(async move {
+        let mut pings = 0u32;
+        while let Some(Ok(message)) = alive.ws.next().await {
+            if matches!(message, Message::Ping(_)) {
+                pings += 1;
+            }
+        }
+        pings
+    });
+
+    // Many intervals past the point a silent peer would have been dropped.
+    tokio::time::sleep(FAST.interval * 10).await;
+    assert!(events.try_recv().is_err(), "the live connection was closed");
+    dialer
+        .send(opened.connection_id, "still here")
+        .await
+        .unwrap();
+
+    dialer.close(opened.connection_id).await.unwrap();
+    let pings = tokio::time::timeout(Duration::from_secs(2), reader)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(pings >= 3, "the dialer pinged only {pings} times");
 }

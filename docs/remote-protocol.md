@@ -27,7 +27,13 @@ adapters (`src/adapters/*`) unchanged.
   authentication, so the same frames travel unchanged through the relay (see
   "Relay"). The phone dials the LAN address first and falls back to the relay.
 - Host sends a WebSocket ping every 20 s and closes the connection after two
-  missed pongs. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s).
+  missed pongs. The client pings too — every 10 s, closing as abnormal (`1006`,
+  reason `pong timeout`) after two misses — because a socket the OS froze under
+  a suspended app carries no close frame back and reads on it stay pending, so
+  without its own pings the client would learn nothing until TCP gave up. The
+  phone additionally probes on returning to the foreground: its workspace
+  refresh doubles as a liveness check, and one unanswered for 6 s forces a
+  reconnect. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s).
 - WebSocket messages larger than 4 MiB are rejected (close code 1009).
 - Everything the host holds for a connection is bounded, and ends with it. The
   outbound queue holds 64 frames: a client that stops reading while the host
