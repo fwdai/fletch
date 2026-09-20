@@ -21,6 +21,7 @@ import { reduce as codexReduce } from "@desktop/adapters/codex/reduce";
 import { normalizeTranscript as cursorNormalize } from "@desktop/adapters/cursor/normalize";
 import { cursorPolicy } from "@desktop/adapters/cursor/policy";
 import { reduce as cursorReduce } from "@desktop/adapters/cursor/reduce";
+import { taskEvents as cursorTaskEvents } from "@desktop/adapters/cursor/task";
 import { normalizeTranscript as opencodeNormalize } from "@desktop/adapters/opencode/normalize";
 import { opencodePolicy } from "@desktop/adapters/opencode/policy";
 import { reduce as opencodeReduce } from "@desktop/adapters/opencode/reduce";
@@ -40,6 +41,11 @@ export interface MobileAdapter {
   reduce(prev: ChatItem[], rawEvent: RawEvent): ChatItem[];
   normalizeTranscript(lines: unknown[]): RawEvent[];
   readonly policy: DisplayPolicy;
+  /** Claude-shaped `system` task events derived from one live event, for a
+   *  provider with no such events of its own (cursor's Task tool_call) — the
+   *  desktop `ChatAdapter.taskEvents`. Folded through the same reducer as
+   *  Claude's, so the sub-agent strip needs no provider branch. */
+  taskEvents?(rawEvent: RawEvent): RawEvent[];
 }
 
 // A full Record keyed by ProviderId, so adding a provider on the desktop is a
@@ -62,6 +68,7 @@ export const ADAPTERS: Record<ProviderId, MobileAdapter> = {
     reduce: cursorReduce,
     normalizeTranscript: cursorNormalize,
     policy: cursorPolicy,
+    taskEvents: cursorTaskEvents,
   },
   opencode: {
     id: "opencode",

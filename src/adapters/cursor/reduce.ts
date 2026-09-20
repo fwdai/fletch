@@ -15,11 +15,14 @@
 //   2. Thinking: a `thinking` event streamed as `subtype:"delta"` (each with
 //      `text`) terminated by `subtype:"completed"`, instead of a thinking
 //      content block on the `assistant` event.
+// A sub-agent is one more tool call kind, `taskToolCall` (see ./task.ts),
+// rendered as a `Task` tool_call so it gets the Agent presenter.
 
 import { reduce as claudeReduce } from "@/adapters/claude/reduce";
 import { asRecord } from "@/adapters/shared/json";
 import { aliasToolInput, upsertToolCall } from "@/adapters/shared/reducer-helpers";
 import type { ChatItem, RawEvent } from "@/adapters/types";
+import { type CursorTaskCall, cursorTaskCall, cursorTaskOutcome } from "./task";
 
 /** Cursor names its file-tool fields differently from Claude — glob uses
  *  `globPattern`/`targetDirectory`, read/edit use `path`, edit carries the new
@@ -55,7 +58,27 @@ function toolCallParts(ev: RawEvent): {
   return { name, input, inner };
 }
 
+/** A sub-agent's Task call: streams until `completed`, then pairs with a
+ *  tool_result holding what the sub-agent reported. Its own turns are not on
+ *  Cursor's live stream (nothing tags them to the call), so `children` stays
+ *  empty live and fills on replay from the ingested sub-agent transcript. */
+function handleTaskCall(prev: ChatItem[], task: CursorTaskCall): ChatItem[] {
+  const completed = task.subtype === "completed";
+  const items = upsertToolCall(prev, {
+    kind: "tool_call",
+    id: task.callId,
+    name: "Task",
+    input: task.input,
+    streaming: !completed,
+  });
+  if (!completed) return items;
+  const { content, isError } = cursorTaskOutcome(task);
+  return [...items, { kind: "tool_result", tool_use_id: task.callId, content, is_error: isError }];
+}
+
 function handleToolCall(prev: ChatItem[], ev: RawEvent): ChatItem[] {
+  const task = cursorTaskCall(ev);
+  if (task) return handleTaskCall(prev, task);
   const id = String(ev.call_id ?? "");
   if (!id) return prev;
   const subtype = typeof ev.subtype === "string" ? ev.subtype : "";

@@ -16,6 +16,9 @@ export type { ToolCall, ToolPresenter, ToolResult } from "./types";
 
 export const PRESENTERS: Record<string, ToolPresenter> = {
   Agent: agentPresenter,
+  // Cursor's sub-agent tool (and Claude's former name for its own): same input
+  // shape — description / subagent_type / prompt — so the same row.
+  Task: agentPresenter,
   Bash: bashPresenter,
   // Codex and Cursor name their shell tool `shell`; same UI as Claude's `Bash`.
   shell: bashPresenter,

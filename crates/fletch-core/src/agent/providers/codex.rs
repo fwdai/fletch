@@ -138,27 +138,31 @@ fn codex_subagent_files(main: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// The spawn call's id, if `body` is the parent's `SubAgentActivity` /
-/// `started` record for the child thread `id` (see the module doc).
-fn codex_subagent_parent(body: &Value, id: &str) -> Option<String> {
-    if body.get("type").and_then(Value::as_str) != Some("event_msg") {
-        return None;
-    }
-    let item = body.pointer("/payload/item")?;
-    let field = |key: &str| item.get(key).and_then(Value::as_str);
-    if field("type") != Some("SubAgentActivity")
-        || field("kind") != Some("started")
-        || field("agent_thread_id") != Some(id)
-    {
-        return None;
-    }
-    field("id").map(str::to_string)
+/// The spawn call's id, from the parent's `SubAgentActivity` / `started` record
+/// for the child thread `id` (see the module doc) — the first of `bodies` that
+/// is one, since a thread id is spawned once.
+fn codex_subagent_parent(bodies: &[Value], id: &str) -> Option<String> {
+    bodies.iter().find_map(|body| {
+        if body.get("type").and_then(Value::as_str) != Some("event_msg") {
+            return None;
+        }
+        let item = body.pointer("/payload/item")?;
+        let field = |key: &str| item.get(key).and_then(Value::as_str);
+        if field("type") != Some("SubAgentActivity")
+            || field("kind") != Some("started")
+            || field("agent_thread_id") != Some(id)
+        {
+            return None;
+        }
+        field("id").map(str::to_string)
+    })
 }
 
 pub(crate) const CODEX_SUBAGENTS: SubagentLayout = SubagentLayout {
     files: codex_subagent_files,
+    needle: None, // the child thread id is verbatim in the linking record
     parent_tool_use: codex_subagent_parent,
-    // Rollout lines carry no id: positional, namespaced by the child id.
+    // Rollout lines carry no id: positional, namespaced by the file's stem.
     id_field: None,
 };
 
@@ -365,8 +369,17 @@ mod tests {
     #[test]
     fn subagent_parent_is_the_spawn_call_id_on_the_started_activity() {
         assert_eq!(
-            codex_subagent_parent(&activity("started", "call_spawn", "child-1"), "child-1")
+            codex_subagent_parent(&[activity("started", "call_spawn", "child-1")], "child-1")
                 .as_deref(),
+            Some("call_spawn")
+        );
+        // Found wherever it sits among the records the needle matched.
+        let bodies = [
+            activity("started", "call_other", "child-2"),
+            activity("started", "call_spawn", "child-1"),
+        ];
+        assert_eq!(
+            codex_subagent_parent(&bodies, "child-1").as_deref(),
             Some("call_spawn")
         );
     }
@@ -375,7 +388,7 @@ mod tests {
     fn subagent_parent_ignores_other_records() {
         // Another child's start.
         assert_eq!(
-            codex_subagent_parent(&activity("started", "call_spawn", "child-2"), "child-1"),
+            codex_subagent_parent(&[activity("started", "call_spawn", "child-2")], "child-1"),
             None
         );
         // The same child's completion / interruption carry ids of their own —
@@ -383,7 +396,7 @@ mod tests {
         for kind in ["completed", "interrupted"] {
             assert_eq!(
                 codex_subagent_parent(
-                    &activity(kind, "subagent-completed-x", "child-1"),
+                    &[activity(kind, "subagent-completed-x", "child-1")],
                     "child-1"
                 ),
                 None,
@@ -394,6 +407,7 @@ mod tests {
         let call = json!({ "type": "response_item", "payload": {
             "type": "function_call", "name": "spawn_agent", "namespace": "collaboration",
             "call_id": "call_spawn", "arguments": "{\"task_name\":\"task\"}" } });
-        assert_eq!(codex_subagent_parent(&call, "child-1"), None);
+        assert_eq!(codex_subagent_parent(&[call], "child-1"), None);
+        assert_eq!(codex_subagent_parent(&[], "child-1"), None);
     }
 }

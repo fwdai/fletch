@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { cursorTaskId } from "@/adapters/cursor/normalize";
 import type { SessionRecord } from "@/api";
 import { reduceRecords } from "@/helpers";
 
@@ -141,6 +142,109 @@ describe("reduceRecords", () => {
       input: { description: "review", subagent_type: "/root/review" },
       children: [{ kind: "agent_message", text: "LGTM" }],
     });
+  });
+
+  it("nests persisted Cursor sub-agent records under the spawning Task call", () => {
+    // Cursor's Task block has no id on disk and its sub-agent file names no
+    // parent; the sync links the two by prompt and tags the sub-agent's records
+    // with the prompt-derived id `normalizeTranscript` gives the block.
+    const prompt = "look at a.rs";
+    const parent = cursorTaskId(prompt);
+    const records = [
+      rec(
+        {
+          role: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                name: "Task",
+                input: { description: "Look", subagent_type: "explore", model: "inherit", prompt },
+              },
+            ],
+          },
+        },
+        "cursor",
+      ),
+      rec(
+        {
+          role: "user",
+          parent_tool_use_id: parent,
+          message: {
+            content: [
+              {
+                type: "text",
+                text: `<timestamp>Fri</timestamp>\n<user_query>\n${prompt}\n</user_query>`,
+              },
+            ],
+          },
+        },
+        "cursor",
+      ),
+      rec(
+        {
+          role: "assistant",
+          parent_tool_use_id: parent,
+          message: { content: [{ type: "text", text: "a.rs is fine" }] },
+        },
+        "cursor",
+      ),
+      rec({ type: "turn_ended", status: "success", parent_tool_use_id: parent }, "cursor"),
+    ];
+    const items = reduceRecords("cursor", records);
+    expect(items).toEqual([
+      {
+        kind: "tool_call",
+        id: parent,
+        name: "Task",
+        input: { description: "Look", subagent_type: "explore", model: "inherit", prompt },
+        children: [
+          { kind: "user_message", text: prompt },
+          { kind: "agent_message", text: "a.rs is fine", streaming: false },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps two identically-prompted Cursor sub-agents in their own rows", () => {
+    // Both Tasks hash the same, so the sync numbers the second file's records
+    // `<hash>-2` and normalizeTranscript numbers the second Task block to
+    // match. Without that they share an id and upsertToolCall merges the rows.
+    const prompt = "look at a.rs";
+    const base = cursorTaskId(prompt);
+    const task = {
+      role: "assistant",
+      message: {
+        content: [{ type: "tool_use", name: "Task", input: { prompt } }],
+      },
+    };
+    const reply = (parent: string, text: string) => ({
+      role: "assistant",
+      parent_tool_use_id: parent,
+      message: { content: [{ type: "text", text }] },
+    });
+    const records = [
+      rec(task, "cursor"),
+      rec(task, "cursor"),
+      rec(reply(base, "first says fine"), "cursor"),
+      rec(reply(`${base}-2`, "second says fine"), "cursor"),
+    ];
+    expect(reduceRecords("cursor", records)).toEqual([
+      {
+        kind: "tool_call",
+        id: base,
+        name: "Task",
+        input: { prompt },
+        children: [{ kind: "agent_message", text: "first says fine", streaming: false }],
+      },
+      {
+        kind: "tool_call",
+        id: `${base}-2`,
+        name: "Task",
+        input: { prompt },
+        children: [{ kind: "agent_message", text: "second says fine", streaming: false }],
+      },
+    ]);
   });
 
   it("is defensive against malformed bodies", () => {
