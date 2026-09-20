@@ -4,6 +4,7 @@ mod disposition;
 mod events;
 mod fork;
 mod lifecycle;
+mod live_turn;
 mod messaging;
 mod pr_set;
 mod rpc_watch;
@@ -14,6 +15,7 @@ mod shell;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};
 pub use lifecycle::SpawnRequest;
+pub use live_turn::LiveTurnSnapshot;
 pub use pr_set::sync_pr_set_links;
 pub use run::ProjectRunConfig;
 pub use session_sync::{
@@ -133,6 +135,10 @@ pub struct Supervisor {
     /// before it acts on the gate (§10.4). Overwritten on each (re)spawn; removed
     /// on teardown.
     pub rpc_dispatchers: Mutex<HashMap<String, Arc<dyn crate::rpc::RpcDispatcher>>>,
+    /// The current turn's `agent:event` stream per agent, for a client that
+    /// missed it (see `live_turn`). Cleared at the next turn start; removed on
+    /// teardown. In-memory only.
+    pub live_turns: Mutex<HashMap<String, live_turn::LiveTurn>>,
     /// Fan-out of every runtime status transition (see [`StatusEvent`]). Held
     /// as the sender; subscribers call [`Supervisor::subscribe_status`]. The
     /// supervisor never reads it, so a dropped-receiver `send` error is ignored.
@@ -160,6 +166,7 @@ impl Supervisor {
             sync_health: Arc::new(Mutex::new(HashMap::new())),
             verify_inflight: Arc::new(Mutex::new(HashSet::new())),
             rpc_dispatchers: Mutex::new(HashMap::new()),
+            live_turns: Mutex::new(HashMap::new()),
             // Capacity is generous: a lagging subscriber gets `Lagged` and
             // re-reads `status_of`, so overflow degrades to a resync, never a
             // lost terminal state. 1024 covers bursts across many live agents.
@@ -213,6 +220,18 @@ impl Supervisor {
     pub fn read_session_records(&self, agent_id: &str) -> Vec<crate::workspace::SessionRecord> {
         self.workspace
             .read_session_records(agent_id)
+            .unwrap_or_default()
+    }
+
+    /// The events of this agent's current (or, once idle, most recent) turn,
+    /// for a client rebuilding a log it missed the stream of. Empty for an
+    /// agent with no buffered turn — one that never ran under this host
+    /// process, or a native-view agent, whose PTY bytes are not events.
+    pub fn read_live_turn(&self, agent_id: &str) -> LiveTurnSnapshot {
+        self.live_turns
+            .lock()
+            .get(agent_id)
+            .map(|t| t.snapshot())
             .unwrap_or_default()
     }
 

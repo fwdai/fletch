@@ -459,6 +459,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `read_session_records` | `{ agentId }` | `SessionRecord[]` |
 | `read_user_turns` | `{ agentId }` | `UserTurn[]` |
 | `sync_session` | `{ agentId }` | `null` |
+| `read_live_turn` | `{ agentId }` — the `event` payloads of the agent's current turn, oldest first, as they were forwarded on `agent:event`; `dropped` counts events cut from the head when the turn outgrew the host's buffer. Empty for a turn that ran under a previous host process or in the native view. No desktop command of this name yet | `{ events: object[], dropped: number }` |
 | `get_git_state` | `{ agentId }` | `GitState \| null` |
 | `get_all_shortstats` | `{}` — uncommitted working-tree stats for every live agent; archived and still-cloning agents are omitted | `Record<agentId, ShortStats>` |
 | `get_all_git_meta` | `{}` — advisory local-git metadata per checkout (base staleness, changed paths), keyed like the PR maps (`agentId` for the primary repo, `"{agentId}::{subdir}"` for secondaries); no network | `Record<gitKey, GitMeta>` |
@@ -823,6 +824,15 @@ refetch `get_workspace` on reconnect and on returning to the foreground, and
 proof of an empty conversation — the turn-end ingest can lag or miss — so the
 phone then asks the host to `sync_session` and reads once more, and keeps
 whatever log it already rendered from live events if that is still empty.
+
+Records stop at the last *finished* turn: the running one is ingested only when
+it ends. A phone that opens a busy agent therefore also asks for
+`read_live_turn` and folds those events onto the rebuilt log exactly as it
+folds the live `agent:event` stream — so a turn whose frames were lost to a
+backgrounded app or a dropped socket is rendered whole, for every provider,
+and the frames still to come continue from where the replay left off. A host
+without the op (gate on `protocol.ops`) leaves the phone with the live log it
+already has, as before.
 
 ## Errors
 

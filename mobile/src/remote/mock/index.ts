@@ -38,6 +38,9 @@ interface MockState {
    *  phone overlays on the rebuilt transcript — it is where a rebuilt bubble
    *  gets its attachments and typed text back from. */
   turns: Record<string, UserTurn[]>;
+  /** The current turn's live frames per agent, as the host buffers them for
+   *  `read_live_turn`: cleared when a turn starts, never at its end. */
+  liveTurns: Record<string, Record<string, unknown>[]>;
   pendingToolUse: Record<string, string>;
   /** The roadmap boards, flat across projects as the host's table is. */
   roadmapItems: RoadmapItem[];
@@ -79,6 +82,7 @@ export class MockHost {
       workspace: structuredClone(fx.workspace),
       records: structuredClone(fx.records),
       turns: structuredClone(fx.userTurns),
+      liveTurns: {},
       pendingToolUse: { pamukkale: fx.PENDING_REQUEST_ID },
       roadmapItems: structuredClone(fx.roadmapItems),
       nextPrNumber: 649,
@@ -241,9 +245,11 @@ export class MockHost {
     while (end > 0 && !steps[end].record) end -= 1;
     this.event("turn:started", { agent_id: id, started_at: Date.now() });
     this.setStatus(id, "running");
+    this.state.liveTurns[id] = [];
     steps.forEach((step, i) => {
       this.later(
         () => {
+          this.state.liveTurns[id] = [...(this.state.liveTurns[id] ?? []), step.live];
           this.event("agent:event", { agent_id: id, event: step.live });
           if (step.record) this.appendRecord(id, provider, step.record);
           if (i === end) {
@@ -418,6 +424,10 @@ export class MockHost {
       case "answer_tool_use": {
         const behavior = String(args.behavior ?? "allow");
         delete this.state.pendingToolUse[id];
+        // As the host: a settled prompt is not replayed.
+        this.state.liveTurns[id] = (this.state.liveTurns[id] ?? []).filter(
+          (ev) => !(ev.type === "control_request" && ev.request_id === args.requestId),
+        );
         this.appendRecord(id, this.agent(id).provider, {
           type: "user",
           message: {
@@ -484,6 +494,8 @@ export class MockHost {
         return this.state.turns[id] ?? [];
       case "sync_session":
         return null;
+      case "read_live_turn":
+        return { events: this.state.liveTurns[id] ?? [], dropped: 0 };
       case "get_git_state":
         return fx.gitStates[id] ?? null;
       // Working-tree stats for the whole fleet, as the host reports them: an

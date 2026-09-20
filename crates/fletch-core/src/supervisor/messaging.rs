@@ -307,7 +307,13 @@ impl Supervisor {
         message: Option<String>,
     ) -> Result<()> {
         let agent = self.live_agent(agent_id)?;
-        agent.answer_tool_use(request_id, updated_input, behavior, message)
+        agent.answer_tool_use(request_id, updated_input, behavior, message)?;
+        // A settled prompt must not come back as a pending card on a client
+        // that replays the turn (see `live_turn`).
+        if let Some(turn) = self.live_turns.lock().get_mut(agent_id) {
+            turn.answered(request_id);
+        }
+        Ok(())
     }
 
     /// Enqueue a follow-up both in memory (the live queue) and in the durable
@@ -402,6 +408,9 @@ pub(super) fn mark_user_turn_started(
     if let Some(activity) = sup.activities.lock().get_mut(agent_id) {
         activity.reset_for_new_turn();
     }
+    // The previous turn is in `session_records` by now; from here the buffer
+    // holds this one (see `live_turn`).
+    sup.live_turns.lock().remove(agent_id);
     // Stamp the turn's run start with a single timestamp shared by the persisted
     // row and the `turn:started` event, so the live timer and the footer measure
     // from the identical instant. Native PTY turns have no fletch-origin row (no

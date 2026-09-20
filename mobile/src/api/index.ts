@@ -19,7 +19,7 @@ import type {
   RoadmapItemPatch,
   RoadmapItemUpdate,
 } from "@desktop/api/types/roadmap";
-import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
+import type { LiveTurn, SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import type { CustomAgent } from "@desktop/storage/customAgents";
 import type { RemoteClient } from "../remote";
@@ -144,6 +144,9 @@ export function createApi(client: RemoteClient) {
       call<SessionRecord[]>("read_session_records", { agentId }),
     readUserTurns: (agentId: string) => call<UserTurn[]>("read_user_turns", { agentId }),
     syncSession: (agentId: string) => call<null>("sync_session", { agentId }),
+    /** The running turn's events, which the records lack until it ends. Gated
+     *  on `hostSupports("read_live_turn")`. */
+    readLiveTurn: (agentId: string) => call<LiveTurn>("read_live_turn", { agentId }),
     getGitState: (agentId: string, subdir?: string) =>
       call<GitState | null>("get_git_state", { agentId, subdir }),
     /** Uncommitted working-tree stats for the whole fleet, keyed by agent id —

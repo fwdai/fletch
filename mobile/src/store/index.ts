@@ -26,6 +26,7 @@ import {
 import type { PushFletch } from "../remote/push";
 import { type ChatsSlice, createChatsSlice } from "./chats";
 import { registerRemoteEvents } from "./events";
+import { replayLiveTurn, runningTurnStart, withPendingTurns } from "./liveTurn";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
 import { forgetPush, startPush, syncPush } from "./push";
@@ -152,7 +153,9 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   refreshWorkspace(): Promise<void>;
   openAgent(agentId: string): void;
   loadAgent(agentId: string): Promise<void>;
-  rebuildLog(agentId: string): Promise<void>;
+  /** Rebuild the log from the host's records. With `liveTurn`, the running
+   *  turn is replayed on top from `read_live_turn` (see store/liveTurn). */
+  rebuildLog(agentId: string, opts?: { liveTurn?: boolean }): Promise<void>;
   loadGit(agentId: string): Promise<void>;
   /** Refresh the fleet-wide working-tree stats behind the agent rows. */
   loadShortstats(): Promise<void>;
@@ -740,22 +743,29 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async loadAgent(agentId) {
-    // A running turn's log is built from live events; the host's records only
-    // catch up at turn end (see rebuildLog). Rebuilding now would replace it
-    // with the prompt alone, so a re-open or reconnect mid-turn keeps what the
-    // stream rendered. The turn-end `session:records-appended` rebuild — which
-    // calls rebuildLog directly — is the authoritative one.
+    // The host's records stop at the last finished turn (the running one is
+    // ingested when it ends), so a busy agent's log is rebuilt from the records
+    // plus the running turn as the host has it (`read_live_turn`) — whatever
+    // the socket missed while the app was in the background, for any provider.
+    // A host without the op leaves the log the live events built rather than
+    // replacing it with the prompt alone; the turn-end `session:records-
+    // appended` rebuild is the authoritative one there.
     const agent = agentOf(get(), agentId);
-    const midTurn = agent !== undefined && isBusy(agent) && get().logs[agentId] !== undefined;
-    if (!midTurn) await get().rebuildLog(agentId);
+    const busy = agent !== undefined && isBusy(agent);
+    if (busy && get().hostSupports("read_live_turn")) {
+      await get().rebuildLog(agentId, { liveTurn: true });
+    } else if (!busy || get().logs[agentId] === undefined) {
+      await get().rebuildLog(agentId);
+    }
     // A purpose-tagged chat has no code of its own to report on — the PM never
     // edits a file, and the host denies it the publish ops — so the git and PR
     // reads are skipped rather than answered with an empty diff.
     if (!agent?.purpose) await get().loadGit(agentId);
   },
 
-  async rebuildLog(agentId) {
+  async rebuildLog(agentId, opts = {}) {
     return guard(set, async () => {
+      const liveTurn = opts.liveTurn ? api.readLiveTurn(agentId) : Promise.resolve(null);
       let [records, turns] = await Promise.all([
         api.readSessionRecords(agentId),
         api.readUserTurns(agentId),
@@ -771,14 +781,26 @@ export const useStore = create<MobileState>()((set, get) => ({
           api.readUserTurns(agentId),
         ]);
       }
-      // Still nothing stored: keep the log the live events built rather than
-      // wiping the conversation the user was just looking at (the desktop's
-      // records-appended handler makes the same call). A brand-new agent has
-      // no log either way, so the empty state still renders for it.
-      if (records.length === 0) return;
+      const live = await liveTurn;
+      // Still nothing stored and no running turn to replay: keep the log the
+      // live events built rather than wiping the conversation the user was
+      // just looking at (the desktop's records-appended handler makes the same
+      // call). A brand-new agent has no log either way, so the empty state
+      // still renders for it.
+      if (records.length === 0 && !live) return;
       const provider = agentOf(get(), agentId)?.provider;
       const items = applyUserTurns(reduceRecords(provider, records), turns);
-      set((s) => ({ logs: { ...s.logs, [agentId]: items } }));
+      if (!live) {
+        set((s) => ({ logs: { ...s.logs, [agentId]: items } }));
+        return;
+      }
+      const startedAt = runningTurnStart(turns);
+      set((s) => ({
+        ...replayLiveTurn(s, agentId, withPendingTurns(agentId, items, turns), live),
+        ...(startedAt === undefined
+          ? {}
+          : { turnStartedAt: { ...s.turnStartedAt, [agentId]: startedAt } }),
+      }));
     });
   },
 

@@ -352,7 +352,7 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 106 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 107 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -374,6 +374,7 @@ fn allowlist_matches_the_protocol_table() {
         "read_session_records",
         "read_user_turns",
         "sync_session",
+        "read_live_turn",
         "get_git_state",
         "get_all_shortstats",
         "get_all_git_meta",

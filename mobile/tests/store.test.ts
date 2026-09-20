@@ -309,18 +309,18 @@ describe("spawn flow", () => {
     expect(fresh?.name).toBeTruthy();
   });
 
-  it("keeps the live log when the agent is re-opened mid-turn", async () => {
+  /** Spawn an agent and wait until its first turn has a tool call streaming. */
+  async function spawnMidTurn(name: string, prompt: string) {
     await state().spawn({
       repoPath: state().workspace?.projects[0].path ?? "",
       provider: "claude",
       model: "claude-opus-5",
       effort: "high",
       base: "main",
-      prompt: "Wire the dictation engine picker",
-      name: "lofoten",
+      prompt,
+      name,
     });
     const id = state().workspace?.agents[0]?.id ?? "";
-    // A tool call has streamed in and the turn is still running.
     await vi.waitFor(
       () => {
         expect(agentOf(state(), id)?.status).toBe("running");
@@ -328,21 +328,39 @@ describe("spawn flow", () => {
       },
       { timeout: 10_000 },
     );
+    return id;
+  }
+
+  it("replays the running turn from the host when the agent is re-opened mid-turn", async () => {
+    const prompt = "Wire the dictation engine picker";
+    const id = await spawnMidTurn("lofoten", prompt);
     const live = state().logs[id] ?? [];
-    // The real host ingests a turn's transcript only at turn end, so mid-turn its
-    // records stop at the prompt. The mock persists every step, so hold it back.
-    const records = await api.readSessionRecords(id);
-    const read = vi.spyOn(api, "readSessionRecords").mockResolvedValue(records.slice(0, 1));
+    // A real host has ingested nothing of the running turn: no record of it
+    // yet, and its user turn still unmatched. The mock persists every step, so
+    // hold both back. And the phone's socket died in the background, so its
+    // own log missed the whole turn.
+    const turns = (await api.readUserTurns(id)).map((t) => ({
+      ...t,
+      native_id: null,
+      ended_at: null,
+    }));
+    const read = vi.spyOn(api, "readSessionRecords").mockResolvedValue([]);
+    const readTurns = vi.spyOn(api, "readUserTurns").mockResolvedValue(turns);
+    useStore.setState((s) => ({ logs: { ...s.logs, [id]: [] } }));
     try {
       // Back to the list, then into the agent again: what openAgent runs.
       state().pop();
       await state().loadAgent(id);
     } finally {
       read.mockRestore();
+      readTurns.mockRestore();
     }
     const after = state().logs[id] ?? [];
-    expect(after.length).toBeGreaterThanOrEqual(live.length);
-    for (const item of live) expect(after).toContainEqual(item);
+    // The prompt opens the replayed turn, then everything the stream drew.
+    expect(after[0]).toMatchObject({ kind: "user_message", text: prompt });
+    for (const item of live.filter((i) => i.kind !== "user_message")) {
+      expect(after).toContainEqual(item);
+    }
 
     // Once the turn ends the host's records are complete and authoritative:
     // re-opening then does rebuild from them.
@@ -352,6 +370,38 @@ describe("spawn flow", () => {
     useStore.setState((s) => ({ logs: { ...s.logs, [id]: (s.logs[id] ?? []).slice(0, 1) } }));
     await state().loadAgent(id);
     expect((state().logs[id] ?? []).some((i) => i.kind === "tool_call")).toBe(true);
+  }, 30_000);
+
+  it("keeps the live log mid-turn on a host without read_live_turn", async () => {
+    const id = await spawnMidTurn("senja", "Add the relay setting to the host sheet");
+    const live = state().logs[id] ?? [];
+    const protocol = state().protocol;
+    const records = await api.readSessionRecords(id);
+    const read = vi.spyOn(api, "readSessionRecords").mockResolvedValue(records.slice(0, 1));
+    const readLive = vi.spyOn(api, "readLiveTurn");
+    useStore.setState({
+      protocol: protocol && {
+        ...protocol,
+        ops: protocol.ops.filter((o) => o !== "read_live_turn"),
+      },
+    });
+    try {
+      state().pop();
+      await state().loadAgent(id);
+    } finally {
+      useStore.setState({ protocol });
+      read.mockRestore();
+      readLive.mockRestore();
+    }
+    // Nothing to replay from, so rebuilding would have left the prompt alone:
+    // the stream's log stays (and keeps growing with the stream).
+    expect(readLive).not.toHaveBeenCalled();
+    const after = state().logs[id] ?? [];
+    expect(after.length).toBeGreaterThanOrEqual(live.length);
+    for (const item of live) expect(after).toContainEqual(item);
+    await vi.waitFor(() => expect(agentOf(state(), id)?.status).toBe("idle"), {
+      timeout: 10_000,
+    });
   }, 30_000);
 
   it("rejects and rolls back when the first message fails, so the prompt can be retried", async () => {
