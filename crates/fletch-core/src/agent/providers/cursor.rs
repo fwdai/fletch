@@ -347,6 +347,14 @@ mod tests {
         let nested = td.path().join("sess-1").join("subagents");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(&main, "{}\n").unwrap();
+        // Written in path order so creation order and the path tiebreak agree
+        // whatever the filesystem's timestamp resolution; ordering by creation
+        // time is covered by the test below.
+        std::fs::write(
+            nested.join("a1.jsonl"),
+            format!("{}\n", first_line("first task")),
+        )
+        .unwrap();
         std::fs::write(
             nested.join("b2.jsonl"),
             format!(
@@ -355,22 +363,16 @@ mod tests {
             ),
         )
         .unwrap();
-        std::fs::write(
-            nested.join("a1.jsonl"),
-            format!("{}\n", first_line("first task")),
-        )
-        .unwrap();
         // Just created: no complete first line yet → empty key, links nothing.
         std::fs::write(nested.join("c3.jsonl"), "{\"role\":\"us").unwrap();
         // Not a transcript.
         std::fs::write(nested.join("notes.txt"), "").unwrap();
 
-        // Creation order, not path order: b2 was written first.
         assert_eq!(
             cursor_subagent_files(&main),
             vec![
-                (cursor_task_id("second task"), nested.join("b2.jsonl")),
                 (cursor_task_id("first task"), nested.join("a1.jsonl")),
+                (cursor_task_id("second task"), nested.join("b2.jsonl")),
                 (String::new(), nested.join("c3.jsonl")),
             ]
         );
