@@ -29,6 +29,7 @@ import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
 import { agentOf, type MobileState } from "./index";
+import { isReplayed } from "./liveTurn";
 import { applyLiveEvent } from "./transcript";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
@@ -45,21 +46,56 @@ const patchAgent = (
 
 /** A held `can_use_tool` prompt: control plane, not transcript. Record
  *  tool_use id → request id so the approval card can answer it, and never feed
- *  it to the reducer. */
-function foldControlRequest(set: Set, agentId: string, ev: RawEvent): boolean {
-  if (ev.type !== "control_request") return false;
+ *  it to the reducer. Null when `ev` is not a control request at all. */
+function foldControlRequest(
+  s: MobileState,
+  agentId: string,
+  ev: RawEvent,
+): Partial<MobileState> | null {
+  if (ev.type !== "control_request") return null;
   const request = ev.request as Record<string, unknown> | undefined;
   const requestId = ev.request_id;
   const toolUseId = request?.tool_use_id;
   if (request?.subtype === "can_use_tool" && typeof toolUseId === "string" && requestId) {
-    set((s) => ({
+    return {
       pendingToolUse: {
         ...s.pendingToolUse,
         [agentId]: { ...(s.pendingToolUse[agentId] ?? {}), [toolUseId]: String(requestId) },
       },
-    }));
+    };
   }
-  return true;
+  return {};
+}
+
+/** Fold one `agent:event` payload into the store: the state after `raw`, as a
+ *  patch on `s`. Pure, so the live stream and a replayed turn (`read_live_turn`)
+ *  go through the identical path and render the identical log. */
+export function foldAgentEvent(
+  s: MobileState,
+  agentId: string,
+  raw: RawEvent,
+): Partial<MobileState> {
+  const control = foldControlRequest(s, agentId, raw);
+  if (control) return control;
+  // Background sub-agent bookkeeping (`system` task events). The chat
+  // reducers ignore `system` anyway; these go to their own map, and keep
+  // arriving after the turn's `result` while a sub-agent is still working.
+  if (isTaskEvent(raw)) return foldTaskEvent(s, agentId, raw);
+  const provider = agentOf(s, agentId)?.provider;
+  // A provider without those events (cursor) derives the same lifecycle from
+  // its own tool events — same fold, and the event still reaches the chat
+  // below as the tool call it is. Mirrors the desktop's eventListeners.
+  let next: MobileState = s;
+  for (const task of getAdapter(provider).taskEvents?.(raw) ?? []) {
+    next = { ...next, ...foldTaskEvent(next, agentId, task) };
+  }
+  const { items, turnEnded } = applyLiveEvent(provider, next.logs[agentId] ?? [], raw);
+  return {
+    backgroundTasks: next.backgroundTasks,
+    logs: { ...next.logs, [agentId]: items },
+    busy: turnEnded ? { ...next.busy, [agentId]: false } : next.busy,
+    pendingToolUse: turnEnded ? { ...next.pendingToolUse, [agentId]: {} } : next.pendingToolUse,
+  };
 }
 
 export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): void {
@@ -67,28 +103,10 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     client.on(event, (payload) => cb(payload as T));
 
   on<AgentManagedEvent>("agent:event", (e) => {
-    const raw = e.event as RawEvent;
-    if (foldControlRequest(set, e.agent_id, raw)) return;
-    // Background sub-agent bookkeeping (`system` task events). The chat
-    // reducers ignore `system` anyway; these go to their own map, and keep
-    // arriving after the turn's `result` while a sub-agent is still working.
-    if (isTaskEvent(raw)) {
-      set((s) => foldTaskEvent(s, e.agent_id, raw));
-      return;
-    }
-    const provider = agentOf(get(), e.agent_id)?.provider;
-    // A provider without those events (cursor) derives the same lifecycle from
-    // its own tool events — same fold, and the event still reaches the chat
-    // below as the tool call it is. Mirrors the desktop's eventListeners.
-    for (const task of getAdapter(provider).taskEvents?.(raw) ?? []) {
-      set((s) => foldTaskEvent(s, e.agent_id, task));
-    }
-    const { items, turnEnded } = applyLiveEvent(provider, get().logs[e.agent_id] ?? [], raw);
-    set((s) => ({
-      logs: { ...s.logs, [e.agent_id]: items },
-      busy: turnEnded ? { ...s.busy, [e.agent_id]: false } : s.busy,
-      pendingToolUse: turnEnded ? { ...s.pendingToolUse, [e.agent_id]: {} } : s.pendingToolUse,
-    }));
+    // A frame a replayed turn already holds is not drawn twice.
+    set((s) =>
+      isReplayed(s.liveSeq, e) ? {} : foldAgentEvent(s, e.agent_id, e.event as RawEvent),
+    );
   });
 
   // The canonical transcript for a finished turn — richer than the live render

@@ -29,6 +29,17 @@ export interface SessionRecordsAppendedEvent {
   agent_id: string;
 }
 
+/** The running turn's `agent:event` payloads, as `read_live_turn` answers: what
+ *  a client that missed the stream folds onto the rebuilt log. `dropped` counts
+ *  events cut from the head of the turn when it outgrew the host's buffer. */
+export interface LiveTurn {
+  events: (Record<string, unknown> & { type?: string })[];
+  dropped: number;
+  /** The `seq` the agent's next `agent:event` will carry; every event above
+   *  has a lower one. A live frame at or past it is not in this snapshot. */
+  next_seq: number;
+}
+
 /** Degraded transcript-ingest status: the vendor CLI's home dir is gone
  *  (`no_root`), its files no longer parse (`format_drift`), or matched files
  *  couldn't be read at all (`read_error`) or only partially (`partial_read`,

@@ -1,10 +1,11 @@
 import type { BackgroundTaskMap } from "@desktop/adapters/shared/backgroundTasks";
-import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
+import type { AgentManagedEvent, AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
 import type { GitState, ShortStats } from "@desktop/api/types/git";
 import type { PrChecks, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
+import type { LiveTurn } from "@desktop/api/types/session";
 import { appActionMessage } from "@desktop/delegation";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
@@ -26,6 +27,7 @@ import {
 import type { PushFletch } from "../remote/push";
 import { type ChatsSlice, createChatsSlice } from "./chats";
 import { registerRemoteEvents } from "./events";
+import { replayLiveTurn, runningTurnStart, withPendingTurns } from "./liveTurn";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
 import { forgetPush, startPush, syncPush } from "./push";
@@ -107,6 +109,11 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   /** Claude's background sub-agents per agent, keyed by task id. Live only:
    *  never persisted, empty after every handshake. See store/backgroundTasks. */
   backgroundTasks: Record<string, BackgroundTaskMap>;
+  /** Per agent, the `seq` of the first live frame a replayed turn did *not*
+   *  hold (see store/liveTurn): frames below it are already in the log and are
+   *  dropped on arrival. Empty after every handshake, since a host restart
+   *  starts its count over. */
+  liveSeq: Record<string, number>;
   gitStates: Record<string, GitState | null>;
   /** Uncommitted working-tree stats for the whole fleet, from the app-wide
    *  poll — the same numbers the desktop sidebar shows. */
@@ -152,7 +159,9 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   refreshWorkspace(): Promise<void>;
   openAgent(agentId: string): void;
   loadAgent(agentId: string): Promise<void>;
-  rebuildLog(agentId: string): Promise<void>;
+  /** Rebuild the log from the host's records. With `liveTurn`, the running
+   *  turn is replayed on top from `read_live_turn` (see store/liveTurn). */
+  rebuildLog(agentId: string, opts?: { liveTurn?: boolean }): Promise<void>;
   loadGit(agentId: string): Promise<void>;
   /** Refresh the fleet-wide working-tree stats behind the agent rows. */
   loadShortstats(): Promise<void>;
@@ -441,6 +450,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   pendingPublishApprovals: [],
   turnStartedAt: {},
   backgroundTasks: {},
+  liveSeq: {},
   gitStates: {},
   shortstats: {},
   prStates: {},
@@ -497,7 +507,8 @@ export const useStore = create<MobileState>()((set, get) => ({
       // Task events missed while the socket was down are gone for good — a
       // task held as running could never be seen ending — so the maps start
       // over on every handshake and refill from whatever the host emits next.
-      set({ backgroundTasks: {} });
+      // The replay watermarks go with them: a restarted host counts from zero.
+      set({ backgroundTasks: {}, liveSeq: {} });
       // The snapshot carries no stats, so the rows get their numbers from the
       // first poll of every handshake rather than waiting out its interval.
       void get().loadShortstats();
@@ -639,6 +650,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       pendingPublishApprovals: [],
       logs: {},
       backgroundTasks: {},
+      liveSeq: {},
       // The chats belong to the host that holds their checkouts, and the ghosts
       // to the boards those chats propose onto.
       chats: {},
@@ -740,21 +752,27 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async loadAgent(agentId) {
-    // A running turn's log is built from live events; the host's records only
-    // catch up at turn end (see rebuildLog). Rebuilding now would replace it
-    // with the prompt alone, so a re-open or reconnect mid-turn keeps what the
-    // stream rendered. The turn-end `session:records-appended` rebuild — which
-    // calls rebuildLog directly — is the authoritative one.
+    // The host's records stop at the last finished turn (the running one is
+    // ingested when it ends), so a busy agent's log is rebuilt from the records
+    // plus the running turn as the host has it (`read_live_turn`) — whatever
+    // the socket missed while the app was in the background, for any provider.
+    // A host without the op leaves the log the live events built rather than
+    // replacing it with the prompt alone; the turn-end `session:records-
+    // appended` rebuild is the authoritative one there.
     const agent = agentOf(get(), agentId);
-    const midTurn = agent !== undefined && isBusy(agent) && get().logs[agentId] !== undefined;
-    if (!midTurn) await get().rebuildLog(agentId);
+    const busy = agent !== undefined && isBusy(agent);
+    if (busy && get().hostSupports("read_live_turn")) {
+      await get().rebuildLog(agentId, { liveTurn: true });
+    } else if (!busy || get().logs[agentId] === undefined) {
+      await get().rebuildLog(agentId);
+    }
     // A purpose-tagged chat has no code of its own to report on — the PM never
     // edits a file, and the host denies it the publish ops — so the git and PR
     // reads are skipped rather than answered with an empty diff.
     if (!agent?.purpose) await get().loadGit(agentId);
   },
 
-  async rebuildLog(agentId) {
+  async rebuildLog(agentId, opts = {}) {
     return guard(set, async () => {
       let [records, turns] = await Promise.all([
         api.readSessionRecords(agentId),
@@ -771,14 +789,42 @@ export const useStore = create<MobileState>()((set, get) => ({
           api.readUserTurns(agentId),
         ]);
       }
-      // Still nothing stored: keep the log the live events built rather than
-      // wiping the conversation the user was just looking at (the desktop's
-      // records-appended handler makes the same call). A brand-new agent has
-      // no log either way, so the empty state still renders for it.
-      if (records.length === 0) return;
+      // Still nothing stored and no running turn to replay: keep the log the
+      // live events built rather than wiping the conversation the user was
+      // just looking at (the desktop's records-appended handler makes the same
+      // call). A brand-new agent has no log either way, so the empty state
+      // still renders for it.
+      if (records.length === 0 && !opts.liveTurn) return;
       const provider = agentOf(get(), agentId)?.provider;
       const items = applyUserTurns(reduceRecords(provider, records), turns);
-      set((s) => ({ logs: { ...s.logs, [agentId]: items } }));
+      if (!opts.liveTurn) {
+        set((s) => ({ logs: { ...s.logs, [agentId]: items } }));
+        return;
+      }
+      // The running turn is read last, once the records have settled, so the
+      // stream has the shortest possible window to move on in — and every
+      // frame that lands in that window is kept, to be folded after the
+      // snapshot or skipped as already in it (see replayLiveTurn). The patch
+      // below runs in the response's own continuation, before the next frame
+      // is dispatched, so nothing arrives between the capture and the fold.
+      const late: AgentManagedEvent[] = [];
+      const off = client.on("agent:event", (payload) => {
+        const e = payload as AgentManagedEvent;
+        if (e.agent_id === agentId) late.push(e);
+      });
+      let live: LiveTurn;
+      try {
+        live = await api.readLiveTurn(agentId);
+      } finally {
+        off();
+      }
+      const startedAt = runningTurnStart(turns);
+      set((s) => ({
+        ...replayLiveTurn(s, agentId, withPendingTurns(agentId, items, turns), live, late),
+        ...(startedAt === undefined
+          ? {}
+          : { turnStartedAt: { ...s.turnStartedAt, [agentId]: startedAt } }),
+      }));
     });
   },
 

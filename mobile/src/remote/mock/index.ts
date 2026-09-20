@@ -38,6 +38,12 @@ interface MockState {
    *  phone overlays on the rebuilt transcript — it is where a rebuilt bubble
    *  gets its attachments and typed text back from. */
   turns: Record<string, UserTurn[]>;
+  /** The current turn's live frames per agent, as the host buffers them for
+   *  `read_live_turn`: cleared when a turn starts, never at its end. */
+  liveTurns: Record<string, Record<string, unknown>[]>;
+  /** The next `seq` each agent's `agent:event` goes out with — counted for the
+   *  agent's life, as the host does, so a replay's watermark holds across turns. */
+  liveSeq: Record<string, number>;
   pendingToolUse: Record<string, string>;
   /** The roadmap boards, flat across projects as the host's table is. */
   roadmapItems: RoadmapItem[];
@@ -79,6 +85,8 @@ export class MockHost {
       workspace: structuredClone(fx.workspace),
       records: structuredClone(fx.records),
       turns: structuredClone(fx.userTurns),
+      liveTurns: {},
+      liveSeq: {},
       pendingToolUse: { pamukkale: fx.PENDING_REQUEST_ID },
       roadmapItems: structuredClone(fx.roadmapItems),
       nextPrNumber: 649,
@@ -135,6 +143,15 @@ export class MockHost {
 
   private event(event: string, payload: unknown) {
     this.emit({ event, payload });
+  }
+
+  /** One `agent:event`, numbered and kept for `read_live_turn` as the host
+   *  does both on the one callback every runner shares. */
+  private agentEvent(id: string, event: Record<string, unknown>) {
+    const seq = this.state.liveSeq[id] ?? 0;
+    this.state.liveSeq[id] = seq + 1;
+    this.state.liveTurns[id] = [...(this.state.liveTurns[id] ?? []), event];
+    this.event("agent:event", { agent_id: id, event, seq });
   }
 
   /** The snapshot as the host reports it: purpose-tagged chats are held back,
@@ -241,10 +258,11 @@ export class MockHost {
     while (end > 0 && !steps[end].record) end -= 1;
     this.event("turn:started", { agent_id: id, started_at: Date.now() });
     this.setStatus(id, "running");
+    this.state.liveTurns[id] = [];
     steps.forEach((step, i) => {
       this.later(
         () => {
-          this.event("agent:event", { agent_id: id, event: step.live });
+          this.agentEvent(id, step.live);
           if (step.record) this.appendRecord(id, provider, step.record);
           if (i === end) {
             this.event("session:records-appended", { agent_id: id });
@@ -418,6 +436,10 @@ export class MockHost {
       case "answer_tool_use": {
         const behavior = String(args.behavior ?? "allow");
         delete this.state.pendingToolUse[id];
+        // As the host: a settled prompt is not replayed.
+        this.state.liveTurns[id] = (this.state.liveTurns[id] ?? []).filter(
+          (ev) => !(ev.type === "control_request" && ev.request_id === args.requestId),
+        );
         this.appendRecord(id, this.agent(id).provider, {
           type: "user",
           message: {
@@ -484,6 +506,12 @@ export class MockHost {
         return this.state.turns[id] ?? [];
       case "sync_session":
         return null;
+      case "read_live_turn":
+        return {
+          events: this.state.liveTurns[id] ?? [],
+          dropped: 0,
+          next_seq: this.state.liveSeq[id] ?? 0,
+        };
       case "get_git_state":
         return fx.gitStates[id] ?? null;
       // Working-tree stats for the whole fleet, as the host reports them: an
@@ -649,16 +677,13 @@ export class MockHost {
    *  waiting agent shows its approval card without a turn having to run) and a
    *  live turn on the running agent. */
   private bootstrap() {
-    this.event("agent:event", {
-      agent_id: "pamukkale",
-      event: {
-        type: "control_request",
-        request_id: fx.PENDING_REQUEST_ID,
-        request: {
-          subtype: "can_use_tool",
-          tool_use_id: fx.PENDING_TOOL_USE_ID,
-          tool_name: "Bash",
-        },
+    this.agentEvent("pamukkale", {
+      type: "control_request",
+      request_id: fx.PENDING_REQUEST_ID,
+      request: {
+        subtype: "can_use_tool",
+        tool_use_id: fx.PENDING_TOOL_USE_ID,
+        tool_name: "Bash",
       },
     });
     this.later(() => this.runTurn("arabia", "continue"), 1200);

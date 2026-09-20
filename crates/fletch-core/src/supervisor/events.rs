@@ -43,16 +43,21 @@ pub(super) fn emit_agent_output(sink: &dyn EventSink, agent_id: &str, bytes: Vec
 struct AgentEventPayload {
     agent_id: String,
     event: Value,
+    /// The agent's per-event count under this host process (see `live_turn`):
+    /// what lets a client that replayed the turn skip the frames the replay
+    /// already held.
+    seq: u64,
 }
 
 /// One parsed JSON event from a managed/per-turn agent's stream.
-pub(super) fn emit_agent_event(sink: &dyn EventSink, agent_id: &str, event: Value) {
+pub(super) fn emit_agent_event(sink: &dyn EventSink, agent_id: &str, event: Value, seq: u64) {
     emit(
         sink,
         "agent:event",
         AgentEventPayload {
             agent_id: agent_id.to_string(),
             event,
+            seq,
         },
     );
 }

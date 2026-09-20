@@ -124,6 +124,7 @@ pub const OPS: &[&str] = &[
     "read_session_records",
     "read_user_turns",
     "sync_session",
+    "read_live_turn",
     "get_git_state",
     "get_all_shortstats",
     "get_all_git_meta",
@@ -442,6 +443,14 @@ impl Dispatch for SupervisorDispatch {
                     let a: AgentArgs = parse(args)?;
                     sup.sync_session(&a.agent_id);
                     res::<()>(Ok(()))
+                }
+
+                // The running turn's event stream, for a client that missed it
+                // (a phone back from the background). The turn-end ingest is
+                // the only other copy and it has not happened yet.
+                "read_live_turn" => {
+                    let a: AgentArgs = parse(args)?;
+                    ok(sup.read_live_turn(&a.agent_id))
                 }
 
                 "get_git_state" => {

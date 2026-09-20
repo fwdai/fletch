@@ -307,7 +307,13 @@ impl Supervisor {
         message: Option<String>,
     ) -> Result<()> {
         let agent = self.live_agent(agent_id)?;
-        agent.answer_tool_use(request_id, updated_input, behavior, message)
+        agent.answer_tool_use(request_id, updated_input, behavior, message)?;
+        // A settled prompt must not come back as a pending card on a client
+        // that replays the turn (see `live_turn`).
+        if let Some(turn) = self.live_turns.lock().get_mut(agent_id) {
+            turn.answered(request_id);
+        }
+        Ok(())
     }
 
     /// Enqueue a follow-up both in memory (the live queue) and in the durable
@@ -431,6 +437,17 @@ fn deliver_as_turn(
     if deletion_guard.contains(&project_id) {
         return Err(Error::Other("project deletion is in progress".into()));
     }
+    // The previous turn is in `session_records` by now; from here the live
+    // buffer holds this one (see `live_turn`). Emptied *before* the message
+    // goes out: the agent's first event can land on the event callback before
+    // this function gets to mark the turn started, and a clear after delivery
+    // would take that event with it. A delivery that fails leaves an empty
+    // buffer for an agent that is idle, which the records already cover.
+    sup.live_turns
+        .lock()
+        .entry(agent_id.to_string())
+        .or_default()
+        .begin_turn();
     sup.deliver_user_message(agent_id, &msg.turn_id, &msg.text, &msg.attachments)?;
     mark_user_turn_started(sup, ctx, agent_id, Some(&msg.turn_id));
     on_first_user_message(
