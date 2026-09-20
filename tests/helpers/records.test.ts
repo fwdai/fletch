@@ -90,6 +90,59 @@ describe("reduceRecords", () => {
     });
   });
 
+  it("nests persisted Codex sub-agent records under the spawning Agent call", () => {
+    // The sync ingests the child rollout's lines after the parent's, each
+    // tagged with the spawn `call_id` (the id of the parent's
+    // `SubAgentActivity` / `started` item). Shapes from codex-cli 0.153.4.
+    const spawn = "call_spawn";
+    const records = [
+      rec(
+        {
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "spawn_agent",
+            namespace: "collaboration",
+            arguments: '{"task_name":"review","fork_turns":"all","message":"gAAAAABq=="}',
+            call_id: spawn,
+          },
+        },
+        "codex",
+      ),
+      rec(
+        {
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: spawn,
+            output: '{"task_name":"/root/review"}',
+          },
+        },
+        "codex",
+      ),
+      rec(
+        {
+          type: "event_msg",
+          parent_tool_use_id: spawn,
+          payload: {
+            type: "item_completed",
+            item: { type: "AgentMessage", id: "m1", content: [{ type: "text", text: "LGTM" }] },
+          },
+        },
+        "codex",
+      ),
+    ];
+    const items = reduceRecords("codex", records);
+    expect(items.map((i) => i.kind)).toEqual(["tool_call", "tool_result"]);
+    expect(items[0]).toMatchObject({
+      kind: "tool_call",
+      id: spawn,
+      name: "Agent",
+      input: { description: "review", subagent_type: "/root/review" },
+      children: [{ kind: "agent_message", text: "LGTM" }],
+    });
+  });
+
   it("is defensive against malformed bodies", () => {
     const records = [rec(null as unknown as Record<string, unknown>), rec({ type: "weird" })];
     expect(() => reduceRecords("pi", records)).not.toThrow();

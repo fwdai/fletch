@@ -1836,6 +1836,15 @@ fn archived_agents_survive_reload_without_reconcile() {
 pub(crate) fn make_workspace_with_session(
     db: &Arc<Mutex<Connection>>,
 ) -> (String, WorkspaceManager) {
+    make_workspace_with_session_for(db, "claude")
+}
+
+/// As [`make_workspace_with_session`], for an agent of a given provider — so a
+/// caller can drive the provider's own transcript reader off a stored record.
+pub(crate) fn make_workspace_with_session_for(
+    db: &Arc<Mutex<Connection>>,
+    provider: &str,
+) -> (String, WorkspaceManager) {
     let td = tempfile::tempdir().unwrap();
     let repo = init_repo(td.path());
     let repo_str = repo.to_str().unwrap().to_string();
@@ -1845,7 +1854,7 @@ pub(crate) fn make_workspace_with_session(
     let mut rec = new_agent_record(
         uuid::Uuid::new_v4().to_string(),
         "evt-test".into(),
-        "claude".into(),
+        provider.into(),
         TrackedRepo {
             repo_path: repo,
             subdir: "repo".into(),

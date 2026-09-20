@@ -130,7 +130,24 @@ pub(crate) fn find_codex_rollouts(session_id: &str, diag: &mut ReadDiagnostics) 
     // `rollout-<ts>-<id>.jsonl`) so one thread id can't match another whose
     // name merely ends with the same characters.
     let suffix = format!("-{session_id}.jsonl");
-    // Walk the YYYY/MM/DD tree (three dir levels) and match the suffix.
+    diag.root_exists = sessions.exists();
+    let out: Vec<PathBuf> = codex_rollout_files(&sessions)
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(&suffix))
+        })
+        .collect();
+    diag.files_matched += out.len();
+    out
+}
+
+/// Every file in a codex `sessions` root's `YYYY/MM/DD` tree (three dir
+/// levels, nothing deeper), sorted — and since every path component is
+/// zero-padded and the filenames timestamp-prefixed, path order is creation
+/// order. Directory listing only; no file is opened.
+pub(crate) fn codex_rollout_files(sessions: &Path) -> Vec<PathBuf> {
     fn dirs_in(p: &Path) -> Vec<PathBuf> {
         std::fs::read_dir(p)
             .into_iter()
@@ -140,26 +157,21 @@ pub(crate) fn find_codex_rollouts(session_id: &str, diag: &mut ReadDiagnostics) 
             .filter(|p| p.is_dir())
             .collect()
     }
-    diag.root_exists = sessions.exists();
     let mut out = Vec::new();
-    for year in dirs_in(&sessions) {
+    for year in dirs_in(sessions) {
         for month in dirs_in(&year) {
             for day in dirs_in(&month) {
-                for entry in std::fs::read_dir(&day).into_iter().flatten().flatten() {
-                    let path = entry.path();
-                    if path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.ends_with(&suffix))
-                    {
-                        out.push(path);
-                    }
-                }
+                out.extend(
+                    std::fs::read_dir(&day)
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .map(|e| e.path()),
+                );
             }
         }
     }
     out.sort();
-    diag.files_matched += out.len();
     out
 }
 
