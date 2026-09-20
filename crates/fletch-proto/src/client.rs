@@ -28,7 +28,7 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::dial::{self, Ws};
 use crate::keys::{StaticKey, DEVICE_KEY_FILE};
@@ -46,6 +46,38 @@ pub type ConnectionId = u64;
 const CLOSE_ABNORMAL: u16 = 1006;
 /// The protocol's code for a failed handshake or a cleartext frame.
 const CLOSE_BAD_FRAME: u16 = 4001;
+/// The reason on the close this end raises when the peer stops answering pings.
+pub const PONG_TIMEOUT: &str = "pong timeout";
+
+/// How this end tells a dead socket from a quiet one.
+///
+/// The host pings, but a socket the OS froze under a suspended app does not
+/// carry the host's close frame back — and a read on it stays pending — so
+/// without pings of its own the client learns nothing until TCP gives up,
+/// minutes later, while every request it sends in the meantime hangs. Over the
+/// relay the pong comes from the relay's runtime (docs/remote-protocol.md,
+/// "Relay"), so this detects the device↔relay hop, which is the one a phone
+/// loses in the background.
+#[derive(Clone, Copy, Debug)]
+pub struct Keepalive {
+    pub interval: Duration,
+    /// Pings sent without a pong in between before the connection is declared
+    /// dead. The connection is closed on the tick *after* the last allowed
+    /// miss, so the worst case is `(max_missed + 1) * interval`.
+    pub max_missed: u32,
+}
+
+impl Default for Keepalive {
+    /// Ten seconds and two misses: a dead socket is closed within thirty
+    /// seconds of the app resuming, and a foregrounded idle phone sends six
+    /// tiny frames a minute.
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(10),
+            max_missed: 2,
+        }
+    }
+}
 
 /// Where to dial, whose identity to insist on, and how long to spend.
 pub struct Target {
@@ -117,6 +149,9 @@ struct Conn {
     /// One Noise object drives both directions; sends and receives are small
     /// enough that sharing it behind the connection's own lock costs nothing.
     channel: Channel,
+    /// Pings sent since the last pong. The keepalive task raises it, the read
+    /// loop zeroes it (see [`Keepalive`]).
+    missed_pongs: u32,
 }
 
 /// Every live connection this client holds, plus the device identity they all
@@ -139,14 +174,24 @@ pub struct Dialer {
     conns: Mutex<HashMap<ConnectionId, Arc<Mutex<Conn>>>>,
     next_id: AtomicU64,
     events: Box<dyn Fn(ClientEvent) + Send + Sync>,
+    keepalive: Keepalive,
 }
 
 impl Dialer {
     /// A dialer whose device key lives in `dir` and whose connections report
-    /// themselves through `events`.
+    /// themselves through `events`, pinging on the default [`Keepalive`].
     pub fn new(
         dir: impl Into<PathBuf>,
         events: Box<dyn Fn(ClientEvent) + Send + Sync>,
+    ) -> Arc<Self> {
+        Self::with_keepalive(dir, events, Keepalive::default())
+    }
+
+    /// [`Dialer::new`] with the ping schedule chosen — tests run it fast.
+    pub fn with_keepalive(
+        dir: impl Into<PathBuf>,
+        events: Box<dyn Fn(ClientEvent) + Send + Sync>,
+        keepalive: Keepalive,
     ) -> Arc<Self> {
         Arc::new(Self {
             dir: dir.into(),
@@ -154,6 +199,7 @@ impl Dialer {
             conns: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(0),
             events,
+            keepalive,
         })
     }
 
@@ -202,9 +248,14 @@ impl Dialer {
         // attempt that failed leaves no id behind for a caller to hold.
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let (writer, reader) = ws.split();
-        let conn = Arc::new(Mutex::new(Conn { writer, channel }));
+        let conn = Arc::new(Mutex::new(Conn {
+            writer,
+            channel,
+            missed_pongs: 0,
+        }));
         self.conns.lock().await.insert(id, conn);
         self.clone().spawn_reader(reader, id);
+        self.clone().spawn_keepalive(id);
         Ok(ConnectResult {
             host_key,
             connection_id: id,
@@ -317,7 +368,14 @@ impl Dialer {
                         }
                         break;
                     }
-                    // Ping/pong are the transport's business and stay unencrypted.
+                    // The answer to our keepalive: the socket is alive.
+                    Ok(Message::Pong(_)) => {
+                        if let Some(conn) = self.conn(id).await {
+                            conn.lock().await.missed_pongs = 0;
+                        }
+                    }
+                    // The host's own pings are answered by the socket itself;
+                    // frames are the transport's business and stay unencrypted.
                     Ok(_) => {}
                     Err(e) => {
                         let message = e.to_string();
@@ -331,6 +389,39 @@ impl Dialer {
                 }
             }
             self.report_close(id, code, reason).await;
+        });
+    }
+
+    /// Ping `id` on the [`Keepalive`] schedule and close it as abnormal (1006,
+    /// [`PONG_TIMEOUT`]) once too many pings go unanswered. Stops on its own
+    /// when the connection is gone from the map, whoever removed it.
+    fn spawn_keepalive(self: Arc<Self>, id: ConnectionId) {
+        let Keepalive {
+            interval,
+            max_missed,
+        } = self.keepalive;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(conn) = self.conn(id).await else {
+                    return;
+                };
+                let mut guard = conn.lock().await;
+                if guard.missed_pongs >= max_missed {
+                    drop(guard);
+                    self.report_close(id, CLOSE_ABNORMAL, PONG_TIMEOUT.into())
+                        .await;
+                    return;
+                }
+                guard.missed_pongs += 1;
+                let sent = guard.writer.send(Message::Ping(Bytes::new())).await;
+                drop(guard);
+                if let Err(e) = sent {
+                    // A write the socket refuses is the same news, sooner.
+                    self.report_close(id, CLOSE_ABNORMAL, e.to_string()).await;
+                    return;
+                }
+            }
         });
     }
 

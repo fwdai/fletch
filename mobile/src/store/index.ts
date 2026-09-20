@@ -12,6 +12,7 @@ import type { ChatItem, RawEvent } from "../adapters";
 import { createApi } from "../api";
 import { isBusy } from "../lib/agents";
 import { ignore } from "../lib/ignore";
+import { withTimeout } from "../lib/timeout";
 import {
   type ConnectionState,
   createClient,
@@ -156,7 +157,10 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  finishing late, which must not dismiss whatever the user opened since. */
   closeSheetIf(name: SheetName): void;
 
-  refreshWorkspace(): Promise<void>;
+  /** Re-read the workspace snapshot. Resolves to whether the host answered:
+   *  the foreground probe reads that, everything else ignores it. Never
+   *  rejects — a failed read is best effort and the next resync recovers. */
+  refreshWorkspace(): Promise<boolean>;
   openAgent(agentId: string): void;
   loadAgent(agentId: string): Promise<void>;
   /** Rebuild the log from the host's records. With `liveTurn`, the running
@@ -226,6 +230,12 @@ let initialized = false;
 /** A tapped alert that arrived before `init` finished. It cannot be acted on
  *  yet: which screen it opens depends on the host key, which is still being
  *  read off disk. */
+/** How long a foregrounded app waits for the host to answer the workspace
+ *  read before treating the socket as dead and reconnecting. `get_workspace`
+ *  is one database read and answers in well under a second even over the
+ *  relay, so a miss this long is the socket, not the host being busy. */
+export const RESUME_PROBE_TIMEOUT_MS = 6_000;
+
 let queuedPush: PushFletch | null = null;
 
 /** A pairing link that arrived before `init` finished — the usual case, in
@@ -522,12 +532,28 @@ export const useStore = create<MobileState>()((set, get) => ({
       // spent. Guarded on `pairStep` so the two never race.
       if (!get().hostKey && !get().pairStep) void adopt(set, get, snapshot.host).catch(ignore);
     });
+    // Back in the foreground: refresh what the background missed — once the
+    // socket has shown it is still alive. iOS freezes a suspended app's
+    // socket, and when the app returns it can read as connected for a while
+    // longer with every request on it hanging. So the refresh doubles as the
+    // probe: a workspace read the host does not answer in time, or that the
+    // socket refuses outright, means the socket is dead, and the reconnect it
+    // triggers does the refreshing instead, through the handshake's snapshot.
+    // The transport's own pings catch the same death for an idle foreground
+    // app, more slowly.
+    const resume = async () => {
+      const alive = await withTimeout(get().refreshWorkspace(), RESUME_PROBE_TIMEOUT_MS, false);
+      if (!alive) {
+        void get().reconnect().catch(ignore);
+        return;
+      }
+      void get().loadShortstats();
+      refreshOpenAgent();
+    };
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
         if (document.hidden || client.state !== "connected") return;
-        void get().refreshWorkspace();
-        void get().loadShortstats();
-        refreshOpenAgent();
+        void resume();
       });
     }
     const saved = await loadSettings();
@@ -741,8 +767,10 @@ export const useStore = create<MobileState>()((set, get) => ({
     try {
       const workspace = await api.getWorkspace();
       if (workspace) set((s) => ({ workspace, busy: reconcileBusy(s.busy, workspace) }));
+      return true;
     } catch {
       // Best effort; the next event or resync recovers.
+      return false;
     }
   },
 
@@ -907,7 +935,9 @@ export const useStore = create<MobileState>()((set, get) => ({
         record,
         prompt,
         attachments,
-        recover: () => get().refreshWorkspace(),
+        recover: async () => {
+          await get().refreshWorkspace();
+        },
       });
     });
   },
