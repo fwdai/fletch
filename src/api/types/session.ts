@@ -35,6 +35,9 @@ export interface SessionRecordsAppendedEvent {
 export interface LiveTurn {
   events: (Record<string, unknown> & { type?: string })[];
   dropped: number;
+  /** The `seq` the agent's next `agent:event` will carry; every event above
+   *  has a lower one. A live frame at or past it is not in this snapshot. */
+  next_seq: number;
 }
 
 /** Degraded transcript-ingest status: the vendor CLI's home dir is gone

@@ -408,9 +408,6 @@ pub(super) fn mark_user_turn_started(
     if let Some(activity) = sup.activities.lock().get_mut(agent_id) {
         activity.reset_for_new_turn();
     }
-    // The previous turn is in `session_records` by now; from here the buffer
-    // holds this one (see `live_turn`).
-    sup.live_turns.lock().remove(agent_id);
     // Stamp the turn's run start with a single timestamp shared by the persisted
     // row and the `turn:started` event, so the live timer and the footer measure
     // from the identical instant. Native PTY turns have no fletch-origin row (no
@@ -440,6 +437,17 @@ fn deliver_as_turn(
     if deletion_guard.contains(&project_id) {
         return Err(Error::Other("project deletion is in progress".into()));
     }
+    // The previous turn is in `session_records` by now; from here the live
+    // buffer holds this one (see `live_turn`). Emptied *before* the message
+    // goes out: the agent's first event can land on the event callback before
+    // this function gets to mark the turn started, and a clear after delivery
+    // would take that event with it. A delivery that fails leaves an empty
+    // buffer for an agent that is idle, which the records already cover.
+    sup.live_turns
+        .lock()
+        .entry(agent_id.to_string())
+        .or_default()
+        .begin_turn();
     sup.deliver_user_message(agent_id, &msg.turn_id, &msg.text, &msg.attachments)?;
     mark_user_turn_started(sup, ctx, agent_id, Some(&msg.turn_id));
     on_first_user_message(

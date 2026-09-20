@@ -136,6 +136,10 @@ export interface AgentOutputEvent {
 export interface AgentManagedEvent {
   agent_id: string;
   event: Record<string, unknown> & { type?: string };
+  /** The agent's per-event count under the current host process, matching
+   *  `LiveTurn.next_seq`: a client that replayed the running turn skips frames
+   *  numbered below the snapshot it folded. Absent from hosts before it. */
+  seq?: number;
 }
 
 export interface AgentStatusEvent {

@@ -2,9 +2,11 @@
 // the desktop adapters rendering real stream-json shapes. The jsdom URL in
 // vite.config.ts puts this file in mock mode (see `mockEnabled`).
 
-import { ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
+import { type AgentManagedEvent, ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
+import type { LiveTurn } from "@desktop/api/types/session";
 import { PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { ChatItem } from "../src/adapters";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import {
   PENDING_REQUEST_ID,
@@ -12,6 +14,7 @@ import {
   PM_CUSTOM_AGENT_ID,
 } from "../src/remote/mock/fixtures";
 import { agentOf, api, client, projectOf, useStore } from "../src/store";
+import { isReplayed, replayLiveTurn } from "../src/store/liveTurn";
 import { clearHost, loadSettings, saveSettings } from "../src/store/persist";
 
 const state = () => useStore.getState();
@@ -143,6 +146,52 @@ describe("event folding", () => {
     } finally {
       send.mockRestore();
     }
+  });
+});
+
+/** The replay against the stream still running under it. Pure, so the exact
+ *  interleavings are pinned down rather than hoped for in a timing test. */
+describe("replaying the running turn", () => {
+  const text = (n: number) => ({
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "text", text: `message ${n}` }] },
+  });
+  const texts = (items: ChatItem[]) =>
+    items.flatMap((i) => (i.kind === "agent_message" ? [i.text] : []));
+
+  it("folds a frame that arrived after the snapshot, once, and skips one it already holds", () => {
+    const id = "zanskar";
+    const live: LiveTurn = { events: [text(1), text(2)], dropped: 0, next_seq: 2 };
+    // Both reached the phone while the snapshot was in flight: the first is
+    // in the snapshot (its frame simply overtook the response), the second
+    // happened after the host took it.
+    const late: AgentManagedEvent[] = [
+      { agent_id: id, event: text(2), seq: 1 },
+      { agent_id: id, event: text(3), seq: 2 },
+    ];
+    const patch = replayLiveTurn(state(), id, [], live, late);
+    expect(texts(patch.logs?.[id] ?? [])).toEqual(["message 1", "message 2", "message 3"]);
+    expect(patch.liveSeq?.[id]).toBe(2);
+  });
+
+  it("then drops a live frame the snapshot covered and keeps the next one", () => {
+    const liveSeq = { zanskar: 2 };
+    expect(isReplayed(liveSeq, { agent_id: "zanskar", event: text(2), seq: 1 })).toBe(true);
+    expect(isReplayed(liveSeq, { agent_id: "zanskar", event: text(3), seq: 2 })).toBe(false);
+    // Another agent's frames, and a host that numbers nothing, are untouched.
+    expect(isReplayed(liveSeq, { agent_id: "other", event: text(1), seq: 0 })).toBe(false);
+    expect(isReplayed(liveSeq, { agent_id: "zanskar", event: text(1) })).toBe(false);
+  });
+
+  it("says so when the host dropped the head of the turn", () => {
+    const patch = replayLiveTurn(state(), "zanskar", [], {
+      events: [text(9)],
+      dropped: 8,
+      next_seq: 9,
+    });
+    const log = patch.logs?.zanskar ?? [];
+    expect(log[0]).toMatchObject({ kind: "notice", text: expect.stringContaining("8 earlier") });
+    expect(texts(log)).toEqual(["message 9"]);
   });
 });
 

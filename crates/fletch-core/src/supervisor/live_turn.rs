@@ -10,10 +10,16 @@
 //! it sits on the one callback all managed and per-turn runners share, so it
 //! needs nothing from the provider's transcript format.
 //!
-//! Cleared when a new user turn starts (`mark_user_turn_started`), not when the
-//! turn ends: between Idle and the turn-end ingest landing, the records still
-//! lack the turn and the buffer is the only place it exists. Clients replay it
-//! only while the agent is busy, so the stale copy is never rendered twice.
+//! Every event carries a per-agent sequence number, on the wire and in the
+//! snapshot, so a client can tell an event the snapshot already holds from one
+//! that arrived while the snapshot was in flight: the two are otherwise
+//! indistinguishable frames, and a client has to fold exactly one copy.
+//!
+//! Emptied when a new user turn is about to be delivered (`begin_turn`), not
+//! when the turn ends: between Idle and the turn-end ingest landing, the
+//! records still lack the turn and the buffer is the only place it exists.
+//! Clients replay it only while the agent is busy, so the stale copy is never
+//! rendered twice.
 
 use std::collections::VecDeque;
 
@@ -30,6 +36,10 @@ pub const LIVE_TURN_CAP: usize = 2000;
 pub struct LiveTurn {
     events: VecDeque<Value>,
     dropped: usize,
+    /// The sequence number the next event gets. Never reset for the agent's
+    /// life under this host process — a new turn continues the count — so a
+    /// client's watermark from one turn stays valid into the next.
+    next_seq: u64,
 }
 
 /// The wire shape of `read_live_turn`.
@@ -39,15 +49,30 @@ pub struct LiveTurnSnapshot {
     pub events: Vec<Value>,
     /// How many events from the head of the turn were discarded to the cap.
     pub dropped: usize,
+    /// The `seq` the next `agent:event` for this agent will carry. Every event
+    /// in `events` has a lower one; a live frame with this or higher arrived
+    /// after the snapshot and is not in it.
+    pub next_seq: u64,
 }
 
 impl LiveTurn {
-    pub fn push(&mut self, event: Value) {
+    /// Keep `event` as the turn's next, returning the sequence number it goes
+    /// out on the wire with.
+    pub fn push(&mut self, event: Value) -> u64 {
         if self.events.len() >= LIVE_TURN_CAP {
             self.events.pop_front();
             self.dropped += 1;
         }
         self.events.push_back(event);
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        seq
+    }
+
+    /// A new turn is about to start: forget the previous one, keep counting.
+    pub fn begin_turn(&mut self) {
+        self.events.clear();
+        self.dropped = 0;
     }
 
     /// A held permission prompt was answered: replaying it would show the
@@ -64,6 +89,7 @@ impl LiveTurn {
         LiveTurnSnapshot {
             events: self.events.iter().cloned().collect(),
             dropped: self.dropped,
+            next_seq: self.next_seq,
         }
     }
 }
@@ -74,12 +100,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn keeps_events_in_order() {
+    fn keeps_events_in_order_and_numbers_them() {
         let mut turn = LiveTurn::default();
-        turn.push(json!({ "type": "assistant", "n": 1 }));
-        turn.push(json!({ "type": "user", "n": 2 }));
+        assert_eq!(turn.push(json!({ "type": "assistant", "n": 1 })), 0);
+        assert_eq!(turn.push(json!({ "type": "user", "n": 2 })), 1);
         let snap = turn.snapshot();
         assert_eq!(snap.dropped, 0);
+        assert_eq!(snap.next_seq, 2);
         assert_eq!(snap.events.len(), 2);
         assert_eq!(snap.events[0]["n"], 1);
         assert_eq!(snap.events[1]["n"], 2);
@@ -95,6 +122,19 @@ mod tests {
         assert_eq!(snap.dropped, 3);
         assert_eq!(snap.events.len(), LIVE_TURN_CAP);
         assert_eq!(snap.events[0]["n"], 3);
+    }
+
+    #[test]
+    fn a_new_turn_empties_the_buffer_but_the_count_goes_on() {
+        let mut turn = LiveTurn::default();
+        turn.push(json!({ "n": 1 }));
+        turn.push(json!({ "n": 2 }));
+        turn.begin_turn();
+        assert_eq!(turn.push(json!({ "n": 3 })), 2);
+        let snap = turn.snapshot();
+        assert_eq!(snap.events.len(), 1);
+        assert_eq!(snap.events[0]["n"], 3);
+        assert_eq!(snap.next_seq, 3);
     }
 
     #[test]

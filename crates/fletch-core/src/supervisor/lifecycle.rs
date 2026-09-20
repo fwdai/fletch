@@ -1586,13 +1586,14 @@ pub(super) fn make_event_handler(
         sup.settle_after_idle_event(&ctx, &agent_id, &event);
 
         // Keep the turn for a client that missed the stream (`read_live_turn`).
-        sup.live_turns
+        let seq = sup
+            .live_turns
             .lock()
             .entry(agent_id.clone())
             .or_default()
             .push(event.clone());
 
-        emit_agent_event(ctx.sink.as_ref(), &agent_id, event);
+        emit_agent_event(ctx.sink.as_ref(), &agent_id, event, seq);
     }
 }
 

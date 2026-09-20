@@ -29,6 +29,7 @@ import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
 import { agentOf, type MobileState } from "./index";
+import { isReplayed } from "./liveTurn";
 import { applyLiveEvent } from "./transcript";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
@@ -102,7 +103,10 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     client.on(event, (payload) => cb(payload as T));
 
   on<AgentManagedEvent>("agent:event", (e) => {
-    set((s) => foldAgentEvent(s, e.agent_id, e.event as RawEvent));
+    // A frame a replayed turn already holds is not drawn twice.
+    set((s) =>
+      isReplayed(s.liveSeq, e) ? {} : foldAgentEvent(s, e.agent_id, e.event as RawEvent),
+    );
   });
 
   // The canonical transcript for a finished turn — richer than the live render

@@ -4,6 +4,7 @@
 // event stream (`read_live_turn`). That copy exists for every provider, and it
 // is what a phone that missed the stream in the background renders from.
 
+import type { AgentManagedEvent } from "@desktop/api/types/agent";
 import type { LiveTurn, UserTurn } from "@desktop/api/types/session";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import type { ChatItem, RawEvent } from "../adapters";
@@ -39,17 +40,34 @@ export function runningTurnStart(turns: UserTurn[]): number | undefined {
   return turns.find((t) => t.started_at != null && t.ended_at == null)?.started_at ?? undefined;
 }
 
+/** A live frame the replay already folded: numbered below the watermark the
+ *  snapshot set for its agent. Folding it again would draw the event twice —
+ *  the host forwards events and answers requests on separate tasks, so a frame
+ *  the snapshot holds can still reach the phone after the snapshot does. A
+ *  frame with no number is from a host without the op, which never replays. */
+export function isReplayed(liveSeq: Record<string, number>, e: AgentManagedEvent): boolean {
+  return e.seq !== undefined && e.seq < (liveSeq[e.agent_id] ?? 0);
+}
+
 /** Fold the host's copy of the running turn onto `base`, as one state patch.
- *  Applied in a single `set` so a live frame arriving meanwhile lands after the
- *  replay, never inside it. The agent's pending prompts start over: the host
- *  drops an answered prompt from the turn it hands back, so the replay is the
- *  whole set of prompts still held — anything this client remembered predates
- *  the frames it missed. */
+ *
+ *  `late` are the frames that reached this client while the snapshot was in
+ *  flight. Those the snapshot already holds (`seq` below its `next_seq`) are in
+ *  `live.events` and are not folded again; the rest happened after the host
+ *  took the snapshot, so they are folded after it — otherwise the replaced log
+ *  would lack them for the rest of the turn. The agent's watermark is then
+ *  `next_seq`, which is what lets the live handler drop a frame the snapshot
+ *  already covered that arrives after this patch lands.
+ *
+ *  The agent's pending prompts start over: the host drops an answered prompt
+ *  from the turn it hands back, so the replay is the whole set of prompts still
+ *  held — anything this client remembered predates the frames it missed. */
 export function replayLiveTurn(
   s: MobileState,
   agentId: string,
   base: ChatItem[],
   live: LiveTurn,
+  late: AgentManagedEvent[] = [],
 ): Partial<MobileState> {
   const head: ChatItem[] =
     live.dropped > 0
@@ -67,13 +85,18 @@ export function replayLiveTurn(
     logs: { ...s.logs, [agentId]: head },
     pendingToolUse: { ...s.pendingToolUse, [agentId]: {} },
   };
-  for (const ev of live.events) {
-    next = { ...next, ...foldAgentEvent(next, agentId, ev as RawEvent) };
+  const fold = (ev: RawEvent) => {
+    next = { ...next, ...foldAgentEvent(next, agentId, ev) };
+  };
+  for (const ev of live.events) fold(ev as RawEvent);
+  for (const e of late) {
+    if (e.seq === undefined || e.seq >= live.next_seq) fold(e.event as RawEvent);
   }
   return {
     logs: next.logs,
     busy: next.busy,
     pendingToolUse: next.pendingToolUse,
     backgroundTasks: next.backgroundTasks,
+    liveSeq: { ...s.liveSeq, [agentId]: live.next_seq },
   };
 }
