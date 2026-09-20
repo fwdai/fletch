@@ -78,22 +78,25 @@ fn claude_subagent_files(main: &Path) -> Vec<(String, PathBuf)> {
 ///
 /// The spawning tool_use id is the block's `tool_use_id`. Nothing else in either
 /// file links the two: the sub-agent's records carry only the session id and
-/// their own `agentId`, and the `tool_use` input holds no id yet.
-fn claude_subagent_parent(body: &Value, id: &str) -> Option<String> {
-    if body
-        .pointer("/toolUseResult/agentId")
-        .and_then(Value::as_str)
-        != Some(id)
-    {
-        return None;
-    }
-    body.pointer("/message/content")?
-        .as_array()?
-        .iter()
-        .find(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))?
-        .get("tool_use_id")?
-        .as_str()
-        .map(str::to_string)
+/// their own `agentId`, and the `tool_use` input holds no id yet. One record
+/// names one agent id, so the first match across `bodies` wins.
+fn claude_subagent_parent(bodies: &[Value], id: &str) -> Option<String> {
+    bodies.iter().find_map(|body| {
+        if body
+            .pointer("/toolUseResult/agentId")
+            .and_then(Value::as_str)
+            != Some(id)
+        {
+            return None;
+        }
+        body.pointer("/message/content")?
+            .as_array()?
+            .iter()
+            .find(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))?
+            .get("tool_use_id")?
+            .as_str()
+            .map(str::to_string)
+    })
 }
 
 const CLAUDE_SUBAGENTS: SubagentLayout = SubagentLayout {
@@ -164,18 +167,28 @@ mod tests {
     fn subagent_parent_links_foreground_and_background_records() {
         for status in ["completed", "async_launched"] {
             assert_eq!(
-                claude_subagent_parent(&parent_record(status, "abc", "toolu_1"), "abc").as_deref(),
+                claude_subagent_parent(&[parent_record(status, "abc", "toolu_1")], "abc")
+                    .as_deref(),
                 Some("toolu_1"),
                 "{status}"
             );
         }
+        // The linking record is found wherever it sits in the batch.
+        let bodies = [
+            json!({ "type": "assistant", "message": {} }),
+            parent_record("completed", "abc", "toolu_2"),
+        ];
+        assert_eq!(
+            claude_subagent_parent(&bodies, "abc").as_deref(),
+            Some("toolu_2")
+        );
     }
 
     #[test]
     fn subagent_parent_ignores_other_records() {
         // Another sub-agent's result.
         assert_eq!(
-            claude_subagent_parent(&parent_record("completed", "other", "toolu_1"), "abc"),
+            claude_subagent_parent(&[parent_record("completed", "other", "toolu_1")], "abc"),
             None
         );
         // The background task notification names the id in text only — no
@@ -184,9 +197,8 @@ mod tests {
             "type": "user",
             "message": { "role": "user", "content": "<task-notification><task-id>abc</task-id></task-notification>" }
         });
-        assert_eq!(claude_subagent_parent(&notification, "abc"), None);
         let own =
             json!({ "type": "assistant", "isSidechain": true, "agentId": "abc", "message": {} });
-        assert_eq!(claude_subagent_parent(&own, "abc"), None);
+        assert_eq!(claude_subagent_parent(&[notification, own], "abc"), None);
     }
 }

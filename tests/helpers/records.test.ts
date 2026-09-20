@@ -206,6 +206,47 @@ describe("reduceRecords", () => {
     ]);
   });
 
+  it("keeps two identically-prompted Cursor sub-agents in their own rows", () => {
+    // Both Tasks hash the same, so the sync numbers the second file's records
+    // `<hash>-2` and normalizeTranscript numbers the second Task block to
+    // match. Without that they share an id and upsertToolCall merges the rows.
+    const prompt = "look at a.rs";
+    const base = cursorTaskId(prompt);
+    const task = {
+      role: "assistant",
+      message: {
+        content: [{ type: "tool_use", name: "Task", input: { prompt } }],
+      },
+    };
+    const reply = (parent: string, text: string) => ({
+      role: "assistant",
+      parent_tool_use_id: parent,
+      message: { content: [{ type: "text", text }] },
+    });
+    const records = [
+      rec(task, "cursor"),
+      rec(task, "cursor"),
+      rec(reply(base, "first says fine"), "cursor"),
+      rec(reply(`${base}-2`, "second says fine"), "cursor"),
+    ];
+    expect(reduceRecords("cursor", records)).toEqual([
+      {
+        kind: "tool_call",
+        id: base,
+        name: "Task",
+        input: { prompt },
+        children: [{ kind: "agent_message", text: "first says fine", streaming: false }],
+      },
+      {
+        kind: "tool_call",
+        id: `${base}-2`,
+        name: "Task",
+        input: { prompt },
+        children: [{ kind: "agent_message", text: "second says fine", streaming: false }],
+      },
+    ]);
+  });
+
   it("is defensive against malformed bodies", () => {
     const records = [rec(null as unknown as Record<string, unknown>), rec({ type: "weird" })];
     expect(() => reduceRecords("pi", records)).not.toThrow();

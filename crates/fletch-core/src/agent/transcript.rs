@@ -72,9 +72,9 @@ pub struct JsonlTail {
 pub struct SubagentLayout {
     /// Sub-agent transcript files of the session whose main transcript is
     /// `main`, as `(link key, path)` in a deterministic order. The key is
-    /// whatever the main transcript names the sub-agent by: Claude's agent id
-    /// (from the file name), Cursor's Task prompt (from the file's first
-    /// record). Empty when the session spawned none.
+    /// whatever `parent_tool_use` can match the sub-agent by: Claude's agent id
+    /// (from the file name), Cursor's Task replay id (derived from the file's
+    /// first record and its position). Empty when the session spawned none.
     pub files: fn(main: &Path) -> Vec<(String, PathBuf)>,
     /// Substring that prefilters the stored main-transcript records handed to
     /// `parent_tool_use` (see `session_record_bodies_containing`). `None` uses
@@ -83,11 +83,14 @@ pub struct SubagentLayout {
     /// substring of the record (Cursor: the prompt is JSON-escaped in the
     /// body) names a fixed marker.
     pub needle: Option<&'static str>,
-    /// The tool_use id that spawned the sub-agent with link key `key`, if
-    /// `body` is the main-transcript record that links the two; `None` for any
-    /// other record. The id must be the one the frontend gives that tool call
-    /// on replay, since the reducer nests by it.
-    pub parent_tool_use: fn(body: &Value, key: &str) -> Option<String>,
+    /// The tool_use id that spawned the sub-agent with link key `key`, given
+    /// every stored main-transcript record the `needle` matched, in transcript
+    /// order; `None` when none of them links the two. The id must be the one
+    /// the frontend gives that tool call on replay, since the reducer nests by
+    /// it. Takes the whole slice rather than one body at a time because Cursor,
+    /// whose blocks carry no id, numbers repeated Task calls across the
+    /// transcript to tell them apart.
+    pub parent_tool_use: fn(bodies: &[Value], key: &str) -> Option<String>,
     /// Per-line native-id field of a sub-agent file (claude's `uuid`); lines
     /// without it are metadata and are dropped. `None` when the lines carry no
     /// id (codex, cursor): they get positional ids, namespaced by the file's

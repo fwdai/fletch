@@ -1241,12 +1241,13 @@ fn ingest_subagents(
             Some(known) => known,
             None => {
                 let needle = layout.needle.unwrap_or(key.as_str());
-                let found = workspace
+                // The whole candidate slice, in transcript order: cursor needs
+                // to number repeated Task calls across records to tell them
+                // apart, which is impossible one body at a time.
+                let bodies = workspace
                     .session_record_bodies_containing(agent_id, needle)
-                    .unwrap_or_default()
-                    .iter()
-                    .find_map(|body| (layout.parent_tool_use)(body, &key));
-                let Some(parent) = found else {
+                    .unwrap_or_default();
+                let Some(parent) = (layout.parent_tool_use)(&bodies, &key) else {
                     continue;
                 };
                 (parent, 0, 0)
@@ -2299,6 +2300,28 @@ mod tests {
         format!("{user}\n{assistant}\n{{\"type\":\"turn_ended\",\"status\":\"success\"}}\n")
     }
 
+    /// The link key the cursor layout gives one sub-agent file — its Task's
+    /// replay id, which depends on where the file falls among its siblings.
+    fn cursor_key_of(
+        layout: crate::agent::SubagentLayout,
+        main: &std::path::Path,
+        file: &std::path::Path,
+    ) -> String {
+        (layout.files)(main)
+            .into_iter()
+            .find(|(_, path)| path == file)
+            .map(|(key, _)| key)
+            .expect("the sub-agent file is keyed")
+    }
+
+    /// The main-transcript assistant record spawning a sub-agent with `prompt`.
+    fn cursor_task_record(prompt: &str) -> serde_json::Value {
+        serde_json::json!({ "role": "assistant", "message": { "content": [
+            { "type": "tool_use", "name": "Task", "input": {
+                "description": "Look", "subagent_type": "explore", "model": "inherit",
+                "prompt": prompt } } ] } })
+    }
+
     #[test]
     fn cursor_subagent_records_are_linked_by_prompt_with_per_file_positional_ids() {
         let db = crate::workspace::tests::test_db();
@@ -2327,12 +2350,11 @@ mod tests {
         assert_eq!(pass(), 0, "nothing links before the Task record is stored");
 
         // The main ingest stores the spawning Task — positional id, no block id.
-        let task = serde_json::json!({ "role": "assistant", "message": { "content": [
-            { "type": "tool_use", "name": "Task", "input": {
-                "description": "Look", "subagent_type": "explore", "model": "inherit", "prompt": "look at a.rs" } } ] } });
+        let task = cursor_task_record("look at a.rs");
         wm.append_session_records(&agent_id, "cursor", "transcript", None, &[("ln:0", &task)])
             .unwrap();
-        let expected_parent = (layout.parent_tool_use)(&task, "look at a.rs").unwrap();
+        let key = cursor_key_of(layout, &main, &sub);
+        let expected_parent = (layout.parent_tool_use)(std::slice::from_ref(&task), &key).unwrap();
 
         assert_eq!(pass(), 3);
         let recs = wm.read_session_records(&agent_id).unwrap();
@@ -2377,6 +2399,65 @@ mod tests {
         subagent_cursors().lock().remove(&sub);
         assert_eq!(pass(), 0);
         assert_eq!(wm.read_session_records(&agent_id).unwrap().len(), 5);
+    }
+
+    /// Two Tasks delegated the same prompt hash to the same base id, so their
+    /// records used to be tagged with one parent and merged into a single row.
+    /// The occurrence suffix keeps them apart.
+    #[test]
+    fn two_cursor_subagents_with_the_same_prompt_are_tagged_separately() {
+        let db = crate::workspace::tests::test_db();
+        let (agent_id, wm) =
+            crate::workspace::tests::make_workspace_with_session_for(&db, "cursor");
+        let record = wm.agent(&agent_id).unwrap();
+        let reader = crate::agent::transcript_reader("cursor").unwrap();
+        let layout = reader.subagents.expect("cursor has a sub-agent layout");
+
+        let td = tempfile::tempdir().unwrap();
+        let main = td.path().join("sess.jsonl");
+        std::fs::write(&main, "").unwrap();
+        let nested = td.path().join("sess").join("subagents");
+        std::fs::create_dir_all(&nested).unwrap();
+        // Reverse path order, so only creation order can pair them up.
+        let first = nested.join("zzzz.jsonl");
+        let second = nested.join("aaaa.jsonl");
+        std::fs::write(&first, cursor_subagent_lines("look at a.rs")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&second, cursor_subagent_lines("look at a.rs")).unwrap();
+
+        let task = cursor_task_record("look at a.rs");
+        wm.append_session_records(
+            &agent_id,
+            "cursor",
+            "transcript",
+            None,
+            &[("ln:0", &task), ("ln:1", &task)],
+        )
+        .unwrap();
+
+        let mut diag = ReadDiagnostics::default();
+        assert_eq!(
+            ingest_subagents(&wm, &record, None, reader, &main, &mut diag),
+            6
+        );
+
+        let first_key = cursor_key_of(layout, &main, &first);
+        let second_key = cursor_key_of(layout, &main, &second);
+        assert_ne!(first_key, second_key, "sibling keys must differ");
+        assert_eq!(second_key, format!("{first_key}-2"));
+
+        let recs = wm.read_session_records(&agent_id).unwrap();
+        let tagged = |stem: &str| -> Vec<String> {
+            recs.iter()
+                .filter(|r| r.native_id.starts_with(stem))
+                .map(|r| r.body["parent_tool_use_id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(tagged("zzzz:"), vec![first_key.clone(); 3]);
+        assert_eq!(tagged("aaaa:"), vec![second_key.clone(); 3]);
+
+        subagent_cursors().lock().remove(&first);
+        subagent_cursors().lock().remove(&second);
     }
 
     // ── Live-poll gate: native view AND a reader that can tail ──

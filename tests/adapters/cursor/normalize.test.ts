@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cursorAdapter } from "@/adapters/cursor/index";
-import { cursorTaskId } from "@/adapters/cursor/normalize";
+import { cursorTaskId, cursorTaskIdNth } from "@/adapters/cursor/normalize";
 import type { ChatItem, RawEvent } from "@/adapters/types";
 
 function render(lines: unknown[]): ChatItem[] {
@@ -111,6 +111,34 @@ describe("cursorAdapter.normalizeTranscript", () => {
     ]);
   });
 
+  // Two Tasks with the same prompt hash the same. Without an occurrence
+  // suffix they share an id, `upsertToolCall` merges them into one row, and
+  // both sub-agents' turns land under it.
+  it("numbers repeated Task prompts so they don't collapse into one call", () => {
+    const prompt = "look at a.rs";
+    const base = cursorTaskId(prompt);
+    const task = {
+      role: "assistant",
+      message: {
+        content: [{ type: "tool_use", name: "Task", input: { prompt } }],
+      },
+    };
+    const items = render([
+      task,
+      // A nested Task inside a sub-agent's own (tagged) record: not part of
+      // the main transcript's numbering, so it must not bump the count.
+      { ...task, parent_tool_use_id: base },
+      task,
+    ]);
+    const calls = items.filter((i) => i.kind === "tool_call") as Array<
+      Extract<ChatItem, { kind: "tool_call" }>
+    >;
+    expect(calls.map((c) => c.id)).toEqual([base, `${base}-2`]);
+    expect(calls[0].children).toEqual([
+      { kind: "tool_call", id: base, name: "Task", input: { prompt } },
+    ]);
+  });
+
   it("derives a stable Task id that matches the sync's (FNV-1a over UTF-16 units)", () => {
     // Pinned against `task_id_is_a_stable_fnv1a_of_the_prompt` in
     // crates/fletch-core/src/agent/providers/cursor.rs.
@@ -118,6 +146,9 @@ describe("cursorAdapter.normalizeTranscript", () => {
     expect(cursorTaskId("look")).toBe(cursorTaskId("look"));
     expect(cursorTaskId("look")).not.toBe(cursorTaskId("look "));
     expect(cursorTaskId("look")).toMatch(/^cursor-task-[0-9a-f]{8}$/);
+    // …and the occurrence suffix, pinned against `suffixed` in providers/cursor.rs.
+    expect(cursorTaskIdNth("cursor-task-811c9dc5", 1)).toBe("cursor-task-811c9dc5");
+    expect(cursorTaskIdNth("cursor-task-811c9dc5", 2)).toBe("cursor-task-811c9dc5-2");
   });
 
   it("is defensive against malformed lines", () => {

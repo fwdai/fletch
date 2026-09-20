@@ -15,7 +15,16 @@
 //! is a user message whose `<user_query>` body equals the Task's `prompt`
 //! (verified on real transcripts, cursor-agent 2026.06.19). The sync links on
 //! that via [`CURSOR_SUBAGENTS`].
+//!
+//! A prompt alone is not unique — the same agent can be delegated the same work
+//! twice — so the link key is the prompt's hash plus the call's occurrence
+//! number (see [`suffixed`]). Sub-agent files are numbered in creation
+//! order and Task calls in transcript order, which line up because Cursor
+//! creates a sub-agent's file when the Task is called. If that ever stops
+//! holding, attribution between two identically-prompted siblings may swap, but
+//! each still gets its own row — the failure the ids exist to prevent.
 
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -61,15 +70,15 @@ pub(crate) fn cursor_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<
     records_with_id(values, None)
 }
 
-/// The replay id of a Cursor `Task` tool call, derived from its prompt because
-/// the on-disk block carries no id of its own. The frontend's Cursor
+/// The base replay id of a Cursor `Task` tool call, derived from its prompt
+/// because the on-disk block carries no id of its own. The frontend's Cursor
 /// `normalizeTranscript` computes the same id for the block (see
 /// `cursorTaskId` in `src/adapters/cursor/normalize.ts`), which is what lets
 /// the reducer nest the sub-agent's records — tagged with this id by the sync —
 /// under that call. FNV-1a (32-bit) over the prompt's UTF-16 code units: the
 /// one encoding both sides get for free, and a hash small enough to write in
-/// five lines each rather than share a dependency. Two Tasks with identical
-/// prompts collapse into one call — an ambiguity Cursor's format has anyway.
+/// five lines each rather than share a dependency. Not unique on its own: see
+/// [`suffixed`] for the occurrence suffix that makes it so.
 pub(crate) fn cursor_task_id(prompt: &str) -> String {
     let mut h: u32 = 0x811c_9dc5;
     for unit in prompt.encode_utf16() {
@@ -77,6 +86,32 @@ pub(crate) fn cursor_task_id(prompt: &str) -> String {
         h = h.wrapping_mul(0x0100_0193);
     }
     format!("cursor-task-{h:08x}")
+}
+
+/// The replay id of the `n`-th (1-based) Task call with base id `base`: the
+/// base itself for the first, `<base>-<n>` after that. Numbering by base id
+/// rather than by prompt text keeps two different prompts that collide in 32
+/// bits on separate rows too. Mirrored by `cursorTaskIdNth` in
+/// `src/adapters/cursor/normalize.ts`, which numbers the main transcript's Task
+/// blocks the same way — a drift between the two un-nests every replayed Cursor
+/// sub-agent.
+fn suffixed(base: String, n: usize) -> String {
+    if n > 1 {
+        format!("{base}-{n}")
+    } else {
+        base
+    }
+}
+
+/// The replay id of the next Task call with this prompt, bumping `counts` (base
+/// id → occurrences seen so far) as it goes. Both sides of the link — the
+/// sub-agent files and the Task blocks they came from — number their sequence
+/// with this, so the two agree.
+fn next_task_id(counts: &mut HashMap<String, usize>, prompt: &str) -> String {
+    let base = cursor_task_id(prompt);
+    let n = counts.entry(base.clone()).or_insert(0);
+    *n += 1;
+    suffixed(base, *n)
 }
 
 /// The user's query inside Cursor's user-turn envelope — a `<timestamp>` line
@@ -88,11 +123,11 @@ fn cursor_user_query(text: &str) -> Option<&str> {
     Some(text[start..end].trim())
 }
 
-/// The link key of one sub-agent file: the query of its first record, which is
-/// the prompt the parent's Task call passed. Empty when the file has no
-/// complete first line yet (just created) or it isn't the expected user
-/// message — such a file links to nothing and is retried next pass.
-fn cursor_subagent_key(path: &Path) -> String {
+/// The query of a sub-agent file's first record, which is the prompt the
+/// parent's Task call passed. Empty when the file has no complete first line
+/// yet (just created) or it isn't the expected user message — such a file links
+/// to nothing and is retried next pass.
+fn cursor_subagent_query(path: &Path) -> String {
     let Ok(file) = std::fs::File::open(path) else {
         return String::new();
     };
@@ -117,21 +152,44 @@ fn cursor_subagent_key(path: &Path) -> String {
         .to_string()
 }
 
+/// When a sub-agent file was created — the moment Cursor called its Task, which
+/// is what puts the files in the same order as the Task calls. Filesystems
+/// without a birth time fall back to the mtime; a file whose metadata can't be
+/// read sorts first and is disambiguated by path.
+fn cursor_subagent_birth(path: &Path) -> Option<std::time::SystemTime> {
+    let meta = std::fs::metadata(path).ok()?;
+    meta.created().or_else(|_| meta.modified()).ok()
+}
+
 /// `<session-id>/subagents/<uuid>.jsonl` files beside the main transcript
-/// `<session-id>.jsonl`, keyed by their first user query, sorted by path.
+/// `<session-id>.jsonl`, in creation order and keyed by the replay id of the
+/// Task that spawned each — the base hash of its first user query plus that
+/// call's occurrence number, so two sub-agents delegated the same prompt get
+/// distinct keys. A file with no readable first line keeps an empty key and
+/// links to nothing (retried next pass) without consuming an occurrence.
 fn cursor_subagent_files(main: &Path) -> Vec<(String, PathBuf)> {
     let dir = main.with_extension("").join("subagents");
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+    let mut paths: Vec<(Option<std::time::SystemTime>, PathBuf)> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .map(|path| (cursor_subagent_birth(&path), path))
         .collect();
     paths.sort();
+    let mut counts: HashMap<String, usize> = HashMap::new();
     paths
         .into_iter()
-        .map(|path| (cursor_subagent_key(&path), path))
+        .map(|(_, path)| {
+            let query = cursor_subagent_query(&path);
+            let key = if query.is_empty() {
+                String::new()
+            } else {
+                next_task_id(&mut counts, &query)
+            };
+            (key, path)
+        })
         .collect()
 }
 
@@ -140,22 +198,30 @@ fn cursor_subagent_files(main: &Path) -> Vec<(String, PathBuf)> {
 /// only those instead of the whole conversation.
 const CURSOR_TASK_NEEDLE: &str = "\"name\":\"Task\"";
 
-/// The replay id of the Task call in `body` whose `prompt` is `key`, if `body`
-/// is the main-transcript assistant record that made it.
-fn cursor_subagent_parent(body: &Value, key: &str) -> Option<String> {
+/// Whether any Task call across `bodies` — the stored main-transcript records
+/// holding one, in transcript order — has replay id `key`; `key` itself if so.
+/// The id is the call's prompt hash plus its occurrence number, which only
+/// comes out right when the whole sequence is numbered at once, hence the
+/// slice. Records carrying a top-level `parent_tool_use_id` are a sub-agent's
+/// own: a Task nested in one isn't part of the main transcript's numbering (nor
+/// of the frontend's, which skips them the same way), so they're skipped.
+fn cursor_subagent_parent(bodies: &[Value], key: &str) -> Option<String> {
     if key.is_empty() {
         return None;
     }
-    body.pointer("/message/content")?
-        .as_array()?
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let found = bodies
         .iter()
+        .filter(|body| body.get("parent_tool_use_id").is_none())
+        .filter_map(|body| body.pointer("/message/content").and_then(Value::as_array))
+        .flatten()
         .filter(|block| {
             block.get("type").and_then(Value::as_str) == Some("tool_use")
                 && block.get("name").and_then(Value::as_str) == Some("Task")
         })
         .filter_map(|block| block.pointer("/input/prompt").and_then(Value::as_str))
-        .find(|prompt| prompt.trim() == key)
-        .map(cursor_task_id)
+        .any(|prompt| next_task_id(&mut counts, prompt.trim()) == key);
+    found.then(|| key.to_string())
 }
 
 pub(crate) const CURSOR_SUBAGENTS: SubagentLayout = SubagentLayout {
@@ -259,7 +325,23 @@ mod tests {
     }
 
     #[test]
-    fn subagent_files_are_keyed_by_their_first_user_query() {
+    fn repeated_task_ids_are_numbered_from_the_second_occurrence() {
+        // Pinned against cursorTaskIdNth in src/adapters/cursor/normalize.ts.
+        let base = cursor_task_id("look");
+        assert_eq!(suffixed(base.clone(), 1), base);
+        assert_eq!(suffixed(base.clone(), 2), format!("{base}-2"));
+        assert_eq!(suffixed(base.clone(), 3), format!("{base}-3"));
+
+        // The counter is keyed by base id, so identical prompts advance
+        // together and different ones never share a number.
+        let mut counts = HashMap::new();
+        assert_eq!(next_task_id(&mut counts, "look"), base);
+        assert_eq!(next_task_id(&mut counts, "other"), cursor_task_id("other"));
+        assert_eq!(next_task_id(&mut counts, "look"), format!("{base}-2"));
+    }
+
+    #[test]
+    fn subagent_files_are_keyed_by_the_replay_id_of_the_task_that_spawned_them() {
         let td = tempfile::tempdir().unwrap();
         let main = td.path().join("sess-1.jsonl");
         let nested = td.path().join("sess-1").join("subagents");
@@ -283,14 +365,73 @@ mod tests {
         // Not a transcript.
         std::fs::write(nested.join("notes.txt"), "").unwrap();
 
+        // Creation order, not path order: b2 was written first.
         assert_eq!(
             cursor_subagent_files(&main),
             vec![
-                ("first task".to_string(), nested.join("a1.jsonl")),
-                ("second task".to_string(), nested.join("b2.jsonl")),
+                (cursor_task_id("second task"), nested.join("b2.jsonl")),
+                (cursor_task_id("first task"), nested.join("a1.jsonl")),
                 (String::new(), nested.join("c3.jsonl")),
             ]
         );
+    }
+
+    #[test]
+    fn two_subagents_with_the_same_prompt_are_keyed_in_creation_order() {
+        let td = tempfile::tempdir().unwrap();
+        let main = td.path().join("sess-1.jsonl");
+        let nested = td.path().join("sess-1").join("subagents");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(&main, "{}\n").unwrap();
+        // Named so path order is the reverse of creation order: the key must
+        // follow the clock, which is what matches the Task call order.
+        let second = nested.join("aaaa.jsonl");
+        let first = nested.join("zzzz.jsonl");
+        let line = format!("{}\n", first_line("look at a.rs"));
+        std::fs::write(&first, &line).unwrap();
+        // Clear any filesystem timestamp granularity between the two.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&second, &line).unwrap();
+
+        let base = cursor_task_id("look at a.rs");
+        assert_eq!(
+            cursor_subagent_files(&main),
+            vec![(base.clone(), first), (format!("{base}-2"), second.clone())]
+        );
+
+        // Each key resolves to its own Task call, so the two never merge.
+        let bodies = [task_record("look at a.rs"), task_record("look at a.rs")];
+        assert_eq!(
+            cursor_subagent_parent(&bodies, &base).as_deref(),
+            Some(base.as_str())
+        );
+        let second_key = format!("{base}-2");
+        assert_eq!(
+            cursor_subagent_parent(&bodies, &second_key).as_deref(),
+            Some(second_key.as_str())
+        );
+        // Only two were called: a third sub-agent file links to nothing.
+        assert_eq!(cursor_subagent_parent(&bodies, &format!("{base}-3")), None);
+    }
+
+    #[test]
+    fn a_subagents_own_nested_task_does_not_shift_the_numbering() {
+        let base = cursor_task_id("look at a.rs");
+        let mut nested = task_record("look at a.rs");
+        nested["parent_tool_use_id"] = json!("cursor-task-deadbeef");
+        // The tagged record sits between the two main-transcript calls; if it
+        // counted, the second would be numbered `-3`.
+        let bodies = [
+            task_record("look at a.rs"),
+            nested,
+            task_record("look at a.rs"),
+        ];
+        let second_key = format!("{base}-2");
+        assert_eq!(
+            cursor_subagent_parent(&bodies, &second_key).as_deref(),
+            Some(second_key.as_str())
+        );
+        assert_eq!(cursor_subagent_parent(&bodies, &format!("{base}-3")), None);
     }
 
     #[test]
@@ -300,22 +441,34 @@ mod tests {
     }
 
     #[test]
-    fn subagent_parent_links_the_task_whose_prompt_matches() {
+    fn subagent_parent_links_the_task_whose_replay_id_matches() {
         let prompt = "Explore src/ for seams.\n\nReport back.";
-        let body = task_record(prompt);
+        let bodies = [task_record(prompt)];
         assert_eq!(
-            cursor_subagent_parent(&body, prompt),
+            cursor_subagent_parent(&bodies, &cursor_task_id(prompt)),
             Some(cursor_task_id(prompt))
         );
         // Another Task's sub-agent, a non-Task tool, a user record, no key.
-        assert_eq!(cursor_subagent_parent(&body, "something else"), None);
+        assert_eq!(
+            cursor_subagent_parent(&bodies, &cursor_task_id("something else")),
+            None
+        );
         let other_tool = json!({ "role": "assistant", "message": { "content": [
             { "type": "tool_use", "name": "Shell", "input": { "prompt": "look" } } ] } });
-        assert_eq!(cursor_subagent_parent(&other_tool, "look"), None);
         let user = json!({ "role": "user", "message": { "content": [
             { "type": "text", "text": "look" }] } });
-        assert_eq!(cursor_subagent_parent(&user, "look"), None);
-        assert_eq!(cursor_subagent_parent(&task_record("look"), ""), None);
+        assert_eq!(
+            cursor_subagent_parent(&[other_tool, user], &cursor_task_id("look")),
+            None
+        );
+        assert_eq!(cursor_subagent_parent(&[task_record("look")], ""), None);
+        // The file's query comes out of an envelope that pads it with
+        // newlines, so the Task's prompt is trimmed before hashing — as the
+        // frontend's normalizeTranscript does.
+        assert_eq!(
+            cursor_subagent_parent(&[task_record("look\n")], &cursor_task_id("look")),
+            Some(cursor_task_id("look"))
+        );
     }
 
     #[test]
