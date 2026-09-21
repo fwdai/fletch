@@ -17,6 +17,7 @@
 mod args;
 mod auth_probe;
 mod capabilities;
+mod host_state;
 mod login;
 mod probe;
 mod providers;
@@ -36,6 +37,7 @@ pub use capabilities::{
     capabilities, injection_mode, mcp_delivery, per_turn_descriptor, transcript_reader,
     PerTurnDescriptor,
 };
+pub use host_state::{host_providers, HostProvider};
 pub use login::login_command;
 pub use probe::{
     cached_provider_version, check_cli, probe_all_providers, validate_bin, BinValidation,
