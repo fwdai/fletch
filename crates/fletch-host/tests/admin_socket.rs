@@ -139,16 +139,23 @@ async fn the_admin_socket_refuses_what_it_does_not_know() {
 
 /// A CLI that never answers `--version` — a broken install, or a custom binary
 /// path pointed at the wrong thing. `status` must not run one at all (it is
-/// what a liveness check calls), and `provider_status`, which does want the
-/// version, must give up on it and still answer.
+/// what a liveness check calls); `provider_status`, which does want the
+/// version, must give up on it and still answer, and must leave nothing of it
+/// running — these CLIs are often wrapper scripts, so the timeout has to reach
+/// the whole process group, not just the script.
 async fn a_wedged_cli_cannot_hang_either_call(data_dir: &std::path::Path, tmp: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
 
     let ran = tmp.join("version-probe-ran");
+    let child_pid = tmp.join("wedged-child.pid");
     let wedged = tmp.join("wedged-claude");
     std::fs::write(
         &wedged,
-        format!("#!/bin/sh\necho ran >> '{}'\nsleep 300\n", ran.display()),
+        format!(
+            "#!/bin/sh\necho ran >> '{}'\nsleep 300 &\necho $! > '{}'\nwait\n",
+            ran.display(),
+            child_pid.display()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&wedged, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -187,5 +194,37 @@ async fn a_wedged_cli_cannot_hang_either_call(data_dir: &std::path::Path, tmp: &
         "a probe that timed out reports no version: {claude}"
     );
 
+    let pid = std::fs::read_to_string(&child_pid)
+        .expect("the wrapper wrote its child's pid")
+        .trim()
+        .to_string();
+    assert!(
+        gone_within(&pid, std::time::Duration::from_secs(1)),
+        "the wrapped `sleep` ({pid}) outlived the probe"
+    );
+
     fletch_core::bin_resolve::set_agent_overrides(std::collections::HashMap::new());
+}
+
+/// Poll `kill -0` until the process is gone, or the budget runs out: group
+/// signal delivery and the reparenting that reaps an orphan are both
+/// asynchronous, so the answer is "shortly", not "already".
+fn gone_within(pid: &str, budget: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !alive {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }

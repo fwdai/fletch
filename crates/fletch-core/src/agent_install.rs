@@ -381,10 +381,10 @@ async fn kill_group_and_reap(group: &mut GroupKill, child: &mut tokio::process::
 
 /// Spawn `command` together with the guard that reaps everything it starts.
 ///
-/// Unix: `process_group(0)` makes the child `setpgid(0, 0)` itself, so its pid
-/// *is* the pgid and every descendant — the `curl`, the `bash` on the far end
-/// of the pipe — inherits it. One `killpg` then reaches the whole install.
-/// `kill_on_drop` stays on as belt-and-braces for the leader.
+/// Unix: `pty_session::spawn_in_own_group` puts the child in a group of its
+/// own, so every descendant — the `curl`, the `bash` on the far end of the pipe
+/// — inherits it and one `killpg` reaches the whole install. `kill_on_drop`
+/// stays on as belt-and-braces for the leader.
 ///
 /// Windows: the pinned installers are `irm … | iex`, which runs the downloaded
 /// script *inside* the PowerShell process, so killing that one process is
@@ -397,18 +397,8 @@ async fn kill_group_and_reap(group: &mut GroupKill, child: &mut tokio::process::
 fn spawn_installer_group(
     mut command: tokio::process::Command,
 ) -> std::io::Result<(tokio::process::Child, GroupKill)> {
-    use std::os::unix::process::CommandExt;
-
-    command.as_std_mut().process_group(0);
-    let child = command.spawn()?;
-    let pid = child
-        .id()
-        .ok_or_else(|| std::io::Error::other("installer had no pid right after spawn"))?;
-    let guard = GroupKill {
-        pgid: nix::unistd::Pid::from_raw(pid as i32),
-        armed: true,
-    };
-    Ok((child, guard))
+    let (child, pgid) = crate::pty_session::spawn_in_own_group(&mut command)?;
+    Ok((child, GroupKill { pgid, armed: true }))
 }
 
 #[cfg(not(unix))]

@@ -256,6 +256,30 @@ impl PtySession {
     }
 }
 
+/// Spawn `command` as its own process-group leader, so one
+/// [`kill_process_group`] reaches everything it starts — a wrapper script's
+/// `sleep`, a `curl … | bash` pipeline — and not just the process we launched.
+/// `process_group(0)` makes the child `setpgid(0, 0)` itself, so its pid *is*
+/// the pgid every descendant inherits; the returned `Pid` is that group.
+///
+/// The non-PTY sibling of what `PtySession::spawn` gets from portable-pty's
+/// `setsid`, and it lives here beside the reaper so "spawn in its own group"
+/// and "signal that group" stay one implementation. Callers keep
+/// `kill_on_drop` on as the backstop for the leader itself.
+#[cfg(unix)]
+pub(crate) fn spawn_in_own_group(
+    command: &mut tokio::process::Command,
+) -> std::io::Result<(tokio::process::Child, nix::unistd::Pid)> {
+    use std::os::unix::process::CommandExt;
+
+    command.as_std_mut().process_group(0);
+    let child = command.spawn()?;
+    let pid = child
+        .id()
+        .ok_or_else(|| std::io::Error::other("child had no pid right after spawn"))?;
+    Ok((child, nix::unistd::Pid::from_raw(pid as i32)))
+}
+
 /// Reap a process group with escalating signals, polling after each so we
 /// stop the instant the group empties. A well-behaved child dies on the first
 /// HUP and the poll returns in a tick; each grace window is a worst case.

@@ -192,18 +192,51 @@ const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// version subprocess is spawned — the sync callers reach it through
 /// [`probe_version`].
 ///
-/// `kill_on_drop` is what makes the deadline real: the timeout drops the
-/// `Command` future, which kills the child rather than leaving it running with
-/// nobody waiting on it. A probe that times out reports no version, exactly
-/// like one that printed nothing.
+/// The deadline has to reach more than the process we spawned: a provider's
+/// `claude` may well be a wrapper script, and killing it would leave whatever
+/// it started running with nobody waiting on it — one orphan per wedged probe,
+/// forever. So the child is spawned in a process group of its own
+/// (`pty_session::spawn_in_own_group`, the same pair the installer teardown
+/// uses) and a timeout signals the *group*; `kill_on_drop` remains the backstop
+/// for the leader. A probe that times out reports no version, exactly like one
+/// that printed nothing.
 async fn probe_version_bounded(bin: &str) -> Option<String> {
     let mut cmd = tokio::process::Command::new(bin);
-    cmd.arg("--version").kill_on_drop(true);
+    cmd.arg("--version")
+        .kill_on_drop(true)
+        // Explicit, because this no longer goes through `Command::output()`:
+        // a version probe reads nothing and its output is ours to parse, never
+        // the caller's terminal.
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     crate::bin_resolve::apply_login_shell_env(cmd.as_std_mut());
-    let out = tokio::time::timeout(VERSION_TIMEOUT, cmd.output())
-        .await
-        .ok()?
-        .ok()?;
+
+    #[cfg(unix)]
+    let (child, pgid) = crate::pty_session::spawn_in_own_group(&mut cmd).ok()?;
+    #[cfg(not(unix))]
+    let child = cmd.spawn().ok()?;
+
+    let out = match tokio::time::timeout(VERSION_TIMEOUT, child.wait_with_output()).await {
+        Ok(result) => result.ok()?,
+        Err(_) => {
+            // Dropping the future killed the leader; the group signal is what
+            // reaches everything below it. Best effort — the reaper reports
+            // only what it could confirm, and an unreaped leader is enough to
+            // make it say "unconfirmed" even though the signals landed.
+            #[cfg(unix)]
+            {
+                let killed = tokio::task::spawn_blocking(move || {
+                    crate::pty_session::kill_process_group(pgid)
+                })
+                .await;
+                if let Ok(Err(e)) = killed {
+                    tracing::debug!(bin, error = %e, "version probe group teardown unconfirmed");
+                }
+            }
+            return None;
+        }
+    };
     // Stdout, or stderr when stdout was silent — some CLIs print their version
     // on the latter.
     let said = if out.stdout.is_empty() {
@@ -271,10 +304,30 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
+    /// Poll until `pid` is gone, or the budget runs out. Group-signal delivery
+    /// and the reparenting that reaps an orphan are both asynchronous, so the
+    /// answer is "shortly", not "by the time the probe returned".
+    fn gone_within(pid: i32, budget: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            if let Err(nix::errno::Errno::ESRCH) =
+                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None)
+            {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
     /// The sync door every non-async caller goes through — the readiness check,
     /// the custom-path validator, and the ingest version stamp. A CLI that
     /// answers is read as before; one that never answers is given up on at the
-    /// deadline rather than waited on forever.
+    /// deadline, and everything it started goes with it: these CLIs are often
+    /// wrapper scripts, and an orphan per probe would accumulate for the life
+    /// of the process.
     #[test]
     fn the_sync_probe_reads_a_version_and_gives_up_on_a_wedged_binary() {
         let dir = tempfile::tempdir().unwrap();
@@ -282,13 +335,33 @@ mod tests {
         let answers = script(dir.path(), "answers", "#!/bin/sh\necho 1.2.3\n");
         assert_eq!(probe_version(&answers), Some("v1.2.3".to_string()));
 
-        let wedged = script(dir.path(), "wedged", "#!/bin/sh\nsleep 300\n");
+        // A wrapper that never answers, with a child of its own — the shape
+        // `kill_on_drop` alone would leave running.
+        let child_pid = dir.path().join("child.pid");
+        let wedged = script(
+            dir.path(),
+            "wedged",
+            &format!(
+                "#!/bin/sh\nsleep 300 &\necho $! > '{}'\nwait\n",
+                child_pid.display()
+            ),
+        );
         let started = std::time::Instant::now();
         assert_eq!(probe_version(&wedged), None, "a wedged probe has no answer");
         assert!(
             started.elapsed() < VERSION_TIMEOUT * 3,
             "the probe waited past its deadline: {:?}",
             started.elapsed()
+        );
+
+        let pid: i32 = std::fs::read_to_string(&child_pid)
+            .expect("the wrapper wrote its child's pid")
+            .trim()
+            .parse()
+            .expect("a pid");
+        assert!(
+            gone_within(pid, std::time::Duration::from_secs(1)),
+            "the wrapper's child ({pid}) outlived the probe"
         );
     }
 }
