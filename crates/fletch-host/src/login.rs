@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use fletch_core::github::client::TokenSource;
 use fletch_core::oauth::{self, Credentials, DeviceCode, OAuthProfile};
 use fletch_core::{database, DbState};
 use parking_lot::Mutex;
@@ -44,7 +45,10 @@ impl Login {
     /// `{ userCode, verificationUrl, expiresIn }`.
     pub async fn start(self: &Arc<Self>, db: DbState) -> Result<Value, String> {
         if let Some(Phase::Waiting(code)) = self.phase.lock().as_ref() {
-            return Ok(waiting(code));
+            return Ok(with_supplied_token_warning(
+                waiting(code),
+                fletch_core::github::client::token_source(),
+            ));
         }
         let creds = Credentials {
             client_id: github_client_id()?,
@@ -83,7 +87,10 @@ impl Login {
         });
 
         match rx.await {
-            Ok(code) => Ok(waiting(&code)),
+            Ok(code) => Ok(with_supplied_token_warning(
+                waiting(&code),
+                fletch_core::github::client::token_source(),
+            )),
             Err(_) => Err(match self.phase.lock().as_ref() {
                 Some(Phase::Failed(e)) => e.clone(),
                 _ => "the GitHub sign-in ended before it issued a code".to_string(),
@@ -116,6 +123,26 @@ impl Default for Login {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Tell an operator whose token was supplied out-of-band that signing in will
+/// not stick: the sign-in works and still writes the database, but boot seeds
+/// the supplied value over it, so the next start is back on the old token. The
+/// CLI prints this line; it costs nothing on a host that stores its token.
+///
+/// Takes the source rather than reading it, so it can be tested without
+/// setting the process-global token every other test in this binary shares.
+fn with_supplied_token_warning(mut started: Value, source: Option<TokenSource>) -> Value {
+    let supplied = match source {
+        Some(TokenSource::Env) => "FLETCH_GITHUB_TOKEN",
+        Some(TokenSource::Credential) => "the github_token credential",
+        _ => return started,
+    };
+    started["warning"] = json!(format!(
+        "note: this host's GitHub token comes from {supplied}, which wins again on the next \
+         start — unset it to use the token this sign-in stores"
+    ));
+    started
 }
 
 fn waiting(code: &DeviceCode) -> Value {
@@ -180,4 +207,32 @@ fn link_account(db: &DbState, profile: &OAuthProfile) -> fletch_core::error::Res
         }),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A host that stores its own token gets the sign-in answer untouched; one
+    /// that was handed a token gets a line naming where it came from, so the
+    /// operator knows the sign-in will not survive a restart.
+    #[test]
+    fn only_a_supplied_token_warns_about_the_next_start() {
+        let started = json!({ "userCode": "ABCD-1234" });
+        assert_eq!(
+            with_supplied_token_warning(started.clone(), Some(TokenSource::Store)),
+            started
+        );
+        assert_eq!(with_supplied_token_warning(started.clone(), None), started);
+        for (source, named) in [
+            (TokenSource::Env, "FLETCH_GITHUB_TOKEN"),
+            (TokenSource::Credential, "the github_token credential"),
+        ] {
+            let warned = with_supplied_token_warning(started.clone(), Some(source));
+            let warning = warned["warning"].as_str().expect("a warning");
+            assert!(warning.contains(named), "{warning}");
+            // The code the CLI prints has to survive the wrapping.
+            assert_eq!(warned["userCode"], started["userCode"]);
+        }
+    }
 }

@@ -52,6 +52,8 @@ pub fn set_token(token: Option<String>) {
         SEALED.store(true, std::sync::atomic::Ordering::SeqCst);
         *w = token.filter(|t| !t.trim().is_empty());
     }
+    // Whatever supplied the boot-time token, this one is the stored one.
+    set_token_source(TokenSource::Store);
     set_cached_login(None);
     // Conditional-GET bodies belong to the old token's view of the world.
     // GitHub validates every ETag itself (a token without access gets a 404,
@@ -74,6 +76,52 @@ pub fn seed_token(token: Option<String>) {
 
 pub fn token() -> Option<String> {
     token_registry().read().unwrap().clone()
+}
+
+/// Where the in-process token came from. A headless host can be handed one
+/// out-of-band — `FLETCH_GITHUB_TOKEN`, or a systemd credential — to keep it
+/// out of its database entirely; everything else comes from the secret store,
+/// which is what a sign-in writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenSource {
+    Env,
+    Credential,
+    Store,
+}
+
+impl TokenSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Env => "env",
+            Self::Credential => "credential",
+            Self::Store => "store",
+        }
+    }
+}
+
+/// [`TokenSource`] as a `u8`, because a source is read from paths that hold no
+/// lock and set once at boot. `Store` is 0 so the default needs no init.
+static SOURCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Record where the token being seeded came from. Boot calls this for a token
+/// it took from the environment or a credential; a later sign-in resets it,
+/// since from then on the live token is the stored one.
+pub fn set_token_source(source: TokenSource) {
+    let code = match source {
+        TokenSource::Store => 0,
+        TokenSource::Env => 1,
+        TokenSource::Credential => 2,
+    };
+    SOURCE.store(code, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Where [`token`] came from, or `None` when there is no token.
+pub fn token_source() -> Option<TokenSource> {
+    token().map(|_| match SOURCE.load(std::sync::atomic::Ordering::SeqCst) {
+        1 => TokenSource::Env,
+        2 => TokenSource::Credential,
+        _ => TokenSource::Store,
+    })
 }
 
 /// The authenticated user's login, cached in-process next to the token. The
@@ -484,6 +532,25 @@ mod tests {
         LOCK.get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// No token has no source; a supplied one keeps the source boot recorded
+    /// until a sign-in replaces it, which makes the token the stored one again.
+    #[test]
+    fn token_source_follows_the_token() {
+        let _guard = test_token_lock();
+        set_token(None);
+        assert_eq!(token_source(), None);
+
+        set_token_source(TokenSource::Env);
+        set_token(Some("stored".into()));
+        assert_eq!(token_source(), Some(TokenSource::Store));
+
+        set_token_source(TokenSource::Credential);
+        assert_eq!(token_source(), Some(TokenSource::Credential));
+
+        set_token(None);
+        assert_eq!(token_source(), None);
     }
 
     #[test]
