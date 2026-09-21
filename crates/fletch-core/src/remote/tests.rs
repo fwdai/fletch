@@ -551,6 +551,9 @@ fn never_exposed_ops_are_not_dispatchable() {
         "open_provider_login",
         "probe_provider_auth",
         "probe_provider_versions",
+        // The headless host's two, on its 0600 admin socket only.
+        "provider_status",
+        "provider_login_command",
         "run_start",
         "run_stop",
         "delete_project",
