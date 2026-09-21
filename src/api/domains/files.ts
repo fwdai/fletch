@@ -5,7 +5,7 @@ import {
   uploadAttachment,
 } from "@/util/attachmentUpload";
 import { invoke } from "../invoke";
-import { invokeLocalRaw } from "../transport";
+import { activeTransport, invokeLocalRaw, type Transport } from "../transport";
 import type {
   CheckoutFile,
   CheckoutFileContents,
@@ -13,14 +13,17 @@ import type {
   DirListing,
 } from "../types/checkout";
 
-/** The four upload ops on the environment being driven — remote-only, so these
- *  are never reached for the local one (see `savePastedAttachment`). */
-const remoteAttachments: AttachmentApi = {
-  attachmentBegin: (name) => invoke<{ upload: string }>("attachment_begin", { name }),
-  attachmentChunk: (upload, data) => invoke<null>("attachment_chunk", { upload, data }),
-  attachmentEnd: (upload) => invoke<{ path: string }>("attachment_end", { upload }),
-  attachmentCancel: (upload) => invoke<null>("attachment_cancel", { upload }),
-};
+/** The four upload ops bound to ONE environment — remote-only, so this is never
+ *  reached for the local one (see `savePastedAttachment`). Bound rather than
+ *  resolved per call because an upload is a stateful sequence: the id
+ *  `attachment_begin` answers with exists only on the host that issued it, so a
+ *  later chunk/end/cancel sent to another host names nothing there. */
+const attachmentApiOver = (transport: Transport): AttachmentApi => ({
+  attachmentBegin: (name) => transport.call<{ upload: string }>("attachment_begin", { name }),
+  attachmentChunk: (upload, data) => transport.call<null>("attachment_chunk", { upload, data }),
+  attachmentEnd: (upload) => transport.call<{ path: string }>("attachment_end", { upload }),
+  attachmentCancel: (upload) => transport.call<null>("attachment_cancel", { upload }),
+});
 
 export const filesApi = {
   listCheckoutTree: (agentId: string) => invoke<CheckoutFile[]>("list_checkout_tree", { agentId }),
@@ -62,6 +65,12 @@ export const filesApi = {
     // Refused here rather than after a minute of chunking: the host drops an
     // upload over the same cap, and a truncated file is a corrupt one.
     assertWithinUploadCap({ name, size: bytes.length });
-    return uploadAttachment(remoteAttachments, name, bytes);
+    // Captured once, here: a switch while the chunks are going up must not send
+    // the rest of this upload to the other host. Nothing else needs invalidating
+    // when that happens — the composer's attachment list is per-environment
+    // through the stash (store/environmentSwitch), so the path this resolves
+    // with lands in the composer of the environment it was staged on, and the
+    // one on screen never shows it.
+    return uploadAttachment(attachmentApiOver(activeTransport()), name, bytes);
   },
 };

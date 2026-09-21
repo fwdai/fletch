@@ -18,11 +18,12 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: rawInvoke }));
 
 /** Records every op the active environment is asked for, and answers the
  *  upload flow the way a host does. */
-function fakeTransport() {
+function fakeTransport(after?: (op: string) => void) {
   const calls: { op: string; args?: Record<string, unknown> }[] = [];
   const transport: Transport = {
     call: <T>(op: string, args?: Record<string, unknown>): Promise<T> => {
       calls.push({ op, args });
+      after?.(op);
       if (op === "attachment_begin") return Promise.resolve({ upload: "u1" } as T);
       if (op === "attachment_end") {
         return Promise.resolve({ path: "/host/.fletch/staging/u1/shot.png" } as T);
@@ -40,9 +41,9 @@ const onLocal = () =>
     environments: {},
   }));
 
-const onHost = (transport: Transport) => {
+const onHost = (transport: Transport, id = "host-1") => {
   const entry: EnvironmentEntry = {
-    id: "host-1",
+    id,
     name: "Cloud box",
     kind: "remote",
     connection: "connected",
@@ -92,6 +93,63 @@ describe("savePastedAttachment", () => {
     expect(calls[0].args).toEqual({ name: "shot.png" });
     // Nothing touched this Mac's staging area.
     expect(rawInvoke).not.toHaveBeenCalled();
+  });
+
+  it("finishes an upload on the environment it started on", async () => {
+    // The user switches hosts while the chunks are going up. `attachment_begin`
+    // answered with an id that exists only on the first host, so every later op
+    // has to go back there: sent to the second, they name nothing — and the
+    // first is left holding a partial file nothing will ever cancel.
+    const second = fakeTransport();
+    const first = fakeTransport((op) => {
+      if (op === "attachment_begin") onHost(second.transport, "host-2");
+    });
+    onHost(first.transport);
+
+    const bytes = new Uint8Array(CHUNK_BYTES + 5);
+    const path = await filesApi.savePastedAttachment("shot.png", bytes);
+
+    expect(path).toBe("/host/.fletch/staging/u1/shot.png");
+    expect(first.calls.map((c) => c.op)).toEqual([
+      "attachment_begin",
+      "attachment_chunk",
+      "attachment_chunk",
+      "attachment_end",
+    ]);
+    expect(second.calls, "the host switched to was never asked about this upload").toEqual([]);
+  });
+
+  it("cancels on the environment it started on when a chunk fails", async () => {
+    // The same binding on the failure path: the partial file is on the first
+    // host, so that is the only host that can drop it.
+    const second = fakeTransport();
+    const first = {
+      calls: [] as { op: string }[],
+      transport: {
+        call: <T>(op: string): Promise<T> => {
+          first.calls.push({ op });
+          if (op === "attachment_begin") return Promise.resolve({ upload: "u1" } as T);
+          if (op === "attachment_chunk") {
+            onHost(second.transport, "host-2");
+            return Promise.reject(new Error("socket closed"));
+          }
+          return Promise.resolve(null as T);
+        },
+        on: () => Promise.resolve(() => {}),
+      } as Transport,
+    };
+    onHost(first.transport);
+
+    await expect(filesApi.savePastedAttachment("shot.png", new Uint8Array(4))).rejects.toThrow(
+      /socket closed/,
+    );
+
+    expect(first.calls.map((c) => c.op)).toEqual([
+      "attachment_begin",
+      "attachment_chunk",
+      "attachment_cancel",
+    ]);
+    expect(second.calls).toEqual([]);
   });
 
   it("refuses a file over the host's cap before uploading a byte of it", async () => {
