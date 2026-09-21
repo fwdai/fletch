@@ -296,6 +296,23 @@ async function guard<T>(set: Setter, fn: () => Promise<T>): Promise<T> {
  *  and the client retries it on its own with the key it pinned — that retry
  *  has no `connect` above it, and without this the app would sit on the Pair
  *  screen holding a working connection. */
+/** Whether `target` pairs with a host other than the one on file. This phone
+ *  keeps exactly one (see `store/persist`), so that pairing does not add a host
+ *  — it drops the current one, its push registration and everything on screen.
+ *  Unknowable for a link with no key pinned, which is not a claim about a
+ *  different host. */
+function replacesPairedHost(hostKey: string | null, target: HostTarget): boolean {
+  return !!hostKey && !!target.hostKey && target.hostKey !== hostKey;
+}
+
+/** Ask before that replacement. A pairing link is a QR code or a tapped URL —
+ *  an old one, or someone else's screen — and the current wiring acts on it
+ *  without a word. */
+function confirmReplace(name?: string | null): boolean {
+  const question = `Replace ${name || "the paired host"}? This phone can pair with one host at a time.`;
+  return typeof window === "undefined" || window.confirm(question);
+}
+
 async function adopt(set: Setter, get: () => MobileState, host: HostInfo): Promise<void> {
   // The client owns the target: the spent pairing token is gone from it and
   // the host key the handshake authenticated is pinned in.
@@ -584,6 +601,13 @@ export const useStore = create<MobileState>()((set, get) => ({
     if (queuedLink) {
       const target = queuedLink;
       queuedLink = null;
+      // The question `pairFromLink` could not ask: the key on disk was not read
+      // yet when the link arrived, which is the ordinary case for a link that
+      // launched the app.
+      if (replacesPairedHost(hostKey, target) && !confirmReplace(saved.hostName)) {
+        set({ pairTarget: null, pairStep: null });
+        return;
+      }
       await get().connect(target).catch(ignore);
       return;
     }
@@ -646,6 +670,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       running?.host === target.host &&
       running?.port === target.port;
     if (get().pairStep && same) return;
+    if (replacesPairedHost(get().hostKey, target) && !confirmReplace(get().hostInfo?.name)) return;
     set({ pairTarget: target, connectionError: null });
     if (!get().ready) {
       // Held until `init` has read what is on disk — see `queuedLink`. The
