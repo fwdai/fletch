@@ -91,10 +91,7 @@ function ExhibitAgentRow({ a }: { a: ParallelAgent }) {
     <div className={`agent ${a.active ? "active" : ""}`}>
       <span className={`ag-rail ${rail}`} />
       <div className="agent-row flex-center">
-        <span className={`ag-name ${working ? "shimmer" : ""}`}>{a.name}</span>
-        <span className="ag-prov-chip">
-          <ProviderIcon slug={a.provider} {...providerChip(a.provider)} size={14} />
-        </span>
+        <span className={`ag-name ag-title ${working ? "shimmer" : ""}`}>{a.task}</span>
         <span className="ag-slot iflex-center">
           <span className="ag-meta">
             {working && <span className="ag-loader" aria-label="Working" />}
@@ -111,7 +108,10 @@ function ExhibitAgentRow({ a }: { a: ParallelAgent }) {
         </span>
       </div>
       <div className="agent-sub flex-center">
-        <span className="a-task">{a.task}</span>
+        <span className="ag-prov-chip">
+          <ProviderIcon slug={a.provider} {...providerChip(a.provider)} size={12} />
+        </span>
+        <span className="a-task a-codename">{a.name}</span>
         <span className="a-diff">
           <span className="add">+{a.add}</span> <span className="del">−{a.rem}</span>
         </span>

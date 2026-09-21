@@ -417,6 +417,15 @@
   color: var(--fg-0);
   flex-shrink: 0;
 }
+/* the work's title leads the row and can run long, so unlike a codename it
+ * takes the remaining width and truncates instead of pushing the slot out */
+.agent-row .ag-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ag-name.ag-name-draft {
   color: var(--fg-1);
   font-weight: 500;

@@ -108,10 +108,13 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const subRunning = subagents.filter((c) => c.running).length;
   const subFailed = subagents.filter((c) => c.failed).length;
 
-  const branch = agent.repos[0]?.branch ?? null;
-  // The agent's own title for the work once it has set one (see the
-  // `set_title` mailbox op); until then the first line of the user's prompt.
-  const taskOrBranch = agent.title || firstShort(agent.task) || branch || "—";
+  // The row leads with what the agent is doing: its own title once it has set
+  // one (see the `set_title` mailbox op), else the first line of the user's
+  // prompt in the draft's muted style. The codename moves to the subtitle —
+  // still the handle for the branch and for talking about the agent, but not
+  // what anyone scans the list by.
+  const title = agent.title || firstShort(agent.task) || "Untitled";
+  const untitled = !agent.title;
   const age = formatAge(agent.created_at, now);
   // spawning is the start of a run — show it as "working" too, not a dead row;
   // so is an idle agent whose sub-agents are still at it.
@@ -189,8 +192,11 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
       >
         <span className={`ag-rail ${railClass}`} />
         <div className="agent-row flex-center">
-          <span className={`ag-name ${working && !awaiting ? "shimmer" : ""}`}>{agent.name}</span>
-          <AgentIdentityChip agent={agent} size={14} />
+          <span
+            className={`ag-name ag-title ${untitled ? "ag-name-draft" : ""} ${working && !awaiting ? "shimmer" : ""}`}
+          >
+            {title}
+          </span>
           {runLive && (
             <span
               className="ag-run tip"
@@ -257,7 +263,8 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
           </span>
         </div>
         <div className="agent-sub flex-center">
-          <span className="a-task">{taskOrBranch}</span>
+          <AgentIdentityChip agent={agent} size={12} />
+          <span className="a-task a-codename">{agent.name}</span>
           {agentPrs.length === 1 ? (
             <PrBadge pr={agentPrs[0].pr} checks={agentPrs[0].checks} />
           ) : agentPrs.length > 1 ? (
@@ -338,10 +345,7 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
     >
       <span className="ag-rail idle" />
       <div className="agent-row flex-center">
-        <span className="ag-name ag-name-draft">{draft.name}</span>
-        <span className="ag-prov-chip tip" data-tip={providerLabel(draft.provider)}>
-          <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={14} />
-        </span>
+        <span className="ag-name ag-title ag-name-draft">Define task…</span>
         <span className="ag-slot iflex-center">
           <span className="ag-meta wide">
             <Badge variant="new">new</Badge>
@@ -359,7 +363,10 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
         </span>
       </div>
       <div className="agent-sub flex-center">
-        <span className="a-task a-task-draft">Define task…</span>
+        <span className="ag-prov-chip tip" data-tip={providerLabel(draft.provider)}>
+          <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={12} />
+        </span>
+        <span className="a-task a-codename">{draft.name}</span>
       </div>
     </div>
   );
