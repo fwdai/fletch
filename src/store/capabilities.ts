@@ -12,7 +12,7 @@
 
 import { hostSupports } from "@/remote/types";
 import { useAppStore } from "@/store";
-import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "./environments";
+import { activeEnvironment, type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "./environments";
 import type { AppState } from "./types";
 
 /** One thing the UI offers, and why a remote host may not be able to.
@@ -51,12 +51,35 @@ export const GATES = {
     label: "Cloning a repository",
     reason: "This host is too old to clone a repository — clone it on the host.",
   },
-  /** Creating a fresh repo. `create_repo` is not on the wire at all, so this is
-   *  closed on every host today; it opens by itself once one advertises it. */
+  /** Creating a fresh repo: browse for the parent, then create it there.
+   *  `create_repo` went on the wire with the project-settings family, so this
+   *  closes only against a host from before them. */
   createProject: {
     op: ["list_dir", "create_repo"],
     label: "Creating a project",
     reason: "This host can't create a repository from here yet.",
+  },
+  /** The project settings page's writes, as one gate: the display name, the
+   *  repo list (attach, detach, relocate, label, unpin) and deleting the
+   *  project. Every op the page can call, so a host that answers only some of
+   *  them is not offered a page whose other half fails on click — they went on
+   *  the wire together, so in practice a host has all of them or none.
+   *  `list_dir` is in the list for attach and relocate, which browse the host's
+   *  disk for the folder first. */
+  projectAdmin: {
+    op: [
+      "list_dir",
+      "rename_project",
+      "delete_project",
+      "project_has_running_agents",
+      "attach_repo_to_project",
+      "detach_repo_from_project",
+      "relocate_repo",
+      "set_repo_label",
+      "remove_workspace_repo",
+    ],
+    label: "Project settings",
+    reason: "This host is too old to change project settings — change them on the host.",
   },
   sideShell: {
     op: "open_agent_shell",
@@ -302,6 +325,14 @@ export function useGate(gate: GateName): string | null {
  *  means where a reader can see it. */
 export function useAnyGate(gates: readonly GateName[]): string | null {
   return useAppStore((s) => anyGateReason(activeEntry(s), gates));
+}
+
+/** [`gateReason`] for the environment the user is driving, outside React — a
+ *  store action refusing a write the button is already disabled for, so a
+ *  keyboard path (Enter in a field, a blur that saves) cannot slip past the
+ *  control. The same backstop `useGitActions.runAction` applies. */
+export function activeGateReason(gate: GateName): string | null {
+  return gateReason(activeEnvironment(), gate);
 }
 
 /** [`useGate`] for a gate picked at render time — the Git panel's action bar

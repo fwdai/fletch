@@ -95,11 +95,28 @@ describe("gateReason", () => {
   });
 
   it("keeps creating a project closed until a host offers `create_repo`", () => {
-    // Not on the wire today, so this is every current host — and it opens by
-    // itself the moment one advertises the op.
+    // Outside the v2 set, so a host from before the op is closed — and it opens
+    // by itself the moment one advertises it.
     expect(gateReason(host(), "createProject")).toBe(GATES.createProject.reason);
     expect(gateReason(host([...V2_DEFAULT_OPS]), "createProject")).toBe(GATES.createProject.reason);
     expect(gateReason(host([...V2_DEFAULT_OPS, "create_repo"]), "createProject")).toBeNull();
+  });
+
+  it("gates the project settings page on every op the page can call", () => {
+    // One gate for the page, and it names the whole family: a host answering
+    // the rename but not the detach would otherwise be offered a page whose
+    // other half fails on click.
+    expect(gateReason(host(), "projectAdmin")).toBe(GATES.projectAdmin.reason);
+    expect(gateReason(host([...V2_DEFAULT_OPS]), "projectAdmin")).toBe(GATES.projectAdmin.reason);
+
+    const settings = requiredOps("projectAdmin");
+    expect(gateReason(host([...V2_DEFAULT_OPS, ...settings]), "projectAdmin")).toBeNull();
+    // Any one of them missing closes it again — including `list_dir`, which
+    // attach and relocate browse the host's disk with.
+    for (const missing of settings) {
+      const partial = host([...V2_DEFAULT_OPS, ...settings].filter((op) => op !== missing));
+      expect(gateReason(partial, "projectAdmin")).toBe(GATES.projectAdmin.reason);
+    }
   });
 
   it("reads a host that reported no descriptor as the v2 default set", () => {

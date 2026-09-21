@@ -48,6 +48,34 @@ pub async fn add_workspace_repo_impl(
     supervisor.add_workspace_repo(path)
 }
 
+/// Attach a repo to an existing project (multi-repo projects). Two phases,
+/// deliberately ordered so a doomed attach can never mutate the picked folder:
+/// the DB attach validates the project and commits first, and only then is a
+/// non-git folder initialized (mirroring [`add_workspace_repo_impl`]). If that
+/// filesystem step fails, the DB attach is rolled back precisely.
+///
+/// Shared with the remote dispatcher, so a repo attached from another machine
+/// gets the same two-phase ordering and the same rollback.
+pub async fn attach_repo_to_project_impl(
+    supervisor: &Supervisor,
+    project_id: &str,
+    repo_path: String,
+) -> Result<Workspace> {
+    let path = PathBuf::from(repo_path);
+    let outcome = supervisor.attach_repo_to_project(project_id, &path)?;
+    if let Err(e) = new_project::ensure_git_repo(&path).await {
+        // Roll back the row(s) the DB phase wrote; best-effort — it re-applies
+        // keys we wrote moments ago on a local connection, so a failure here
+        // means the DB itself is gone, and the init error is the one to show.
+        let _ = supervisor.undo_attach(&outcome);
+        return Err(e);
+    }
+    Ok(supervisor
+        .workspace
+        .current()
+        .expect("workspace initialized"))
+}
+
 /// Emit `workspace:changed` when a command has changed the project list, so
 /// every other view — the desktop window, each paired phone — reloads it rather
 /// than waiting for its next refresh. The caller still applies the returned

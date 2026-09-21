@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 
 export function DeleteSection({
   projectId,
@@ -12,6 +13,9 @@ export function DeleteSection({
 }) {
   const agents = useAppStore((state) => state.workspace?.agents ?? []);
   const deleteProject = useAppStore((state) => state.deleteProject);
+  // A host from before the project-settings ops answers neither the delete nor
+  // the running-agents probe, so the gate speaks for both.
+  const gate = useGate("projectAdmin");
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,6 +28,10 @@ export function DeleteSection({
   const hasRunningAgent = hasVisibleRunningAgent || hasBackendRunningAgent === true;
 
   useEffect(() => {
+    // A gated host would answer the probe `unknown op` every second, and its
+    // fail-closed branch would then blame running agents for a button that is
+    // dead for another reason entirely.
+    if (gate) return;
     let cancelled = false;
     const refresh = async () => {
       try {
@@ -41,7 +49,16 @@ export function DeleteSection({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [projectId]);
+  }, [projectId, gate]);
+
+  const blocked = gate !== null || checkingAgents || hasRunningAgent;
+  const blockedTip =
+    gate ??
+    (checkingAgents
+      ? "Checking agent status"
+      : hasRunningAgent
+        ? "Stop running agents first"
+        : undefined);
 
   const remove = async () => {
     setDeleting(true);
@@ -85,7 +102,8 @@ export function DeleteSection({
             <Button
               variant="outline"
               danger
-              disabled={checkingAgents || hasRunningAgent || deleting}
+              disabled={blocked || deleting}
+              tip={blockedTip}
               onClick={() => void remove()}
             >
               {deleting ? "Deleting…" : "Confirm delete"}
@@ -99,6 +117,7 @@ export function DeleteSection({
             <p className="ps-section-lead text-sm">
               Permanently delete {projectName} and all of its agents, workspaces, and history.
             </p>
+            {gate && <div className="ps-delete-note text-xs">{gate}</div>}
             {hasRunningAgent && (
               <div className="ps-delete-note text-xs">
                 Stop running agents before deleting this project.
@@ -109,18 +128,12 @@ export function DeleteSection({
           <Button
             variant="outline"
             danger
-            disabled={checkingAgents || hasRunningAgent}
+            disabled={blocked}
             onClick={() => {
               setConfirming(true);
               setError(null);
             }}
-            tip={
-              checkingAgents
-                ? "Checking agent status"
-                : hasRunningAgent
-                  ? "Stop running agents first"
-                  : undefined
-            }
+            tip={blockedTip}
           >
             Delete project
           </Button>

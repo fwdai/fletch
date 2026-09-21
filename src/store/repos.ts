@@ -3,7 +3,18 @@ import { dropAgentEntries } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
 import { track } from "@/util/track";
+import { activeGateReason, type GateName } from "./capabilities";
 import type { SliceCreator } from "./types";
+
+/** Refuse a write the environment the user is driving cannot take. The control
+ *  is already disabled with this reason, so this is the backstop for the paths
+ *  that never touch a button — Enter in the name field, a blur that saves a
+ *  label — as the Git panel's dispatch is for its own keyboard shortcuts.
+ *  Throws, because every caller here surfaces the failure inline. */
+function refuseWhenGated(gate: GateName = "projectAdmin"): void {
+  const reason = activeGateReason(gate);
+  if (reason) throw new Error(reason);
+}
 
 export interface ReposSlice {
   addWorkspaceRepo: (path: string) => Promise<void>;
@@ -60,6 +71,13 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
   },
 
   removeWorkspaceRepo: async (path) => {
+    // The one action here that reports through `lastError` rather than
+    // throwing; the refusal follows it.
+    const gated = activeGateReason("projectAdmin");
+    if (gated) {
+      set({ lastError: gated });
+      return;
+    }
     try {
       const ws = await api.removeWorkspaceRepo(path);
       set({ workspace: ws });
@@ -70,27 +88,32 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
 
   attachRepoToProject: async (projectId, path) => {
     // Errors propagate to the Repositories section for inline display.
+    refuseWhenGated();
     const ws = await api.attachRepoToProject(projectId, path);
     set({ workspace: ws });
   },
 
   detachRepoFromProject: async (projectId, path) => {
+    refuseWhenGated();
     const ws = await api.detachRepoFromProject(projectId, path);
     set({ workspace: ws });
   },
 
   setRepoLabel: async (path, label) => {
+    refuseWhenGated();
     const ws = await api.setRepoLabel(path, label);
     set({ workspace: ws });
   },
 
   renameProject: async (projectId, name) => {
     // Errors propagate to the modal for inline display.
+    refuseWhenGated();
     const ws = await api.renameProject(projectId, name);
     set({ workspace: ws });
   },
 
   deleteProject: async (projectId) => {
+    refuseWhenGated();
     const result = await api.deleteProject(projectId);
     const deletedIds = result.deleted_agent_ids;
     for (const id of deletedIds) clearOutputBuffer(id);
@@ -113,6 +136,7 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
   },
 
   relocateProject: async (oldPath, newPath) => {
+    refuseWhenGated();
     const ws = await api.relocateRepo(oldPath, newPath);
     // Keep the project's manual sidebar position, and repoint the open project
     // screen (keyed by repo path) at the new location so it doesn't go stale.
@@ -145,6 +169,10 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
   },
 
   createRepo: async (name, destParent, isPrivate, description, publish) => {
+    // The popover's Create row is already dead on a host that cannot take it;
+    // this is the same backstop the settings writes have, for a modal left open
+    // across an environment switch.
+    refuseWhenGated("createProject");
     const first = (get().workspace?.projects.length ?? 0) === 0;
     const ws = await api.createRepo(name, destParent, isPrivate, description, publish);
     set({ workspace: ws });

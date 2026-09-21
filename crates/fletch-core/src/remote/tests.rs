@@ -352,7 +352,7 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 107 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 116 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -400,8 +400,17 @@ fn allowlist_matches_the_protocol_table() {
         "list_dir",
         "add_workspace_repo",
         "clone_repo",
+        "create_repo",
         "gh_status",
         "gh_repo_list",
+        "remove_workspace_repo",
+        "attach_repo_to_project",
+        "detach_repo_from_project",
+        "set_repo_label",
+        "rename_project",
+        "project_has_running_agents",
+        "delete_project",
+        "relocate_repo",
         "dictation_status",
         "dictation_begin",
         "dictation_audio",
@@ -521,7 +530,10 @@ fn never_exposed_ops_are_not_dispatchable() {
     // The made-up `wf_start_run` / `roadmap_enqueue` placeholders and
     // `roadmap_delete_item` left with them when the whole `wf_*`/`roadmap_*`
     // surface went on the wire; what is still withheld around those two
-    // families is asserted by name below.
+    // families is asserted by name below. `delete_project` and `create_repo`
+    // left the list with the project-settings family: like `merge_pr` they were
+    // scope rather than policy — they touch the project list and the folders
+    // the host already pins, nothing outside them — so both now have rows.
     for op in [
         // The one Git-panel action that stays off the wire, and the only one of
         // them that writes outside the agent's checkout: `git branch -D` in the
@@ -547,10 +559,6 @@ fn never_exposed_ops_are_not_dispatchable() {
         "install_agent",
         "run_start",
         "run_stop",
-        "delete_project",
-        // Adding a project is exposed; creating a brand-new repo is the
-        // documented follow-up, so it stays off the wire.
-        "create_repo",
         "",
         "hello",
         "pair",
@@ -1048,10 +1056,202 @@ async fn add_project_ops_reject_bad_args_and_unknown_names() {
         "the wire key is camelCase"
     );
     assert_eq!(
-        dispatch::add_project_op(&sup, "create_repo", json!({}))
+        dispatch::add_project_op(&sup, "publish_agent", json!({}))
             .await
             .unwrap_err(),
         UNKNOWN_OP
+    );
+}
+
+/// `publish: false` is the whole GitHub-free half of the command: a seeded repo
+/// with an initial commit, pinned as a project. The publishing half needs a
+/// signed-in `gh` and is left to manual testing with the other network ops.
+#[tokio::test]
+async fn create_repo_seeds_a_local_project_when_publishing_is_off() {
+    let (_db, sup) = supervisor();
+    let parent = tempfile::tempdir().unwrap();
+
+    let workspace = dispatch::add_project_op(
+        &sup,
+        "create_repo",
+        json!({
+            "name": "notebook",
+            "destParent": parent.path(),
+            "private": true,
+            "description": "scratch",
+            "publish": false,
+        }),
+    )
+    .await
+    .expect("create_repo");
+
+    let target = parent.path().join("notebook");
+    assert_eq!(workspace["projects"][0]["name"], "notebook");
+    assert_eq!(
+        workspace["repos"],
+        json!([target.to_string_lossy().as_ref()])
+    );
+    assert!(target.join(".git").is_dir(), "the new repo is initialized");
+    assert!(std::fs::read_to_string(target.join("README.md"))
+        .expect("README")
+        .contains("scratch"));
+}
+
+// ---------------------------------------------------------------------------
+// Project-settings ops
+//
+// Same shape as the add-project ops above: dispatched in process against a real
+// `Supervisor`. `delete_project` is the exception — it needs the workflow
+// scheduler, so it is exercised through `SupervisorDispatch` below.
+// ---------------------------------------------------------------------------
+
+/// The settings page end to end against the wire arms: pin two folders, make
+/// them one project, rename it, label a repo, move one on disk, then detach.
+#[tokio::test]
+async fn the_project_settings_ops_rename_relabel_relocate_and_detach() {
+    let (_db, sup) = supervisor();
+    let parent = tempfile::tempdir().unwrap();
+    let repo = parent.path().join("api");
+    let second = parent.path().join("web");
+    git_init(&repo);
+    git_init(&second);
+
+    let workspace =
+        dispatch::add_project_op(&sup, "add_workspace_repo", json!({ "repoPath": repo }))
+            .await
+            .expect("add_workspace_repo");
+    let project_id = workspace["projects"][0]["project_id"]
+        .as_str()
+        .expect("project id")
+        .to_string();
+
+    let renamed = dispatch::project_settings_op(
+        &sup,
+        "rename_project",
+        json!({ "projectId": project_id, "name": "Gateway" }),
+    )
+    .await
+    .expect("rename_project");
+    assert_eq!(renamed["projects"][0]["name"], "Gateway");
+
+    let labelled = dispatch::project_settings_op(
+        &sup,
+        "set_repo_label",
+        json!({ "repoPath": repo, "label": "Backend" }),
+    )
+    .await
+    .expect("set_repo_label");
+    assert_eq!(labelled["projects"][0]["label"], "Backend");
+
+    let attached = dispatch::project_settings_op(
+        &sup,
+        "attach_repo_to_project",
+        json!({ "projectId": project_id, "repoPath": second }),
+    )
+    .await
+    .expect("attach_repo_to_project");
+    assert_eq!(
+        attached["projects"]
+            .as_array()
+            .expect("projects")
+            .iter()
+            .filter(|p| p["project_id"] == project_id.as_str())
+            .count(),
+        2,
+        "both repos are in the one project"
+    );
+
+    // Nothing is running, so the Delete section's poll answers false rather
+    // than erroring.
+    assert_eq!(
+        dispatch::project_settings_op(
+            &sup,
+            "project_has_running_agents",
+            json!({ "projectId": project_id }),
+        )
+        .await
+        .expect("project_has_running_agents"),
+        json!(false)
+    );
+
+    let moved = parent.path().join("web-moved");
+    std::fs::rename(&second, &moved).unwrap();
+    let relocated = dispatch::project_settings_op(
+        &sup,
+        "relocate_repo",
+        json!({ "oldPath": second, "newPath": moved }),
+    )
+    .await
+    .expect("relocate_repo");
+    assert!(relocated["repos"]
+        .as_array()
+        .expect("repos")
+        .contains(&json!(moved.to_string_lossy().as_ref())));
+
+    let detached = dispatch::project_settings_op(
+        &sup,
+        "detach_repo_from_project",
+        json!({ "projectId": project_id, "repoPath": moved }),
+    )
+    .await
+    .expect("detach_repo_from_project");
+    assert_eq!(detached["repos"], json!([repo.to_string_lossy().as_ref()]));
+
+    // …and unpinning the last one empties the workspace, as the sidebar's
+    // Remove does locally.
+    let removed =
+        dispatch::project_settings_op(&sup, "remove_workspace_repo", json!({ "repoPath": repo }))
+            .await
+            .expect("remove_workspace_repo");
+    assert_eq!(removed["repos"], json!([]));
+}
+
+/// Missing or snake_cased argument keys are a deserialization error, not a
+/// panic, and a name this helper does not answer still fails closed.
+#[tokio::test]
+async fn project_settings_ops_reject_bad_args_and_unknown_names() {
+    let (_db, sup) = supervisor();
+    for (op, args) in [
+        ("rename_project", json!({ "projectId": "p1" })),
+        ("set_repo_label", json!({ "repoPath": "/tmp/x" })),
+        (
+            "attach_repo_to_project",
+            json!({ "project_id": "p1", "repo_path": "/tmp/x" }),
+        ),
+        ("relocate_repo", json!({ "oldPath": "/tmp/x" })),
+        ("remove_workspace_repo", json!({})),
+        ("project_has_running_agents", json!({})),
+    ] {
+        assert!(
+            dispatch::project_settings_op(&sup, op, args).await.is_err(),
+            "{op} takes the command's camelCase keys"
+        );
+    }
+    assert_eq!(
+        dispatch::project_settings_op(&sup, "delete_project", json!({ "projectId": "p1" }))
+            .await
+            .unwrap_err(),
+        UNKNOWN_OP,
+        "delete_project needs the scheduler, so it is not answered here"
+    );
+}
+
+/// Deleting a project is reachable through the dispatcher — the failure a host
+/// without a published scheduler gives is the scheduler's absence, never
+/// `unknown op`, which a client is told to read as "this host cannot do that".
+#[tokio::test]
+async fn delete_project_reaches_the_scheduler_rather_than_answering_unknown_op() {
+    let (d, _dir) = wf_roadmap_dispatch();
+    assert_eq!(
+        d.dispatch("delete_project", json!({ "projectId": "p1" }))
+            .await,
+        Err(dispatch::WORKFLOWS_UNAVAILABLE.to_string())
+    );
+    assert!(
+        d.dispatch("delete_project", json!({ "project_id": "p1" }))
+            .await
+            .is_err(),
+        "the wire key is camelCase"
     );
 }
 
