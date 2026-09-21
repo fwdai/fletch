@@ -5,6 +5,7 @@ import { PromptField } from "../../components/PromptField";
 import { PickerSheet, ProviderMark, Sheet, Swatch } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { modelLabel, providerLabel } from "../../lib/agents";
+import { hostProviderBlock, useHostProviders } from "../../lib/hostProviders";
 import { ignore } from "../../lib/ignore";
 import { modelsFor, useModels } from "../../lib/models";
 import { api, useStore } from "../../store";
@@ -30,6 +31,10 @@ export function NewAgentSheet({
   const lastError = useStore((s) => s.lastError);
   const clearError = useStore((s) => s.clearError);
   const models = useModels();
+  // Which agents the Mac can actually start, re-read each time the sheet
+  // opens. Null until it answers (or forever, on a host too old for the op),
+  // and null blocks nothing.
+  const hostProviders = useHostProviders(open);
 
   const [pid, setPid] = useState(projectId ?? projects[0]?.project_id ?? "");
   const [prompt, setPrompt] = useState("");
@@ -96,7 +101,12 @@ export function NewAgentSheet({
   const providerModels = modelsFor(models, provider);
   // Text or a file, not necessarily both: a screenshot can be the whole brief.
   const hasDraft = prompt.trim().length > 0 || attachments.paths.length > 0;
-  const held = starting || dictating || attachments.uploading;
+  // The chosen agent is one the host cannot start: hold the button rather than
+  // let the spawn reach the host and fail there. The selection is left alone —
+  // switching it for the user would start a different agent than the one they
+  // picked.
+  const providerBlocked = hostProviderBlock(hostProviders, provider);
+  const held = starting || dictating || attachments.uploading || providerBlocked !== null;
   const start = () => {
     if (!hasDraft || held) return;
     setStarting(true);
@@ -189,6 +199,12 @@ export function NewAgentSheet({
             <Icon name="chevD" size={11} style={{ color: "var(--fg-3)" }} />
           </button>
         </PromptField>
+        {providerBlocked && (
+          <div className="chips-note">
+            {providerLabel(provider)} is {providerBlocked} on the host — pick another agent, or
+            install or sign it in there.
+          </div>
+        )}
         {lastError && (
           <Notice tone="error" className="na-err" onDismiss={clearError}>
             {lastError}
@@ -241,6 +257,7 @@ export function NewAgentSheet({
         provider={provider}
         model={model || (providerModels[0]?.id ?? "")}
         effort={effort}
+        hostProviders={hostProviders}
         setProvider={setProvider}
         setModel={setModel}
         setEffort={setEffort}
