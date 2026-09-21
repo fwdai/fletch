@@ -40,8 +40,8 @@ pub use capabilities::{
 pub use host_state::{host_providers, HostProvider};
 pub use login::login_command;
 pub use probe::{
-    cached_provider_version, check_cli, probe_all_providers, validate_bin, BinValidation,
-    ProviderProbe, ToolStatus,
+    cached_provider_version, check_cli, probe_all_providers, resolve_all_providers, validate_bin,
+    BinValidation, ProviderProbe, ToolStatus,
 };
 pub use probe::{parse_semver, resolve_agent_bin};
 pub use spawn::{PerTurnSpec, SpawnSpec};

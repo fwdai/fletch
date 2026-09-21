@@ -49,10 +49,13 @@ impl Admin {
                 let mut status = self.status()?;
                 // Probed, not read off the host's state, so it is added here
                 // rather than inside `status` — see the provider block below.
+                // `installed_rows`, never `rows`: `status` is what a liveness
+                // check calls, and it must not be able to block behind a vendor
+                // CLI's `--version`.
                 if let Some(object) = status.as_object_mut() {
                     object.insert(
                         "providers".into(),
-                        provider::summary(&provider::rows().await),
+                        provider::summary(&provider::installed_rows().await),
                     );
                 }
                 Ok(status)

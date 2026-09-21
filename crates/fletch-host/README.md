@@ -306,7 +306,7 @@ theirs, not Fletch's, and several of them sign in by opening a browser. So
 before the first agent runs, do it interactively on the host:
 
 ```sh
-ssh you@host          # as the user the service runs as — see below
+ssh you@host          # as the user the service runs as — this is required
 fletch-host provider status
 ```
 
@@ -330,8 +330,10 @@ machine, so `provider status` says so instead of offering a command.
 Those logins persist in each tool's own config, so this is once per host (per
 provider), not once per run — but they must be the logins of **the user the
 service runs as**, since that is whose home directory the agent (and the
-container sandbox, which mounts `~/.claude`) reads. `ssh` in as that user;
-`provider login` warns if you are not them.
+container sandbox, which mounts `~/.claude`) reads. That is a requirement, not
+a preference: `provider login` refuses to run as anyone else (a login as root
+would drop root-owned credential files into that user's home) and prints the
+`sudo -u <user> fletch-host provider login <id>` that does it properly.
 
 ## The data dir, and who may read it
 
