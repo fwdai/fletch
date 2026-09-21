@@ -377,10 +377,6 @@ async fn read_loop<S: WsTransport>(
     // has. Kept as the id rather than a bare flag because `register_push`
     // writes to *this* device's record (see `dispatch::SESSION_OPS`).
     let mut authenticated: Option<String> = None;
-    // What that device may call. Read once, here, because a grant only changes
-    // by revoke-and-re-pair — and a revoke closes this socket, so there is no
-    // window in which a cached set is wider than the record on disk.
-    let mut scopes: Vec<super::dispatch::Scope> = Vec::new();
     let mut event_task: Option<tokio::task::JoinHandle<()>> = None;
     // Owns the dispatch tasks, so they are aborted when this loop ends instead
     // of outliving the socket they were going to answer on.
@@ -506,7 +502,6 @@ async fn read_loop<S: WsTransport>(
                                         platform = %record.platform,
                                         "remote: device authenticated"
                                     );
-                                    scopes = record.scope_set();
                                     authenticated = Some(record.device_id);
                                 }
                                 None => {
@@ -535,14 +530,32 @@ async fn read_loop<S: WsTransport>(
                         }
 
                         // The per-device half of the same gate: the op exists on
-                        // this host, but this device's pairing scopes may not
-                        // reach it. Answered rather than closed — a scope is a
-                        // standing fact about the device, not a bad credential,
-                        // and the connection stays useful for everything else.
+                        // this host, but this device's scopes may not reach it.
+                        // Answered rather than closed — a scope is a standing
+                        // fact about the device, not a bad credential, and the
+                        // connection stays useful for everything else.
+                        //
+                        // Read from the store on every frame, not cached at the
+                        // handshake: the record is the only authority on what a
+                        // device may do, and a re-pair can narrow it under a
+                        // live connection. A cached set would let a device that
+                        // paired Full keep publishing after it re-paired as
+                        // Control, for as long as it stayed connected. The read
+                        // is one uncontended lock and a scan of a list that has
+                        // a handful of rows.
+                        //
+                        // An id with no record answers `forbidden` too: a revoke
+                        // between frames already closes the socket, so this is
+                        // only the ordering backstop.
                         //
                         // `SupervisorDispatch` carries no identity by design, so
                         // this is the only place it can be checked.
-                        if !super::dispatch::allows(&scopes, &frame.op) {
+                        let device = authenticated.as_deref().unwrap_or_default();
+                        let permitted = state
+                            .devices()
+                            .scopes_of(device)
+                            .is_some_and(|scopes| super::dispatch::allows(&scopes, &frame.op));
+                        if !permitted {
                             out.send(json_frame(err_frame(&frame.id, super::dispatch::FORBIDDEN)));
                             continue;
                         }
@@ -648,9 +661,11 @@ async fn authenticate(
             // say, what access this pairing is claiming.
             let pending = state.pairing().consume(&args.token)?;
             let info = args.device.unwrap_or_default();
+            // Through `pair_device`, not the store directly: a re-pair that
+            // *changes* what this device may do also has to hang up on the
+            // connections still holding the old descriptor.
             let record = state
-                .devices()
-                .register(
+                .pair_device(
                     &info.name(),
                     &info.platform(),
                     remote_static,

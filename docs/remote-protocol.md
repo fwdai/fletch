@@ -452,7 +452,16 @@ have that op" are the same actions it hides for "this device may not". The
 
 **Changing a device's scopes is a revoke and a re-pair.** There is no in-place
 edit. A re-pair on a key already on file replaces that record's scopes with the
-new code's.
+new code's, and if that *changed* the set the host closes that device's live
+connections with `1012` — the device is still paired, so the client reconnects
+on its normal backoff and `hello` hands it the new `protocol.ops`. A re-pair
+that grants the same scopes closes nothing.
+
+**The stored record is the only authority.** Every request is authorized
+against `devices.json` as it stands at that moment, not against a set captured
+when the connection authenticated, so a device narrowed mid-connection cannot
+go on using the access it no longer has. `protocol.ops` is a copy handed out at
+`pair`/`hello`; the close above is what keeps a client from holding a stale one.
 
 **A record with no `scopes` field means every scope.** Every device paired
 before scopes existed was paired into the undivided surface, so anything
@@ -969,10 +978,12 @@ device key or revoked; `4004` host has remote access disabled. `4003` also arriv
 connection is authenticated as, and `4004` when the host turns remote access
 off — in both cases the credential is gone or dormant, so the client should
 stop reconnecting until it is paired or the host is enabled again. `1012`
-(service restart) arrives when the host moves its listener to another port; it
-is retryable, and a relayed device reconnects without noticing, since the relay
-routes on the host key. A LAN-only device still dials the old port until it
-learns the new one.
+(service restart) arrives when the host moves its listener to another port, and
+when this device re-paired into a different scope set (see "Scopes") — in both
+cases the credential is still good, so it is retryable and the client comes
+straight back for a fresh `protocol`. A relayed device reconnects without
+noticing, since the relay routes on the host key; a LAN-only device still dials
+the old port until it learns the new one.
 
 Relay close codes reach the phone on the device link and are all retryable
 with the normal backoff — the condition is on the host's or relay's side and

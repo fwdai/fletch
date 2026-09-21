@@ -52,6 +52,18 @@ pub(super) const CLOSE_RESTARTING: CloseReason = CloseReason {
     reason: "listener restarting",
 };
 
+/// A device re-paired into a *different* scope set under a live connection, so
+/// the descriptor that connection was handed no longer matches its record.
+///
+/// `1012` and not `4003`: the device is still paired, it simply has to say
+/// `hello` again to be told what it may now do. `4003` means "you are not
+/// paired", and every client stops reconnecting behind it — which would strand
+/// a device that was only narrowed.
+pub(super) const CLOSE_REPAIRED: CloseReason = CloseReason {
+    code: 1012,
+    reason: "device re-paired with different access",
+};
+
 struct Session {
     /// `None` until `pair`/`hello` succeeds. Pre-auth connections are tracked
     /// too, so disabling remote access closes a socket that is mid-handshake

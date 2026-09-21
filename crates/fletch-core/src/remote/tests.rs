@@ -327,6 +327,16 @@ fn re_pairing_overrides_the_scopes() {
         .unwrap();
     assert_eq!(widened.scope_set(), Scope::ALL.to_vec());
     assert_eq!(store.list().len(), 1);
+
+    // `scopes_of` is what every frame is authorized against, so it has to see
+    // the re-pair rather than some earlier copy of the grant.
+    assert_eq!(
+        store.scopes_of(&full.device_id),
+        Some(Scope::ALL.to_vec()),
+        "the gate reads the record as it now stands"
+    );
+    store.register("phone", "ios", &key(1), &control).unwrap();
+    assert_eq!(store.scopes_of(&full.device_id), Some(control));
 }
 
 /// A scope a future Fletch writes and this one cannot enforce is dropped, not
@@ -1933,6 +1943,144 @@ async fn a_full_device_still_sees_the_whole_surface() {
     ws.request("2", "push_agent", json!({ "agentId": "arabia" }))
         .await;
     assert_eq!(ws.next_json().await["error"], UNKNOWN_OP);
+}
+
+/// Re-pairing a connected Full device with a Control code must not leave the
+/// old connection publishing. Both halves of that: the live socket is hung up
+/// (`1012`, so the client comes back rather than treating itself as unpaired),
+/// and the `hello` it reconnects with carries the narrowed surface.
+#[tokio::test]
+async fn re_pairing_into_a_narrower_preset_hangs_up_the_old_connection() {
+    let host = boot();
+    let phone = device();
+    let control = dispatch::preset_scopes("control").expect("control");
+
+    // A Full device, connected and working.
+    let minted = host.state.pairing().mint(&Scope::ALL);
+    let mut full = secure_connect(host.port, &phone).await;
+    full.request(
+        "1",
+        "pair",
+        json!({ "token": minted.token, "device": { "name": "iPhone", "platform": "ios" } }),
+    )
+    .await;
+    assert_eq!(full.next_json().await["ok"], true);
+
+    // The same phone re-pairs on a second connection with a Control code.
+    let minted = host.state.pairing().mint(&control);
+    let mut narrowed = secure_connect(host.port, &phone).await;
+    narrowed
+        .request(
+            "1",
+            "pair",
+            json!({ "token": minted.token, "device": { "name": "iPhone", "platform": "ios" } }),
+        )
+        .await;
+    assert_eq!(narrowed.next_json().await["ok"], true);
+
+    // The Full connection is hung up, so it cannot go on publishing and its
+    // client cannot go on offering the actions its stale descriptor named.
+    assert_eq!(
+        full.close_code().await,
+        1012,
+        "a re-paired device is still paired, so the close must be retryable"
+    );
+
+    // And what the device may now do is the narrowed set, at `hello` and on the
+    // wire, without another code.
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("2", "hello", json!({})).await;
+    let hello = ws.next_json().await;
+    let ops = hello["result"]["protocol"]["ops"].as_array().unwrap();
+    for op in dispatch::ops_for(&[Scope::Publish]) {
+        assert!(!ops.contains(&json!(op)), "{op} survived the re-pair");
+    }
+    ws.request("3", "push_agent", json!({ "agentId": "arabia" }))
+        .await;
+    assert_eq!(ws.next_json().await["error"], FORBIDDEN);
+}
+
+/// Re-pairing with the *same* access is the common case — a lapsed code, a
+/// reinstall, a second scan — and must not kick the phone off.
+#[tokio::test]
+async fn re_pairing_with_unchanged_scopes_leaves_the_connection_alone() {
+    let host = boot();
+    let phone = device();
+
+    let pair = json!({ "name": "iPhone", "platform": "ios" });
+
+    let minted = host.state.pairing().mint(&Scope::ALL);
+    let mut first = secure_connect(host.port, &phone).await;
+    first
+        .request(
+            "1",
+            "pair",
+            json!({ "token": minted.token, "device": pair }),
+        )
+        .await;
+    assert_eq!(first.next_json().await["ok"], true);
+
+    let minted = host.state.pairing().mint(&Scope::ALL);
+    let mut second = secure_connect(host.port, &phone).await;
+    second
+        .request(
+            "2",
+            "pair",
+            json!({ "token": minted.token, "device": pair }),
+        )
+        .await;
+    assert_eq!(second.next_json().await["ok"], true);
+
+    // Nothing changed, so the first connection was never asked to close.
+    first.request("3", "get_workspace", json!({})).await;
+    let reply = first.next_json().await;
+    assert_eq!(reply["id"], "3");
+    assert_eq!(reply["ok"], true);
+}
+
+/// The record is the only authority: a grant narrowed under a live connection
+/// takes effect on that connection's very next frame, without waiting for it to
+/// reconnect. This is the half that makes a stale descriptor merely stale
+/// rather than dangerous.
+#[tokio::test]
+async fn authorization_reads_the_record_on_every_frame() {
+    let host = boot();
+    let phone = device();
+    let minted = host.state.pairing().mint(&Scope::ALL);
+
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request(
+        "1",
+        "pair",
+        json!({ "token": minted.token, "device": { "name": "iPhone", "platform": "ios" } }),
+    )
+    .await;
+    assert_eq!(ws.next_json().await["ok"], true);
+
+    // Full: the op reaches the dispatcher (the stub says `unknown op`).
+    ws.request("2", "push_agent", json!({ "agentId": "arabia" }))
+        .await;
+    assert_eq!(ws.next_json().await["error"], UNKNOWN_OP);
+
+    // Narrow the record underneath the open connection, without going through
+    // `pair` — so nothing closed this socket and only the per-frame read can
+    // notice.
+    let control = dispatch::preset_scopes("control").expect("control");
+    host.state
+        .devices()
+        .register("iPhone", "ios", &phone.public, &control)
+        .unwrap();
+
+    ws.request("3", "push_agent", json!({ "agentId": "arabia" }))
+        .await;
+    assert_eq!(
+        ws.next_json().await["error"],
+        FORBIDDEN,
+        "the connection kept the scopes it authenticated with"
+    );
+    // Still a working connection for what it may do.
+    ws.request("4", "get_workspace", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
 }
 
 /// The handshake is not optional: a client that opens the socket and starts

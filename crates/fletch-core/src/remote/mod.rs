@@ -45,8 +45,9 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::broadcast;
 
+use self::auth::DeviceRecord;
 use self::relay::{RelayLink, RelayTiming};
-use self::session::{Sessions, CLOSE_DISABLED, CLOSE_RESTARTING, CLOSE_REVOKED};
+use self::session::{Sessions, CLOSE_DISABLED, CLOSE_REPAIRED, CLOSE_RESTARTING, CLOSE_REVOKED};
 use crate::error::{Error, Result};
 // How deep the per-connection fan-out buffers, shared with the engine channel
 // that feeds it: one number for the whole path (see `host::sink`).
@@ -556,6 +557,52 @@ impl RemoteState {
                 .map(|s| s.as_str().to_string())
                 .collect(),
         })
+    }
+
+    /// Redeem a pairing: record the device under the key its handshake proved,
+    /// with the scopes the code carried, and hang up on its *existing*
+    /// connections if that changed what it may do.
+    ///
+    /// The hang-up is the other half of "the stored record is the only
+    /// authority". Per-frame checks already read the record, so a narrowed
+    /// device cannot act beyond its new scopes — but its live connection would
+    /// still be holding the descriptor it was handed at `hello`, and a client
+    /// gating on a stale `protocol.ops` would keep *offering* actions that now
+    /// come back `forbidden`. Closing makes it reconnect and be told.
+    ///
+    /// Record first, socket second, exactly as [`Self::revoke_device`] does, and
+    /// for the same reason: in that order there is no interleaving that leaves a
+    /// connection running on the scopes the record no longer grants.
+    ///
+    /// Unchanged scopes close nothing: re-scanning a Full code on a Full device
+    /// (a lapsed code, a reinstall) is the common case and must not kick the
+    /// phone off. The connection doing the pairing is not affected either way —
+    /// it binds to the device only after this returns.
+    ///
+    /// The read and the write are two lock acquisitions, so two `pair` frames
+    /// racing on one device key could in principle both see "unchanged" and
+    /// close nothing. That is a stale *descriptor* on a live socket, never stale
+    /// *authority*: every frame is authorized against the stored record (see
+    /// `server::read_loop`), so the device still cannot act beyond its new
+    /// scopes, and the next reconnect corrects the descriptor.
+    pub(super) fn pair_device(
+        &self,
+        name: &str,
+        platform: &str,
+        public_key: &[u8; 32],
+        scopes: &[Scope],
+    ) -> Result<DeviceRecord> {
+        let before = self.devices.find_by_key(public_key).map(|d| d.scope_set());
+        let record = self.devices.register(name, platform, public_key, scopes)?;
+        if before.is_some_and(|before| before != record.scope_set()) {
+            tracing::info!(
+                device = %record.name,
+                "remote: re-paired with different access; closing its live connections"
+            );
+            self.sessions
+                .close_device(&record.device_id, CLOSE_REPAIRED);
+        }
+        Ok(record)
     }
 
     /// Revoke a device and hang up on it.
