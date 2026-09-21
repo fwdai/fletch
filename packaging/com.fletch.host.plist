@@ -66,6 +66,11 @@
         <key>QUORUM_GITHUB_CLIENT_ID</key>
         <string></string>
         -->
+        <!-- Or skip the sign-in and hand the host a token, which then stays
+             out of its database (see the README).
+        <key>FLETCH_GITHUB_TOKEN</key>
+        <string></string>
+        -->
     </dict>
 
     <!-- Logs go to stderr; launchd has no journal, so name a file. -->

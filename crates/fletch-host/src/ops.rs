@@ -146,6 +146,10 @@ impl Admin {
             "githubConnected".into(),
             json!(fletch_core::github::client::token().is_some()),
         );
+        object.insert(
+            "githubTokenSource".into(),
+            json!(fletch_core::github::client::token_source().map(|s| s.as_str())),
+        );
         Ok(status)
     }
 

@@ -1,10 +1,11 @@
-import { open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import type { ProjectRef } from "@/api";
+import { pickFolder } from "@/components/FolderPicker";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { basename } from "@/util/format";
 
 /** The repositories field of the General section: where the project lives on
@@ -18,6 +19,9 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
   const attachRepoToProject = useAppStore((s) => s.attachRepoToProject);
   const detachRepoFromProject = useAppStore((s) => s.detachRepoFromProject);
   const relocateProject = useAppStore((s) => s.relocateProject);
+  // Closed on a host from before the project-settings ops; the section header
+  // carries the reason, each dead control repeats it.
+  const gate = useGate("projectAdmin");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,23 +41,21 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
     }
   }
 
+  // Both pickers ask the environment the user is driving: the native dialog on
+  // this Mac, the in-app browser over `list_dir` on a paired host — the folder
+  // these ops take is one of the host's, not one of ours.
   async function onAttach() {
-    const picked = await open({
-      directory: true,
-      multiple: false,
-      title: "Select a git repository to attach",
-    });
-    if (typeof picked !== "string") return;
+    const picked = await pickFolder({ title: "Select a git repository to attach" });
+    if (!picked) return;
     await run(() => attachRepoToProject(projectId, picked));
   }
 
   async function onRelocate(path: string) {
-    const picked = await open({
-      directory: true,
-      multiple: false,
-      title: "Select the repository's new location",
-    });
-    if (typeof picked !== "string" || picked === path) return;
+    // No `start`: the old path is where the folder *was*, and handing a native
+    // dialog a directory that no longer exists is how it opens somewhere
+    // arbitrary. The host browser opens at `~`.
+    const picked = await pickFolder({ title: "Select the repository's new location" });
+    if (!picked || picked === path) return;
     await run(() => relocateProject(path, picked));
   }
 
@@ -69,6 +71,7 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
             primary={i === 0 && multi}
             detachable={multi}
             busy={busy}
+            gate={gate}
             onRelocate={() => void onRelocate(r.path)}
             onDetach={() => void run(() => detachRepoFromProject(projectId, r.path))}
             onError={setError}
@@ -80,7 +83,8 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
         variant="outline"
         size="lg"
         className="ps-repo-add"
-        disabled={busy}
+        disabled={busy || gate !== null}
+        tip={gate ?? undefined}
         onClick={onAttach}
       >
         Attach repository…
@@ -103,6 +107,7 @@ function RepoRow({
   primary,
   detachable,
   busy,
+  gate,
   onRelocate,
   onDetach,
   onError,
@@ -111,6 +116,8 @@ function RepoRow({
   primary: boolean;
   detachable: boolean;
   busy: boolean;
+  /** Why this host cannot take the row's writes, or null when it can. */
+  gate: string | null;
   onRelocate: () => void;
   onDetach: () => void;
   /** Surface a failed save in the field's shared error slot (null clears it) —
@@ -122,7 +129,7 @@ function RepoRow({
   const [label, setLabel] = useState(saved);
 
   async function saveLabel() {
-    if (label.trim() === saved) return;
+    if (label.trim() === saved || gate) return;
     try {
       await setRepoLabel(repo.path, label);
       // The store round-trips the trimmed value (or "" when cleared); mirror it
@@ -146,6 +153,8 @@ function RepoRow({
             placeholder={basename(repo.path)}
             spellCheck={false}
             autoComplete="off"
+            disabled={gate !== null}
+            title={gate ?? undefined}
             aria-label={`Label for ${repo.path}`}
             onChange={(e) => setLabel(e.target.value)}
             onKeyDown={(e) => {
@@ -166,16 +175,22 @@ function RepoRow({
           {repo.path}
         </div>
       </div>
-      <Button variant="link" size="sm" disabled={busy} onClick={onRelocate}>
+      <Button
+        variant="link"
+        size="sm"
+        disabled={busy || gate !== null}
+        tip={gate ?? undefined}
+        onClick={onRelocate}
+      >
         Change…
       </Button>
       {detachable && (
         <IconButton
           size="sm"
           danger
-          tip="Detach from project"
+          tip={gate ?? "Detach from project"}
           aria-label={`Detach ${repo.path}`}
-          disabled={busy}
+          disabled={busy || gate !== null}
           onClick={onDetach}
         >
           <Icon name="close" />

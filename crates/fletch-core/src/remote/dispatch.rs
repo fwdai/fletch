@@ -17,7 +17,7 @@
 //! which case it goes in [`SESSION_OPS`] and is answered by `server`.
 
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -150,8 +150,17 @@ pub const OPS: &[&str] = &[
     "list_dir",
     "add_workspace_repo",
     "clone_repo",
+    "create_repo",
     "gh_status",
     "gh_repo_list",
+    "remove_workspace_repo",
+    "attach_repo_to_project",
+    "detach_repo_from_project",
+    "set_repo_label",
+    "rename_project",
+    "project_has_running_agents",
+    "delete_project",
+    "relocate_repo",
     "dictation_status",
     "dictation_begin",
     "dictation_audio",
@@ -635,12 +644,47 @@ impl Dispatch for SupervisorDispatch {
 
                 "list_dir" | "gh_status" | "gh_repo_list" => add_project_op(sup, op, args).await,
 
-                // The two that change the project list also tell every other
+                // The three that change the project list also tell every other
                 // view about it, exactly as the Tauri commands do.
-                "add_workspace_repo" | "clone_repo" => crate::commands::announce_workspace(
+                "add_workspace_repo" | "clone_repo" | "create_repo" => {
+                    crate::commands::announce_workspace(
+                        ctx.sink.as_ref(),
+                        add_project_op(sup, op, args).await,
+                    )
+                }
+
+                // The project settings page (protocol doc, "Project settings
+                // from a remote client"). Every one of these rewrites the
+                // project list, so each tells the other views about it — the
+                // desktop command answers the caller with the new `Workspace`
+                // and no event, which is enough for one window but not for the
+                // host's own window plus a phone.
+                "remove_workspace_repo"
+                | "attach_repo_to_project"
+                | "detach_repo_from_project"
+                | "set_repo_label"
+                | "rename_project"
+                | "relocate_repo" => crate::commands::announce_workspace(
                     ctx.sink.as_ref(),
-                    add_project_op(sup, op, args).await,
+                    project_settings_op(sup, op, args).await,
                 ),
+
+                // The read the Delete section polls while its confirm is up.
+                "project_has_running_agents" => project_settings_op(sup, op, args).await,
+
+                // Destructive, like `discard_agent` and `wf_delete_run`: the
+                // project's agents, their checkouts and its workflow runs all
+                // go. Needs the scheduler, so it is here rather than in
+                // [`project_settings_op`], and the supervisor refuses while any
+                // of the project's agents is running.
+                "delete_project" => {
+                    let a: ProjectArgs = parse(args)?;
+                    let workflows = workflows(ctx)?;
+                    crate::commands::announce_workspace(
+                        ctx.sink.as_ref(),
+                        res(sup.clone().delete_project(&workflows, &a.project_id).await),
+                    )
+                }
 
                 // Remote-only: the phone streams a file's bytes, this Mac stages
                 // it where a desktop paste lands (`attachments::remote`). The
@@ -1215,10 +1259,82 @@ pub(super) async fn add_project_op(sup: &Supervisor, op: &str, args: Value) -> D
             res(crate::commands::clone_repo_impl(sup, &a.spec, &a.dest_parent).await)
         }
 
+        // `publish` decides whether GitHub is involved at all: false creates a
+        // local-only repo, which is what a host with no `gh` connection can
+        // still do. Absent means publish, as the command's default does.
+        "create_repo" => {
+            let a: CreateRepoArgs = parse(args)?;
+            res(crate::commands::create_repo_impl(
+                sup,
+                &a.name,
+                &a.dest_parent,
+                a.private,
+                a.description.as_deref(),
+                a.publish.unwrap_or(true),
+            )
+            .await)
+        }
+
         // Both take no arguments; calling the commands themselves keeps the
         // repo-list cap in one place.
         "gh_status" => res(crate::commands::gh_status_impl().await),
         "gh_repo_list" => res(crate::commands::gh_repo_list_impl().await),
+
+        _ => Err(UNKNOWN_OP.to_string()),
+    }
+}
+
+/// The project settings page's ops (protocol doc, "Project settings from a
+/// remote client"): rename and delete a project, attach/detach/relocate a repo,
+/// label one, unpin one. Split out of the match above for the same reason
+/// [`add_project_op`] is — none of them needs the engine ctx, so the remote
+/// tests drive them against a bare `Supervisor`. `delete_project` is the one
+/// that stays in the match: it needs the workflow scheduler. The
+/// `workspace:changed` the mutating ones owe everyone else is added by the
+/// caller, which has the sink.
+pub(super) async fn project_settings_op(sup: &Supervisor, op: &str, args: Value) -> DispatchResult {
+    match op {
+        "remove_workspace_repo" => {
+            let a: RepoPathArgs = parse(args)?;
+            res(sup.remove_workspace_repo(PathBuf::from(a.repo_path)))
+        }
+
+        // Two-phase (DB, then the folder) with a rollback, exactly as the
+        // desktop command runs it.
+        "attach_repo_to_project" => {
+            let a: ProjectRepoArgs = parse(args)?;
+            res(crate::commands::attach_repo_to_project_impl(sup, &a.project_id, a.repo_path).await)
+        }
+
+        // Guarded supervisor-side: a project's last repo, and any repo an agent
+        // checkout still references, are both refused.
+        "detach_repo_from_project" => {
+            let a: ProjectRepoArgs = parse(args)?;
+            res(sup.detach_repo_from_project(&a.project_id, PathBuf::from(a.repo_path)))
+        }
+
+        "set_repo_label" => {
+            let a: RepoLabelArgs = parse(args)?;
+            res(sup.set_repo_label(PathBuf::from(a.repo_path), &a.label))
+        }
+
+        "rename_project" => {
+            let a: RenameProjectArgs = parse(args)?;
+            res(sup.rename_project(&a.project_id, &a.name))
+        }
+
+        // Repoints a pinned repo at a folder the user moved *on the host*; it
+        // validates the destination is a git repo there and touches neither
+        // folder.
+        "relocate_repo" => {
+            let a: RelocateArgs = parse(args)?;
+            res(sup.relocate_repo(PathBuf::from(a.old_path), PathBuf::from(a.new_path)))
+        }
+
+        "project_has_running_agents" => {
+            let a: ProjectArgs = parse(args)?;
+            ok(sup.project_has_running_agents(&a.project_id))
+        }
 
         _ => Err(UNKNOWN_OP.to_string()),
     }
@@ -1367,6 +1483,53 @@ struct PathArgs {
 struct CloneArgs {
     spec: String,
     dest_parent: String,
+}
+
+/// `private` is the wire key the desktop's `createRepo` already sends (the
+/// command's own parameter name), so it is not renamed here.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateRepoArgs {
+    name: String,
+    dest_parent: String,
+    private: bool,
+    #[serde(default)]
+    description: Option<String>,
+    /// Absent publishes, as the command's default does.
+    #[serde(default)]
+    publish: Option<bool>,
+}
+
+/// One repo of one project: attach and detach both address a repo *within* a
+/// project, so both keys are required.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectRepoArgs {
+    project_id: String,
+    repo_path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoLabelArgs {
+    repo_path: String,
+    /// Blank clears back to the folder-basename fallback.
+    label: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameProjectArgs {
+    project_id: String,
+    name: String,
+}
+
+/// Both paths are on the *host*: the folder was moved there, not here.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RelocateArgs {
+    old_path: String,
+    new_path: String,
 }
 
 #[derive(Deserialize)]

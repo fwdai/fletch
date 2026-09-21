@@ -488,11 +488,20 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
 | `discover_supported_models` | as command | `AgentModels[]` |
-| `list_dir` | `{ path }` (tilde-expanded on the host) | `DirListing` |
+| `list_dir` | `{ path }` (tilde-expanded on the host) | `DirListing` — entries sorted directories-first then by name and capped at 1000, with `truncated` saying the cap bit; each entry carries `is_repo` (a directory holding a `.git`). Both fields were added within v2, so a client reading a host from before them sees no marks and no truncation flag |
 | `add_workspace_repo` | `{ repoPath }` | `Workspace` |
 | `clone_repo` | `{ spec, destParent }` | `Workspace` |
+| `create_repo` | `{ name, destParent, private, description?, publish? }` — seeds the repo on the *host* (README + initial commit) and pins it; `publish: false` keeps it local-only, absent publishes | `Workspace` |
 | `gh_status` | `{}` | `GhStatus` |
 | `gh_repo_list` | `{}` | `GhRepoSummary[]` |
+| `remove_workspace_repo` | `{ repoPath }` — unpins the repo; the folder on the host is untouched | `Workspace` |
+| `attach_repo_to_project` | `{ projectId, repoPath }` — two-phase on the host (database, then `git init` for a folder that is not a repository yet), rolled back if the second phase fails | `Workspace` |
+| `detach_repo_from_project` | `{ projectId, repoPath }` — refuses a project's last repo and any repo an agent checkout still references | `Workspace` |
+| `set_repo_label` | `{ repoPath, label }` — blank clears back to the folder-basename fallback | `Workspace` |
+| `rename_project` | `{ projectId, name }` — the display name only; no folder is renamed | `Workspace` |
+| `project_has_running_agents` | `{ projectId }` — the read the Delete section polls | `boolean` |
+| `delete_project` | `{ projectId }` — destructive: the project's agents, their checkouts and transcripts, and its workflow runs all go. Refused while any of its agents is running. The repository folders themselves are left alone | `ProjectDeleteResult` |
+| `relocate_repo` | `{ oldPath, newPath }` — both paths are on the host; it validates the destination is a git repository there and moves nothing | `Workspace` |
 | `dictation_status` | `{}` (remote-only, see "Dictation") | `{ available: boolean, reason: string \| null }` |
 | `dictation_begin` | `{}` (remote-only) | `{ session: string, auto_stop: boolean }` |
 | `dictation_audio` | `{ session, rate: number, pcm: string }` — base64 of 16-bit little-endian mono PCM at `rate` Hz (remote-only) | `null` |
@@ -580,15 +589,17 @@ does not otherwise touch, which is the line `rpc/caps.rs` draws for agents:
 force is confined to the branch the host itself materialized. Deleting a merged
 branch is done on the host, or on GitHub.
 
-Not yet exposed, but only for want of a reason to be: `fork_agent`,
-`delete_project`, `create_repo`, and the two mention sources the composers use
-(`list_repo_tree`, `list_repo_prs`, which stay off with their read families).
-These are scope, not policy — a client gates each one on its absence from
-`protocol.ops` and says so, and a later release may add the row. `merge_pr` was
-in this group until it earned its row above: the credential it spends is the one
-`push_agent` and `create_pr` already spend, and the five working-tree ops
-(`pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`,
-`abort_merge_agent`) joined it for the same reason.
+Not yet exposed, but only for want of a reason to be: `fork_agent` and the two
+mention sources the composers use (`list_repo_tree`, `list_repo_prs`, which stay
+off with their read families). These are scope, not policy — a client gates each
+one on its absence from `protocol.ops` and says so, and a later release may add
+the row. `merge_pr` was in this group until it earned its row above: the
+credential it spends is the one `push_agent` and `create_pr` already spend, and
+the five working-tree ops (`pull_agent`, `rebase_agent`, `stash_agent`,
+`discard_agent_changes`, `abort_merge_agent`) joined it for the same reason.
+`delete_project` and `create_repo` left with the project-settings family below,
+for the same kind of reason: they act on the project list and on the folders the
+host already pins, and nothing outside them.
 
 The spawn flow is the desktop's: `allocate_draft_name` → `spawn_agent` →
 wait for `agent:status` to leave `spawning` → `send_user_message` with the
@@ -631,8 +642,25 @@ land in does not matter. Note `DirListing.entries[].is_dir` is snake_case:
 `DirEntry` is serialized as-is, the one non-camelCase payload on the allowlist.
 Pinning a folder that is not yet a git repository runs `git init` plus an
 initial commit in it, exactly as the desktop dialog does. The phone remembers
-the last destination parent per host, as the desktop does. Creating a brand-new
-repo from the phone (`create_repo`) is a follow-up.
+the last destination parent per host, as the desktop does. The third flow,
+**create a new repo** (`list_dir` for the parent, then `create_repo`), seeds and
+commits the repo on the host; it publishes to GitHub with the host's own `gh`
+connection, and `publish: false` keeps it local there, exactly as the desktop
+dialog does when no connection exists.
+
+Project settings from a remote client are the same commands as well: a repo's
+label (`set_repo_label`), the repos a project is made of
+(`attach_repo_to_project`, `detach_repo_from_project`, `relocate_repo`,
+`remove_workspace_repo`), the project's display name (`rename_project`), and
+deleting it (`project_has_running_agents` to know whether the button is live,
+then `delete_project`). Every path in them is a path on the *host*, so a client
+picks one with `list_dir` rather than its own file dialog, and nothing here
+moves, renames or deletes a folder on disk: attach may `git init` a folder that
+is not a repository yet, and that is the only filesystem write in the group.
+Each of these answers the new `Workspace` (or, for `delete_project`, a
+`ProjectDeleteResult`) and the host also emits `workspace:changed`, as the
+add-project ops do — the desktop commands emit nothing, because one window
+applying the result is the whole audience there.
 
 Planning chats from the phone are the desktop Roadmap tab's Project Manager
 chat, reached through the same commands. `list_custom_agents` returns the

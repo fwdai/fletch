@@ -21,8 +21,14 @@
   text-align: left;
   width: 100%;
 }
-.np-item:hover {
+.np-item:hover:not(:disabled) {
   background: var(--hover);
+}
+/* Gated (e.g. creating a repo on a host that can't): still readable, since the
+   subtitle is where the reason is. */
+.np-item:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 .np-item .np-icon {
   width: 32px;

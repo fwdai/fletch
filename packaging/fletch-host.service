@@ -58,6 +58,10 @@ Environment=RUST_LOG=info
 # the client id of an OAuth app that has it enabled. The desktop bakes its own
 # in at build time; a host reads it from here. Uncomment and set yours.
 #Environment=QUORUM_GITHUB_CLIENT_ID=
+# Or skip the sign-in and hand the host a token, which then stays out of its
+# database: either of these, the environment variable first (see the README).
+#Environment=FLETCH_GITHUB_TOKEN=
+#LoadCredential=github_token:/etc/fletch/github_token
 # Agent processes are children of this one, and `serve` kills them itself on
 # SIGTERM; give that a moment before systemd reaches for SIGKILL.
 TimeoutStopSec=30

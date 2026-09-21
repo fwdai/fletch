@@ -431,8 +431,21 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // gets there.
     git_dist::init(data_dir.join(git_dist::INSTALL_DIR_NAME));
     // Seed the in-process GitHub token so API calls and git network auth work
-    // without a DB handle (updated on sign-in).
-    seed_secret_mirror(&db, github::TOKEN_SETTING, github::seed_token);
+    // without a DB handle (updated on sign-in). A headless host may be handed
+    // one out-of-band instead, to keep it out of the database entirely — then
+    // that value is used for this process's lifetime and never written.
+    match headless
+        .then(|| {
+            supplied_github_token(
+                std::env::var("FLETCH_GITHUB_TOKEN").ok(),
+                std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from),
+            )
+        })
+        .flatten()
+    {
+        Some((token, source)) => github::client::seed_token_from(Some(token), source),
+        None => seed_secret_mirror(&db, github::TOKEN_SETTING, github::seed_token),
+    }
     // Same for the Linear API key, so the issue adapters — reached from poll
     // paths with no DB handle — see a key pasted in a previous run.
     seed_secret_mirror(&db, linear::TOKEN_SETTING, linear::seed_token);
@@ -738,6 +751,36 @@ fn seed_secret_mirror(db: &Db, key: &'static str, apply: fn(Option<String>)) {
     }
 }
 
+/// The GitHub token an operator supplied out-of-band, if any: the
+/// `FLETCH_GITHUB_TOKEN` environment variable, else a systemd credential named
+/// `github_token` (which systemd exposes as a file under
+/// `$CREDENTIALS_DIRECTORY`). Headless only — see [`boot`].
+///
+/// Takes both inputs as arguments rather than reading the process environment
+/// itself, so it can be tested: the environment is shared by every test in the
+/// binary, and these tests run in parallel with the ones that boot an engine.
+fn supplied_github_token(
+    env: Option<String>,
+    credentials_dir: Option<PathBuf>,
+) -> Option<(String, github::client::TokenSource)> {
+    if let Some(token) = env.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+        return Some((token, github::client::TokenSource::Env));
+    }
+    // The credential's name is the settings key it stands in for, so a unit
+    // says `LoadCredential=github_token:<file>` and nothing else has to match.
+    let path = credentials_dir?.join(github::TOKEN_SETTING);
+    let token = match std::fs::read_to_string(&path) {
+        Ok(token) => token.trim().to_string(),
+        Err(e) => {
+            // Not fatal: fall through to the stored token rather than leaving a
+            // host that was signed in before with no GitHub at all.
+            tracing::warn!(path = %path.display(), error = %e, "could not read the github_token credential");
+            return None;
+        }
+    };
+    (!token.is_empty()).then_some((token, github::client::TokenSource::Credential))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,6 +861,41 @@ mod tests {
                 "the event never reached the boot broadcast"
             );
         });
+    }
+
+    /// A headless host can be handed its GitHub token instead of storing one.
+    /// The environment wins over a credential; blank is not a token; a
+    /// credential directory without the file falls back to the stored token.
+    #[test]
+    fn a_supplied_github_token_comes_from_the_env_then_a_credential() {
+        use github::client::TokenSource;
+        let dir = tempfile::tempdir().unwrap();
+        let creds = dir.path().to_path_buf();
+        std::fs::write(creds.join(github::TOKEN_SETTING), "  ghp_from_file\n").unwrap();
+
+        assert_eq!(
+            supplied_github_token(Some("ghp_from_env".into()), Some(creds.clone())),
+            Some(("ghp_from_env".to_string(), TokenSource::Env))
+        );
+        // Blank (an `Environment=FLETCH_GITHUB_TOKEN=` nobody filled in) is not
+        // a token, so the credential is still reached — and arrives trimmed,
+        // since the file almost certainly ends in a newline.
+        assert_eq!(
+            supplied_github_token(Some("   ".into()), Some(creds.clone())),
+            Some(("ghp_from_file".to_string(), TokenSource::Credential))
+        );
+        assert_eq!(
+            supplied_github_token(None, Some(creds)),
+            Some(("ghp_from_file".to_string(), TokenSource::Credential))
+        );
+        // Nothing supplied, and a credentials dir that holds other credentials
+        // but not this one: boot falls back to the store.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            supplied_github_token(None, Some(empty.path().to_path_buf())),
+            None
+        );
+        assert_eq!(supplied_github_token(None, None), None);
     }
 
     /// The desktop's rule: its own `~/.fletch` roots are its to sweep, and a

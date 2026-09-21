@@ -377,6 +377,36 @@ is not one of them. None of this helps against anything *outside* the sandbox,
 though — a `--data-dir` left world-readable is still world-readable, which is
 what the `0700` above is for.
 
+### Keeping the token out of the database
+
+If a plaintext token in the database is not a trade you want to make, hand the
+host the token instead and it never writes one:
+
+```sh
+FLETCH_GITHUB_TOKEN=ghp_... fletch-host serve
+```
+
+or, in the systemd unit, a credential — systemd reads the file as root and
+exposes it to this service alone, so the token is neither in the unit nor in
+anything else's environment:
+
+```ini
+LoadCredential=github_token:/etc/fletch/github_token
+```
+
+Either way the value is used for the life of the process and is never persisted;
+`fletch-host status` reports which one it came from as `githubTokenSource`
+(`env`, `credential` or `store`). The environment variable wins if both are set.
+
+The trade-off: a supplied token is seeded *over* whatever the database holds, so
+`fletch-host github login` still works and still stores its token, but the next
+start is back on the supplied one (the command says so when it starts). Pick one
+or the other — sign in, or supply the token and rotate it yourself.
+
+Neither helps with the rest of the directory, which still holds this host's
+private key and its paired devices. On a cloud box, put the data dir on an
+encrypted volume.
+
 Deliberately not the desktop's data directory. A Mac running both must not have
 two engines on one SQLite database — each would sweep the other's live agents as
 orphans. A debug build takes a `dev` subfolder of it for the same reason: one
@@ -407,5 +437,6 @@ them when they are unset, and then keeping them unique per host is yours to do.
 - **No PTY streaming**: a remote client sees agent status and events, not a live
   terminal. That is Phase 5 of the multi-host plan.
 - **Cursor cannot run in a container on a Linux host** (see "The sandbox").
-- **No `fletch-host update`**: upgrading is downloading the new tarball over
-  the old binary and restarting the service.
+- **No unattended upgrades and no rollback**: `fletch-host update` exists (see
+  "Update"), but running it is yours to do, and undoing one is restoring the
+  database copy it left behind by hand.
