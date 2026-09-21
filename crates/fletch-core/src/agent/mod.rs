@@ -17,6 +17,7 @@
 mod args;
 mod auth_probe;
 mod capabilities;
+mod login;
 mod probe;
 mod providers;
 mod spawn;
@@ -29,15 +30,16 @@ use crate::exec_session::ExecSession;
 use crate::managed_session::ManagedSession;
 use crate::pty_session::PtySession;
 
-pub use auth_probe::{probe_all_provider_auth, ProviderAuthProbe};
+pub use auth_probe::{probe_all_provider_auth, AuthStatus, ProviderAuthProbe};
 pub use capabilities::provider_bin_label;
 pub use capabilities::{
     capabilities, injection_mode, mcp_delivery, per_turn_descriptor, transcript_reader,
     PerTurnDescriptor,
 };
+pub use login::login_command;
 pub use probe::{
-    cached_provider_version, check_cli, probe_all_providers, validate_bin, BinValidation,
-    ProviderProbe, ToolStatus,
+    cached_provider_version, check_cli, probe_all_providers, resolve_all_providers, validate_bin,
+    BinValidation, ProviderProbe, ToolStatus,
 };
 pub use probe::{parse_semver, resolve_agent_bin};
 pub use spawn::{PerTurnSpec, SpawnSpec};

@@ -249,6 +249,9 @@ reachable `addresses`, the paired `devices`, the `relay` link, any standing
   Worth a look on a Linux box, where seatbelt does not exist.
 - `githubConnected` — whether a GitHub token is loaded, i.e. whether pushes and
   PRs will work. See "GitHub" below if it is `false`.
+- `providers: { signedIn, signedOut }` — the installed agent CLIs, by whether
+  they have a usable login. `fletch-host provider status` is the long form; see
+  "Log in to the provider CLIs first" below.
 
 Everything except `serve` talks to the running host over its admin socket, and
 takes the same `--data-dir` to find it. With no host running they print
@@ -298,19 +301,39 @@ changed.
 
 ## Log in to the provider CLIs first, over SSH
 
-Fletch runs `claude`, `codex`, `gemini` and friends; their credentials are
+Fletch runs `claude`, `codex`, `cursor-agent` and friends; their credentials are
 theirs, not Fletch's, and several of them sign in by opening a browser. So
 before the first agent runs, do it interactively on the host:
 
 ```sh
-ssh you@host
-claude login        # and whichever others you use
+ssh you@host          # as the user the service runs as — this is required
+fletch-host provider status
 ```
+
+```
+provider     installed  auth        fix
+claude       2.1.4      signed out  fletch-host provider login claude
+codex        0.48.0     signed in
+cursor       —          not found   curl -fsSL https://cursor.com/install | bash
+antigravity  —          not found   install Antigravity on this host
+```
+
+`fletch-host provider login claude` runs that CLI's own sign-in command — the
+same one the desktop runs, with the same binary resolution (a custom binary path
+set in settings wins, and the login shell's PATH is searched) — right in your
+terminal, with its stdin and stdout. Whatever it asks for, a code to paste or a
+browser to open, you answer it where you are sitting. When it exits the host
+re-probes and prints what it now makes of that provider. antigravity and pi have
+no CLI login: their credentials are made elsewhere and only land on this
+machine, so `provider status` says so instead of offering a command.
 
 Those logins persist in each tool's own config, so this is once per host (per
 provider), not once per run — but they must be the logins of **the user the
 service runs as**, since that is whose home directory the agent (and the
-container sandbox, which mounts `~/.claude`) reads. `ssh` in as that user.
+container sandbox, which mounts `~/.claude`) reads. That is a requirement, not
+a preference: `provider login` refuses to run as anyone else (a login as root
+would drop root-owned credential files into that user's home) and prints the
+`sudo -u <user> fletch-host provider login <id>` that does it properly.
 
 ## The data dir, and who may read it
 

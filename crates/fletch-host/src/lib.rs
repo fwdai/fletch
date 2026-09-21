@@ -23,6 +23,7 @@
 pub mod admin;
 pub mod login;
 pub mod ops;
+pub mod provider;
 pub mod serve;
 pub mod service;
 pub mod update;

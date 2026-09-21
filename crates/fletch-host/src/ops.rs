@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::login::Login;
+use crate::provider;
 
 /// The engine plus the little state the socket needs on top of it.
 pub struct Admin {
@@ -44,7 +45,21 @@ impl Admin {
 
     pub async fn call(&self, op: &str, args: Value) -> Result<Value, String> {
         match op {
-            "status" => self.status(),
+            "status" => {
+                let mut status = self.status()?;
+                // Probed, not read off the host's state, so it is added here
+                // rather than inside `status` — see the provider block below.
+                // `installed_rows`, never `rows`: `status` is what a liveness
+                // check calls, and it must not be able to block behind a vendor
+                // CLI's `--version`.
+                if let Some(object) = status.as_object_mut() {
+                    object.insert(
+                        "providers".into(),
+                        provider::summary(&provider::installed_rows().await),
+                    );
+                }
+                Ok(status)
+            }
             "begin_pairing" => {
                 let invite = self.remote()?.begin_pairing();
                 value(&invite)
@@ -90,6 +105,15 @@ impl Admin {
                 .map_err(|e| e.to_string());
                 let cloned = commands::announce_workspace(self.engine.ctx.sink.as_ref(), cloned)?;
                 value(&cloned)
+            }
+            // ── The provider CLIs (`crate::provider`) ─────────────────────
+            // Operator-only, like everything else here: `provider_login_command`
+            // hands back a resolved argv and an environment, which is the
+            // machine's own business and never a paired device's.
+            "provider_status" => value(&provider::rows().await),
+            "provider_login_command" => {
+                let args: ProviderArgs = parse(args)?;
+                provider::login_spec(&args.id)
             }
             _ => Err(UNKNOWN_OP.to_string()),
         }
@@ -187,4 +211,10 @@ struct PathArgs {
 struct CloneArgs {
     spec: String,
     dest_parent: String,
+}
+
+/// A provider id, for the provider ops.
+#[derive(Deserialize)]
+struct ProviderArgs {
+    id: String,
 }

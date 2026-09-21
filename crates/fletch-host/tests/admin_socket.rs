@@ -76,4 +76,155 @@ async fn the_admin_socket_refuses_what_it_does_not_know() {
         json!(false),
         "nothing has signed this host in"
     );
+    assert!(
+        status["providers"]["signedIn"].is_array() && status["providers"]["signedOut"].is_array(),
+        "status says which provider CLIs are signed in: {status}"
+    );
+
+    // The provider surface. Nothing is asserted about what is installed on the
+    // machine running this — CI has none of these CLIs — only that every known
+    // provider is answered for, with the fields the CLI table prints.
+    let providers = admin::call(&data_dir, "provider_status", json!({}))
+        .await
+        .expect("provider_status");
+    let providers = providers.as_array().cloned().unwrap_or_default();
+    let ids: Vec<&str> = providers.iter().filter_map(|p| p["id"].as_str()).collect();
+    for known in ["claude", "codex", "cursor", "antigravity", "opencode", "pi"] {
+        assert!(ids.contains(&known), "{known} is missing from {ids:?}");
+    }
+    let claude = providers
+        .iter()
+        .find(|p| p["id"] == json!("claude"))
+        .expect("claude is probed");
+    assert_eq!(claude["label"], json!("Claude Code"), "{claude}");
+    assert_eq!(
+        claude["loginCommand"],
+        json!("claude auth login"),
+        "the row carries the vendor's own sign-in command: {claude}"
+    );
+    assert!(claude["installed"].is_boolean(), "{claude}");
+    if claude["installed"] == json!(false) {
+        assert_eq!(
+            claude["auth"],
+            json!(null),
+            "a CLI that is not here has no login state: {claude}"
+        );
+    }
+
+    // What `provider login` refuses, and why.
+    assert_eq!(
+        admin::call(
+            &data_dir,
+            "provider_login_command",
+            json!({ "id": "nonesuch" })
+        )
+        .await,
+        Err("unknown provider nonesuch".to_string()),
+        "a provider nobody has heard of is named in the error"
+    );
+    let out_of_band = admin::call(
+        &data_dir,
+        "provider_login_command",
+        json!({ "id": "antigravity" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        out_of_band.contains("Antigravity") && out_of_band.contains("out of band"),
+        "a provider with no login command says so: {out_of_band}"
+    );
+
+    a_wedged_cli_cannot_hang_either_call(&data_dir, dir.path()).await;
+}
+
+/// A CLI that never answers `--version` — a broken install, or a custom binary
+/// path pointed at the wrong thing. `status` must not run one at all (it is
+/// what a liveness check calls); `provider_status`, which does want the
+/// version, must give up on it and still answer, and must leave nothing of it
+/// running — these CLIs are often wrapper scripts, so the timeout has to reach
+/// the whole process group, not just the script.
+async fn a_wedged_cli_cannot_hang_either_call(data_dir: &std::path::Path, tmp: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let ran = tmp.join("version-probe-ran");
+    let child_pid = tmp.join("wedged-child.pid");
+    let wedged = tmp.join("wedged-claude");
+    std::fs::write(
+        &wedged,
+        format!(
+            "#!/bin/sh\necho ran >> '{}'\nsleep 300 &\necho $! > '{}'\nwait\n",
+            ran.display(),
+            child_pid.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wedged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The same door a user's custom binary path goes through.
+    fletch_core::bin_resolve::set_agent_overrides(std::collections::HashMap::from([(
+        "claude".to_string(),
+        wedged.to_string_lossy().into_owned(),
+    )]));
+
+    let status = admin::call(data_dir, "status", json!({}))
+        .await
+        .expect("status");
+    assert!(
+        !ran.exists(),
+        "status answered by running a provider CLI: {status}"
+    );
+
+    let started = std::time::Instant::now();
+    let providers = admin::call(data_dir, "provider_status", json!({}))
+        .await
+        .expect("provider_status");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "provider_status waited on a CLI that sleeps for 300s"
+    );
+    assert!(ran.exists(), "provider_status did probe the version");
+    let claude = providers
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == json!("claude")))
+        .expect("claude is probed")
+        .clone();
+    assert_eq!(claude["installed"], json!(true), "{claude}");
+    assert_eq!(
+        claude["version"],
+        json!(null),
+        "a probe that timed out reports no version: {claude}"
+    );
+
+    let pid = std::fs::read_to_string(&child_pid)
+        .expect("the wrapper wrote its child's pid")
+        .trim()
+        .to_string();
+    assert!(
+        gone_within(&pid, std::time::Duration::from_secs(1)),
+        "the wrapped `sleep` ({pid}) outlived the probe"
+    );
+
+    fletch_core::bin_resolve::set_agent_overrides(std::collections::HashMap::new());
+}
+
+/// Poll `kill -0` until the process is gone, or the budget runs out: group
+/// signal delivery and the reparenting that reaps an orphan are both
+/// asynchronous, so the answer is "shortly", not "already".
+fn gone_within(pid: &str, budget: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !alive {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
