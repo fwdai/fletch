@@ -8,6 +8,7 @@ import { useFileSource } from "./autocomplete/sources/files";
 import { usePrSource } from "./autocomplete/sources/prs";
 import { triggerQueryAt } from "./autocomplete/triggers";
 import { useAutocomplete } from "./autocomplete/useAutocomplete";
+import { stageAttachmentPath } from "./stageAttachment";
 import { useFileDrop } from "./useFileDrop";
 
 /** Max grown height of the input, in px, before it scrolls internally. Exported
@@ -97,12 +98,36 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     setAttachments((cur) => cur.filter((x) => x !== path));
   }
 
-  const isDropTarget = useFileDrop(addPaths);
+  /** Attach whatever each job stages, and say so once for the ones that
+   *  failed — a file too big for the host, one that could not be read. The
+   *  rest still attach: losing four attachments because the fifth was a video
+   *  is worse than the error. */
+  async function stageAll(noun: string, jobs: Promise<string>[]) {
+    const results = await Promise.allSettled(jobs);
+    addPaths(results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : [])));
+    const failed = results.filter((r) => r.status === "rejected");
+    if (failed.length) {
+      const reason = failed[0].reason;
+      setLastError(
+        `Couldn't attach ${failed.length} ${noun}${failed.length > 1 ? "s" : ""}: ${
+          reason instanceof Error ? reason.message : String(reason)
+        }`,
+      );
+    }
+  }
+
+  /** Paths from a drop or the picker. Staged rather than attached as-is, so
+   *  the composer only ever holds paths the environment being driven can
+   *  read (see `stageAttachmentPath`). */
+  const attachPaths = (paths: string[]) =>
+    stageAll("file", paths.map(stageAttachmentPath)).catch(() => {});
+
+  const isDropTarget = useFileDrop((paths) => void attachPaths(paths));
 
   async function browse() {
     const sel = await open({ multiple: true });
     if (!sel) return;
-    addPaths(Array.isArray(sel) ? sel : [sel]);
+    await attachPaths(Array.isArray(sel) ? sel : [sel]);
   }
 
   /** Files on the clipboard — a screenshot's image data, or files copied in
@@ -113,7 +138,8 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   async function pasteFiles(files: FileList) {
     // Copied image data has no real name (WebKit labels it "image.png"), so
     // stamp one; a Finder copy keeps its own.
-    const results = await Promise.allSettled(
+    await stageAll(
+      "pasted file",
       Array.from(files).map(async (f, i) => {
         const ext = f.type.split("/")[1] || "bin";
         const generic = !f.name || f.name === "image.png";
@@ -121,16 +147,6 @@ export function useComposerInput(cfg: ComposerInputConfig) {
         return api.savePastedAttachment(name, new Uint8Array(await f.arrayBuffer()));
       }),
     );
-    addPaths(results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : [])));
-    const failed = results.filter((r) => r.status === "rejected");
-    if (failed.length) {
-      const reason = failed[0].reason;
-      setLastError(
-        `Couldn't attach ${failed.length} pasted file${failed.length > 1 ? "s" : ""}: ${
-          reason instanceof Error ? reason.message : String(reason)
-        }`,
-      );
-    }
   }
 
   // Autocompletions share one menu + keyboard mechanics (useAutocomplete);
