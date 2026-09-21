@@ -92,6 +92,10 @@ const STASH_KEYS = [
   "autopilot",
   "autopilotVerdicts",
   "autopilotLog",
+  // Publishes waiting on an answer. They belong to the engine that is blocked
+  // on one, and `loadPendingPublishApprovals` re-reads the entered
+  // environment's queue rather than trusting what was parked.
+  "pendingPublishApprovals",
   // What the user typed but did not send, per agent or per draft, and the
   // drafts themselves (grouped by repo path, which is the engine's).
   "composerSeeds",
@@ -146,6 +150,7 @@ const BLANK: Pick<AppState, StashKey> = {
   autopilot: {},
   autopilotVerdicts: {},
   autopilotLog: {},
+  pendingPublishApprovals: [],
   composerSeeds: {},
   composerDrafts: {},
   drafts: [],
@@ -239,6 +244,11 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
       // generation, which is what drops a `get_workspace` still in flight
       // against the environment we left.
       await refreshWorkspace(set).catch(() => {});
+      // …and what this environment is blocked on, which no event will tell a
+      // client that was not connected when it was raised.
+      await get()
+        .loadPendingPublishApprovals()
+        .catch(() => {});
     },
 
     environmentReconnected: (id) => {
@@ -246,6 +256,9 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
       void (async () => {
         await refreshWorkspace(set).catch(() => {});
         await resyncSelectedAgent().catch(() => {});
+        await get()
+          .loadPendingPublishApprovals()
+          .catch(() => {});
       })();
     },
   };

@@ -81,6 +81,8 @@ const newStore = () => {
         autopilotLog: {},
         autopilotVerdicts: {},
         loadHistoryTranscript: vi.fn(),
+        pendingPublishApprovals: [],
+        loadPendingPublishApprovals: vi.fn().mockResolvedValue(undefined),
       }) as unknown as AppState,
   );
   setEnvironmentsSource(store.getState);

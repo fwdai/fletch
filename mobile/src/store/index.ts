@@ -183,6 +183,12 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   ): Promise<void>;
   /** A gated publish the host is holding, from `publish:approval-requested`. */
   receivePublishApproval(request: PublishApproval): void;
+  /** Replace the cards with what the host says is still waiting. The event
+   *  above only reaches the devices connected when it fired, so every handshake
+   *  re-reads the queue: that is how a phone opened after the agent asked sees
+   *  the prompt, and how one whose card was answered elsewhere drops it. A
+   *  no-op on a host too old for `approvals_list`. */
+  loadPendingApprovals(): Promise<void>;
   answerPublishApproval(id: string, approved: boolean): Promise<void>;
   /** The host says that request is over (`publish:approval-resolved`) — someone
    *  else answered it, or its wait lapsed. Drop the card; there is nothing to
@@ -522,6 +528,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       // The snapshot carries no stats, so the rows get their numbers from the
       // first poll of every handshake rather than waiting out its interval.
       void get().loadShortstats();
+      // The publishes this host is blocked on. Every handshake, because the
+      // request event only reached the devices connected when it fired — and so
+      // did the resolution, whoever gave it.
+      void get().loadPendingApprovals().catch(ignore);
       refreshOpenAgent();
       // Every handshake — the first pairing and every reconnect — is when the
       // host is told the APNs token again.
@@ -967,6 +977,11 @@ export const useStore = create<MobileState>()((set, get) => ({
     // No pre-authorization to consult, unlike the desktop's autopilot: the
     // phone has no standing per-checkout grant, so every prompt is shown.
     set((s) => ({ pendingPublishApprovals: [...s.pendingPublishApprovals, request] }));
+  },
+
+  async loadPendingApprovals() {
+    if (!get().hostSupports("approvals_list")) return;
+    set({ pendingPublishApprovals: await api.listPublishApprovals() });
   },
 
   async answerPublishApproval(id, approved) {

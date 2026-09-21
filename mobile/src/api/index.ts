@@ -19,6 +19,7 @@ import type {
   RoadmapItemPatch,
   RoadmapItemUpdate,
 } from "@desktop/api/types/roadmap";
+import type { PublishApproval } from "@desktop/api/types/sandbox";
 import type { LiveTurn, SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import type { CustomAgent } from "@desktop/storage/customAgents";
@@ -128,6 +129,10 @@ export function createApi(client: RemoteClient) {
      *  answers `unknown op`. */
     answerPublishApproval: (id: string, approved: boolean) =>
       call<null>("answer_publish_approval", { id, approved }),
+    /** The prompts still waiting, oldest first — what a phone that connected
+     *  after the event fired has no other way to learn. Gated on
+     *  `hostSupports("approvals_list")`. */
+    listPublishApprovals: () => call<PublishApproval[]>("approvals_list"),
     stopAgent: (agentId: string) => call<null>("stop_agent", { agentId }),
     resumeAgent: (agentId: string) => call<null>("resume_agent", { agentId }),
     archiveAgent: (agentId: string) => call<null>("archive_agent", { agentId }),

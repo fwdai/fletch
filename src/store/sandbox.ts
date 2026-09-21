@@ -7,7 +7,9 @@ import {
   type PublishApproval,
   type PublishApprovalResolved,
 } from "@/api";
+import { hostSupports } from "@/remote/types";
 import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preferences";
+import { activeEnvironment } from "./environments";
 import { checkoutKey } from "./git";
 import { autopilotIsDriving, publishPreAuthorized } from "./publishApproval";
 import type { SliceCreator } from "./types";
@@ -115,6 +117,17 @@ export interface SandboxSlice {
    *  decision so it is testable without a rendered listener — and the decision is
    *  what keeps an unattended autopilot run from stalling on a prompt. */
   receivePublishApproval: (request: PublishApproval) => void;
+  /** Replace the queue with what the active host says is still waiting.
+   *
+   *  `publish:approval-requested` only reaches the clients connected when it
+   *  fired, so a window that switched to a host — or reconnected to one — has
+   *  neither the prompts raised while it was away nor any way to know the ones
+   *  it holds were answered elsewhere. Wholesale, because the host's registry
+   *  is the authority on both halves of that.
+   *
+   *  A no-op for the local environment (this window was listening) and for a
+   *  host too old for `approvals_list` (it would answer `unknown op`). */
+  loadPendingPublishApprovals: () => Promise<void>;
   /** Answer the queued request `id` and drop it from the queue. */
   answerPublishApproval: (id: string, approved: boolean) => Promise<void>;
   /** Drop the queued request `id` because the engine says it is over — someone
@@ -206,6 +219,16 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
       console.error("publish approval prompted while autopilot is driving", { key, request });
     }
     set((prev) => ({ pendingPublishApprovals: [...prev.pendingPublishApprovals, request] }));
+  },
+
+  loadPendingPublishApprovals: async () => {
+    const env = activeEnvironment();
+    if (env.kind !== "remote" || !hostSupports(env.protocol, "approvals_list")) return;
+    const pending = await api.listPublishApprovals();
+    // A switch while the read was in flight owns the queue now; ours would be
+    // another host's prompts on this one's screen.
+    if (activeEnvironment().id !== env.id) return;
+    set({ pendingPublishApprovals: pending });
   },
 
   answerPublishApproval: async (id, approved) => {

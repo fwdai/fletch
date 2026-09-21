@@ -14,18 +14,23 @@ import type { PublishApproval, PublishApprovalResolved } from "@/api";
 import type { AutopilotState } from "@/autopilot";
 import { newEnrollment } from "@/autopilot";
 import type { Delegation, DelegationKind } from "@/delegation";
+import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { checkoutKey } from "./git";
 import { type PublishAuthorityState, publishPreAuthorized } from "./publishApproval";
 import { createSandboxSlice } from "./sandbox";
 
-const { answerPublishApproval } = vi.hoisted(() => ({ answerPublishApproval: vi.fn() }));
-vi.mock("@/api", () => ({ api: { answerPublishApproval } }));
+const { answerPublishApproval, listPublishApprovals } = vi.hoisted(() => ({
+  answerPublishApproval: vi.fn(),
+  listPublishApprovals: vi.fn(),
+}));
+vi.mock("@/api", () => ({ api: { answerPublishApproval, listPublishApprovals } }));
 
 /** The slice creator and the action, loosely typed: the test store carries only
  *  the sandbox slice plus the two maps the policy reads, not the whole AppState. */
 type SliceFn = (set: unknown, get: unknown) => Record<string, unknown>;
 type Recv = (r: PublishApproval) => void;
 type Resolve = (e: PublishApprovalResolved) => void;
+type Load = () => Promise<void>;
 
 const KEY = checkoutKey("a1");
 const SECOND_REPO = checkoutKey("a1", "web");
@@ -198,5 +203,53 @@ describe("receivePublishApproval", () => {
     const s = store();
     (s.getState().resolvePublishApproval as Resolve)({ id: "never-seen", outcome: "approved" });
     expect(s.getState().pendingPublishApprovals).toEqual([]);
+  });
+
+  // `publish:approval-requested` reaches only the clients connected when it
+  // fired, so a window that has just switched to a host — or reconnected to one
+  // — has to ask what is waiting rather than wait for an event that has been
+  // and gone.
+  describe("loadPendingPublishApprovals", () => {
+    const remote = (ops: string[]): EnvironmentEntry => ({
+      id: "host-1",
+      name: "Cloud box",
+      kind: "remote",
+      connection: "connected",
+      protocol: { version: 2, ops, events: [], features: [] },
+    });
+
+    const activeIs = (entry?: EnvironmentEntry) =>
+      setEnvironmentsSource(() => ({
+        activeEnvironmentId: entry?.id ?? LOCAL_ENVIRONMENT_ID,
+        environments: entry ? { [entry.id]: entry } : {},
+      }));
+
+    it("replaces the queue with what the host is still blocked on", async () => {
+      listPublishApprovals.mockResolvedValue([request({ id: "raised-while-away" })]);
+      activeIs(remote(["approvals_list"]));
+      const s = store();
+      // A card this window holds that the host has since resolved: wholesale,
+      // so it goes.
+      (s.getState().receivePublishApproval as Recv)(request({ id: "answered-elsewhere" }));
+
+      await (s.getState().loadPendingPublishApprovals as Load)();
+
+      expect((s.getState().pendingPublishApprovals as PublishApproval[]).map((r) => r.id)).toEqual([
+        "raised-while-away",
+      ]);
+    });
+
+    it("asks neither this Mac nor a host too old for the op", async () => {
+      listPublishApprovals.mockClear();
+      listPublishApprovals.mockResolvedValue([]);
+      const s = store();
+
+      activeIs();
+      await (s.getState().loadPendingPublishApprovals as Load)();
+      activeIs(remote([]));
+      await (s.getState().loadPendingPublishApprovals as Load)();
+
+      expect(listPublishApprovals).not.toHaveBeenCalled();
+    });
   });
 });
