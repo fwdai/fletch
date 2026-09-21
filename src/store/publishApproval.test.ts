@@ -274,6 +274,35 @@ describe("receivePublishApproval", () => {
       ]);
     });
 
+    it("lets the newest of two overlapping loads own the queue", async () => {
+      // Every handshake starts a load without waiting for the last, so two are
+      // out at once and can answer out of order. The older one answering last
+      // used to land its stale snapshot — and, since the buffer is the newest
+      // claim's, it would have replayed almost nothing over it.
+      activeIs(remote(["approvals_list"]));
+      const s = store();
+      const answers: ((rows: PublishApproval[]) => void)[] = [];
+      listPublishApprovals.mockImplementation(
+        () => new Promise<PublishApproval[]>((resolve) => answers.push(resolve)),
+      );
+
+      const older = (s.getState().loadPendingPublishApprovals as Load)();
+      const newer = (s.getState().loadPendingPublishApprovals as Load)();
+      // Raised while both are out: it belongs to the newer read, the only one
+      // whose snapshot will be written.
+      (s.getState().receivePublishApproval as Recv)(request({ id: "raised-mid-flight" }));
+
+      answers[1]([request({ id: "from-the-newer-read" })]);
+      await newer;
+      answers[0]([request({ id: "from-the-older-read" })]);
+      await older;
+
+      expect((s.getState().pendingPublishApprovals as PublishApproval[]).map((r) => r.id)).toEqual([
+        "from-the-newer-read",
+        "raised-mid-flight",
+      ]);
+    });
+
     it("asks neither this Mac nor a host too old for the op", async () => {
       listPublishApprovals.mockClear();
       listPublishApprovals.mockResolvedValue([]);

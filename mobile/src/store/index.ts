@@ -7,6 +7,7 @@ import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
 import type { LiveTurn } from "@desktop/api/types/session";
 import { appActionMessage } from "@desktop/delegation";
+import { newestWins } from "@desktop/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@desktop/util/publishApprovals";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
@@ -257,9 +258,16 @@ let queuedPush: PushFletch | null = null;
  *  the one a pairing that got in first had just pinned. */
 let queuedLink: HostTarget | null = null;
 
+/** Every handshake starts an `approvals_list` without waiting for the last, so
+ *  two can be out at once and answer out of order. One order for all of them,
+ *  as everywhere else a whole list is replaced (util/newestWins). */
+const approvalLoads = newestWins();
+
 /** Approval events seen while an `approvals_list` is in flight, replayed over
  *  its answer so the snapshot cannot undo them (see util/publishApprovals).
- *  Null when no list is outstanding, which is nearly always. */
+ *  Belongs to the newest claim — an older load's snapshot is superseded
+ *  wholesale, so the events it missed are not its to replay. Null when no list
+ *  is outstanding, which is nearly always. */
 let approvalsInFlight: ApprovalEvent[] | null = null;
 
 const homeItem = (): NavItem => ({ key: Date.now(), screen: "home", props: {}, phase: "idle" });
@@ -1016,12 +1024,16 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async loadPendingApprovals() {
     if (!get().hostSupports("approvals_list")) return;
+    const claim = approvalLoads.claim();
     const buffer: ApprovalEvent[] = [];
     approvalsInFlight = buffer;
     try {
       // The snapshot is what the host was blocked on when it read its queue,
       // not when it answered; whatever it said in between is folded back in.
       const pending = await api.listPublishApprovals();
+      // …unless a newer load has been issued to replace this queue, in which
+      // case ours is the older snapshot and writing it would undo the newer.
+      if (!claim.current()) return;
       set({ pendingPublishApprovals: replayApprovalEvents(pending, buffer) });
     } finally {
       if (approvalsInFlight === buffer) approvalsInFlight = null;

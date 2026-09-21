@@ -9,6 +9,7 @@ import {
 } from "@/api";
 import { hostSupports } from "@/remote/types";
 import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preferences";
+import { newestWins } from "@/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@/util/publishApprovals";
 import { activeEnvironment, forActiveEnvironment } from "./environments";
 import { checkoutKey } from "./git";
@@ -32,9 +33,16 @@ export interface DockerBuildProgress {
  *  shows neutral copy for it instead of guessing. */
 export const NEUTRAL_BUILD_RUNTIME = "container";
 
+/** Every handshake starts an `approvals_list` without waiting for the last, so
+ *  two can be out at once and answer out of order. One order for all of them,
+ *  as everywhere else a whole list is replaced (util/newestWins). */
+const approvalLoads = newestWins();
+
 /** Approval events seen while an `approvals_list` is in flight, replayed over
  *  its answer so the snapshot cannot undo them (see util/publishApprovals).
- *  Null when no list is outstanding, which is nearly always. */
+ *  Belongs to the newest claim — an older load's snapshot is superseded
+ *  wholesale, so the events it missed are not its to replay. Null when no list
+ *  is outstanding, which is nearly always. */
 let approvalsInFlight: ApprovalEvent[] | null = null;
 
 /** Fold one `docker:build-progress` event into the keyed build state that
@@ -231,13 +239,16 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   loadPendingPublishApprovals: async () => {
     const env = activeEnvironment();
     if (env.kind !== "remote" || !hostSupports(env.protocol, "approvals_list")) return;
+    const claim = approvalLoads.claim();
     const buffer: ApprovalEvent[] = [];
     approvalsInFlight = buffer;
     try {
-      // A switch while the read was in flight owns the queue now; ours would be
-      // another host's prompts on this one's screen.
+      // Two guards, composing. A switch while the read was in flight owns the
+      // queue now, and ours would be another host's prompts on this one's
+      // screen; a newer load owns it too, and ours is the older snapshot it
+      // was issued to replace.
       const pending = await forActiveEnvironment(() => api.listPublishApprovals());
-      if (!pending) return;
+      if (!pending || !claim.current()) return;
       // The snapshot is what the host was blocked on when it read its queue,
       // not when it answered; whatever it said in between is folded back in.
       set({ pendingPublishApprovals: replayApprovalEvents(pending, buffer) });

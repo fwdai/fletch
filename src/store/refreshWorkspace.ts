@@ -11,24 +11,23 @@
 // made a just-deleted agent flash back into the sidebar for a moment before the
 // trailing refetch removed it again.
 //
-// The guard is a monotonic generation token shared by every refetch site: each
-// call stamps the next generation, and only the newest generation's response is
-// applied. Older, slower responses are dropped, so the last-issued fetch — which
-// reflects every committed delete — always wins.
+// So every refetch site shares one order — `newestWins` in util/newestWins,
+// which is where the rule and its limits are written down.
 //
-// The guard can't catch the other ordering: the newest fetch's response was
+// The one thing that order can't catch: the newest fetch's response was
 // produced BEFORE a delete the user has since clicked (the backend hadn't
 // committed yet), so it still lists the agent. For that, every applied snapshot
 // passes through `applyPendingHides`, which keeps a user-requested removal
 // hidden until a snapshot confirms it.
 
 import { api, type Workspace } from "@/api";
+import { newestWins } from "@/util/newestWins";
 import { applyPendingHides } from "./pendingHides";
 import type { AppState, SliceCreator } from "./types";
 
 type AppSet = Parameters<SliceCreator<AppState>>[0];
 
-let generation = 0;
+const refetches = newestWins();
 
 /**
  * Fetch the workspace and apply it, unless a newer refresh was issued while
@@ -48,11 +47,11 @@ export const refreshWorkspace = async (
   set: AppSet,
   extra?: (fresh: Workspace, state: AppState) => Partial<AppState>,
 ): Promise<Workspace | null> => {
-  const gen = ++generation;
+  const claim = refetches.claim();
   const fresh = await api.getWorkspace();
   // A newer refresh started (and may already have applied) while we awaited —
   // ours is stale, so drop it instead of overwriting the newer snapshot.
-  if (gen !== generation || !fresh) return null;
+  if (!claim.current() || !fresh) return null;
   const applied = applyPendingHides(fresh);
   set((state) => ({ ...extra?.(applied, state), workspace: applied }));
   return applied;
