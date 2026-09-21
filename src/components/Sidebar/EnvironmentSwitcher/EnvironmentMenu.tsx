@@ -1,4 +1,5 @@
 import { HostGateNote } from "@/components/HostGateNote";
+import { HostProvidersNote } from "@/components/HostProvidersNote";
 import { Icon } from "@/components/Icon";
 import { Scrim } from "@/components/ui/Scrim";
 import { useAppStore } from "@/store";
@@ -56,6 +57,7 @@ export function EnvironmentMenu({ onClose }: { onClose: () => void }) {
               <span className="env-item-name text-base">{env.name}</span>
               <span className="env-item-sub text-sm">{subLine(env)}</span>
               <HostGateNote env={env} className="env-item-sub text-sm" />
+              <HostProvidersNote env={env} className="env-item-sub text-sm" />
             </span>
             {env.id === activeId && <Icon name="check" size={13} />}
           </button>

@@ -1,4 +1,5 @@
 import { ProviderMark, Sheet } from "../../components/ui";
+import { hostProviderBlock } from "../../lib/hostProviders";
 import {
   contextLabel,
   effortsFor,
@@ -6,12 +7,14 @@ import {
   modelsFor,
   providerOptions,
 } from "../../lib/models";
+import type { HostProvider } from "../../remote";
 
 /** Agent, model and effort in one panel — the prototype's "Runner" sheet. */
 export function RunnerSheet({
   open,
   onClose,
   models,
+  hostProviders,
   provider,
   model,
   effort,
@@ -22,6 +25,9 @@ export function RunnerSheet({
   open: boolean;
   onClose: () => void;
   models: ModelsByAgent;
+  /** What the host said it can run, or null when it has not said (see
+   *  `useHostProviders`). Null offers everything, as before. */
+  hostProviders: HostProvider[] | null;
   provider: string;
   model: string;
   effort: string;
@@ -31,6 +37,12 @@ export function RunnerSheet({
 }) {
   const list = modelsFor(models, provider);
   const efforts = effortsFor(list.find((m) => m.id === model));
+  // Said once under the row rather than on every chip: the chips are two words
+  // wide and the fix is the same sentence for all of them.
+  const unavailable = providerOptions().flatMap((p) => {
+    const why = hostProviderBlock(hostProviders, p.id);
+    return why ? [`${p.label} ${why}`] : [];
+  });
   return (
     <Sheet
       open={open}
@@ -47,21 +59,33 @@ export function RunnerSheet({
         Agent
       </div>
       <div className="chips">
-        {providerOptions().map((p) => (
-          <button
-            type="button"
-            key={p.id}
-            className={`chip${p.id === provider ? " on" : ""}`}
-            onClick={() => {
-              setProvider(p.id);
-              setModel(modelsFor(models, p.id)[0]?.id ?? "");
-            }}
-          >
-            <ProviderMark id={p.id} />
-            {p.label}
-          </button>
-        ))}
+        {providerOptions().map((p) => {
+          const why = hostProviderBlock(hostProviders, p.id);
+          return (
+            <button
+              type="button"
+              key={p.id}
+              // An agent the host cannot start is not a choice: the spawn would
+              // reach the host and fail there. Fixing it is the operator's, on
+              // the host, so there is nothing to offer beyond the reason.
+              disabled={why !== null}
+              className={`chip${p.id === provider ? " on" : ""}`}
+              onClick={() => {
+                setProvider(p.id);
+                setModel(modelsFor(models, p.id)[0]?.id ?? "");
+              }}
+            >
+              <ProviderMark id={p.id} />
+              {p.label}
+            </button>
+          );
+        })}
       </div>
+      {unavailable.length > 0 && (
+        <div className="chips-note">
+          {unavailable.join(" · ")} on the host — install or sign in there.
+        </div>
+      )}
       <div className="sect" style={{ marginTop: 18 }}>
         Model
       </div>

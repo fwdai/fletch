@@ -35,6 +35,19 @@ const PROTOCOL: HostProtocol = {
 
 const RECORD: HostRecord = { hostKey: HOST_KEY, name: "Saved name", addr: "10.0.0.4:47285" };
 
+/** A host that answers `host_providers`, and one row for it to answer with.
+ *  `PROTOCOL` deliberately lacks the op, so the two together cover both sides
+ *  of "does this host say what it can run". */
+const WITH_OP: HostProtocol = { ...PROTOCOL, ops: [...PROTOCOL.ops, "host_providers"] };
+const PROVIDER_ROW = {
+  id: "claude",
+  label: "Claude Code",
+  installed: true,
+  version: "2.1.4",
+  auth: "signed_out",
+  loginCommand: "claude auth login",
+};
+
 /** A client the test drives: it records the target it was pointed at and lets
  *  the test push a state change, a handshake snapshot, or a disconnect. Only
  *  the members the registry uses do anything; the rest satisfy the interface. */
@@ -76,7 +89,17 @@ function fakeClient() {
       self.disconnected += 1;
       state = "disconnected";
     },
-    call: () => Promise.reject(new Error("unused")),
+    /** Ops the registry sent, and what to answer them with. An op with no
+     *  answer rejects, which is what the registry's advisory reads must
+     *  survive. */
+    calls: [] as string[],
+    answers: {} as Record<string, unknown>,
+    call(op: string) {
+      self.calls.push(op);
+      return op in self.answers
+        ? Promise.resolve(self.answers[op])
+        : Promise.reject(new Error(`unstubbed op ${op}`));
+    },
     on: () => () => {},
     onState(cb: StateHandler) {
       states.add(cb);
@@ -104,9 +127,16 @@ function fakeClient() {
   return self as typeof self & RemoteClient;
 }
 
-/** Let every pending microtask run: `pair` awaits the device thunk before it
- *  publishes anything, and the test drives the client after that. */
-const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+/** Let every pending task run: `pair` awaits the device thunk before it
+ *  publishes anything, and the test drives the client after that. Several
+ *  ticks rather than one, because an advisory read retries behind a timer of
+ *  its own (`retryDelayMs: 0` here) and so settles a tick later than the
+ *  handshake that started it. */
+const settled = async () => {
+  for (let tick = 0; tick < 4; tick += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+};
 
 function harness() {
   const store = create<AppState>()((...a) => ({ ...createEnvironmentsSlice(...a) }) as AppState);
@@ -120,11 +150,14 @@ function harness() {
     writers: {
       upsertEnvironment: store.getState().upsertEnvironment,
       setEnvironmentConnection: store.getState().setEnvironmentConnection,
+      setEnvironmentProviders: store.getState().setEnvironmentProviders,
       removeEnvironment: store.getState().removeEnvironment,
       environmentReconnected: reconnected,
     },
     device,
     newClient: () => client,
+    // The retry exists; how long it waits is not what these tests check.
+    retryDelayMs: 0,
   });
   const entry = (): EnvironmentEntry | undefined => store.getState().environments[HOST_KEY];
   return { store, client, registry, entry, device, reconnected };
@@ -175,6 +208,88 @@ describe("the paired-host lifecycle", () => {
     // The descriptor survives the drop: it is what the UI is gated on, and a
     // reconnect refreshes rather than re-earns it.
     expect(entry()?.protocol).toEqual(PROTOCOL);
+  });
+
+  it("asks a host that lists `host_providers` which providers it can run", async () => {
+    const { registry, entry, client } = harness();
+    await registry.adopt(RECORD);
+
+    client.answers.host_providers = [PROVIDER_ROW];
+    client.handshake({ host: HOST, workspace: null, protocol: WITH_OP });
+    await settled();
+
+    expect(entry()?.providers).toEqual([PROVIDER_ROW]);
+  });
+
+  it("does not ask a host that does not list the op, and leaves it un-judged", async () => {
+    const { registry, entry, client } = harness();
+    await registry.adopt(RECORD);
+
+    // PROTOCOL has no `host_providers` row: asking would answer "unknown op",
+    // and the absent entry field is what makes every provider offerable.
+    client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    await settled();
+
+    expect(client.calls).not.toContain("host_providers");
+    expect(entry()?.providers).toBeUndefined();
+  });
+
+  it("retries a failed provider read once, and takes the second answer", async () => {
+    const { registry, entry, client } = harness();
+    await registry.adopt(RECORD);
+    const providers = [PROVIDER_ROW];
+
+    // Fails, then succeeds: one blip on reconnect should not cost the answer.
+    let asked = 0;
+    client.call = <T>(op: string): Promise<T> => {
+      client.calls.push(op);
+      asked += 1;
+      return asked === 1
+        ? Promise.reject(new Error("socket hiccup"))
+        : Promise.resolve(providers as T);
+    };
+    client.handshake({ host: HOST, workspace: null, protocol: WITH_OP });
+    await settled();
+
+    expect(asked).toBe(2);
+    expect(entry()?.providers).toEqual(providers);
+  });
+
+  it("clears providers to unknown when a reconnect's read keeps failing", async () => {
+    const { registry, entry, client } = harness();
+    await registry.adopt(RECORD);
+
+    client.answers.host_providers = [PROVIDER_ROW];
+    client.handshake({ host: HOST, workspace: null, protocol: WITH_OP });
+    await settled();
+    expect(entry()?.providers).toEqual([PROVIDER_ROW]);
+
+    // Both attempts fail on the reconnect. Keeping the old rows would let the
+    // app go on naming a provider the operator has since removed, and be
+    // believed; unknown blocks nothing, so unknown is the safe answer.
+    delete client.answers.host_providers;
+    client.handshake({ host: HOST, workspace: null, protocol: WITH_OP });
+    await settled();
+
+    expect(entry()?.providers).toBeUndefined();
+  });
+
+  it("clears providers when a host comes back without the op", async () => {
+    const { registry, entry, client } = harness();
+    await registry.adopt(RECORD);
+
+    client.answers.host_providers = [PROVIDER_ROW];
+    client.handshake({ host: HOST, workspace: null, protocol: WITH_OP });
+    await settled();
+    expect(entry()?.providers).toEqual([PROVIDER_ROW]);
+
+    // Downgraded, or the op withdrawn: it is not asked, so nothing refreshes
+    // the rows — they have to be gone already, or they would outlive the
+    // capability that produced them.
+    client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    await settled();
+
+    expect(entry()?.providers).toBeUndefined();
   });
 
   it("mirrors the client's `retrying` so a wait can be told from a dead end", async () => {

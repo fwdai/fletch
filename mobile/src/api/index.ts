@@ -22,7 +22,7 @@ import type {
 import type { LiveTurn, SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import type { CustomAgent } from "@desktop/storage/customAgents";
-import type { RemoteClient } from "../remote";
+import type { HostProvider, RemoteClient } from "../remote";
 
 /** The extras a preset-backed spawn carries. All optional: a plain spawn sends
  *  null for each, exactly as before. */
@@ -172,6 +172,11 @@ export function createApi(client: RemoteClient) {
     listRepoBranches: (repoPath: string) => call<string[]>("list_repo_branches", { repoPath }),
     repoDefaultBranch: (repoPath: string) => call<string>("repo_default_branch", { repoPath }),
     discoverSupportedModels: () => call<AgentModels[]>("discover_supported_models"),
+    /** Which provider CLIs the host has, and which of them are signed in — the
+     *  agent runs there, so this and not the static `PROVIDERS` list decides
+     *  what can be spawned. Gated on `hostSupports("host_providers")`; a host
+     *  without it says nothing and the picker offers everything, as before. */
+    hostProviders: () => call<HostProvider[]>("host_providers"),
     /** `path` may be `~`-relative; the host expands it and reports the
      *  absolute `base` it read, which is what the picker navigates from. */
     listDir: (path: string) => call<DirListing>("list_dir", { path }),

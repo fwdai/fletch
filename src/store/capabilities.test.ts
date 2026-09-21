@@ -3,6 +3,7 @@
 // answers — or, from a host that said nothing, against the v2 default set.
 
 import { describe, expect, it } from "vitest";
+import type { HostProvider } from "@/remote/types";
 import { V2_DEFAULT_OPS } from "@/remote/types";
 import {
   anyGateReason,
@@ -10,8 +11,10 @@ import {
   GATES,
   type GateName,
   gateReason,
+  hostProvidersNote,
   hostSkew,
   hostVersionLabel,
+  providerReason,
   requiredOps,
 } from "./capabilities";
 import type { EnvironmentEntry } from "./environments";
@@ -340,5 +343,103 @@ describe("hostVersionLabel", () => {
 
   it("labels the version the host reported", () => {
     expect(hostVersionLabel({ ...host(), appVersion: "0.7.30" })).toBe("v0.7.30");
+  });
+});
+
+// ── Which providers a host can run ──────────────────────────────────────────
+
+const provider = (over: Partial<HostProvider> & { id: string }): HostProvider => ({
+  label: over.id,
+  installed: true,
+  version: "1.0.0",
+  auth: "signed_in",
+  loginCommand: `${over.id} login`,
+  ...over,
+});
+
+const withProviders = (providers: HostProvider[]): EnvironmentEntry => ({
+  ...host(["host_providers"]),
+  providers,
+});
+
+describe("providerReason", () => {
+  it("never blocks the local environment, whatever it happens to carry", () => {
+    // The field is remote-only, so this is the belt-and-braces case: even a
+    // local entry that somehow held provider rows must not gate This Mac.
+    expect(providerReason({ ...local, providers: [provider({ id: "claude" })] }, "claude")).toBe(
+      null,
+    );
+  });
+
+  it("blocks nothing while the host has said nothing", () => {
+    // A host not greeted yet, and one too old to answer the op, look the same
+    // from here — and both offer every provider, as before the op existed.
+    expect(providerReason(host(), "claude")).toBeNull();
+    expect(providerReason(host(["host_providers"]), "claude")).toBeNull();
+  });
+
+  it("blocks nothing for a provider the host did not list", () => {
+    expect(providerReason(withProviders([provider({ id: "claude" })]), "codex")).toBeNull();
+  });
+
+  it("names the host for a CLI that is not there", () => {
+    const env = withProviders([
+      provider({ id: "cursor", installed: false, version: null, auth: null }),
+    ]);
+    expect(providerReason(env, "cursor")).toBe("Not installed on Cloud box");
+  });
+
+  it("quotes the host CLI's login for a signed-out provider", () => {
+    const env = withProviders([provider({ id: "claude", auth: "signed_out" })]);
+    expect(providerReason(env, "claude")).toBe(
+      "Not signed in on Cloud box — run `fletch-host provider login claude` there",
+    );
+  });
+
+  it("says where the credential comes from when the CLI has no login command", () => {
+    // antigravity and pi: `fletch-host provider login` would have nothing to
+    // run, so pointing at it would be a dead end.
+    const env = withProviders([
+      provider({ id: "antigravity", auth: "signed_out", loginCommand: null }),
+    ]);
+    expect(providerReason(env, "antigravity")).toBe(
+      "Not signed in on Cloud box — sign it in there; its CLI has no login command",
+    );
+  });
+
+  it("does not block on a probe that could not tell", () => {
+    // `unknown` is the absence of an answer, not a claim of signed-out.
+    const env = withProviders([provider({ id: "pi", auth: "unknown" })]);
+    expect(providerReason(env, "pi")).toBeNull();
+  });
+});
+
+describe("hostProvidersNote", () => {
+  it("is null for the local environment and for a host that has not answered", () => {
+    expect(hostProvidersNote(local)).toBeNull();
+    expect(hostProvidersNote(host(["host_providers"]))).toBeNull();
+  });
+
+  it("is null when every provider is installed and signed in", () => {
+    expect(hostProvidersNote(withProviders([provider({ id: "claude" })]))).toBeNull();
+  });
+
+  it("names the signed-out ones first, then the missing ones", () => {
+    const note = hostProvidersNote(
+      withProviders([
+        provider({ id: "claude", auth: "signed_out" }),
+        provider({ id: "codex", auth: "signed_out" }),
+        provider({ id: "cursor", installed: false, version: null, auth: null }),
+        provider({ id: "opencode" }),
+      ]),
+    );
+    expect(note?.summary).toBe("claude, codex not signed in · cursor not installed");
+    expect(note?.tip.split("\n")).toHaveLength(3);
+    expect(note?.tip).toContain("run `fletch-host provider login claude` there");
+    expect(note?.tip).toContain("cursor: not installed on Cloud box");
+  });
+
+  it("says nothing about a provider whose login state is unknown", () => {
+    expect(hostProvidersNote(withProviders([provider({ id: "pi", auth: "unknown" })]))).toBeNull();
   });
 });

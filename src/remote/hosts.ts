@@ -21,6 +21,8 @@ export const hosts = createHostRegistry({
     upsertEnvironment: (entry) => useAppStore.getState().upsertEnvironment(entry),
     setEnvironmentConnection: (id, connection, error, retrying) =>
       useAppStore.getState().setEnvironmentConnection(id, connection, error, retrying),
+    setEnvironmentProviders: (id, providers) =>
+      useAppStore.getState().setEnvironmentProviders(id, providers),
     removeEnvironment: (id) => useAppStore.getState().removeEnvironment(id),
     environmentReconnected: (id) => useAppStore.getState().environmentReconnected(id),
   },

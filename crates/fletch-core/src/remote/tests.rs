@@ -352,7 +352,7 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 116 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 117 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -473,6 +473,7 @@ fn allowlist_matches_the_protocol_table() {
         "roadmap_get_brief_proposal",
         "roadmap_accept_brief_proposal",
         "roadmap_reject_brief_proposal",
+        "host_providers",
         "register_push",
     ];
     assert_eq!(
@@ -512,6 +513,9 @@ fn the_protocol_descriptor_reports_the_whole_wire_surface() {
         );
     }
     assert!(protocol.ops.contains(&"answer_publish_approval"));
+    // Named too: a client that cannot see it falls back to offering every
+    // provider, so losing the row silently would un-gate the spawn flow.
+    assert!(protocol.ops.contains(&"host_providers"));
     assert_eq!(protocol.events.as_slice(), super::events::FORWARDED_EVENTS);
     assert!(
         protocol.features.is_empty(),
@@ -557,9 +561,11 @@ fn never_exposed_ops_are_not_dispatchable() {
         "reveal_logs",
         "track_event",
         "install_agent",
-        // The provider surface is the operator's: it resolves binaries, reports
-        // login state and hands back a command with the host user's environment
-        // in it. A paired device gets none of that.
+        // The provider surface is the operator's: it resolves binaries, opens
+        // a login PTY and hands back a command with the host user's
+        // environment in it. A paired device gets none of that — it gets
+        // `host_providers`, which is read-only and carries no path, no
+        // environment and no credential.
         "open_provider_login",
         "probe_provider_auth",
         "probe_provider_versions",
