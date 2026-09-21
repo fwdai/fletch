@@ -343,6 +343,18 @@ export function hostProvidersNote(env: EnvironmentEntry): { summary: string; tip
   return { summary, tip };
 }
 
+/** What Settings › Account has to say while a host is the environment on
+ *  screen: the identity on that page is this Mac's, and the host's is the
+ *  operator's to manage there. Null for the local environment, so the groups
+ *  can drop it in unconditionally exactly like [`hostProvidersNote`].
+ *
+ *  Not a gate: the controls work — they act on this Mac, which is what they
+ *  have always done — so the answer is a sentence, not a closed switch. */
+export function hostAccountNote(env: EnvironmentEntry): string | null {
+  if (env.kind === "local") return null;
+  return `This is this Mac's account. ${env.name} signs in with its own — connect it there with \`fletch-host github login\`.`;
+}
+
 /** The host's own version, for the rows that identify it. Null for the local
  *  environment and for a host that has not reported one (nothing has been
  *  greeted yet, or the handshake predates the field). */

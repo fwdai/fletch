@@ -1,23 +1,34 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { api, type GhStatus } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { useGithubConnect } from "@/util/useGithubConnect";
+import { HostAccountNote } from "./HostAccountNote";
 
 /** GitHub connection control for Settings → Account. Connecting runs the
  *  device flow inline (the same one onboarding uses); disconnecting drops the
- *  stored token and returns the app to local-only mode. */
+ *  stored token and returns the app to local-only mode.
+ *
+ *  Both act on THIS Mac — `oauth_device_login` is local by construction — so
+ *  the status beside them is read locally too, rather than from the store's
+ *  `github`, which follows the active environment. A host is signed in on the
+ *  host; [`HostAccountNote`] says so. */
 export function GithubConnection() {
-  const github = useAppStore((s) => s.github);
-  const refreshGithub = useAppStore((s) => s.refreshGithub);
+  const [github, setGithub] = useState<GhStatus | null>(null);
   const disconnectGithub = useAppStore((s) => s.disconnectGithub);
-  const { connect, cancel, device, error, busy } = useGithubConnect();
 
   // Reflect the current connection on mount (and after a connect/disconnect
   // elsewhere) so the row isn't stale.
-  useEffect(() => {
-    void refreshGithub();
-  }, [refreshGithub]);
+  const probe = useCallback(() => {
+    void api
+      .ghStatus()
+      .then(setGithub)
+      .catch(() => setGithub({ installed: true, authenticated: false, login: null }));
+  }, []);
+  const { connect, cancel, device, error, busy } = useGithubConnect(probe);
+
+  useEffect(probe, [probe]);
 
   if (device) {
     return (
@@ -44,7 +55,7 @@ export function GithubConnection() {
             : "Not connected — local projects still work offline"}
         </span>
         {connected ? (
-          <Button variant="outline" onClick={() => void disconnectGithub()}>
+          <Button variant="outline" onClick={() => void disconnectGithub().then(probe)}>
             Disconnect
           </Button>
         ) : (
@@ -59,6 +70,7 @@ export function GithubConnection() {
           Fletch uses this to clone, push, and open pull requests on your behalf.
         </div>
       )}
+      <HostAccountNote />
     </div>
   );
 }

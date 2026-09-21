@@ -15,11 +15,16 @@ export interface AccountSlice {
   /** Dictation ends itself after a pause. Opt-out: defaults on. Mirrors the
    *  backend-owned `dictation_auto_stop` setting. */
   dictationAutoStop: boolean;
-  /** GitHub connection: null until the first probe, then the live status.
-   *  `authenticated` gates push/PR/clone affordances app-wide. */
+  /** The ACTIVE environment's GitHub connection: null until the first probe,
+   *  then the live status. `authenticated` gates push/PR/clone affordances
+   *  app-wide, and those act where the checkout is — so on a paired host this
+   *  is the host's login, not this Mac's. Settings › Account shows this Mac's
+   *  own, which it probes for itself (`api.ghStatus`). */
   github: GhStatus | null;
   /** Linear connection: null until the first probe. `authenticated` gates
-   *  Linear issue affordances (inbox rows, composer picker, team picker). */
+   *  Linear issue affordances (inbox rows, composer picker, team picker).
+   *  Always this Mac's: the key is in this machine's keychain and no `linear_*`
+   *  op is on the wire. */
   linear: LinearStatus | null;
 
   saveAccount: (patch: Pick<AccountProfile, "firstName" | "lastName" | "email">) => Promise<void>;
@@ -71,7 +76,7 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   },
   refreshGithub: async () => {
     try {
-      set({ github: await api.ghStatus() });
+      set({ github: await api.ghStatusActive() });
     } catch {
       // A failed probe means we can't confirm a connection — treat as
       // not-connected so gated UI shows "connect" rather than a spinner.
@@ -90,11 +95,12 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   disconnectGithub: async () => {
     try {
       await api.githubDisconnect();
-      // Only reflect disconnected once the backend actually cleared the token.
-      // If the write failed the token is still stored, so leaving `github`
-      // as-is keeps the UI honest instead of showing a phantom disconnect
-      // that a later refresh silently reverses.
-      set({ github: { installed: true, authenticated: false, login: null } });
+      // Re-probe rather than assume: the token this cleared is this Mac's, and
+      // `github` is the ACTIVE environment's answer — on a paired host it is
+      // unchanged by the disconnect, and writing "not connected" there would
+      // shut gates the host can still pass. A failed write leaves the token
+      // stored, and the probe reports that too.
+      await get().refreshGithub();
     } catch (e) {
       set({ lastError: String(e) });
     }

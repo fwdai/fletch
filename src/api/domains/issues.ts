@@ -1,4 +1,4 @@
-import { invoke } from "../invoke";
+import { invoke, invokeLocal } from "../invoke";
 import type {
   IssueComment,
   IssueSource,
@@ -28,9 +28,13 @@ export const issuesApi = {
    *  in the composer), so its eventual PR carries the closing trailer. */
   setAgentIssueRef: (agentId: string, issueRef: string) =>
     invoke<void>("set_agent_issue_ref", { agentId, issueRef }),
-  linearStatus: () => invoke<LinearStatus>("linear_status"),
+  // Linear is an account on THIS Mac: the personal API key lives in this
+  // machine's keychain and none of the `linear_*` ops is on a host's table
+  // (docs/remote-protocol.md), so routing them would answer `UNKNOWN_OP` the
+  // moment a host is the active environment.
+  linearStatus: () => invokeLocal<LinearStatus>("linear_status"),
   /** Validate + store a Linear personal API key. Rejects on a bad key. */
-  linearConnect: (apiKey: string) => invoke<LinearStatus>("linear_connect", { apiKey }),
-  linearDisconnect: () => invoke<void>("linear_disconnect"),
-  linearListTeams: () => invoke<LinearTeam[]>("linear_list_teams"),
+  linearConnect: (apiKey: string) => invokeLocal<LinearStatus>("linear_connect", { apiKey }),
+  linearDisconnect: () => invokeLocal<void>("linear_disconnect"),
+  linearListTeams: () => invokeLocal<LinearTeam[]>("linear_list_teams"),
 };
