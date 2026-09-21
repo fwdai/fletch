@@ -443,10 +443,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         })
         .flatten()
     {
-        Some((token, source)) => {
-            github::client::set_token_source(source);
-            github::seed_token(Some(token));
-        }
+        Some((token, source)) => github::client::seed_token_from(Some(token), source),
         None => seed_secret_mirror(&db, github::TOKEN_SETTING, github::seed_token),
     }
     // Same for the Linear API key, so the issue adapters — reached from poll

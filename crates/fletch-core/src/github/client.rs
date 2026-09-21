@@ -28,12 +28,19 @@ const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 /// stalled connection (mirrors `git.rs`'s NET_TIMEOUT rationale).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The token, cached in-process. Seeded from the DB at startup and updated on
-/// login, so API calls (deep in poll paths, with no DB handle) never touch
-/// the DB — the same pattern as `bin_resolve`'s override registry.
-fn token_registry() -> &'static RwLock<Option<String>> {
-    static TOKEN: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+/// The token, cached in-process, with where it came from. Seeded from the DB
+/// at startup and updated on login, so API calls (deep in poll paths, with no
+/// DB handle) never touch the DB — the same pattern as `bin_resolve`'s override
+/// registry. Token and source live under one lock so a reader never sees a
+/// new token paired with the old source.
+fn token_registry() -> &'static RwLock<Option<(String, TokenSource)>> {
+    static TOKEN: OnceLock<RwLock<Option<(String, TokenSource)>>> = OnceLock::new();
     TOKEN.get_or_init(|| RwLock::new(None))
+}
+
+/// Blank counts as none.
+fn clean(token: Option<String>) -> Option<String> {
+    token.filter(|t| !t.trim().is_empty())
 }
 
 /// True once an explicit [`set_token`] (login/disconnect) has run. Guards
@@ -50,10 +57,9 @@ pub fn set_token(token: Option<String>) {
     {
         let mut w = token_registry().write().unwrap();
         SEALED.store(true, std::sync::atomic::Ordering::SeqCst);
-        *w = token.filter(|t| !t.trim().is_empty());
+        // Whatever supplied the boot-time token, this one is the stored one.
+        *w = clean(token).map(|t| (t, TokenSource::Store));
     }
-    // Whatever supplied the boot-time token, this one is the stored one.
-    set_token_source(TokenSource::Store);
     set_cached_login(None);
     // Conditional-GET bodies belong to the old token's view of the world.
     // GitHub validates every ETag itself (a token without access gets a 404,
@@ -67,15 +73,32 @@ pub fn set_token(token: Option<String>) {
 /// login/disconnect either lands after this (and overwrites the seed) or
 /// before it (and the seed no-ops) — the fresher value wins in both orders.
 pub fn seed_token(token: Option<String>) {
+    seed_token_from(token, TokenSource::Store);
+}
+
+/// [`seed_token`] for a token boot took from somewhere other than the secret
+/// store (the environment, a systemd credential), recording that source with
+/// it. Same seal rule: a sign-in that already ran wins.
+pub fn seed_token_from(token: Option<String>, source: TokenSource) {
     let mut w = token_registry().write().unwrap();
     if SEALED.load(std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    *w = token.filter(|t| !t.trim().is_empty());
+    *w = clean(token).map(|t| (t, source));
 }
 
 pub fn token() -> Option<String> {
-    token_registry().read().unwrap().clone()
+    token_registry()
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|(t, _)| t.clone())
+}
+
+/// Where [`token`] came from, or `None` when there is no token. Read from the
+/// same snapshot as the token itself.
+pub fn token_source() -> Option<TokenSource> {
+    token_registry().read().unwrap().as_ref().map(|(_, s)| *s)
 }
 
 /// Where the in-process token came from. A headless host can be handed one
@@ -97,31 +120,6 @@ impl TokenSource {
             Self::Store => "store",
         }
     }
-}
-
-/// [`TokenSource`] as a `u8`, because a source is read from paths that hold no
-/// lock and set once at boot. `Store` is 0 so the default needs no init.
-static SOURCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-
-/// Record where the token being seeded came from. Boot calls this for a token
-/// it took from the environment or a credential; a later sign-in resets it,
-/// since from then on the live token is the stored one.
-pub fn set_token_source(source: TokenSource) {
-    let code = match source {
-        TokenSource::Store => 0,
-        TokenSource::Env => 1,
-        TokenSource::Credential => 2,
-    };
-    SOURCE.store(code, std::sync::atomic::Ordering::SeqCst);
-}
-
-/// Where [`token`] came from, or `None` when there is no token.
-pub fn token_source() -> Option<TokenSource> {
-    token().map(|_| match SOURCE.load(std::sync::atomic::Ordering::SeqCst) {
-        1 => TokenSource::Env,
-        2 => TokenSource::Credential,
-        _ => TokenSource::Store,
-    })
 }
 
 /// The authenticated user's login, cached in-process next to the token. The
@@ -542,12 +540,10 @@ mod tests {
         set_token(None);
         assert_eq!(token_source(), None);
 
-        set_token_source(TokenSource::Env);
+        // A sign-in always records the store, whatever came before.
         set_token(Some("stored".into()));
+        assert_eq!(token(), Some("stored".into()));
         assert_eq!(token_source(), Some(TokenSource::Store));
-
-        set_token_source(TokenSource::Credential);
-        assert_eq!(token_source(), Some(TokenSource::Credential));
 
         set_token(None);
         assert_eq!(token_source(), None);
