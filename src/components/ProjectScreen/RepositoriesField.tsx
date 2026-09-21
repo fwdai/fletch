@@ -51,10 +51,10 @@ export function RepositoriesField({ projectId }: { projectId: string }) {
   }
 
   async function onRelocate(path: string) {
-    const picked = await pickFolder({
-      title: "Select the repository's new location",
-      start: path,
-    });
+    // No `start`: the old path is where the folder *was*, and handing a native
+    // dialog a directory that no longer exists is how it opens somewhere
+    // arbitrary. The host browser opens at `~`.
+    const picked = await pickFolder({ title: "Select the repository's new location" });
     if (!picked || picked === path) return;
     await run(() => relocateProject(path, picked));
   }
