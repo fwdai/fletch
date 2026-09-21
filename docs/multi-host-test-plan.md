@@ -138,10 +138,15 @@ Build and run beside the desktop; the debug build takes its own
 so nothing collides with the desktop.
 
 ```sh
-cargo build --release --manifest-path crates/fletch-host/Cargo.toml
-H=crates/fletch-host/target/release/fletch-host
+cargo build --manifest-path crates/fletch-host/Cargo.toml
+H=crates/fletch-host/target/debug/fletch-host
 $H serve --port 47286 --name "mini"          # desktop may hold 47285
 ```
+
+Debug on purpose: `data_dir_under` only appends `dev` under `debug_assertions`
+(`crates/fletch-host/src/serve.rs:48-55`), so a release binary would serve from
+`~/Library/Application Support/fletch-host` with flat `workspaces`/`rpc` and the
+`dev` paths below would not exist.
 
 | # | Check | Expect |
 |---|---|---|
