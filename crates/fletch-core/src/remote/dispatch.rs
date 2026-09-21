@@ -467,6 +467,8 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("roadmap_get_brief_proposal", Scope::Observe),
     ("roadmap_accept_brief_proposal", Scope::Roadmap),
     ("roadmap_reject_brief_proposal", Scope::Roadmap),
+    // Read-only, and every device needs it before it offers to spawn anything.
+    ("host_providers", Scope::Observe),
 ];
 
 /// The one scope that reaches `op`. `None` for a name outside [`OPS`] —
