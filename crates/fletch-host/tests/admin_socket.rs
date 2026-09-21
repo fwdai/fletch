@@ -76,4 +76,61 @@ async fn the_admin_socket_refuses_what_it_does_not_know() {
         json!(false),
         "nothing has signed this host in"
     );
+    assert!(
+        status["providers"]["signedIn"].is_array() && status["providers"]["signedOut"].is_array(),
+        "status says which provider CLIs are signed in: {status}"
+    );
+
+    // The provider surface. Nothing is asserted about what is installed on the
+    // machine running this — CI has none of these CLIs — only that every known
+    // provider is answered for, with the fields the CLI table prints.
+    let providers = admin::call(&data_dir, "provider_status", json!({}))
+        .await
+        .expect("provider_status");
+    let providers = providers.as_array().cloned().unwrap_or_default();
+    let ids: Vec<&str> = providers.iter().filter_map(|p| p["id"].as_str()).collect();
+    for known in ["claude", "codex", "cursor", "antigravity", "opencode", "pi"] {
+        assert!(ids.contains(&known), "{known} is missing from {ids:?}");
+    }
+    let claude = providers
+        .iter()
+        .find(|p| p["id"] == json!("claude"))
+        .expect("claude is probed");
+    assert_eq!(claude["label"], json!("Claude Code"), "{claude}");
+    assert_eq!(
+        claude["loginCommand"],
+        json!("claude auth login"),
+        "the row carries the vendor's own sign-in command: {claude}"
+    );
+    assert!(claude["installed"].is_boolean(), "{claude}");
+    if claude["installed"] == json!(false) {
+        assert_eq!(
+            claude["auth"],
+            json!(null),
+            "a CLI that is not here has no login state: {claude}"
+        );
+    }
+
+    // What `provider login` refuses, and why.
+    assert_eq!(
+        admin::call(
+            &data_dir,
+            "provider_login_command",
+            json!({ "id": "nonesuch" })
+        )
+        .await,
+        Err("unknown provider nonesuch".to_string()),
+        "a provider nobody has heard of is named in the error"
+    );
+    let out_of_band = admin::call(
+        &data_dir,
+        "provider_login_command",
+        json!({ "id": "antigravity" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        out_of_band.contains("Antigravity") && out_of_band.contains("out of band"),
+        "a provider with no login command says so: {out_of_band}"
+    );
 }

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use fletch_core::host::HeadlessRelay;
-use fletch_host::{admin, serve, service, update};
+use fletch_host::{admin, provider, serve, service, update};
 use serde_json::{json, Value};
 
 #[derive(Parser)]
@@ -86,6 +86,11 @@ enum Command {
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
+    },
+    /// The agent CLIs on this host: what is installed, what is signed in.
+    Provider {
+        #[command(subcommand)]
+        command: ProviderCommand,
     },
     /// Run `serve` under this machine's init system (systemd or launchd).
     Service {
@@ -177,6 +182,20 @@ enum ProjectCommand {
         /// Where to put the clone. Defaults to the current directory.
         #[arg(long, value_name = "DIR")]
         into: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProviderCommand {
+    /// One line per provider: its version, whether it is signed in, and what
+    /// to do about it if it is not.
+    Status,
+    /// Run a provider CLI's own sign-in here, in this terminal. Do it as the
+    /// user the host runs as — the credential lands in that user's home
+    /// directory, which is the one the agents read.
+    Login {
+        /// The provider, from `provider status` (e.g. `claude`).
+        id: String,
     },
 }
 
@@ -335,6 +354,10 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
                 .await?;
                 print_json(&project);
             }
+        },
+        Command::Provider { command } => match command {
+            ProviderCommand::Status => provider::print_status(data_dir).await?,
+            ProviderCommand::Login { id } => provider::login(data_dir, &id).await?,
         },
     }
     Ok(())
