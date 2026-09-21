@@ -36,6 +36,25 @@ pub async fn clone_repo_impl(
     supervisor.add_workspace_repo(target)
 }
 
+/// Create a fresh repo locally + on GitHub, then register it as a workspace
+/// project. `publish` false keeps it local-only (no GitHub connection yet); the
+/// git panel offers "Publish to GitHub" later.
+///
+/// Shared with the remote dispatcher, so a project created from another machine
+/// is seeded, committed and pinned by the same code the desktop runs.
+pub async fn create_repo_impl(
+    supervisor: &Supervisor,
+    name: &str,
+    dest_parent: &str,
+    private: bool,
+    description: Option<&str>,
+    publish: bool,
+) -> Result<crate::workspace::Workspace> {
+    let target =
+        new_project::create(name, Path::new(dest_parent), private, description, publish).await?;
+    supervisor.add_workspace_repo(target)
+}
+
 /// Create a PR for the agent's current branch. Pass empty title/body to
 /// auto-fill from commits.
 ///

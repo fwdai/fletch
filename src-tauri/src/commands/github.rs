@@ -1,7 +1,6 @@
 //! GitHub connection, repo clone/create/publish, and per-agent PR handlers
 //! (state, checks, comments, issues) plus the app-wide PR polling sweeps.
 
-use std::path::Path;
 use std::sync::Arc;
 use tauri::State;
 
@@ -52,17 +51,17 @@ pub async fn create_repo(
     description: Option<String>,
     publish: Option<bool>,
 ) -> Result<crate::workspace::Workspace> {
-    let target = new_project::create(
+    fletch_core::commands::create_repo_impl(
+        &supervisor,
         &name,
-        Path::new(&dest_parent),
+        &dest_parent,
         private,
         description.as_deref(),
         // Default true: an older frontend that doesn't pass the flag keeps
         // the original create-and-publish behavior.
         publish.unwrap_or(true),
     )
-    .await?;
-    supervisor.add_workspace_repo(target)
+    .await
 }
 
 /// Publish a local-only project to GitHub: create the remote repo from the

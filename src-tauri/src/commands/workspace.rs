@@ -7,7 +7,6 @@ use tauri::State;
 
 use crate::error::Result;
 use crate::host::EngineCtx;
-use crate::new_project;
 use crate::supervisor::Supervisor;
 use crate::workspace::{ProjectDeleteResult, Workspace};
 
@@ -56,28 +55,16 @@ pub fn remove_workspace_repo(
     supervisor.remove_workspace_repo(PathBuf::from(repo_path))
 }
 
-/// Attach a repo to an existing project (multi-repo projects). Two phases,
-/// deliberately ordered so a doomed attach can never mutate the picked
-/// folder: the DB attach validates the project and commits first, and only
-/// then is a non-git folder initialized (mirroring `add_workspace_repo`).
-/// If that filesystem step fails, the DB attach is rolled back precisely.
+/// Attach a repo to an existing project (multi-repo projects). Two phases —
+/// DB first, folder second, with a rollback if the folder step fails; see
+/// `attach_repo_to_project_impl`, which the remote dispatcher calls too.
 #[tauri::command]
 pub async fn attach_repo_to_project(
     supervisor: State<'_, Arc<Supervisor>>,
     project_id: String,
     repo_path: String,
 ) -> Result<Workspace> {
-    let sup = supervisor.inner().clone();
-    let path = PathBuf::from(repo_path);
-    let outcome = sup.attach_repo_to_project(&project_id, &path)?;
-    if let Err(e) = new_project::ensure_git_repo(&path).await {
-        // Roll back the row(s) the DB phase wrote; best-effort — it re-applies
-        // keys we wrote moments ago on a local connection, so a failure here
-        // means the DB itself is gone, and the init error is the one to show.
-        let _ = sup.undo_attach(&outcome);
-        return Err(e);
-    }
-    Ok(sup.workspace.current().expect("workspace initialized"))
+    fletch_core::commands::attach_repo_to_project_impl(&supervisor, &project_id, repo_path).await
 }
 
 /// Detach a repo from a project. Rejects the project's last repo and any repo
