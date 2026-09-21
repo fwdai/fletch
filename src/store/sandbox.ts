@@ -10,7 +10,7 @@ import {
 import { hostSupports } from "@/remote/types";
 import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preferences";
 import { type ApprovalEvent, replayApprovalEvents } from "@/util/publishApprovals";
-import { activeEnvironment } from "./environments";
+import { activeEnvironment, forActiveEnvironment } from "./environments";
 import { checkoutKey } from "./git";
 import { autopilotIsDriving, publishPreAuthorized } from "./publishApproval";
 import type { SliceCreator } from "./types";
@@ -234,10 +234,10 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     const buffer: ApprovalEvent[] = [];
     approvalsInFlight = buffer;
     try {
-      const pending = await api.listPublishApprovals();
       // A switch while the read was in flight owns the queue now; ours would be
       // another host's prompts on this one's screen.
-      if (activeEnvironment().id !== env.id) return;
+      const pending = await forActiveEnvironment(() => api.listPublishApprovals());
+      if (!pending) return;
       // The snapshot is what the host was blocked on when it read its queue,
       // not when it answered; whatever it said in between is folded back in.
       set({ pendingPublishApprovals: replayApprovalEvents(pending, buffer) });

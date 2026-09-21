@@ -186,3 +186,27 @@ export function activeEnvironment(): EnvironmentEntry {
     initialState().environments[LOCAL_ENVIRONMENT_ID]
   );
 }
+
+/** Run a routed read and hand its answer back only if the environment that was
+ *  active when it started is still active when it lands. `undefined` means
+ *  superseded: write nothing.
+ *
+ *  THIS is how a store action that writes an environment-owned slice must run a
+ *  read that goes over the wire. A switch is a click, so it lands in the middle
+ *  of whatever is in flight, and every such answer belongs to the environment
+ *  it was asked of: written blind, one host's GitHub login — or its approval
+ *  queue, or its "not connected" — appears in another host's view and gates
+ *  buttons that publish somewhere else entirely.
+ *
+ *  Failure is not caught here. A read that must still write something when it
+ *  fails (a probe whose failure means "not connected") folds that answer into
+ *  `run`, so the fallback is guarded too; anything else rejects through.
+ *
+ *  `refreshWorkspace` is the one exception and keeps its own guard: its
+ *  generation token also orders a refresh against another refresh of the SAME
+ *  environment, which this cannot see. */
+export async function forActiveEnvironment<T>(run: () => Promise<T>): Promise<T | undefined> {
+  const id = activeEnvironmentId();
+  const answer = await run();
+  return activeEnvironmentId() === id ? answer : undefined;
+}

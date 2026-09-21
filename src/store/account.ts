@@ -1,5 +1,6 @@
 import { api, type GhStatus, type LinearStatus } from "@/api";
 import { type AccountProfile, getAccount, saveAccountProfile, toProfile } from "@/storage/accounts";
+import { forActiveEnvironment } from "./environments";
 import type { SliceCreator } from "./types";
 
 export interface AccountSlice {
@@ -75,13 +76,17 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
     }
   },
   refreshGithub: async () => {
-    try {
-      set({ github: await api.ghStatusActive() });
-    } catch {
+    // `github` is the ACTIVE environment's answer, and `ghStatusActive` is
+    // routed, so the probe is run through the environment guard: a switch while
+    // it was in flight means this login is the other host's and must not be
+    // written here (see `forActiveEnvironment`). The failure answer goes inside
+    // the guard for the same reason.
+    const status = await forActiveEnvironment(() =>
       // A failed probe means we can't confirm a connection — treat as
       // not-connected so gated UI shows "connect" rather than a spinner.
-      set({ github: { installed: true, authenticated: false, login: null } });
-    }
+      api.ghStatusActive().catch(() => ({ installed: true, authenticated: false, login: null })),
+    );
+    if (status) set({ github: status });
   },
   refreshLinear: async () => {
     try {
