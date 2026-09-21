@@ -272,6 +272,25 @@ pub(super) fn emit_task(sink: &dyn EventSink, agent_id: &str, task: String) {
 }
 
 #[derive(Clone, serde::Serialize)]
+struct AgentTitlePayload {
+    agent_id: String,
+    title: String,
+}
+
+/// The agent titled its work via the `set_title` mailbox op. Mirrors
+/// `agent:task`; the sidebar subtitle prefers this over the task's first line.
+pub(super) fn emit_title(sink: &dyn EventSink, agent_id: &str, title: String) {
+    emit(
+        sink,
+        "agent:title",
+        AgentTitlePayload {
+            agent_id: agent_id.to_string(),
+            title,
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
 struct AgentBranchPayload {
     agent_id: String,
     subdir: String,

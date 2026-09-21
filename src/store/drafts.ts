@@ -357,6 +357,11 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // Tags the workspace with its originating issue so the agent's PR
         // closes it (backend appends `Closes #N` to the primary repo's PR).
         draft.issueRef,
+        undefined,
+        // The prompt is sent below once the process is up; persisting it as the
+        // task at spawn means the returned record and every refresh snapshot
+        // already carry it, so the sidebar row never reads empty in between.
+        prompt,
       );
       // A draft started from a board card links its item to the agent the
       // moment there is an agent to link to — this is the only point where the

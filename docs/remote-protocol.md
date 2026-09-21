@@ -887,7 +887,8 @@ these names to every authenticated connection:
 
 ```
 agent:event            agent:status           agent:task
-agent:branch           agent:model            agent:effort
+agent:title            agent:branch           agent:model
+agent:effort
 agent:repo_added       agent:git-action       session:records-appended
 turn:sent              turn:started           workspace:changed
 pr:state_changed       verify:report          publish:approval-requested

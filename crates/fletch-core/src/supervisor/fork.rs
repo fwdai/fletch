@@ -172,6 +172,8 @@ impl Supervisor {
             // Nor its purpose: forking is a sidebar action, and the fork is an
             // ordinary agent that carries the parent's conversation forward.
             purpose: None,
+            // A fork has no first prompt yet; its task is captured on first send.
+            task: None,
         };
         let child = self.clone().spawn_agent(ctx, req).await?;
 

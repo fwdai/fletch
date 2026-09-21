@@ -80,6 +80,18 @@ impl Supervisor {
             busy,
         );
 
+        // Capture the task at send time, not at delivery: a fresh spawn's first
+        // prompt is held until the process is up, and every client should read
+        // it as the task through that window. Idempotent (`set_agent_task_if_empty`),
+        // so `deliver_as_turn`'s own call — kept for the flush and native paths —
+        // is a no-op after this one.
+        on_first_user_message(
+            self.clone(),
+            ctx.clone(),
+            agent_id.to_string(),
+            text.to_string(),
+        );
+
         let delivery = decide_delivery(busy, mode, tool_gated, queue_nonempty);
         // Whether the message is genuinely held for a later boundary. A path
         // that delivers now returns `false`; a still-busy `Enqueue` returns

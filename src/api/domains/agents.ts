@@ -31,6 +31,11 @@ export const agentsApi = {
      *  `ROADMAP_PM_PURPOSE`): it is hidden from the sidebar and spawned with a
      *  narrower capability grant. `undefined` for a normal spawn. */
     purpose?: string,
+    /** The first prompt, when the caller sends it right after spawning (the
+     *  draft path). Persisted as the record's `task` at creation, so the
+     *  returned record and every snapshot already carry it — the sidebar row
+     *  never shows an empty task while the process starts. */
+    task?: string,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
       view,
@@ -46,6 +51,7 @@ export const agentsApi = {
       forkBase: forkBase ?? null,
       issueRef: issueRef ?? null,
       purpose: purpose ?? null,
+      task: task ?? null,
     }),
   /** A project's purpose-tagged chats, newest first (see `ROADMAP_PM_PURPOSE`).
    *  These never appear in the workspace snapshot, so the surface that owns

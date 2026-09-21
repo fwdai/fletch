@@ -278,6 +278,12 @@ pub struct SpawnRequest {
     /// hides the workspace from the sidebar and narrows its capability grant.
     /// `None` for a normal user or workflow spawn.
     pub purpose: Option<String>,
+    /// The first prompt, when the caller already has it (the desktop's draft
+    /// spawn). Persisted as the record's `task` at creation, so the sidebar row
+    /// reads it from the first snapshot instead of waiting for the message to
+    /// be delivered once the process is up. `None` leaves the task to
+    /// `on_first_user_message`, which captures it at send time.
+    pub task: Option<String>,
 }
 
 impl Supervisor {
@@ -306,6 +312,7 @@ impl Supervisor {
             carry_from,
             issue_ref,
             purpose,
+            task,
         } = req;
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -408,12 +415,18 @@ impl Supervisor {
             adopted_checkout: adopted.clone(),
         };
 
+        // Same filter as `on_first_user_message`: a bare slash command is not
+        // the task, and the send-time capture will skip it too.
+        let initial_task = task
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty() && !t.starts_with('/'))
+            .unwrap_or_default();
         let mut record = new_agent_record(
             initial_id.clone(),
             initial_id,
             provider,
             primary,
-            String::new(),
+            initial_task,
             view,
         );
         // Session-level effort (claude `--effort`); persisted so start_process

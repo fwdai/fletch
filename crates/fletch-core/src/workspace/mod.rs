@@ -309,6 +309,13 @@ pub struct AgentRecord {
     /// narrower capability grant (`rpc::caps`).
     #[serde(default)]
     pub purpose: Option<String>,
+    /// A short title for the work, written by the agent through the
+    /// `set_title` mailbox op once it knows what the user wants (which may be
+    /// a few messages in). `None` until then; the sidebar falls back to the
+    /// first line of `task`. Unlike `task`, the agent may rewrite it as the
+    /// purpose sharpens or shifts.
+    #[serde(default)]
+    pub title: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -502,7 +509,7 @@ const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created
             s.provider, s.view, s.provider_session_id, s.last_error,
             s.effort, s.model, s.instructions, s.forked_context, s.custom_agent_id,
             s.skills, s.mcp_servers,
-            w.sandbox_engine, w.owner_run_id, w.issue_ref, w.purpose
+            w.sandbox_engine, w.owner_run_id, w.issue_ref, w.purpose, w.title
      FROM workspaces w
      LEFT JOIN sessions s ON s.workspace_id = w.id";
 
@@ -530,6 +537,7 @@ type AgentRow = (
     Option<String>, // w.owner_run_id
     Option<String>, // w.issue_ref
     Option<String>, // w.purpose
+    Option<String>, // w.title
 );
 
 impl WorkspaceManager {

@@ -19,6 +19,7 @@ import {
   onAgentRepoAdded,
   onAgentStatus,
   onAgentTask,
+  onAgentTitle,
   onAgentView,
   onDockerBuildProgress,
   onPrStateChanged,
@@ -444,6 +445,12 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   await bind(
     onAgentTask((e) => {
       patchAgent(get, set, e.agent_id, { task: e.task });
+    }),
+  );
+
+  await bind(
+    onAgentTitle((e) => {
+      patchAgent(get, set, e.agent_id, { title: e.title });
     }),
   );
 

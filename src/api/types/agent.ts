@@ -90,6 +90,10 @@ export interface AgentRecord {
    *  Tagged workspaces are absent from the `get_workspace` snapshot entirely;
    *  they arrive through `listProjectChats`. */
   purpose?: string | null;
+  /** A short title for the work, written by the agent via the `set_title`
+   *  mailbox op once it knows what the user wants. Null until then; the
+   *  sidebar subtitle falls back to the first line of `task`. */
+  title?: string | null;
 }
 
 /** `workspaces.purpose` for a Roadmap project-manager chat — a manual chat that
@@ -166,6 +170,11 @@ export interface AgentModelEvent {
 export interface AgentTaskEvent {
   agent_id: string;
   task: string;
+}
+
+export interface AgentTitleEvent {
+  agent_id: string;
+  title: string;
 }
 
 export interface AgentBranchEvent {

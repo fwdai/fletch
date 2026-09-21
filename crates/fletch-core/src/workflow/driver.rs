@@ -169,6 +169,9 @@ impl AgentDriver for SupervisorDriver {
                         // A step agent is hidden by its `owner_run_id`, not by a
                         // purpose tag — the run monitor owns it.
                         purpose: None,
+                        // The step prompt is delivered as a message; the task is
+                        // captured from it then.
+                        task: None,
                     },
                 )
                 .await?;

@@ -95,9 +95,10 @@
   font-size: var(--fs-sm);
   color: color-mix(in oklch, var(--fg-1), var(--fg-0) 30%);
 }
-.agent-sub .a-task.a-task-draft {
-  color: var(--fg-3);
-  font-style: italic;
+/* the codename, demoted under the title: the branch/worktree handle, not the
+ * thing to scan by, so it sits at the identity chip's weight */
+.agent-sub .a-task.a-codename {
+  color: var(--fg-2);
 }
 .agent-sub .a-diff {
   font-family: var(--font-mono);

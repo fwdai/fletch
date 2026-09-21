@@ -13,6 +13,7 @@ import type {
   AgentRepoAddedEvent,
   AgentStatusEvent,
   AgentTaskEvent,
+  AgentTitleEvent,
   Workspace,
 } from "@desktop/api/types/agent";
 import type { PrStateChangedEvent } from "@desktop/api/types/pr";
@@ -170,6 +171,12 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     get().patchChat(e.agent_id, { task: e.task });
     const ws = get().workspace;
     if (ws) set({ workspace: patchAgent(ws, e.agent_id, { task: e.task }) });
+  });
+
+  on<AgentTitleEvent>("agent:title", (e) => {
+    get().patchChat(e.agent_id, { title: e.title });
+    const ws = get().workspace;
+    if (ws) set({ workspace: patchAgent(ws, e.agent_id, { title: e.title }) });
   });
 
   on<AgentModelEvent>("agent:model", (e) => {

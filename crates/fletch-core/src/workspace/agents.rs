@@ -168,6 +168,19 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Record the agent-written title for the workspace's work (see the
+    /// `set_title` mailbox op). Overwrites unconditionally: the agent may set a
+    /// tentative title early and refine it once the purpose is clearer.
+    pub fn set_agent_title(&self, id: &str, title: &str) -> Result<()> {
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE workspaces SET title = ?1 WHERE id = ?2",
+            rusqlite::params![title, id],
+        )?;
+        Ok(())
+    }
+
     pub fn set_agent_task_if_empty(&self, id: &str, task: &str) -> Result<bool> {
         let conn = self.db.lock();
         let changed = conn.execute(
