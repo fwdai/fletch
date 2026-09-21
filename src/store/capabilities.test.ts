@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { V2_DEFAULT_OPS } from "@/remote/types";
 import {
+  anyGateReason,
   closedGates,
   GATES,
   type GateName,
@@ -208,6 +209,32 @@ describe("gateReason", () => {
     const narrow = host(["get_workspace"]);
 
     expect(gateReason(narrow, "sideShell")).toBe(GATES.sideShell.reason);
+  });
+});
+
+describe("anyGateReason", () => {
+  it("is null for the local environment", () => {
+    expect(anyGateReason(local, ["openProject", "cloneProject", "createProject"])).toBeNull();
+  });
+
+  it("gives the first gate's reason when the host can run none of them", () => {
+    // No `list_dir`, so every route into adding a project is closed.
+    const blind = host([...V2_DEFAULT_OPS].filter((op) => op !== "list_dir"));
+
+    expect(anyGateReason(blind, ["openProject", "cloneProject", "createProject"])).toBe(
+      GATES.openProject.reason,
+    );
+  });
+
+  it("is null while one of them is open, whichever it is", () => {
+    // Creating a repo is closed on every host today; cloning is not, so a
+    // control that leads to both is still worth offering.
+    const usual = host([...V2_DEFAULT_OPS]);
+
+    expect(anyGateReason(usual, ["createProject", "cloneProject"])).toBeNull();
+    expect(anyGateReason(usual, ["cloneProject", "createProject"])).toBeNull();
+    // …and closed on its own, which is what the row inside the menu says.
+    expect(anyGateReason(usual, ["createProject"])).toBe(GATES.createProject.reason);
   });
 });
 

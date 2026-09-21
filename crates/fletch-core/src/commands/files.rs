@@ -473,48 +473,116 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// The order a listing goes out in — directories first, then by name — as a
+/// total order, so the selection below can be a heap rather than a sort of
+/// everything the directory holds.
+struct Ranked(DirEntry);
+
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .0
+            .is_dir
+            .cmp(&self.0.is_dir)
+            .then_with(|| self.0.name.cmp(&other.0.name))
+    }
+}
+
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Ranked {}
+
+/// The first `cap` entries under that order, and whether anything was dropped
+/// to get there — without ever holding more than `cap` of them.
+///
+/// A device can point `list_dir` at any readable directory on the host, so the
+/// traversal itself has to be bounded: collecting a directory with a million
+/// names and sorting it is memory the caller chooses and the host pays for,
+/// several requests at a time. A max-heap capped at `cap` keeps the smallest
+/// `cap` entries seen so far — O(n log cap) time, O(cap) memory — and the
+/// answer is identical to sorting everything and truncating.
+fn top_entries(entries: impl Iterator<Item = DirEntry>, cap: usize) -> (Vec<DirEntry>, bool) {
+    let mut heap: std::collections::BinaryHeap<Ranked> =
+        std::collections::BinaryHeap::with_capacity(cap.saturating_add(1));
+    let mut truncated = false;
+    for entry in entries {
+        if cap == 0 {
+            return (Vec::new(), true);
+        }
+        heap.push(Ranked(entry));
+        if heap.len() > cap {
+            // The largest under the order is the one furthest from the front of
+            // the listing, so it is the one nobody will miss.
+            heap.pop();
+            truncated = true;
+        }
+    }
+    // `into_sorted_vec` is ascending under `Ord` — the listing order itself —
+    // and sorts at most `cap` entries.
+    let kept = heap.into_sorted_vec().into_iter().map(|r| r.0).collect();
+    (kept, truncated)
+}
+
+/// One entry as the listing reports it, before the `.git` check.
+fn dir_entry(entry: &std::fs::DirEntry) -> DirEntry {
+    let file_type = entry.file_type().ok();
+    let is_dir = match file_type {
+        // `file_type` answers about the link itself, so a symlinked directory
+        // (`~/Code` -> an external volume) would read as a file and vanish from
+        // every folder picker. One stat, and only for the links: a plain entry
+        // keeps the answer the read already had.
+        Some(t) if t.is_symlink() => std::fs::metadata(entry.path())
+            .map(|m| m.is_dir())
+            .unwrap_or(false),
+        Some(t) => t.is_dir(),
+        None => false,
+    };
+    DirEntry {
+        name: entry.file_name().to_string_lossy().to_string(),
+        is_dir,
+        is_repo: false,
+    }
+}
+
 /// Shared with the remote dispatcher.
 pub async fn list_dir_impl(path: String) -> Result<DirListing> {
     // Keep the payload bounded (the picker filters it down and the composer
-    // shows ten), but cap *after* sorting: taking the filesystem's first
-    // thousand names dropped whichever folder the user was actually looking for
-    // whenever a sibling like node_modules came back first. Hidden entries are
-    // kept so typing a leading "." can still reveal dotfiles.
+    // shows ten), but choose *which* entries by the listing's own order rather
+    // than by whatever order the filesystem replied in — which used to drop
+    // whichever folder the user was looking for whenever a sibling like
+    // node_modules came back first. Hidden entries are kept so typing a leading
+    // "." can still reveal dotfiles.
     const MAX_ENTRIES: usize = 1000;
 
     let dir = expand_tilde(&path);
     let read = std::fs::read_dir(&dir)
         .map_err(|e| Error::Other(format!("read_dir {}: {e}", dir.display())))?;
 
-    let mut entries = Vec::new();
-    for entry in read.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let file_type = entry.file_type().ok();
-        let is_dir = match file_type {
-            // `file_type` answers about the link itself, so a symlinked
-            // directory (`~/Code` -> an external volume) would read as a file
-            // and vanish from every folder picker. One stat, and only for the
-            // links: a plain entry keeps the answer the read already had.
-            Some(t) if t.is_symlink() => std::fs::metadata(entry.path())
-                .map(|m| m.is_dir())
-                .unwrap_or(false),
-            Some(t) => t.is_dir(),
-            None => false,
-        };
-        entries.push(DirEntry {
-            name,
-            is_dir,
-            is_repo: false,
-        });
-    }
+    // An entry the directory would not hand over is one the listing does not
+    // have, which is the same admission `truncated` makes.
+    let mut unreadable = false;
+    let streamed = read.filter_map(|entry| match entry {
+        Ok(entry) => Some(dir_entry(&entry)),
+        Err(_) => {
+            unreadable = true;
+            None
+        }
+    });
+    let (mut entries, dropped) = top_entries(streamed, MAX_ENTRIES);
+    let truncated = dropped || unreadable;
 
-    // Directories first, then by name: this is what a picker walks, and a cap
-    // is only meaningful over a deterministic order.
-    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
-    let truncated = entries.len() > MAX_ENTRIES;
-    entries.truncate(MAX_ENTRIES);
-
-    // After the cap, so a huge directory costs at most `MAX_ENTRIES` stats.
+    // After the selection, so a huge directory costs at most `MAX_ENTRIES` of
+    // these stats however many names it holds.
     for entry in &mut entries {
         entry.is_repo = entry.is_dir && dir.join(&entry.name).join(".git").exists();
     }
@@ -619,6 +687,75 @@ pub fn resolve_new_path(checkout: &Path, rel: &str) -> Result<PathBuf> {
         std::fs::create_dir_all(dir)?;
     }
     Ok(abs)
+}
+
+#[cfg(test)]
+mod top_entries_tests {
+    use super::{top_entries, DirEntry};
+
+    fn entry(name: &str, is_dir: bool) -> DirEntry {
+        DirEntry {
+            name: name.to_string(),
+            is_dir,
+            is_repo: false,
+        }
+    }
+
+    /// The whole point of the heap: a directory far bigger than the cap is
+    /// answered with the front of the listing, not with whatever came first off
+    /// the filesystem — and without ever holding the 5000 entries at once.
+    #[test]
+    fn keeps_the_front_of_the_listing_from_a_stream_far_larger_than_the_cap() {
+        // Interleaved and in no useful order, as a real `read_dir` is: the
+        // directories are the odd numbers, counting down.
+        let streamed = (0..5000).map(|i| {
+            let n = 4999 - i;
+            entry(&format!("{n:04}"), n % 2 == 1)
+        });
+
+        let (kept, truncated) = top_entries(streamed, 1000);
+
+        assert!(truncated);
+        assert_eq!(kept.len(), 1000);
+        // Every directory sorts ahead of every file, so 1000 slots is exactly
+        // the 500 lowest-numbered odd names… and then nothing else.
+        assert!(kept.iter().all(|e| e.is_dir));
+        assert_eq!(kept[0].name, "0001");
+        assert_eq!(kept[999].name, "1999");
+        // Ties by name, ascending, with no duplicates or gaps.
+        let names: Vec<&str> = kept.iter().map(|e| e.name.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn orders_directories_first_then_by_name_when_everything_fits() {
+        let streamed = [
+            entry("b.txt", false),
+            entry("zeta", true),
+            entry("a.txt", false),
+            entry("alpha", true),
+        ];
+
+        let (kept, truncated) = top_entries(streamed.into_iter(), 1000);
+
+        assert!(!truncated);
+        assert_eq!(
+            kept.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            ["alpha", "zeta", "a.txt", "b.txt"]
+        );
+    }
+
+    #[test]
+    fn a_cap_of_zero_keeps_nothing_and_says_so() {
+        let (kept, truncated) = top_entries([entry("a", true)].into_iter(), 0);
+
+        assert!(kept.is_empty());
+        assert!(truncated);
+        // …and an empty directory is not truncated, cap or no cap.
+        assert!(!top_entries(std::iter::empty(), 0).1);
+    }
 }
 
 #[cfg(test)]
