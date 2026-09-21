@@ -961,6 +961,8 @@ async fn list_dir_answers_with_a_listing_and_expands_a_tilde() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("sub")).unwrap();
     std::fs::write(dir.path().join("file.txt"), b"x").unwrap();
+    let repo = dir.path().join("repo");
+    git_init(&repo);
 
     let listing = dispatch::add_project_op(&sup, "list_dir", json!({ "path": dir.path() }))
         .await
@@ -972,6 +974,14 @@ async fn list_dir_answers_with_a_listing_and_expands_a_tilde() {
         .find(|e| e["name"] == "sub")
         .expect("the subdirectory is listed");
     assert_eq!(sub["is_dir"], true);
+    // A plain directory is not a repository; the one with a `.git` is, which is
+    // what the folder picker marks.
+    assert_eq!(sub["is_repo"], false);
+    let repo_entry = entries
+        .iter()
+        .find(|e| e["name"] == "repo")
+        .expect("the repository is listed");
+    assert_eq!(repo_entry["is_repo"], true);
     assert!(entries.iter().any(|e| e["name"] == "file.txt"));
 
     // The phone sends the path the user typed; the host resolves `~`.

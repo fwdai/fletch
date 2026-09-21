@@ -1,0 +1,76 @@
+/* ── Folder picker ────────────────────────────────────────────────────
+   The in-app folder browser, shown only on a remote environment (the native
+   dialog answers locally). Shell, header and footer come from the shared
+   `Modal` primitive; this is the browser itself. */
+
+.fp-path {
+  gap: 8px;
+}
+.fp-path .ui-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.fp-list {
+  display: flex;
+  flex-direction: column;
+  /* Fixed height, not a max: the list is walked, and a card that resizes under
+     every click makes the modal jump around the screen. */
+  height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--bd);
+  border-radius: var(--r-sm);
+}
+.fp-row {
+  gap: 10px;
+  padding: 8px 11px;
+  text-align: left;
+  width: 100%;
+  border-bottom: 1px solid var(--bd);
+}
+.fp-row:last-child {
+  border-bottom: none;
+}
+.fp-row:hover {
+  background: var(--hover);
+}
+.fp-row svg {
+  color: var(--fg-2);
+  flex-shrink: 0;
+}
+.fp-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A folder that already holds a `.git`. */
+.fp-repo {
+  flex-shrink: 0;
+  color: var(--fg-2);
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.fp-empty {
+  padding: 16px;
+  color: var(--fg-2);
+  text-align: center;
+}
+
+/* The path the primary button would hand back, spelled out beside it. */
+.fp-foot {
+  align-items: center;
+}
+.fp-base {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
