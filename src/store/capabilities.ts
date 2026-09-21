@@ -32,13 +32,21 @@ interface Gate {
 /** Every gate in the app, so the reasons are written once and read the same
  *  way everywhere. Keep the wording short: it is a tooltip, not a dialog. */
 export const GATES = {
-  /** New Project, "Add project", attach/relocate a repo — all of them open a
-   *  native picker on this Mac. `add_workspace_repo` itself is on the wire; the
-   *  path to hand it is not. */
+  /** "Add project" and the clone destination. The folder to hand the op is
+   *  browsed over `list_dir` on a remote environment (the native picker cannot
+   *  see that disk), and both ops have been on the wire since v2 — so this
+   *  closes only against a host that answers neither. */
   addProject: {
-    op: null,
+    op: "add_workspace_repo",
     label: "Adding projects",
-    reason: "Add projects on the host or from your phone.",
+    reason: "This host is too old to add a project — add it on the host.",
+  },
+  /** Creating a fresh repo. `create_repo` is not on the wire at all, so this is
+   *  closed on every host today; it opens by itself once one advertises it. */
+  createProject: {
+    op: "create_repo",
+    label: "Creating a project",
+    reason: "This host can't create a repository from here yet.",
   },
   sideShell: {
     op: "open_agent_shell",
@@ -196,7 +204,7 @@ export function hostSkew(env: EnvironmentEntry, clientVersion: string): HostSkew
   // greeted yet of gaps it may not have.
   if (env.connection !== "connected") return null;
   // The host's own answer only. A gate with no op is closed by *this* side —
-  // the native folder picker cannot browse a cloud box's disk — and saying it is
+  // autopilot judges a project by this Mac's own opt-out rows — and saying it is
   // "unavailable on this host" would blame the wrong machine; the control that
   // is gated says so itself, where the user is trying to use it.
   const closed = closedGates(env).filter((g) => GATES[g.name].op !== null);

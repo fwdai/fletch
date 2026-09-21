@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { DockerBuildToast } from "./components/DockerBuildToast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Feedback } from "./components/Feedback";
+import { FolderPickerHost } from "./components/FolderPicker";
 import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
 import { Onboarding } from "./components/Onboarding";
@@ -164,6 +165,9 @@ export function App() {
       <Settings />
       {onboardingOpen && <Onboarding />}
       <GithubConnectModal />
+      {/* Answers `pickFolder` on a remote environment, from wherever it was
+          called — the sidebar, Home, or the New Project modal. */}
+      <FolderPickerHost />
       <Feedback />
 
       {lastError && (

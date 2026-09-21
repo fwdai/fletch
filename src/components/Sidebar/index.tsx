@@ -303,11 +303,11 @@ export function Sidebar() {
       <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
       <div className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">
-          {/* Every route into this popover opens a native folder picker on
-              this Mac, which cannot browse a paired host's disk — so on a
-              remote environment it says where to add projects instead. A
-              disabled button gets no pointer events in the WebView, so the
-              tooltip trigger has to be the wrapper. */}
+          {/* Open on this Mac and on any host that takes a project (the folder
+              is browsed over `list_dir` there); closed against one that
+              answers neither op, where it says so instead. A disabled button
+              gets no pointer events in the WebView, so the tooltip trigger has
+              to be the wrapper. */}
           <span className={addProjectGate ? "tip" : undefined} data-tip={addProjectGate}>
             <button
               className="add-proj-cta flex-center text-sm"

@@ -36,8 +36,9 @@ const GATED_OPS: string[] = Object.values(GATES)
   .map((g): string | null => g.op)
   .filter((op): op is string => op !== null);
 
-/** How many gates a host can close by itself — the rest are this side's. */
-const OP_BACKED = GATED_OPS.length;
+/** How many gates a host from before the descriptor closes by itself: the
+ *  op-backed ones whose op is outside the v2 set it answers. */
+const OLD_HOST_CLOSED = GATED_OPS.filter((op) => !V2_DEFAULT_OPS.includes(op)).length;
 
 describe("gateReason", () => {
   it("never gates the local environment", () => {
@@ -47,10 +48,8 @@ describe("gateReason", () => {
   });
 
   it("gates the local-only affordances on any remote host, however capable", () => {
-    // `add_workspace_repo` IS on the wire; the native folder picker that feeds
-    // it is not, so this gate ignores the descriptor entirely. Autopilot is the
-    // same shape: its opt-outs are this Mac's rows and its verify rung is a
-    // local script, so no descriptor opens it.
+    // Autopilot's opt-outs are this Mac's rows and its verify rung is a local
+    // script, so no descriptor opens it.
     const generous = host([
       ...V2_DEFAULT_OPS,
       "open_agent_shell",
@@ -59,10 +58,26 @@ describe("gateReason", () => {
       "fork_agent",
     ]);
 
-    for (const gate of ["addProject", "autopilot"] as const) {
-      expect(GATES[gate].op).toBeNull();
-      expect(gateReason(generous, gate)).toBe(GATES[gate].reason);
-    }
+    expect(GATES.autopilot.op).toBeNull();
+    expect(gateReason(generous, "autopilot")).toBe(GATES.autopilot.reason);
+  });
+
+  it("opens adding a project on any host that takes one", () => {
+    // Both halves — browsing the disk (`list_dir`) and pinning the folder
+    // (`add_workspace_repo`) — have been on the wire since v2, so even a host
+    // that reported no descriptor takes a project.
+    expect(gateReason(host(), "addProject")).toBeNull();
+    expect(gateReason(host([...V2_DEFAULT_OPS]), "addProject")).toBeNull();
+    // A host that says it does not answer the op is taken at its word.
+    expect(gateReason(host(["get_workspace"]), "addProject")).toBe(GATES.addProject.reason);
+  });
+
+  it("keeps creating a project closed until a host offers `create_repo`", () => {
+    // Not on the wire today, so this is every current host — and it opens by
+    // itself the moment one advertises the op.
+    expect(gateReason(host(), "createProject")).toBe(GATES.createProject.reason);
+    expect(gateReason(host([...V2_DEFAULT_OPS]), "createProject")).toBe(GATES.createProject.reason);
+    expect(gateReason(host([...V2_DEFAULT_OPS, "create_repo"]), "createProject")).toBeNull();
   });
 
   it("reads a host that reported no descriptor as the v2 default set", () => {
@@ -166,9 +181,14 @@ describe("closedGates", () => {
   it("lists every closed gate with the reason its control shows", () => {
     const old = host();
 
-    // A host from before the descriptor answers the v2 set, which carries none
-    // of the gated ops — so this is the whole table.
-    expect(closedGates(old).map((g) => g.name)).toEqual(Object.keys(GATES));
+    // A host from before the descriptor answers the v2 set: everything this
+    // side gates, plus every gate whose op landed after that set.
+    const expected = (Object.keys(GATES) as GateName[]).filter((name) => {
+      const op = GATES[name].op;
+      return op === null || !V2_DEFAULT_OPS.includes(op);
+    });
+    expect(expected.length).toBeGreaterThan(0);
+    expect(closedGates(old).map((g) => g.name)).toEqual(expected);
     for (const gate of closedGates(old)) {
       expect(gate.reason).toBe(gateReason(old, gate.name));
       expect(gate.label).toBe(GATES[gate.name].label);
@@ -205,11 +225,11 @@ describe("hostSkew", () => {
   });
 
   it("says nothing about a connected host that answers every gated op", () => {
-    // `addProject` is still closed — the picker is this Mac's — but that is not
-    // this host's shortcoming, so the row stays quiet.
+    // `autopilot` is still closed — it runs on this Mac — but that is not this
+    // host's shortcoming, so the row stays quiet.
     const every = host([...V2_DEFAULT_OPS, ...GATED_OPS]);
 
-    expect(gateReason(every, "addProject")).not.toBeNull();
+    expect(gateReason(every, "autopilot")).not.toBeNull();
     expect(hostSkew(every, CLIENT)).toBeNull();
   });
 
@@ -229,12 +249,12 @@ describe("hostSkew", () => {
   it("counts them once a list would be too long, and reports both versions", () => {
     const skew = hostSkew(withVersion(host(), "0.7.30"), CLIENT);
 
-    // Every op-backed gate: none of their ops is in the v2 set, which is what
-    // makes each one a gate. `addProject` is this side's and is left out.
-    expect(skew?.closed).toHaveLength(OP_BACKED);
-    expect(skew?.summary).toBe(`${OP_BACKED} features unavailable on this host`);
+    // Every op-backed gate whose op landed after the v2 set this host answers.
+    // `autopilot` is this side's and is left out.
+    expect(skew?.closed).toHaveLength(OLD_HOST_CLOSED);
+    expect(skew?.summary).toBe(`${OLD_HOST_CLOSED} features unavailable on this host`);
     expect(skew?.tip).toContain(`Merging a PR: ${GATES.mergePr.reason}`);
-    expect(skew?.tip).not.toContain(GATES.addProject.reason);
+    expect(skew?.tip).not.toContain(GATES.autopilot.reason);
     // Reported side by side, never compared: the list above is the op table's
     // answer, not this line's.
     expect(skew?.tip.split("\n").at(-1)).toBe("Host 0.7.30 · this app 0.7.32");

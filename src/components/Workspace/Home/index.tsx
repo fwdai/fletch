@@ -1,8 +1,8 @@
-import { open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
+import { pickFolder } from "@/components/FolderPicker";
 import { PanelToggle } from "@/components/PanelToggle";
 import { useAppStore } from "@/store";
-import { useGate } from "@/store/capabilities";
+import { activeEntry, useGate } from "@/store/capabilities";
 import { ActionCard } from "./ActionCard";
 import { greeting } from "./greeting";
 
@@ -25,6 +25,7 @@ export function Home() {
 
   const [adding, setAdding] = useState(false);
   const addProjectGate = useGate("addProject");
+  const remote = useAppStore((s) => activeEntry(s).kind === "remote");
 
   const repos = workspace?.repos ?? [];
   const projects = workspace?.projects ?? [];
@@ -54,21 +55,19 @@ export function Home() {
     });
   };
 
-  // Same flow as the sidebar's "Open a folder" (NewProjectPopover): native
-  // directory picker → pin the repo → remember it as the next New-agent target.
+  // Same flow as the sidebar's "Open a folder" (NewProjectPopover): pick a
+  // folder on the active environment → pin the repo → remember it as the next
+  // New-agent target.
   const addProject = async () => {
     if (adding || addProjectGate) return;
     setAdding(true);
     try {
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        title: "Select a git repository",
-      });
+      const picked = await pickFolder({ title: "Select a git repository" });
       // `addWorkspaceRepo` routes its own failures to the error banner; the
-      // dialog itself can still reject (plugin/platform error), which we'd
-      // otherwise drop as an unhandled rejection with no user feedback.
-      if (typeof picked === "string") {
+      // picker itself can still reject (plugin/platform error, a host that went
+      // away), which we'd otherwise drop as an unhandled rejection with no user
+      // feedback.
+      if (picked) {
         await addWorkspaceRepo(picked);
         setLastRepoPath(picked);
       }
@@ -119,9 +118,14 @@ export function Home() {
                 tone="primary"
                 icon="folder"
                 title="Add your first project"
-                // The picker is this Mac's, so on a remote environment the card
-                // says where projects come from instead of opening it.
-                sub={addProjectGate ?? "Open a local git repository on your machine"}
+                // A host that can't take one says so here instead of opening a
+                // picker that would have nowhere to send the folder.
+                sub={
+                  addProjectGate ??
+                  (remote
+                    ? "Open a git repository on the host"
+                    : "Open a local git repository on your machine")
+                }
                 onClick={() => void addProject()}
                 busy={adding}
               />
@@ -132,7 +136,7 @@ export function Home() {
                 <ActionCard
                   icon="folder"
                   title="Add a project"
-                  sub="Open another local repo"
+                  sub={remote ? "Open another repo on the host" : "Open another local repo"}
                   onClick={() => void addProject()}
                   busy={adding}
                 />
