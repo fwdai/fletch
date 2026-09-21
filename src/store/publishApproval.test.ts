@@ -14,18 +14,23 @@ import type { PublishApproval, PublishApprovalResolved } from "@/api";
 import type { AutopilotState } from "@/autopilot";
 import { newEnrollment } from "@/autopilot";
 import type { Delegation, DelegationKind } from "@/delegation";
+import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { checkoutKey } from "./git";
 import { type PublishAuthorityState, publishPreAuthorized } from "./publishApproval";
 import { createSandboxSlice } from "./sandbox";
 
-const { answerPublishApproval } = vi.hoisted(() => ({ answerPublishApproval: vi.fn() }));
-vi.mock("@/api", () => ({ api: { answerPublishApproval } }));
+const { answerPublishApproval, listPublishApprovals } = vi.hoisted(() => ({
+  answerPublishApproval: vi.fn(),
+  listPublishApprovals: vi.fn(),
+}));
+vi.mock("@/api", () => ({ api: { answerPublishApproval, listPublishApprovals } }));
 
 /** The slice creator and the action, loosely typed: the test store carries only
  *  the sandbox slice plus the two maps the policy reads, not the whole AppState. */
 type SliceFn = (set: unknown, get: unknown) => Record<string, unknown>;
 type Recv = (r: PublishApproval) => void;
 type Resolve = (e: PublishApprovalResolved) => void;
+type Load = () => Promise<void>;
 
 const KEY = checkoutKey("a1");
 const SECOND_REPO = checkoutKey("a1", "web");
@@ -198,5 +203,117 @@ describe("receivePublishApproval", () => {
     const s = store();
     (s.getState().resolvePublishApproval as Resolve)({ id: "never-seen", outcome: "approved" });
     expect(s.getState().pendingPublishApprovals).toEqual([]);
+  });
+
+  // `publish:approval-requested` reaches only the clients connected when it
+  // fired, so a window that has just switched to a host — or reconnected to one
+  // — has to ask what is waiting rather than wait for an event that has been
+  // and gone.
+  describe("loadPendingPublishApprovals", () => {
+    const remote = (ops: string[]): EnvironmentEntry => ({
+      id: "host-1",
+      name: "Cloud box",
+      kind: "remote",
+      connection: "connected",
+      protocol: { version: 2, ops, events: [], features: [] },
+    });
+
+    const activeIs = (entry?: EnvironmentEntry) =>
+      setEnvironmentsSource(() => ({
+        activeEnvironmentId: entry?.id ?? LOCAL_ENVIRONMENT_ID,
+        environments: entry ? { [entry.id]: entry } : {},
+      }));
+
+    it("replaces the queue with what the host is still blocked on", async () => {
+      listPublishApprovals.mockResolvedValue([request({ id: "raised-while-away" })]);
+      activeIs(remote(["approvals_list"]));
+      const s = store();
+      // A card this window holds that the host has since resolved: wholesale,
+      // so it goes.
+      (s.getState().receivePublishApproval as Recv)(request({ id: "answered-elsewhere" }));
+
+      await (s.getState().loadPendingPublishApprovals as Load)();
+
+      expect((s.getState().pendingPublishApprovals as PublishApproval[]).map((r) => r.id)).toEqual([
+        "raised-while-away",
+      ]);
+    });
+
+    it("keeps a prompt that was raised while the list was in flight", async () => {
+      // The host forwards events and writes op responses from separate tasks,
+      // so a publish gated a moment after the queue was read reaches us first.
+      // Replacing the queue wholesale used to drop it — the host then waits out
+      // its timeout with nothing on screen to answer it.
+      activeIs(remote(["approvals_list"]));
+      const s = store();
+      listPublishApprovals.mockImplementation(async () => {
+        (s.getState().receivePublishApproval as Recv)(request({ id: "raised-mid-flight" }));
+        return [request({ id: "already-waiting" })];
+      });
+
+      await (s.getState().loadPendingPublishApprovals as Load)();
+
+      expect((s.getState().pendingPublishApprovals as PublishApproval[]).map((r) => r.id)).toEqual([
+        "already-waiting",
+        "raised-mid-flight",
+      ]);
+    });
+
+    it("does not put back a prompt the host resolved while the list was in flight", async () => {
+      activeIs(remote(["approvals_list"]));
+      const s = store();
+      listPublishApprovals.mockImplementation(async () => {
+        (s.getState().resolvePublishApproval as Resolve)({ id: "over", outcome: "denied" });
+        return [request({ id: "over" }), request({ id: "still-waiting" })];
+      });
+
+      await (s.getState().loadPendingPublishApprovals as Load)();
+
+      expect((s.getState().pendingPublishApprovals as PublishApproval[]).map((r) => r.id)).toEqual([
+        "still-waiting",
+      ]);
+    });
+
+    it("lets the newest of two overlapping loads own the queue", async () => {
+      // Every handshake starts a load without waiting for the last, so two are
+      // out at once and can answer out of order. The older one answering last
+      // used to land its stale snapshot — and, since the buffer is the newest
+      // claim's, it would have replayed almost nothing over it.
+      activeIs(remote(["approvals_list"]));
+      const s = store();
+      const answers: ((rows: PublishApproval[]) => void)[] = [];
+      listPublishApprovals.mockImplementation(
+        () => new Promise<PublishApproval[]>((resolve) => answers.push(resolve)),
+      );
+
+      const older = (s.getState().loadPendingPublishApprovals as Load)();
+      const newer = (s.getState().loadPendingPublishApprovals as Load)();
+      // Raised while both are out: it belongs to the newer read, the only one
+      // whose snapshot will be written.
+      (s.getState().receivePublishApproval as Recv)(request({ id: "raised-mid-flight" }));
+
+      answers[1]([request({ id: "from-the-newer-read" })]);
+      await newer;
+      answers[0]([request({ id: "from-the-older-read" })]);
+      await older;
+
+      expect((s.getState().pendingPublishApprovals as PublishApproval[]).map((r) => r.id)).toEqual([
+        "from-the-newer-read",
+        "raised-mid-flight",
+      ]);
+    });
+
+    it("asks neither this Mac nor a host too old for the op", async () => {
+      listPublishApprovals.mockClear();
+      listPublishApprovals.mockResolvedValue([]);
+      const s = store();
+
+      activeIs();
+      await (s.getState().loadPendingPublishApprovals as Load)();
+      activeIs(remote([]));
+      await (s.getState().loadPendingPublishApprovals as Load)();
+
+      expect(listPublishApprovals).not.toHaveBeenCalled();
+    });
   });
 });

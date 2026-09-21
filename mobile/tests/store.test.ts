@@ -287,6 +287,54 @@ describe("answering a gated publish", () => {
     await state().answerPublishApproval(request.id, true);
     expect(state().pendingPublishApprovals).toHaveLength(0);
   });
+
+  it("keeps a prompt raised while `approvals_list` was in flight", async () => {
+    // The host forwards events and writes op responses from separate tasks, so
+    // a publish gated a moment after the queue was read reaches the phone
+    // first. Replacing the queue wholesale used to drop it, and the host then
+    // waits out its timeout with nothing on screen to answer it.
+    const waiting = { ...request, id: "pub-already-waiting" };
+    const raised = { ...request, id: "pub-mid-flight" };
+    const list = vi.spyOn(api, "listPublishApprovals").mockImplementation(async () => {
+      state().receivePublishApproval(raised);
+      return [waiting];
+    });
+
+    await state().loadPendingApprovals();
+
+    expect(state().pendingPublishApprovals.map((r) => r.id)).toEqual([waiting.id, raised.id]);
+    list.mockRestore();
+    useStore.setState({ pendingPublishApprovals: [] });
+  });
+
+  it("lets the newest of two overlapping loads own the queue", async () => {
+    // Every handshake starts a load without waiting for the last, so two are
+    // out at once and can answer out of order. The older one answering last
+    // used to land its stale snapshot over the newer one's.
+    const answers: ((rows: (typeof request)[]) => void)[] = [];
+    const list = vi
+      .spyOn(api, "listPublishApprovals")
+      .mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+
+    const older = state().loadPendingApprovals();
+    const newer = state().loadPendingApprovals();
+    // Raised while both are out: it belongs to the newer read, the only one
+    // whose snapshot will be written.
+    const raised = { ...request, id: "pub-mid-flight" };
+    state().receivePublishApproval(raised);
+
+    answers[1]([{ ...request, id: "pub-from-the-newer-read" }]);
+    await newer;
+    answers[0]([{ ...request, id: "pub-from-the-older-read" }]);
+    await older;
+
+    expect(state().pendingPublishApprovals.map((r) => r.id)).toEqual([
+      "pub-from-the-newer-read",
+      raised.id,
+    ]);
+    list.mockRestore();
+    useStore.setState({ pendingPublishApprovals: [] });
+  });
 });
 
 describe("spawn flow", () => {

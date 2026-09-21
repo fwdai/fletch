@@ -2,6 +2,14 @@
 // are; images that would be a poor use of the relay — or that the agent could
 // not read at all — are re-encoded on the phone first.
 
+import { assertWithinUploadCap } from "@desktop/util/attachmentUpload";
+
+/** The host's per-file cap and the refusal both clients give, beside the
+ *  upload driver the cap belongs to. Applied here before a byte is read: a
+ *  video or archive picked by mistake would otherwise be pulled whole into the
+ *  webview's memory — hundreds of MB on a phone. */
+export { assertWithinUploadCap, MAX_UPLOAD_BYTES } from "@desktop/util/attachmentUpload";
+
 /** Longest edge after re-encoding. Plenty for an agent reading a screenshot;
  *  a phone photo is 3–4× this and tens of megabytes. */
 export const MAX_EDGE = 2048;
@@ -12,23 +20,6 @@ export const REENCODE_OVER_BYTES = 1.5 * 1024 * 1024;
 /** JPEG quality for the re-encode. High enough that UI text in a screenshot
  *  stays legible; the size win over a raw PNG is still several-fold. */
 const JPEG_QUALITY = 0.9;
-
-/** The host's per-file cap (`attachments::remote::MAX_UPLOAD_BYTES`), applied
- *  here before a byte is read: a video or archive picked by mistake would
- *  otherwise be pulled whole into the webview's memory — hundreds of MB on a
- *  phone — and then uploaded up to the cap before the host refused it. */
-export const MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
-
-const mb = (bytes: number) => `${Math.round(bytes / (1024 * 1024))} MB`;
-
-/** Refuse a file the host would refuse, before touching its bytes. */
-function assertWithinCap(file: { name: string; size: number }): void {
-  if (file.size > MAX_UPLOAD_BYTES) {
-    throw new Error(
-      `${file.name || "file"} is ${mb(file.size)} — the limit is ${mb(MAX_UPLOAD_BYTES)}`,
-    );
-  }
-}
 
 export interface PreparedFile {
   name: string;
@@ -113,6 +104,6 @@ export async function prepareFile(file: File): Promise<PreparedFile> {
       // Fall through: send what we have.
     }
   }
-  assertWithinCap(file);
+  assertWithinUploadCap(file);
   return { name: file.name || "attachment", bytes: await readBytes(file) };
 }

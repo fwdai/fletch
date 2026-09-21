@@ -7,6 +7,8 @@ import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
 import type { LiveTurn } from "@desktop/api/types/session";
 import { appActionMessage } from "@desktop/delegation";
+import { newestWins } from "@desktop/util/newestWins";
+import { type ApprovalEvent, replayApprovalEvents } from "@desktop/util/publishApprovals";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
 import { createApi } from "../api";
@@ -183,6 +185,12 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   ): Promise<void>;
   /** A gated publish the host is holding, from `publish:approval-requested`. */
   receivePublishApproval(request: PublishApproval): void;
+  /** Replace the cards with what the host says is still waiting. The event
+   *  above only reaches the devices connected when it fired, so every handshake
+   *  re-reads the queue: that is how a phone opened after the agent asked sees
+   *  the prompt, and how one whose card was answered elsewhere drops it. A
+   *  no-op on a host too old for `approvals_list`. */
+  loadPendingApprovals(): Promise<void>;
   answerPublishApproval(id: string, approved: boolean): Promise<void>;
   /** The host says that request is over (`publish:approval-resolved`) — someone
    *  else answered it, or its wait lapsed. Drop the card; there is nothing to
@@ -250,6 +258,18 @@ let queuedPush: PushFletch | null = null;
  *  the one a pairing that got in first had just pinned. */
 let queuedLink: HostTarget | null = null;
 
+/** Every handshake starts an `approvals_list` without waiting for the last, so
+ *  two can be out at once and answer out of order. One order for all of them,
+ *  as everywhere else a whole list is replaced (util/newestWins). */
+const approvalLoads = newestWins();
+
+/** Approval events seen while an `approvals_list` is in flight, replayed over
+ *  its answer so the snapshot cannot undo them (see util/publishApprovals).
+ *  Belongs to the newest claim — an older load's snapshot is superseded
+ *  wholesale, so the events it missed are not its to replay. Null when no list
+ *  is outstanding, which is nearly always. */
+let approvalsInFlight: ApprovalEvent[] | null = null;
+
 const homeItem = (): NavItem => ({ key: Date.now(), screen: "home", props: {}, phase: "idle" });
 
 const newId = () =>
@@ -290,6 +310,25 @@ async function guard<T>(set: Setter, fn: () => Promise<T>): Promise<T> {
  *  and the client retries it on its own with the key it pinned — that retry
  *  has no `connect` above it, and without this the app would sit on the Pair
  *  screen holding a working connection. */
+/** Whether to act on `target`, asking first when doing so would drop the host
+ *  on file. This phone keeps exactly one (see `store/persist`), so pairing with
+ *  a second does not add a host — it drops the current one, its push
+ *  registration and everything on screen. A pairing link is a QR code or a
+ *  tapped URL — an old one, or someone else's screen — so that is a question
+ *  rather than a side effect.
+ *
+ *  Nothing is asked when the link names no host key (it makes no claim about a
+ *  different host) or names the one already paired.
+ *
+ *  Both entry points ask it: `pairFromLink` for a link that arrives while the
+ *  app is running, and `init` for one that launched it — where the key on disk
+ *  had not been read yet when the link came in. */
+function shouldPairFrom(target: HostTarget, hostKey: string | null, hostName?: string | null) {
+  if (!hostKey || !target.hostKey || target.hostKey === hostKey) return true;
+  const question = `Replace ${hostName || "the paired host"}? This phone can pair with one host at a time.`;
+  return typeof window === "undefined" || window.confirm(question);
+}
+
 async function adopt(set: Setter, get: () => MobileState, host: HostInfo): Promise<void> {
   // The client owns the target: the spent pairing token is gone from it and
   // the host key the handshake authenticated is pinned in.
@@ -522,6 +561,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       // The snapshot carries no stats, so the rows get their numbers from the
       // first poll of every handshake rather than waiting out its interval.
       void get().loadShortstats();
+      // The publishes this host is blocked on. Every handshake, because the
+      // request event only reached the devices connected when it fired — and so
+      // did the resolution, whoever gave it.
+      void get().loadPendingApprovals().catch(ignore);
       refreshOpenAgent();
       // Every handshake — the first pairing and every reconnect — is when the
       // host is told the APNs token again.
@@ -574,8 +617,16 @@ export const useStore = create<MobileState>()((set, get) => ({
     if (queuedLink) {
       const target = queuedLink;
       queuedLink = null;
-      await get().connect(target).catch(ignore);
-      return;
+      // The question `pairFromLink` could not ask: the key on disk was not read
+      // yet when the link arrived, which is the ordinary case for a link that
+      // launched the app. Declining drops the link and nothing else — the app
+      // was opened by it, so returning here would leave the phone sitting on an
+      // unconnected Home, with the host it *is* paired with never dialled.
+      if (shouldPairFrom(target, hostKey, saved.hostName)) {
+        await get().connect(target).catch(ignore);
+        return;
+      }
+      set({ pairTarget: null, pairStep: null });
     }
     if (mockEnabled()) {
       // The mock host has no pairing step worth clicking through every reload;
@@ -636,6 +687,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       running?.host === target.host &&
       running?.port === target.port;
     if (get().pairStep && same) return;
+    if (!shouldPairFrom(target, get().hostKey, get().hostInfo?.name)) return;
     set({ pairTarget: target, connectionError: null });
     if (!get().ready) {
       // Held until `init` has read what is on disk — see `queuedLink`. The
@@ -966,7 +1018,26 @@ export const useStore = create<MobileState>()((set, get) => ({
   receivePublishApproval(request) {
     // No pre-authorization to consult, unlike the desktop's autopilot: the
     // phone has no standing per-checkout grant, so every prompt is shown.
+    approvalsInFlight?.push({ kind: "requested", request });
     set((s) => ({ pendingPublishApprovals: [...s.pendingPublishApprovals, request] }));
+  },
+
+  async loadPendingApprovals() {
+    if (!get().hostSupports("approvals_list")) return;
+    const claim = approvalLoads.claim();
+    const buffer: ApprovalEvent[] = [];
+    approvalsInFlight = buffer;
+    try {
+      // The snapshot is what the host was blocked on when it read its queue,
+      // not when it answered; whatever it said in between is folded back in.
+      const pending = await api.listPublishApprovals();
+      // …unless a newer load has been issued to replace this queue, in which
+      // case ours is the older snapshot and writing it would undo the newer.
+      if (!claim.current()) return;
+      set({ pendingPublishApprovals: replayApprovalEvents(pending, buffer) });
+    } finally {
+      if (approvalsInFlight === buffer) approvalsInFlight = null;
+    }
   },
 
   async answerPublishApproval(id, approved) {
@@ -979,6 +1050,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   resolvePublishApproval(id) {
+    approvalsInFlight?.push({ kind: "resolved", id });
     set((s) => ({
       pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
     }));

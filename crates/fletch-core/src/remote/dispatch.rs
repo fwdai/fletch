@@ -121,6 +121,7 @@ pub const OPS: &[&str] = &[
     "send_user_message",
     "answer_tool_use",
     "answer_publish_approval",
+    "approvals_list",
     "stop_agent",
     "resume_agent",
     "archive_agent",
@@ -352,6 +353,9 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("send_user_message", Scope::Agents),
     ("answer_tool_use", Scope::Agents),
     ("answer_publish_approval", Scope::Publish),
+    // Reading the queue is a read. Answering one is the `publish` op above, so
+    // an Observe device sees what is waiting and can do nothing about it.
+    ("approvals_list", Scope::Observe),
     ("stop_agent", Scope::Agents),
     ("resume_agent", Scope::Agents),
     ("archive_agent", Scope::Agents),
@@ -642,6 +646,11 @@ impl Dispatch for SupervisorDispatch {
                     crate::rpc::approval::answer(&a.id, a.approved);
                     Ok(Value::Null)
                 }
+
+                // What is still waiting, for a client that connected after the
+                // event fired — the same registry the admin socket's
+                // `approvals list` reads.
+                "approvals_list" => ok(crate::rpc::approval::pending()),
 
                 "stop_agent" => {
                     let a: AgentArgs = parse(args)?;
@@ -1687,6 +1696,69 @@ mod provider_tests {
             home.is_empty() || !json.contains(&home),
             "the host's home directory reached the wire: {json}"
         );
+    }
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::{Dispatch, SupervisorDispatch};
+    use crate::host::ctx::test_ctx;
+    use crate::rpc::approval;
+    use crate::supervisor::Supervisor;
+    use crate::workspace::WorkspaceManager;
+
+    /// `publish:approval-requested` only reaches the clients that were
+    /// connected when it fired. This op is how every other one — a phone opened
+    /// afterwards, a desktop that just reconnected — learns a publish is
+    /// waiting on it.
+    #[tokio::test]
+    async fn approvals_list_answers_the_queue_a_late_client_never_heard() {
+        let (ctx, _sink, _dir) = test_ctx();
+        let sup = Arc::new(Supervisor::new(Arc::new(WorkspaceManager::new(
+            ctx.db.clone(),
+        ))));
+        let dispatch = SupervisorDispatch::new(ctx.clone(), sup);
+
+        approval::set_enabled(true);
+        approval::set_wait_secs(30);
+        let sink = ctx.sink.clone();
+        let asking = tokio::spawn(async move {
+            approval::refuse_unless_approved(
+                sink.as_ref(),
+                "arabia",
+                "push_agent",
+                Some("/repo"),
+                "push arabia to origin",
+            )
+            .await
+        });
+        while approval::pending().is_empty() {
+            tokio::task::yield_now().await;
+        }
+
+        let reply = dispatch
+            .dispatch("approvals_list", json!({}))
+            .await
+            .expect("a read of the registry is always answerable");
+
+        let rows = reply.as_array().expect("an array of pending approvals");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["agent_id"], "arabia");
+        assert_eq!(rows[0]["op"], "push_agent");
+        assert_eq!(rows[0]["detail"], "push arabia to origin");
+        assert!(rows[0]["id"].is_string() && rows[0]["requested_at"].is_string());
+
+        // Answering empties it, so a client that lists again after someone else
+        // approved sees the card gone rather than a stale one.
+        let id = rows[0]["id"].as_str().unwrap().to_string();
+        approval::answer(&id, true);
+        assert!(asking.await.expect("the ask resolves").is_none());
+        assert!(approval::pending().is_empty());
+        approval::set_enabled(false);
     }
 }
 

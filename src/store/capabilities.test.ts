@@ -11,6 +11,7 @@ import {
   GATES,
   type GateName,
   gateReason,
+  hostAccountNote,
   hostProvidersNote,
   hostSkew,
   hostVersionLabel,
@@ -441,5 +442,19 @@ describe("hostProvidersNote", () => {
 
   it("says nothing about a provider whose login state is unknown", () => {
     expect(hostProvidersNote(withProviders([provider({ id: "pi", auth: "unknown" })]))).toBeNull();
+  });
+});
+
+describe("hostAccountNote", () => {
+  it("says nothing on this Mac, where the account page is about the machine it is on", () => {
+    expect(hostAccountNote(local)).toBeNull();
+  });
+
+  it("names the host and how its own sign-in is done, whatever it answers", () => {
+    // Not op-backed: the account controls act on this Mac in every environment,
+    // so a host that has not been greeted yet gets the same sentence.
+    const note = hostAccountNote(host());
+    expect(note).toContain("Cloud box");
+    expect(note).toContain("fletch-host github login");
   });
 });

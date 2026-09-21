@@ -7,7 +7,11 @@ import {
   type PublishApproval,
   type PublishApprovalResolved,
 } from "@/api";
+import { hostSupports } from "@/remote/types";
 import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preferences";
+import { newestWins } from "@/util/newestWins";
+import { type ApprovalEvent, replayApprovalEvents } from "@/util/publishApprovals";
+import { activeEnvironment, forActiveEnvironment } from "./environments";
 import { checkoutKey } from "./git";
 import { autopilotIsDriving, publishPreAuthorized } from "./publishApproval";
 import type { SliceCreator } from "./types";
@@ -28,6 +32,18 @@ export interface DockerBuildProgress {
 /** `containerBuilds` key for events that didn't name a runtime — the toast
  *  shows neutral copy for it instead of guessing. */
 export const NEUTRAL_BUILD_RUNTIME = "container";
+
+/** Every handshake starts an `approvals_list` without waiting for the last, so
+ *  two can be out at once and answer out of order. One order for all of them,
+ *  as everywhere else a whole list is replaced (util/newestWins). */
+const approvalLoads = newestWins();
+
+/** Approval events seen while an `approvals_list` is in flight, replayed over
+ *  its answer so the snapshot cannot undo them (see util/publishApprovals).
+ *  Belongs to the newest claim — an older load's snapshot is superseded
+ *  wholesale, so the events it missed are not its to replay. Null when no list
+ *  is outstanding, which is nearly always. */
+let approvalsInFlight: ApprovalEvent[] | null = null;
 
 /** Fold one `docker:build-progress` event into the keyed build state that
  *  drives the toast. Every phase touches only its own runtime's key, so
@@ -115,6 +131,17 @@ export interface SandboxSlice {
    *  decision so it is testable without a rendered listener — and the decision is
    *  what keeps an unattended autopilot run from stalling on a prompt. */
   receivePublishApproval: (request: PublishApproval) => void;
+  /** Replace the queue with what the active host says is still waiting.
+   *
+   *  `publish:approval-requested` only reaches the clients connected when it
+   *  fired, so a window that switched to a host — or reconnected to one — has
+   *  neither the prompts raised while it was away nor any way to know the ones
+   *  it holds were answered elsewhere. Wholesale, because the host's registry
+   *  is the authority on both halves of that.
+   *
+   *  A no-op for the local environment (this window was listening) and for a
+   *  host too old for `approvals_list` (it would answer `unknown op`). */
+  loadPendingPublishApprovals: () => Promise<void>;
   /** Answer the queued request `id` and drop it from the queue. */
   answerPublishApproval: (id: string, approved: boolean) => Promise<void>;
   /** Drop the queued request `id` because the engine says it is over — someone
@@ -205,7 +232,29 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     if (request.op === "git_push" && autopilotIsDriving(s.autopilot[key])) {
       console.error("publish approval prompted while autopilot is driving", { key, request });
     }
+    approvalsInFlight?.push({ kind: "requested", request });
     set((prev) => ({ pendingPublishApprovals: [...prev.pendingPublishApprovals, request] }));
+  },
+
+  loadPendingPublishApprovals: async () => {
+    const env = activeEnvironment();
+    if (env.kind !== "remote" || !hostSupports(env.protocol, "approvals_list")) return;
+    const claim = approvalLoads.claim();
+    const buffer: ApprovalEvent[] = [];
+    approvalsInFlight = buffer;
+    try {
+      // Two guards, composing. A switch while the read was in flight owns the
+      // queue now, and ours would be another host's prompts on this one's
+      // screen; a newer load owns it too, and ours is the older snapshot it
+      // was issued to replace.
+      const pending = await forActiveEnvironment(() => api.listPublishApprovals());
+      if (!pending || !claim.current()) return;
+      // The snapshot is what the host was blocked on when it read its queue,
+      // not when it answered; whatever it said in between is folded back in.
+      set({ pendingPublishApprovals: replayApprovalEvents(pending, buffer) });
+    } finally {
+      if (approvalsInFlight === buffer) approvalsInFlight = null;
+    }
   },
 
   answerPublishApproval: async (id, approved) => {
@@ -218,6 +267,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   },
 
   resolvePublishApproval: ({ id }) => {
+    approvalsInFlight?.push({ kind: "resolved", id });
     set((s) => ({
       pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
     }));

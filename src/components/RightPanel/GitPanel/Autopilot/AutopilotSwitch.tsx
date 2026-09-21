@@ -1,6 +1,7 @@
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { autopilotProjectOn } from "@/store/autopilot";
+import { useGate } from "@/store/capabilities";
 
 // ── The kill switch ──────────────────────────────────────────────────────────
 // Autopilot is on by default and acts without being asked, which is right until
@@ -24,16 +25,20 @@ function switchTip(projectOn: boolean, on: boolean): string {
 }
 
 export function AutopilotSwitch({ agentId, projectId }: { agentId: string; projectId: string }) {
+  // Autopilot only ever runs against this Mac (see the `autopilot` gate), and
+  // its pause list is keyed by agent id — a recycled place name — so a click
+  // while a host is on screen would pause a LOCAL workspace of the same name.
+  const gate = useGate("autopilot");
   const disabledProjects = useAppStore((s) => s.autopilotDisabledProjects);
   const paused = useAppStore((s) => s.autopilotPausedAgents.includes(agentId));
   const setAgentAutopilot = useAppStore((s) => s.setAgentAutopilot);
 
   // With the project switch off there is nothing here to pause: show the glyph
   // struck and inert rather than hide it, so the answer to "where did autopilot
-  // go" is on screen.
-  const projectOn = autopilotProjectOn(disabledProjects, projectId);
+  // go" is on screen. A closed gate reads the same way, with its own reason.
+  const projectOn = !gate && autopilotProjectOn(disabledProjects, projectId);
   const on = projectOn && !paused;
-  const tip = switchTip(projectOn, on);
+  const tip = gate ?? switchTip(projectOn, on);
 
   return (
     <button

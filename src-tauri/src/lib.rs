@@ -1498,13 +1498,51 @@ pub fn run() {
         // that path fires `ExitRequested`, handled in `run` below. Following
         // the macOS convention keeps a long fleet alive across an accidental
         // window close.
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
                 }
             }
+            // Dropping a file is as much a user gesture as picking one, but the
+            // dialog plugin only grants the fs scope for paths IT returned, so a
+            // dropped path arrives with none and the webview's `stat`/`readFile`
+            // is refused (src/components/Composer/stageAttachment.ts). Granted
+            // per path here, through the same `allow_file` the dialog uses. The
+            // alternative — a home-wide scope in the capability file — would
+            // hand the webview's `fs:allow-write-text-file` every text file
+            // under $HOME, for the sake of reading the one that was dropped.
+            //
+            // On ordering, since this grant has to be in place before the JS
+            // side acts on the same drop: this listener runs AFTER tauri has
+            // emitted `tauri://drag-drop` to the webview, not before — the
+            // internal handler goes first and the global listeners after it
+            // (tauri/src/manager/window.rs, `on_window_event`). It is still in
+            // time. The emit only schedules the event's delivery into the
+            // webview, while this runs to completion on the main thread before
+            // the event loop turns; and the JS side's first fs call is an
+            // awaited `stat`, which is another IPC round trip back into this
+            // process.
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                // `try_fs_scope` rather than `fs_scope`: the latter panics if
+                // the fs plugin is absent, and a drop must never take the app
+                // down over a file it could not read.
+                let Some(scope) = tauri_plugin_fs::FsExt::try_fs_scope(window) else {
+                    tracing::warn!("fs plugin not registered; dropped paths stay unreadable");
+                    return;
+                };
+                for path in paths {
+                    if let Err(e) = scope.allow_file(path) {
+                        tracing::warn!(
+                            error = %e,
+                            path = %path.display(),
+                            "could not grant a dropped path to the fs scope"
+                        );
+                    }
+                }
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             db_insert,

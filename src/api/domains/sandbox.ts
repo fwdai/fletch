@@ -5,6 +5,7 @@ import type {
   DockerProbe,
   IsolationReport,
   PodmanProbe,
+  PublishApproval,
 } from "../types/sandbox";
 
 export const sandboxApi = {
@@ -28,6 +29,11 @@ export const sandboxApi = {
   // so a late answer can never publish anything.
   answerPublishApproval: (id: string, approved: boolean) =>
     invoke<void>("answer_publish_approval", { id, approved }),
+  // What is still waiting, oldest first. A `publish:approval-requested` event
+  // only reaches the clients connected when it fired, so this is how a window
+  // that has just (re)connected to a host learns of one — gate it on
+  // `hostSupports("approvals_list")`, since an older host answers `unknown op`.
+  listPublishApprovals: () => invoke<PublishApproval[]>("approvals_list"),
   // Anthropic auth for containerized agents. Docker-only: seatbelt agents keep
   // the user's own claude login. The token is backend-owned
   // (`claude_container_token` in the backend secret store, written by the

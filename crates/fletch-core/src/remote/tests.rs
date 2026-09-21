@@ -527,7 +527,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 117 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 118 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -539,6 +539,7 @@ fn allowlist_matches_the_protocol_table() {
         "send_user_message",
         "answer_tool_use",
         "answer_publish_approval",
+        "approvals_list",
         "stop_agent",
         "resume_agent",
         "archive_agent",

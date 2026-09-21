@@ -467,6 +467,9 @@ export class MockHost {
       // does on a current Mac.
       case "answer_publish_approval":
         return null;
+      // …and nothing is waiting, for the same reason.
+      case "approvals_list":
+        return [];
       case "stop_agent":
         this.close();
         this.setStatus(id, "stopped");

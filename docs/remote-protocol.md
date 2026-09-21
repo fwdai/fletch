@@ -426,7 +426,7 @@ The six scopes, and what each one covers:
 
 | scope | covers |
 |---|---|
-| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers` |
+| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `approvals_list` |
 | `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`) |
 | `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos |
 | `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
@@ -519,6 +519,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `send_user_message` | `{ agentId, turnId, text, attachments: string[] }` — paths from `attachment_end` (see "Attachments") | `boolean` |
 | `answer_tool_use` | `{ agentId, requestId, updatedInput, behavior, message? }` | `null` |
 | `answer_publish_approval` | `{ id, approved }` — `id` from the `publish:approval-requested` event; an id the host has already timed out is ignored | `null` |
+| `approvals_list` | `{}` — the publish approvals still waiting, oldest first, for a client that connected after the event fired | `PendingApproval[]` (the `publish:approval-requested` payload plus `requested_at`) |
 | `stop_agent` | `{ agentId }` | `null` |
 | `resume_agent` | `{ agentId }` | `null` |
 | `archive_agent` | `{ agentId }` | `null` |
@@ -913,7 +914,10 @@ On the `error` status transition, `agent:status` must carry the real
 agent's publish is blocked on the host until someone answers with
 `answer_publish_approval` (or the host's wait lapses and refuses it). A client
 that does not have that op on `protocol.ops` can show the prompt but not answer
-it.
+it. An event only reaches the clients that were connected when it fired, so a
+client asks `approvals_list` after every handshake and replaces its pending set
+with the answer — that is how a phone opened after the agent asked still sees
+the prompt, and how one whose card was answered elsewhere stops showing it.
 
 `publish:approval-resolved` `{ id, outcome: "approved" | "denied" | "expired" }`
 closes one of those prompts. It fires once per `publish:approval-requested`,

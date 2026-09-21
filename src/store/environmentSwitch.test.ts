@@ -77,7 +77,14 @@ const newStore = () => {
         composerDrafts: {},
         managedLogs: {},
         managedBusy: {},
+        autopilot: {},
+        autopilotLog: {},
+        autopilotVerdicts: {},
         loadHistoryTranscript: vi.fn(),
+        pendingPublishApprovals: [],
+        loadPendingPublishApprovals: vi.fn().mockResolvedValue(undefined),
+        github: null,
+        refreshGithub: vi.fn().mockResolvedValue(undefined),
       }) as unknown as AppState,
   );
   setEnvironmentsSource(store.getState);
@@ -87,6 +94,14 @@ const newStore = () => {
 
 // Minimal workspace shapes; nothing here reads past the identity.
 const ws = (label: string) => ({ label }) as unknown as NonNullable<AppState["workspace"]>;
+
+const gh = (login: string) =>
+  ({ installed: true, authenticated: true, login }) as NonNullable<AppState["github"]>;
+
+/** `environmentReconnected` is fire-and-forget; let its awaits land. */
+const settle = async () => {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+};
 
 describe("switchEnvironment", () => {
   beforeEach(() => {
@@ -139,6 +154,28 @@ describe("switchEnvironment", () => {
     });
   });
 
+  it("does not let an autopilot enrolment answer for the host's same-named agent", async () => {
+    const store = newStore();
+    // Agent ids are recycled place names, so the host has a `fuji` too — and
+    // `publishPreAuthorized` reads this map by bare checkout key to auto-approve
+    // a push. An enrolment made here must not be on screen over there.
+    store.setState({
+      autopilot: { "fuji::": { enrolled: true } as never },
+      autopilotVerdicts: { "fuji::": { ok: true } as never },
+      autopilotLog: { "fuji::": [{ at: 1 }] as never },
+    });
+
+    await store.getState().switchEnvironment(HOST);
+
+    expect(store.getState().autopilot).toEqual({});
+    expect(store.getState().autopilotVerdicts).toEqual({});
+    expect(store.getState().autopilotLog).toEqual({});
+
+    // And it is parked, not lost: switching back puts the enrolment on screen.
+    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
+    expect(store.getState().autopilot["fuji::"]).toEqual({ enrolled: true });
+  });
+
   it("re-registers the engine listeners against the new transport", async () => {
     const store = newStore();
 
@@ -172,6 +209,23 @@ describe("switchEnvironment", () => {
 
     expect(getWorkspace).toHaveBeenCalledOnce();
     expect(store.getState().workspace).toEqual(ws("from the host"));
+  });
+
+  it("re-probes the GitHub login, and parks the one it leaves", async () => {
+    // `store.github` is the ACTIVE environment's answer: it gates push, PR and
+    // clone app-wide, and those act where the checkout is. Left alone, this
+    // Mac's login would be gating buttons that publish from the host.
+    const store = newStore();
+    store.setState({ github: gh("alex-on-this-mac") });
+
+    await store.getState().switchEnvironment(HOST);
+
+    expect(store.getState().refreshGithub).toHaveBeenCalledOnce();
+    // Blank until the probe answers, rather than the Mac's login held over.
+    expect(store.getState().github).toBeNull();
+
+    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
+    expect(store.getState().github).toEqual(gh("alex-on-this-mac"));
   });
 
   it("shows a disconnected host's parked view instead of blocking on it", async () => {
@@ -224,13 +278,13 @@ describe("environmentReconnected", () => {
     getWorkspace.mockClear();
 
     store.getState().environmentReconnected(HOST);
-    // The handler is fire-and-forget; let its two awaits land.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await settle();
 
     expect(getWorkspace).toHaveBeenCalledOnce();
     expect(store.getState().loadHistoryTranscript).toHaveBeenCalledWith("fuji");
+    // A reconnect means this client was out of touch, so the host's GitHub
+    // login is as much in doubt as its workspace.
+    expect(store.getState().refreshGithub).toHaveBeenCalledTimes(2);
   });
 
   it("leaves a background host's handshake alone", async () => {
@@ -253,9 +307,7 @@ describe("environmentReconnected", () => {
     });
 
     store.getState().environmentReconnected(HOST);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await settle();
 
     expect(store.getState().loadHistoryTranscript).not.toHaveBeenCalled();
   });

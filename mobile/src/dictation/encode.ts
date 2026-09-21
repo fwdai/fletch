@@ -2,6 +2,13 @@
 // "Dictation"): 16-bit little-endian mono PCM, base64. Pure, so it is tested
 // without an AudioContext.
 
+import { bytesToBase64 } from "@desktop/util/base64";
+
+/** The chunked `btoa` both clients encode with — dictation here, attachment
+ *  chunks in `attachments/upload`. Re-exported so the audio path's callers
+ *  keep reading from one module. */
+export { bytesToBase64 };
+
 /** Web Audio hands out float samples in [-1, 1]; the host wants 16-bit
  *  integers. Clamped, because a hot input can overshoot the range. */
 export function floatToPcm16(samples: Float32Array): Int16Array {
@@ -32,17 +39,6 @@ export function pcm16ToBytes(pcm: Int16Array): Uint8Array {
   const view = new DataView(bytes.buffer);
   for (let i = 0; i < pcm.length; i++) view.setInt16(i * 2, pcm[i], true);
   return bytes;
-}
-
-/** `btoa` over a chunked binary string: a second of audio is ~100 KB, and
- *  `String.fromCharCode(...bytes)` on that many arguments overflows the stack. */
-export function bytesToBase64(bytes: Uint8Array): string {
-  const STEP = 0x8000;
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += STEP) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + STEP));
-  }
-  return btoa(binary);
 }
 
 export const pcm16ToBase64 = (pcm: Int16Array) => bytesToBase64(pcm16ToBytes(pcm));

@@ -4,11 +4,12 @@ import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
+import { HostAccountNote } from "./HostAccountNote";
 
 /** Linear connection control for Settings › Account: the app-wide personal API
- *  key, stored in the keychain and shared by every project. Which team a
- *  project draws tickets from stays on that project's screen. Same chrome as
- *  `GithubConnection` (`set-gh-*`). */
+ *  key, stored in THIS Mac's keychain and shared by every project on it. Which
+ *  team a project draws tickets from stays on that project's screen. Same
+ *  chrome as `GithubConnection` (`set-gh-*`). */
 export function LinearConnection() {
   const linear = useAppStore((s) => s.linear);
   const refreshLinear = useAppStore((s) => s.refreshLinear);
@@ -101,6 +102,7 @@ export function LinearConnection() {
           set.
         </div>
       )}
+      <HostAccountNote />
     </div>
   );
 }
