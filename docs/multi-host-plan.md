@@ -682,7 +682,7 @@ surface is in `multi-host-test-plan.md`.
 - [x] Gap 2a: host folder browser over `list_dir` on the desktop (native picker stays local); `is_repo`/`truncated` on `list_dir`; per-flow gates. PR #786.
 - [x] Gap 2b: project settings ops on the wire (`create_repo`, rename, delete, attach, detach, relocate, label, remove). PR #788 on #786.
 - [x] Gap 1a: `fletch-host provider status|login <id>`; bounded `--version` probes everywhere. PR #787.
-- [o] Gap 1b: `host_providers` op; clients grey providers the host lacks and quote the fix. PR #789 on #787.
+- [x] Gap 1b: `host_providers` op; clients grey providers the host lacks and quote the fix. PR #789 on #787.
 - [o] Gap 3: device scopes at pairing (Full / Control), per-device `protocol.ops`, `forbidden`. PR #791.
 
 Nothing else from the deferred table has been started. Items 13 and 14
