@@ -545,6 +545,12 @@ fn never_exposed_ops_are_not_dispatchable() {
         "reveal_logs",
         "track_event",
         "install_agent",
+        // The provider surface is the operator's: it resolves binaries, reports
+        // login state and hands back a command with the host user's environment
+        // in it. A paired device gets none of that.
+        "open_provider_login",
+        "probe_provider_auth",
+        "probe_provider_versions",
         "run_start",
         "run_stop",
         "delete_project",
