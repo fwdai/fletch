@@ -1,4 +1,5 @@
 import { HostGateNote } from "@/components/HostGateNote";
+import { HostProvidersNote } from "@/components/HostProvidersNote";
 import { Button } from "@/components/ui/Button";
 import type { SavedHost } from "@/storage/remoteHosts";
 import { useAppStore } from "@/store";
@@ -50,6 +51,7 @@ export function HostRow({
         </div>
         {entry?.error && <div className="set-row-s text-sm">{entry.error}</div>}
         {entry && <HostGateNote env={entry} className="set-row-s text-sm" />}
+        {entry && <HostProvidersNote env={entry} className="set-row-s text-sm" />}
       </div>
       <div className="set-row-c flex-center">
         <Button variant="outline" size="sm" danger disabled={disabled} onClick={onForget}>

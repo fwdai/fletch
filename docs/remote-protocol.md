@@ -619,14 +619,20 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `roadmap_get_brief_proposal` | `{ projectId }` | `RoadmapBriefProposal \| null` |
 | `roadmap_accept_brief_proposal` | `{ projectId }` — the only thing that writes product memory | `RoadmapBrief` |
 | `roadmap_reject_brief_proposal` | `{ projectId }` | `null` |
+| `host_providers` | `{}` — which provider CLIs this host has and which of them are signed in, so a client never offers to spawn one the host cannot run (see "Which providers a host can run"). Read-only; no desktop command of this name | `{ id, label, installed, version: string \| null, auth: "signed_in" \| "signed_out" \| "unknown" \| null, loginCommand: string \| null }[]` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
 (`write_checkout_file`, `rename_*`, `delete_*`, `create_*`, `copy_*`), shell
 ops (`open_agent_shell`, `write_to_shell`, …), `write_to_agent` (raw PTY),
-editor/log/telemetry/provider-install ops, and the `run_*` family (`run_start`,
-`run_stop`, `run_verification` — this machine's own scripts). Adding an op means
-adding a row here and a match arm in the dispatcher.
+editor/log/telemetry ops, the provider install/login ops (`install_agent`,
+`open_provider_login`) and the two desktop provider probes behind Settings ›
+Providers (`probe_provider_versions`, `probe_provider_auth`, which answer with
+resolved binary paths), and the `run_*` family (`run_start`, `run_stop`,
+`run_verification` — this machine's own scripts). `host_providers` above is the
+read-only half of the provider surface and the only part of it on the wire:
+state and the command that would change it, never the change itself and never a
+path. Adding an op means adding a row here and a match arm in the dispatcher.
 
 Withheld on policy, not scope: `delete_branch_agent`. Every other Git-panel
 action acts inside the agent's own checkout, which is the reach `commit_agent`
@@ -654,6 +660,28 @@ The spawn flow is the desktop's: `allocate_draft_name` → `spawn_agent` →
 wait for `agent:status` to leave `spawning` → `send_user_message` with the
 prompt as the first turn (`turnId` = client UUID). The phone does not send
 the prompt through `instructions`.
+
+### Which providers a host can run
+
+An agent only runs if its vendor CLI is installed *and* signed in, on the
+machine it spawns on — so with a remote environment active, the provider list
+that matters is the host's, not the client's. `host_providers` answers it: one
+row per provider the engine knows, with `installed`, the version, and `auth`
+(`null` for a CLI that is not there — there is no login state to report about a
+binary that is not present, and `unknown` is a probe that could not tell rather
+than a claim, so a client must not block on it).
+
+Clients fetch it once per connection, on the handshake snapshot, and disable a
+provider that is missing or signed out rather than letting the spawn fail
+later. The fix is the operator's and happens on the host — `loginCommand` is
+the vendor's own command, carried so the client can quote
+`fletch-host provider login <id>` beside the reason instead of offering a
+button it must not have. A host too old to list the op reports nothing, and the
+client offers every provider as before.
+
+Settings › Providers stays this Mac's, whatever environment is active: it
+installs binaries and opens login PTYs here, and those ops are never on the
+wire. With a remote host active it says so in one line.
 
 Adding a project from the phone reuses the desktop's commands unchanged. Two
 flows: **open an existing folder** on the Mac (`list_dir` to browse, then

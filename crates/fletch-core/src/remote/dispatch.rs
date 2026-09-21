@@ -230,6 +230,13 @@ pub const OPS: &[&str] = &[
     "roadmap_get_brief_proposal",
     "roadmap_accept_brief_proposal",
     "roadmap_reject_brief_proposal",
+    // Which provider CLIs this host has, and which of them are signed in.
+    // Read-only and the only provider op on the wire: a client spawns a
+    // provider *here*, so it needs to know before it offers one. Installing a
+    // provider and signing one in stay the operator's, on the host itself —
+    // `install_agent`, `open_provider_login` and the two desktop probes behind
+    // Settings › Providers are never exposed (docs/remote-protocol.md).
+    "host_providers",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -1455,6 +1462,12 @@ impl Dispatch for SupervisorDispatch {
                     )
                 }
 
+                // What this host could actually spawn: the provider CLIs it
+                // has and which of them are signed in. Takes no arguments and
+                // changes nothing — the client uses it to say why a provider
+                // is not offered, and to quote the command that would fix it.
+                "host_providers" => ok(crate::agent::host_providers().await),
+
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.
                 _ => Err(UNKNOWN_OP.to_string()),
@@ -1599,6 +1612,80 @@ fn ok<T: serde::Serialize>(value: T) -> DispatchResult {
 /// of the error, per the protocol doc.
 fn res<T: serde::Serialize>(result: crate::error::Result<T>) -> DispatchResult {
     ok(result.map_err(|e| e.to_string())?)
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::{Dispatch, SupervisorDispatch};
+    use crate::host::ctx::test_ctx;
+    use crate::supervisor::Supervisor;
+    use crate::workspace::WorkspaceManager;
+
+    /// The one provider op on the wire answers the shape a client gates on, and
+    /// nothing more: an id, a label, installed + version, a status word, and
+    /// the pinned login command. No resolved binary path, no home directory, no
+    /// credential — those stay behind the desktop-only
+    /// `probe_provider_versions` / `probe_provider_auth`, which are not
+    /// dispatchable (see `tests::never_exposed_ops_are_not_dispatchable`).
+    ///
+    /// The contents are whatever this machine has; only the shape is asserted.
+    #[tokio::test]
+    async fn host_providers_answers_state_without_paths_or_secrets() {
+        let (ctx, _sink, _dir) = test_ctx();
+        let sup = Arc::new(Supervisor::new(Arc::new(WorkspaceManager::new(
+            ctx.db.clone(),
+        ))));
+        let dispatch = SupervisorDispatch::new(ctx, sup);
+
+        let reply = dispatch
+            .dispatch("host_providers", json!({}))
+            .await
+            .expect("a read-only probe is always answerable");
+
+        let rows = reply.as_array().expect("an array of providers");
+        assert!(!rows.is_empty(), "the provider table is never empty");
+        for row in rows {
+            let row = row.as_object().expect("an object per provider");
+            let mut keys: Vec<&str> = row.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                [
+                    "auth",
+                    "id",
+                    "installed",
+                    "label",
+                    "loginCommand",
+                    "version"
+                ],
+                "the wire shape changed"
+            );
+            assert!(row["id"].is_string() && row["label"].is_string());
+            assert!(row["installed"].is_boolean());
+            // Only an installed CLI has a login state, and it is one of three
+            // fixed words rather than anything read out of a credential store.
+            match row["auth"].as_str() {
+                Some(auth) => assert!(
+                    row["installed"] == json!(true)
+                        && matches!(auth, "signed_in" | "signed_out" | "unknown"),
+                    "bad auth on {row:?}"
+                ),
+                None => assert!(row["auth"].is_null(), "bad auth on {row:?}"),
+            }
+        }
+
+        let home = dirs::home_dir().unwrap_or_default();
+        let home = home.to_string_lossy().to_string();
+        let json = reply.to_string();
+        assert!(
+            home.is_empty() || !json.contains(&home),
+            "the host's home directory reached the wire: {json}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

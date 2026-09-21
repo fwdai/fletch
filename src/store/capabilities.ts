@@ -10,6 +10,7 @@
 // The local environment is never gated. That is the whole rule for it: with no
 // paired hosts every gate below answers `null` and the app is what it was.
 
+import type { HostProvider } from "@/remote/types";
 import { hostSupports } from "@/remote/types";
 import { useAppStore } from "@/store";
 import { activeEnvironment, type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "./environments";
@@ -278,6 +279,68 @@ export function hostSkew(env: EnvironmentEntry, clientVersion: string): HostSkew
     `Host ${env.appVersion ?? "version unknown"} · this app ${clientVersion}`,
   ].join("\n");
   return { closed, summary, tip };
+}
+
+// ── Which providers a host can run ──────────────────────────────────────────
+//
+// A gate above is about an *op* a host may not answer; this is about a provider
+// CLI a host may not have. Same shape of answer — a string a control shows
+// instead of working, or null — and the same rule for the local environment:
+// This Mac's providers are probed by this Mac (src/store/providers.ts) and
+// nothing here touches them.
+
+/** How the operator fixes a signed-out provider, on the host. The desktop
+ *  cannot: installing and signing in are never on the wire, so the client
+ *  quotes the command rather than offering a button (docs/remote-protocol.md,
+ *  "Which providers a host can run"). */
+const fixFor = (p: HostProvider): string =>
+  p.loginCommand
+    ? `run \`fletch-host provider login ${p.id}\` there`
+    : // antigravity and pi have no login command: their credential is made
+      // elsewhere and only lands on the host, so pointing at `provider login`
+      // would be a dead end.
+      "sign it in there; its CLI has no login command";
+
+/** Why `providerId` can't be spawned in `env`, or null when it can.
+ *
+ *  Null is also the answer whenever the client does not *know*: the local
+ *  environment, a host too old to answer `host_providers`, a host not greeted
+ *  yet, a provider the host did not list, and an `unknown` login probe. A
+ *  client that knows nothing blocks nothing — the spawn behaves exactly as it
+ *  did before this op existed. */
+export function providerReason(env: EnvironmentEntry, providerId: string): string | null {
+  if (env.kind === "local") return null;
+  const row = env.providers?.find((p) => p.id === providerId);
+  if (!row) return null;
+  if (!row.installed) return `Not installed on ${env.name}`;
+  // `unknown` is a probe that could not tell, not a claim that it is signed
+  // out; blocking on it would send the user after a login they already have.
+  if (row.auth !== "signed_out") return null;
+  return `Not signed in on ${env.name} — ${fixFor(row)}`;
+}
+
+/** The one line a host's row shows about its providers, and the tooltip that
+ *  spells out the fix for each. Null when there is nothing wrong, and for every
+ *  case `providerReason` knows nothing about — so the two surfaces that
+ *  identify a host can drop it in unconditionally, exactly like `hostSkew`. */
+export function hostProvidersNote(env: EnvironmentEntry): { summary: string; tip: string } | null {
+  if (env.kind === "local" || !env.providers) return null;
+  const missing = env.providers.filter((p) => !p.installed);
+  const out = env.providers.filter((p) => p.installed && p.auth === "signed_out");
+  if (missing.length === 0 && out.length === 0) return null;
+
+  const names = (rows: HostProvider[]) => rows.map((p) => p.id).join(", ");
+  const summary = [
+    out.length > 0 ? `${names(out)} not signed in` : null,
+    missing.length > 0 ? `${names(missing)} not installed` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const tip = [
+    ...out.map((p) => `${p.label}: signed out — ${fixFor(p)}`),
+    ...missing.map((p) => `${p.label}: not installed on ${env.name}`),
+  ].join("\n");
+  return { summary, tip };
 }
 
 /** The host's own version, for the rows that identify it. Null for the local

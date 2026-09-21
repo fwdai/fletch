@@ -11,6 +11,7 @@ import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { activeEntry } from "@/store/capabilities";
 import { useProviderPoll } from "@/util/useProviderPoll";
 import { SetGroup, SetHead } from "../primitives";
 import { ProviderRow } from "./ProviderRow";
@@ -20,6 +21,7 @@ export function ProvidersPane() {
   const providerPaths = useAppStore((s) => s.providerPaths);
   const providersProbed = useAppStore((s) => s.providersProbed);
   const refreshProviderVersions = useAppStore((s) => s.refreshProviderVersions);
+  const env = useAppStore(activeEntry);
   const [scanning, setScanning] = useState(false);
 
   // Keep re-probing while the pane is open, so an install the user runs in
@@ -84,6 +86,16 @@ export function ProvidersPane() {
           </>
         }
       />
+
+      {/* This pane is This Mac's, whatever environment is active: it probes
+          this machine's binaries and installs and signs in here, and none of
+          those ops is on the wire (docs/remote-protocol.md). Say so rather
+          than let the rows read as the host's. */}
+      {env.kind === "remote" && (
+        <p className="set-prov-hint text-sm">
+          These are this Mac's providers. {env.name}'s are managed on {env.name}.
+        </p>
+      )}
 
       <SetGroup label="Agents on this system" last>
         <div className="set-prov-list">

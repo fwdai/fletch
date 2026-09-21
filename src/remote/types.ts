@@ -113,6 +113,27 @@ export const V2_DEFAULT_OPS: readonly string[] = [
   "register_push",
 ];
 
+/** One provider CLI on a host, as `host_providers` answers it (see
+ *  docs/remote-protocol.md, "Which providers a host can run").
+ *
+ *  An agent runs on the machine it spawns on, so this — not this Mac's probe —
+ *  is what decides whether a remote environment can offer a provider. `auth` is
+ *  null for a CLI that is not installed (there is no login state to report
+ *  about a binary that is not there) and `"unknown"` when the host's probe
+ *  could not tell, which is not a claim: never block on it. */
+export interface HostProvider {
+  id: string;
+  label: string;
+  installed: boolean;
+  version: string | null;
+  auth: "signed_in" | "signed_out" | "unknown" | null;
+  /** The vendor's own sign-in command, or null for a provider that
+   *  authenticates out of band. Its *absence* is what the client reads: a
+   *  provider with no login command cannot be fixed with
+   *  `fletch-host provider login`. */
+  loginCommand: string | null;
+}
+
 /** Whether the connected host answers `op`. A host that reported a `protocol`
  *  is taken at its word; one that reported none is an older host, which answers
  *  exactly the v2 default set. */

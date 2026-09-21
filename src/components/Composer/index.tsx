@@ -12,11 +12,11 @@ import {
   type ThinkingLevel,
   thinkingLevelsFromModel,
 } from "@/data/providerDetail";
-import { DEFAULT_PROVIDER_ID, isDockerSupported, providerLabel } from "@/data/providers";
+import { DEFAULT_PROVIDER_ID } from "@/data/providers";
 import type { LocalCommandAction } from "@/data/slashCommands";
-import { isContainerEngine, sandboxEngineLabel } from "@/storage/preferences";
 import type { UsageSnapshot } from "@/store";
 import { useAppStore } from "@/store";
+import { blockedSentence, useAgentAvailability } from "./availability";
 import { ComposerFrame } from "./ComposerFrame";
 import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
 import { IssuePicker } from "./IssuePicker";
@@ -204,7 +204,6 @@ export function Composer({
   const modelCatalog = useAppStore((s) => s.modelCatalog);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
   const customAgents = useAppStore((s) => s.customAgents);
-  const sandboxEngine = useAppStore((s) => s.sandboxEngine);
   // The listening tooltip promises one of two things — "stops when you pause"
   // or "stop it yourself" — and which is true is the user's setting, not the
   // engine's doing: both engines honour it.
@@ -255,8 +254,15 @@ export function Composer({
   // backend. `provider` mirrors a custom agent's base, so this covers custom
   // agents too. Existing sessions already spawned with their engine and keep a
   // locked picker, so they're exempt.
-  const dockerBlocked =
-    !existingSession && isContainerEngine(sandboxEngine) && !isDockerSupported(provider);
+  // Why this draft cannot be sent, in the words the send button shows — or
+  // null when it can. The *single* rule: the same `useAgentAvailability` the
+  // provider picker greys its rows with, so the button, the picker and the
+  // spawn path can never disagree about the draft on screen. An existing
+  // session spawned under its own settings and keeps a locked picker, so it is
+  // exempt; whatever the agent is already running with is what it keeps.
+  const availability = useAgentAvailability();
+  const sendBlocked =
+    (existingSession ? null : blockedSentence(availability(provider))) ?? undefined;
 
   const [thinkingValue, setThinkingValue] = useState<string | undefined>(() =>
     resolveThinking(
@@ -341,17 +347,17 @@ export function Composer({
     hasDraft: hasContent,
     micDenied,
   });
-  const sendBlocked = dockerBlocked
-    ? `${providerLabel(provider)} isn't available in ${sandboxEngineLabel(sandboxEngine)} sandboxes yet — switch to Claude to send`
-    : undefined;
-
   /** Send the draft — also while the agent works, as a mid-turn follow-up.
    *  Nothing is sent by voice alone: a send only happens once dictation is
    *  idle. */
   function send() {
     if (dictation.phase !== "idle") return;
     const trimmed = input.text.trim();
-    if ((!trimmed && input.attachments.length === 0) || disabled || dockerBlocked) return;
+    // `sendBlocked` and nothing else: ↵ and the button are the same action and
+    // must refuse on the same rule. This used to re-test one of the reasons by
+    // hand, which let Enter start an agent the button said could not be
+    // started.
+    if ((!trimmed && input.attachments.length === 0) || disabled || sendBlocked) return;
     onSend({
       text: trimmed,
       provider,
