@@ -23,7 +23,7 @@
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
+use tokio::sync::Mutex;
 
 use super::{login_command, probe_all_provider_auth, probe_all_providers, provider_bin_label};
 use crate::agent::AuthStatus;
@@ -60,40 +60,47 @@ const FRESH_FOR: Duration = Duration::from_secs(10);
 ///
 /// Probing means resolving six binaries and running `--version` on each, so
 /// the op is cheap to *ask* and expensive to *answer* — the asymmetry a remote
-/// caller is on the wrong side of.
+/// caller is on the wrong side of. The memo closes the gap twice over: a hit
+/// costs nothing, and a *miss* is single-flight.
 ///
-/// Deliberately not single-flight: two callers that race the expiry both
-/// probe, and the last one to finish wins. The lock is never held across the
-/// probe, which is what keeps one wedged CLI from blocking every other caller
-/// for its whole version timeout — and that property matters more here than
-/// saving the occasional duplicate probe.
+/// Single-flight is the point of holding the lock across the probe rather than
+/// around the two halves of it. A connection may have eight requests in
+/// flight, and without it eight simultaneous misses mean eight full probes —
+/// dozens of subprocesses for one answer they all want anyway. Waiting is
+/// bounded by the probe itself (`VERSION_TIMEOUT` per binary, run
+/// concurrently), and a caller that waits gets the answer it came for.
+///
+/// The lock is [`tokio::sync::Mutex`] because it is held across an await.
+/// Clippy's `await_holding_lock` is about the std and `parking_lot` guards,
+/// which block the executor thread; this one yields.
 struct Memo(Mutex<Option<(Instant, Vec<HostProvider>)>>);
 
 impl Memo {
     const fn new() -> Self {
-        Self(Mutex::new(None))
+        Self(Mutex::const_new(None))
     }
 
     /// The memoised answer if it is still fresh at `now`, otherwise `probe`'s,
     /// which is remembered on the way out. `now` is a parameter so the memo is
     /// testable without sleeping.
+    ///
+    /// Callers that arrive during a probe queue on the lock and take its
+    /// result, which by then is fresh — so `probe` runs once per expiry, not
+    /// once per caller.
     async fn get<F, Fut>(&self, now: Instant, probe: F) -> Vec<HostProvider>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Vec<HostProvider>>,
     {
-        if let Some(fresh) = self.fresh(now) {
-            return fresh;
+        let mut held = self.0.lock().await;
+        if let Some((taken, rows)) = held.as_ref() {
+            if now.saturating_duration_since(*taken) < FRESH_FOR {
+                return rows.clone();
+            }
         }
         let rows = probe().await;
-        *self.0.lock() = Some((now, rows.clone()));
+        *held = Some((now, rows.clone()));
         rows
-    }
-
-    fn fresh(&self, now: Instant) -> Option<Vec<HostProvider>> {
-        let held = self.0.lock();
-        let (taken, rows) = held.as_ref()?;
-        (now.saturating_duration_since(*taken) < FRESH_FOR).then(|| rows.clone())
     }
 }
 
@@ -208,6 +215,32 @@ mod tests {
 
         assert_eq!(probes.load(Ordering::SeqCst), 2);
         assert_eq!(after[0].id, "codex", "it served the stale answer");
+    }
+
+    /// Eight callers arriving on an empty memo — one connection's whole
+    /// in-flight allowance — probe once between them, not eight times. Without
+    /// this the op would let a remote caller multiply one ask into dozens of
+    /// subprocesses on the host.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_misses_probe_once_and_share_the_answer() {
+        let memo = Memo::new();
+        let probes = AtomicUsize::new(0);
+        let at = Instant::now();
+        let probe = || async {
+            probes.fetch_add(1, Ordering::SeqCst);
+            // Long enough that the other seven are certainly waiting on the
+            // lock rather than arriving after the first one finished.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            row("claude")
+        };
+
+        let answers = futures_util::future::join_all((0..8).map(|_| memo.get(at, probe))).await;
+
+        assert_eq!(probes.load(Ordering::SeqCst), 1, "the probe was not shared");
+        assert_eq!(answers.len(), 8);
+        for answer in &answers {
+            assert_eq!(answer[0].id, "claude");
+        }
     }
 
     /// An empty answer is an answer. Memoising `None`-as-miss instead would
