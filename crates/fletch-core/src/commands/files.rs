@@ -55,11 +55,16 @@ impl DiffBaseMode {
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// One entry in an arbitrary directory listing (for the composer's `@`
-/// file-mention autocomplete when the user types a filesystem path).
+/// file-mention autocomplete when the user types a filesystem path, and for
+/// the folder pickers).
 #[derive(Serialize)]
 pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
+    /// Whether this directory is a git repository (it holds a `.git`), so a
+    /// folder picker can mark the repositories without opening each one. Always
+    /// false for a file — the check is only worth a stat on a directory.
+    pub is_repo: bool,
 }
 
 /// A directory listing plus the absolute path that was listed, so the
@@ -479,7 +484,14 @@ pub async fn list_dir_impl(path: String) -> Result<DirListing> {
     for entry in read.flatten().take(MAX_ENTRIES) {
         let name = entry.file_name().to_string_lossy().to_string();
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        entries.push(DirEntry { name, is_dir });
+        // One extra stat per directory, and only for directories: a listing of
+        // a thousand files pays nothing for it.
+        let is_repo = is_dir && entry.path().join(".git").exists();
+        entries.push(DirEntry {
+            name,
+            is_dir,
+            is_repo,
+        });
     }
 
     Ok(DirListing {

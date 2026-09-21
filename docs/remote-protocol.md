@@ -488,7 +488,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
 | `discover_supported_models` | as command | `AgentModels[]` |
-| `list_dir` | `{ path }` (tilde-expanded on the host) | `DirListing` |
+| `list_dir` | `{ path }` (tilde-expanded on the host) | `DirListing` — each entry carries `is_repo` (a directory holding a `.git`), added within v2, so a client reading a host from before it simply sees no marks |
 | `add_workspace_repo` | `{ repoPath }` | `Workspace` |
 | `clone_repo` | `{ spec, destParent }` | `Workspace` |
 | `gh_status` | `{}` | `GhStatus` |

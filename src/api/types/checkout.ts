@@ -18,10 +18,15 @@ export interface CheckoutFile {
 }
 
 /** One entry in an arbitrary directory listing, used by the composer's `@`
- *  file-mention autocomplete when the user types a filesystem path. */
+ *  file-mention autocomplete when the user types a filesystem path and by the
+ *  folder pickers. */
 export interface DirEntry {
   name: string;
   is_dir: boolean;
+  /** Whether this directory holds a `.git` — so a folder picker can mark the
+   *  repositories without opening each one. Only computed for directories, and
+   *  absent from a host too old to send it. */
+  is_repo?: boolean;
 }
 
 /** A directory listing plus the absolute (tilde-expanded) path that was
