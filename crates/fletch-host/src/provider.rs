@@ -49,9 +49,22 @@ pub struct ProviderRow {
 // ── The ops ───────────────────────────────────────────────────────────────
 
 /// Probe every provider: installed + version, then login state for the ones
-/// that are installed.
+/// that are installed. Each `--version` is bounded by the engine
+/// (`agent::probe_all_providers`), so a wedged CLI costs a slow answer rather
+/// than a socket call that never returns.
 pub async fn rows() -> Vec<ProviderRow> {
-    let installed = agent::probe_all_providers().await;
+    rows_from(agent::probe_all_providers().await).await
+}
+
+/// The same rows without a version, and — the point of this one — without
+/// running a single vendor binary: resolution and the credential probe only.
+/// What `status` summarises, since a status call must not be able to hang
+/// behind somebody's `--version`.
+pub async fn installed_rows() -> Vec<ProviderRow> {
+    rows_from(agent::resolve_all_providers().await).await
+}
+
+async fn rows_from(installed: Vec<agent::ProviderProbe>) -> Vec<ProviderRow> {
     let auth = agent::probe_all_provider_auth().await;
 
     installed
@@ -99,12 +112,21 @@ pub fn login_spec(id: &str) -> Result<Value, String> {
     }))
 }
 
+/// Who the caller is, which this layer must never say: the host's own login
+/// shell knows the service user's `HOME`, and handing that to a process running
+/// as somebody else would write one user's credential into another user's home
+/// directory (root-owned files in it, at worst). `provider login` already
+/// refuses a caller who is not the host's user; stripping these means even a
+/// future caller of the op cannot be told to impersonate one.
+const IDENTITY_VARS: [&str; 4] = ["HOME", "USER", "LOGNAME", "SHELL"];
+
 /// The two layers the desktop's sign-in PTY puts over the inherited environment
 /// (`pty_session::PtySession::spawn`): the user's login shell, then the
-/// portable git's bin dir on PATH when that is the git this host runs. The
-/// caller inherits the rest of its own environment, exactly as the PTY child
-/// inherits the desktop's. Not the PTY's `TERM`/`COLORTERM` — the operator is
-/// at a real terminal that has its own.
+/// portable git's bin dir on PATH when that is the git this host runs — minus
+/// [`IDENTITY_VARS`], so what is left is PATH-shaped and says nothing about
+/// who anyone is. The caller inherits the rest of its own environment, exactly
+/// as the PTY child inherits the desktop's. Not the PTY's `TERM`/`COLORTERM` —
+/// the operator is at a real terminal that has its own.
 fn login_env() -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     if let Some(shell) = fletch_core::bin_resolve::login_shell_env() {
@@ -114,6 +136,9 @@ fn login_env() -> BTreeMap<String, String> {
     }
     for (key, value) in fletch_core::git_dist::child_env() {
         env.insert(key, value);
+    }
+    for key in IDENTITY_VARS {
+        env.remove(key);
     }
     env
 }
@@ -150,6 +175,7 @@ pub async fn print_status(data_dir: &Path) -> Result<(), String> {
 /// `fletch-host provider login <id>`: run the vendor's own login here, in this
 /// terminal, and say what the host makes of the result afterwards.
 pub async fn login(data_dir: &Path, id: &str) -> Result<(), String> {
+    require_the_host_user(data_dir, id)?;
     let spec = admin::call(data_dir, "provider_login_command", json!({ "id": id })).await?;
     let argv: Vec<String> = spec["argv"]
         .as_array()
@@ -162,7 +188,6 @@ pub async fn login(data_dir: &Path, id: &str) -> Result<(), String> {
     let Some((program, args)) = argv.split_first() else {
         return Err("the host did not say what to run".to_string());
     };
-    warn_if_not_the_host_user(data_dir);
 
     let mut command = std::process::Command::new(program);
     command.args(args);
@@ -186,19 +211,31 @@ pub async fn login(data_dir: &Path, id: &str) -> Result<(), String> {
         .stderr(Stdio::inherit())
         .status()
         .map_err(|e| format!("cannot run {program}: {e}"))?;
+    // Whatever the CLI exited with, it may already have written the
+    // credential — several of these flows save the login and then fail a later
+    // step — so the probe, not the exit code, is what says where this provider
+    // now stands. Re-probed either way, and reported before the exit.
+    match fetch_rows(data_dir).await {
+        Ok(rows) => println!("{}", outcome_line(id, rows.iter().find(|row| row.id == id))),
+        // The child's code is the answer a caller waits on, so a probe that
+        // could not run says so on stderr rather than replacing it.
+        Err(e) => eprintln!("{id}: the host could not re-probe it: {e}"),
+    }
     if !status.success() {
         // The vendor CLI has already said what went wrong, on this terminal.
         // Exit with its code so a script that wrapped this sees it.
         std::process::exit(status.code().unwrap_or(1));
     }
-
-    // The login wrote a credential (or did not); the probe is what decides.
-    let rows = fetch_rows(data_dir).await?;
-    match rows.iter().find(|row| row.id == id) {
-        Some(row) => println!("{id}: {}", state_line(row)),
-        None => println!("{id}: signed in, as far as its CLI is concerned"),
-    }
     Ok(())
+}
+
+/// What `provider login` prints once the vendor's command is done: what the
+/// host now makes of that provider, or that it has no probe for it.
+fn outcome_line(id: &str, row: Option<&ProviderRow>) -> String {
+    match row {
+        Some(row) => format!("{id}: {}", state_line(row)),
+        None => format!("{id}: the host has no login probe for it"),
+    }
 }
 
 async fn fetch_rows(data_dir: &Path) -> Result<Vec<ProviderRow>, String> {
@@ -208,26 +245,34 @@ async fn fetch_rows(data_dir: &Path) -> Result<Vec<ProviderRow>, String> {
 }
 
 /// A login belongs to the user whose home directory it lands in, and the agents
-/// run as the user that owns the data dir — so a login run as anyone else is
-/// written where the host will never look. Said once, before the command runs;
-/// it is a warning rather than a refusal because `sudo -u` and a shared account
-/// are both legitimate ways to end up here.
-fn warn_if_not_the_host_user(data_dir: &Path) {
+/// read the home directory of the user that owns the data dir — so a login run
+/// as anyone else is written where the host will never look, and a login run as
+/// *root* is worse than useless: it leaves root-owned credential files in that
+/// user's home. Refused rather than warned about, with the one command that
+/// does what the caller meant.
+fn require_the_host_user(data_dir: &Path, id: &str) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     let Ok(meta) = std::fs::metadata(data_dir) else {
-        return;
+        // The data dir is unreadable, which the socket call is about to say
+        // better than this can.
+        return Ok(());
     };
+    let owner = meta.uid();
     let me = nix::unistd::getuid().as_raw();
-    if meta.uid() == me {
-        return;
+    if owner == me {
+        return Ok(());
     }
-    eprintln!(
-        "warning: {} belongs to uid {}, but you are uid {me}. This login will be written to \
-         *your* home directory, and the host will not see it. Run it as the user the host \
-         runs as.",
+    let who = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(owner))
+        .ok()
+        .flatten()
+        .map(|user| user.name)
+        .unwrap_or_else(|| owner.to_string());
+    Err(format!(
+        "{} belongs to uid {owner} ({who}), but you are uid {me}. A provider login belongs to \
+         the user the host runs as — theirs is the home directory the agents read. Run:\n  \
+         sudo -u {who} fletch-host provider login {id}",
         data_dir.display(),
-        meta.uid()
-    );
+    ))
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────
@@ -400,6 +445,40 @@ mod tests {
             summary(&rows),
             json!({ "signedIn": ["claude"], "signedOut": ["codex"] })
         );
+    }
+
+    /// The line after a login is the probe's answer, whatever the CLI exited
+    /// with — a flow that saved the credential and then failed a later step
+    /// still shows as signed in, and a failed one says why it is not.
+    #[test]
+    fn the_outcome_line_reports_what_the_probe_found() {
+        let signed_in = row("claude", "Claude Code", Some("v2.1.4"), Some("signed_in"));
+        assert_eq!(
+            outcome_line("claude", Some(&signed_in)),
+            "claude: signed in"
+        );
+
+        let mut refused = row("claude", "Claude Code", Some("v2.1.4"), Some("signed_out"));
+        refused.detail = Some("no credentials file".to_string());
+        assert_eq!(
+            outcome_line("claude", Some(&refused)),
+            "claude: signed out (no credentials file)"
+        );
+
+        assert!(outcome_line("claude", None).contains("no login probe"));
+    }
+
+    /// The environment the host hands back adds PATH-shaped values and never
+    /// says who anybody is — a child that inherits it stays the caller.
+    #[test]
+    fn the_login_environment_carries_no_identity() {
+        let env = login_env();
+        for key in IDENTITY_VARS {
+            assert!(
+                !env.contains_key(key),
+                "{key} must not be handed out: {env:?}"
+            );
+        }
     }
 
     /// The op refuses what it cannot run, in words that name the provider.

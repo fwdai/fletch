@@ -133,4 +133,59 @@ async fn the_admin_socket_refuses_what_it_does_not_know() {
         out_of_band.contains("Antigravity") && out_of_band.contains("out of band"),
         "a provider with no login command says so: {out_of_band}"
     );
+
+    a_wedged_cli_cannot_hang_either_call(&data_dir, dir.path()).await;
+}
+
+/// A CLI that never answers `--version` — a broken install, or a custom binary
+/// path pointed at the wrong thing. `status` must not run one at all (it is
+/// what a liveness check calls), and `provider_status`, which does want the
+/// version, must give up on it and still answer.
+async fn a_wedged_cli_cannot_hang_either_call(data_dir: &std::path::Path, tmp: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let ran = tmp.join("version-probe-ran");
+    let wedged = tmp.join("wedged-claude");
+    std::fs::write(
+        &wedged,
+        format!("#!/bin/sh\necho ran >> '{}'\nsleep 300\n", ran.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wedged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The same door a user's custom binary path goes through.
+    fletch_core::bin_resolve::set_agent_overrides(std::collections::HashMap::from([(
+        "claude".to_string(),
+        wedged.to_string_lossy().into_owned(),
+    )]));
+
+    let status = admin::call(data_dir, "status", json!({}))
+        .await
+        .expect("status");
+    assert!(
+        !ran.exists(),
+        "status answered by running a provider CLI: {status}"
+    );
+
+    let started = std::time::Instant::now();
+    let providers = admin::call(data_dir, "provider_status", json!({}))
+        .await
+        .expect("provider_status");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "provider_status waited on a CLI that sleeps for 300s"
+    );
+    assert!(ran.exists(), "provider_status did probe the version");
+    let claude = providers
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == json!("claude")))
+        .expect("claude is probed")
+        .clone();
+    assert_eq!(claude["installed"], json!(true), "{claude}");
+    assert_eq!(
+        claude["version"],
+        json!(null),
+        "a probe that timed out reports no version: {claude}"
+    );
+
+    fletch_core::bin_resolve::set_agent_overrides(std::collections::HashMap::new());
 }
