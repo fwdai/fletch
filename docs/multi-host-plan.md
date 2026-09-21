@@ -669,6 +669,22 @@ purpose: the plan is an own secure pairing procedure later, not a tailnet.
   a message. The release `host` job now signs the tarball with the existing
   updater key and uploads `.sig`.
 
+### 6.3 Closing the remaining gaps (2026-09-21)
+
+After the polish PRs merged, an audit found four gaps: no provider CLI login
+on a headless host, projects only addable where someone has local access, no
+scope at pairing, and plaintext secrets on a host. Each was verified against
+the code and sliced into six PRs; the verdicts, scopes and order are in
+`multi-host-gaps-plan.md`, and the manual test matrix for the whole multi-host
+surface is in `multi-host-test-plan.md`.
+
+- [x] Gap 4: GitHub token from `FLETCH_GITHUB_TOKEN` or a systemd credential, never persisted. PR #785.
+- [o] Gap 2a: host folder browser over `list_dir` on the desktop (native picker stays local); `is_repo`/`truncated` on `list_dir`; per-flow gates. PR #786.
+- [o] Gap 2b: project settings ops on the wire (`create_repo`, rename, delete, attach, detach, relocate, label, remove). PR #788 on #786.
+- [o] Gap 1a: `fletch-host provider status|login <id>`; bounded `--version` probes everywhere. PR #787.
+- [o] Gap 1b: `host_providers` op; clients grey providers the host lacks and quote the fix. PR #789 on #787.
+- [ ] Gap 3: device scopes at pairing (Full / Control), per-device `protocol.ops`, `forbidden`. After the two stacks merge.
+
 Nothing else from the deferred table has been started. Items 13 and 14
 (scopes, PTY streams) remain the big parity gap: remote agents are
 structured-view only, with no side shells or Run panel on the host.
