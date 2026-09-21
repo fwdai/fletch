@@ -5,7 +5,7 @@ name = "fletch-core"
 # four agree. This is the version a paired client reads as `HostInfo.appVersion`
 # (`remote::mod`), so a crate version of its own would report a number no
 # release ever had. Bump all four together; see docs/RELEASING.md.
-version = "0.7.32"
+version = "0.8.0"
 description = "The Fletch engine: agents, sandboxes, workspaces, workflows and the remote host, with no Tauri in the dependency graph"
 authors = ["Alex Chaplinsky", "fwdai.org"]
 license = "AGPL-3.0-only"
