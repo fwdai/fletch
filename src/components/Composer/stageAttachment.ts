@@ -15,10 +15,12 @@ import { baseName } from "@/util/paths";
  *  dropped by mistake costs an error rather than hundreds of megabytes through
  *  the webview.
  *
- *  Reading needs `fs:scope-home-recursive` in the capability file: a drop is as
- *  much a user gesture as a pick, but the dialog plugin only grants the fs
- *  scope for paths IT returned (see `util/image.ts`), so a dropped path has
- *  none. A file outside $HOME still fails, as the composer's error. */
+ *  The dialog plugin grants the fs scope for paths IT returned (see
+ *  `util/image.ts`), so a picked path can be read here; a dropped one has no
+ *  grant of its own, and the Rust `DragDrop` window-event handler in
+ *  `src-tauri/src/lib.rs` calls the same `allow_file` for it. Anything else —
+ *  a path this webview made up — is still refused, which is the point of not
+ *  widening the capability instead. */
 export async function stageAttachmentPath(path: string): Promise<string> {
   if (activeEnvironment().kind === "local") return path;
   const name = baseName(path);

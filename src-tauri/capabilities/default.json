@@ -15,7 +15,6 @@
     "fs:allow-read-text-file",
     "fs:allow-read-file",
     "fs:allow-stat",
-    "fs:scope-home-recursive",
     "fs:allow-write-text-file",
     "notification:default",
     "shell:default",
