@@ -17,6 +17,7 @@ import type { LocalCommandAction } from "@/data/slashCommands";
 import { isContainerEngine, sandboxEngineLabel } from "@/storage/preferences";
 import type { UsageSnapshot } from "@/store";
 import { useAppStore } from "@/store";
+import { activeEntry, providerReason } from "@/store/capabilities";
 import { ComposerFrame } from "./ComposerFrame";
 import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
 import { IssuePicker } from "./IssuePicker";
@@ -258,6 +259,10 @@ export function Composer({
   const dockerBlocked =
     !existingSession && isContainerEngine(sandboxEngine) && !isDockerSupported(provider);
 
+  // The environment this draft would spawn into — This Mac, or a paired host
+  // whose own provider list decides what it can run (see `sendBlocked` below).
+  const hostEnv = useAppStore(activeEntry);
+
   const [thinkingValue, setThinkingValue] = useState<string | undefined>(() =>
     resolveThinking(
       defaultProvider,
@@ -341,9 +346,17 @@ export function Composer({
     hasDraft: hasContent,
     micDenied,
   });
+  // With a remote environment active, the agent spawns on the host — so a
+  // provider the host has not got, or has not signed in, blocks the send for
+  // exactly the reason the picker greyed it out with. The selection is left
+  // alone: switching it for the user would silently start a different agent
+  // than the one they picked. Null on This Mac and whenever the host has said
+  // nothing, so nothing new can block a local send.
+  const hostProviderBlocked =
+    !existingSession && hostEnv.kind === "remote" ? providerReason(hostEnv, provider) : null;
   const sendBlocked = dockerBlocked
     ? `${providerLabel(provider)} isn't available in ${sandboxEngineLabel(sandboxEngine)} sandboxes yet — switch to Claude to send`
-    : undefined;
+    : (hostProviderBlocked ?? undefined);
 
   /** Send the draft — also while the agent works, as a mid-turn follow-up.
    *  Nothing is sent by voice alone: a send only happens once dictation is

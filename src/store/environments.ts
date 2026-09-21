@@ -18,7 +18,7 @@
 // the note on `setEnvironmentsSource` at the bottom).
 
 import type { Transport } from "@/api/transport";
-import type { HostProtocol } from "@/remote/types";
+import type { HostProtocol, HostProvider } from "@/remote/types";
 import type { AppState, SliceCreator } from "./types";
 
 /** The desktop's own engine, following T3Code's `PRIMARY_LOCAL_ENVIRONMENT_ID`.
@@ -56,6 +56,12 @@ export interface EnvironmentEntry {
    *  one that has not been greeted yet. The local environment is never gated
    *  (docs/multi-host-plan.md §5.1), so it never has one. */
   protocol?: HostProtocol;
+  /** Remote only: which provider CLIs the host has and which of them are signed
+   *  in, from `host_providers` on the last handshake. Absent for a host that
+   *  does not answer the op, and for one that has not been greeted yet — in
+   *  both cases the client knows nothing and blocks nothing (see
+   *  `providerReason` in ./capabilities). In memory only, like `protocol`. */
+  providers?: HostProvider[];
   /** What this environment was showing when the user last left it — the
    *  workspace snapshot and every map keyed by something that belongs to one
    *  engine (agent ids, checkouts, repo paths). Written and read only by
@@ -84,6 +90,11 @@ export interface EnvironmentsSlice {
     error?: string,
     retrying?: boolean,
   ) => void;
+  /** Record what a host answered `host_providers` with. Its own writer rather
+   *  than a field on `upsertEnvironment` because the answer arrives after the
+   *  handshake that published the entry, and must not carry a stale connection
+   *  state back with it. */
+  setEnvironmentProviders: (id: EnvironmentId, providers: HostProvider[]) => void;
   /** Forget a paired host. The local environment is not removable: it is this
    *  process's own engine, present from the first render, and nothing in the
    *  app has a fallback for its absence. */
@@ -122,6 +133,15 @@ export const createEnvironmentsSlice: SliceCreator<EnvironmentsSlice> = (set) =>
       return {
         environments: { ...s.environments, [id]: { ...entry, connection, error, retrying } },
       };
+    }),
+
+  setEnvironmentProviders: (id, providers) =>
+    set((s) => {
+      const entry = s.environments[id];
+      // Same rule as `setEnvironmentConnection`: an answer for a host that has
+      // since been forgotten is not worth reviving the entry for.
+      if (!entry) return {};
+      return { environments: { ...s.environments, [id]: { ...entry, providers } } };
     }),
 
   removeEnvironment: (id) =>

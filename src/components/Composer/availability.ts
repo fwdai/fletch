@@ -1,6 +1,7 @@
 import { isDockerSupported, providerLabel } from "@/data/providers";
 import { isContainerEngine, sandboxEngineLabel } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { activeEntry, providerReason } from "@/store/capabilities";
 
 export interface Availability {
   /** Why this agent can't be spawned right now, or null when it can. Rendered
@@ -25,6 +26,13 @@ export interface Availability {
  *  Roadmap's new-chat screen — because a rule that decides what the user is
  *  allowed to start must not exist twice.
  *
+ *  With a remote environment active the agent spawns on the *host*, so the
+ *  install/sign-in half of the answer comes from the host's own probe
+ *  (`providerReason`, fed by `host_providers`) and this Mac's probe is not
+ *  consulted at all — its binaries have nothing to do with a spawn that happens
+ *  somewhere else. Nothing changes for This Mac, where `providerReason` is
+ *  always null.
+ *
  *  Pass a custom agent's `base` to gate it: a custom agent inherits its base
  *  provider's availability exactly. */
 export function useAgentAvailability(): (providerId: string) => Availability {
@@ -35,6 +43,7 @@ export function useAgentAvailability(): (providerId: string) => Availability {
   // container support is unspawnable while a container engine is on.
   const engine = useAppStore((s) => s.sandboxEngine);
   const containerOnly = isContainerEngine(engine);
+  const env = useAppStore(activeEntry);
 
   return (providerId: string) => {
     // The container gate is checked first: a non-container provider is blocked
@@ -45,6 +54,17 @@ export function useAgentAvailability(): (providerId: string) => Availability {
         reason: `${providerLabel(providerId)} isn't available in ${label} sandboxes yet`,
         note: `Not in ${label} yet`,
       };
+    }
+    // On a host, the host answers. Fails open the same way this Mac's probe
+    // does: a host that has not reported its providers, or does not answer the
+    // op at all, blocks nothing and shows no version.
+    if (env.kind === "remote") {
+      const reason = providerReason(env, providerId);
+      const row = env.providers?.find((p) => p.id === providerId);
+      if (reason) {
+        return { reason, note: row?.installed ? "Signed out" : "Not installed" };
+      }
+      return { reason: null, note: row?.version ?? "" };
     }
     // Fail open on the install gate: only enforce it once a probe has actually
     // succeeded (`providersProbed`). While probing, or if the probe failed,

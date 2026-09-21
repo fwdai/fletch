@@ -16,14 +16,23 @@ import { RemoteTransport } from "@/api/transport";
 import type { EnvironmentSwitchSlice } from "@/store/environmentSwitch";
 import type { ConnectionStatus, EnvironmentsSlice } from "@/store/environments";
 import { parseAddress } from "./pairing";
-import type { ConnectionState, DeviceInfo, HelloResult, HostTarget, RemoteClient } from "./types";
+import {
+  type ConnectionState,
+  type DeviceInfo,
+  type HelloResult,
+  type HostProtocol,
+  type HostProvider,
+  type HostTarget,
+  hostSupports,
+  type RemoteClient,
+} from "./types";
 
 /** The store writers the registry drives. Taken as an interface rather than
  *  reached for through the app store, so the lifecycle is testable with nothing
  *  but a fake client and a fake set of writers. */
 export type EnvironmentWriters = Pick<
   EnvironmentsSlice,
-  "upsertEnvironment" | "setEnvironmentConnection" | "removeEnvironment"
+  "upsertEnvironment" | "setEnvironmentConnection" | "setEnvironmentProviders" | "removeEnvironment"
 > &
   Pick<EnvironmentSwitchSlice, "environmentReconnected">;
 
@@ -81,6 +90,28 @@ export interface HostRegistry {
 export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
   const clients = new Map<string, RemoteClient>();
   const { writers } = opts;
+
+  /** Ask a host which provider CLIs it has and which are signed in, and fold
+   *  the answer into its entry. Advisory in both directions: a host too old to
+   *  answer the op is never asked, and a call that fails leaves the last answer
+   *  (or none) in place rather than claiming the host lost a provider. */
+  async function loadProviders(
+    hostKey: string,
+    client: RemoteClient,
+    protocol: HostProtocol | undefined,
+  ): Promise<void> {
+    if (!hostSupports(protocol, "host_providers")) return;
+    try {
+      const providers = await client.call<HostProvider[]>("host_providers");
+      // A host forgotten while the call was in flight must not be revived: the
+      // upsert would write the entry back. `clients` is the registry's own
+      // record of what it is still managing.
+      if (clients.get(hostKey) !== client) return;
+      writers.setEnvironmentProviders(hostKey, providers);
+    } catch {
+      // Advisory, like every other read here.
+    }
+  }
 
   /** Build the client, publish the entry, start the dial, and subscribe the two
    *  things the entry is made of: the connection state, and the descriptor
@@ -144,6 +175,13 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
       // The store decides whether that matters (it does only while this host is
       // the active environment).
       writers.environmentReconnected(record.hostKey);
+      // Which providers this host could actually spawn. Once per connection and
+      // off the critical path: the entry is already published and usable, and a
+      // client that never learns the answer blocks nothing (see
+      // `providerReason` in @/store/capabilities). Here rather than beside the
+      // workspace refresh because a host's row says this whether or not it is
+      // the environment on screen.
+      void loadProviders(record.hostKey, client, snapshot.protocol);
     });
     return { client, dial };
   }

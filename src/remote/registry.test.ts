@@ -76,7 +76,17 @@ function fakeClient() {
       self.disconnected += 1;
       state = "disconnected";
     },
-    call: () => Promise.reject(new Error("unused")),
+    /** Ops the registry sent, and what to answer them with. An op with no
+     *  answer rejects, which is what the registry's advisory reads must
+     *  survive. */
+    calls: [] as string[],
+    answers: {} as Record<string, unknown>,
+    call(op: string) {
+      self.calls.push(op);
+      return op in self.answers
+        ? Promise.resolve(self.answers[op])
+        : Promise.reject(new Error(`unstubbed op ${op}`));
+    },
     on: () => () => {},
     onState(cb: StateHandler) {
       states.add(cb);
@@ -120,6 +130,7 @@ function harness() {
     writers: {
       upsertEnvironment: store.getState().upsertEnvironment,
       setEnvironmentConnection: store.getState().setEnvironmentConnection,
+      setEnvironmentProviders: store.getState().setEnvironmentProviders,
       removeEnvironment: store.getState().removeEnvironment,
       environmentReconnected: reconnected,
     },
@@ -175,6 +186,71 @@ describe("the paired-host lifecycle", () => {
     // The descriptor survives the drop: it is what the UI is gated on, and a
     // reconnect refreshes rather than re-earns it.
     expect(entry()?.protocol).toEqual(PROTOCOL);
+  });
+
+  it("asks a host that lists `host_providers` which providers it can run", async () => {
+    const { registry, entry, client } = harness();
+    await registry.adopt(RECORD);
+
+    const providers = [
+      {
+        id: "claude",
+        label: "Claude Code",
+        installed: true,
+        version: "2.1.4",
+        auth: "signed_out",
+        loginCommand: "claude auth login",
+      },
+    ];
+    client.answers.host_providers = providers;
+    client.handshake({
+      host: HOST,
+      workspace: null,
+      protocol: { ...PROTOCOL, ops: [...PROTOCOL.ops, "host_providers"] },
+    });
+    await settled();
+
+    expect(entry()?.providers).toEqual(providers);
+  });
+
+  it("does not ask a host that does not list the op, and leaves it un-judged", async () => {
+    const { registry, entry, client } = harness();
+    await registry.adopt(RECORD);
+
+    // PROTOCOL has no `host_providers` row: asking would answer "unknown op",
+    // and the absent entry field is what makes every provider offerable.
+    client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    await settled();
+
+    expect(client.calls).not.toContain("host_providers");
+    expect(entry()?.providers).toBeUndefined();
+  });
+
+  it("keeps the last provider answer when a later read fails", async () => {
+    const { registry, entry, client } = harness();
+    await registry.adopt(RECORD);
+    const withOp = { ...PROTOCOL, ops: [...PROTOCOL.ops, "host_providers"] };
+
+    const providers = [
+      {
+        id: "codex",
+        label: "Codex",
+        installed: true,
+        version: "0.48.0",
+        auth: "signed_in",
+        loginCommand: "codex login",
+      },
+    ];
+    client.answers.host_providers = providers;
+    client.handshake({ host: HOST, workspace: null, protocol: withOp });
+    await settled();
+
+    // A reconnect whose read fails must not read as "the host lost codex".
+    delete client.answers.host_providers;
+    client.handshake({ host: HOST, workspace: null, protocol: withOp });
+    await settled();
+
+    expect(entry()?.providers).toEqual(providers);
   });
 
   it("mirrors the client's `retrying` so a wait can be told from a dead end", async () => {
