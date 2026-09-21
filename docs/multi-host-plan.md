@@ -679,11 +679,11 @@ the code and sliced into six PRs; the verdicts, scopes and order are in
 surface is in `multi-host-test-plan.md`.
 
 - [x] Gap 4: GitHub token from `FLETCH_GITHUB_TOKEN` or a systemd credential, never persisted. PR #785.
-- [o] Gap 2a: host folder browser over `list_dir` on the desktop (native picker stays local); `is_repo`/`truncated` on `list_dir`; per-flow gates. PR #786.
-- [o] Gap 2b: project settings ops on the wire (`create_repo`, rename, delete, attach, detach, relocate, label, remove). PR #788 on #786.
-- [o] Gap 1a: `fletch-host provider status|login <id>`; bounded `--version` probes everywhere. PR #787.
+- [x] Gap 2a: host folder browser over `list_dir` on the desktop (native picker stays local); `is_repo`/`truncated` on `list_dir`; per-flow gates. PR #786.
+- [x] Gap 2b: project settings ops on the wire (`create_repo`, rename, delete, attach, detach, relocate, label, remove). PR #788 on #786.
+- [x] Gap 1a: `fletch-host provider status|login <id>`; bounded `--version` probes everywhere. PR #787.
 - [o] Gap 1b: `host_providers` op; clients grey providers the host lacks and quote the fix. PR #789 on #787.
-- [ ] Gap 3: device scopes at pairing (Full / Control), per-device `protocol.ops`, `forbidden`. After the two stacks merge.
+- [o] Gap 3: device scopes at pairing (Full / Control), per-device `protocol.ops`, `forbidden`. PR #791.
 
 Nothing else from the deferred table has been started. Items 13 and 14
 (scopes, PTY streams) remain the big parity gap: remote agents are

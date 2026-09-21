@@ -4,10 +4,9 @@
 (#749–#784). Verdicts first, then one PR per line of work with scope, files,
 acceptance and order. Nothing here changes the local desktop path.
 
-Status (2026-09-21): PR 5 → #785 (merged). PR 1 → #786, PR 2 → #788 (on
-#786), PR 3 → #787, PR 4 → #789 (on #787), all open with review threads
-addressed. PR 6 starts once both stacks are on `main`. The manual checks for
-all of it are in `multi-host-test-plan.md`.
+Status (2026-09-21): PR 5 → #785, PR 1 → #786, PR 2 → #788, PR 3 → #787,
+all merged. PR 4 → #789 and PR 6 → #791 open, review threads addressed. The
+manual checks for all of it are in `multi-host-test-plan.md`.
 
 ## 1. Verification
 
