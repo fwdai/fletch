@@ -179,6 +179,21 @@ export function gateReason(env: EnvironmentEntry, gate: GateName): string | null
   return GATES[gate].reason;
 }
 
+/** Why none of `gates` can run in `env`, or null while at least one of them
+ *  can. For a control that is a way in to several flows — the sidebar's "+",
+ *  which opens a menu of three — since disabling it on one flow's gate would
+ *  hide the others behind it. The reason given is the first gate's, the one the
+ *  control is named after. */
+export function anyGateReason(env: EnvironmentEntry, gates: readonly GateName[]): string | null {
+  let first: string | null = null;
+  for (const gate of gates) {
+    const reason = gateReason(env, gate);
+    if (reason === null) return null;
+    first ??= reason;
+  }
+  return first;
+}
+
 /** A gate that is closed in one environment: the feature's name and the reason
  *  its control gives, carried together so a list of them can be both counted
  *  and read out. */
@@ -279,6 +294,14 @@ export const activeEntry = (s: AppState): EnvironmentEntry =>
  *  rendering it disabled, or leaving it out. */
 export function useGate(gate: GateName): string | null {
   return useAppStore((s) => gateReason(activeEntry(s), gate));
+}
+
+/** [`useGate`] for a control that leads to several flows: closed only when the
+ *  active environment can run none of them. Pass a constant array — the value
+ *  is a string, so a fresh one each render costs nothing, but it says what it
+ *  means where a reader can see it. */
+export function useAnyGate(gates: readonly GateName[]): string | null {
+  return useAppStore((s) => anyGateReason(activeEntry(s), gates));
 }
 
 /** [`useGate`] for a gate picked at render time — the Git panel's action bar

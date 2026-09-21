@@ -4,7 +4,7 @@ import { Icon } from "@/components/Icon";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { useGate } from "@/store/capabilities";
+import { useAnyGate } from "@/store/capabilities";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
 import { useRuns } from "@/workflows/run/useRuns";
@@ -132,8 +132,12 @@ function applySearch(groups: ProjectGroupData[], q: string): ProjectGroupData[] 
     );
 }
 
+/** What the "+" button leads to. It is closed only when the environment can
+ *  run none of them — each row inside says for itself whether it can. */
+const ADD_PROJECT_GATES = ["openProject", "cloneProject", "createProject"] as const;
+
 export function Sidebar() {
-  const openProjectGate = useGate("openProject");
+  const addProjectGate = useAnyGate(ADD_PROJECT_GATES);
   const workspace = useAppStore((s) => s.workspace);
   const drafts = useAppStore((s) => s.drafts);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
@@ -303,16 +307,16 @@ export function Sidebar() {
       <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
       <div className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">
-          {/* Open on this Mac and on any host that takes a project (the folder
-              is browsed over `list_dir` there); closed against one that
-              answers neither op, where it says so instead. A disabled button
-              gets no pointer events in the WebView, so the tooltip trigger has
-              to be the wrapper. */}
-          <span className={openProjectGate ? "tip" : undefined} data-tip={openProjectGate}>
+          {/* Open while the environment can run any of the three flows behind
+              it — this Mac always can, a host by its descriptor — and closed,
+              with the reason, when it can run none. A disabled button gets no
+              pointer events in the WebView, so the tooltip trigger has to be
+              the wrapper. */}
+          <span className={addProjectGate ? "tip" : undefined} data-tip={addProjectGate}>
             <button
               className="add-proj-cta flex-center text-sm"
               onClick={() => setNpOpen(true)}
-              disabled={openProjectGate !== null}
+              disabled={addProjectGate !== null}
               aria-label="Add project"
             >
               <Icon name="plus" size={13} />
