@@ -16,6 +16,14 @@
 //! Nothing here can carry a secret or a path: the fields are an id, a label, a
 //! version string, a fixed status word, and the pinned login command from
 //! [`super::login_command`].
+//!
+//! The answer is memoised for [`FRESH_FOR`] — see [`Memo`] for why the op
+//! needs it.
+
+use std::future::Future;
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use super::{login_command, probe_all_provider_auth, probe_all_providers, provider_bin_label};
 use crate::agent::AuthStatus;
@@ -40,10 +48,70 @@ pub struct HostProvider {
     pub login_command: Option<String>,
 }
 
+/// How long an answer stays good.
+///
+/// A paired device may call `host_providers` as often as it likes, while what
+/// it reports only changes at operator cadence — an install or a sign-in, done
+/// on the host by hand — so a few seconds of staleness costs nothing and stops
+/// a client loop turning into a subprocess-spawn loop on someone's machine.
+const FRESH_FOR: Duration = Duration::from_secs(10);
+
+/// The last answer, and when it was taken.
+///
+/// Probing means resolving six binaries and running `--version` on each, so
+/// the op is cheap to *ask* and expensive to *answer* — the asymmetry a remote
+/// caller is on the wrong side of.
+///
+/// Deliberately not single-flight: two callers that race the expiry both
+/// probe, and the last one to finish wins. The lock is never held across the
+/// probe, which is what keeps one wedged CLI from blocking every other caller
+/// for its whole version timeout — and that property matters more here than
+/// saving the occasional duplicate probe.
+struct Memo(Mutex<Option<(Instant, Vec<HostProvider>)>>);
+
+impl Memo {
+    const fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    /// The memoised answer if it is still fresh at `now`, otherwise `probe`'s,
+    /// which is remembered on the way out. `now` is a parameter so the memo is
+    /// testable without sleeping.
+    async fn get<F, Fut>(&self, now: Instant, probe: F) -> Vec<HostProvider>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Vec<HostProvider>>,
+    {
+        if let Some(fresh) = self.fresh(now) {
+            return fresh;
+        }
+        let rows = probe().await;
+        *self.0.lock() = Some((now, rows.clone()));
+        rows
+    }
+
+    fn fresh(&self, now: Instant) -> Option<Vec<HostProvider>> {
+        let held = self.0.lock();
+        let (taken, rows) = held.as_ref()?;
+        (now.saturating_duration_since(*taken) < FRESH_FOR).then(|| rows.clone())
+    }
+}
+
+/// Every caller in this process shares one answer — the wire op, and whatever
+/// else comes to want the same list.
+static MEMO: Memo = Memo::new();
+
+/// Which provider CLIs this host has, and which of them are signed in.
+///
+/// Memoised for [`FRESH_FOR`]; [`probe`] is the uncached read.
+pub async fn host_providers() -> Vec<HostProvider> {
+    MEMO.get(Instant::now(), probe).await
+}
+
 /// Probe every provider on this host: installed + version, then login state for
 /// the ones that are installed. Never errors — a provider that cannot be
 /// classified is reported as `unknown` rather than dropped.
-pub async fn host_providers() -> Vec<HostProvider> {
+async fn probe() -> Vec<HostProvider> {
     let installed = probe_all_providers().await;
     let auth = probe_all_provider_auth().await;
 
@@ -82,7 +150,82 @@ fn auth_name(status: AuthStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    /// A memo of its own with a counted stand-in for the probe, so nothing
+    /// here touches [`MEMO`] — these tests must not decide what a later one
+    /// sees, and the real probes read whatever is installed on the machine.
+    fn counted() -> (Memo, AtomicUsize) {
+        (Memo::new(), AtomicUsize::new(0))
+    }
+
+    fn row(id: &str) -> Vec<HostProvider> {
+        vec![HostProvider {
+            id: id.to_string(),
+            label: id.to_string(),
+            installed: true,
+            version: Some("1.0.0".to_string()),
+            auth: Some("signed_in"),
+            login_command: None,
+        }]
+    }
+
+    /// The point of the memo: a client that loops the op gets the same answer
+    /// back without six more vendor binaries being run for it.
+    #[tokio::test]
+    async fn a_second_ask_inside_the_window_does_not_probe_again() {
+        let (memo, probes) = counted();
+        let at = Instant::now();
+        let probe = || async {
+            probes.fetch_add(1, Ordering::SeqCst);
+            row("claude")
+        };
+
+        let first = memo.get(at, probe).await;
+        let second = memo.get(at + FRESH_FOR / 2, probe).await;
+
+        assert_eq!(probes.load(Ordering::SeqCst), 1, "it probed twice");
+        assert_eq!(first.len(), second.len());
+        assert_eq!(first[0].id, second[0].id);
+    }
+
+    /// Stale is stale: the window is short precisely so that a sign-in done on
+    /// the host shows up on the client's next look, not on its next restart.
+    #[tokio::test]
+    async fn an_ask_past_the_window_probes_again_and_reports_the_change() {
+        let (memo, probes) = counted();
+        let at = Instant::now();
+        let probe = || async {
+            let nth = probes.fetch_add(1, Ordering::SeqCst);
+            row(if nth == 0 { "claude" } else { "codex" })
+        };
+
+        assert_eq!(memo.get(at, probe).await[0].id, "claude");
+        // Exactly at the boundary counts as expired — `fresh` is a strict `<`.
+        let after = memo.get(at + FRESH_FOR, probe).await;
+
+        assert_eq!(probes.load(Ordering::SeqCst), 2);
+        assert_eq!(after[0].id, "codex", "it served the stale answer");
+    }
+
+    /// An empty answer is an answer. Memoising `None`-as-miss instead would
+    /// re-probe every call on a machine with no provider installed — the one
+    /// machine where probing is pure waste.
+    #[tokio::test]
+    async fn an_empty_answer_is_remembered_like_any_other() {
+        let (memo, probes) = counted();
+        let at = Instant::now();
+        let probe = || async {
+            probes.fetch_add(1, Ordering::SeqCst);
+            Vec::new()
+        };
+
+        assert!(memo.get(at, probe).await.is_empty());
+        assert!(memo.get(at + FRESH_FOR / 2, probe).await.is_empty());
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+    }
 
     /// The probes read this machine, so the contents vary — the shape does
     /// not. Every row names a known provider, says whether it is here, and
