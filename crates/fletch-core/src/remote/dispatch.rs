@@ -606,6 +606,7 @@ impl Dispatch for SupervisorDispatch {
                         a.fork_base,
                         a.issue_ref,
                         remote_purpose(a.purpose),
+                        a.task,
                     )
                     .await)
                 }
@@ -1805,6 +1806,9 @@ struct SpawnArgs {
     /// Honoured only for `PURPOSE_ROADMAP_PM`; see [`remote_purpose`].
     #[serde(default)]
     purpose: Option<String>,
+    /// The first prompt, persisted as the task at creation (see `SpawnRequest`).
+    #[serde(default)]
+    task: Option<String>,
 }
 
 /// One project's purpose-scoped chats (`workspace::PURPOSE_ROADMAP_PM`).

@@ -357,6 +357,11 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // Tags the workspace with its originating issue so the agent's PR
         // closes it (backend appends `Closes #N` to the primary repo's PR).
         draft.issueRef,
+        undefined,
+        // The prompt is sent below once the process is up; persisting it as the
+        // task at spawn means the returned record and every refresh snapshot
+        // already carry it, so the sidebar row never reads empty in between.
+        prompt,
       );
       // A draft started from a board card links its item to the agent the
       // moment there is an agent to link to — this is the only point where the
@@ -376,12 +381,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       set((state) => {
         const { [id]: _droppedDraft, ...restComposerDrafts } = state.composerDrafts;
         const patches: Partial<AppState> = {
-          // The prompt is sent below, once the process is up, and the host only
-          // records it as the task on delivery — so the freshly spawned record
-          // has none. Seed it here, like the log bubble, so the sidebar row reads
-          // the prompt from the moment it appears; the host's `agent:task` later
-          // confirms the same value.
-          workspace: adoptSpawnedAgent(state.workspace, { ...rec, task: prompt }),
+          workspace: adoptSpawnedAgent(state.workspace, rec),
           selectedAgentId: rec.id,
           drafts: state.drafts.filter((d) => d.id !== id),
           activeDraftId: null,

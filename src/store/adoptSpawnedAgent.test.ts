@@ -110,9 +110,11 @@ describe("spawning a draft under a recycled landmark name", () => {
     const { selectedAgentId, workspace } = store.getState();
     expect(selectedAgentId).toBe(NAME);
     const selected = workspace?.agents.find((a) => a.id === selectedAgentId);
-    // The spawn response carries no task (the prompt is sent after the process
-    // is up); the store seeds it so the sidebar row reads the prompt at once.
-    expect(selected).toEqual({ ...fresh, task: "ship it" });
+    expect(selected).toEqual(fresh);
+    // The prompt rides the spawn as the record's task, so the returned record
+    // and every later snapshot carry it — no client-side seed to be clobbered
+    // by a refresh while the process starts.
+    expect(spawnAgent.mock.calls[0]?.at(-1)).toBe("ship it");
     // The archived predecessor is gone entirely — one record per id.
     expect(workspace?.agents.filter((a) => a.id === NAME)).toHaveLength(1);
     expect(workspace?.agents).toContainEqual(unrelated);
@@ -124,9 +126,6 @@ describe("spawning a draft under a recycled landmark name", () => {
     await store.getState().spawnFromDraft("d1", "ship it", "claude", "claude-opus-5");
 
     const { selectedAgentId, workspace } = store.getState();
-    expect(workspace?.agents.find((a) => a.id === selectedAgentId)).toEqual({
-      ...fresh,
-      task: "ship it",
-    });
+    expect(workspace?.agents.find((a) => a.id === selectedAgentId)).toEqual(fresh);
   });
 });

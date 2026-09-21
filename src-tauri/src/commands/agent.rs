@@ -34,6 +34,10 @@ pub async fn spawn_agent(
     // the Roadmap tab's project-manager chat (`workspace::PURPOSE_ROADMAP_PM`).
     // Absent for a normal spawn.
     purpose: Option<String>,
+    // The first prompt, persisted as the task at creation so the sidebar row
+    // never shows an empty task while the process starts. Absent when the
+    // caller has no prompt yet.
+    task: Option<String>,
 ) -> Result<AgentRecord> {
     fletch_core::commands::spawn_agent_impl(
         supervisor.inner().clone(),
@@ -51,6 +55,7 @@ pub async fn spawn_agent(
         fork_base,
         issue_ref,
         purpose,
+        task,
     )
     .await
 }

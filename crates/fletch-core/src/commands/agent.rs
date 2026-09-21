@@ -29,6 +29,7 @@ pub async fn spawn_agent_impl(
     fork_base: Option<String>,
     issue_ref: Option<String>,
     purpose: Option<String>,
+    task: Option<String>,
 ) -> Result<AgentRecord> {
     sup.spawn_agent(
         ctx,
@@ -57,6 +58,8 @@ pub async fn spawn_agent_impl(
             // Set when the spawn originates from a Home-inbox issue.
             issue_ref,
             purpose,
+            // The first prompt, when the caller sends it right after spawning.
+            task,
         },
     )
     .await
