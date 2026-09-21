@@ -33,8 +33,11 @@
 //     for the same-named agent on a host (and `publishPreAuthorized` reads it to
 //     auto-approve a push).
 //   - Provider versions, model catalogs, installs, container builds, the custom
-//     agent / skill / MCP libraries, the account and the appearance settings
-//     are properties of this desktop, keyed by provider or runtime.
+//     agent / skill / MCP libraries, the account profile, the Linear connection
+//     and the appearance settings are properties of this desktop, keyed by
+//     provider or runtime. `github` is NOT among them any more — it is the
+//     active environment's own login (see store/account), so it is stashed
+//     below like the rest of that environment's view.
 //   - `prWriteOrder`'s high-water marks are keyed by checkout, but its ticket
 //     counter is globally monotonic: every write issued after a switch outranks
 //     every one issued before it, so a shared key cannot reject a fresh write.
@@ -96,6 +99,10 @@ const STASH_KEYS = [
   // on one, and `loadPendingPublishApprovals` re-reads the entered
   // environment's queue rather than trusting what was parked.
   "pendingPublishApprovals",
+  // Whose GitHub answers for this environment's checkouts. Parked so switching
+  // back shows the last known answer while `refreshGithub` re-probes, rather
+  // than blanking the push/PR affordances for a moment.
+  "github",
   // What the user typed but did not send, per agent or per draft, and the
   // drafts themselves (grouped by repo path, which is the engine's).
   "composerSeeds",
@@ -151,6 +158,7 @@ const BLANK: Pick<AppState, StashKey> = {
   autopilotVerdicts: {},
   autopilotLog: {},
   pendingPublishApprovals: [],
+  github: null,
   composerSeeds: {},
   composerDrafts: {},
   drafts: [],
@@ -190,6 +198,33 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     const midTurn = get().managedBusy[agentId] && get().managedLogs[agentId] !== undefined;
     if (midTurn) return;
     await get().loadHistoryTranscript(agentId);
+  };
+
+  /** Ask the environment for everything it owns the answer to. One list, run
+   *  by both entry points below: a switch and a handshake are the same question
+   *  — what is true over there now — and hand-listing the reads at each is how
+   *  `github` came to be refreshed at neither.
+   *
+   *  Each is best-effort on its own: a host that is not connected rejects at
+   *  once (the client has no socket to write to), which leaves the stash — or
+   *  an empty view — on screen with the connection state beside it in the
+   *  switcher, rather than stopping the reads that follow. */
+  const resyncEnvironment = async () => {
+    // Issued unconditionally so it always claims the newest refresh
+    // generation, which is what drops a `get_workspace` still in flight
+    // against the environment we left.
+    await refreshWorkspace(set).catch(() => {});
+    // What this environment is blocked on, which no event will tell a client
+    // that was not connected when it was raised.
+    await get()
+      .loadPendingPublishApprovals()
+      .catch(() => {});
+    // …and whose GitHub login gates its push / PR / clone affordances:
+    // `store.github` is the ACTIVE environment's answer, so it is this Mac's
+    // until something re-probes it here.
+    await get()
+      .refreshGithub()
+      .catch(() => {});
   };
 
   return {
@@ -237,28 +272,18 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
       // now; ours must not write over it.
       if (get().activeEnvironmentId !== id) return;
 
-      // Then the truth. A host that is not connected rejects this at once (the
-      // client has no socket to write to), leaving the stash — or an empty view
-      // — on screen with the connection state beside it in the switcher.
-      // Issued unconditionally so it always claims the newest refresh
-      // generation, which is what drops a `get_workspace` still in flight
-      // against the environment we left.
-      await refreshWorkspace(set).catch(() => {});
-      // …and what this environment is blocked on, which no event will tell a
-      // client that was not connected when it was raised.
-      await get()
-        .loadPendingPublishApprovals()
-        .catch(() => {});
+      // Then the truth.
+      await resyncEnvironment();
     },
 
     environmentReconnected: (id) => {
       if (get().activeEnvironmentId !== id) return;
       void (async () => {
-        await refreshWorkspace(set).catch(() => {});
+        await resyncEnvironment();
+        // Only a reconnect needs this: the switch restored the log from the
+        // stash, where a dropped socket silently missed the live events the
+        // open agent's log is built from.
         await resyncSelectedAgent().catch(() => {});
-        await get()
-          .loadPendingPublishApprovals()
-          .catch(() => {});
       })();
     },
   };
