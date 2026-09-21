@@ -73,7 +73,12 @@ pub struct DirEntry {
 pub struct DirListing {
     /// Absolute, tilde-expanded directory that was read.
     pub base: String,
+    /// Directories first, then by name — and never more than the cap in
+    /// `list_dir_impl`.
     pub entries: Vec<DirEntry>,
+    /// Whether the directory held more entries than the cap, so a picker can
+    /// say that what it is showing is not all of it.
+    pub truncated: bool,
 }
 
 /// One entry in the checkout file list. Directories are derived on the
@@ -470,10 +475,11 @@ pub fn expand_tilde(path: &str) -> PathBuf {
 
 /// Shared with the remote dispatcher.
 pub async fn list_dir_impl(path: String) -> Result<DirListing> {
-    // Stop reading well above what the picker shows (the frontend filters and
-    // caps display at 10) so a huge directory like /usr/lib or node_modules
-    // can't stall the read or bloat the IPC payload. Hidden entries are kept
-    // so typing a leading "." can still reveal dotfiles.
+    // Keep the payload bounded (the picker filters it down and the composer
+    // shows ten), but cap *after* sorting: taking the filesystem's first
+    // thousand names dropped whichever folder the user was actually looking for
+    // whenever a sibling like node_modules came back first. Hidden entries are
+    // kept so typing a leading "." can still reveal dotfiles.
     const MAX_ENTRIES: usize = 1000;
 
     let dir = expand_tilde(&path);
@@ -481,22 +487,42 @@ pub async fn list_dir_impl(path: String) -> Result<DirListing> {
         .map_err(|e| Error::Other(format!("read_dir {}: {e}", dir.display())))?;
 
     let mut entries = Vec::new();
-    for entry in read.flatten().take(MAX_ENTRIES) {
+    for entry in read.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        // One extra stat per directory, and only for directories: a listing of
-        // a thousand files pays nothing for it.
-        let is_repo = is_dir && entry.path().join(".git").exists();
+        let file_type = entry.file_type().ok();
+        let is_dir = match file_type {
+            // `file_type` answers about the link itself, so a symlinked
+            // directory (`~/Code` -> an external volume) would read as a file
+            // and vanish from every folder picker. One stat, and only for the
+            // links: a plain entry keeps the answer the read already had.
+            Some(t) if t.is_symlink() => std::fs::metadata(entry.path())
+                .map(|m| m.is_dir())
+                .unwrap_or(false),
+            Some(t) => t.is_dir(),
+            None => false,
+        };
         entries.push(DirEntry {
             name,
             is_dir,
-            is_repo,
+            is_repo: false,
         });
+    }
+
+    // Directories first, then by name: this is what a picker walks, and a cap
+    // is only meaningful over a deterministic order.
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+    let truncated = entries.len() > MAX_ENTRIES;
+    entries.truncate(MAX_ENTRIES);
+
+    // After the cap, so a huge directory costs at most `MAX_ENTRIES` stats.
+    for entry in &mut entries {
+        entry.is_repo = entry.is_dir && dir.join(&entry.name).join(".git").exists();
     }
 
     Ok(DirListing {
         base: dir.to_string_lossy().to_string(),
         entries,
+        truncated,
     })
 }
 
@@ -593,6 +619,78 @@ pub fn resolve_new_path(checkout: &Path, rel: &str) -> Result<PathBuf> {
         std::fs::create_dir_all(dir)?;
     }
     Ok(abs)
+}
+
+#[cfg(test)]
+mod list_dir_tests {
+    use super::list_dir_impl;
+
+    async fn list(dir: &std::path::Path) -> super::DirListing {
+        list_dir_impl(dir.to_string_lossy().to_string())
+            .await
+            .expect("list_dir")
+    }
+
+    /// A folder reached through a symlink — `~/Code` pointing at an external
+    /// volume is the everyday case — is a folder. `file_type` answers about the
+    /// link, so without the extra stat it reads as a file and the picker cannot
+    /// walk into it at all.
+    #[tokio::test]
+    async fn follows_a_symlinked_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(tmp.path().join("file.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("link")).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("file.txt"), tmp.path().join("flink")).unwrap();
+
+        let listing = list(tmp.path()).await;
+        let entry = |name: &str| {
+            listing
+                .entries
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap_or_else(|| panic!("{name} is listed"))
+                .is_dir
+        };
+
+        assert!(entry("link"), "a link to a directory lists as one");
+        assert!(!entry("flink"), "a link to a file does not");
+        assert!(!listing.truncated);
+    }
+
+    /// Directories first and then by name, so the cap below takes a slice the
+    /// user can predict rather than whatever order the filesystem replied in.
+    #[tokio::test]
+    async fn sorts_directories_first_then_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["b.txt", "a.txt"] {
+            std::fs::write(tmp.path().join(name), b"x").unwrap();
+        }
+        for name in ["zeta", "alpha"] {
+            std::fs::create_dir(tmp.path().join(name)).unwrap();
+        }
+
+        let listing = list(tmp.path()).await;
+        let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "zeta", "a.txt", "b.txt"]);
+    }
+
+    /// The cap is applied to the sorted list, and the listing says so — a folder
+    /// that sorts late must not disappear because a thousand files came first.
+    #[tokio::test]
+    async fn caps_the_sorted_list_and_says_it_did() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..1100 {
+            std::fs::write(tmp.path().join(format!("f{i:05}.txt")), b"x").unwrap();
+        }
+        std::fs::create_dir(tmp.path().join("zzz-late")).unwrap();
+
+        let listing = list(tmp.path()).await;
+        assert_eq!(listing.entries.len(), 1000);
+        assert!(listing.truncated);
+        assert_eq!(listing.entries[0].name, "zzz-late");
+    }
 }
 
 #[cfg(test)]
