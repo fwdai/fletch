@@ -123,7 +123,23 @@ pub fn check_cli(name: &str) -> ToolStatus {
 /// Probe every known provider in parallel and return their resolved path +
 /// version string. Missing/uninstalled providers return `None` for both fields;
 /// the frontend falls back to the hardcoded defaults in that case.
+///
+/// Every `--version` here is bounded (see [`VERSION_TIMEOUT`]), so one wedged
+/// CLI — or a custom binary path pointed at something that never exits — costs
+/// a slow probe rather than a caller that never returns.
 pub async fn probe_all_providers() -> Vec<ProviderProbe> {
+    probe_providers(true).await
+}
+
+/// The same set, resolved but never *run*: no `--version`, no subprocess at
+/// all. For callers that only need to know whether a provider's CLI is on this
+/// machine (`fletch-host status`), where executing six vendor binaries to
+/// answer that would be both wasteful and a way to hang.
+pub async fn resolve_all_providers() -> Vec<ProviderProbe> {
+    probe_providers(false).await
+}
+
+async fn probe_providers(with_version: bool) -> Vec<ProviderProbe> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
 
     // (id, bin_name, human_label)
@@ -138,9 +154,20 @@ pub async fn probe_all_providers() -> Vec<ProviderProbe> {
         let id = id.to_string();
         let bin = bin.to_string();
         let label = label.to_string();
-        handles.push(tokio::task::spawn_blocking(move || {
-            let path = resolve_agent_bin(&id, &bin, &label, &home).ok();
-            let version = path.as_deref().and_then(probe_version);
+        handles.push(tokio::spawn(async move {
+            let resolving = id.clone();
+            // Resolution touches the filesystem (and, once per process, the
+            // login shell), so it stays on the blocking pool.
+            let path = tokio::task::spawn_blocking(move || {
+                resolve_agent_bin(&resolving, &bin, &label, &home).ok()
+            })
+            .await
+            .ok()
+            .flatten();
+            let version = match path.as_deref() {
+                Some(path) if with_version => probe_version_bounded(path).await,
+                _ => None,
+            };
             ProviderProbe { id, version, path }
         }));
     }
@@ -154,6 +181,26 @@ pub async fn probe_all_providers() -> Vec<ProviderProbe> {
     results
 }
 
+/// Ceiling on a single `--version`. Every CLI here answers in well under a
+/// second; a probe that reaches this is a binary that is wedged, prompting, or
+/// not the CLI the user thought they pointed us at.
+const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// [`probe_version`] with a deadline, and a child that dies with it:
+/// `kill_on_drop` means the timeout drops the `Command` future and reaps the
+/// process rather than leaving it running with nobody waiting on it. A probe
+/// that times out reports no version, exactly like one that printed nothing.
+async fn probe_version_bounded(bin: &str) -> Option<String> {
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.arg("--version").kill_on_drop(true);
+    crate::bin_resolve::apply_login_shell_env(cmd.as_std_mut());
+    let out = tokio::time::timeout(VERSION_TIMEOUT, cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    parse_semver(&version_text(&out.stdout, &out.stderr))
+}
+
 /// Run `<bin> --version` and extract the first semver-like token from stdout
 /// (or stderr as fallback). Returns `None` if the binary errors or emits no
 /// recognisable version.
@@ -162,12 +209,13 @@ fn probe_version(bin: &str) -> Option<String> {
     cmd.arg("--version");
     crate::bin_resolve::apply_login_shell_env(&mut cmd);
     let out = cmd.output().ok()?;
-    let text = if !out.stdout.is_empty() {
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    } else {
-        String::from_utf8_lossy(&out.stderr).into_owned()
-    };
-    parse_semver(&text)
+    parse_semver(&version_text(&out.stdout, &out.stderr))
+}
+
+/// What a CLI said its version was: stdout, or stderr when stdout was silent.
+fn version_text(stdout: &[u8], stderr: &[u8]) -> String {
+    let said = if stdout.is_empty() { stderr } else { stdout };
+    String::from_utf8_lossy(said).into_owned()
 }
 
 /// Extract the first `N.N[.N[.N]]` token from arbitrary version output.
