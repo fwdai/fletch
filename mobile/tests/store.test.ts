@@ -287,6 +287,25 @@ describe("answering a gated publish", () => {
     await state().answerPublishApproval(request.id, true);
     expect(state().pendingPublishApprovals).toHaveLength(0);
   });
+
+  it("keeps a prompt raised while `approvals_list` was in flight", async () => {
+    // The host forwards events and writes op responses from separate tasks, so
+    // a publish gated a moment after the queue was read reaches the phone
+    // first. Replacing the queue wholesale used to drop it, and the host then
+    // waits out its timeout with nothing on screen to answer it.
+    const waiting = { ...request, id: "pub-already-waiting" };
+    const raised = { ...request, id: "pub-mid-flight" };
+    const list = vi.spyOn(api, "listPublishApprovals").mockImplementation(async () => {
+      state().receivePublishApproval(raised);
+      return [waiting];
+    });
+
+    await state().loadPendingApprovals();
+
+    expect(state().pendingPublishApprovals.map((r) => r.id)).toEqual([waiting.id, raised.id]);
+    list.mockRestore();
+    useStore.setState({ pendingPublishApprovals: [] });
+  });
 });
 
 describe("spawn flow", () => {

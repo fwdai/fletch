@@ -239,6 +239,41 @@ describe("receivePublishApproval", () => {
       ]);
     });
 
+    it("keeps a prompt that was raised while the list was in flight", async () => {
+      // The host forwards events and writes op responses from separate tasks,
+      // so a publish gated a moment after the queue was read reaches us first.
+      // Replacing the queue wholesale used to drop it — the host then waits out
+      // its timeout with nothing on screen to answer it.
+      activeIs(remote(["approvals_list"]));
+      const s = store();
+      listPublishApprovals.mockImplementation(async () => {
+        (s.getState().receivePublishApproval as Recv)(request({ id: "raised-mid-flight" }));
+        return [request({ id: "already-waiting" })];
+      });
+
+      await (s.getState().loadPendingPublishApprovals as Load)();
+
+      expect((s.getState().pendingPublishApprovals as PublishApproval[]).map((r) => r.id)).toEqual([
+        "already-waiting",
+        "raised-mid-flight",
+      ]);
+    });
+
+    it("does not put back a prompt the host resolved while the list was in flight", async () => {
+      activeIs(remote(["approvals_list"]));
+      const s = store();
+      listPublishApprovals.mockImplementation(async () => {
+        (s.getState().resolvePublishApproval as Resolve)({ id: "over", outcome: "denied" });
+        return [request({ id: "over" }), request({ id: "still-waiting" })];
+      });
+
+      await (s.getState().loadPendingPublishApprovals as Load)();
+
+      expect((s.getState().pendingPublishApprovals as PublishApproval[]).map((r) => r.id)).toEqual([
+        "still-waiting",
+      ]);
+    });
+
     it("asks neither this Mac nor a host too old for the op", async () => {
       listPublishApprovals.mockClear();
       listPublishApprovals.mockResolvedValue([]);

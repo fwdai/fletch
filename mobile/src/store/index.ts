@@ -7,6 +7,7 @@ import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
 import type { LiveTurn } from "@desktop/api/types/session";
 import { appActionMessage } from "@desktop/delegation";
+import { type ApprovalEvent, replayApprovalEvents } from "@desktop/util/publishApprovals";
 import { create } from "zustand";
 import type { ChatItem, RawEvent } from "../adapters";
 import { createApi } from "../api";
@@ -255,6 +256,11 @@ let queuedPush: PushFletch | null = null;
  *  before that, which on a fresh install means a null host key written over
  *  the one a pairing that got in first had just pinned. */
 let queuedLink: HostTarget | null = null;
+
+/** Approval events seen while an `approvals_list` is in flight, replayed over
+ *  its answer so the snapshot cannot undo them (see util/publishApprovals).
+ *  Null when no list is outstanding, which is nearly always. */
+let approvalsInFlight: ApprovalEvent[] | null = null;
 
 const homeItem = (): NavItem => ({ key: Date.now(), screen: "home", props: {}, phase: "idle" });
 
@@ -1004,12 +1010,22 @@ export const useStore = create<MobileState>()((set, get) => ({
   receivePublishApproval(request) {
     // No pre-authorization to consult, unlike the desktop's autopilot: the
     // phone has no standing per-checkout grant, so every prompt is shown.
+    approvalsInFlight?.push({ kind: "requested", request });
     set((s) => ({ pendingPublishApprovals: [...s.pendingPublishApprovals, request] }));
   },
 
   async loadPendingApprovals() {
     if (!get().hostSupports("approvals_list")) return;
-    set({ pendingPublishApprovals: await api.listPublishApprovals() });
+    const buffer: ApprovalEvent[] = [];
+    approvalsInFlight = buffer;
+    try {
+      // The snapshot is what the host was blocked on when it read its queue,
+      // not when it answered; whatever it said in between is folded back in.
+      const pending = await api.listPublishApprovals();
+      set({ pendingPublishApprovals: replayApprovalEvents(pending, buffer) });
+    } finally {
+      if (approvalsInFlight === buffer) approvalsInFlight = null;
+    }
   },
 
   async answerPublishApproval(id, approved) {
@@ -1022,6 +1038,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   resolvePublishApproval(id) {
+    approvalsInFlight?.push({ kind: "resolved", id });
     set((s) => ({
       pendingPublishApprovals: s.pendingPublishApprovals.filter((r) => r.id !== id),
     }));
