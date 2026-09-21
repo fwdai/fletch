@@ -194,6 +194,10 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
         <div className="agent-row flex-center">
           <span
             className={`ag-name ag-title ${untitled ? "ag-name-draft" : ""} ${working && !awaiting ? "shimmer" : ""}`}
+            // Native title, as on SubagentRow: the row truncates, and the
+            // hover-delayed browser tooltip recovers the full text without
+            // firing the app tooltip on every pass over the row.
+            title={title}
           >
             {title}
           </span>
