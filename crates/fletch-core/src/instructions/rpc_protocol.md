@@ -66,12 +66,17 @@ can define their own ops on top of the same mailbox.
 
 ### Workspace title
 
-`{"op":"set_title","args":{"title":"Swap sidebar title and prompt"}}` — 3–6
-words naming the work, max 80 chars.
+`set_title` names the work for the sidebar: 3–6 words, max 80 chars, no
+double quotes. Fire-and-forget — do not wait for the response:
 
-- Call it once the user has asked for a change, investigation, or deliverable.
-  Not on greetings, small talk, or clarifying questions.
-- Each turn: if untitled and the purpose is now clear, call it first.
+```sh
+ID=$(uuidgen); printf '{"id":"%s","op":"set_title","args":{"title":"Swap sidebar title and prompt"}}' "$ID" > "$FLETCH_RPC_DIR/requests/$ID.json.tmp" && mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"
+```
+
+- First tool call of the first turn, if the user has asked for a change,
+  investigation, or deliverable. Not on greetings, small talk, or clarifying
+  questions.
+- Each later turn: if untitled and the purpose is now clear, call it first.
 - Untitled after the user's third message: call it with your best inference.
 - Repeat calls overwrite. Re-call only when the purpose changes materially.
 
