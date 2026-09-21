@@ -1,6 +1,7 @@
 import type { RemoteDevice } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { formatAge } from "@/util/format";
+import { presetLabel, presetOfScopes } from "./presets";
 
 const PLATFORM_LABELS: Record<string, string> = {
   ios: "iOS",
@@ -8,9 +9,10 @@ const PLATFORM_LABELS: Record<string, string> = {
   macos: "macOS",
 };
 
-/** One paired device: name, platform, whether it is connected right now, and
- *  the credential's revoke. Revoking drops the stored token hash — the phone's
- *  next `hello` is refused, and it has to be paired again. */
+/** One paired device: name, platform, what it may do, whether it is connected
+ *  right now, and the credential's revoke. Revoking drops the device's public
+ *  key — the phone's next `hello` is refused, and it has to be paired again,
+ *  which is also the only way to change what a device may do. */
 export function DeviceRow({
   device,
   disabled,
@@ -21,12 +23,13 @@ export function DeviceRow({
   onRevoke: () => void;
 }) {
   const platform = PLATFORM_LABELS[device.platform] ?? device.platform;
+  const access = presetLabel(presetOfScopes(device.scopes ?? []));
   const seen = device.lastSeenAt ? formatAge(device.lastSeenAt, Date.now()) : null;
   const sub = device.connected
-    ? `${platform} · connected`
+    ? `${platform} · ${access} · connected`
     : seen
-      ? `${platform} · last seen ${seen} ago`
-      : `${platform} · never connected`;
+      ? `${platform} · ${access} · last seen ${seen} ago`
+      : `${platform} · ${access} · never connected`;
 
   return (
     <div className="set-row flex-center">

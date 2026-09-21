@@ -17,7 +17,26 @@ export interface RemoteDevice {
   /** Whether this device has an APNs token registered, i.e. whether push
    *  alerts reach it. The token itself never leaves the host. */
   pushEnabled: boolean;
+  /** What this device may do, fixed when it paired — a subset of
+   *  {@link ALL_SCOPES}. A device paired before scopes existed reads as all of
+   *  them. Changing it is a revoke and a re-pair. */
+  scopes: string[];
 }
+
+/** The six slices of the remote surface (`dispatch::Scope` in Rust). The host
+ *  is what enforces them; this list is only here so the pane can describe a
+ *  grant. */
+export const ALL_SCOPES = [
+  "observe",
+  "agents",
+  "projects",
+  "workflows",
+  "roadmap",
+  "publish",
+] as const;
+
+/** The named scope sets pairing offers (`remote::PAIRING_PRESETS`). */
+export type PairingPreset = "full" | "control";
 
 /** The relay the desktop offers when the switch goes on. Mirrors
  *  `DEFAULT_RELAY_URL` in `src-tauri/src/remote/mod.rs`; only a suggestion —
@@ -70,4 +89,8 @@ export interface PairingInvite {
   url: string;
   /** RFC3339. */
   expiresAt: string;
+  /** The preset this code grants when it is redeemed. */
+  preset: PairingPreset;
+  /** That preset spelled out, for a reader that would rather see the scopes. */
+  scopes: string[];
 }

@@ -60,8 +60,14 @@ impl Admin {
                 }
                 Ok(status)
             }
+            // `preset` is the access the code grants (`full` or `control`);
+            // absent means `full`, as it did before presets existed.
             "begin_pairing" => {
-                let invite = self.remote()?.begin_pairing();
+                let args: PresetArgs = parse(args)?;
+                let invite = self
+                    .remote()?
+                    .begin_pairing(args.preset.as_deref())
+                    .map_err(|e| e.to_string())?;
                 value(&invite)
             }
             "devices_list" => value(&self.remote()?.status().devices),
@@ -193,6 +199,15 @@ fn value<T: serde::Serialize>(value: &T) -> Result<Value, String> {
 #[serde(rename_all = "camelCase")]
 struct DeviceArgs {
     device_id: String,
+}
+
+/// `begin_pairing`'s one optional argument. Absent is `full`, so a caller that
+/// predates presets (an older `fletch-host` against a newer engine) keeps
+/// pairing exactly as it did.
+#[derive(Deserialize)]
+struct PresetArgs {
+    #[serde(default)]
+    preset: Option<String>,
 }
 
 #[derive(Deserialize)]

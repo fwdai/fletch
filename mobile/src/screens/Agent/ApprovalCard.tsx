@@ -53,8 +53,9 @@ export function ApprovalCard({
 /** A publish the host is holding for a human (`publish:approval-requested`,
  *  raised when the Mac's "Confirm before publishing" setting is on). The agent
  *  is blocked on it until someone answers or the host's wait lapses, so this is
- *  shown wherever the phone can reach it — including on an older host that
- *  cannot be answered from here, where saying so beats a silent stall. */
+ *  shown wherever the phone can reach it — including when it cannot be answered
+ *  from here (an older host, or a device paired without `publish`), where
+ *  saying so beats a silent stall. */
 export function PublishApprovalCard({ request }: { request: PublishApproval }) {
   const answer = useStore((s) => s.answerPublishApproval);
   const canAnswer = useStore((s) => s.hostSupports("answer_publish_approval"));
@@ -81,7 +82,7 @@ export function PublishApprovalCard({ request }: { request: PublishApproval }) {
       <div className="always">
         {canAnswer
           ? "An unanswered publish is refused on the host."
-          : "Answer it on your Mac — this one is too old to answer from the phone."}
+          : "Answer it on your Mac — this device may not answer publish approvals."}
       </div>
     </div>
   );

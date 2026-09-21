@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type PairingInvite, type RemoteStatus } from "@/api";
+import { api, type PairingInvite, type PairingPreset, type RemoteStatus } from "@/api";
 
 /** How often the pane re-reads status. A phone connecting or dropping produces
  *  no Tauri event (the remote server is the thing being observed, not an agent),
@@ -14,7 +14,9 @@ export interface Remote {
   setEnabled: (enabled: boolean) => Promise<void>;
   setPort: (port: number) => Promise<void>;
   setRelay: (url: string | null) => Promise<void>;
-  beginPairing: () => Promise<void>;
+  /** Mint a code granting `preset`. The host refuses a preset it does not
+   *  define, which surfaces as `error`. */
+  beginPairing: (preset: PairingPreset) => Promise<void>;
   revoke: (deviceId: string) => Promise<void>;
   clearInvite: () => void;
 }
@@ -78,10 +80,10 @@ export function useRemote(): Remote {
     [mutate],
   );
 
-  const beginPairing = useCallback(async () => {
+  const beginPairing = useCallback(async (preset: PairingPreset) => {
     setError(null);
     try {
-      setInvite(await api.remoteBeginPairing());
+      setInvite(await api.remoteBeginPairing(preset));
     } catch (e) {
       setError(String(e));
     }

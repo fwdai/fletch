@@ -529,6 +529,37 @@ async fn read_loop<S: WsTransport>(
                             continue;
                         }
 
+                        // The per-device half of the same gate: the op exists on
+                        // this host, but this device's scopes may not reach it.
+                        // Answered rather than closed — a scope is a standing
+                        // fact about the device, not a bad credential, and the
+                        // connection stays useful for everything else.
+                        //
+                        // Read from the store on every frame, not cached at the
+                        // handshake: the record is the only authority on what a
+                        // device may do, and a re-pair can narrow it under a
+                        // live connection. A cached set would let a device that
+                        // paired Full keep publishing after it re-paired as
+                        // Control, for as long as it stayed connected. The read
+                        // is one uncontended lock and a scan of a list that has
+                        // a handful of rows.
+                        //
+                        // An id with no record answers `forbidden` too: a revoke
+                        // between frames already closes the socket, so this is
+                        // only the ordering backstop.
+                        //
+                        // `SupervisorDispatch` carries no identity by design, so
+                        // this is the only place it can be checked.
+                        let device = authenticated.as_deref().unwrap_or_default();
+                        let permitted = state
+                            .devices()
+                            .scopes_of(device)
+                            .is_some_and(|scopes| super::dispatch::allows(&scopes, &frame.op));
+                        if !permitted {
+                            out.send(json_frame(err_frame(&frame.id, super::dispatch::FORBIDDEN)));
+                            continue;
+                        }
+
                         // Answered here rather than through the dispatcher: it
                         // writes to this connection's own device record, and
                         // the identity is the one the handshake proved — see
@@ -619,19 +650,27 @@ async fn authenticate(
     remote_static: &[u8; 32],
 ) -> Option<(DeviceRecord, Value)> {
     let host = super::host_info();
-    // Same descriptor on both results: what the host answers does not depend on
-    // which frame asked, and a client that only ever pairs must learn it too.
-    let protocol = super::protocol_descriptor();
+    // The descriptor is per *device*, not per host: `ops` is narrowed to what
+    // this device's pairing scopes reach, so a client's existing "the host does
+    // not have that op" gate also hides what this device may not do. Both
+    // results carry it — a client that only ever pairs must learn it too.
     match frame.op.as_str() {
         "pair" => {
             let args: PairArgs = serde_json::from_value(frame.args.clone()).ok()?;
-            if !state.pairing().consume(&args.token) {
-                return None;
-            }
+            // The token carries the grant: nothing in the frame says, or may
+            // say, what access this pairing is claiming.
+            let pending = state.pairing().consume(&args.token)?;
             let info = args.device.unwrap_or_default();
+            // Through `pair_device`, not the store directly: a re-pair that
+            // *changes* what this device may do also has to hang up on the
+            // connections still holding the old descriptor.
             let record = state
-                .devices()
-                .register(&info.name(), &info.platform(), remote_static)
+                .pair_device(
+                    &info.name(),
+                    &info.platform(),
+                    remote_static,
+                    &pending.scopes,
+                )
                 .map_err(|e| tracing::warn!(error = %e, "remote: pairing failed"))
                 .ok()?;
             // No snapshot here, by contract: `pair` only authenticates and
@@ -640,7 +679,7 @@ async fn authenticate(
             let result = json!({
                 "deviceId": record.device_id,
                 "host": host,
-                "protocol": protocol,
+                "protocol": super::protocol_descriptor_for(&record.scope_set()),
             });
             Some((record, result))
         }
@@ -649,6 +688,7 @@ async fn authenticate(
             // name and platform from `pair`, and the key is not up for
             // negotiation.
             let record = state.devices().find_by_key(remote_static)?;
+            let protocol = super::protocol_descriptor_for(&record.scope_set());
             let workspace = state
                 .dispatch("get_workspace", json!({}))
                 .await
