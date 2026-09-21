@@ -27,6 +27,11 @@
 //     because autopilot never runs against a remote environment: its rungs need
 //     `run_verification`, `fork_agent` and the local `project_settings` table,
 //     none of which are on the wire (docs/remote-protocol.md's op table).
+//     What autopilot builds *per checkout* — `autopilot`, `autopilotVerdicts`,
+//     `autopilotLog` — IS stashed, for the reason above: those maps are keyed by
+//     `agentId::subdir`, so a local checkout's enrolment would otherwise answer
+//     for the same-named agent on a host (and `publishPreAuthorized` reads it to
+//     auto-approve a push).
 //   - Provider versions, model catalogs, installs, container builds, the custom
 //     agent / skill / MCP libraries, the account and the appearance settings
 //     are properties of this desktop, keyed by provider or runtime.
@@ -82,6 +87,11 @@ const STASH_KEYS = [
   "delegations",
   "delegationNotices",
   "verificationReports",
+  // Per-checkout autopilot: what it is tracking, the verdict it is judging the
+  // open cycle by, and the history it wrote.
+  "autopilot",
+  "autopilotVerdicts",
+  "autopilotLog",
   // What the user typed but did not send, per agent or per draft, and the
   // drafts themselves (grouped by repo path, which is the engine's).
   "composerSeeds",
@@ -133,6 +143,9 @@ const BLANK: Pick<AppState, StashKey> = {
   delegations: {},
   delegationNotices: {},
   verificationReports: {},
+  autopilot: {},
+  autopilotVerdicts: {},
+  autopilotLog: {},
   composerSeeds: {},
   composerDrafts: {},
   drafts: [],

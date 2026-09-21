@@ -77,6 +77,9 @@ const newStore = () => {
         composerDrafts: {},
         managedLogs: {},
         managedBusy: {},
+        autopilot: {},
+        autopilotLog: {},
+        autopilotVerdicts: {},
         loadHistoryTranscript: vi.fn(),
       }) as unknown as AppState,
   );
@@ -137,6 +140,28 @@ describe("switchEnvironment", () => {
     expect(store.getState().environments[HOST].stash?.composerDrafts).toEqual({
       fuji: "typed on the host",
     });
+  });
+
+  it("does not let an autopilot enrolment answer for the host's same-named agent", async () => {
+    const store = newStore();
+    // Agent ids are recycled place names, so the host has a `fuji` too — and
+    // `publishPreAuthorized` reads this map by bare checkout key to auto-approve
+    // a push. An enrolment made here must not be on screen over there.
+    store.setState({
+      autopilot: { "fuji::": { enrolled: true } as never },
+      autopilotVerdicts: { "fuji::": { ok: true } as never },
+      autopilotLog: { "fuji::": [{ at: 1 }] as never },
+    });
+
+    await store.getState().switchEnvironment(HOST);
+
+    expect(store.getState().autopilot).toEqual({});
+    expect(store.getState().autopilotVerdicts).toEqual({});
+    expect(store.getState().autopilotLog).toEqual({});
+
+    // And it is parked, not lost: switching back puts the enrolment on screen.
+    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
+    expect(store.getState().autopilot["fuji::"]).toEqual({ enrolled: true });
   });
 
   it("re-registers the engine listeners against the new transport", async () => {
