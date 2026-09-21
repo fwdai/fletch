@@ -296,20 +296,22 @@ async function guard<T>(set: Setter, fn: () => Promise<T>): Promise<T> {
  *  and the client retries it on its own with the key it pinned — that retry
  *  has no `connect` above it, and without this the app would sit on the Pair
  *  screen holding a working connection. */
-/** Whether `target` pairs with a host other than the one on file. This phone
- *  keeps exactly one (see `store/persist`), so that pairing does not add a host
- *  — it drops the current one, its push registration and everything on screen.
- *  Unknowable for a link with no key pinned, which is not a claim about a
- *  different host. */
-function replacesPairedHost(hostKey: string | null, target: HostTarget): boolean {
-  return !!hostKey && !!target.hostKey && target.hostKey !== hostKey;
-}
-
-/** Ask before that replacement. A pairing link is a QR code or a tapped URL —
- *  an old one, or someone else's screen — and the current wiring acts on it
- *  without a word. */
-function confirmReplace(name?: string | null): boolean {
-  const question = `Replace ${name || "the paired host"}? This phone can pair with one host at a time.`;
+/** Whether to act on `target`, asking first when doing so would drop the host
+ *  on file. This phone keeps exactly one (see `store/persist`), so pairing with
+ *  a second does not add a host — it drops the current one, its push
+ *  registration and everything on screen. A pairing link is a QR code or a
+ *  tapped URL — an old one, or someone else's screen — so that is a question
+ *  rather than a side effect.
+ *
+ *  Nothing is asked when the link names no host key (it makes no claim about a
+ *  different host) or names the one already paired.
+ *
+ *  Both entry points ask it: `pairFromLink` for a link that arrives while the
+ *  app is running, and `init` for one that launched it — where the key on disk
+ *  had not been read yet when the link came in. */
+function shouldPairFrom(target: HostTarget, hostKey: string | null, hostName?: string | null) {
+  if (!hostKey || !target.hostKey || target.hostKey === hostKey) return true;
+  const question = `Replace ${hostName || "the paired host"}? This phone can pair with one host at a time.`;
   return typeof window === "undefined" || window.confirm(question);
 }
 
@@ -603,13 +605,14 @@ export const useStore = create<MobileState>()((set, get) => ({
       queuedLink = null;
       // The question `pairFromLink` could not ask: the key on disk was not read
       // yet when the link arrived, which is the ordinary case for a link that
-      // launched the app.
-      if (replacesPairedHost(hostKey, target) && !confirmReplace(saved.hostName)) {
-        set({ pairTarget: null, pairStep: null });
+      // launched the app. Declining drops the link and nothing else — the app
+      // was opened by it, so returning here would leave the phone sitting on an
+      // unconnected Home, with the host it *is* paired with never dialled.
+      if (shouldPairFrom(target, hostKey, saved.hostName)) {
+        await get().connect(target).catch(ignore);
         return;
       }
-      await get().connect(target).catch(ignore);
-      return;
+      set({ pairTarget: null, pairStep: null });
     }
     if (mockEnabled()) {
       // The mock host has no pairing step worth clicking through every reload;
@@ -670,7 +673,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       running?.host === target.host &&
       running?.port === target.port;
     if (get().pairStep && same) return;
-    if (replacesPairedHost(get().hostKey, target) && !confirmReplace(get().hostInfo?.name)) return;
+    if (!shouldPairFrom(target, get().hostKey, get().hostInfo?.name)) return;
     set({ pairTarget: target, connectionError: null });
     if (!get().ready) {
       // Held until `init` has read what is on disk — see `queuedLink`. The
