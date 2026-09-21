@@ -11,6 +11,7 @@ import {
   gateReason,
   hostSkew,
   hostVersionLabel,
+  requiredOps,
 } from "./capabilities";
 import type { EnvironmentEntry } from "./environments";
 
@@ -29,16 +30,17 @@ const host = (ops?: string[]): EnvironmentEntry => ({
   ...(ops ? { protocol: { version: 2, ops, events: [], features: [] } } : {}),
 });
 
-/** Every op a gate names: what a host has to answer for the app to offer it
+/** Every op any gate names: what a host has to answer for the app to offer it
  *  everything that can be offered remotely. Derived from the table, so a gate
  *  added later cannot quietly fall out of the fixtures below. */
-const GATED_OPS: string[] = Object.values(GATES)
-  .map((g): string | null => g.op)
-  .filter((op): op is string => op !== null);
+const GATED_OPS: string[] = (Object.keys(GATES) as GateName[]).flatMap((g) => [...requiredOps(g)]);
 
-/** How many gates a host from before the descriptor closes by itself: the
- *  op-backed ones whose op is outside the v2 set it answers. */
-const OLD_HOST_CLOSED = GATED_OPS.filter((op) => !V2_DEFAULT_OPS.includes(op)).length;
+/** The gates a host from before the descriptor closes by itself: op-backed, and
+ *  needing something the v2 set it answers does not carry. */
+const OLD_HOST_CLOSED = (Object.keys(GATES) as GateName[]).filter((g) => {
+  const ops = requiredOps(g);
+  return ops.length > 0 && !ops.every((op) => V2_DEFAULT_OPS.includes(op));
+}).length;
 
 describe("gateReason", () => {
   it("never gates the local environment", () => {
@@ -62,14 +64,33 @@ describe("gateReason", () => {
     expect(gateReason(generous, "autopilot")).toBe(GATES.autopilot.reason);
   });
 
-  it("opens adding a project on any host that takes one", () => {
-    // Both halves — browsing the disk (`list_dir`) and pinning the folder
-    // (`add_workspace_repo`) — have been on the wire since v2, so even a host
-    // that reported no descriptor takes a project.
-    expect(gateReason(host(), "addProject")).toBeNull();
-    expect(gateReason(host([...V2_DEFAULT_OPS]), "addProject")).toBeNull();
-    // A host that says it does not answer the op is taken at its word.
-    expect(gateReason(host(["get_workspace"]), "addProject")).toBe(GATES.addProject.reason);
+  it("opens the add-project flows a host can see through to the end", () => {
+    // Browsing the disk (`list_dir`), pinning the folder and cloning have all
+    // been on the wire since v2, so even a host that reported no descriptor
+    // takes a project — but creating one is a different story (below).
+    expect(gateReason(host(), "openProject")).toBeNull();
+    expect(gateReason(host([...V2_DEFAULT_OPS]), "openProject")).toBeNull();
+    expect(gateReason(host([...V2_DEFAULT_OPS]), "cloneProject")).toBeNull();
+    // A host that says it does not answer the ops is taken at its word.
+    expect(gateReason(host(["get_workspace"]), "openProject")).toBe(GATES.openProject.reason);
+  });
+
+  it("closes every add-project flow on a host that cannot list a directory", () => {
+    // The folder each of them needs is browsed over `list_dir`, so a host
+    // answering everything else still has nowhere to send the user first.
+    const blind = host([...V2_DEFAULT_OPS, "create_repo"].filter((op) => op !== "list_dir"));
+
+    expect(gateReason(blind, "openProject")).toBe(GATES.openProject.reason);
+    expect(gateReason(blind, "cloneProject")).toBe(GATES.cloneProject.reason);
+    expect(gateReason(blind, "createProject")).toBe(GATES.createProject.reason);
+  });
+
+  it("closes cloning on a host that has no GitHub reads to build the picker on", () => {
+    const noGh = host([...V2_DEFAULT_OPS].filter((op) => op !== "gh_repo_list"));
+
+    expect(gateReason(noGh, "cloneProject")).toBe(GATES.cloneProject.reason);
+    // …and only that one: pinning a folder asks GitHub nothing.
+    expect(gateReason(noGh, "openProject")).toBeNull();
   });
 
   it("keeps creating a project closed until a host offers `create_repo`", () => {
@@ -182,10 +203,10 @@ describe("closedGates", () => {
     const old = host();
 
     // A host from before the descriptor answers the v2 set: everything this
-    // side gates, plus every gate whose op landed after that set.
+    // side gates, plus every gate needing an op that landed after that set.
     const expected = (Object.keys(GATES) as GateName[]).filter((name) => {
-      const op = GATES[name].op;
-      return op === null || !V2_DEFAULT_OPS.includes(op);
+      const ops = requiredOps(name);
+      return ops.length === 0 || !ops.every((op) => V2_DEFAULT_OPS.includes(op));
     });
     expect(expected.length).toBeGreaterThan(0);
     expect(closedGates(old).map((g) => g.name)).toEqual(expected);
@@ -198,9 +219,9 @@ describe("closedGates", () => {
   it("leaves only the local-only gates closed on a host that answers everything", () => {
     const every = host([...V2_DEFAULT_OPS, ...GATED_OPS]);
 
-    // The gates with no op — the blocker is on this side, so no host can open
+    // The gates naming no op — the blocker is on this side, so no host can open
     // them — derived from the table so adding one does not silently break this.
-    const localOnly = (Object.keys(GATES) as GateName[]).filter((g) => GATES[g].op === null);
+    const localOnly = (Object.keys(GATES) as GateName[]).filter((g) => requiredOps(g).length === 0);
     expect(localOnly.length).toBeGreaterThan(0);
     expect(closedGates(every).map((g) => g.name)).toEqual(localOnly);
   });

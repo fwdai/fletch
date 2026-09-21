@@ -24,7 +24,7 @@ export function Home() {
   const setLastError = useAppStore((s) => s.setLastError);
 
   const [adding, setAdding] = useState(false);
-  const addProjectGate = useGate("addProject");
+  const openProjectGate = useGate("openProject");
   const remote = useAppStore((s) => activeEntry(s).kind === "remote");
 
   const repos = workspace?.repos ?? [];
@@ -59,7 +59,7 @@ export function Home() {
   // folder on the active environment → pin the repo → remember it as the next
   // New-agent target.
   const addProject = async () => {
-    if (adding || addProjectGate) return;
+    if (adding || openProjectGate) return;
     setAdding(true);
     try {
       const picked = await pickFolder({ title: "Select a git repository" });
@@ -121,7 +121,7 @@ export function Home() {
                 // A host that can't take one says so here instead of opening a
                 // picker that would have nowhere to send the folder.
                 sub={
-                  addProjectGate ??
+                  openProjectGate ??
                   (remote
                     ? "Open a git repository on the host"
                     : "Open a local git repository on your machine")
@@ -132,7 +132,7 @@ export function Home() {
             )}
 
             <div className="home-grid">
-              {hasProjects && !addProjectGate && (
+              {hasProjects && !openProjectGate && (
                 <ActionCard
                   icon="folder"
                   title="Add a project"
