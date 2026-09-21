@@ -63,7 +63,16 @@ export interface HostRegistryOptions {
   /** Builds the client for one host. Injected so the wiring owns the secure
    *  transport and a test can hand in a fake. */
   newClient: (device: DeviceInfo) => RemoteClient;
+  /** How long to wait before the one retry of an advisory read. Defaults to
+   *  [`RETRY_AFTER_MS`]; a test passes 0 so it does not have to wait out a
+   *  delay whose length is not what it is checking. */
+  retryDelayMs?: number;
 }
+
+/** Short enough that a host which answered the handshake a moment ago is
+ *  almost certainly still there, long enough not to catch the same blip
+ *  twice. */
+const RETRY_AFTER_MS = 1_000;
 
 /** The client's five states as the three an entry has. `pairing` is a
  *  connection being established like any other as far as a status dot goes;
@@ -91,25 +100,46 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
   const clients = new Map<string, RemoteClient>();
   const { writers } = opts;
 
+  /** Which handshake a provider answer belongs to. Bumped by every snapshot,
+   *  so a read in flight across a reconnect cannot write its stale rows over
+   *  the fresh unknown the reconnect just established. */
+  const handshakes = new Map<string, number>();
+
+  const retryDelay = opts.retryDelayMs ?? RETRY_AFTER_MS;
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
   /** Ask a host which provider CLIs it has and which are signed in, and fold
-   *  the answer into its entry. Advisory in both directions: a host too old to
-   *  answer the op is never asked, and a call that fails leaves the last answer
-   *  (or none) in place rather than claiming the host lost a provider. */
+   *  the answer into its entry.
+   *
+   *  `providers` is handshake-derived state, exactly like `protocol`: the
+   *  snapshot clears it to unknown and this re-establishes it. So a host too
+   *  old for the op is never asked and stays unknown, and a read that fails
+   *  twice leaves unknown rather than the rows from a previous connection —
+   *  which could name providers the operator has since removed, and would be
+   *  believed. Unknown blocks nothing (`providerReason`), so failing to
+   *  unknown fails open. */
   async function loadProviders(
     hostKey: string,
     client: RemoteClient,
     protocol: HostProtocol | undefined,
   ): Promise<void> {
     if (!hostSupports(protocol, "host_providers")) return;
-    try {
-      const providers = await client.call<HostProvider[]>("host_providers");
-      // A host forgotten while the call was in flight must not be revived: the
-      // upsert would write the entry back. `clients` is the registry's own
-      // record of what it is still managing.
+    const handshake = handshakes.get(hostKey);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (attempt > 0) await pause(retryDelay);
+      // Stale in either direction: a host forgotten while the call was in
+      // flight must not be revived, and a newer handshake owns the entry now.
       if (clients.get(hostKey) !== client) return;
-      writers.setEnvironmentProviders(hostKey, providers);
-    } catch {
-      // Advisory, like every other read here.
+      if (handshakes.get(hostKey) !== handshake) return;
+      try {
+        const providers = await client.call<HostProvider[]>("host_providers");
+        if (clients.get(hostKey) !== client) return;
+        if (handshakes.get(hostKey) !== handshake) return;
+        writers.setEnvironmentProviders(hostKey, providers);
+        return;
+      } catch {
+        // One retry, then unknown — see the contract above.
+      }
     }
   }
 
@@ -161,6 +191,7 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
       // descriptor is what gates a remote environment's UI. The version rides
       // along for the rows that name the host — it is reported, never gated on.
       name = snapshot.host.name || name;
+      handshakes.set(record.hostKey, (handshakes.get(record.hostKey) ?? 0) + 1);
       writers.upsertEnvironment({
         id: record.hostKey,
         name,
@@ -169,6 +200,11 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
         retrying: false,
         appVersion: snapshot.host.appVersion,
         protocol: snapshot.protocol,
+        // Handshake-derived, like `protocol` beside it: cleared to unknown
+        // here and re-established by `loadProviders` below. A host that has
+        // dropped the op, or been restarted with a provider uninstalled, must
+        // not keep answering through last connection's rows.
+        providers: undefined,
       });
       // Every handshake — the first and every reconnect — means this client has
       // been out of touch, so whatever is on screen for this host is behind.
@@ -191,6 +227,7 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
     // later greet a host this device is no longer paired with.
     clients.get(hostKey)?.disconnect();
     clients.delete(hostKey);
+    handshakes.delete(hostKey);
     writers.removeEnvironment(hostKey);
   }
 
