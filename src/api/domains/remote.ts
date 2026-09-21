@@ -1,5 +1,5 @@
 import { invokeLocal } from "../invoke";
-import type { PairingInvite, RemoteStatus } from "../types/remote";
+import type { PairingInvite, PairingPreset, RemoteStatus } from "../types/remote";
 
 /** Host-side control of the paired-device remote server. These are not remote
  *  ops — they are how the desktop turns the listener on, points it at a relay,
@@ -17,8 +17,10 @@ export const remoteApi = {
    *  or `null` to stop. Rejects a URL that is not `ws://` or `wss://`. */
   remoteSetRelay: (url: string | null) => invokeLocal<RemoteStatus>("remote_set_relay", { url }),
   /** Rejects while the listener is down: a code nothing can be typed into is
-   *  worse than an error. */
-  remoteBeginPairing: () => invokeLocal<PairingInvite>("remote_begin_pairing"),
+   *  worse than an error. `preset` is the access the code grants; the host
+   *  refuses a name it does not define. */
+  remoteBeginPairing: (preset: PairingPreset) =>
+    invokeLocal<PairingInvite>("remote_begin_pairing", { preset }),
   remoteRevokeDevice: (deviceId: string) =>
     invokeLocal<RemoteStatus>("remote_revoke_device", { deviceId }),
 };

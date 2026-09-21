@@ -58,7 +58,15 @@ enum Command {
     /// Print what the host is doing, as JSON.
     Status,
     /// Mint a pairing link for a phone or a desktop.
-    Pair,
+    Pair {
+        /// What the paired device may do. `full` is everything; `control`
+        /// watches and steers agents, approves tool use and drives projects,
+        /// workflows and the roadmap, but cannot push, open or merge PRs, or
+        /// approve a publish. Changing it later means revoking and pairing
+        /// again.
+        #[arg(long, value_name = "PRESET", default_value = "full")]
+        scope: String,
+    },
     /// Paired devices.
     Devices {
         #[command(subcommand)]
@@ -263,14 +271,15 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
         Command::Status => {
             print_json(&admin::call(data_dir, "status", json!({})).await?);
         }
-        Command::Pair => {
-            let invite = admin::call(data_dir, "begin_pairing", json!({})).await?;
+        Command::Pair { scope } => {
+            let invite = admin::call(data_dir, "begin_pairing", json!({ "preset": scope })).await?;
             let url = string(&invite, "url");
             println!("{url}");
             println!();
             print_pairing_qr(&url);
             println!("code:    {}", string(&invite, "token"));
             println!("expires: {}", string(&invite, "expiresAt"));
+            println!("access:  {}", preset_label(&string(&invite, "preset")));
             println!();
             println!(
                 "Open Fletch on the phone, choose \"Pair with a host\" and scan the code \
@@ -286,10 +295,11 @@ async fn client(data_dir: &std::path::Path, command: Command) -> Result<(), Stri
                 }
                 for device in devices {
                     println!(
-                        "{}  {} ({})  {}  last seen {}",
+                        "{}  {} ({})  {}  {}  last seen {}",
                         string(&device, "deviceId"),
                         string(&device, "name"),
                         string(&device, "platform"),
+                        device_preset(&device),
                         if device["connected"] == json!(true) {
                             "connected"
                         } else {
@@ -505,6 +515,28 @@ fn print_json(value: &Value) {
 /// over rather than refusing to show the rest.
 fn string(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_string()
+}
+
+/// A preset name as a column: `full` → `Full`. An unknown name is printed as it
+/// came, so a host that grew a third preset still says something true.
+fn preset_label(preset: &str) -> String {
+    match preset {
+        "full" => "Full".to_string(),
+        "control" => "Control".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Which preset a device row's `scopes` amount to. The gate is the scope list,
+/// not the preset name — a record carries the scopes, never the name it was
+/// paired under — so this reads the one scope that tells the two apart.
+fn device_preset(device: &Value) -> String {
+    let publishes = match device["scopes"].as_array() {
+        Some(scopes) => scopes.iter().any(|v| v == &json!("publish")),
+        // A host from before scopes says nothing, and that is Full.
+        None => true,
+    };
+    preset_label(if publishes { "full" } else { "control" })
 }
 
 /// Log to stderr, so an init system's journal (and a terminal) get it without

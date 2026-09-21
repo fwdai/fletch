@@ -9,7 +9,9 @@ use tokio_tungstenite::tungstenite::{Bytes, Message};
 use tokio_tungstenite::WebSocketStream;
 
 use super::auth::DeviceRecord;
-use super::dispatch::{self, Dispatch, DispatchFuture, TOO_MANY_IN_FLIGHT, UNKNOWN_OP};
+use super::dispatch::{
+    self, Dispatch, DispatchFuture, Scope, FORBIDDEN, TOO_MANY_IN_FLIGHT, UNKNOWN_OP,
+};
 use super::push::{AgentLookup, PushTriggers};
 use super::secure::{self, Handshake, SecureChannel};
 use super::{DeviceStore, PairingTokens, RemoteState};
@@ -21,7 +23,7 @@ use crate::workspace::AgentStatus;
 
 #[test]
 fn pairing_token_uses_the_documented_alphabet() {
-    let minted = PairingTokens::new().mint();
+    let minted = PairingTokens::new().mint(&Scope::ALL);
     assert_eq!(minted.token.len(), 8);
     assert!(
         minted
@@ -36,30 +38,50 @@ fn pairing_token_uses_the_documented_alphabet() {
 #[test]
 fn pairing_token_is_single_use() {
     let tokens = PairingTokens::new();
-    let minted = tokens.mint();
-    assert!(tokens.consume(&minted.token));
-    assert!(!tokens.consume(&minted.token));
+    let minted = tokens.mint(&Scope::ALL);
+    assert!(tokens.consume(&minted.token).is_some());
+    assert!(tokens.consume(&minted.token).is_none());
 }
 
 #[test]
 fn pairing_token_expires() {
     let tokens = PairingTokens::new();
-    let minted = tokens.mint_with_ttl(Duration::ZERO);
-    assert!(!tokens.consume(&minted.token));
+    let minted = tokens.mint_with_ttl(&Scope::ALL, Duration::ZERO);
+    assert!(tokens.consume(&minted.token).is_none());
 }
 
 #[test]
 fn unminted_pairing_token_is_rejected() {
-    assert!(!PairingTokens::new().consume("AAAAAAAA"));
+    assert!(PairingTokens::new().consume("AAAAAAAA").is_none());
 }
 
 #[test]
 fn minting_does_not_invalidate_an_outstanding_token() {
     let tokens = PairingTokens::new();
-    let first = tokens.mint();
-    let second = tokens.mint();
-    assert!(tokens.consume(&first.token));
-    assert!(tokens.consume(&second.token));
+    let first = tokens.mint(&Scope::ALL);
+    let second = tokens.mint(&Scope::ALL);
+    assert!(tokens.consume(&first.token).is_some());
+    assert!(tokens.consume(&second.token).is_some());
+}
+
+/// The code carries the grant: `consume` hands back what was minted, because
+/// nothing in the `pair` frame may say what access it is claiming.
+#[test]
+fn a_pairing_token_carries_the_scopes_it_was_minted_with() {
+    let tokens = PairingTokens::new();
+    let control = dispatch::preset_scopes("control").expect("control");
+    let full = tokens.mint(&Scope::ALL);
+    let narrow = tokens.mint(&control);
+
+    assert_eq!(narrow.scopes, control);
+    assert_eq!(
+        tokens.consume(&narrow.token).expect("redeemable").scopes,
+        control
+    );
+    assert_eq!(
+        tokens.consume(&full.token).expect("redeemable").scopes,
+        Scope::ALL.to_vec()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +101,9 @@ fn key(seed: u8) -> [u8; 32] {
 fn device_key_is_found_until_revoked() {
     let dir = tempfile::tempdir().unwrap();
     let store = DeviceStore::load(dir.path());
-    let record = store.register("Alex's iPhone", "ios", &key(1)).unwrap();
+    let record = store
+        .register("Alex's iPhone", "ios", &key(1), &Scope::ALL)
+        .unwrap();
 
     assert_eq!(record.public_key.len(), 43, "32 bytes as base64url, no pad");
     let found = store.find_by_key(&key(1)).expect("a paired key is found");
@@ -100,7 +124,9 @@ fn device_key_is_found_until_revoked() {
 fn unknown_device_key_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let store = DeviceStore::load(dir.path());
-    store.register("phone", "ios", &key(1)).unwrap();
+    store
+        .register("phone", "ios", &key(1), &Scope::ALL)
+        .unwrap();
     assert!(store.find_by_key(&key(2)).is_none());
 }
 
@@ -108,8 +134,12 @@ fn unknown_device_key_is_rejected() {
 fn pairing_the_same_key_twice_updates_one_record() {
     let dir = tempfile::tempdir().unwrap();
     let store = DeviceStore::load(dir.path());
-    let first = store.register("iPhone", "ios", &key(1)).unwrap();
-    let second = store.register("Renamed iPhone", "ios", &key(1)).unwrap();
+    let first = store
+        .register("iPhone", "ios", &key(1), &Scope::ALL)
+        .unwrap();
+    let second = store
+        .register("Renamed iPhone", "ios", &key(1), &Scope::ALL)
+        .unwrap();
 
     assert_eq!(store.list().len(), 1, "one device, one record");
     assert_eq!(second.device_id, first.device_id, "the id is kept");
@@ -120,7 +150,9 @@ fn pairing_the_same_key_twice_updates_one_record() {
 fn devices_json_holds_the_public_key_and_is_owner_only() {
     let dir = tempfile::tempdir().unwrap();
     let store = DeviceStore::load(dir.path());
-    let record = store.register("phone", "ios", &key(1)).unwrap();
+    let record = store
+        .register("phone", "ios", &key(1), &Scope::ALL)
+        .unwrap();
 
     let path = dir.path().join("devices.json");
     let raw = std::fs::read_to_string(&path).unwrap();
@@ -143,7 +175,9 @@ fn devices_survive_a_reload() {
     let dir = tempfile::tempdir().unwrap();
     {
         let store = DeviceStore::load(dir.path());
-        store.register("phone", "ios", &key(1)).unwrap();
+        store
+            .register("phone", "ios", &key(1), &Scope::ALL)
+            .unwrap();
     }
     let reopened = DeviceStore::load(dir.path());
     assert!(reopened.find_by_key(&key(1)).is_some());
@@ -221,13 +255,117 @@ fn records_without_the_push_fields_still_load() {
     assert_eq!(reloaded[0].push_environment.as_deref(), Some("production"));
 }
 
+/// Every record on disk predates scopes and was paired when the surface was
+/// undivided, so a missing `scopes` must read as *every* scope. Anything else
+/// would silently take access away from every device the user already has —
+/// and, because `parse_devices` drops a record it cannot deserialize, a
+/// non-defaulted field would unpair them outright.
+#[test]
+fn records_without_scopes_load_as_full() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("devices.json"),
+        serde_json::to_vec(&json!([{
+            "deviceId": "before-scopes",
+            "name": "phone",
+            "platform": "ios",
+            "publicKey": super::secure::encode_key(&key(1)),
+            "createdAt": "2026-01-02T00:00:00Z",
+            "lastSeenAt": null,
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let store = DeviceStore::load(dir.path());
+    let loaded = store.list();
+    assert_eq!(loaded.len(), 1, "a record without scopes was dropped");
+    assert_eq!(loaded[0].scope_set(), Scope::ALL.to_vec());
+    assert_eq!(
+        store.scopes_of("before-scopes"),
+        Some(Scope::ALL.to_vec()),
+        "an existing device keeps the whole surface"
+    );
+    assert!(store.scopes_of("never-paired").is_none());
+}
+
+/// A Control pairing is a fact about the record, so it has to survive the
+/// round trip to `devices.json` — a scope set that reverted at the next launch
+/// would hand the device back everything it was paired without.
+#[test]
+fn a_control_device_persists_and_reloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let control = dispatch::preset_scopes("control").expect("control");
+    let record = {
+        let store = DeviceStore::load(dir.path());
+        store.register("phone", "ios", &key(1), &control).unwrap()
+    };
+    assert_eq!(record.scope_set(), control);
+
+    let reopened = DeviceStore::load(dir.path());
+    assert_eq!(reopened.scopes_of(&record.device_id), Some(control.clone()));
+    assert!(!reopened.list()[0].scopes.contains(&"publish".to_string()));
+}
+
+/// Re-pairing is the only way to change a device's access, so the new token's
+/// scopes win over the record's — both ways round.
+#[test]
+fn re_pairing_overrides_the_scopes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = DeviceStore::load(dir.path());
+    let control = dispatch::preset_scopes("control").expect("control");
+
+    let full = store
+        .register("phone", "ios", &key(1), &Scope::ALL)
+        .unwrap();
+    let narrowed = store.register("phone", "ios", &key(1), &control).unwrap();
+    assert_eq!(narrowed.device_id, full.device_id, "one key, one record");
+    assert_eq!(narrowed.scope_set(), control);
+
+    let widened = store
+        .register("phone", "ios", &key(1), &Scope::ALL)
+        .unwrap();
+    assert_eq!(widened.scope_set(), Scope::ALL.to_vec());
+    assert_eq!(store.list().len(), 1);
+}
+
+/// A scope a future Fletch writes and this one cannot enforce is dropped, not
+/// honoured and not fatal: the record keeps working with the scopes this build
+/// understands.
+#[test]
+fn an_unknown_scope_name_is_dropped_rather_than_honoured() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("devices.json"),
+        serde_json::to_vec(&json!([{
+            "deviceId": "from-the-future",
+            "name": "phone",
+            "platform": "ios",
+            "publicKey": super::secure::encode_key(&key(1)),
+            "createdAt": "2026-01-02T00:00:00Z",
+            "lastSeenAt": null,
+            "scopes": ["observe", "terminal"],
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let store = DeviceStore::load(dir.path());
+    assert_eq!(
+        store.scopes_of("from-the-future"),
+        Some(vec![Scope::Observe])
+    );
+}
+
 /// A token belongs to a device that is still paired. A registration for one
 /// that was revoked under the connection writes nothing.
 #[test]
 fn setting_a_push_token_on_an_unknown_device_stores_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let store = DeviceStore::load(dir.path());
-    store.register("phone", "ios", &key(1)).unwrap();
+    store
+        .register("phone", "ios", &key(1), &Scope::ALL)
+        .unwrap();
     assert!(!store
         .set_push("never-paired", Some("aa"), "sandbox")
         .unwrap());
@@ -253,7 +391,7 @@ fn concurrent_writers_leave_the_file_agreeing_with_memory() {
                     public[0] = w;
                     public[1] = i;
                     let record = store
-                        .register(&format!("phone-{w}-{i}"), "ios", &public)
+                        .register(&format!("phone-{w}-{i}"), "ios", &public, &Scope::ALL)
                         .unwrap();
                     store.touch(&record.device_id);
                     if i % 2 == 0 {
@@ -332,7 +470,7 @@ fn the_host_key_persists_across_state_and_is_owner_only() {
 fn the_pairing_url_carries_the_host_id_and_an_address() {
     let dir = tempfile::tempdir().unwrap();
     let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
-    let invite = state.begin_pairing();
+    let invite = state.begin_pairing(None).unwrap();
     let host_id = state.status().host_id;
 
     assert!(
@@ -344,6 +482,33 @@ fn the_pairing_url_carries_the_host_id_and_an_address() {
     assert!(invite.url.contains(&format!("&token={}", invite.token)));
     assert!(invite.url.contains("&addr="), "url {}", invite.url);
     assert!(invite.url.contains("&name="));
+}
+
+/// The invite says what it grants, `None` is today's pairing, and a preset this
+/// host does not define is refused rather than guessed at — guessing would hand
+/// out access nobody asked for.
+#[test]
+fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
+
+    let default = state.begin_pairing(None).unwrap();
+    assert_eq!(default.preset, "full");
+    assert!(default.scopes.contains(&"publish".to_string()));
+
+    let control = state.begin_pairing(Some("control")).unwrap();
+    assert_eq!(control.preset, "control");
+    assert!(!control.scopes.contains(&"publish".to_string()));
+    // The token it minted is the one that carries the grant.
+    assert_eq!(
+        state.pairing().consume(&control.token).unwrap().scopes,
+        dispatch::preset_scopes("control").unwrap()
+    );
+
+    assert!(state.begin_pairing(Some("observer")).is_err());
+    // The URL is the same shape either way: the scope rides on the token, not
+    // on the link, so a phone needs no new query parameter to honour it.
+    assert!(!control.url.contains("preset="));
 }
 
 // ---------------------------------------------------------------------------
@@ -482,6 +647,87 @@ fn allowlist_matches_the_protocol_table() {
     for op in documented {
         assert!(dispatch::is_allowed(op), "{op} is in the doc's table");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Scopes
+// ---------------------------------------------------------------------------
+
+/// The scope table and `OPS` are two lists that must stay one surface: an op
+/// added to `OPS` and not to the table would be unreachable for every device
+/// (no scope contains it), and a row in the table with no op behind it is a
+/// gate on nothing. Either way it fails here rather than in the field.
+#[test]
+fn every_op_has_exactly_one_scope() {
+    for op in dispatch::OPS {
+        assert!(
+            dispatch::scope_of(op).is_some(),
+            "{op} is on the wire with no scope; add a row to OP_SCOPES"
+        );
+    }
+    let mut scoped: Vec<&str> = dispatch::ops_for(&Scope::ALL);
+    scoped.sort_unstable();
+    let mut ops: Vec<&str> = dispatch::OPS.to_vec();
+    ops.sort_unstable();
+    assert_eq!(
+        scoped, ops,
+        "the scope table and OPS name different ops, or one of them twice"
+    );
+    // The session ops are outside the table by design: they act on the calling
+    // device's own record, so every device may call them.
+    for op in dispatch::SESSION_OPS {
+        assert!(dispatch::scope_of(op).is_none());
+        assert!(dispatch::allows(&[], op), "{op} needs no scope");
+    }
+}
+
+/// The five ops that spend the user's GitHub credential or let an agent out of
+/// the sandbox. Named here so narrowing or widening `publish` is a deliberate
+/// edit of this list, not a side effect of moving a row.
+#[test]
+fn the_publish_scope_is_the_five_ops_that_leave_the_machine() {
+    let publish: Vec<&str> = dispatch::ops_for(&[Scope::Publish]);
+    assert_eq!(
+        publish,
+        vec![
+            "answer_publish_approval",
+            "push_agent",
+            "create_pr",
+            "merge_pr",
+            "roadmap_merge_item_pr",
+        ],
+        "publish is the set a Control device cannot reach"
+    );
+}
+
+#[test]
+fn the_control_preset_is_everything_but_publish() {
+    let full = dispatch::preset_scopes("full").expect("full");
+    let control = dispatch::preset_scopes("control").expect("control");
+    assert_eq!(full, Scope::ALL.to_vec());
+    assert!(!control.contains(&Scope::Publish));
+    assert_eq!(control.len(), full.len() - 1);
+    assert!(
+        dispatch::preset_scopes("observer").is_none(),
+        "no such preset"
+    );
+
+    // What a Control device's `protocol.ops` leaves out — the whole of the
+    // client-side gating this PR relies on.
+    let ops = dispatch::ops_for(&control);
+    for op in dispatch::ops_for(&[Scope::Publish]) {
+        assert!(!ops.contains(&op), "{op} reached a Control device");
+        assert!(!dispatch::allows(&control, op));
+    }
+    assert!(
+        ops.contains(&"answer_tool_use"),
+        "Control still approves tools"
+    );
+    assert!(
+        ops.contains(&"commit_agent"),
+        "a commit never leaves the Mac"
+    );
+    assert!(dispatch::allows(&control, dispatch::REGISTER_PUSH));
 }
 
 /// `register_push` is on the wire allowlist but *not* on the dispatcher's:
@@ -1426,7 +1672,7 @@ async fn close_code(ws: &mut WebSocketStream<TcpStream>) -> u16 {
 #[tokio::test]
 async fn pair_then_hello_then_op_then_event_fanout() {
     let host = boot();
-    let minted = host.state.pairing().mint();
+    let minted = host.state.pairing().mint(&Scope::ALL);
     let phone = device();
 
     // pair
@@ -1462,7 +1708,7 @@ async fn pair_then_hello_then_op_then_event_fanout() {
 
     // The pairing token is spent, and the device is now in the census under the
     // key the handshake proved.
-    assert!(!host.state.pairing().consume(&minted.token));
+    assert!(host.state.pairing().consume(&minted.token).is_none());
     let status = host.state.status();
     assert_eq!(status.devices.len(), 1);
     assert!(status.devices[0].connected);
@@ -1562,7 +1808,7 @@ async fn pairing_twice_on_one_key_does_not_duplicate_the_device() {
     let phone = device();
 
     for name in ["iPhone", "iPhone renamed"] {
-        let minted = host.state.pairing().mint();
+        let minted = host.state.pairing().mint(&Scope::ALL);
         let mut ws = secure_connect(host.port, &phone).await;
         ws.request(
             "1",
@@ -1576,6 +1822,111 @@ async fn pairing_twice_on_one_key_does_not_duplicate_the_device() {
     let devices = host.state.status().devices;
     assert_eq!(devices.len(), 1, "one key, one record");
     assert_eq!(devices[0].name, "iPhone renamed");
+}
+
+/// A Control pairing, end to end over the socket: the code's scopes reach the
+/// record, both handshake results hide the five publish ops, and calling one
+/// anyway is answered `forbidden` on a connection that stays up.
+#[tokio::test]
+async fn a_control_device_is_refused_the_publish_ops() {
+    let host = boot();
+    let control = dispatch::preset_scopes("control").expect("control");
+    let minted = host.state.pairing().mint(&control);
+    let phone = device();
+    let publish = dispatch::ops_for(&[Scope::Publish]);
+
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request(
+        "1",
+        "pair",
+        json!({ "token": minted.token, "device": { "name": "iPhone", "platform": "ios" } }),
+    )
+    .await;
+    let paired = ws.next_json().await;
+    assert_eq!(paired["ok"], true);
+
+    // The descriptor is per device: the phone and the desktop client already
+    // hide what `protocol.ops` omits, which is the whole of the client gating.
+    let ops = paired["result"]["protocol"]["ops"].as_array().unwrap();
+    for op in &publish {
+        assert!(!ops.contains(&json!(op)), "{op} was advertised to Control");
+    }
+    assert!(ops.contains(&json!("answer_tool_use")));
+    assert!(ops.contains(&json!("commit_agent")));
+    assert!(
+        ops.contains(&json!("register_push")),
+        "a session op is not scoped"
+    );
+
+    // Every one of them is refused on the wire too — `protocol.ops` is a
+    // courtesy to the client, not the gate.
+    for (i, op) in publish.iter().enumerate() {
+        let id = format!("p{i}");
+        ws.request(&id, op, json!({ "agentId": "arabia" })).await;
+        let denied = ws.next_json().await;
+        assert_eq!(denied["id"], id.as_str());
+        assert_eq!(denied["ok"], false);
+        assert_eq!(denied["error"], FORBIDDEN, "{op} was not refused");
+    }
+
+    // And the connection is still good for what the device *may* do: a scope is
+    // a standing fact about the device, not a bad credential.
+    ws.request("2", "get_workspace", json!({})).await;
+    let reply = ws.next_json().await;
+    assert_eq!(reply["id"], "2");
+    assert_eq!(reply["ok"], true);
+
+    // The record carries the scopes, so `hello` on a fresh connection narrows
+    // the descriptor the same way without another code.
+    drop(ws);
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("3", "hello", json!({})).await;
+    let hello = ws.next_json().await;
+    assert_eq!(hello["ok"], true);
+    let ops = hello["result"]["protocol"]["ops"].as_array().unwrap();
+    for op in &publish {
+        assert!(!ops.contains(&json!(op)), "{op} came back at hello");
+    }
+    ws.request("4", "push_agent", json!({ "agentId": "arabia" }))
+        .await;
+    assert_eq!(ws.next_json().await["error"], FORBIDDEN);
+
+    // Settings shows the device's grant.
+    let devices = host.state.status().devices;
+    assert_eq!(devices.len(), 1);
+    assert!(!devices[0].scopes.contains(&"publish".to_string()));
+}
+
+/// A Full pairing is today's pairing: the descriptor is the whole surface, and
+/// nothing is answered `forbidden`. The converse of the test above, and the
+/// reason `pair_then_hello_then_op_then_event_fanout` needed no edit.
+#[tokio::test]
+async fn a_full_device_still_sees_the_whole_surface() {
+    let host = boot();
+    let minted = host.state.pairing().mint(&Scope::ALL);
+    let phone = device();
+
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request(
+        "1",
+        "pair",
+        json!({ "token": minted.token, "device": { "name": "iPhone", "platform": "ios" } }),
+    )
+    .await;
+    let paired = ws.next_json().await;
+    let ops: Vec<&str> = paired["result"]["protocol"]["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|op| op.as_str().unwrap())
+        .collect();
+    assert_eq!(ops, super::protocol_descriptor().ops);
+
+    // `push_agent` reaches the dispatcher (the stub answers `unknown op`, not
+    // `forbidden`), which is what says the gate let it through.
+    ws.request("2", "push_agent", json!({ "agentId": "arabia" }))
+        .await;
+    assert_eq!(ws.next_json().await["error"], UNKNOWN_OP);
 }
 
 /// The handshake is not optional: a client that opens the socket and starts
@@ -1657,7 +2008,7 @@ async fn revoked_device_key_closes_4003() {
     let record = host
         .state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     host.state.revoke_device(&record.device_id).unwrap();
 
@@ -1706,7 +2057,7 @@ async fn disabling_remote_access_closes_live_connections_4004() {
     let phone = device();
     host.state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut ws = secure_connect(host.port, &phone).await;
     ws.request("1", "hello", json!({})).await;
@@ -1725,7 +2076,7 @@ async fn changing_the_port_moves_the_listener_and_closes_1012() {
     let phone = device();
     host.state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut ws = secure_connect(host.port, &phone).await;
     ws.request("1", "hello", json!({})).await;
@@ -1767,7 +2118,7 @@ async fn revoking_a_device_closes_its_live_connection_4003() {
     let record = host
         .state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut ws = secure_connect(host.port, &phone).await;
     ws.request("1", "hello", json!({})).await;
@@ -1797,7 +2148,7 @@ async fn revoking_closes_the_live_connection_even_when_persisting_fails() {
     let record = host
         .state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut ws = secure_connect(host.port, &phone).await;
     ws.request("1", "hello", json!({})).await;
@@ -1840,11 +2191,11 @@ async fn revoking_one_device_leaves_another_connected() {
     let first = host
         .state
         .devices()
-        .register("phone", "ios", &one.public)
+        .register("phone", "ios", &one.public, &Scope::ALL)
         .unwrap();
     host.state
         .devices()
-        .register("tablet", "android", &two.public)
+        .register("tablet", "android", &two.public, &Scope::ALL)
         .unwrap();
 
     let mut doomed = secure_connect(host.port, &one).await;
@@ -1869,7 +2220,7 @@ async fn requests_past_the_in_flight_cap_are_refused_without_dispatching() {
     let phone = device();
     host.state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut ws = secure_connect(host.port, &phone).await;
     ws.request("0", "hello", json!({})).await;
@@ -1894,7 +2245,7 @@ async fn oversized_frame_is_rejected_and_never_dispatched() {
     let phone = device();
     host.state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut ws = secure_connect(host.port, &phone).await;
     ws.request("1", "hello", json!({})).await;
@@ -1964,12 +2315,12 @@ async fn register_push_stores_the_token_on_the_calling_device_and_clears_it() {
     let caller = host
         .state
         .devices()
-        .register("phone", "ios", &one.public)
+        .register("phone", "ios", &one.public, &Scope::ALL)
         .unwrap();
     let bystander = host
         .state
         .devices()
-        .register("tablet", "ios", &two.public)
+        .register("tablet", "ios", &two.public, &Scope::ALL)
         .unwrap();
 
     let mut ws = secure_connect(host.port, &one).await;
@@ -2055,7 +2406,7 @@ async fn register_push_rejects_a_token_that_is_not_lowercase_hex() {
     let record = host
         .state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut ws = secure_connect(host.port, &phone).await;
     ws.request("0", "hello", json!({})).await;
@@ -2182,7 +2533,7 @@ impl Triggers {
             let seed = i as u8 + 1;
             let record = state
                 .devices()
-                .register(&format!("phone-{seed}"), "ios", &key(seed))
+                .register(&format!("phone-{seed}"), "ios", &key(seed), &Scope::ALL)
                 .unwrap();
             state
                 .devices()
@@ -2404,7 +2755,7 @@ fn only_devices_with_a_token_are_addressed() {
     // A third paired device that never registered.
     h.state
         .devices()
-        .register("laptop", "macos", &key(9))
+        .register("laptop", "macos", &key(9), &Scope::ALL)
         .unwrap();
     let agents = Agents::named("Fix login crash");
 
@@ -2422,7 +2773,7 @@ fn only_devices_with_a_token_are_addressed() {
     let none = Triggers::boot(false, &[]);
     none.state
         .devices()
-        .register("laptop", "macos", &key(9))
+        .register("laptop", "macos", &key(9), &Scope::ALL)
         .unwrap();
     none.triggers
         .on_status(&agents, "arabia", &AgentStatus::Running);
@@ -2451,7 +2802,10 @@ fn no_more_than_eight_tokens_travel_in_one_frame() {
 fn an_alert_with_no_relay_link_is_dropped_quietly() {
     let dir = tempfile::tempdir().unwrap();
     let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
-    let record = state.devices().register("phone", "ios", &key(1)).unwrap();
+    let record = state
+        .devices()
+        .register("phone", "ios", &key(1), &Scope::ALL)
+        .unwrap();
     state
         .devices()
         .set_push(&record.device_id, Some("a1b2"), "sandbox")

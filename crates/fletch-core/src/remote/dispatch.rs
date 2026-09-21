@@ -46,6 +46,13 @@ pub trait Dispatch: Send + Sync + 'static {
 /// The error text the protocol reserves for an op that is not on the allowlist.
 pub const UNKNOWN_OP: &str = "unknown op";
 
+/// The error text the protocol reserves for an op the *calling device* may not
+/// use. Distinct from [`UNKNOWN_OP`] on purpose: the op exists on this host, the
+/// device's pairing scope simply does not include it, and a client that sees
+/// this knows to say "re-pair this device with more access" rather than "this
+/// host is too old".
+pub const FORBIDDEN: &str = "forbidden";
+
 /// The five ops a host can only answer with a local speech engine behind it.
 /// They stay in [`OPS`] on every host — the protocol descriptor advertises them
 /// and a phone may always ask — but a host with no engine answers
@@ -245,6 +252,240 @@ pub const SESSION_OPS: &[&str] = &[REGISTER_PUSH];
 /// the dispatcher answers and what the session layer answers for itself.
 pub fn is_allowed(op: &str) -> bool {
     OPS.contains(&op) || SESSION_OPS.contains(&op)
+}
+
+// ---------------------------------------------------------------------------
+// Scopes
+//
+// What a *device* may do, fixed at pairing. [`OPS`] says what the host answers
+// at all; this block says which slice of it each paired device reaches. The two
+// are deliberately separate tables: `OPS` is ordered by the protocol doc and
+// must not be reordered, so the scope of each op is stated once, here, and
+// `tests::every_op_has_exactly_one_scope` holds the two in step.
+//
+// Changing a device's scope is a revoke and a re-pair; there is no in-place
+// edit, which is why `server` can read a connection's scopes once at the
+// handshake.
+// ---------------------------------------------------------------------------
+
+/// One slice of the remote surface. A device's pairing grants a set of these,
+/// and an op outside the set is answered [`FORBIDDEN`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Scope {
+    /// Every read: the workspace, transcripts, diffs, PR state, the boards.
+    Observe,
+    /// Watch and steer agents, and the working-tree moves that never leave this
+    /// machine (commit, pull, rebase, stash, discard, abort a merge).
+    Agents,
+    /// Add, rename, relocate and remove projects and their repos.
+    Projects,
+    /// Launch, steer and curate workflow runs and stored definitions.
+    Workflows,
+    /// Drive the roadmap board and answer the PM's proposals.
+    Roadmap,
+    /// Everything that leaves this machine under the user's name: a push, a PR
+    /// opened or merged, a gated publish approved.
+    Publish,
+}
+
+impl Scope {
+    /// Every scope, in the order the doc lists them. The `full` preset.
+    pub const ALL: [Scope; 6] = [
+        Scope::Observe,
+        Scope::Agents,
+        Scope::Projects,
+        Scope::Workflows,
+        Scope::Roadmap,
+        Scope::Publish,
+    ];
+
+    /// The wire and on-disk spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::Observe => "observe",
+            Scope::Agents => "agents",
+            Scope::Projects => "projects",
+            Scope::Workflows => "workflows",
+            Scope::Roadmap => "roadmap",
+            Scope::Publish => "publish",
+        }
+    }
+
+    /// Parse the wire spelling. `None` for a name this build does not know,
+    /// which the store drops rather than failing the whole record over.
+    pub fn parse(name: &str) -> Option<Scope> {
+        Scope::ALL.into_iter().find(|s| s.as_str() == name)
+    }
+}
+
+/// The named scope sets pairing offers. `None` for a name this host does not
+/// define — `begin_pairing` refuses rather than quietly granting something.
+pub fn preset_scopes(name: &str) -> Option<Vec<Scope>> {
+    match name {
+        "full" => Some(Scope::ALL.to_vec()),
+        // Everything except what leaves the machine under the user's name.
+        "control" => Some(
+            Scope::ALL
+                .into_iter()
+                .filter(|s| *s != Scope::Publish)
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Every op in [`OPS`], with the one scope that reaches it. Exhaustive by test:
+/// an op added to `OPS` without a row here fails
+/// `tests::every_op_has_exactly_one_scope`, so a new op cannot arrive
+/// accidentally ungated (or ungateable).
+const OP_SCOPES: &[(&str, Scope)] = &[
+    ("get_workspace", Scope::Observe),
+    ("allocate_draft_name", Scope::Agents),
+    ("spawn_agent", Scope::Agents),
+    ("send_user_message", Scope::Agents),
+    ("answer_tool_use", Scope::Agents),
+    ("answer_publish_approval", Scope::Publish),
+    ("stop_agent", Scope::Agents),
+    ("resume_agent", Scope::Agents),
+    ("archive_agent", Scope::Agents),
+    ("restore_agent", Scope::Agents),
+    ("discard_agent", Scope::Agents),
+    ("set_agent_model", Scope::Agents),
+    ("set_agent_effort", Scope::Agents),
+    ("read_session_records", Scope::Observe),
+    ("read_user_turns", Scope::Observe),
+    ("sync_session", Scope::Observe),
+    ("read_live_turn", Scope::Observe),
+    ("get_git_state", Scope::Observe),
+    ("get_all_shortstats", Scope::Observe),
+    ("get_all_git_meta", Scope::Observe),
+    ("list_checkout_tree", Scope::Observe),
+    ("read_checkout_file", Scope::Observe),
+    ("get_file_diff", Scope::Observe),
+    // Commits and the rest of the Git panel's working-tree moves stay with the
+    // agents that own the checkout: nothing they do leaves this machine.
+    ("commit_agent", Scope::Agents),
+    ("push_agent", Scope::Publish),
+    ("pull_agent", Scope::Agents),
+    ("rebase_agent", Scope::Agents),
+    ("stash_agent", Scope::Agents),
+    ("discard_agent_changes", Scope::Agents),
+    ("abort_merge_agent", Scope::Agents),
+    ("create_pr", Scope::Publish),
+    ("merge_pr", Scope::Publish),
+    ("get_pr_state", Scope::Observe),
+    ("get_pr_checks", Scope::Observe),
+    ("get_pr_live", Scope::Observe),
+    ("get_pr_threads", Scope::Observe),
+    ("list_repo_branches", Scope::Observe),
+    ("repo_default_branch", Scope::Observe),
+    ("discover_supported_models", Scope::Observe),
+    ("list_dir", Scope::Observe),
+    ("add_workspace_repo", Scope::Projects),
+    ("clone_repo", Scope::Projects),
+    ("create_repo", Scope::Projects),
+    ("gh_status", Scope::Observe),
+    ("gh_repo_list", Scope::Observe),
+    ("remove_workspace_repo", Scope::Projects),
+    ("attach_repo_to_project", Scope::Projects),
+    ("detach_repo_from_project", Scope::Projects),
+    ("set_repo_label", Scope::Projects),
+    ("rename_project", Scope::Projects),
+    // The read the Delete section polls, so it is a read and not a project
+    // write — the confirm it feeds still needs `delete_project`.
+    ("project_has_running_agents", Scope::Observe),
+    ("delete_project", Scope::Projects),
+    ("relocate_repo", Scope::Projects),
+    // The capability probe is a read; capturing audio steers an agent.
+    ("dictation_status", Scope::Observe),
+    ("dictation_begin", Scope::Agents),
+    ("dictation_audio", Scope::Agents),
+    ("dictation_end", Scope::Agents),
+    ("dictation_cancel", Scope::Agents),
+    ("attachment_begin", Scope::Agents),
+    ("attachment_chunk", Scope::Agents),
+    ("attachment_end", Scope::Agents),
+    ("attachment_cancel", Scope::Agents),
+    ("list_project_chats", Scope::Observe),
+    ("list_custom_agents", Scope::Observe),
+    ("get_agent", Scope::Observe),
+    ("wf_list_runs", Scope::Observe),
+    ("wf_get_run", Scope::Observe),
+    ("wf_events", Scope::Observe),
+    ("wf_run_agents", Scope::Workflows),
+    ("wf_launch", Scope::Workflows),
+    ("wf_cancel", Scope::Workflows),
+    ("wf_resume", Scope::Workflows),
+    ("wf_retry", Scope::Workflows),
+    ("wf_approve", Scope::Workflows),
+    ("wf_reject", Scope::Workflows),
+    ("wf_run_diff", Scope::Observe),
+    ("wf_resolve_conflict", Scope::Workflows),
+    ("wf_delete_run", Scope::Workflows),
+    ("wf_answer", Scope::Workflows),
+    ("wf_def_save", Scope::Workflows),
+    ("wf_def_list", Scope::Observe),
+    ("wf_def_delete", Scope::Workflows),
+    ("wf_def_export_yaml", Scope::Observe),
+    ("wf_def_import_yaml", Scope::Workflows),
+    ("roadmap_list_items", Scope::Observe),
+    ("roadmap_get_item", Scope::Observe),
+    ("roadmap_create_item", Scope::Roadmap),
+    ("roadmap_update_item", Scope::Roadmap),
+    ("roadmap_set_rank", Scope::Roadmap),
+    ("roadmap_hand_off_item", Scope::Roadmap),
+    ("roadmap_item_review", Scope::Roadmap),
+    // The board's own publish: the same credential `merge_pr` spends.
+    ("roadmap_merge_item_pr", Scope::Publish),
+    ("roadmap_note_review_feedback", Scope::Roadmap),
+    ("roadmap_hold_item", Scope::Roadmap),
+    ("roadmap_release_item", Scope::Roadmap),
+    ("roadmap_hold_project", Scope::Roadmap),
+    ("roadmap_release_project", Scope::Roadmap),
+    ("roadmap_get_project_hold", Scope::Observe),
+    ("roadmap_reclaim_item", Scope::Roadmap),
+    ("roadmap_reject_item", Scope::Roadmap),
+    ("roadmap_reopen_item", Scope::Roadmap),
+    ("roadmap_delete_item", Scope::Roadmap),
+    ("roadmap_discard_proposal", Scope::Roadmap),
+    ("roadmap_list_item_events", Scope::Observe),
+    ("roadmap_latest_events", Scope::Observe),
+    ("roadmap_list_proposals", Scope::Observe),
+    ("roadmap_accept_proposal", Scope::Roadmap),
+    ("roadmap_reject_proposal", Scope::Roadmap),
+    ("roadmap_get_order_proposal", Scope::Observe),
+    ("roadmap_accept_order_proposal", Scope::Roadmap),
+    ("roadmap_reject_order_proposal", Scope::Roadmap),
+    ("roadmap_get_brief", Scope::Observe),
+    ("roadmap_get_brief_proposal", Scope::Observe),
+    ("roadmap_accept_brief_proposal", Scope::Roadmap),
+    ("roadmap_reject_brief_proposal", Scope::Roadmap),
+];
+
+/// The one scope that reaches `op`. `None` for a name outside [`OPS`] —
+/// including the [`SESSION_OPS`], which every device may call (see [`allows`]).
+pub fn scope_of(op: &str) -> Option<Scope> {
+    OP_SCOPES
+        .iter()
+        .find(|(name, _)| *name == op)
+        .map(|(_, scope)| *scope)
+}
+
+/// Whether a device holding `scopes` may call `op`. The [`SESSION_OPS`] are
+/// always allowed: `register_push` acts on the calling device's own record and
+/// grants it nothing over the host.
+pub fn allows(scopes: &[Scope], op: &str) -> bool {
+    SESSION_OPS.contains(&op) || scope_of(op).is_some_and(|s| scopes.contains(&s))
+}
+
+/// [`OPS`], in its own order, narrowed to what `scopes` reaches. This is what
+/// the `protocol.ops` of a `pair`/`hello` result carries, so a client's existing
+/// "does this host have the op" gate is also its "may this device" gate.
+pub fn ops_for(scopes: &[Scope]) -> Vec<&'static str> {
+    OPS.iter()
+        .copied()
+        .filter(|op| scope_of(op).is_some_and(|s| scopes.contains(&s)))
+        .collect()
 }
 
 /// The production dispatcher: the engine ctx and supervisor the Tauri commands

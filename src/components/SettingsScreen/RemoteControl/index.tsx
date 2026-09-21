@@ -1,9 +1,13 @@
+import { useState } from "react";
+import type { PairingPreset } from "@/api";
+import { Segmented } from "@/components/Settings/Segmented";
 import { Button } from "@/components/ui/Button";
 import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
 import { DeviceRow } from "./DeviceRow";
 import { PairedHosts } from "./PairedHosts";
 import { PairingCard } from "./PairingCard";
 import { PortRow } from "./PortRow";
+import { CONTROL_PRESET_HELP, PAIRING_PRESETS } from "./presets";
 import { RelayRow } from "./RelayRow";
 import { useRemote } from "./useRemote";
 
@@ -27,6 +31,11 @@ export function RemoteControlPane() {
     revoke,
     clearInvite,
   } = useRemote();
+
+  // What the next code will grant. Full is the default, which is what every
+  // pairing granted before presets existed; it is not remembered between
+  // codes, so nothing narrows a pairing by accident.
+  const [preset, setPreset] = useState<PairingPreset>("full");
 
   const enabled = !!status?.enabled;
   const listening = !!status?.listening;
@@ -86,12 +95,24 @@ export function RemoteControlPane() {
         {listening && !invite && (
           <SetRow
             title="Pair a device"
-            sub="Generates a one-time code, good for five minutes. Enter it in Fletch on your phone."
+            sub={
+              <>
+                Generates a one-time code, good for five minutes. Enter it in Fletch on your phone.
+                <br />
+                {CONTROL_PRESET_HELP}
+              </>
+            }
+            align="start"
           >
+            <Segmented<PairingPreset>
+              value={preset}
+              options={PAIRING_PRESETS}
+              onChange={setPreset}
+            />
             <Button
               variant="primary"
               disabled={!!status?.error}
-              onClick={() => void beginPairing()}
+              onClick={() => void beginPairing(preset)}
             >
               Pair a device
             </Button>
@@ -103,7 +124,7 @@ export function RemoteControlPane() {
             invite={invite}
             hostId={status?.hostId}
             lanOnly={status?.relay.state !== "connected"}
-            onRegenerate={() => void beginPairing()}
+            onRegenerate={() => void beginPairing(invite.preset)}
             onDismiss={clearInvite}
           />
         )}

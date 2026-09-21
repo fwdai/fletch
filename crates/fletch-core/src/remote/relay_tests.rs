@@ -25,6 +25,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 use tokio_tungstenite::WebSocketStream;
 
+use super::dispatch::Scope;
 use super::relay::{Frame, RelayState, RelayTiming};
 use super::secure::{Handshake, HostKey, SecureChannel};
 use super::tests::{device, Device, StubDispatch};
@@ -471,7 +472,7 @@ async fn a_relayed_device_handshakes_and_says_hello() {
     let phone = device();
     host.state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
 
     let mut conn = Phone::open(&mut link, 1, &phone).await;
@@ -510,11 +511,11 @@ async fn two_relayed_devices_are_served_independently() {
     let (one, two) = (device(), device());
     host.state
         .devices()
-        .register("phone", "ios", &one.public)
+        .register("phone", "ios", &one.public, &Scope::ALL)
         .unwrap();
     host.state
         .devices()
-        .register("tablet", "android", &two.public)
+        .register("tablet", "android", &two.public, &Scope::ALL)
         .unwrap();
 
     // Interleaved on purpose: the two handshakes share one link, and a mux that
@@ -549,11 +550,11 @@ async fn revoking_closes_only_that_virtual_connection() {
     let doomed = host
         .state
         .devices()
-        .register("phone", "ios", &one.public)
+        .register("phone", "ios", &one.public, &Scope::ALL)
         .unwrap();
     host.state
         .devices()
-        .register("tablet", "android", &two.public)
+        .register("tablet", "android", &two.public, &Scope::ALL)
         .unwrap();
 
     let mut first = Phone::open(&mut link, 1, &one).await;
@@ -588,7 +589,7 @@ async fn stopping_closes_every_virtual_connection_with_4004_then_drops_the_link(
     for (name, phone) in [("phone", &one), ("tablet", &two)] {
         host.state
             .devices()
-            .register(name, "ios", &phone.public)
+            .register(name, "ios", &phone.public, &Scope::ALL)
             .unwrap();
     }
     let mut first = Phone::open(&mut link, 1, &one).await;
@@ -632,7 +633,7 @@ async fn a_relay_close_ends_the_session() {
     let phone = device();
     host.state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut conn = Phone::open(&mut link, 1, &phone).await;
     conn.request(&mut link, "1", "hello", json!({})).await;
@@ -685,7 +686,7 @@ async fn frames_for_an_unknown_connection_are_ignored() {
     let phone = device();
     host.state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut conn = Phone::open(&mut link, 1, &phone).await;
     conn.request(&mut link, "1", "hello", json!({})).await;
@@ -734,7 +735,7 @@ async fn a_notify_travels_as_type_0x05_on_connid_zero() {
     let phone = device();
     host.state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut conn = Phone::open(&mut link, 1, &phone).await;
     conn.request(&mut link, "1", "hello", json!({})).await;
@@ -759,7 +760,7 @@ async fn a_notify_from_the_relay_is_ignored() {
     let phone = device();
     host.state
         .devices()
-        .register("phone", "ios", &phone.public)
+        .register("phone", "ios", &phone.public, &Scope::ALL)
         .unwrap();
     let mut conn = Phone::open(&mut link, 1, &phone).await;
     conn.request(&mut link, "1", "hello", json!({})).await;
@@ -865,10 +866,10 @@ async fn the_relay_url_is_normalized_and_validated() {
     );
 
     // And the pairing link carries it, url-encoded, only once it is set.
-    assert!(state.begin_pairing().url.contains(&format!(
+    assert!(state.begin_pairing(None).unwrap().url.contains(&format!(
         "&relay={}",
         DEFAULT_RELAY_URL.replace(':', "%3A").replace('/', "%2F")
     )));
     state.set_relay(None).unwrap();
-    assert!(!state.begin_pairing().url.contains("relay="));
+    assert!(!state.begin_pairing(None).unwrap().url.contains("relay="));
 }

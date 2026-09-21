@@ -15,6 +15,7 @@ use parking_lot::Mutex;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+use super::dispatch::Scope;
 use super::secure::encode_key;
 use crate::error::Result;
 
@@ -28,11 +29,14 @@ const PAIRING_LEN: usize = 8;
 pub const PAIRING_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// A freshly minted pairing token plus the wall-clock instant it lapses, which
-/// is what Settings counts down to.
+/// is what Settings counts down to. `scopes` is what redeeming it will grant —
+/// the code carries the access, so the desktop can say what it is handing out
+/// before anybody scans it.
 #[derive(Debug, Clone)]
 pub struct MintedToken {
     pub token: String,
     pub expires_at: DateTime<Utc>,
+    pub scopes: Vec<Scope>,
 }
 
 /// The outstanding pairing tokens. Small by construction: a token is dropped
@@ -41,11 +45,16 @@ pub struct PairingTokens {
     pending: Mutex<Vec<Pending>>,
 }
 
-struct Pending {
-    token: String,
+/// One outstanding token and what it grants. `consume` hands this back rather
+/// than a bare `bool` so the scope set travels with the code it was minted for:
+/// nothing in the `pair` frame may say what access it is claiming.
+#[derive(Debug, Clone)]
+pub struct Pending {
+    pub token: String,
     /// Monotonic deadline, so a wall-clock jump can neither extend a token nor
     /// void one early.
     expires_at: Instant,
+    pub scopes: Vec<Scope>,
 }
 
 impl PairingTokens {
@@ -55,13 +64,13 @@ impl PairingTokens {
         }
     }
 
-    pub fn mint(&self) -> MintedToken {
-        self.mint_with_ttl(PAIRING_TTL)
+    pub fn mint(&self, scopes: &[Scope]) -> MintedToken {
+        self.mint_with_ttl(scopes, PAIRING_TTL)
     }
 
     /// `ttl` is a parameter rather than the constant so tests can mint a token
     /// that is already past its deadline.
-    pub fn mint_with_ttl(&self, ttl: Duration) -> MintedToken {
+    pub fn mint_with_ttl(&self, scopes: &[Scope], ttl: Duration) -> MintedToken {
         let token = random_code(PAIRING_LEN);
         let now = Instant::now();
         let mut pending = self.pending.lock();
@@ -69,23 +78,24 @@ impl PairingTokens {
         pending.push(Pending {
             token: token.clone(),
             expires_at: now + ttl,
+            scopes: scopes.to_vec(),
         });
         let expires_at = Utc::now() + chrono::Duration::from_std(ttl).unwrap_or_default();
-        MintedToken { token, expires_at }
+        MintedToken {
+            token,
+            expires_at,
+            scopes: scopes.to_vec(),
+        }
     }
 
-    /// Redeem a token: true at most once per mint, and never past the TTL.
-    pub fn consume(&self, token: &str) -> bool {
+    /// Redeem a token: `Some` at most once per mint, and never past the TTL.
+    /// The entry carries the scopes the token was minted with.
+    pub fn consume(&self, token: &str) -> Option<Pending> {
         let now = Instant::now();
         let mut pending = self.pending.lock();
         pending.retain(|p| p.expires_at > now);
-        match pending.iter().position(|p| p.token == token) {
-            Some(i) => {
-                pending.remove(i);
-                true
-            }
-            None => false,
-        }
+        let i = pending.iter().position(|p| p.token == token)?;
+        Some(pending.remove(i))
     }
 }
 
@@ -131,9 +141,32 @@ pub struct DeviceRecord {
     /// token routes nowhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_environment: Option<String>,
+    /// What this device may do, fixed when it paired (`dispatch::Scope`). Held
+    /// as strings rather than as the enum so a scope this build does not know —
+    /// a record written by a newer Fletch — costs the device that one scope
+    /// instead of its whole record.
+    ///
+    /// Defaulted to *every* scope: every record on disk predates scopes and was
+    /// paired when the surface was undivided, so anything narrower would
+    /// silently take access away from a device that already has it.
+    #[serde(default = "all_scope_names")]
+    pub scopes: Vec<String>,
+}
+
+/// The `scopes` a record written before scopes existed is read as: all of them.
+/// See the field docs — this is the compatibility rule the protocol doc states.
+fn all_scope_names() -> Vec<String> {
+    Scope::ALL.iter().map(|s| s.as_str().to_string()).collect()
 }
 
 impl DeviceRecord {
+    /// This device's grant, as the gate wants it. Unknown names are dropped:
+    /// they are scopes this build cannot enforce, and enforcing nothing is not
+    /// an option.
+    pub fn scope_set(&self) -> Vec<Scope> {
+        self.scopes.iter().filter_map(|s| Scope::parse(s)).collect()
+    }
+
     /// Where a push alert for this device goes, if anywhere: the token and the
     /// APNs environment it is valid against. The one definition of "push is on
     /// for this device", so what `RemoteDevice::push_enabled` reports and what
@@ -241,18 +274,25 @@ impl DeviceStore {
     /// that record's name and platform rather than adding a duplicate, since
     /// the key *is* the identity and a phone that re-pairs (a lapsed code, a
     /// reinstall that kept its key) is the same device.
+    ///
+    /// `scopes` comes from the pairing token, and a re-pair takes the *new*
+    /// token's scopes: re-pairing is how a device's access is changed, since
+    /// there is no in-place edit of a record's grant.
     pub fn register(
         &self,
         name: &str,
         platform: &str,
         public_key: &[u8; 32],
+        scopes: &[Scope],
     ) -> Result<DeviceRecord> {
         let public_key = encode_key(public_key);
         let now = Utc::now().to_rfc3339();
+        let scopes: Vec<String> = scopes.iter().map(|s| s.as_str().to_string()).collect();
         self.mutate(move |devices| {
             if let Some(existing) = devices.iter_mut().find(|d| d.public_key == public_key) {
                 existing.name = name.to_string();
                 existing.platform = platform.to_string();
+                existing.scopes = scopes;
                 return existing.clone();
             }
             let record = DeviceRecord {
@@ -268,10 +308,22 @@ impl DeviceStore {
                 // anyway.
                 push_token: None,
                 push_environment: None,
+                scopes,
             };
             devices.push(record.clone());
             record
         })
+    }
+
+    /// What the device with this id may do, or `None` if it is not on file.
+    /// Read once per connection at the handshake: a grant only changes by
+    /// revoke-and-re-pair, which closes the socket anyway.
+    pub fn scopes_of(&self, device_id: &str) -> Option<Vec<Scope>> {
+        self.devices
+            .lock()
+            .iter()
+            .find(|d| d.device_id == device_id)
+            .map(DeviceRecord::scope_set)
     }
 
     /// Resolve the static key the handshake proved to its record. `None` for a

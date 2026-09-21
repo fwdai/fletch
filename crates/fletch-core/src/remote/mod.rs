@@ -30,7 +30,8 @@ mod tests;
 
 pub use auth::{DeviceStore, PairingTokens};
 pub use dispatch::{
-    Dispatch, DispatchFuture, DispatchResult, SupervisorDispatch, DICTATION_UNAVAILABLE, UNKNOWN_OP,
+    preset_scopes, Dispatch, DispatchFuture, DispatchResult, Scope, SupervisorDispatch,
+    DICTATION_UNAVAILABLE, FORBIDDEN, UNKNOWN_OP,
 };
 pub use events::install_taps;
 pub use relay::RelayStatus;
@@ -68,6 +69,12 @@ pub const RELAY_URL_SETTING: &str = "remote.relay_url";
 /// that check it is a URL `set_relay` accepts.
 #[cfg_attr(not(test), allow(dead_code))]
 pub const DEFAULT_RELAY_URL: &str = "wss://relay.fletch.sh";
+/// The pairing presets `begin_pairing` accepts, in the order a chooser should
+/// offer them. Each one names a scope set in [`dispatch::preset_scopes`].
+pub const PAIRING_PRESETS: [&str; 2] = ["full", "control"];
+/// What a pairing grants when nobody says: today's undivided surface, so a
+/// caller that predates presets keeps pairing exactly as it did.
+pub const DEFAULT_PAIRING_PRESET: &str = "full";
 /// Default listen port (protocol doc).
 pub const DEFAULT_PORT: u16 = 47285;
 /// The only path the listener serves.
@@ -131,6 +138,10 @@ pub struct RemoteDevice {
     /// alerts reach it. The token itself never leaves the host — Settings only
     /// needs to know that it is there.
     pub push_enabled: bool,
+    /// What this device may do (`dispatch::Scope`), fixed when it paired. A
+    /// device paired before scopes existed reads as every scope. Changing it is
+    /// a revoke and a re-pair.
+    pub scopes: Vec<String>,
 }
 
 /// `remote_status`' reply.
@@ -170,6 +181,12 @@ pub struct PairingInvite {
     pub token: String,
     pub url: String,
     pub expires_at: String,
+    /// The preset this code grants when it is redeemed (`full` or `control`),
+    /// so the pane can say what it is handing out.
+    pub preset: String,
+    /// That preset spelled out, for a client that would rather read the scopes
+    /// than know the preset names.
+    pub scopes: Vec<String>,
 }
 
 struct Inner {
@@ -466,6 +483,7 @@ impl RemoteState {
                     platform: d.platform,
                     created_at: d.created_at,
                     last_seen_at: d.last_seen_at,
+                    scopes: d.scopes,
                 })
                 .collect(),
             // Both are "the remote dir is unusable", and either one blocks
@@ -479,8 +497,20 @@ impl RemoteState {
     }
 
     /// Mint a pairing token and the `fletch://pair` deep link that carries it.
-    pub fn begin_pairing(&self) -> PairingInvite {
-        let minted = self.pairing.mint();
+    ///
+    /// `preset` names the access the code grants (`dispatch::preset_scopes`);
+    /// `None` is `full`, which is what every pairing granted before presets
+    /// existed. An unknown name is refused rather than narrowed or widened —
+    /// guessing here would hand out access nobody asked for.
+    pub fn begin_pairing(&self, preset: Option<&str>) -> Result<PairingInvite> {
+        let preset = preset.unwrap_or(DEFAULT_PAIRING_PRESET);
+        let scopes = dispatch::preset_scopes(preset).ok_or_else(|| {
+            Error::Other(format!(
+                "unknown pairing preset {preset:?}: expected one of {}",
+                PAIRING_PRESETS.join(", ")
+            ))
+        })?;
+        let minted = self.pairing.mint(&scopes);
         let host = host_info();
         let (port, relay_url) = {
             let inner = self.inner.lock();
@@ -515,11 +545,17 @@ impl RemoteState {
             urlencode(&minted.token),
             urlencode(&host.name),
         );
-        PairingInvite {
+        Ok(PairingInvite {
             token: minted.token,
             url,
             expires_at: minted.expires_at.to_rfc3339(),
-        }
+            preset: preset.to_string(),
+            scopes: minted
+                .scopes
+                .iter()
+                .map(|s| s.as_str().to_string())
+                .collect(),
+        })
     }
 
     /// Revoke a device and hang up on it.
@@ -639,9 +675,20 @@ pub fn host_info() -> HostInfo {
 /// already define the wire surface, so a name can only appear here by being
 /// reachable.
 pub fn protocol_descriptor() -> Protocol {
+    protocol_descriptor_for(&dispatch::Scope::ALL)
+}
+
+/// The descriptor as one *device* sees it: `ops` narrowed to what its pairing
+/// scopes reach, everything else unchanged. This is what makes the scope gate
+/// free on the client — a phone or desktop already hides an op the host does not
+/// advertise, and now "does not advertise" also covers "not for this device".
+///
+/// The session ops are in every device's descriptor: they act on the calling
+/// device's own record (see [`dispatch::SESSION_OPS`]).
+pub fn protocol_descriptor_for(scopes: &[dispatch::Scope]) -> Protocol {
     Protocol {
         version: PROTOCOL_VERSION,
-        ops: [dispatch::OPS, dispatch::SESSION_OPS].concat(),
+        ops: [dispatch::ops_for(scopes), dispatch::SESSION_OPS.to_vec()].concat(),
         events: events::FORWARDED_EVENTS.to_vec(),
         features: Vec::new(),
     }

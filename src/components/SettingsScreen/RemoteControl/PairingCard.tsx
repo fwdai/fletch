@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { PairingInvite } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { presetLabel } from "./presets";
 
 const QR_SIZE = 148;
 
@@ -57,7 +58,9 @@ export function PairingCard({
         <div className="set-pair-copy text-sm">
           {expired
             ? "This code has expired. Generate a new one."
-            : "Enter this code in Fletch on your phone, or scan the code."}
+            : `Enter this code in Fletch on your phone, or scan the code. It grants ${presetLabel(
+                invite.preset,
+              )} access.`}
         </div>
         {!expired && lanOnly && (
           <div className="set-inline-warn text-sm">

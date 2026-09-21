@@ -99,8 +99,14 @@ pub async fn remote_set_relay(
 /// carries it. Refuses while the listener is down — a code nothing can be typed
 /// into is worse than an error — and while the device store is unwritable,
 /// since that pairing would stop working at the next launch.
+///
+/// `preset` is the access the code grants (`full` or `control`); absent means
+/// `full`, which is what every pairing granted before presets existed.
 #[tauri::command]
-pub fn remote_begin_pairing(remote: State<'_, Arc<RemoteState>>) -> Result<PairingInvite> {
+pub fn remote_begin_pairing(
+    remote: State<'_, Arc<RemoteState>>,
+    preset: Option<String>,
+) -> Result<PairingInvite> {
     let status = remote.status();
     if let Some(error) = status.error {
         return Err(Error::Other(error));
@@ -110,7 +116,7 @@ pub fn remote_begin_pairing(remote: State<'_, Arc<RemoteState>>) -> Result<Pairi
             "Turn on mobile access before pairing a device.".into(),
         ));
     }
-    Ok(remote.begin_pairing())
+    remote.begin_pairing(preset.as_deref())
 }
 
 #[tauri::command]

@@ -352,8 +352,10 @@ not have on record (never paired, or revoked) closes with `4003`.
 
 Desktop Settings → "Remote control" → "Pair a device" calls the Tauri command
 `remote_begin_pairing`, which mints a one-time pairing code (8 chars from
-`A-Z2-9`, no ambiguous glyphs), valid 5 minutes, single use. Settings shows it
-as text and as a QR code encoding:
+`A-Z2-9`, no ambiguous glyphs), valid 5 minutes, single use. The code carries
+the scope preset the pairing will grant (see "Scopes"); the link does not, so
+nothing a client says can widen it. Settings shows the code as text and as a QR
+code encoding:
 
 ```
 fletch://pair?host=<host public key, base64url>&addr=<ip>:<port>&relay=<url-encoded relay base URL>&token=<code>&name=<url-encoded host name>
@@ -378,15 +380,19 @@ Result:
 { "deviceId": "uuid", "host": { "name": "Alex's MacBook Pro", "appVersion": "0.7.23", "os": "macos" }, "protocol": { "version": 2, "ops": [ … ], "events": [ … ], "features": [] } }
 ```
 
-`protocol` is what this host answers — see "Compatibility". It is on `pair` as
-well as `hello` because a client that has only ever paired must know the
-surface without a second round trip.
+`protocol` is what this host answers *this device* — `ops` is already narrowed
+to the device's scopes, so a client needs no new gate (see "Scopes" and
+"Compatibility"). It is on `pair` as well as `hello` because a client that has
+only ever paired must know the surface without a second round trip.
 
 The frame carries no credential: the device's identity is the static key the
 handshake delivered. The host persists
-`{ deviceId, name, platform, publicKey (base64url), createdAt, lastSeenAt, pushToken?, pushEnvironment? }`
+`{ deviceId, name, platform, publicKey (base64url), createdAt, lastSeenAt, pushToken?, pushEnvironment?, scopes }`
 in `<app_data_dir>/remote/devices.json`. Records from the token era (with a
-`tokenHash` and no `publicKey`) are dropped at load. After `pair` the
+`tokenHash` and no `publicKey`) are dropped at load; a record with no `scopes`
+is read as every scope (see "Scopes"). Pairing again on a key already on file
+updates that one record, and the new code's scopes replace the old ones — which
+is how a device's access is changed. After `pair` the
 connection is authenticated as if `hello` had succeeded and the host starts
 forwarding events. The host does NOT push a snapshot; the client issues
 `get_workspace` itself right after a successful `pair`.
@@ -405,9 +411,54 @@ Result:
 
 The host looks up the handshake's remote static key in `devices.json`; a key
 it does not know closes with `4003`. `workspace` is the exact `get_workspace`
-result. `protocol` is the same descriptor `pair` answers with (see
-"Compatibility"). After the response the host starts forwarding events for this
+result. `protocol` is the same descriptor `pair` answers with, narrowed to this
+device's scopes (see "Scopes" and "Compatibility"). After the response the host starts forwarding events for this
 connection.
+
+## Scopes
+
+A pairing grants a set of scopes, fixed at `pair` and stored on the device
+record. An op outside the set is answered `{ ok: false, error: "forbidden" }`;
+the connection stays up, because a scope is a standing fact about the device
+and not a bad credential.
+
+The six scopes, and what each one covers:
+
+| scope | covers |
+|---|---|
+| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status` |
+| `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`) |
+| `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos |
+| `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
+| `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
+| `publish` | the five ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval` |
+
+Every op in the table below has exactly one scope. `register_push` is outside
+the scheme and always allowed: it writes the calling device's own APNs token
+and grants it nothing over the host.
+
+Two presets are offered at pairing:
+
+- **`full`** — every scope. Today's surface, and the default when no preset is
+  named.
+- **`control`** — every scope except `publish`. Watch and steer agents, approve
+  tool use, add projects, drive workflows and the roadmap; but no push, no PR
+  opened or merged, and no publish approved.
+
+Because `protocol.ops` is already narrowed to the device's scopes, a client
+needs no scope-specific gating: the actions it hides for "this host does not
+have that op" are the same actions it hides for "this device may not". The
+`forbidden` error is the backstop, for a client that asks anyway.
+
+**Changing a device's scopes is a revoke and a re-pair.** There is no in-place
+edit. A re-pair on a key already on file replaces that record's scopes with the
+new code's.
+
+**A record with no `scopes` field means every scope.** Every device paired
+before scopes existed was paired into the undivided surface, so anything
+narrower would silently take away access it already has. A scope name a host
+does not recognize is ignored rather than honoured, and does not invalidate the
+record.
 
 ## Compatibility
 
@@ -429,6 +480,10 @@ older than the other. The rules that make that safe:
   ops the session layer answers itself), `events` the forwarded-event whitelist,
   `features` named behaviours that are neither — none defined yet. It is the
   whole surface, not a delta.
+- **`ops` is per device, not per host.** It is the host's surface narrowed to
+  the calling device's pairing scopes (see "Scopes"), so the membership gate a
+  client already uses to hide what a host lacks also hides what *this device*
+  may not do. Nothing else in `protocol` varies by device.
 - **A missing `protocol` means the v2 default set**: the ops and events this doc
   listed when the field was introduced (42 ops, 15 events). Only a host from
   before the field omits it, and that is exactly what those hosts answer.
@@ -870,9 +925,15 @@ already has, as before.
 
 ## Errors
 
-Host errors are strings (the `Display` of the Rust `Error`). Two are reserved:
-`"unknown op"` for anything off the allowlist and `"too many in-flight
-requests"` for a connection over its concurrency cap.
+Host errors are strings (the `Display` of the Rust `Error`). Three are
+reserved: `"unknown op"` for anything off the allowlist, `"forbidden"` for an op
+this host has but this *device's* pairing scopes do not reach (see "Scopes"),
+and `"too many in-flight requests"` for a connection over its concurrency cap.
+
+`"forbidden"` is deliberately distinct from `"unknown op"`: the op exists here,
+so a client should say "re-pair this device with more access" rather than "this
+host cannot do that". Neither is a transport fault; neither warrants a retry or
+a reconnect.
 
 Auth failures are WebSocket close codes, not error responses: `4001` failed
 handshake, text frame, or bad first frame; `4003` unauthenticated, unknown
@@ -901,11 +962,12 @@ a phone.
 | `remote_set_enabled` | `{ enabled }` start/stop the listener and the relay link; persists setting `remote.enabled`; disabling closes live connections with `4004` |
 | `remote_set_port` | `{ port }` persist setting `remote.port`; a running listener moves to it at once (its connections close with `1012`, the relay link stays up), an idle one records it for the next start; refused, with nothing stored, when the port cannot be bound; returns `RemoteStatus` |
 | `remote_set_relay` | `{ url: string \| null }` persist setting `remote.relay_url` (null/empty clears it) and connect or drop the host link accordingly; returns `RemoteStatus` |
-| `remote_begin_pairing` | `{ token, url, expiresAt }`; refused while the listener is down or `error` is set |
+| `remote_begin_pairing` | `{ preset?: "full" \| "control" }` (absent is `full`) → `{ token, url, expiresAt, preset, scopes }`; refused for a preset the host does not define, and while the listener is down or `error` is set |
 | `remote_revoke_device` | `{ deviceId }`; drops the credential and closes that device's live connections with `4003` |
 
-`RemoteDevice = { deviceId, name, platform, createdAt, lastSeenAt, connected }`,
-where `connected` is derived from the live connections, not from `lastSeenAt`.
+`RemoteDevice = { deviceId, name, platform, createdAt, lastSeenAt, connected, pushEnabled, scopes }`,
+where `connected` is derived from the live connections, not from `lastSeenAt`,
+and `scopes` is what the device was paired with (see "Scopes").
 `RelayStatus = { url: string | null, state: "off" | "connecting" | "connected" | "error", error: string | null }`;
 `off` when no URL is set or remote access is disabled, `error` with the last
 failure while the link is between reconnect attempts.

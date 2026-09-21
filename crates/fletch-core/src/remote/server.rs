@@ -377,6 +377,10 @@ async fn read_loop<S: WsTransport>(
     // has. Kept as the id rather than a bare flag because `register_push`
     // writes to *this* device's record (see `dispatch::SESSION_OPS`).
     let mut authenticated: Option<String> = None;
+    // What that device may call. Read once, here, because a grant only changes
+    // by revoke-and-re-pair — and a revoke closes this socket, so there is no
+    // window in which a cached set is wider than the record on disk.
+    let mut scopes: Vec<super::dispatch::Scope> = Vec::new();
     let mut event_task: Option<tokio::task::JoinHandle<()>> = None;
     // Owns the dispatch tasks, so they are aborted when this loop ends instead
     // of outliving the socket they were going to answer on.
@@ -502,6 +506,7 @@ async fn read_loop<S: WsTransport>(
                                         platform = %record.platform,
                                         "remote: device authenticated"
                                     );
+                                    scopes = record.scope_set();
                                     authenticated = Some(record.device_id);
                                 }
                                 None => {
@@ -526,6 +531,19 @@ async fn read_loop<S: WsTransport>(
                         // rejection and not the only one.
                         if !super::dispatch::is_allowed(&frame.op) {
                             out.send(json_frame(err_frame(&frame.id, super::dispatch::UNKNOWN_OP)));
+                            continue;
+                        }
+
+                        // The per-device half of the same gate: the op exists on
+                        // this host, but this device's pairing scopes may not
+                        // reach it. Answered rather than closed — a scope is a
+                        // standing fact about the device, not a bad credential,
+                        // and the connection stays useful for everything else.
+                        //
+                        // `SupervisorDispatch` carries no identity by design, so
+                        // this is the only place it can be checked.
+                        if !super::dispatch::allows(&scopes, &frame.op) {
+                            out.send(json_frame(err_frame(&frame.id, super::dispatch::FORBIDDEN)));
                             continue;
                         }
 
@@ -619,19 +637,25 @@ async fn authenticate(
     remote_static: &[u8; 32],
 ) -> Option<(DeviceRecord, Value)> {
     let host = super::host_info();
-    // Same descriptor on both results: what the host answers does not depend on
-    // which frame asked, and a client that only ever pairs must learn it too.
-    let protocol = super::protocol_descriptor();
+    // The descriptor is per *device*, not per host: `ops` is narrowed to what
+    // this device's pairing scopes reach, so a client's existing "the host does
+    // not have that op" gate also hides what this device may not do. Both
+    // results carry it — a client that only ever pairs must learn it too.
     match frame.op.as_str() {
         "pair" => {
             let args: PairArgs = serde_json::from_value(frame.args.clone()).ok()?;
-            if !state.pairing().consume(&args.token) {
-                return None;
-            }
+            // The token carries the grant: nothing in the frame says, or may
+            // say, what access this pairing is claiming.
+            let pending = state.pairing().consume(&args.token)?;
             let info = args.device.unwrap_or_default();
             let record = state
                 .devices()
-                .register(&info.name(), &info.platform(), remote_static)
+                .register(
+                    &info.name(),
+                    &info.platform(),
+                    remote_static,
+                    &pending.scopes,
+                )
                 .map_err(|e| tracing::warn!(error = %e, "remote: pairing failed"))
                 .ok()?;
             // No snapshot here, by contract: `pair` only authenticates and
@@ -640,7 +664,7 @@ async fn authenticate(
             let result = json!({
                 "deviceId": record.device_id,
                 "host": host,
-                "protocol": protocol,
+                "protocol": super::protocol_descriptor_for(&record.scope_set()),
             });
             Some((record, result))
         }
@@ -649,6 +673,7 @@ async fn authenticate(
             // name and platform from `pair`, and the key is not up for
             // negotiation.
             let record = state.devices().find_by_key(remote_static)?;
+            let protocol = super::protocol_descriptor_for(&record.scope_set());
             let workspace = state
                 .dispatch("get_workspace", json!({}))
                 .await
