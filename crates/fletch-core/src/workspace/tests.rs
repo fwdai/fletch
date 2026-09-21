@@ -134,7 +134,8 @@ fn agent_title_round_trips_and_overwrites() {
         Some("Greet the user")
     );
 
-    wm.set_agent_title("yosemite", "Fix sidebar flicker").unwrap();
+    wm.set_agent_title("yosemite", "Fix sidebar flicker")
+        .unwrap();
     assert_eq!(
         wm.agent("yosemite").unwrap().title.as_deref(),
         Some("Fix sidebar flicker")
