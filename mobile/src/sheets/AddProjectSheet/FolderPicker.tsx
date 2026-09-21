@@ -1,16 +1,15 @@
-import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
 import { Icon } from "@desktop/components/Icon";
-import { type ReactNode, useEffect, useState } from "react";
+import { useFolderBrowser } from "@desktop/util/folderBrowser";
+import type { ReactNode } from "react";
 import { Sheet } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
-import { childPath, parentPath } from "../../lib/paths";
+import { childPath } from "../../lib/paths";
 import { useStore } from "../../store";
 
-const isHidden = (entry: DirEntry) => entry.name.startsWith(".");
-
-/** Browse the Mac over `list_dir`. Directories only — everything this sheet
- *  can do takes a folder — and the walk is anchored on the `base` the host
- *  reports, never on the string it was asked for: `~` and symlinks resolve
+/** Browse the Mac over `list_dir`, on the browser the desktop's own remote
+ *  folder picker uses (`useFolderBrowser`). Directories only — everything this
+ *  sheet can do takes a folder — and the walk is anchored on the `base` the
+ *  host reports, never on the string it was asked for: `~` and symlinks resolve
  *  there, not here. */
 export function FolderPicker({
   start = "~",
@@ -34,41 +33,20 @@ export function FolderPicker({
   onDismissError?: () => void;
 }) {
   const listDir = useStore((s) => s.listDir);
-  const [path, setPath] = useState(start);
-  const [listing, setListing] = useState<DirListing | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [showHidden, setShowHidden] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    setLoading(true);
-    setListError(null);
-    listDir(path).then(
-      (next) => {
-        if (!live) return;
-        setListing(next);
-        setLoading(false);
-      },
-      (e: unknown) => {
-        if (!live) return;
-        // Drop the old listing with it, so the crumb and the action point at
-        // the folder that failed rather than at the last one that worked.
-        setListing(null);
-        setListError(e instanceof Error ? e.message : String(e));
-        setLoading(false);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [path, listDir]);
-
-  const base = listing?.base ?? path;
-  const dirs = (listing?.entries ?? []).filter((e) => e.is_dir);
-  const hiddenCount = dirs.filter(isHidden).length;
-  const shown = showHidden ? dirs : dirs.filter((e) => !isHidden(e));
-  const up = parentPath(base);
+  // A failed read drops the listing with it, so the crumb and the action point
+  // at the folder that failed rather than at the last one that worked.
+  const {
+    base,
+    up,
+    shown,
+    hiddenCount,
+    showHidden,
+    setShowHidden,
+    setPath,
+    listing,
+    loading,
+    error: listError,
+  } = useFolderBrowser({ listDir, start });
   const shownError = error ?? listError;
 
   return (
