@@ -418,6 +418,10 @@ const LOGIN_POLL: Duration = Duration::from_secs(2);
 
 async fn github_login(data_dir: &std::path::Path) -> Result<(), String> {
     let started = admin::call(data_dir, "github_login_start", json!({})).await?;
+    // Only a host whose token was supplied out-of-band sends one (see `login`).
+    if let Some(warning) = started["warning"].as_str() {
+        eprintln!("{warning}");
+    }
     let expires_in = started["expiresIn"].as_u64().unwrap_or(900);
     println!(
         "Open {} and enter this code: {}",
