@@ -17,12 +17,13 @@ import type { AppState } from "./types";
 
 /** One thing the UI offers, and why a remote host may not be able to.
  *
- *  `op` is the op the control would call. `null` means the blocker is on THIS
- *  side, not the host's — a native folder picker cannot browse a cloud box's
- *  disk however willing the host is (docs/multi-host-plan.md §5.3, item 9) — so
- *  the gate closes for every remote environment regardless of its descriptor. */
+ *  `op` is what the control would call: one op, or every op the flow needs from
+ *  end to end — a host that answers some of them would otherwise be offered a
+ *  control that fails halfway through. `null` means the blocker is on THIS
+ *  side, not the host's (docs/multi-host-plan.md §5.3, item 9), so the gate
+ *  closes for every remote environment regardless of its descriptor. */
 interface Gate {
-  op: string | null;
+  op: string | readonly string[] | null;
   /** The feature itself, in two or three words — what a list of what this host
    *  cannot do reads as. The `reason` is the sentence; this is the name. */
   label: string;
@@ -32,28 +33,51 @@ interface Gate {
 /** Every gate in the app, so the reasons are written once and read the same
  *  way everywhere. Keep the wording short: it is a tooltip, not a dialog. */
 export const GATES = {
-  /** "Add project" and the clone destination. The folder to hand the op is
-   *  browsed over `list_dir` on a remote environment (the native picker cannot
-   *  see that disk), and both ops have been on the wire since v2 — so this
-   *  closes only against a host that answers neither. */
-  addProject: {
-    op: "add_workspace_repo",
+  /** Pinning a folder that is already on the host. Every remote route into it
+   *  browses the disk first — the native picker cannot see it — so the flow is
+   *  `list_dir` then `add_workspace_repo`, and a host answering only one of them
+   *  would be offered a picker with nowhere to send the folder. Both have been
+   *  on the wire since v2, so this closes only against a narrower host. */
+  openProject: {
+    op: ["list_dir", "add_workspace_repo"],
     label: "Adding projects",
     reason: "This host is too old to add a project — add it on the host.",
   },
-  /** Creating a fresh repo. On the wire since the project-settings family, so
-   *  this closes only against a host from before those ops. */
+  /** Cloning from GitHub: the same browse for the destination, the clone
+   *  itself, and the two `gh_*` reads the repo list and the connect prompt are
+   *  built on. */
+  cloneProject: {
+    op: ["list_dir", "clone_repo", "gh_status", "gh_repo_list"],
+    label: "Cloning a repository",
+    reason: "This host is too old to clone a repository — clone it on the host.",
+  },
+  /** Creating a fresh repo: browse for the parent, then create it there.
+   *  `create_repo` went on the wire with the project-settings family, so this
+   *  closes only against a host from before them. */
   createProject: {
-    op: "create_repo",
+    op: ["list_dir", "create_repo"],
     label: "Creating a project",
     reason: "This host can't create a repository from here yet.",
   },
   /** The project settings page's writes, as one gate: the display name, the
    *  repo list (attach, detach, relocate, label, unpin) and deleting the
-   *  project. They went on the wire together and a host has all of them or
-   *  none, so one reason covers the page rather than seven identical ones. */
+   *  project. Every op the page can call, so a host that answers only some of
+   *  them is not offered a page whose other half fails on click — they went on
+   *  the wire together, so in practice a host has all of them or none.
+   *  `list_dir` is in the list for attach and relocate, which browse the host's
+   *  disk for the folder first. */
   projectAdmin: {
-    op: "rename_project",
+    op: [
+      "list_dir",
+      "rename_project",
+      "delete_project",
+      "project_has_running_agents",
+      "attach_repo_to_project",
+      "detach_repo_from_project",
+      "relocate_repo",
+      "set_repo_label",
+      "remove_workspace_repo",
+    ],
     label: "Project settings",
     reason: "This host is too old to change project settings — change them on the host.",
   },
@@ -157,13 +181,25 @@ export const GATES = {
 
 export type GateName = keyof typeof GATES;
 
+/** The ops `gate` needs a host to answer — none at all for a gate this side
+ *  closes. Written as a bare string for the common one-op case, so this is
+ *  where the two shapes become one. */
+export function requiredOps(gate: GateName): readonly string[] {
+  const { op } = GATES[gate];
+  return op === null ? [] : typeof op === "string" ? [op] : op;
+}
+
 /** Why `gate` is closed in `env`, or null when it is open. Pure, so the gate
- *  table is testable without a store or a host. */
+ *  table is testable without a store or a host.
+ *
+ *  Every op the flow needs, not just its last one: a host that takes the folder
+ *  but cannot list a directory would otherwise be offered a picker that opens
+ *  on an error. */
 export function gateReason(env: EnvironmentEntry, gate: GateName): string | null {
   if (env.kind === "local") return null;
-  const { op, reason } = GATES[gate];
-  if (op !== null && hostSupports(env.protocol, op)) return null;
-  return reason;
+  const ops = requiredOps(gate);
+  if (ops.length > 0 && ops.every((op) => hostSupports(env.protocol, op))) return null;
+  return GATES[gate].reason;
 }
 
 /** A gate that is closed in one environment: the feature's name and the reason
@@ -216,7 +252,7 @@ export function hostSkew(env: EnvironmentEntry, clientVersion: string): HostSkew
   // autopilot judges a project by this Mac's own opt-out rows — and saying it is
   // "unavailable on this host" would blame the wrong machine; the control that
   // is gated says so itself, where the user is trying to use it.
-  const closed = closedGates(env).filter((g) => GATES[g.name].op !== null);
+  const closed = closedGates(env).filter((g) => requiredOps(g.name).length > 0);
   if (closed.length === 0) return null;
   const summary =
     closed.length > NAMED_LIMIT

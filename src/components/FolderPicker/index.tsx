@@ -109,6 +109,12 @@ function FolderPicker({
               {loading ? "Reading…" : error ? "Couldn't read this folder" : "No folders here"}
             </div>
           )}
+          {/* The host stops reading a huge directory at its cap, so say that
+              this is a slice rather than let a missing folder read as absent.
+              Typing the path is the way past it. */}
+          {listing?.truncated && (
+            <div className="fp-empty text-sm">Too many entries to list — type a path above</div>
+          )}
         </div>
 
         {hiddenCount > 0 && (

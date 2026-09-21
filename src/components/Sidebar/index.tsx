@@ -133,7 +133,7 @@ function applySearch(groups: ProjectGroupData[], q: string): ProjectGroupData[] 
 }
 
 export function Sidebar() {
-  const addProjectGate = useGate("addProject");
+  const openProjectGate = useGate("openProject");
   const workspace = useAppStore((s) => s.workspace);
   const drafts = useAppStore((s) => s.drafts);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);
@@ -308,11 +308,11 @@ export function Sidebar() {
               answers neither op, where it says so instead. A disabled button
               gets no pointer events in the WebView, so the tooltip trigger has
               to be the wrapper. */}
-          <span className={addProjectGate ? "tip" : undefined} data-tip={addProjectGate}>
+          <span className={openProjectGate ? "tip" : undefined} data-tip={openProjectGate}>
             <button
               className="add-proj-cta flex-center text-sm"
               onClick={() => setNpOpen(true)}
-              disabled={addProjectGate !== null}
+              disabled={openProjectGate !== null}
               aria-label="Add project"
             >
               <Icon name="plus" size={13} />

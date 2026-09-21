@@ -3,17 +3,16 @@ import { dropAgentEntries } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
 import { track } from "@/util/track";
-import { activeGateReason } from "./capabilities";
+import { activeGateReason, type GateName } from "./capabilities";
 import type { SliceCreator } from "./types";
 
-/** Refuse a project-settings write the environment the user is driving cannot
- *  take. The controls are already disabled with this reason (`projectAdmin`),
- *  so this is the backstop for the paths that never touch a button — Enter in
- *  the name field, a blur that saves a label — as the Git panel's dispatch is
- *  for its own keyboard shortcuts. Throws, because every caller here surfaces
- *  the failure inline. */
-function refuseWhenGated(): void {
-  const reason = activeGateReason("projectAdmin");
+/** Refuse a write the environment the user is driving cannot take. The control
+ *  is already disabled with this reason, so this is the backstop for the paths
+ *  that never touch a button — Enter in the name field, a blur that saves a
+ *  label — as the Git panel's dispatch is for its own keyboard shortcuts.
+ *  Throws, because every caller here surfaces the failure inline. */
+function refuseWhenGated(gate: GateName = "projectAdmin"): void {
+  const reason = activeGateReason(gate);
   if (reason) throw new Error(reason);
 }
 
@@ -170,6 +169,10 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
   },
 
   createRepo: async (name, destParent, isPrivate, description, publish) => {
+    // The popover's Create row is already dead on a host that cannot take it;
+    // this is the same backstop the settings writes have, for a modal left open
+    // across an environment switch.
+    refuseWhenGated("createProject");
     const first = (get().workspace?.projects.length ?? 0) === 0;
     const ws = await api.createRepo(name, destParent, isPrivate, description, publish);
     set({ workspace: ws });

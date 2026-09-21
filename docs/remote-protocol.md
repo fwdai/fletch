@@ -488,7 +488,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
 | `discover_supported_models` | as command | `AgentModels[]` |
-| `list_dir` | `{ path }` (tilde-expanded on the host) | `DirListing` — each entry carries `is_repo` (a directory holding a `.git`), added within v2, so a client reading a host from before it simply sees no marks |
+| `list_dir` | `{ path }` (tilde-expanded on the host) | `DirListing` — entries sorted directories-first then by name and capped at 1000, with `truncated` saying the cap bit; each entry carries `is_repo` (a directory holding a `.git`). Both fields were added within v2, so a client reading a host from before them sees no marks and no truncation flag |
 | `add_workspace_repo` | `{ repoPath }` | `Workspace` |
 | `clone_repo` | `{ spec, destParent }` | `Workspace` |
 | `create_repo` | `{ name, destParent, private, description?, publish? }` — seeds the repo on the *host* (README + initial commit) and pins it; `publish: false` keeps it local-only, absent publishes | `Workspace` |

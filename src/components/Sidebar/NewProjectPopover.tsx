@@ -17,6 +17,10 @@ export function NewProjectPopover({
 }) {
   const addWorkspaceRepo = useAppStore((s) => s.addWorkspaceRepo);
   const remote = useAppStore((s) => activeEntry(s).kind === "remote");
+  // A row each, because the three flows need different ops of the host: one
+  // can be offered while another says why it cannot run here.
+  const openGate = useGate("openProject");
+  const cloneGate = useGate("cloneProject");
   const createGate = useGate("createProject");
 
   async function onOpenFolder() {
@@ -31,23 +35,25 @@ export function NewProjectPopover({
     <>
       <Scrim onClose={onClose} zIndex={290} />
       <div className="np-pop">
+        {/* Gated rather than hidden: a row that says why it cannot run here is
+            more use than a menu that quietly changes shape. */}
         <Item
           icon="folder"
           title="Open a folder"
-          subtitle={remote ? "Repo on the host" : "Local repo on your machine"}
+          subtitle={openGate ?? (remote ? "Repo on the host" : "Local repo on your machine")}
+          disabled={openGate !== null}
           onClick={onOpenFolder}
         />
         <Item
           icon="github"
           title="Clone from GitHub"
-          subtitle="Pick a repo or paste a URL"
+          subtitle={cloneGate ?? "Pick a repo or paste a URL"}
+          disabled={cloneGate !== null}
           onClick={() => onChoose("clone")}
         />
         <Item
           icon="sparkle"
           title="Create new project"
-          // Gated rather than hidden: the row says why it cannot run here,
-          // which is more use than a menu that quietly changes shape.
           subtitle={createGate ?? "New repo, local + on GitHub"}
           disabled={createGate !== null}
           onClick={() => onChoose("create")}
