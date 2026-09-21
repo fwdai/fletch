@@ -675,8 +675,9 @@ After the polish PRs merged, an audit found four gaps: no provider CLI login
 on a headless host, projects only addable where someone has local access, no
 scope at pairing, and plaintext secrets on a host. Each was verified against
 the code and sliced into six PRs; the verdicts, scopes and order are in
-`multi-host-gaps-plan.md`, and the manual test matrix for the whole multi-host
-surface is in `multi-host-test-plan.md`.
+`multi-host-gaps-plan.md`, whose per-PR acceptance is what to run for these six.
+The manual test matrix for the surface underneath them (#749–#784) is in
+`multi-host-test-plan.md`.
 
 - [x] Gap 4: GitHub token from `FLETCH_GITHUB_TOKEN` or a systemd credential, never persisted. PR #785.
 - [x] Gap 2a: host folder browser over `list_dir` on the desktop (native picker stays local); `is_repo`/`truncated` on `list_dir`; per-flow gates. PR #786.
@@ -689,7 +690,7 @@ Nothing else from the deferred table has been started. Items 13 and 14
 (scopes, PTY streams) remain the big parity gap: remote agents are
 structured-view only, with no side shells or Run panel on the host.
 
-### 6.3 How this work is being run (for whoever picks it up)
+### 6.4 How this work is being run (for whoever picks it up)
 
 - One PR per checklist line, built by an Opus sub-agent in a git worktree under
   `.claude/worktrees/`, all sharing `CARGO_TARGET_DIR=<checkout>/src-tauri/target`.

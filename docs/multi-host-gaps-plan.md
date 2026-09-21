@@ -5,8 +5,10 @@
 acceptance and order. Nothing here changes the local desktop path.
 
 Status (2026-09-21): PR 5 → #785, PR 1 → #786, PR 2 → #788, PR 3 → #787,
-PR 4 → #789, all merged. PR 6 → #791 open, review threads addressed. The
-manual checks for all of it are in `multi-host-test-plan.md`.
+PR 4 → #789, all merged. PR 6 → #791 open, review threads addressed.
+`multi-host-test-plan.md` is the manual matrix for the surface these gaps sit
+on (#749–#784); it does not yet carry checks for #785–#791. Until it does, each
+PR's own **Acceptance** paragraph in §2 is what to run for that work.
 
 ## 1. Verification
 
