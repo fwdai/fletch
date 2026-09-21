@@ -23,6 +23,7 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "agent:event",
     "agent:status",
     "agent:task",
+    "agent:title",
     "agent:branch",
     "agent:model",
     "agent:effort",

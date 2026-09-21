@@ -9,6 +9,7 @@ import type {
   AgentRepoAddedEvent,
   AgentStatusEvent,
   AgentTaskEvent,
+  AgentTitleEvent,
   AgentViewEvent,
   ShellOutputEvent,
 } from "./types/agent";
@@ -284,6 +285,11 @@ export function onAgentModel(cb: (e: AgentModelEvent) => void): Promise<Unlisten
 
 export function onAgentTask(cb: (e: AgentTaskEvent) => void): Promise<UnlistenFn> {
   return on<AgentTaskEvent>("agent:task", cb);
+}
+
+/** The agent titled its work via `set_title`; the sidebar subtitle prefers it. */
+export function onAgentTitle(cb: (e: AgentTitleEvent) => void): Promise<UnlistenFn> {
+  return on<AgentTitleEvent>("agent:title", cb);
 }
 
 export function onAgentBranch(cb: (e: AgentBranchEvent) => void): Promise<UnlistenFn> {

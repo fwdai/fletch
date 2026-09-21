@@ -59,6 +59,8 @@ pub fn new_agent_record(
         // Set by a surface that owns its own chats (the Roadmap tab); a plain
         // spawn is an ordinary sidebar agent.
         purpose: None,
+        // Written by the agent via `set_title` once it knows the work.
+        title: None,
         created_at: Utc::now().to_rfc3339(),
         last_error: None,
         archive: None,

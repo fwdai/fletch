@@ -23,6 +23,13 @@ pub const EVENT_PR_OPENED: &str = "git.pr_opened";
 /// change to the agent's turn instead of inferring it from a polled snapshot.
 pub const EVENT_ACTION_DONE: &str = "git.action_done";
 
+/// Emitted by `set_title`: the agent named the work this workspace is doing.
+/// Payload `{ "title": "..." }`; the watcher persists it on the workspace row.
+pub const EVENT_TITLE_SET: &str = "workspace.title_set";
+
+/// Longest title `set_title` accepts. A sidebar subtitle, not a paragraph.
+const MAX_TITLE_CHARS: usize = 80;
+
 /// Host-brokered ops whose success means the agent did the delegated work. Local
 /// mutations signal out-of-band via the clone's hooks (`signal_git_action`).
 fn is_mutating_op(op: &str) -> bool {
@@ -113,6 +120,7 @@ impl GitDispatcher {
             "reply_thread" => (self.reply_thread(id, args).await, Vec::new()),
             "resolve_thread" => (self.resolve_thread(id, args).await, Vec::new()),
             "echo" => (self.echo(id, args).await, Vec::new()),
+            "set_title" => self.set_title(id, args),
             "ping" => (
                 Response::ok(id, 0, "pong".to_string(), String::new()),
                 Vec::new(),
@@ -138,6 +146,39 @@ impl GitDispatcher {
             return Response::err(id, "echo requires a non-empty `message` arg");
         }
         Response::ok(id, 0, message.to_string(), String::new())
+    }
+
+    /// The agent names the work it is doing. Validated here and relayed as
+    /// `EVENT_TITLE_SET`; the supervisor's watcher owns the persistence, like
+    /// it does for branch and PR events. No git runs.
+    fn set_title(&self, id: &str, args: &Value) -> (Response, Vec<RpcEvent>) {
+        let title = args
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        if title.is_empty() {
+            return (
+                Response::err(id, "set_title requires a non-empty `title` arg"),
+                Vec::new(),
+            );
+        }
+        if title.chars().count() > MAX_TITLE_CHARS {
+            return (
+                Response::err(
+                    id,
+                    format!("set_title: title exceeds {MAX_TITLE_CHARS} characters; keep it to a few words"),
+                ),
+                Vec::new(),
+            );
+        }
+        (
+            Response::ok(id, 0, title.clone(), String::new()),
+            vec![RpcEvent::named(
+                EVENT_TITLE_SET,
+                serde_json::json!({ "title": title }),
+            )],
+        )
     }
 
     /// The clone's hook can't emit an app event itself; this relays it as

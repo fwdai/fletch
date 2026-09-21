@@ -64,6 +64,17 @@ actions that need host-held GitHub credentials — `git_push`, `open_pr`, and
 dispatcher also exposes `echo` as a simple round-trip check. Future app features
 can define their own ops on top of the same mailbox.
 
+### Workspace title
+
+`{"op":"set_title","args":{"title":"Swap sidebar title and prompt"}}` — 3–6
+words naming the work, max 80 chars.
+
+- Call it once the user has asked for a change, investigation, or deliverable.
+  Not on greetings, small talk, or clarifying questions.
+- Each turn: if untitled and the purpose is now clear, call it first.
+- Untitled after the user's third message: call it with your best inference.
+- Repeat calls overwrite. Re-call only when the purpose changes materially.
+
 In a multi-repo workspace (sibling repository checkouts under the workspace
 root), every git op accepts an optional `args.repo` — the sibling checkout's
 directory name — and defaults to your starting repository when absent. Commit

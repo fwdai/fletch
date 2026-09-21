@@ -109,7 +109,9 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const subFailed = subagents.filter((c) => c.failed).length;
 
   const branch = agent.repos[0]?.branch ?? null;
-  const taskOrBranch = firstShort(agent.task) || branch || "—";
+  // The agent's own title for the work once it has set one (see the
+  // `set_title` mailbox op); until then the first line of the user's prompt.
+  const taskOrBranch = agent.title || firstShort(agent.task) || branch || "—";
   const age = formatAge(agent.created_at, now);
   // spawning is the start of a run — show it as "working" too, not a dead row;
   // so is an idle agent whose sub-agents are still at it.

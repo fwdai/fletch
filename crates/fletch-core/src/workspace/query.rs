@@ -471,6 +471,7 @@ impl WorkspaceManager {
             owner_run_id,
             issue_ref,
             purpose,
+            title,
         ) = row;
 
         let is_archived = archived_millis.is_some();
@@ -513,6 +514,7 @@ impl WorkspaceManager {
             owner_run_id,
             issue_ref,
             purpose,
+            title,
             created_at: millis_to_iso(created_millis),
             last_error,
             archive,

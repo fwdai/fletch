@@ -110,6 +110,39 @@ fn mk_repo(path: &str) -> TrackedRepo {
     }
 }
 
+/// The title starts empty, round-trips through the record, and — unlike the
+/// task — is overwritten on every write so the agent can refine an early guess.
+#[test]
+fn agent_title_round_trips_and_overwrites() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+    let mut record = new_agent_record(
+        "yosemite".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "hello".into(),
+        AgentView::Custom,
+    );
+    wm.add_agent(&mut record).unwrap();
+    assert_eq!(wm.agent("yosemite").unwrap().title, None);
+
+    wm.set_agent_title("yosemite", "Greet the user").unwrap();
+    assert_eq!(
+        wm.agent("yosemite").unwrap().title.as_deref(),
+        Some("Greet the user")
+    );
+
+    wm.set_agent_title("yosemite", "Fix sidebar flicker").unwrap();
+    assert_eq!(
+        wm.agent("yosemite").unwrap().title.as_deref(),
+        Some("Fix sidebar flicker")
+    );
+
+    assert!(wm.set_agent_title("nope", "x").is_err());
+}
+
 /// An adopted checkout is the authoritative path for that repo entry, while an
 /// ordinary entry still derives one from the agent id + subdir. Every consumer
 /// resolves through this, so the two must not be confusable.
