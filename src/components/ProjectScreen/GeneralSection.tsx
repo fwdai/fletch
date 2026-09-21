@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { RepositoriesField } from "./RepositoriesField";
 
 interface Props {
@@ -14,6 +15,10 @@ interface Props {
  *  of its own — each repo row carries its own path. */
 export function GeneralSection({ projectId, currentName }: Props) {
   const renameProject = useAppStore((s) => s.renameProject);
+  // One gate for the whole section: the name field here and every control in
+  // the repositories field below. Null on this Mac and on any host that
+  // answers the project-settings ops.
+  const gate = useGate("projectAdmin");
 
   const [name, setName] = useState(currentName);
   const [saving, setSaving] = useState(false);
@@ -23,7 +28,7 @@ export function GeneralSection({ projectId, currentName }: Props) {
   const dirty = trimmed.length > 0 && trimmed !== currentName;
 
   async function saveName() {
-    if (!dirty || saving) return;
+    if (!dirty || saving || gate) return;
     setSaving(true);
     setError(null);
     try {
@@ -45,6 +50,7 @@ export function GeneralSection({ projectId, currentName }: Props) {
         <p className="ps-section-lead text-sm">
           The project&rsquo;s display name and the repositories it&rsquo;s made of.
         </p>
+        {gate && <p className="ps-hint text-sm">{gate}</p>}
       </header>
 
       <div className="ps-field">
@@ -58,6 +64,8 @@ export function GeneralSection({ projectId, currentName }: Props) {
             value={name}
             spellCheck={false}
             autoComplete="off"
+            disabled={gate !== null}
+            title={gate ?? undefined}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -75,7 +83,8 @@ export function GeneralSection({ projectId, currentName }: Props) {
           <Button
             variant="outline"
             size="lg"
-            disabled={!dirty || saving}
+            disabled={!dirty || saving || gate !== null}
+            tip={gate ?? undefined}
             onClick={() => void saveName()}
           >
             {saving ? "Saving…" : "Save"}

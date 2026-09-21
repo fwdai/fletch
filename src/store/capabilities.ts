@@ -12,7 +12,7 @@
 
 import { hostSupports } from "@/remote/types";
 import { useAppStore } from "@/store";
-import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "./environments";
+import { activeEnvironment, type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "./environments";
 import type { AppState } from "./types";
 
 /** One thing the UI offers, and why a remote host may not be able to.
@@ -41,12 +41,21 @@ export const GATES = {
     label: "Adding projects",
     reason: "This host is too old to add a project — add it on the host.",
   },
-  /** Creating a fresh repo. `create_repo` is not on the wire at all, so this is
-   *  closed on every host today; it opens by itself once one advertises it. */
+  /** Creating a fresh repo. On the wire since the project-settings family, so
+   *  this closes only against a host from before those ops. */
   createProject: {
     op: "create_repo",
     label: "Creating a project",
     reason: "This host can't create a repository from here yet.",
+  },
+  /** The project settings page's writes, as one gate: the display name, the
+   *  repo list (attach, detach, relocate, label, unpin) and deleting the
+   *  project. They went on the wire together and a host has all of them or
+   *  none, so one reason covers the page rather than seven identical ones. */
+  projectAdmin: {
+    op: "rename_project",
+    label: "Project settings",
+    reason: "This host is too old to change project settings — change them on the host.",
   },
   sideShell: {
     op: "open_agent_shell",
@@ -257,6 +266,14 @@ export const activeEntry = (s: AppState): EnvironmentEntry =>
  *  rendering it disabled, or leaving it out. */
 export function useGate(gate: GateName): string | null {
   return useAppStore((s) => gateReason(activeEntry(s), gate));
+}
+
+/** [`gateReason`] for the environment the user is driving, outside React — a
+ *  store action refusing a write the button is already disabled for, so a
+ *  keyboard path (Enter in a field, a blur that saves) cannot slip past the
+ *  control. The same backstop `useGitActions.runAction` applies. */
+export function activeGateReason(gate: GateName): string | null {
+  return gateReason(activeEnvironment(), gate);
 }
 
 /** [`useGate`] for a gate picked at render time — the Git panel's action bar
