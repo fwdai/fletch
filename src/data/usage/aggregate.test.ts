@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { UsageBucket, UsageScan, UsageScanTokens, UsageSessionSpan } from "@/api";
 import type { SlimCatalog } from "@/data/modelCatalog";
+import type { EnvironmentEntry } from "@/store/environments";
 import { dayKeysBetween, localDay } from "@/util/format";
-import { aggregateUsage, localHourStart, rangeBounds } from "./aggregate";
+import { aggregateUsage, localHourStart, mergeScans, rangeBounds } from "./aggregate";
 import { costLabel, coverageLabel, modelCostLabel } from "./costLabel";
-import { isFresh, SCAN_TTL_MS } from "./useUsageStats";
+import type { HostUsageScan } from "./types";
+import { isFresh, SCAN_TTL_MS, usageScanHosts } from "./useUsageStats";
 
 // A fixture catalog rather than a real one: what models.dev charges changes
 // under us, and this file is testing the fold, not the price table. Rates are
@@ -444,6 +446,113 @@ describe("costLabel", () => {
     ).providers;
     expect(coverageLabel(claude).kind).toBe("exact");
     expect(coverageLabel(codex).kind).toBe("unpriced");
+  });
+});
+
+describe("mergeScans", () => {
+  const hostScan = (envId: string, s: UsageScan, fetchedAt = 1_700_000_000_000): HostUsageScan => ({
+    envId,
+    envName: envId,
+    scan: s,
+    fetchedAt,
+  });
+
+  it("hands a single host's scan back untouched", () => {
+    const only = scan([bucket({ hourStartMs: at("2026-09-17", 9), model: "sonnet-5" })]);
+    expect(mergeScans([hostScan("local", only)])).toBe(only);
+  });
+
+  it("concatenates buckets in sorted order, leaving same-key cells to the fold", () => {
+    const hour = at("2026-09-17", 9);
+    const merged = mergeScans([
+      hostScan("local", scan([bucket({ hourStartMs: hour, model: "sonnet-5" })])),
+      hostScan(
+        "hostB",
+        scan([
+          bucket({ hourStartMs: at("2026-09-17", 8), model: "mystery", provider: "codex" }),
+          bucket({ hourStartMs: hour, model: "sonnet-5", tokens: tokens(7, 3) }),
+        ]),
+      ),
+    ]);
+    expect(merged.buckets.map((b) => [b.hourStartMs, b.provider, b.model])).toEqual([
+      [at("2026-09-17", 8), "codex", "mystery"],
+      [hour, "claude", "sonnet-5"],
+      [hour, "claude", "sonnet-5"],
+    ]);
+    // Both cells survive into the aggregate rather than one shadowing the other.
+    const stats = aggregateUsage(merged, CATALOG, windowOf(["2026-09-17", "2026-09-17"]));
+    const sonnet = stats.byModel.find((m) => m.model === "sonnet-5");
+    expect(sonnet?.tokens).toBe(110 + 10);
+  });
+
+  it("keeps two hosts' identical session ids apart", () => {
+    const span = session({ firstMs: at("2026-09-17", 9), lastMs: at("2026-09-17", 10) });
+    const merged = mergeScans([
+      hostScan("local", scan([], [{ ...span, id: "abc" }])),
+      hostScan("hostB", scan([], [{ ...span, id: "abc" }])),
+    ]);
+    expect(merged.sessions.map((s) => s.id)).toEqual(["hostB:abc", "local:abc"]);
+    expect(
+      aggregateUsage(merged, CATALOG, windowOf(["2026-09-17", "2026-09-17"])).totalSessions,
+    ).toBe(2);
+  });
+
+  it("sums the scan counters and intersects the hosts' windows", () => {
+    const a = { ...scan([]), scannedFiles: 3, filesRead: 2, bytesRead: 10 };
+    const b = { ...scan([]), scannedFiles: 5, filesRead: 0, bytesRead: 7 };
+    // Independent clocks: the merged window is the part both hosts covered.
+    a.sinceMs = 100;
+    a.untilMs = 900;
+    b.sinceMs = 200;
+    b.untilMs = 800;
+    const merged = mergeScans([hostScan("local", a), hostScan("hostB", b)]);
+    expect(merged).toMatchObject({
+      scannedFiles: 8,
+      filesRead: 2,
+      bytesRead: 17,
+      sinceMs: 200,
+      untilMs: 800,
+    });
+  });
+});
+
+describe("usageScanHosts", () => {
+  const env = (e: Partial<EnvironmentEntry> & Pick<EnvironmentEntry, "id">): EnvironmentEntry => ({
+    name: e.id,
+    kind: "remote",
+    connection: "connected",
+    ...e,
+  });
+  const supports = (ops: string[]) => ({ version: 2, ops, events: [], features: [] });
+  const ids = (envs: EnvironmentEntry[]) =>
+    usageScanHosts(Object.fromEntries(envs.map((e) => [e.id, e]))).map((e) => e.id);
+
+  const local = env({ id: "local", name: "This Mac", kind: "local" });
+
+  it("always scans the local machine, whatever else is around", () => {
+    expect(ids([local])).toEqual(["local"]);
+  });
+
+  it("scans a connected host that answers the op, local first then by name", () => {
+    const b = env({ id: "b", name: "Beta", protocol: supports(["scan_usage_transcripts"]) });
+    const a = env({ id: "a", name: "Alpha", protocol: supports(["scan_usage_transcripts"]) });
+    expect(ids([b, a, local])).toEqual(["local", "a", "b"]);
+  });
+
+  it("skips hosts that are not connected", () => {
+    const off = env({
+      id: "off",
+      connection: "disconnected",
+      protocol: supports(["scan_usage_transcripts"]),
+    });
+    expect(ids([local, off])).toEqual(["local"]);
+  });
+
+  it("skips hosts too old to answer the op, reported or defaulted", () => {
+    const narrow = env({ id: "narrow", protocol: supports(["get_workspace"]) });
+    // No protocol at all means the frozen v2 default set, which predates the op.
+    const legacy = env({ id: "legacy" });
+    expect(ids([local, narrow, legacy])).toEqual(["local"]);
   });
 });
 

@@ -1,11 +1,14 @@
-// Usage across every local coding-agent session: scan → aggregate → view model.
-// `useUsageStats` is the entry point for UI; `aggregateUsage` is the pure fold
-// behind it, reusable by any other surface that has a scan in hand.
+// Usage across every coding-agent session this client can see — on this machine
+// and on every connected host: scan → merge → aggregate → view model.
+// `useUsageStats` is the entry point for UI; `mergeScans` and `aggregateUsage`
+// are the pure folds behind it, reusable by any other surface that has scans in
+// hand.
 
 export {
   aggregateUsage,
   bucketsInRange,
   localHourStart,
+  mergeScans,
   processedTokens,
   rangeBounds,
   sessionsInRange,
@@ -19,6 +22,7 @@ export {
   modelCostLabel,
 } from "./costLabel";
 export type {
+  HostUsageScan,
   UsageCostCoverage,
   UsageDay,
   UsageDayRow,
@@ -32,4 +36,12 @@ export type {
   UsageTokenTotals,
   UsageTotals,
 } from "./types";
-export { isFresh, SCAN_TTL_MS, type UsageStatsResult, useUsageStats } from "./useUsageStats";
+export {
+  ALL_HOSTS,
+  isFresh,
+  SCAN_TTL_MS,
+  type UsageHost,
+  type UsageStatsResult,
+  usageScanHosts,
+  useUsageStats,
+} from "./useUsageStats";

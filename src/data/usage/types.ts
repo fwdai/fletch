@@ -1,4 +1,4 @@
-import type { UsageProvider } from "@/api";
+import type { UsageProvider, UsageScan } from "@/api";
 
 // View model for "how many tokens and dollars did every local coding-agent
 // session burn". Derived from a raw transcript scan (`UsageScan`) plus the
@@ -7,6 +7,21 @@ import type { UsageProvider } from "@/api";
 
 /** How far back the usage view looks. */
 export type UsageRange = "24h" | "7d" | "30d" | "90d";
+
+/** One host's scan, tagged with the environment it was read from. Transcripts
+ *  live on the machine that ran the sessions, so every host answers for itself
+ *  and the client merges the answers (`mergeScans`). The tag is what makes a
+ *  merge safe — session ids are unique within a host only — and what the host
+ *  filter selects on. */
+export interface HostUsageScan {
+  /** `EnvironmentEntry.id`: `"local"`, or a host's public key. */
+  envId: string;
+  /** The environment's display name, for the filter and the header. */
+  envName: string;
+  scan: UsageScan;
+  /** When this host's scan was taken, by *this* client's clock. */
+  fetchedAt: number;
+}
 
 /** Which number the headline and the daily chart plot. */
 export type UsageMetric = "cost" | "tokens";

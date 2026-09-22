@@ -426,7 +426,7 @@ The six scopes, and what each one covers:
 
 | scope | covers |
 |---|---|
-| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `approvals_list` |
+| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `scan_usage_transcripts`, `approvals_list` |
 | `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`) |
 | `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos |
 | `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
@@ -630,6 +630,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `roadmap_accept_brief_proposal` | `{ projectId }` — the only thing that writes product memory | `RoadmapBrief` |
 | `roadmap_reject_brief_proposal` | `{ projectId }` | `null` |
 | `host_providers` | `{}` — which provider CLIs this host has and which of them are signed in, so a client never offers to spawn one the host cannot run (see "Which providers a host can run"). Read-only; no desktop command of this name | `{ id, label, installed, version: string \| null, auth: "signed_in" \| "signed_out" \| "unknown" \| null, loginCommand: string \| null }[]` |
+| `scan_usage_transcripts` | `{ sinceMs, untilMs }` — token counts read off *this host's* Claude Code and Codex transcripts over the half-open window, bucketed by local hour, provider and model, plus a span per contributing session. Uncached and slow (seconds over 90 days): ask for the widest window once and slice shorter ranges out of the answer. Read-only; the hours are the host's local hours and the ids are unique within the host only, so a client aggregating several hosts must tag each answer with the host it came from | `UsageScan` — `{ buckets: { hourStartMs, provider, model, tokens: { input, output, cacheRead, cacheWrite }, requests }[], sessions: { provider, id, firstMs, lastMs }[], scannedFiles, filesRead, bytesRead, sinceMs, untilMs }` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation

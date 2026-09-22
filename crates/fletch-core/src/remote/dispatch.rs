@@ -238,6 +238,11 @@ pub const OPS: &[&str] = &[
     // `install_agent`, `open_provider_login` and the two desktop probes behind
     // Settings › Providers are never exposed (docs/remote-protocol.md).
     "host_providers",
+    // Token usage read off this host's own Claude Code / Codex transcripts.
+    // Read-only, and per-host by nature: the transcripts live on the machine
+    // that ran the sessions, so a client aggregating several hosts asks each
+    // one separately.
+    "scan_usage_transcripts",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -473,6 +478,8 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("roadmap_reject_brief_proposal", Scope::Roadmap),
     // Read-only, and every device needs it before it offers to spawn anything.
     ("host_providers", Scope::Observe),
+    // Counts off transcripts already on disk; writes nothing.
+    ("scan_usage_transcripts", Scope::Observe),
 ];
 
 /// The one scope that reaches `op`. `None` for a name outside [`OPS`] —
@@ -1480,6 +1487,19 @@ impl Dispatch for SupervisorDispatch {
                 // is not offered, and to quote the command that would fix it.
                 "host_providers" => ok(crate::agent::host_providers().await),
 
+                // This host's own token usage, read straight off its Claude
+                // Code and Codex transcripts. A blocking file walk measured in
+                // seconds, so it goes to a blocking worker rather than parking
+                // a runtime thread — exactly as the desktop command does.
+                "scan_usage_transcripts" => {
+                    let a: UsageScanArgs = parse(args)?;
+                    ok(tokio::task::spawn_blocking(move || {
+                        crate::usage_scan::scan_all(a.since_ms, a.until_ms)
+                    })
+                    .await
+                    .map_err(|e| format!("usage scan failed: {e}"))?)
+                }
+
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.
                 _ => Err(UNKNOWN_OP.to_string()),
@@ -1982,6 +2002,16 @@ struct RunArgs {
 
 /// `wf_list_runs` scopes to one project or lists every run; the frontend sends
 /// the key present-and-null for the unscoped call.
+/// The window `scan_usage_transcripts` reads, epoch ms, half-open — the same
+/// pair the desktop command takes. The client scans its widest window once and
+/// slices shorter ranges out of the answer.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageScanArgs {
+    since_ms: i64,
+    until_ms: i64,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RunsArgs {

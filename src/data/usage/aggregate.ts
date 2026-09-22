@@ -10,6 +10,7 @@ import type { SlimCatalog } from "@/data/modelCatalog";
 import { cacheSavingsUsd, priceTokens } from "@/data/modelCatalog";
 import { dayKeysBetween, localDay } from "@/util/format";
 import type {
+  HostUsageScan,
   UsageDay,
   UsageDayRow,
   UsageDaySlice,
@@ -87,6 +88,53 @@ export function sessionsInRange(
   { sinceMs, untilMs }: UsageRangeBounds,
 ): UsageSessionSpan[] {
   return sessions.filter((s) => s.lastMs >= sinceMs && s.firstMs < untilMs);
+}
+
+/** Fold several hosts' scans into the one `UsageScan` shape `aggregateUsage`
+ *  takes, so nothing downstream has to know how many machines answered.
+ *
+ *  Two things need care. Session ids are unique within a host only — two hosts
+ *  can both have a session `abc` — so every id is prefixed with its environment
+ *  id, which keeps `totalSessions` an honest count. And the hosts have
+ *  independent clocks: the merged window is the *intersection* of theirs
+ *  (`max` of the starts, `min` of the ends), so no range sliced out of it can
+ *  claim a window some contributing host had not yet reached.
+ *
+ *  Buckets are concatenated as they are. Two hosts can hold the same
+ *  hour/provider/model cell, and `aggregateUsage` sums cells rather than
+ *  assuming one per key, so there is nothing to combine here — only to order,
+ *  which keeps the result the sorted shape a `UsageScan` claims to be. */
+export function mergeScans(scans: readonly HostUsageScan[]): UsageScan {
+  // One host is the overwhelmingly common case, and its own scan already is
+  // the merge — no ids can collide and no clocks can disagree.
+  if (scans.length === 1) return scans[0].scan;
+
+  const buckets = scans
+    .flatMap((h) => h.scan.buckets)
+    .sort(
+      (a, b) =>
+        a.hourStartMs - b.hourStartMs ||
+        a.provider.localeCompare(b.provider) ||
+        a.model.localeCompare(b.model),
+    );
+  const sessions = scans
+    .flatMap((h) => h.scan.sessions.map((s) => ({ ...s, id: `${h.envId}:${s.id}` })))
+    .sort(
+      (a, b) =>
+        a.provider.localeCompare(b.provider) || a.firstMs - b.firstMs || (a.id < b.id ? -1 : 1),
+    );
+  const sum = (pick: (s: UsageScan) => number) =>
+    scans.reduce((total, h) => total + pick(h.scan), 0);
+
+  return {
+    buckets,
+    sessions,
+    scannedFiles: sum((s) => s.scannedFiles),
+    filesRead: sum((s) => s.filesRead),
+    bytesRead: sum((s) => s.bytesRead),
+    sinceMs: Math.max(...scans.map((h) => h.scan.sinceMs)),
+    untilMs: Math.min(...scans.map((h) => h.scan.untilMs)),
+  };
 }
 
 interface DayAcc {
