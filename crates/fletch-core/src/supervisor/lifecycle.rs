@@ -210,15 +210,7 @@ async fn discard_if_still_dead(sup: &Supervisor, agent_id: &str, parent_dir: &Pa
             );
             return;
         }
-        let name = parent_dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| agent_id.to_string());
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let tombstone = parent_dir.with_file_name(format!("{name}.discarding-{nonce}"));
+        let tombstone = crate::workspace::discard_tombstone(parent_dir);
         match tokio::fs::rename(parent_dir, &tombstone).await {
             Ok(()) => tombstone,
             // Nothing there: the attempt never got as far as creating it.
@@ -236,7 +228,17 @@ async fn discard_if_still_dead(sup: &Supervisor, agent_id: &str, parent_dir: &Pa
             }
         }
     };
-    let _ = tokio::fs::remove_dir_all(&tombstone).await;
+    // Once set aside the tree is invisible to every other path, so a failed
+    // delete costs disk, not correctness: `boot` sweeps leftover tombstones
+    // (`workspace::sweep_discarded_checkouts`), which is the retry.
+    if let Err(e) = tokio::fs::remove_dir_all(&tombstone).await {
+        tracing::warn!(
+            agent_id,
+            path = %tombstone.display(),
+            error = %e,
+            "abandoned spawn: could not remove its set-aside dir; the next start will"
+        );
+    }
 }
 
 /// Resolved, per-spawn inputs for `spawn_agent_process` — everything that

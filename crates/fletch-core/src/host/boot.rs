@@ -496,6 +496,12 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
                 tracing::warn!(error = %e, "skipping rpc mailbox sweep")
             }
         }
+        // Finish any checkout an abandoned spawn set aside but could not
+        // delete (`workspace::DISCARD_MARKER`); nothing else revisits those.
+        match workspace::checkouts_root() {
+            Ok(root) => workspace::sweep_discarded_checkouts(&root),
+            Err(e) => tracing::warn!(error = %e, "skipping discarded-checkout sweep"),
+        }
     }
 
     let supervisor = Arc::new(Supervisor::new(workspace.clone()));
