@@ -174,6 +174,42 @@ async fn discard_failed_spawn(checkout: Option<&Path>, parent_dir: &Path) {
     let _ = tokio::fs::remove_dir_all(parent_dir).await;
 }
 
+/// `discard_failed_spawn`, but only if nobody took the agent back first.
+///
+/// Both paths are keyed by agent id, not by attempt, so an *abandoned* spawn
+/// task that deletes them unconditionally deletes whatever a later attempt put
+/// there: the agent times out, the user resumes it (`resume_agent`,
+/// `switch_view`, `respawn_agent_preserving_session`, `restore_agent` — all of
+/// which reuse the same checkout), and the stale task then removes the live
+/// workspace out from under the running process.
+///
+/// So the check and the delete both happen under the per-agent lifecycle lock,
+/// the same lock every one of those paths holds while it sets `Spawning`: a
+/// live status (`Spawning`/`Running`/`Idle`) means a newer attempt owns the
+/// paths and we must not touch them, and a resume cannot interleave between
+/// our reading that and removing the tree. Anything else (`Error`, `Stopped`,
+/// or no entry at all) means the attempt we belong to is still the last word,
+/// and its leftovers are ours to clean up.
+async fn discard_if_still_dead(
+    sup: &Supervisor,
+    agent_id: &str,
+    checkout: Option<&Path>,
+    parent_dir: &Path,
+) {
+    let _lifecycle_guard = sup.agent_lifecycle.lock().await;
+    if matches!(
+        sup.live_status(agent_id),
+        Some(AgentStatus::Spawning | AgentStatus::Running | AgentStatus::Idle)
+    ) {
+        tracing::debug!(
+            agent_id,
+            "abandoned spawn: agent is live again; leaving its checkout in place"
+        );
+        return;
+    }
+    discard_failed_spawn(checkout, parent_dir).await;
+}
+
 /// Resolved, per-spawn inputs for `spawn_agent_process` — everything that
 /// isn't already carried on the `AgentRecord` (paths, session id, and this
 /// spawn's generation number).
@@ -518,6 +554,11 @@ impl Supervisor {
             // up what it owns and return, so no stage lands after the terminal
             // status and no provisioning keeps running for a dead agent or over
             // a live one.
+            //
+            // Cleaning up goes through `discard_if_still_dead`, never
+            // `discard_failed_spawn` directly: the second of those two reasons
+            // is exactly the case where the checkout is no longer ours to
+            // delete, and only that helper can tell them apart.
             let progress = |stage, detail| {
                 if !sup.spawn_still_live(&id_for_task, spawn_gen) {
                     tracing::debug!(
@@ -562,7 +603,7 @@ impl Supervisor {
             // The agent dir exists from here on, but no checkout does yet — so
             // that dir is the whole of what this task has to undo.
             if !adopted_for_task && !progress(SpawnStage::Cloning, None) {
-                discard_failed_spawn(None, &parent_dir).await;
+                discard_if_still_dead(&sup, &id_for_task, None, &parent_dir).await;
                 return;
             }
             let provision_result = match &run_repo_for_task {
@@ -631,7 +672,8 @@ impl Supervisor {
             // indexing is off or under Docker). Runs the cheap copy inline and
             // advances the mirror in the background.
             if !progress(SpawnStage::Indexing, None) {
-                discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                discard_if_still_dead(&sup, &id_for_task, owned_checkout.as_deref(), &parent_dir)
+                    .await;
                 return;
             }
             provision_codegraph_index(
@@ -653,7 +695,13 @@ impl Supervisor {
             // step never carries, so this is always a non-run clone).
             if let Some(src) = &carry_from_task {
                 if !progress(SpawnStage::Carrying, None) {
-                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                    discard_if_still_dead(
+                        &sup,
+                        &id_for_task,
+                        owned_checkout.as_deref(),
+                        &parent_dir,
+                    )
+                    .await;
                     return;
                 }
                 let carried = match &base_sha {
@@ -688,7 +736,13 @@ impl Supervisor {
                         SpawnStage::AttachingRepos,
                         source.file_name().map(|n| n.to_string_lossy().into_owned()),
                     ) {
-                        discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                        discard_if_still_dead(
+                            &sup,
+                            &id_for_task,
+                            owned_checkout.as_deref(),
+                            &parent_dir,
+                        )
+                        .await;
                         return;
                     }
                     if let Err(e) = sup
@@ -708,7 +762,8 @@ impl Supervisor {
             }
 
             if !progress(SpawnStage::Starting, None) {
-                discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                discard_if_still_dead(&sup, &id_for_task, owned_checkout.as_deref(), &parent_dir)
+                    .await;
                 return;
             }
             tokio::time::sleep(Duration::from_millis(350)).await;
@@ -1978,5 +2033,38 @@ mod tests {
         for provider in ["claude", "codex", "cursor", "antigravity"] {
             assert!(ensure_engine_supports_provider(EngineKind::SandboxExec, provider).is_ok());
         }
+    }
+
+    /// A timed-out spawn's task outlives the timeout, and the user may have
+    /// resumed the agent before that task gets round to cleaning up. Resume
+    /// reuses the very checkout the task is about to remove, so the discard
+    /// has to look at who owns the paths now: a live agent keeps them, a dead
+    /// attempt still clears up after itself.
+    #[tokio::test]
+    async fn an_abandoned_spawn_only_discards_paths_nobody_took_back() {
+        let sup = crate::supervisor::tests::test_supervisor();
+        let td = tempfile::tempdir().unwrap();
+
+        let resumed = td.path().join("resumed");
+        std::fs::create_dir_all(&resumed).unwrap();
+        sup.statuses
+            .lock()
+            .insert("resumed".into(), AgentStatus::Spawning);
+        discard_if_still_dead(&sup, "resumed", None, &resumed).await;
+        assert!(
+            resumed.is_dir(),
+            "a newer attempt owns these paths; the stale task must not delete them"
+        );
+
+        let failed = td.path().join("failed");
+        std::fs::create_dir_all(&failed).unwrap();
+        sup.statuses
+            .lock()
+            .insert("failed".into(), AgentStatus::Error);
+        discard_if_still_dead(&sup, "failed", None, &failed).await;
+        assert!(
+            !failed.exists(),
+            "nobody took the agent back, so the failed spawn's dir goes"
+        );
     }
 }
