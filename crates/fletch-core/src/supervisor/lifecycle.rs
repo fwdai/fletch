@@ -483,6 +483,12 @@ impl Supervisor {
             }),
         );
         self.set_status(&ctx, &agent_id, AgentStatus::Spawning, None);
+        // This attempt's identity for the liveness checks below. Captured here,
+        // synchronously and before the watchdog is armed, so it can never pick
+        // up the bump that the watchdog (or any other teardown) makes when it
+        // claims this spawn — the point being that the number then stops
+        // matching and the abandoned task can't revive under a later attempt.
+        let spawn_gen = self.generations.lock().get(&agent_id).copied().unwrap_or(0);
         // A new row is a structural change: `agent:status` alone is dropped by
         // any view that doesn't have the agent yet (the desktop window when a
         // paired phone spawned it, and vice versa). Announce it so every other
@@ -506,12 +512,14 @@ impl Supervisor {
             //
             // Doubles as this task's cooperation point with the spawn watchdog,
             // which claims the `Spawning` status and kills the process but
-            // cannot cancel us. `false` means the spawn's outcome was already
-            // claimed elsewhere (timeout, teardown): the caller must clean up
-            // what it owns and return, so no stage lands after the terminal
-            // status and no provisioning keeps running for a dead agent.
+            // cannot cancel us. `false` means *this attempt's* outcome was
+            // already claimed elsewhere (timeout, teardown) — or the agent has
+            // since been restarted under a later attempt: the caller must clean
+            // up what it owns and return, so no stage lands after the terminal
+            // status and no provisioning keeps running for a dead agent or over
+            // a live one.
             let progress = |stage, detail| {
-                if !sup.spawn_still_live(&id_for_task) {
+                if !sup.spawn_still_live(&id_for_task, spawn_gen) {
                     tracing::debug!(
                         agent_id = %id_for_task,
                         ?stage,
