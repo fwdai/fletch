@@ -192,9 +192,11 @@ async fn discard_failed_spawn(checkout: Option<&Path>, parent_dir: &Path) {
 ///
 /// The lock is supervisor-wide, so the slow part must not run under it: a
 /// large checkout's recursive delete would stall every other agent's spawn,
-/// resume, switch and restore meanwhile. Instead the agent dir is renamed to a
-/// sibling tombstone while the lock is held — one atomic, cheap `rename` — and
-/// the tombstone is removed after the lock is released. A resume that comes
+/// resume, switch and restore meanwhile. Instead the agent dir is renamed into
+/// the discard root beside the checkouts root (`workspace::discard_root`, so it
+/// leaves the agent namespace entirely) while the lock is held — one atomic,
+/// cheap `rename` — and the tombstone is removed after the lock is released,
+/// or by the next boot's sweep if that fails. A resume that comes
 /// after the rename finds no checkout at the agent's path, exactly what it
 /// would have found had the whole delete happened under the lock.
 async fn discard_if_still_dead(sup: &Supervisor, agent_id: &str, parent_dir: &Path) {
@@ -210,13 +212,23 @@ async fn discard_if_still_dead(sup: &Supervisor, agent_id: &str, parent_dir: &Pa
             );
             return;
         }
-        let tombstone = crate::workspace::discard_tombstone(parent_dir);
-        match tokio::fs::rename(parent_dir, &tombstone).await {
-            Ok(()) => tombstone,
+        if !parent_dir.exists() {
             // Nothing there: the attempt never got as far as creating it.
+            return;
+        }
+        // Set aside under the discard root beside the checkouts root; the
+        // move is a rename on the same filesystem. Neither step should fail,
+        // and if one does, correctness beats speed and the delete runs under
+        // the lock as a one-off.
+        let moved = match crate::workspace::discard_tombstone(parent_dir) {
+            Ok(tombstone) => tokio::fs::rename(parent_dir, &tombstone)
+                .await
+                .map(|()| tombstone),
+            Err(e) => Err(e),
+        };
+        match moved {
+            Ok(tombstone) => tombstone,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-            // A sibling rename should not fail; if it does, correctness beats
-            // speed and the delete runs under the lock as a one-off.
             Err(e) => {
                 tracing::warn!(
                     agent_id,
@@ -2061,8 +2073,11 @@ mod tests {
     async fn an_abandoned_spawn_only_discards_paths_nobody_took_back() {
         let sup = crate::supervisor::tests::test_supervisor();
         let td = tempfile::tempdir().unwrap();
+        // Agent dirs live under a checkouts root; tombstones go to its sibling
+        // discard root, so both stay inside the tempdir.
+        let root = td.path().join("workspaces");
 
-        let resumed = td.path().join("resumed");
+        let resumed = root.join("resumed");
         std::fs::create_dir_all(&resumed).unwrap();
         sup.statuses
             .lock()
@@ -2073,7 +2088,7 @@ mod tests {
             "a newer attempt owns these paths; the stale task must not delete them"
         );
 
-        let failed = td.path().join("failed");
+        let failed = root.join("failed");
         std::fs::create_dir_all(failed.join("checkout")).unwrap();
         sup.statuses
             .lock()
@@ -2085,15 +2100,14 @@ mod tests {
         );
         // The tree is set aside under the lock and deleted after it; neither
         // the dir nor its tombstone may survive.
-        let leftovers: Vec<_> = std::fs::read_dir(td.path())
+        let leftovers: Vec<_> = std::fs::read_dir(crate::workspace::discard_root(&root))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|n| n.starts_with("failed"))
             .collect();
         assert!(leftovers.is_empty(), "tombstone left behind: {leftovers:?}");
 
         // A dir the attempt never created is nothing to clean up, and not an
         // error either.
-        discard_if_still_dead(&sup, "failed", &td.path().join("never-made")).await;
+        discard_if_still_dead(&sup, "failed", &root.join("never-made")).await;
     }
 }

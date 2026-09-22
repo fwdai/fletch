@@ -28,9 +28,9 @@ mod turns;
 
 pub use factory::{is_per_turn_provider, new_agent_record};
 pub use paths::{
-    agent_parent_dir, allocate_repo_subdir, checkouts_root, discard_tombstone,
+    agent_parent_dir, allocate_repo_subdir, checkouts_root, discard_root, discard_tombstone,
     migrate_default_checkouts_root, projects_root, repo_checkout_path, sweep_discarded_checkouts,
-    tools_root, DISCARD_MARKER, WORKSPACES_ROOT_ENV,
+    tools_root, WORKSPACES_ROOT_ENV,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

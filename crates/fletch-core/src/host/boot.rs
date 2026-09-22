@@ -497,7 +497,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
             }
         }
         // Finish any checkout an abandoned spawn set aside but could not
-        // delete (`workspace::DISCARD_MARKER`); nothing else revisits those.
+        // delete (`workspace::discard_root`); nothing else revisits those.
         match workspace::checkouts_root() {
             Ok(root) => workspace::sweep_discarded_checkouts(&root),
             Err(e) => tracing::warn!(error = %e, "skipping discarded-checkout sweep"),
