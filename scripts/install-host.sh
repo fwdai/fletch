@@ -97,61 +97,67 @@ No such release, or it published no archive for $tgt."
   [ -f "$dir/fletch-host" ] || die "$name holds no fletch-host binary"
 }
 
-TARGET="$(target)"
-VERSION="${FLETCH_HOST_VERSION:-}"
-VERSION="${VERSION#v}"
-if [ -z "$VERSION" ]; then
-  VERSION="$(latest_version)" || true
-  [ -n "$VERSION" ] || die "cannot read the latest release from the GitHub API; set FLETCH_HOST_VERSION to pin one"
-fi
-echo "fletch-host $VERSION ($TARGET) -> $INSTALL_DIR"
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-fetch_and_verify "$TMP" "$VERSION" "$TARGET"
-
-BIN="$INSTALL_DIR/fletch-host"
-mkdir -p "$INSTALL_DIR"
-# Install beside the target and rename: a running host's binary cannot be
-# written in place on Linux, but it can be replaced.
-install -m 755 "$TMP/fletch-host" "$INSTALL_DIR/.fletch-host.new"
-mv -f "$INSTALL_DIR/.fletch-host.new" "$BIN"
-echo "installed $VERSION at $BIN"
-
-case ":$PATH:" in
-  *":$INSTALL_DIR:"*) ;;
-  *) echo "note: $INSTALL_DIR is not on your PATH — add it with
-  export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
-esac
-
-if [ -n "${FLETCH_HOST_SKIP_SERVICE:-}" ]; then
-  echo "FLETCH_HOST_SKIP_SERVICE is set; stopping before \`service install\`"
-  exit 0
-fi
-
-"$BIN" service install
-
-if [ "$(uname -s)" = "Linux" ] && command -v loginctl >/dev/null 2>&1; then
-  WHO="${USER:-$(id -un)}"
-  if [ "$(loginctl show-user "$WHO" --property=Linger 2>/dev/null)" != "Linger=yes" ]; then
-    echo
-    echo "A systemd user unit stops when you log out. Lingering needs sudo, so run it yourself:"
-    echo "    sudo loginctl enable-linger $WHO"
+# Everything runs from main so that `curl | bash` parses the whole script
+# before executing any of it; a truncated download then does nothing.
+main() {
+  TARGET="$(target)"
+  VERSION="${FLETCH_HOST_VERSION:-}"
+  VERSION="${VERSION#v}"
+  if [ -z "$VERSION" ]; then
+    VERSION="$(latest_version)" || true
+    [ -n "$VERSION" ] || die "cannot read the latest release from the GitHub API; set FLETCH_HOST_VERSION to pin one"
   fi
-fi
+  echo "fletch-host $VERSION ($TARGET) -> $INSTALL_DIR"
 
-echo
-printf 'waiting for the host to answer'
-WAITED=0
-until "$BIN" status >/dev/null 2>&1; do
-  if [ "$WAITED" -ge 30 ]; then
-    echo
-    die "the host did not answer its admin socket in 30s; check the logs \`service install\` printed above"
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "$TMP"' EXIT
+  fetch_and_verify "$TMP" "$VERSION" "$TARGET"
+
+  BIN="$INSTALL_DIR/fletch-host"
+  mkdir -p "$INSTALL_DIR"
+  # Install beside the target and rename: a running host's binary cannot be
+  # written in place on Linux, but it can be replaced.
+  install -m 755 "$TMP/fletch-host" "$INSTALL_DIR/.fletch-host.new"
+  mv -f "$INSTALL_DIR/.fletch-host.new" "$BIN"
+  echo "installed $VERSION at $BIN"
+
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*) ;;
+    *) echo "note: $INSTALL_DIR is not on your PATH — add it with
+    export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
+  esac
+
+  if [ -n "${FLETCH_HOST_SKIP_SERVICE:-}" ]; then
+    echo "FLETCH_HOST_SKIP_SERVICE is set; stopping before \`service install\`"
+    exit 0
   fi
-  printf '.'
-  sleep 1
-  WAITED=$((WAITED + 1))
-done
-printf ' ok\n\n'
 
-exec "$BIN" pair
+  "$BIN" service install
+
+  if [ "$(uname -s)" = "Linux" ] && command -v loginctl >/dev/null 2>&1; then
+    WHO="${USER:-$(id -un)}"
+    if [ "$(loginctl show-user "$WHO" --property=Linger 2>/dev/null)" != "Linger=yes" ]; then
+      echo
+      echo "A systemd user unit stops when you log out. Lingering needs sudo, so run it yourself:"
+      echo "    sudo loginctl enable-linger $WHO"
+    fi
+  fi
+
+  echo
+  printf 'waiting for the host to answer'
+  WAITED=0
+  until "$BIN" status >/dev/null 2>&1; do
+    if [ "$WAITED" -ge 30 ]; then
+      echo
+      die "the host did not answer its admin socket in 30s; check the logs \`service install\` printed above"
+    fi
+    printf '.'
+    sleep 1
+    WAITED=$((WAITED + 1))
+  done
+  printf ' ok\n\n'
+
+  exec "$BIN" pair
+}
+
+main "$@"
