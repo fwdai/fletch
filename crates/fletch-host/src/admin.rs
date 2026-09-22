@@ -17,6 +17,7 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -164,8 +165,30 @@ async fn session(admin: Arc<Admin>, stream: UnixStream) -> io::Result<()> {
 }
 
 /// Ask the running host one question. The client half of everything above.
+///
+/// Bounded, because connecting is not the same as being answered: `serve` binds
+/// this socket *before* the engine boots, so a client that asks during a long
+/// database migration connects to a listener nothing is accepting on yet and
+/// would otherwise wait for as long as the migration takes. Every subcommand
+/// goes through here, so every one of them gets an answer or an error.
 pub async fn call(data_dir: &Path, op: &str, args: Value) -> Result<Value, String> {
     let path = socket_path(data_dir);
+    match tokio::time::timeout(CALL_TIMEOUT, exchange(&path, op, args)).await {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "{} did not answer in {}s; the host is still starting (a database migration on a \
+             big data dir can take a while) — try again in a moment",
+            path.display(),
+            CALL_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+/// How long [`call`] waits for the whole connect-ask-answer. Generous: it is
+/// there to end a wait that has no end, not to time an op out.
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(15);
+
+async fn exchange(path: &Path, op: &str, args: Value) -> Result<Value, String> {
     let stream = UnixStream::connect(&path)
         .await
         .map_err(|e| match e.kind() {

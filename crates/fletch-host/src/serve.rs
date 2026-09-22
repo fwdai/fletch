@@ -8,6 +8,7 @@ use fletch_core::host::{self, BootConfig, Engine, HeadlessRelay, RemoteBoot};
 
 use crate::admin;
 use crate::ops::Admin;
+use crate::update::CURRENT_VERSION;
 
 /// What `fletch-host serve` was asked for. Every field is this run only:
 /// nothing here is written to the database, which is why passing `--port` once
@@ -174,7 +175,7 @@ pub async fn start(config: Config) -> Result<Arc<Admin>, String> {
             // cannot beat it there); a host that never started must not leave it
             // behind for the next one to reason about.
             let _ = std::fs::remove_file(admin::socket_path(&data_dir));
-            return Err(e.to_string());
+            return Err(boot_failure(e, &data_dir));
         }
     };
 
@@ -182,6 +183,30 @@ pub async fn start(config: Config) -> Result<Arc<Admin>, String> {
     let admin = Arc::new(Admin::new(engine, data_dir));
     tokio::spawn(admin::serve(admin.clone(), listener));
     Ok(admin)
+}
+
+/// Why the host is not starting, in the words the operator can act on.
+///
+/// One case gets more than the engine's own sentence: a database written by a
+/// newer fletch-host. The engine can only say that the schema is ahead of it —
+/// what to do about it (install that newer version, or put back the copy it
+/// made before migrating) is this binary's business, and without it the
+/// operator sees a schema error and no way out of it.
+fn boot_failure(e: host::BootError, data_dir: &Path) -> String {
+    if matches!(
+        e,
+        host::BootError::Database(fletch_core::error::Error::SchemaTooNew)
+    ) {
+        return format!(
+            "the database in {} was written by a newer fletch-host than this one \
+             ({CURRENT_VERSION}), and a migrated schema does not open under an older build.\n\
+             Install that version — `fletch-host update` — or, to stay on this one, restore the \
+             copy it made before migrating, from {}, over the database.",
+            data_dir.display(),
+            data_dir.join("backups").display(),
+        );
+    }
+    e.to_string()
 }
 
 /// Boot the host and serve until a signal ends the process.

@@ -19,9 +19,23 @@ curl -fsSL https://raw.githubusercontent.com/fwdai/fletch/main/scripts/install-h
 
 That downloads this machine's tarball, verifies it, installs the binary, runs
 `fletch-host service install` and ends at the pairing QR — the manual steps
-below, in one command. Run it again to upgrade. Two env vars configure it:
-`FLETCH_HOST_VERSION=0.8.0` pins a release instead of taking the latest, and
-`FLETCH_HOST_INSTALL_DIR` moves the binary off `~/.local/bin`.
+below, in one command. A fresh install needs **minisign** on `PATH`
+(`brew install minisign`, `apt install minisign`, `dnf install minisign`): the
+signature is what makes the download the project's binary rather than whoever
+answered, so a missing minisign or a missing `.sig` stops the install instead of
+warning and carrying on.
+
+Run it again and it installs nothing: it finds the binary already there and
+hands the upgrade to `fletch-host update`, which verifies the same two ways,
+copies the database aside and restarts the service through the unit it already
+has — rather than re-running `service install`, which would rewrite that unit
+and reset the `--port`, `--name` or `--system` you installed it with.
+
+Three env vars configure it: `FLETCH_HOST_VERSION=0.8.0` pins a release instead
+of taking the latest (and is what a re-run passes to `update`),
+`FLETCH_HOST_INSTALL_DIR` moves the binary off `~/.local/bin`, and
+`FLETCH_HOST_SKIP_SIGNATURE=1` installs without checking the signature — the
+insecure way past the minisign requirement, and it says so while it does it.
 
 By hand instead. Each release publishes
 `fletch-host-<version>-<target>.tar.gz`, a matching `.sha256`, and a `.sig`
@@ -154,6 +168,13 @@ fletch-host update --check     # current vs available, and nothing else
 fletch-host update             # install the latest release
 fletch-host update 0.7.32      # install (or reinstall) one version
 ```
+
+A named version *older* than the running one is refused, and so is one that
+cannot be ordered against it (a pre-release, say). An older host cannot open a
+database this build has already migrated — it stops with "database schema is
+newer than this app version" — so going back means restoring the pre-migration
+copy from `<data-dir>/backups/` over the database as well. `--allow-downgrade`
+says you mean to.
 
 Run it **as the user the host runs as** — yourself for a user unit or a bare
 `serve`, `sudo -u fletch fletch-host update` for a `--system --user fletch`

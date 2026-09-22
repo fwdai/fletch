@@ -115,6 +115,12 @@ enum Command {
         /// Print what is available and stop; change nothing.
         #[arg(long)]
         check: bool,
+        /// Allow a named version older than this one. Refused by default: an
+        /// older host cannot open a database this build has migrated, so the
+        /// pre-migration copy in `<data-dir>/backups/` has to be restored
+        /// alongside it.
+        #[arg(long)]
+        allow_downgrade: bool,
         /// Install this already-downloaded tarball (its `.sig` beside it) —
         /// the step `sudo` runs. Re-verifies the signature; opens no data dir.
         #[arg(long, value_name = "TARBALL", conflicts_with_all = ["version", "check"])]
@@ -253,7 +259,14 @@ fn main() {
             version,
             check,
             from,
-        } => runtime.block_on(update::run(&data_dir, version, check, from)),
+            allow_downgrade,
+        } => runtime.block_on(update::run(
+            &data_dir,
+            version,
+            check,
+            from,
+            allow_downgrade,
+        )),
         command => runtime.block_on(client(&data_dir, command)),
     };
     if let Err(e) = result {
