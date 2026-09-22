@@ -152,6 +152,28 @@ export interface AgentStatusEvent {
   last_error: string | null;
 }
 
+/** Which step of a fresh spawn is running, from `agent:spawn-progress`. A host
+ *  newer than this client can name a stage that is not here, so readers must
+ *  tolerate an unknown value rather than index blindly. */
+export type SpawnStage =
+  | "preparing"
+  | "cloning"
+  | "indexing"
+  | "carrying"
+  | "attaching_repos"
+  | "starting";
+
+/** Progress behind the `spawning` status — a label for the wait, never
+ *  authoritative state. Not snapshotted: a client that connects mid-spawn has
+ *  no stage until the next one fires. */
+export interface AgentSpawnProgressEvent {
+  agent_id: string;
+  stage: SpawnStage;
+  /** What the stage is working on, when it has something to name (the repo
+   *  being checked out, say). */
+  detail: string | null;
+}
+
 export interface AgentViewEvent {
   agent_id: string;
   view: AgentView;

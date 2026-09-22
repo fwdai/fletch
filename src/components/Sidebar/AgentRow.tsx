@@ -7,6 +7,7 @@ import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { providerChip, providerLabel } from "@/data/providers";
+import { spawnStageLabel } from "@/data/spawnStage";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
@@ -91,6 +92,9 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // the running chip's tooltip (":port"). Absent until then.
   const runPort = useAppStore((s) => s.runPorts[agent.id]);
   const pending = useAppStore((s) => s.pendingToolUse[agent.id]);
+  // Which step a fresh spawn is on, from `agent:spawn-progress` — the loader's
+  // tooltip. Absent for anything but a spawn this client watched.
+  const spawnStage = useAppStore((s) => s.spawnStage[agent.id]);
   const stop = useAppStore((s) => s.stop);
   const archive = useAppStore((s) => s.archive);
   const promoteAgentToWorkflow = useAppStore((s) => s.promoteAgentToWorkflow);
@@ -221,7 +225,17 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
                   <Icon name="hand" size={12} />
                 </span>
               ) : (
-                working && <span className="ag-loader" aria-label="Working" />
+                working && (
+                  <span
+                    className="ag-loader"
+                    // While spawning, the spinner says which step it is on
+                    // (clone, index, start…) instead of nothing at all — to
+                    // the pointer via `title`, and to a screen reader via the
+                    // same label, so the stage isn't mouse-only.
+                    aria-label={spawnStageLabel(spawnStage) ?? "Working"}
+                    title={spawnStageLabel(spawnStage)}
+                  />
+                )
               )}
               {agent.status === "idle" && !active && unseen && (
                 <span

@@ -171,3 +171,118 @@ pub(super) fn migrate_checkouts_root_in(fletch_dir: &Path, overridden: bool) {
         }
     }
 }
+
+/// Where agent dirs set aside for deletion go: a sibling of the checkouts root
+/// (`~/.fletch/workspaces.discarding/` beside `~/.fletch/workspaces/`), on the
+/// same filesystem so the move is one `rename`. Deliberately *outside* the
+/// checkouts root: agent ids are user-supplied names, so no naming rule inside
+/// that root could tell a tombstone from an agent that happens to be called
+/// like one. Everything under this dir is a delete that has not finished, and
+/// nothing else ever writes here.
+pub fn discard_root(checkouts_root: &Path) -> PathBuf {
+    let name = checkouts_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "workspaces".to_string());
+    checkouts_root.with_file_name(format!("{name}.discarding"))
+}
+
+/// The path an agent dir (`<root>/<agent-id>`) is renamed to before it is
+/// deleted (see `supervisor::lifecycle::discard_if_still_dead`): a fresh,
+/// unique entry under [`discard_root`]. Creates the discard root if needed.
+pub fn discard_tombstone(parent_dir: &Path) -> std::io::Result<PathBuf> {
+    let root = parent_dir.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "agent dir has no parent")
+    })?;
+    let discard = discard_root(root);
+    std::fs::create_dir_all(&discard)?;
+    let name = parent_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "agent".to_string());
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Ok(discard.join(format!("{name}-{nonce}")))
+}
+
+/// Empty the discard root beside `checkouts_root`. A tombstone outlives its
+/// attempt only when its delete failed (a transient I/O error, a file held
+/// open), and nothing else ever looks there again — so boot finishes the job.
+/// Best-effort: an entry that still cannot be removed is logged and tried
+/// again next boot.
+pub fn sweep_discarded_checkouts(checkouts_root: &Path) {
+    let discard = discard_root(checkouts_root);
+    let entries = match std::fs::read_dir(&discard) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!(root = %discard.display(), error = %e, "skipping discarded-checkout sweep");
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match removed {
+            Ok(()) => tracing::info!(path = %path.display(), "removed a discarded checkout"),
+            Err(e) => tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "could not remove a discarded checkout; will retry next start"
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod discard_tests {
+    use super::*;
+
+    #[test]
+    fn tombstones_live_beside_the_root_and_never_collide() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("workspaces");
+        let dir = root.join("agent-1");
+        let a = discard_tombstone(&dir).unwrap();
+        let b = discard_tombstone(&dir).unwrap();
+        assert_eq!(a.parent(), Some(discard_root(&root).as_path()));
+        assert_eq!(discard_root(&root), td.path().join("workspaces.discarding"));
+        assert!(
+            discard_root(&root).is_dir(),
+            "the discard root is created on demand"
+        );
+        assert!(
+            !a.starts_with(&root),
+            "a tombstone is never inside the agent namespace"
+        );
+        assert_ne!(a, b, "two set-asides of one agent must not share a path");
+    }
+
+    #[test]
+    fn the_sweep_empties_the_discard_root_and_touches_nothing_else() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("workspaces");
+        // An agent whose id looks like a tombstone marker is still an agent.
+        let live = root.join("demo.discarding-backup");
+        std::fs::create_dir_all(live.join("checkout")).unwrap();
+        let tomb = discard_tombstone(&root.join("agent-dead")).unwrap();
+        std::fs::create_dir_all(tomb.join("checkout")).unwrap();
+        std::fs::write(tomb.join("checkout").join("f"), b"x").unwrap();
+
+        sweep_discarded_checkouts(&root);
+
+        assert!(
+            live.is_dir(),
+            "nothing under the checkouts root is the sweep's to touch"
+        );
+        assert!(!tomb.exists(), "a tombstone is finished by the sweep");
+        // A missing discard root is a no-op, not an error.
+        sweep_discarded_checkouts(&td.path().join("absent"));
+    }
+}

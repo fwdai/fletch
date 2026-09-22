@@ -20,8 +20,8 @@ use crate::workspace::{
 };
 
 use super::events::{
-    emit_agent_event, emit_agent_output, emit_effort, emit_model, emit_repo_added, emit_view,
-    emit_workspace_changed,
+    emit_agent_event, emit_agent_output, emit_effort, emit_model, emit_repo_added,
+    emit_spawn_progress, emit_view, emit_workspace_changed, SpawnStage,
 };
 use super::messaging::{
     drain_message_queue, flush_queued, mark_user_turn_started, on_first_user_message,
@@ -172,6 +172,85 @@ async fn discard_failed_spawn(checkout: Option<&Path>, parent_dir: &Path) {
         let _ = provision::teardown(checkout).await;
     }
     let _ = tokio::fs::remove_dir_all(parent_dir).await;
+}
+
+/// `discard_failed_spawn`, but only if nobody took the agent back first.
+///
+/// Both paths are keyed by agent id, not by attempt, so an *abandoned* spawn
+/// task that deletes them unconditionally deletes whatever a later attempt put
+/// there: the agent times out, the user resumes it (`resume_agent`,
+/// `switch_view`, `respawn_agent_preserving_session`, `restore_agent` — all of
+/// which reuse the same checkout), and the stale task then removes the live
+/// workspace out from under the running process.
+///
+/// So the ownership check happens under the lifecycle lock, the same lock every
+/// one of those paths holds while it sets `Spawning`: a live status
+/// (`Spawning`/`Running`/`Idle`) means a newer attempt owns the paths and we
+/// must not touch them. Anything else (`Error`, `Stopped`, or no entry at all)
+/// means the attempt we belong to is still the last word, and its leftovers
+/// are ours to clean up.
+///
+/// The lock is supervisor-wide, so the slow part must not run under it: a
+/// large checkout's recursive delete would stall every other agent's spawn,
+/// resume, switch and restore meanwhile. Instead the agent dir is renamed into
+/// the discard root beside the checkouts root (`workspace::discard_root`, so it
+/// leaves the agent namespace entirely) while the lock is held — one atomic,
+/// cheap `rename` — and the tombstone is removed after the lock is released,
+/// or by the next boot's sweep if that fails. A resume that comes
+/// after the rename finds no checkout at the agent's path, exactly what it
+/// would have found had the whole delete happened under the lock.
+async fn discard_if_still_dead(sup: &Supervisor, agent_id: &str, parent_dir: &Path) {
+    let tombstone = {
+        let _lifecycle_guard = sup.agent_lifecycle.lock().await;
+        if matches!(
+            sup.live_status(agent_id),
+            Some(AgentStatus::Spawning | AgentStatus::Running | AgentStatus::Idle)
+        ) {
+            tracing::debug!(
+                agent_id,
+                "abandoned spawn: agent is live again; leaving its checkout in place"
+            );
+            return;
+        }
+        if !parent_dir.exists() {
+            // Nothing there: the attempt never got as far as creating it.
+            return;
+        }
+        // Set aside under the discard root beside the checkouts root; the
+        // move is a rename on the same filesystem. Neither step should fail,
+        // and if one does, correctness beats speed and the delete runs under
+        // the lock as a one-off.
+        let moved = match crate::workspace::discard_tombstone(parent_dir) {
+            Ok(tombstone) => tokio::fs::rename(parent_dir, &tombstone)
+                .await
+                .map(|()| tombstone),
+            Err(e) => Err(e),
+        };
+        match moved {
+            Ok(tombstone) => tombstone,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                tracing::warn!(
+                    agent_id,
+                    error = %e,
+                    "abandoned spawn: could not set its dir aside; removing in place"
+                );
+                discard_failed_spawn(None, parent_dir).await;
+                return;
+            }
+        }
+    };
+    // Once set aside the tree is invisible to every other path, so a failed
+    // delete costs disk, not correctness: `boot` sweeps leftover tombstones
+    // (`workspace::sweep_discarded_checkouts`), which is the retry.
+    if let Err(e) = tokio::fs::remove_dir_all(&tombstone).await {
+        tracing::warn!(
+            agent_id,
+            path = %tombstone.display(),
+            error = %e,
+            "abandoned spawn: could not remove its set-aside dir; the next start will"
+        );
+    }
 }
 
 /// Resolved, per-spawn inputs for `spawn_agent_process` — everything that
@@ -483,6 +562,12 @@ impl Supervisor {
             }),
         );
         self.set_status(&ctx, &agent_id, AgentStatus::Spawning, None);
+        // This attempt's identity for the liveness checks below. Captured here,
+        // synchronously and before the watchdog is armed, so it can never pick
+        // up the bump that the watchdog (or any other teardown) makes when it
+        // claims this spawn — the point being that the number then stops
+        // matching and the abandoned task can't revive under a later attempt.
+        let spawn_gen = self.generations.lock().get(&agent_id).copied().unwrap_or(0);
         // A new row is a structural change: `agent:status` alone is dropped by
         // any view that doesn't have the agent yet (the desktop window when a
         // paired phone spawned it, and vice versa). Announce it so every other
@@ -500,6 +585,39 @@ impl Supervisor {
         let mcp_servers_for_task = record.mcp_servers.clone();
         let adopted_for_task = adopted.is_some();
         crate::host::spawn(async move {
+            // Stage markers for the clients, emitted ahead of each step so the
+            // spinner behind `spawning` can say what it is waiting on. Progress
+            // only: a dropped one costs a label.
+            //
+            // Doubles as this task's cooperation point with the spawn watchdog,
+            // which claims the `Spawning` status and kills the process but
+            // cannot cancel us. `false` means *this attempt's* outcome was
+            // already claimed elsewhere (timeout, teardown) — or the agent has
+            // since been restarted under a later attempt: the caller must clean
+            // up what it owns and return, so no stage lands after the terminal
+            // status and no provisioning keeps running for a dead agent or over
+            // a live one.
+            //
+            // Cleaning up goes through `discard_if_still_dead`, never
+            // `discard_failed_spawn` directly: the second of those two reasons
+            // is exactly the case where the checkout is no longer ours to
+            // delete, and only that helper can tell them apart.
+            let progress = |stage, detail| {
+                if !sup.spawn_still_live(&id_for_task, spawn_gen) {
+                    tracing::debug!(
+                        agent_id = %id_for_task,
+                        ?stage,
+                        "spawn outcome already claimed; abandoning provisioning"
+                    );
+                    return false;
+                }
+                emit_spawn_progress(ctx_for_task.sink.as_ref(), &id_for_task, stage, detail);
+                true
+            };
+            // Nothing created yet, so there is nothing to discard here.
+            if !progress(SpawnStage::Preparing, None) {
+                return;
+            }
             if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                 return;
@@ -525,6 +643,12 @@ impl Supervisor {
             // inputs to provisioning only, and provisioning is what adoption
             // replaces.
             let mut base_freshness = None;
+            // The agent dir exists from here on, but no checkout does yet — so
+            // that dir is the whole of what this task has to undo.
+            if !adopted_for_task && !progress(SpawnStage::Cloning, None) {
+                discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
+                return;
+            }
             let provision_result = match &run_repo_for_task {
                 _ if adopted_for_task => Ok(()),
                 // Workflow step (§12.1): fork from `fork_base` in the run repo.
@@ -590,6 +714,10 @@ impl Supervisor {
             // Warm the codegraph index for this checkout (best-effort; no-op when
             // indexing is off or under Docker). Runs the cheap copy inline and
             // advances the mirror in the background.
+            if !progress(SpawnStage::Indexing, None) {
+                discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
+                return;
+            }
             provision_codegraph_index(
                 project_id_for_task.clone(),
                 repo_path.clone(),
@@ -608,6 +736,10 @@ impl Supervisor {
             // Tears down like the start_process failure path below (a workflow
             // step never carries, so this is always a non-run clone).
             if let Some(src) = &carry_from_task {
+                if !progress(SpawnStage::Carrying, None) {
+                    discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
+                    return;
+                }
                 let carried = match &base_sha {
                     Some(base) => match git::snapshot_worktree(src).await {
                         Ok(snap) => git::carry_worktree(&primary_checkout, src, &snap, base).await,
@@ -636,6 +768,13 @@ impl Supervisor {
                     if source == repo_path {
                         continue;
                     }
+                    if !progress(
+                        SpawnStage::AttachingRepos,
+                        source.file_name().map(|n| n.to_string_lossy().into_owned()),
+                    ) {
+                        discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
+                        return;
+                    }
                     if let Err(e) = sup
                         .attach_repo_checkout(&ctx_for_task, &id_for_task, source.clone(), false)
                         .await
@@ -652,6 +791,10 @@ impl Supervisor {
                 }
             }
 
+            if !progress(SpawnStage::Starting, None) {
+                discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
+                return;
+            }
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task, true).await {
@@ -1919,5 +2062,52 @@ mod tests {
         for provider in ["claude", "codex", "cursor", "antigravity"] {
             assert!(ensure_engine_supports_provider(EngineKind::SandboxExec, provider).is_ok());
         }
+    }
+
+    /// A timed-out spawn's task outlives the timeout, and the user may have
+    /// resumed the agent before that task gets round to cleaning up. Resume
+    /// reuses the very checkout the task is about to remove, so the discard
+    /// has to look at who owns the paths now: a live agent keeps them, a dead
+    /// attempt still clears up after itself.
+    #[tokio::test]
+    async fn an_abandoned_spawn_only_discards_paths_nobody_took_back() {
+        let sup = crate::supervisor::tests::test_supervisor();
+        let td = tempfile::tempdir().unwrap();
+        // Agent dirs live under a checkouts root; tombstones go to its sibling
+        // discard root, so both stay inside the tempdir.
+        let root = td.path().join("workspaces");
+
+        let resumed = root.join("resumed");
+        std::fs::create_dir_all(&resumed).unwrap();
+        sup.statuses
+            .lock()
+            .insert("resumed".into(), AgentStatus::Spawning);
+        discard_if_still_dead(&sup, "resumed", &resumed).await;
+        assert!(
+            resumed.is_dir(),
+            "a newer attempt owns these paths; the stale task must not delete them"
+        );
+
+        let failed = root.join("failed");
+        std::fs::create_dir_all(failed.join("checkout")).unwrap();
+        sup.statuses
+            .lock()
+            .insert("failed".into(), AgentStatus::Error);
+        discard_if_still_dead(&sup, "failed", &failed).await;
+        assert!(
+            !failed.exists(),
+            "nobody took the agent back, so the failed spawn's dir goes"
+        );
+        // The tree is set aside under the lock and deleted after it; neither
+        // the dir nor its tombstone may survive.
+        let leftovers: Vec<_> = std::fs::read_dir(crate::workspace::discard_root(&root))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(leftovers.is_empty(), "tombstone left behind: {leftovers:?}");
+
+        // A dir the attempt never created is nothing to clean up, and not an
+        // error either.
+        discard_if_still_dead(&sup, "failed", &root.join("never-made")).await;
     }
 }

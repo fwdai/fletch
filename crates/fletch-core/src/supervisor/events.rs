@@ -197,6 +197,57 @@ pub(super) fn emit_status(
     );
 }
 
+/// Which step of a fresh spawn is running right now. Progress only — the
+/// authoritative state stays `agent:status`, and a client that misses these
+/// still sees `spawning` followed by `idle`/`error`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum SpawnStage {
+    /// Creating the agent's workspace directory.
+    Preparing,
+    /// Cloning the source repo and detaching at the base commit.
+    Cloning,
+    /// Warming the codegraph index for the new checkout.
+    Indexing,
+    /// Overlaying the source workspace's uncommitted work (fork "carry code").
+    Carrying,
+    /// Checking out the project's other repos.
+    AttachingRepos,
+    /// Launching the agent process.
+    Starting,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct SpawnProgressPayload {
+    agent_id: String,
+    stage: SpawnStage,
+    detail: Option<String>,
+}
+
+/// One stage boundary of a fresh spawn, so a client can say what the 15-odd
+/// seconds behind "spawning" are actually being spent on. Never emitted after
+/// the spawn's terminal status: every caller sits ahead of the work it names,
+/// and re-checks `Supervisor::spawn_still_live` for its own attempt before
+/// emitting, so a spawn whose outcome was already claimed (timeout) stops
+/// instead of narrating — and stays stopped if the agent is resumed under a
+/// later attempt.
+pub(super) fn emit_spawn_progress(
+    sink: &dyn EventSink,
+    agent_id: &str,
+    stage: SpawnStage,
+    detail: Option<String>,
+) {
+    emit(
+        sink,
+        "agent:spawn-progress",
+        SpawnProgressPayload {
+            agent_id: agent_id.to_string(),
+            stage,
+            detail,
+        },
+    );
+}
+
 #[derive(Clone, serde::Serialize)]
 struct AgentViewPayload {
     agent_id: String,
@@ -501,6 +552,33 @@ mod tests {
                 "agent:status".to_string(),
                 json!({ "agent_id": "fuji", "status": "idle", "last_error": "boom" })
             )]
+        );
+    }
+
+    /// Same contract, and the stage strings in particular are what the clients
+    /// switch their label on.
+    #[test]
+    fn a_spawn_progress_event_carries_its_stage() {
+        let sink = RecordingSink::new();
+        emit_spawn_progress(&sink, "fuji", SpawnStage::Cloning, None);
+        emit_spawn_progress(
+            &sink,
+            "fuji",
+            SpawnStage::AttachingRepos,
+            Some("docs".to_string()),
+        );
+        assert_eq!(
+            sink.events(),
+            vec![
+                (
+                    "agent:spawn-progress".to_string(),
+                    json!({ "agent_id": "fuji", "stage": "cloning", "detail": null })
+                ),
+                (
+                    "agent:spawn-progress".to_string(),
+                    json!({ "agent_id": "fuji", "stage": "attaching_repos", "detail": "docs" })
+                ),
+            ]
         );
     }
 

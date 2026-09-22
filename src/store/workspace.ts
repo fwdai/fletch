@@ -8,6 +8,7 @@ import {
   type ForkContext,
   type RunPhase,
   type SessionRecord,
+  type SpawnStage,
   type Workspace,
 } from "@/api";
 import { discoverCommands } from "@/data/slashCommands";
@@ -134,6 +135,11 @@ export interface WorkspaceSlice {
   /** Optional label shown alongside the busy indicator, e.g. "Compacting"
    *  for `/compact`. Cleared when the turn ends. */
   managedBusyLabel: Record<string, string | undefined>;
+  /** What a spawning agent is doing right now, from `agent:spawn-progress` —
+   *  the composer placeholder and the sidebar spinner's tooltip. Absent until
+   *  the first stage arrives (a client that connects mid-spawn gets no
+   *  snapshot), and dropped when the agent leaves `spawning`. */
+  spawnStage: Record<string, { stage: SpawnStage; detail: string | null }>;
   /** True while a view switch is in flight — disable toggle UI. */
   switchInFlight: Record<string, boolean>;
   /** True for agents that completed a turn while not focused — drives the
@@ -266,6 +272,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   managedBusy: {},
   turnStartedAt: {},
   managedBusyLabel: {},
+  spawnStage: {},
   switchInFlight: {},
   unseenResults: {},
   syncHealth: {},

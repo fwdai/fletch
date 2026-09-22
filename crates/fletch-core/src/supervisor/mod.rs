@@ -348,6 +348,35 @@ impl Supervisor {
         true
     }
 
+    /// Is *this* spawn attempt still unresolved — i.e. would a
+    /// `claim_spawn_outcome` from it still succeed? `gen` is the agent's
+    /// generation as captured when the attempt started.
+    ///
+    /// The status half is the same map, same lock, same match as the swap
+    /// above, so the two can never disagree: `false` here means the spawn's
+    /// outcome is already claimed (by the spawn timeout, or by a teardown) and
+    /// this side lost. The spawn task polls this at every stage boundary, which
+    /// is what makes the timeout actually stop the work: without it a timed-out
+    /// spawn kept cloning, indexing and attaching repos — and emitting stage
+    /// events — after `agent:status` had already gone to `error`.
+    ///
+    /// The generation half binds the answer to the attempt. Status alone would
+    /// say "live" again the moment a *later* attempt re-entered `Spawning` (a
+    /// resume after the timeout), letting the abandoned task resume
+    /// provisioning against the checkout and process the new attempt owns.
+    /// Every actor that can strand a spawn task — the timeout watchdog,
+    /// `detach_runtime`, `start_process`, `apply_exit_if_current`, `shutdown` —
+    /// bumps the generation, so a stale capture can never match again.
+    fn spawn_still_live(&self, agent_id: &str, gen: u64) -> bool {
+        if !matches!(
+            self.statuses.lock().get(agent_id),
+            Some(AgentStatus::Spawning)
+        ) {
+            return false;
+        }
+        self.generations.lock().get(agent_id).copied().unwrap_or(0) == gen
+    }
+
     /// Durable side-effects of a status change: persist to the DB where the
     /// status warrants it, then emit to the frontend. Split out of
     /// `set_status` so `claim_spawn_outcome` can reuse it after writing the
@@ -648,6 +677,66 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::database::init(dir.path()).unwrap();
         Supervisor::new(Arc::new(WorkspaceManager::new(db)))
+    }
+
+    /// The spawn task and the spawn watchdog read the same cell: the moment
+    /// either claims the outcome, the other's liveness check must flip — that
+    /// agreement is what makes a timed-out spawn stop at its next stage
+    /// boundary instead of working on (and emitting stages) past `error`.
+    #[test]
+    fn claiming_a_spawn_outcome_ends_its_liveness() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = test_supervisor();
+        sup.statuses
+            .lock()
+            .insert("a1".to_string(), AgentStatus::Spawning);
+
+        assert!(sup.spawn_still_live("a1", 0));
+        // An agent nobody is spawning is never live.
+        assert!(!sup.spawn_still_live("unknown", 0));
+
+        assert!(sup.claim_spawn_outcome(
+            &ctx,
+            "a1",
+            AgentStatus::Error,
+            Some("Spawn timed out".into())
+        ));
+        assert!(!sup.spawn_still_live("a1", 0));
+        // And the losing side (here the spawn task's own failure path) would
+        // fail its claim too — the predicate and the swap can't disagree.
+        assert!(!sup.claim_spawn_outcome(&ctx, "a1", AgentStatus::Idle, None));
+    }
+
+    /// The timed-out attempt's task outlives the claim, and a resume puts the
+    /// agent back into `Spawning` while it is still running. Status alone would
+    /// call that stale task live again — and let it provision over the new
+    /// attempt's checkout — so the generation the watchdog bumped is what keeps
+    /// it dead. The new attempt, holding the bumped number, is live.
+    #[test]
+    fn a_stale_spawn_attempt_stays_dead_across_a_resume() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = test_supervisor();
+        sup.statuses
+            .lock()
+            .insert("a1".to_string(), AgentStatus::Spawning);
+        let stale_gen = sup.generations.lock().get("a1").copied().unwrap_or(0);
+
+        // Spawn watchdog: claim the timeout, then invalidate the attempt.
+        assert!(sup.claim_spawn_outcome(
+            &ctx,
+            "a1",
+            AgentStatus::Error,
+            Some("Spawn timed out".into())
+        ));
+        sup.bump_generation("a1");
+
+        // Resume: the agent is `Spawning` once more, under a new generation.
+        sup.set_status(&ctx, "a1", AgentStatus::Spawning, None);
+        let resume_gen = sup.generations.lock().get("a1").copied().unwrap_or(0);
+        assert_ne!(stale_gen, resume_gen);
+
+        assert!(!sup.spawn_still_live("a1", stale_gen));
+        assert!(sup.spawn_still_live("a1", resume_gen));
     }
 
     /// Manual/local check (macOS-only, `#[ignore]`d so it's off the Linux CI

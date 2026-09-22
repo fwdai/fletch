@@ -30,6 +30,7 @@ import {
   onSessionRecordsAppended,
   onSessionSyncHealth,
   onShellOutput,
+  onSpawnProgress,
   onTurnSent,
   onTurnStarted,
   onVerificationReport,
@@ -501,6 +502,11 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
         if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
           delete turnStartedAt[e.agent_id];
         }
+        // Any spawn stage we were showing belongs to a spawn that has now
+        // ended, one way or the other (`spawning` itself is the only status
+        // the label outlives).
+        const spawnStage = { ...state.spawnStage };
+        if (e.status !== "spawning") delete spawnStage[e.agent_id];
         return {
           workspace: next,
           managedLogs:
@@ -528,6 +534,27 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
                 ? { ...state.managedBusy, [e.agent_id]: false }
                 : state.managedBusy,
           turnStartedAt,
+          spawnStage,
+        };
+      });
+    }),
+  );
+
+  // Which step of a fresh spawn is running. Dropped once the record says the
+  // spawn is over, so a stage that crossed paths with the terminal status (the
+  // spawn watchdog can fire mid-stage) can't resurrect the label. An agent we
+  // don't have yet is kept: the first stages can beat the refetch this spawn's
+  // `workspace:changed` triggered, and its `agent:status` still clears the key.
+  await bind(
+    onSpawnProgress((e) => {
+      set((state) => {
+        const agent = state.workspace?.agents.find((a) => a.id === e.agent_id);
+        if (agent && agent.status !== "spawning") return {};
+        return {
+          spawnStage: {
+            ...state.spawnStage,
+            [e.agent_id]: { stage: e.stage, detail: e.detail },
+          },
         };
       });
     }),

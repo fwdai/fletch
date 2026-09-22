@@ -7,6 +7,7 @@ import type {
   AgentModelEvent,
   AgentOutputEvent,
   AgentRepoAddedEvent,
+  AgentSpawnProgressEvent,
   AgentStatusEvent,
   AgentTaskEvent,
   AgentTitleEvent,
@@ -265,6 +266,13 @@ export function onTurnStarted(cb: (e: TurnStartedEvent) => void): Promise<Unlist
 
 export function onAgentStatus(cb: (e: AgentStatusEvent) => void): Promise<UnlistenFn> {
   return on<AgentStatusEvent>("agent:status", cb);
+}
+
+/** Fires at each stage boundary of a fresh spawn (clone, index, start…), so the
+ *  composer and the sidebar spinner can name what the wait is for. Progress
+ *  only — `agent:status` stays the authoritative state. */
+export function onSpawnProgress(cb: (e: AgentSpawnProgressEvent) => void): Promise<UnlistenFn> {
+  return on<AgentSpawnProgressEvent>("agent:spawn-progress", cb);
 }
 
 export function onAgentView(cb: (e: AgentViewEvent) => void): Promise<UnlistenFn> {
