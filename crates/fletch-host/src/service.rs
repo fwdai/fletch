@@ -256,11 +256,11 @@ fn finish(rendered: String) -> Result<String, String> {
 /// One `ExecStart=` word. systemd splits on whitespace and understands double
 /// quotes, so anything with a space in it (a data dir under "Application
 /// Support", say) has to be quoted.
-/// The executable a systemd unit runs: the first word of its `ExecStart=`,
-/// unquoted the way [`systemd_quote`] quoted it (or as a hand-written unit
-/// would: a bare word, or one in double quotes with `\"` and `\\`). What
-/// `update` matches against the binary it replaced.
-pub fn systemd_unit_exec(unit: &str) -> Option<PathBuf> {
+/// Every word of a systemd unit's `ExecStart=` — the executable, then the
+/// arguments — unquoted the way [`systemd_quote`] quoted them (or as a
+/// hand-written unit would: bare words, or ones in double quotes with `\"` and
+/// `\\`).
+pub fn systemd_unit_words(unit: &str) -> Option<Vec<String>> {
     let line = unit
         .lines()
         .map(str::trim)
@@ -268,35 +268,144 @@ pub fn systemd_unit_exec(unit: &str) -> Option<PathBuf> {
         .trim_start();
     // systemd's `ExecStart=@path`, `-path`, `+path` etc. prefixes name the
     // same file; strip them so a hand-edited unit still matches.
-    let line = line.trim_start_matches(['@', '-', '+', '!', ':']);
-    let word = if let Some(rest) = line.strip_prefix('"') {
-        let mut out = String::new();
-        let mut chars = rest.chars();
-        loop {
-            match chars.next()? {
-                '\\' => out.push(chars.next()?),
-                '"' => break,
-                c => out.push(c),
-            }
+    let mut rest = line.trim_start_matches(['@', '-', '+', '!', ':']);
+    let mut words = Vec::new();
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return Some(words);
         }
-        out
-    } else {
-        line.split_whitespace().next()?.to_string()
-    };
-    (!word.is_empty()).then(|| PathBuf::from(word))
+        if let Some(quoted) = rest.strip_prefix('"') {
+            let mut out = String::new();
+            let mut chars = quoted.chars();
+            loop {
+                match chars.next()? {
+                    '\\' => out.push(chars.next()?),
+                    '"' => break,
+                    c => out.push(c),
+                }
+            }
+            words.push(out);
+            rest = chars.as_str();
+        } else {
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            words.push(rest[..end].to_string());
+            rest = &rest[end..];
+        }
+    }
+}
+
+/// The executable a systemd unit runs: the first word of its `ExecStart=`.
+/// What `update` matches against the binary it replaced.
+pub fn systemd_unit_exec(unit: &str) -> Option<PathBuf> {
+    first_word(systemd_unit_words(unit)?)
+}
+
+/// Every `<string>` of a launchd plist's `ProgramArguments` array — the
+/// executable, then the arguments — XML-unescaped the way [`render_launchd`]
+/// escaped them. Bounded at `</array>`: the `<string>`s after it are the log
+/// paths and the environment, not the command line.
+pub fn launchd_plist_words(plist: &str) -> Option<Vec<String>> {
+    let after_key = plist.split("<key>ProgramArguments</key>").nth(1)?;
+    let array = after_key.split("</array>").next().unwrap_or(after_key);
+    Some(
+        array
+            .split("<string>")
+            .skip(1)
+            .filter_map(|chunk| chunk.split("</string>").next())
+            .map(|word| xml_unescape(word.trim()))
+            .collect(),
+    )
 }
 
 /// The executable a launchd plist runs: the first `<string>` of its
-/// `ProgramArguments`, XML-unescaped the way [`render_launchd`] escaped it.
+/// `ProgramArguments`.
 pub fn launchd_plist_exec(plist: &str) -> Option<PathBuf> {
-    let after_key = plist.split("<key>ProgramArguments</key>").nth(1)?;
-    let first = after_key
-        .split("<string>")
-        .nth(1)?
-        .split("</string>")
-        .next()?;
-    let word = xml_unescape(first.trim());
+    first_word(launchd_plist_words(plist)?)
+}
+
+fn first_word(words: Vec<String>) -> Option<PathBuf> {
+    let word = words.into_iter().next()?;
     (!word.is_empty()).then(|| PathBuf::from(word))
+}
+
+/// One installed service definition: the file, and the command line in it.
+#[derive(Debug, Clone)]
+pub struct Installed {
+    pub unit: PathBuf,
+    pub exec: PathBuf,
+    /// Everything after the executable — the `serve` arguments the unit was
+    /// installed with.
+    pub args: Vec<String>,
+}
+
+/// Reads a unit's command line out of its text.
+type WordsOf = fn(&str) -> Option<Vec<String>>;
+
+/// The service definition installed on this machine, if there is one: the
+/// systemd system unit, then the systemd user unit, then the launchd agent —
+/// the order `update::restart` probes in. Read-only, and it runs nothing.
+pub fn find_installed() -> Option<Installed> {
+    first_installed(candidate_units())
+}
+
+fn candidate_units() -> Vec<(PathBuf, WordsOf)> {
+    let mut candidates: Vec<(PathBuf, WordsOf)> = vec![(
+        Path::new("/etc/systemd/system").join(UNIT_NAME),
+        systemd_unit_words as WordsOf,
+    )];
+    if let Ok(dir) = systemd_user_dir() {
+        candidates.push((dir.join(UNIT_NAME), systemd_unit_words));
+    }
+    if let Ok(plist) = launchd_plist_path() {
+        candidates.push((plist, launchd_plist_words));
+    }
+    candidates
+}
+
+fn first_installed(candidates: Vec<(PathBuf, WordsOf)>) -> Option<Installed> {
+    candidates
+        .into_iter()
+        .find_map(|(path, words_of)| read_installed(&path, words_of))
+}
+
+fn read_installed(unit: &Path, words_of: WordsOf) -> Option<Installed> {
+    let text = std::fs::read_to_string(unit).ok()?;
+    let mut words = words_of(&text)?.into_iter();
+    let exec = words.next().filter(|word| !word.is_empty())?;
+    Some(Installed {
+        unit: unit.to_path_buf(),
+        exec: PathBuf::from(exec),
+        args: words.collect(),
+    })
+}
+
+/// `service show`: the installed unit as `key=value` lines a shell can read —
+/// what it is, what it runs, and with which arguments. `default_args` is what
+/// a flag-less [`install`] on this machine would write instead, which is what
+/// lets a caller tell a rewrite that changes nothing from one that would reset
+/// an operator's `--data-dir`, `--port` or `--name`.
+///
+/// No installed unit is an error, not an empty success: a caller tests the
+/// exit status, and every line it reads is then about a unit that exists.
+pub fn show() -> Result<(), String> {
+    let Some(installed) = find_installed() else {
+        return Err("no fletch-host service is installed".to_string());
+    };
+    let defaults = Spec {
+        exec: PathBuf::new(),
+        data_dir: crate::serve::default_data_dir(),
+        port: None,
+        name: None,
+        user: None,
+        system: false,
+        log_path: PathBuf::new(),
+    };
+    println!("unit={}", installed.unit.display());
+    println!("exec={}", installed.exec.display());
+    println!("args={}", installed.args.join(" "));
+    println!("default_args={}", defaults.serve_args().join(" "));
+    Ok(())
 }
 
 fn xml_unescape(text: &str) -> String {
@@ -814,5 +923,51 @@ mod exec_tests {
             );
         }
         assert_eq!(launchd_plist_exec("<plist><dict></dict></plist>"), None);
+    }
+
+    /// What `service show` reports: the first unit that exists, in probing
+    /// order, with the whole command line split back out of it.
+    #[test]
+    fn the_lookup_reports_the_first_unit_that_exists_and_its_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let exec = "/opt/my tools/fletch-host";
+        let unit = dir.path().join(UNIT_NAME);
+        let plist = dir.path().join("com.fletch.host.plist");
+        let missing = dir.path().join("missing.service");
+
+        let mut spec = spec_with_exec(exec);
+        spec.port = Some(4242);
+        std::fs::write(&unit, render_systemd(&spec).unwrap()).unwrap();
+        std::fs::write(&plist, render_launchd(&spec_with_exec(exec)).unwrap()).unwrap();
+
+        // Nothing installed at any candidate path is "nothing installed".
+        assert!(first_installed(vec![(missing.clone(), systemd_unit_words)]).is_none());
+
+        // The systemd unit wins over the plist when both are there, and its
+        // arguments come back whole — quoted paths unquoted, flags kept.
+        let found = first_installed(vec![
+            (missing.clone(), systemd_unit_words),
+            (unit.clone(), systemd_unit_words),
+            (plist.clone(), launchd_plist_words),
+        ])
+        .unwrap();
+        assert_eq!(found.unit, unit);
+        assert_eq!(found.exec, PathBuf::from(exec));
+        assert_eq!(
+            found.args,
+            ["serve", "--data-dir", "/srv/fletch-host", "--port", "4242"]
+        );
+
+        // With the systemd unit gone, the plist answers — and its
+        // `ProgramArguments` stop at `</array>`, so the log paths below it are
+        // not arguments.
+        let found = first_installed(vec![
+            (missing, systemd_unit_words),
+            (plist.clone(), launchd_plist_words),
+        ])
+        .unwrap();
+        assert_eq!(found.unit, plist);
+        assert_eq!(found.exec, PathBuf::from(exec));
+        assert_eq!(found.args, ["serve", "--data-dir", "/srv/fletch-host"]);
     }
 }

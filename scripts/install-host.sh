@@ -16,8 +16,16 @@
 # which would rewrite that unit from this script's (absent) --port/--name/
 # --system flags and reset the operator's service configuration.
 #
+# A re-run with a *different* FLETCH_HOST_INSTALL_DIR finds no binary there and
+# would otherwise be a fresh install, `service install` and all. So the service
+# itself is looked for too, through `fletch-host service show`, and an install
+# that would rewrite someone else's unit stops instead.
+#
 #   FLETCH_HOST_VERSION      pin a release, e.g. 0.8.0 (default: the latest)
 #   FLETCH_HOST_INSTALL_DIR  where the binary goes (default: ~/.local/bin)
+#   FLETCH_HOST_SKIP_SERVICE=1  install the binary and stop before
+#                            `service install`, leaving any installed service
+#                            as it is
 #   FLETCH_HOST_SKIP_SIGNATURE=1  install without verifying the release
 #                            signature — insecure, and the one way past the
 #                            minisign requirement below
@@ -72,6 +80,83 @@ installed_host() {
   if [ -x "$INSTALL_DIR/fletch-host" ]; then
     echo "$INSTALL_DIR/fletch-host"
   fi
+}
+
+# One `key=value` line out of `fletch-host service show`.
+show_field() {
+  printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
+}
+
+# Refuse to reset a service this script did not configure. $1 is the verified
+# binary to ask — the one in $TMP, before anything has been installed.
+#
+# A fresh install ends in a flag-less `fletch-host service install`, which
+# overwrites whatever unit is there and restarts it with default arguments.
+# Getting this far with a unit already installed means $INSTALL_DIR holds no
+# binary: a re-run pointed at another FLETCH_HOST_INSTALL_DIR, or a binary
+# deleted by hand. Rewriting the unit would then drop the --data-dir, --port,
+# --name or --system it was installed with and restart the host, possibly
+# against a different database. This script has none of those flags and does
+# not try to guess them, so the rule is: refuse whenever a unit exists, except
+# in the one case where the rewrite would change nothing — same binary path,
+# the arguments a flag-less install writes anyway, and not a --system unit
+# (which lives elsewhere, so a flag-less install would leave it running and
+# start a second host beside it).
+refuse_to_reset_service() {
+  local show
+  # A non-zero exit means no service is installed, which is the ordinary case.
+  show="$("$1" service show 2>/dev/null)" || return 0
+  decide_service_conflict "$show"
+}
+
+# The decision, over `service show`'s output alone.
+decide_service_conflict() {
+  local unit unit_exec args default_args
+  unit="$(show_field "$1" unit)"
+  unit_exec="$(show_field "$1" exec)"
+  args="$(show_field "$1" args)"
+  default_args="$(show_field "$1" default_args)"
+
+  if [ "$unit_exec" != "$INSTALL_DIR/fletch-host" ]; then
+    die "a fletch-host service is already installed, and it runs a binary this
+install would not touch:
+    unit: $unit
+    runs: $unit_exec
+Installing into $INSTALL_DIR would rewrite that unit with default arguments and
+restart the host, possibly against a different database. Upgrade the host that
+is installed, in place:
+    curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install-host.sh | FLETCH_HOST_INSTALL_DIR=$(dirname "$unit_exec") bash
+or remove its service first:
+    $unit_exec service uninstall"
+  fi
+
+  # A --system unit is not the unit a flag-less `service install` writes: that
+  # one is a user unit, so this would start a second host beside the first.
+  case "$unit" in
+    /etc/systemd/system/*)
+      die "a fletch-host service is already installed system-wide at
+    $unit
+but $INSTALL_DIR/fletch-host is gone, so this is a fresh install, and its
+flag-less \`service install\` writes a *user* unit — leaving that one running
+and starting a second host beside it.
+Re-run with FLETCH_HOST_SKIP_SERVICE=1 to put the binary back and leave the
+service alone, or remove the unit yourself to start over." ;;
+  esac
+
+  if [ "$args" != "$default_args" ]; then
+    die "a fletch-host service is already installed at
+    $unit
+but $INSTALL_DIR/fletch-host is gone, so this is a fresh install, and its
+flag-less \`service install\` would rewrite that unit as
+    fletch-host $default_args
+losing how it was configured:
+    fletch-host $args
+Re-run with FLETCH_HOST_SKIP_SERVICE=1 to put the binary back and leave the
+service alone, or remove the unit yourself to start over."
+  fi
+
+  echo "note: the service at $unit runs $unit_exec with this script's own default"
+  echo "note: arguments, so \`service install\` writes back an equivalent unit."
 }
 
 target() {
@@ -203,6 +288,13 @@ main() {
   TMP="$(mktemp -d)"
   trap cleanup EXIT
   fetch_and_verify "$TMP" "$VERSION" "$TARGET"
+
+  # The binary in $TMP is verified now, and it is the one that knows where
+  # units live on this machine — so ask it about the service before writing
+  # anything. Skipped when `service install` is not going to run at all.
+  if [ -z "${FLETCH_HOST_SKIP_SERVICE:-}" ]; then
+    refuse_to_reset_service "$TMP/fletch-host"
+  fi
 
   BIN="$INSTALL_DIR/fletch-host"
   mkdir -p "$INSTALL_DIR"

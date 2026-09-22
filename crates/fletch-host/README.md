@@ -33,9 +33,10 @@ re-running `service install`, which would rewrite that unit and reset the
 `--port`, `--name` or `--system` you installed it with. Only that directory
 counts, never another `fletch-host` that happens to be on `PATH`: the service
 unit names an absolute path, so upgrading a binary somewhere else would leave
-the one the service actually runs behind. Point `FLETCH_HOST_INSTALL_DIR`
-somewhere new and it is a fresh install instead, whose `service install`
-re-points the unit at the new binary.
+the one the service actually runs behind. An installed service is found even
+when no binary sits in that directory — `fletch-host service show` reports the
+unit wherever it is — so pointing `FLETCH_HOST_INSTALL_DIR` somewhere new stops
+the install with the two ways out rather than resetting the service you have.
 
 Three env vars configure it: `FLETCH_HOST_VERSION=0.8.0` pins a release instead
 of taking the latest (and is what a re-run passes to `update`),

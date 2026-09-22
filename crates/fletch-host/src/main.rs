@@ -150,6 +150,11 @@ enum ServiceCommand {
         #[arg(long)]
         system: bool,
     },
+    /// Print the installed service definition — `unit=`, `exec=`, `args=` and
+    /// the `default_args=` a flag-less `install` would write — one `key=value`
+    /// per line, for a script to read. Exits non-zero when nothing is
+    /// installed. Changes nothing and starts nothing.
+    Show,
     /// Stop the service, disable it and remove its definition.
     Uninstall {
         /// Linux: the unit in /etc/systemd/system rather than your own.
@@ -443,6 +448,7 @@ fn service_command(data_dir: Option<PathBuf>, command: ServiceCommand) -> Result
             };
             service::install(&spec)
         }
+        ServiceCommand::Show => service::show(),
         ServiceCommand::Uninstall { system } => service::uninstall(system),
     }
 }
