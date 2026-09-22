@@ -227,7 +227,21 @@ fn main() {
 
     // One runtime for both halves: the engine's background tasks belong to it
     // (`serve`), and the client subcommands use it for the socket.
-    let runtime = match tokio::runtime::Runtime::new() {
+    //
+    // Never fewer than two workers. `serve` runs `host::boot` synchronously on
+    // a worker while the admin accept loop answers `starting` from another;
+    // on a one-vCPU box the default (one worker per CPU) would leave that
+    // loop unpolled for the whole boot, and a `status` asked meanwhile would
+    // hang instead of being told to wait.
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(2);
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(e) => fail(&format!("cannot start a tokio runtime: {e}")),
     };
