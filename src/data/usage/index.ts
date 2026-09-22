@@ -7,6 +7,7 @@
 export {
   aggregateUsage,
   bucketsInRange,
+  clampToScan,
   localHourStart,
   mergeScans,
   processedTokens,

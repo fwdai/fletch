@@ -68,6 +68,22 @@ export function rangeBounds(range: UsageRange, nowMs: number): UsageRangeBounds 
   return { sinceMs: start.getTime(), untilMs: nowMs };
 }
 
+/** A range narrowed to the window a scan actually covers.
+ *
+ *  `rangeBounds` describes the window the *control* selects, which is a claim
+ *  about the calendar rather than about the data: a merged scan opens at the
+ *  latest host's start (`mergeScans` intersects them), so hosts cached either
+ *  side of local midnight leave the selected range opening before any all-host
+ *  data exists. Clamping here keeps the day axis and the header's "from" label
+ *  describing the window the numbers came from instead of padding it with days
+ *  no host was asked about. */
+export function clampToScan(bounds: UsageRangeBounds, scan: UsageScan): UsageRangeBounds {
+  return {
+    sinceMs: Math.max(bounds.sinceMs, scan.sinceMs),
+    untilMs: Math.min(bounds.untilMs, scan.untilMs),
+  };
+}
+
 /** The buckets a range covers: `[sinceMs, untilMs)` by bucket start. Every
  *  bound `rangeBounds` produces is already on an hour (multi-day ranges open at
  *  local midnight, "24h" at a whole hour), so a bucket is in or out with no

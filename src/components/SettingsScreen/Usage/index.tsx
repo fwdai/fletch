@@ -37,9 +37,12 @@ export function UsagePane() {
     if (host !== ALL_HOSTS && !hosts.some((h) => h.id === host)) setHost(ALL_HOSTS);
   }, [host, hosts]);
 
-  // The header describes the *selected* window immediately; `stats.range` is
-  // the window the data in hand covers, which lags by one scan.
-  const bounds = useMemo(() => rangeBounds(range, Date.now()), [range]);
+  // The header names the window the numbers on screen actually cover, so it
+  // reads `stats.range` — already clamped to the scans behind it — rather than
+  // recomputing the selected window and claiming days no host answered for.
+  // Before the first scan lands there are no numbers to describe, only the
+  // window the control selects.
+  const bounds = useMemo(() => stats?.range ?? rangeBounds(range, Date.now()), [stats, range]);
   const empty = !!stats?.empty;
   // A failed first scan leaves nothing to show but the error; a failed re-scan
   // still has the previous numbers behind it.

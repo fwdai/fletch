@@ -3,7 +3,7 @@ import type { UsageBucket, UsageScan, UsageScanTokens, UsageSessionSpan } from "
 import type { SlimCatalog } from "@/data/modelCatalog";
 import type { EnvironmentEntry } from "@/store/environments";
 import { dayKeysBetween, localDay } from "@/util/format";
-import { aggregateUsage, localHourStart, mergeScans, rangeBounds } from "./aggregate";
+import { aggregateUsage, clampToScan, localHourStart, mergeScans, rangeBounds } from "./aggregate";
 import { costLabel, coverageLabel, modelCostLabel } from "./costLabel";
 import type { HostUsageScan } from "./types";
 import {
@@ -129,6 +129,24 @@ describe("localHourStart", () => {
   it("snaps to the top of the containing local hour", () => {
     expect(localHourStart(at("2026-09-17", 15, 42))).toBe(at("2026-09-17", 15));
     expect(localHourStart(at("2026-09-17", 15))).toBe(at("2026-09-17", 15));
+  });
+});
+
+describe("clampToScan", () => {
+  const covered = { ...scan([]), sinceMs: 200, untilMs: 800 };
+
+  it("narrows a range to the window the scan covers", () => {
+    expect(clampToScan({ sinceMs: 100, untilMs: 900 }, covered)).toEqual({
+      sinceMs: 200,
+      untilMs: 800,
+    });
+  });
+
+  it("leaves a range that already sits inside the scan alone", () => {
+    expect(clampToScan({ sinceMs: 300, untilMs: 700 }, covered)).toEqual({
+      sinceMs: 300,
+      untilMs: 700,
+    });
   });
 });
 
@@ -628,6 +646,40 @@ describe("mergeScans", () => {
     ]);
     expect(merged.sessions.map((s) => s.id)).toEqual(["local:straddle", "hostB:inside"]);
   });
+
+  it("clamps a selected range to the window every host covered", () => {
+    // `local` was cached before local midnight and `hostB` after it, so the
+    // merged window only opens on the 17th — while "7 days" asks for the 11th.
+    const merged = mergeScans([
+      hostScan(
+        "local",
+        covering(
+          scan([bucket({ hourStartMs: at("2026-09-17", 9), model: "sonnet-5" })]),
+          at("2026-09-16", 0),
+          at("2026-09-17", 20),
+        ),
+      ),
+      hostScan(
+        "hostB",
+        covering(
+          scan([bucket({ hourStartMs: at("2026-09-17", 10), model: "sonnet-5" })]),
+          at("2026-09-17", 0),
+          at("2026-09-17", 23),
+        ),
+      ),
+    ]);
+    const selected = rangeBounds("7d", merged.untilMs);
+    expect(selected.sinceMs).toBe(at("2026-09-11", 0));
+
+    const clamped = clampToScan(selected, merged);
+    expect(clamped).toEqual({ sinceMs: at("2026-09-17", 0), untilMs: at("2026-09-17", 20) });
+
+    // One honest day on the axis rather than seven, six of them zeroes no host
+    // was ever asked about — and the stats carry that window for the header.
+    const stats = aggregateUsage(merged, CATALOG, clamped);
+    expect(stats.daily.map((d) => d.day)).toEqual(["2026-09-17"]);
+    expect(stats.range).toEqual(clamped);
+  });
 });
 
 // The pane's whole view is folded out of the per-host scan states, so a host
@@ -659,8 +711,8 @@ describe("deriveUsageView", () => {
   it("carries every target's status and folds only the hosts that answered", () => {
     const view = deriveUsageView(targets, { local: ok("local"), beta: failed("connection lost") });
     expect(view.hosts).toEqual([
-      { id: "local", name: "This Mac", status: "ok", error: null },
-      { id: "beta", name: "Beta", status: "error", error: "connection lost" },
+      { id: "local", name: "This Mac", status: "ok", error: null, covered: true },
+      { id: "beta", name: "Beta", status: "error", error: "connection lost", covered: false },
     ]);
     // One host down beside one that answered takes nothing off the screen.
     expect(view.error).toBeNull();
@@ -719,6 +771,30 @@ describe("deriveUsageView", () => {
     expect(view.error).toBe("disk busy");
     expect(view.loading).toBe(false);
     expect(view.scans).toHaveLength(1);
+  });
+
+  it("counts coverage by the scans folded, not by the hosts' status", () => {
+    // `local`'s re-scan failed but kept its last scan, so its usage is still in
+    // the total and the host is still covered; `beta` never answered.
+    const view = deriveUsageView(targets, {
+      local: failed("disk busy", scanOf("local")),
+      beta: failed("connection lost"),
+    });
+    expect(view.scans.map((s) => s.envId)).toEqual(["local"]);
+    expect(view.hosts.map((h) => h.covered)).toEqual([true, false]);
+  });
+
+  it("does not count a host that is still scanning with nothing behind it", () => {
+    const view = deriveUsageView(targets, { local: { status: "loading" }, beta: ok("beta") });
+    expect(view.scans.map((s) => s.envId)).toEqual(["beta"]);
+    expect(view.hosts.map((h) => h.covered)).toEqual([false, true]);
+
+    // A re-scan behind numbers already on screen keeps that host covered.
+    const rescan = deriveUsageView(targets, {
+      local: { status: "loading", scan: scanOf("local") },
+      beta: ok("beta"),
+    });
+    expect(rescan.hosts.map((h) => h.covered)).toEqual([true, true]);
   });
 
   it("ages the view by its oldest scan and labels scans with current names", () => {

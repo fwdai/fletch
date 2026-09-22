@@ -55,15 +55,17 @@ function rangeText(range: UsageRange, { sinceMs, untilMs }: UsageRangeBounds): s
 
 /** Whose sessions the numbers cover: one machine, one named host, or all of
  *  them. Never claims "this machine" once more than one host is in play, and
- *  never counts a host whose scan failed — it contributed nothing, so "across
- *  all 3 hosts" would be a false total. Hosts still scanning are counted in:
- *  they are expected to answer, and the skeletons say they haven't yet. */
+ *  counts exactly the hosts whose scans the totals were folded from
+ *  (`UsageHost.covered`) — not the hosts whose status happens to look healthy.
+ *  A host whose re-scan failed still has its last scan in the numbers and is
+ *  still counted; one that has never answered, failed or still scanning, is
+ *  not, and the skeletons say why. */
 function scopeText(hosts: UsageHost[], host: string): string {
   if (hosts.length < 2) return "on this machine";
   if (host !== ALL_HOSTS) return `on ${hosts.find((h) => h.id === host)?.name ?? "this host"}`;
-  const failed = hosts.filter((h) => h.status === "error").length;
-  if (failed === 0) return `across all ${hosts.length} hosts`;
-  return `across ${hosts.length - failed} of ${hosts.length} hosts`;
+  const covered = hosts.filter((h) => h.covered).length;
+  if (covered === hosts.length) return `across all ${hosts.length} hosts`;
+  return `across ${covered} of ${hosts.length} hosts`;
 }
 
 /** The pane header. The host filter, the period picker and the re-scan button
@@ -97,11 +99,19 @@ export function UsageHeader({
                 { value: ALL_HOSTS, label: "All hosts" },
                 // A host whose scan failed stays selectable and says why on
                 // hover; picking it shows that error where its numbers would
-                // be, rather than skeletons that would never resolve.
+                // be, rather than skeletons that would never resolve. The same
+                // `covered` flag the header counts says whether the failure
+                // took its numbers away or only its freshness.
                 ...hosts.map((h) => ({
                   value: h.id,
                   label: h.name,
-                  ...(h.error ? { tip: `Scan failed: ${h.error}` } : {}),
+                  ...(h.error
+                    ? {
+                        tip: h.covered
+                          ? `Scan failed: ${h.error} (showing its last scan)`
+                          : `Scan failed: ${h.error}`,
+                      }
+                    : {}),
                 })),
               ]}
               onChange={onHost}

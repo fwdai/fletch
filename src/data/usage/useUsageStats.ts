@@ -4,7 +4,7 @@ import { api } from "@/api";
 import { hostSupports } from "@/remote/types";
 import { useAppStore } from "@/store";
 import type { EnvironmentEntry, EnvironmentId } from "@/store/environments";
-import { aggregateUsage, mergeScans, rangeBounds, WIDEST_RANGE } from "./aggregate";
+import { aggregateUsage, clampToScan, mergeScans, rangeBounds, WIDEST_RANGE } from "./aggregate";
 import type { HostUsageScan, UsageRange, UsageStats } from "./types";
 
 /** The op each host answers for its own disk. */
@@ -38,6 +38,12 @@ export interface UsageHost {
   status: HostScanState["status"];
   /** Why this host has no numbers. Null unless `status` is `"error"`. */
   error: string | null;
+  /** This host put a scan into the view's `scans`, so its usage is inside the
+   *  numbers on screen. Not the same question as `status`: a host whose
+   *  re-scan failed keeps its last scan and is still in the total, while one
+   *  that has never answered is not — which is why coverage is counted from
+   *  here and never from the status. */
+  covered: boolean;
 }
 
 export interface UsageStatsResult {
@@ -167,24 +173,27 @@ export function deriveUsageView(
   states: HostScanStates,
   host: string = ALL_HOSTS,
 ): UsageView {
+  const scans: HostUsageScan[] = [];
   // A target with no entry yet (its `load` has not run) reads as loading: it is
   // a host we intend to ask, which is what a skeleton means.
   const hosts: UsageHost[] = targets.map((t) => {
     const state = states[t.id];
+    // One lookup answers both "is this host's usage in the numbers" and "which
+    // scans do the numbers fold over", so the header's count and the total can
+    // never be derived from different facts.
+    const scan = host === ALL_HOSTS || t.id === host ? state?.scan : undefined;
+    // Renamed hosts pick up the new name without a re-scan.
+    if (scan) scans.push({ ...scan, envName: t.name });
     return {
       id: t.id,
       name: t.name,
       status: state?.status ?? "loading",
       error: state?.status === "error" ? state.error : null,
+      covered: scan !== undefined,
     };
   });
 
   const scoped = hosts.filter((h) => host === ALL_HOSTS || h.id === host);
-  // Renamed hosts pick up the new name without a re-scan.
-  const scans = scoped.flatMap((h) => {
-    const scan = states[h.id]?.scan;
-    return scan ? [{ ...scan, envName: h.name }] : [];
-  });
   // Only a selection where every host failed has nothing to say; one failure
   // beside a host that answered leaves the numbers true, of fewer machines.
   const failed = scoped.filter((h) => h.status === "error");
@@ -289,9 +298,11 @@ export function useUsageStats(range: UsageRange, host: string = ALL_HOSTS): Usag
   const stats = useMemo(() => {
     if (view.scans.length === 0) return null;
     const merged = mergeScans(view.scans);
-    // Sub-ranges end where the scans ended, so no range can claim a window
-    // they didn't cover and the chart's last column is the last scanned hour.
-    return aggregateUsage(merged, catalog, rangeBounds(range, merged.untilMs));
+    // A sub-range is a slice of the merged scan, so it is clamped to both of
+    // that scan's edges: it ends where the scans ended, and it opens no earlier
+    // than the window every contributing host covered. Either way no range can
+    // claim hours the data in hand does not answer for.
+    return aggregateUsage(merged, catalog, clampToScan(rangeBounds(range, merged.untilMs), merged));
   }, [view.scans, catalog, range]);
 
   const refresh = useCallback(() => load(targets, true), [load, targets]);
