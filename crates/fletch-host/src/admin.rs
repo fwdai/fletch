@@ -164,6 +164,12 @@ async fn session(admin: Arc<Admin>, stream: UnixStream) -> io::Result<()> {
 }
 
 /// Ask the running host one question. The client half of everything above.
+///
+/// Unbounded on purpose. The host answers every op from the moment the socket
+/// is bound — `ops::STARTING` while the engine is still booting — so a wait
+/// here is the op itself taking its time, and `project clone` on a big
+/// repository legitimately takes minutes. A deadline here could only cut that
+/// short and report a failure the host is not having.
 pub async fn call(data_dir: &Path, op: &str, args: Value) -> Result<Value, String> {
     let path = socket_path(data_dir);
     let stream = UnixStream::connect(&path)

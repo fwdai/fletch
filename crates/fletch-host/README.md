@@ -13,9 +13,41 @@ host refuses to start rather than run an agent outside the boundary it promised.
 
 ## Install
 
-Each release publishes `fletch-host-<version>-<target>.tar.gz`, a matching
-`.sha256`, and a `.sig` (minisign, the same key the desktop's updater trusts —
-`fletch-host update` checks both):
+```sh
+curl -fsSL https://raw.githubusercontent.com/fwdai/fletch/main/scripts/install-host.sh | bash
+```
+
+That downloads this machine's tarball, verifies it, installs the binary, runs
+`fletch-host service install` and ends at the pairing QR — the manual steps
+below, in one command. A fresh install needs **minisign** on `PATH`
+(`brew install minisign`, `apt install minisign`, `dnf install minisign`): the
+signature is what makes the download the project's binary rather than whoever
+answered, so a missing minisign or a missing `.sig` stops the install instead of
+warning and carrying on.
+
+Run it again with the same `FLETCH_HOST_INSTALL_DIR` and it installs nothing: it
+finds the binary already in that directory and hands the upgrade to
+`fletch-host update`, which verifies the same two ways, copies the database
+aside and restarts the service through the unit it already has — rather than
+re-running `service install`, which would rewrite that unit and reset the
+`--port`, `--name` or `--system` you installed it with. Only that directory
+counts, never another `fletch-host` that happens to be on `PATH`: the service
+unit names an absolute path, so upgrading a binary somewhere else would leave
+the one the service actually runs behind. An installed service is found even
+when no binary sits in that directory — `fletch-host service show` reports the
+unit wherever it is — so pointing `FLETCH_HOST_INSTALL_DIR` somewhere new stops
+the install with the two ways out rather than resetting the service you have.
+
+Three env vars configure it: `FLETCH_HOST_VERSION=0.8.0` pins a release instead
+of taking the latest (and is what a re-run passes to `update`),
+`FLETCH_HOST_INSTALL_DIR` moves the binary off `~/.local/bin`, and
+`FLETCH_HOST_SKIP_SIGNATURE=1` installs without checking the signature — the
+insecure way past the minisign requirement, and it says so while it does it.
+
+By hand instead. Each release publishes
+`fletch-host-<version>-<target>.tar.gz`, a matching `.sha256`, and a `.sig`
+(minisign, the same key the desktop's updater trusts — `fletch-host update`
+checks both):
 
 ```sh
 V=<the release version>                       # e.g. 0.7.32, without the leading v
@@ -144,6 +176,13 @@ fletch-host update             # install the latest release
 fletch-host update 0.7.32      # install (or reinstall) one version
 ```
 
+A named version *older* than the running one is refused, and so is one that
+cannot be ordered against it (a pre-release, say). An older host cannot open a
+database this build has already migrated — it stops with "database schema is
+newer than this app version" — so going back means restoring the pre-migration
+copy from `<data-dir>/backups/` over the database as well. `--allow-downgrade`
+says you mean to.
+
 Run it **as the user the host runs as** — yourself for a user unit or a bare
 `serve`, `sudo -u fletch fletch-host update` for a `--system --user fletch`
 install. Not under `sudo`: it refuses, because everything below but the final
@@ -256,6 +295,10 @@ reachable `addresses`, the paired `devices`, the `relay` link, any standing
 Everything except `serve` talks to the running host over its admin socket, and
 takes the same `--data-dir` to find it. With no host running they print
 `fletch-host is not running; start it with 'fletch-host serve'` and exit 1.
+A host that is up but still booting — a migration on a big data dir takes a
+while — answers `the host is still starting` straight away, so these never hang
+waiting on a start; and none of them is otherwise time-limited, because
+`project clone` on a large repository is minutes of honest work.
 
 ## Approvals
 

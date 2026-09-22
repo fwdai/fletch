@@ -151,6 +151,7 @@ pub async fn run(
     version: Option<String>,
     check: bool,
     from: Option<PathBuf>,
+    allow_downgrade: bool,
 ) -> Result<(), String> {
     if let Some(tarball) = from {
         return install_from(&tarball).await;
@@ -216,6 +217,12 @@ pub async fn run(
         println!("(`fletch-host update {CURRENT_VERSION}` reinstalls it anyway.)");
         return Ok(());
     }
+    // A named version can be an older one, and going back is the one update
+    // that can leave the host unable to start at all. Checked before anything
+    // is downloaded.
+    if version.is_some() {
+        refuse_downgrade(&assets.version, allow_downgrade)?;
+    }
 
     // Where the three downloads live: this user's own data dir, written as this
     // user. Kept after the swap: they are the evidence for what is now
@@ -270,6 +277,58 @@ pub async fn run(
         }
     }
     Ok(())
+}
+
+/// What going back costs, said in full wherever a downgrade is refused: it is
+/// the database, not the binary, that does not come back on its own.
+const DOWNGRADE_RISK: &str = "An older fletch-host cannot open a database a newer one has \
+     migrated — it refuses with \"database schema is newer than this app version\" and will not \
+     start. Restore the copy the newer version made before it migrated \
+     (<data-dir>/backups/data.db.<version>.bak) over the database first, or the host stays down.";
+
+/// Refuse a named version older than this build's, and refuse one this cannot
+/// order at all, unless `--allow-downgrade` says the caller means it.
+fn refuse_downgrade(requested: &str, allow_downgrade: bool) -> Result<(), String> {
+    if allow_downgrade {
+        return Ok(());
+    }
+    let (Some(wanted), Some(current)) = (version_parts(requested), version_parts(CURRENT_VERSION))
+    else {
+        return Err(format!(
+            "cannot tell whether {requested} is older than this build's {CURRENT_VERSION}: one \
+             of them is not a plain <major>.<minor>.<patch> (a pre-release, say), and a guess \
+             here is a host that will not start.\n{DOWNGRADE_RISK}\nPass --allow-downgrade to \
+             install it anyway."
+        ));
+    };
+    if wanted < current {
+        return Err(format!(
+            "{requested} is older than this build's {CURRENT_VERSION}; refusing.\n\
+             {DOWNGRADE_RISK}\nPass --allow-downgrade to install it anyway."
+        ));
+    }
+    Ok(())
+}
+
+/// A release number as three comparable numbers: `0.8.10` → `[0, 8, 10]`.
+///
+/// Fletch's versions are plain dotted triples (one product version across four
+/// manifests, asserted equal by CI), and ordering two of them is the only
+/// comparison anything here needs — so it is ten lines rather than a
+/// dependency this package, which has no committed lockfile, would have to
+/// fetch. Anything that is not three numbers — a pre-release, a git
+/// description, a typo — is `None`, and the caller refuses instead of ordering
+/// it wrongly.
+fn version_parts(version: &str) -> Option<[u64; 3]> {
+    let mut fields = version.split('.');
+    let mut parts = [0u64; 3];
+    for part in parts.iter_mut() {
+        *part = fields.next()?.parse().ok()?;
+    }
+    if fields.next().is_some() {
+        return None;
+    }
+    Some(parts)
 }
 
 /// A path as one shell word, for a command the user copies: single-quoted,
@@ -1022,6 +1081,46 @@ mod tests {
             "'/Users/me/Application Support/x.tar.gz'"
         );
         assert_eq!(shell_quote(Path::new("/it's/here")), "'/it'\\''s/here'");
+    }
+
+    #[test]
+    fn versions_order_as_numbers_and_only_as_numbers() {
+        assert_eq!(version_parts("0.8.0"), Some([0, 8, 0]));
+        // Not string order: 10 is after 9, and 0.8.0 is after 0.10.0's opposite.
+        assert!(version_parts("0.8.10").unwrap() > version_parts("0.8.9").unwrap());
+        assert!(version_parts("0.10.0").unwrap() > version_parts("0.8.0").unwrap());
+        assert!(version_parts("1.0.0").unwrap() > version_parts("0.99.99").unwrap());
+        // Anything that is not three plain numbers has no order here.
+        for odd in ["0.9.0-rc.1", "0.9", "0.9.0.1", "v0.9.0", "", "0.9.x"] {
+            assert_eq!(version_parts(odd), None, "{odd}");
+        }
+        // This build's own version is one of the orderable ones, or every
+        // comparison below degrades into the "cannot tell" refusal.
+        assert!(
+            version_parts(CURRENT_VERSION).is_some(),
+            "{CURRENT_VERSION}"
+        );
+    }
+
+    /// Going back is refused, and the refusal says what it would cost, because
+    /// the binary comes back and the migrated database does not.
+    #[test]
+    fn an_older_version_is_refused_unless_the_caller_asks_for_it() {
+        let e = refuse_downgrade("0.0.1", false).unwrap_err();
+        assert!(e.contains("older than this build's"), "{e}");
+        assert!(e.contains("schema is newer"), "{e}");
+        assert!(e.contains("--allow-downgrade"), "{e}");
+        refuse_downgrade("0.0.1", true).unwrap();
+
+        // Reinstalling this version, or installing a newer one, is not a
+        // downgrade.
+        refuse_downgrade(CURRENT_VERSION, false).unwrap();
+        refuse_downgrade("9999.0.0", false).unwrap();
+
+        // A version this cannot order is refused rather than guessed at.
+        let e = refuse_downgrade("0.9.0-rc.1", false).unwrap_err();
+        assert!(e.contains("cannot tell"), "{e}");
+        refuse_downgrade("0.9.0-rc.1", true).unwrap();
     }
 
     #[test]

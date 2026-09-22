@@ -115,6 +115,12 @@ enum Command {
         /// Print what is available and stop; change nothing.
         #[arg(long)]
         check: bool,
+        /// Allow a named version older than this one. Refused by default: an
+        /// older host cannot open a database this build has migrated, so the
+        /// pre-migration copy in `<data-dir>/backups/` has to be restored
+        /// alongside it.
+        #[arg(long)]
+        allow_downgrade: bool,
         /// Install this already-downloaded tarball (its `.sig` beside it) —
         /// the step `sudo` runs. Re-verifies the signature; opens no data dir.
         #[arg(long, value_name = "TARBALL", conflicts_with_all = ["version", "check"])]
@@ -144,6 +150,11 @@ enum ServiceCommand {
         #[arg(long)]
         system: bool,
     },
+    /// Print the installed service definition — `unit=`, `exec=`, `args=` and
+    /// the `default_args=` a flag-less `install` would write — one `key=value`
+    /// per line, for a script to read. Exits non-zero when nothing is
+    /// installed. Changes nothing and starts nothing.
+    Show,
     /// Stop the service, disable it and remove its definition.
     Uninstall {
         /// Linux: the unit in /etc/systemd/system rather than your own.
@@ -221,7 +232,21 @@ fn main() {
 
     // One runtime for both halves: the engine's background tasks belong to it
     // (`serve`), and the client subcommands use it for the socket.
-    let runtime = match tokio::runtime::Runtime::new() {
+    //
+    // Never fewer than two workers. `serve` runs `host::boot` synchronously on
+    // a worker while the admin accept loop answers `starting` from another;
+    // on a one-vCPU box the default (one worker per CPU) would leave that
+    // loop unpolled for the whole boot, and a `status` asked meanwhile would
+    // hang instead of being told to wait.
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(2);
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(e) => fail(&format!("cannot start a tokio runtime: {e}")),
     };
@@ -253,7 +278,14 @@ fn main() {
             version,
             check,
             from,
-        } => runtime.block_on(update::run(&data_dir, version, check, from)),
+            allow_downgrade,
+        } => runtime.block_on(update::run(
+            &data_dir,
+            version,
+            check,
+            from,
+            allow_downgrade,
+        )),
         command => runtime.block_on(client(&data_dir, command)),
     };
     if let Err(e) = result {
@@ -416,6 +448,7 @@ fn service_command(data_dir: Option<PathBuf>, command: ServiceCommand) -> Result
             };
             service::install(&spec)
         }
+        ServiceCommand::Show => service::show(),
         ServiceCommand::Uninstall { system } => service::uninstall(system),
     }
 }
