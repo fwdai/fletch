@@ -20,8 +20,8 @@ use crate::workspace::{
 };
 
 use super::events::{
-    emit_agent_event, emit_agent_output, emit_effort, emit_model, emit_repo_added, emit_view,
-    emit_workspace_changed,
+    emit_agent_event, emit_agent_output, emit_effort, emit_model, emit_repo_added,
+    emit_spawn_progress, emit_view, emit_workspace_changed, SpawnStage,
 };
 use super::messaging::{
     drain_message_queue, flush_queued, mark_user_turn_started, on_first_user_message,
@@ -500,6 +500,15 @@ impl Supervisor {
         let mcp_servers_for_task = record.mcp_servers.clone();
         let adopted_for_task = adopted.is_some();
         crate::host::spawn(async move {
+            // Stage markers for the clients, emitted ahead of each step so the
+            // spinner behind `spawning` can say what it is waiting on. Progress
+            // only: a dropped one costs a label, and every failure path below
+            // returns straight after `fail_spawn`, so none lands after the
+            // terminal status.
+            let progress = |stage, detail| {
+                emit_spawn_progress(ctx_for_task.sink.as_ref(), &id_for_task, stage, detail)
+            };
+            progress(SpawnStage::Preparing, None);
             if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                 return;
@@ -525,6 +534,9 @@ impl Supervisor {
             // inputs to provisioning only, and provisioning is what adoption
             // replaces.
             let mut base_freshness = None;
+            if !adopted_for_task {
+                progress(SpawnStage::Cloning, None);
+            }
             let provision_result = match &run_repo_for_task {
                 _ if adopted_for_task => Ok(()),
                 // Workflow step (§12.1): fork from `fork_base` in the run repo.
@@ -590,6 +602,7 @@ impl Supervisor {
             // Warm the codegraph index for this checkout (best-effort; no-op when
             // indexing is off or under Docker). Runs the cheap copy inline and
             // advances the mirror in the background.
+            progress(SpawnStage::Indexing, None);
             provision_codegraph_index(
                 project_id_for_task.clone(),
                 repo_path.clone(),
@@ -608,6 +621,7 @@ impl Supervisor {
             // Tears down like the start_process failure path below (a workflow
             // step never carries, so this is always a non-run clone).
             if let Some(src) = &carry_from_task {
+                progress(SpawnStage::Carrying, None);
                 let carried = match &base_sha {
                     Some(base) => match git::snapshot_worktree(src).await {
                         Ok(snap) => git::carry_worktree(&primary_checkout, src, &snap, base).await,
@@ -636,6 +650,10 @@ impl Supervisor {
                     if source == repo_path {
                         continue;
                     }
+                    progress(
+                        SpawnStage::AttachingRepos,
+                        source.file_name().map(|n| n.to_string_lossy().into_owned()),
+                    );
                     if let Err(e) = sup
                         .attach_repo_checkout(&ctx_for_task, &id_for_task, source.clone(), false)
                         .await
@@ -652,6 +670,7 @@ impl Supervisor {
                 }
             }
 
+            progress(SpawnStage::Starting, None);
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task, true).await {

@@ -22,6 +22,7 @@ use crate::host::{EngineCtx, Event, Sink};
 pub const FORWARDED_EVENTS: &[&str] = &[
     "agent:event",
     "agent:status",
+    "agent:spawn-progress",
     "agent:task",
     "agent:title",
     "agent:branch",

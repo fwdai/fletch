@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { type AgentRecord, api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { providerLabel } from "@/data/providers";
+import { spawnStageLabel } from "@/data/spawnStage";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
 import { ChatWorkingStatus } from "./ChatWorkingStatus";
@@ -36,6 +37,9 @@ export function ChatComposer({
   const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
   const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
+  // Which step a fresh spawn is on, so the disabled composer says "Cloning
+  // repository…" rather than only "Agent is not ready".
+  const spawnStage = useAppStore((s) => s.spawnStage[agent.id]);
   const send = useAppStore((s) => s.sendUserMessage);
   const setAgentEffort = useAppStore((s) => s.setAgentEffort);
   const setAgentModel = useAppStore((s) => s.setAgentModel);
@@ -128,7 +132,7 @@ export function ChatComposer({
                   ? "Loading transcript…"
                   : switchInFlight
                     ? "Switching view…"
-                    : "Agent is not ready"
+                    : (spawnStageLabel(spawnStage) ?? "Agent is not ready")
             }
             stopping={busy}
             mentionSource={() =>

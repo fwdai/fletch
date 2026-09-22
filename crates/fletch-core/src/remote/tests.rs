@@ -885,6 +885,17 @@ fn the_whole_wf_and_roadmap_surface_is_exposed() {
     }
 }
 
+/// Per-stage spawn progress rides the wire too: a remote client watches the
+/// same 15-odd seconds of clone/index/start as the desktop, and with only
+/// `agent:status` it would have nothing to show for them.
+#[test]
+fn spawn_progress_is_forwarded_and_advertised() {
+    assert!(super::events::FORWARDED_EVENTS.contains(&"agent:spawn-progress"));
+    assert!(super::protocol_descriptor()
+        .events
+        .contains(&"agent:spawn-progress"));
+}
+
 /// The workflow and roadmap events the desktop UI listens to all reach a remote
 /// client, and the descriptor advertises them — otherwise a remote run monitor
 /// or board would render once and then go stale.
