@@ -918,8 +918,12 @@ spawn is on — `preparing`, `cloning`, `indexing`, `carrying`,
 `spawning` instead of showing a bare spinner. Progress only, and not
 snapshotted anywhere: the authoritative state is `agent:status`, a client that
 connects mid-spawn sees `spawning` with no stage until the next one fires, and
-one that does not know a `stage` value ignores it. Never emitted after the
-spawn's terminal status.
+one that does not know a `stage` value ignores it. The host emits no stage once
+the spawn has reached its terminal status — a spawn that times out stops at its
+next stage boundary rather than narrating work the `error` status already
+ended — but a client must still tolerate a stage that was in transit when the
+terminal status overtook it: treat `agent:status` as authoritative and let the
+stage label go stale, never the other way round.
 `publish:approval-requested` is a held prompt like a tool-use approval: the
 agent's publish is blocked on the host until someone answers with
 `answer_publish_approval` (or the host's wait lapses and refuses it). A client

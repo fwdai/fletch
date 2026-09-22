@@ -502,13 +502,30 @@ impl Supervisor {
         crate::host::spawn(async move {
             // Stage markers for the clients, emitted ahead of each step so the
             // spinner behind `spawning` can say what it is waiting on. Progress
-            // only: a dropped one costs a label, and every failure path below
-            // returns straight after `fail_spawn`, so none lands after the
-            // terminal status.
+            // only: a dropped one costs a label.
+            //
+            // Doubles as this task's cooperation point with the spawn watchdog,
+            // which claims the `Spawning` status and kills the process but
+            // cannot cancel us. `false` means the spawn's outcome was already
+            // claimed elsewhere (timeout, teardown): the caller must clean up
+            // what it owns and return, so no stage lands after the terminal
+            // status and no provisioning keeps running for a dead agent.
             let progress = |stage, detail| {
-                emit_spawn_progress(ctx_for_task.sink.as_ref(), &id_for_task, stage, detail)
+                if !sup.spawn_still_live(&id_for_task) {
+                    tracing::debug!(
+                        agent_id = %id_for_task,
+                        ?stage,
+                        "spawn outcome already claimed; abandoning provisioning"
+                    );
+                    return false;
+                }
+                emit_spawn_progress(ctx_for_task.sink.as_ref(), &id_for_task, stage, detail);
+                true
             };
-            progress(SpawnStage::Preparing, None);
+            // Nothing created yet, so there is nothing to discard here.
+            if !progress(SpawnStage::Preparing, None) {
+                return;
+            }
             if let Err(e) = tokio::fs::create_dir_all(&parent_dir).await {
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                 return;
@@ -534,8 +551,11 @@ impl Supervisor {
             // inputs to provisioning only, and provisioning is what adoption
             // replaces.
             let mut base_freshness = None;
-            if !adopted_for_task {
-                progress(SpawnStage::Cloning, None);
+            // The agent dir exists from here on, but no checkout does yet — so
+            // that dir is the whole of what this task has to undo.
+            if !adopted_for_task && !progress(SpawnStage::Cloning, None) {
+                discard_failed_spawn(None, &parent_dir).await;
+                return;
             }
             let provision_result = match &run_repo_for_task {
                 _ if adopted_for_task => Ok(()),
@@ -602,7 +622,10 @@ impl Supervisor {
             // Warm the codegraph index for this checkout (best-effort; no-op when
             // indexing is off or under Docker). Runs the cheap copy inline and
             // advances the mirror in the background.
-            progress(SpawnStage::Indexing, None);
+            if !progress(SpawnStage::Indexing, None) {
+                discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                return;
+            }
             provision_codegraph_index(
                 project_id_for_task.clone(),
                 repo_path.clone(),
@@ -621,7 +644,10 @@ impl Supervisor {
             // Tears down like the start_process failure path below (a workflow
             // step never carries, so this is always a non-run clone).
             if let Some(src) = &carry_from_task {
-                progress(SpawnStage::Carrying, None);
+                if !progress(SpawnStage::Carrying, None) {
+                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                    return;
+                }
                 let carried = match &base_sha {
                     Some(base) => match git::snapshot_worktree(src).await {
                         Ok(snap) => git::carry_worktree(&primary_checkout, src, &snap, base).await,
@@ -650,10 +676,13 @@ impl Supervisor {
                     if source == repo_path {
                         continue;
                     }
-                    progress(
+                    if !progress(
                         SpawnStage::AttachingRepos,
                         source.file_name().map(|n| n.to_string_lossy().into_owned()),
-                    );
+                    ) {
+                        discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                        return;
+                    }
                     if let Err(e) = sup
                         .attach_repo_checkout(&ctx_for_task, &id_for_task, source.clone(), false)
                         .await
@@ -670,7 +699,10 @@ impl Supervisor {
                 }
             }
 
-            progress(SpawnStage::Starting, None);
+            if !progress(SpawnStage::Starting, None) {
+                discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                return;
+            }
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task, true).await {

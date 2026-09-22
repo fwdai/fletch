@@ -228,9 +228,11 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
                 working && (
                   <span
                     className="ag-loader"
-                    aria-label="Working"
                     // While spawning, the spinner says which step it is on
-                    // (clone, index, start…) instead of nothing at all.
+                    // (clone, index, start…) instead of nothing at all — to
+                    // the pointer via `title`, and to a screen reader via the
+                    // same label, so the stage isn't mouse-only.
+                    aria-label={spawnStageLabel(spawnStage) ?? "Working"}
                     title={spawnStageLabel(spawnStage)}
                   />
                 )

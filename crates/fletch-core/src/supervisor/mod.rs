@@ -348,6 +348,22 @@ impl Supervisor {
         true
     }
 
+    /// Is this spawn still unresolved — i.e. would a `claim_spawn_outcome`
+    /// still succeed? Same map, same lock, same match as the swap above, so the
+    /// two can never disagree: `false` here means the spawn's outcome is already
+    /// claimed (by the spawn timeout, or by a teardown) and this side lost.
+    ///
+    /// The spawn task polls this at every stage boundary, which is what makes
+    /// the timeout actually stop the work: without it a timed-out spawn kept
+    /// cloning, indexing and attaching repos — and emitting stage events —
+    /// after `agent:status` had already gone to `error`.
+    fn spawn_still_live(&self, agent_id: &str) -> bool {
+        matches!(
+            self.statuses.lock().get(agent_id),
+            Some(AgentStatus::Spawning)
+        )
+    }
+
     /// Durable side-effects of a status change: persist to the DB where the
     /// status warrants it, then emit to the frontend. Split out of
     /// `set_status` so `claim_spawn_outcome` can reuse it after writing the
@@ -648,6 +664,34 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::database::init(dir.path()).unwrap();
         Supervisor::new(Arc::new(WorkspaceManager::new(db)))
+    }
+
+    /// The spawn task and the spawn watchdog read the same cell: the moment
+    /// either claims the outcome, the other's liveness check must flip — that
+    /// agreement is what makes a timed-out spawn stop at its next stage
+    /// boundary instead of working on (and emitting stages) past `error`.
+    #[test]
+    fn claiming_a_spawn_outcome_ends_its_liveness() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = test_supervisor();
+        sup.statuses
+            .lock()
+            .insert("a1".to_string(), AgentStatus::Spawning);
+
+        assert!(sup.spawn_still_live("a1"));
+        // An agent nobody is spawning is never live.
+        assert!(!sup.spawn_still_live("unknown"));
+
+        assert!(sup.claim_spawn_outcome(
+            &ctx,
+            "a1",
+            AgentStatus::Error,
+            Some("Spawn timed out".into())
+        ));
+        assert!(!sup.spawn_still_live("a1"));
+        // And the losing side (here the spawn task's own failure path) would
+        // fail its claim too — the predicate and the swap can't disagree.
+        assert!(!sup.claim_spawn_outcome(&ctx, "a1", AgentStatus::Idle, None));
     }
 
     /// Manual/local check (macOS-only, `#[ignore]`d so it's off the Linux CI
