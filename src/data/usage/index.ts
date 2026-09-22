@@ -38,10 +38,14 @@ export type {
 } from "./types";
 export {
   ALL_HOSTS,
+  deriveUsageView,
+  type HostScanState,
+  type HostScanStates,
   isFresh,
   SCAN_TTL_MS,
   type UsageHost,
   type UsageStatsResult,
+  type UsageView,
   usageScanHosts,
   useUsageStats,
 } from "./useUsageStats";

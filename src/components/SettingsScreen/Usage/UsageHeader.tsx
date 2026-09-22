@@ -22,9 +22,9 @@ const RANGES: { value: UsageRange; label: string; tip?: string }[] = [
 interface Props {
   range: UsageRange;
   onRange: (r: UsageRange) => void;
-  /** The hosts that contributed a scan, local first. One of them means there is
-   *  nothing to choose between and the host filter is not rendered — the same
-   *  rule the sidebar's environment switcher follows. */
+  /** Every host being asked, local first, each with its scan status. One of
+   *  them means there is nothing to choose between and the host filter is not
+   *  rendered — the same rule the sidebar's environment switcher follows. */
   hosts: UsageHost[];
   /** An environment id, or `ALL_HOSTS`. */
   host: string;
@@ -54,11 +54,16 @@ function rangeText(range: UsageRange, { sinceMs, untilMs }: UsageRangeBounds): s
 }
 
 /** Whose sessions the numbers cover: one machine, one named host, or all of
- *  them. Never claims "this machine" once more than one host is in play. */
+ *  them. Never claims "this machine" once more than one host is in play, and
+ *  never counts a host whose scan failed — it contributed nothing, so "across
+ *  all 3 hosts" would be a false total. Hosts still scanning are counted in:
+ *  they are expected to answer, and the skeletons say they haven't yet. */
 function scopeText(hosts: UsageHost[], host: string): string {
   if (hosts.length < 2) return "on this machine";
-  if (host === ALL_HOSTS) return `across all ${hosts.length} hosts`;
-  return `on ${hosts.find((h) => h.id === host)?.name ?? "this host"}`;
+  if (host !== ALL_HOSTS) return `on ${hosts.find((h) => h.id === host)?.name ?? "this host"}`;
+  const failed = hosts.filter((h) => h.status === "error").length;
+  if (failed === 0) return `across all ${hosts.length} hosts`;
+  return `across ${hosts.length - failed} of ${hosts.length} hosts`;
 }
 
 /** The pane header. The host filter, the period picker and the re-scan button
@@ -90,7 +95,14 @@ export function UsageHeader({
               value={host}
               options={[
                 { value: ALL_HOSTS, label: "All hosts" },
-                ...hosts.map((h) => ({ value: h.id, label: h.name })),
+                // A host whose scan failed stays selectable and says why on
+                // hover; picking it shows that error where its numbers would
+                // be, rather than skeletons that would never resolve.
+                ...hosts.map((h) => ({
+                  value: h.id,
+                  label: h.name,
+                  ...(h.error ? { tip: `Scan failed: ${h.error}` } : {}),
+                })),
               ]}
               onChange={onHost}
             />

@@ -98,31 +98,43 @@ export function sessionsInRange(
  *  id, which keeps `totalSessions` an honest count. And the hosts have
  *  independent clocks: the merged window is the *intersection* of theirs
  *  (`max` of the starts, `min` of the ends), so no range sliced out of it can
- *  claim a window some contributing host had not yet reached.
+ *  claim a window some contributing host had not yet reached. Data outside that
+ *  intersection is dropped rather than carried — a scan that crossed local
+ *  midnight, or hosts cached minutes apart, would otherwise leave the edge
+ *  buckets holding only some hosts' usage while every reader (the chart's first
+ *  column, `rangeBounds` off `untilMs`) treats them as an all-host total.
  *
- *  Buckets are concatenated as they are. Two hosts can hold the same
- *  hour/provider/model cell, and `aggregateUsage` sums cells rather than
- *  assuming one per key, so there is nothing to combine here — only to order,
- *  which keeps the result the sorted shape a `UsageScan` claims to be. */
+ *  Buckets inside the window are concatenated as they are. Two hosts can hold
+ *  the same hour/provider/model cell, and `aggregateUsage` sums cells rather
+ *  than assuming one per key, so there is nothing to combine here — only to
+ *  order, which keeps the result the sorted shape a `UsageScan` claims to be. */
 export function mergeScans(scans: readonly HostUsageScan[]): UsageScan {
   // One host is the overwhelmingly common case, and its own scan already is
   // the merge — no ids can collide and no clocks can disagree.
   if (scans.length === 1) return scans[0].scan;
 
-  const buckets = scans
-    .flatMap((h) => h.scan.buckets)
-    .sort(
-      (a, b) =>
-        a.hourStartMs - b.hourStartMs ||
-        a.provider.localeCompare(b.provider) ||
-        a.model.localeCompare(b.model),
-    );
-  const sessions = scans
-    .flatMap((h) => h.scan.sessions.map((s) => ({ ...s, id: `${h.envId}:${s.id}` })))
-    .sort(
-      (a, b) =>
-        a.provider.localeCompare(b.provider) || a.firstMs - b.firstMs || (a.id < b.id ? -1 : 1),
-    );
+  // The part of the timeline every contributing host actually covered.
+  const window: UsageRangeBounds = {
+    sinceMs: Math.max(...scans.map((h) => h.scan.sinceMs)),
+    untilMs: Math.min(...scans.map((h) => h.scan.untilMs)),
+  };
+
+  const buckets = bucketsInRange(
+    scans.flatMap((h) => h.scan.buckets),
+    window,
+  ).sort(
+    (a, b) =>
+      a.hourStartMs - b.hourStartMs ||
+      a.provider.localeCompare(b.provider) ||
+      a.model.localeCompare(b.model),
+  );
+  const sessions = sessionsInRange(
+    scans.flatMap((h) => h.scan.sessions.map((s) => ({ ...s, id: `${h.envId}:${s.id}` }))),
+    window,
+  ).sort(
+    (a, b) =>
+      a.provider.localeCompare(b.provider) || a.firstMs - b.firstMs || (a.id < b.id ? -1 : 1),
+  );
   const sum = (pick: (s: UsageScan) => number) =>
     scans.reduce((total, h) => total + pick(h.scan), 0);
 
@@ -132,8 +144,7 @@ export function mergeScans(scans: readonly HostUsageScan[]): UsageScan {
     scannedFiles: sum((s) => s.scannedFiles),
     filesRead: sum((s) => s.filesRead),
     bytesRead: sum((s) => s.bytesRead),
-    sinceMs: Math.max(...scans.map((h) => h.scan.sinceMs)),
-    untilMs: Math.min(...scans.map((h) => h.scan.untilMs)),
+    ...window,
   };
 }
 

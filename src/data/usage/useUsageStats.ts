@@ -14,17 +14,37 @@ const SCAN_OP = "scan_usage_transcripts";
  *  one, and every other is a host public key, so no host can collide with it. */
 export const ALL_HOSTS = "all";
 
+/** How one host's scan is going. `scan` is the last answer that host gave; it
+ *  survives a re-scan and a failure, because stale numbers beat an empty pane,
+ *  and it is what separates a re-scan behind numbers on screen from a cold
+ *  first load. */
+export type HostScanState =
+  | { status: "loading"; scan?: HostUsageScan }
+  | { status: "ok"; scan: HostUsageScan }
+  | { status: "error"; error: string; scan?: HostUsageScan };
+
+/** Every host's scan state, keyed by environment id. The single source the pane
+ *  derives from: a host that failed has an entry like any other, so it can be
+ *  counted, offered by the filter and explained. */
+export type HostScanStates = Record<EnvironmentId, HostScanState>;
+
 /** One host the pane can filter to, in the order the filter shows them. */
 export interface UsageHost {
   id: EnvironmentId;
   name: string;
+  /** How this host's scan went. Every current target is listed whatever its
+   *  status: dropping a failed host is how a header ends up claiming to cover a
+   *  machine that contributed nothing. */
+  status: HostScanState["status"];
+  /** Why this host has no numbers. Null unless `status` is `"error"`. */
+  error: string | null;
 }
 
 export interface UsageStatsResult {
   /** null until the first scan lands. Survives a failed re-scan — stale numbers
    *  beat an empty pane. */
   stats: UsageStats | null;
-  /** The hosts that contributed (or are contributing) a scan, local first. One
+  /** Every host the pane is asking, local first, each with its own status. One
    *  entry means the filter has nothing to offer and is hidden. */
   hosts: UsageHost[];
   /** No data on screen yet: render skeletons. */
@@ -32,9 +52,10 @@ export interface UsageStatsResult {
   /** A re-scan is running behind numbers that are already on screen: keep them,
    *  but dim them so it's visible that they may move. */
   refreshing: boolean;
-  /** Set only when *no* host answered. A host that failed beside others that
-   *  didn't is a console warning: the numbers on screen are still true, just of
-   *  fewer machines, and the filter shows which ones. */
+  /** Set only when every host in the current selection failed. A host that
+   *  failed beside others that didn't is not an error for the pane: the numbers
+   *  on screen are still true, just of fewer machines, and both the header count
+   *  and the filter say which ones. */
   error: string | null;
   /** The model catalog has prices in it. False on a cold start before the
    *  catalog lands, when every bucket prices to null and a cost of "$0.00"
@@ -104,13 +125,80 @@ function scanHost(env: EnvironmentEntry): Promise<void> {
   return run;
 }
 
-/** The cached scans for `hosts`, in their order, skipping hosts that have not
- *  answered yet. Renamed hosts pick up the new name without a re-scan. */
-function cached(hosts: readonly EnvironmentEntry[]): HostUsageScan[] {
-  return hosts.flatMap((h) => {
+/** The cached scans for `hosts` as already-settled state, so reopening the pane
+ *  shows the last scan instantly instead of skeletons. A host with nothing
+ *  cached is left out and `load` puts it in as `"loading"`. */
+function seedStates(hosts: readonly EnvironmentEntry[]): HostScanStates {
+  const seeded: HostScanStates = {};
+  for (const h of hosts) {
     const hit = cache.get(h.id);
-    return hit ? [{ ...hit, envName: h.name }] : [];
+    if (hit) seeded[h.id] = { status: "ok", scan: hit };
+  }
+  return seeded;
+}
+
+/** What `deriveUsageView` reads off the scan states: the host list plus the
+ *  scans the current selection folds over and the states the pane renders
+ *  around them. Everything but the aggregation, which needs the catalog. */
+export interface UsageView {
+  hosts: UsageHost[];
+  /** The scans the selection covers, in the filter's order, each carrying its
+   *  host's current display name. */
+  scans: HostUsageScan[];
+  loading: boolean;
+  refreshing: boolean;
+  error: string | null;
+  scannedAt: number | null;
+}
+
+/** Everything the pane shows about the hosts, folded out of the scan states of
+ *  the hosts it is asking *right now*.
+ *
+ *  Intersecting with `targets` on every derivation is what keeps a slow host
+ *  honest: a scan that settles after its host disconnected writes its own entry
+ *  and changes nothing on screen, because a host that is no longer a target is
+ *  no longer read. No generation counter, and no way for a stale batch to
+ *  re-add a departed host's numbers under a header that has stopped counting
+ *  it.
+ *
+ *  `host` is an environment id, or `ALL_HOSTS` for every target. */
+export function deriveUsageView(
+  targets: readonly EnvironmentEntry[],
+  states: HostScanStates,
+  host: string = ALL_HOSTS,
+): UsageView {
+  // A target with no entry yet (its `load` has not run) reads as loading: it is
+  // a host we intend to ask, which is what a skeleton means.
+  const hosts: UsageHost[] = targets.map((t) => {
+    const state = states[t.id];
+    return {
+      id: t.id,
+      name: t.name,
+      status: state?.status ?? "loading",
+      error: state?.status === "error" ? state.error : null,
+    };
   });
+
+  const scoped = hosts.filter((h) => host === ALL_HOSTS || h.id === host);
+  // Renamed hosts pick up the new name without a re-scan.
+  const scans = scoped.flatMap((h) => {
+    const scan = states[h.id]?.scan;
+    return scan ? [{ ...scan, envName: h.name }] : [];
+  });
+  // Only a selection where every host failed has nothing to say; one failure
+  // beside a host that answered leaves the numbers true, of fewer machines.
+  const failed = scoped.filter((h) => h.status === "error");
+  const error = scoped.length > 0 && failed.length === scoped.length ? failed[0].error : null;
+  const scanning = scoped.some((h) => h.status === "loading");
+
+  return {
+    hosts,
+    scans,
+    loading: scans.length === 0 && error === null,
+    refreshing: scans.length > 0 && scanning,
+    error,
+    scannedAt: scans.length > 0 ? Math.min(...scans.map((s) => s.fetchedAt)) : null,
+  };
 }
 
 /** Scan every connected host's Claude Code / Codex transcripts once, then
@@ -123,20 +211,17 @@ function cached(hosts: readonly EnvironmentEntry[]): HostUsageScan[] {
  *  and nothing else. Pricing depends on a catalog that can refresh under us, so
  *  a catalog update re-prices the scans in hand rather than re-reading disks.
  *
+ *  Hosts are tracked one by one: each scan settles into its own entry of a
+ *  state map, and the pane's view is derived from that map intersected with the
+ *  hosts currently worth asking (`deriveUsageView`).
+ *
  *  `host` is an environment id, or `ALL_HOSTS` for the merged view. */
 export function useUsageStats(range: UsageRange, host: string = ALL_HOSTS): UsageStatsResult {
   const catalog = useAppStore((s) => s.modelCatalog);
   const environments = useAppStore((s) => s.environments);
   const targets = useMemo(() => usageScanHosts(environments), [environments]);
-  // The id/name pairs the filter renders.
-  const hosts = useMemo<UsageHost[]>(
-    () => targets.map((t) => ({ id: t.id, name: t.name })),
-    [targets],
-  );
 
-  const [scans, setScans] = useState<HostUsageScan[]>(() => cached(targets));
-  const [scanning, setScanning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [states, setStates] = useState<HostScanStates>(() => seedStates(targets));
   const alive = useRef(true);
 
   useEffect(() => {
@@ -152,33 +237,44 @@ export function useUsageStats(range: UsageRange, host: string = ALL_HOSTS): Usag
       const hit = cache.get(t.id);
       return force || !hit || !isFresh(hit.fetchedAt, now);
     });
-    if (stale.length === 0) {
-      setScans(cached(current));
-      return;
-    }
-    setScanning(true);
-    Promise.all(
-      // One host's failure must not take the others' numbers with it, so each
-      // scan settles on its own and the rejection becomes a message.
-      stale.map((t) =>
-        scanHost(t).then(
-          () => null,
-          (err: unknown) => {
-            console.warn(`usage scan failed on ${t.name}`, err);
-            return err instanceof Error ? err.message : String(err);
-          },
-        ),
-      ),
-    ).then((results) => {
-      if (!alive.current) return;
-      const failures = results.filter((r): r is string => r !== null);
-      setScans(cached(current));
-      setScanning(false);
-      // Only a total failure is the pane's business. Compared against the whole
-      // host set, not just the ones asked: a host that failed while another's
-      // fresh scan was served from cache has taken nothing off the screen.
-      setError(failures.length === current.length ? failures[0] : null);
+    const staleIds = new Set(stale.map((t) => t.id));
+    // One write for what this load knows: whoever is about to be scanned turns
+    // "loading" while keeping the scan it already has, and whoever the cache
+    // still answers for is settled from it (a host that just joined the set
+    // with a fresh entry included).
+    setStates((prev) => {
+      const next: HostScanStates = { ...prev };
+      for (const t of current) {
+        const hit = cache.get(t.id);
+        if (staleIds.has(t.id)) next[t.id] = { status: "loading", scan: hit };
+        else if (hit) next[t.id] = { status: "ok", scan: hit };
+      }
+      return next;
     });
+    // Each host settles on its own and writes only its own entry, so one host's
+    // failure takes nothing off the screen and a slow host answering late
+    // cannot overwrite what a later load already settled.
+    for (const t of stale) {
+      scanHost(t).then(
+        () => {
+          const hit = cache.get(t.id);
+          if (!alive.current || !hit) return;
+          setStates((prev) => ({ ...prev, [t.id]: { status: "ok", scan: hit } }));
+        },
+        (err: unknown) => {
+          console.warn(`usage scan failed on ${t.name}`, err);
+          if (!alive.current) return;
+          setStates((prev) => ({
+            ...prev,
+            [t.id]: {
+              status: "error",
+              error: err instanceof Error ? err.message : String(err),
+              scan: cache.get(t.id),
+            },
+          }));
+        },
+      );
+    }
   }, []);
 
   // Mount, and whenever the scannable host set changes: a newly connected host
@@ -188,32 +284,26 @@ export function useUsageStats(range: UsageRange, host: string = ALL_HOSTS): Usag
     load(targets, false);
   }, [load, targets]);
 
-  // The host filter is a filter on the scans in hand, applied before the fold.
-  const selected = useMemo(
-    () => (host === ALL_HOSTS ? scans : scans.filter((s) => s.envId === host)),
-    [scans, host],
-  );
+  const view = useMemo(() => deriveUsageView(targets, states, host), [targets, states, host]);
 
   const stats = useMemo(() => {
-    if (selected.length === 0) return null;
-    const merged = mergeScans(selected);
+    if (view.scans.length === 0) return null;
+    const merged = mergeScans(view.scans);
     // Sub-ranges end where the scans ended, so no range can claim a window
     // they didn't cover and the chart's last column is the last scanned hour.
     return aggregateUsage(merged, catalog, rangeBounds(range, merged.untilMs));
-  }, [selected, catalog, range]);
-
-  const scannedAt = selected.length > 0 ? Math.min(...selected.map((s) => s.fetchedAt)) : null;
+  }, [view.scans, catalog, range]);
 
   const refresh = useCallback(() => load(targets, true), [load, targets]);
 
   return {
     stats,
-    hosts,
-    loading: stats === null && error === null,
-    refreshing: scanning && stats !== null,
-    error,
+    hosts: view.hosts,
+    loading: view.loading,
+    refreshing: view.refreshing,
+    error: view.error,
     catalogReady: Object.keys(catalog).length > 0,
     refresh,
-    scannedAt,
+    scannedAt: view.scannedAt,
   };
 }

@@ -6,7 +6,13 @@ import { dayKeysBetween, localDay } from "@/util/format";
 import { aggregateUsage, localHourStart, mergeScans, rangeBounds } from "./aggregate";
 import { costLabel, coverageLabel, modelCostLabel } from "./costLabel";
 import type { HostUsageScan } from "./types";
-import { isFresh, SCAN_TTL_MS, usageScanHosts } from "./useUsageStats";
+import {
+  deriveUsageView,
+  type HostScanState,
+  isFresh,
+  SCAN_TTL_MS,
+  usageScanHosts,
+} from "./useUsageStats";
 
 // A fixture catalog rather than a real one: what models.dev charges changes
 // under us, and this file is testing the fold, not the price table. Rates are
@@ -58,6 +64,15 @@ const session = (s: Partial<UsageSessionSpan> & Pick<UsageSessionSpan, "firstMs"
 const windowOf = (days: string[]) => ({
   sinceMs: at(days[0], 0),
   untilMs: at(days[days.length - 1], 23),
+});
+
+/** An environment entry with the fields the scan-host pick and the derivation
+ *  read; the rest of the store's entry is irrelevant here. */
+const env = (e: Partial<EnvironmentEntry> & Pick<EnvironmentEntry, "id">): EnvironmentEntry => ({
+  name: e.id,
+  kind: "remote",
+  connection: "connected",
+  ...e,
 });
 
 const scan = (buckets: UsageBucket[], sessions: UsageSessionSpan[] = []): UsageScan => ({
@@ -462,16 +477,30 @@ describe("mergeScans", () => {
     expect(mergeScans([hostScan("local", only)])).toBe(only);
   });
 
+  /** A scan tagged with the window its host covered — what the merge
+   *  intersects, and what it trims the merged data down to. */
+  const covering = (s: UsageScan, sinceMs: number, untilMs: number): UsageScan => ({
+    ...s,
+    sinceMs,
+    untilMs,
+  });
+
+  /** A whole day, covered by every host unless a test says otherwise. */
+  const DAY = [at("2026-09-17", 0), at("2026-09-18", 0)] as const;
+
   it("concatenates buckets in sorted order, leaving same-key cells to the fold", () => {
     const hour = at("2026-09-17", 9);
     const merged = mergeScans([
-      hostScan("local", scan([bucket({ hourStartMs: hour, model: "sonnet-5" })])),
+      hostScan("local", covering(scan([bucket({ hourStartMs: hour, model: "sonnet-5" })]), ...DAY)),
       hostScan(
         "hostB",
-        scan([
-          bucket({ hourStartMs: at("2026-09-17", 8), model: "mystery", provider: "codex" }),
-          bucket({ hourStartMs: hour, model: "sonnet-5", tokens: tokens(7, 3) }),
-        ]),
+        covering(
+          scan([
+            bucket({ hourStartMs: at("2026-09-17", 8), model: "mystery", provider: "codex" }),
+            bucket({ hourStartMs: hour, model: "sonnet-5", tokens: tokens(7, 3) }),
+          ]),
+          ...DAY,
+        ),
       ),
     ]);
     expect(merged.buckets.map((b) => [b.hourStartMs, b.provider, b.model])).toEqual([
@@ -488,8 +517,8 @@ describe("mergeScans", () => {
   it("keeps two hosts' identical session ids apart", () => {
     const span = session({ firstMs: at("2026-09-17", 9), lastMs: at("2026-09-17", 10) });
     const merged = mergeScans([
-      hostScan("local", scan([], [{ ...span, id: "abc" }])),
-      hostScan("hostB", scan([], [{ ...span, id: "abc" }])),
+      hostScan("local", covering(scan([], [{ ...span, id: "abc" }]), ...DAY)),
+      hostScan("hostB", covering(scan([], [{ ...span, id: "abc" }]), ...DAY)),
     ]);
     expect(merged.sessions.map((s) => s.id)).toEqual(["hostB:abc", "local:abc"]);
     expect(
@@ -514,15 +543,192 @@ describe("mergeScans", () => {
       untilMs: 800,
     });
   });
+
+  it("drops buckets outside the window every host covered", () => {
+    // `local` scanned from yesterday and `hostB` only from midnight — a scan
+    // that crossed midnight, or two hosts cached hours apart. Yesterday's
+    // bucket is one host's usage, so it cannot sit in an all-host total.
+    const merged = mergeScans([
+      hostScan(
+        "local",
+        covering(
+          scan([
+            bucket({ hourStartMs: at("2026-09-16", 9), model: "sonnet-5" }),
+            bucket({ hourStartMs: at("2026-09-17", 9), model: "sonnet-5" }),
+          ]),
+          at("2026-09-16", 0),
+          at("2026-09-17", 20),
+        ),
+      ),
+      hostScan(
+        "hostB",
+        covering(
+          scan([
+            bucket({ hourStartMs: at("2026-09-17", 10), model: "sonnet-5" }),
+            // After `local` stopped looking, so outside the merged window too.
+            bucket({ hourStartMs: at("2026-09-17", 21), model: "sonnet-5" }),
+          ]),
+          at("2026-09-17", 0),
+          at("2026-09-17", 23),
+        ),
+      ),
+    ]);
+    expect(merged.sinceMs).toBe(at("2026-09-17", 0));
+    expect(merged.untilMs).toBe(at("2026-09-17", 20));
+    expect(merged.buckets.map((b) => b.hourStartMs)).toEqual([
+      at("2026-09-17", 9),
+      at("2026-09-17", 10),
+    ]);
+    // The invariant every reader of a merged scan relies on.
+    expect(
+      merged.buckets.every(
+        (b) => b.hourStartMs >= merged.sinceMs && b.hourStartMs < merged.untilMs,
+      ),
+    ).toBe(true);
+  });
+
+  it("drops sessions outside the shared window but keeps one that straddles it", () => {
+    const merged = mergeScans([
+      hostScan(
+        "local",
+        covering(
+          scan(
+            [],
+            [
+              session({ id: "early", firstMs: at("2026-09-16", 8), lastMs: at("2026-09-16", 9) }),
+              session({
+                id: "straddle",
+                firstMs: at("2026-09-16", 23),
+                lastMs: at("2026-09-17", 2),
+              }),
+            ],
+          ),
+          at("2026-09-16", 0),
+          at("2026-09-17", 20),
+        ),
+      ),
+      hostScan(
+        "hostB",
+        covering(
+          scan(
+            [],
+            [
+              session({
+                id: "inside",
+                firstMs: at("2026-09-17", 10),
+                lastMs: at("2026-09-17", 11),
+              }),
+              session({ id: "late", firstMs: at("2026-09-17", 21), lastMs: at("2026-09-17", 22) }),
+            ],
+          ),
+          at("2026-09-17", 0),
+          at("2026-09-17", 23),
+        ),
+      ),
+    ]);
+    expect(merged.sessions.map((s) => s.id)).toEqual(["local:straddle", "hostB:inside"]);
+  });
+});
+
+// The pane's whole view is folded out of the per-host scan states, so a host
+// that failed, one that is still scanning and one that has left the set are all
+// questions about this fold rather than about React.
+describe("deriveUsageView", () => {
+  const local = env({ id: "local", name: "This Mac", kind: "local" });
+  const beta = env({ id: "beta", name: "Beta" });
+  const targets = [local, beta];
+
+  const scanOf = (envId: string, fetchedAt = 1_700_000_000_000): HostUsageScan => ({
+    envId,
+    // Stale on purpose: the fold re-labels every scan with its host's current
+    // name, so a rename needs no re-scan.
+    envName: `old ${envId}`,
+    scan: scan([bucket({ hourStartMs: at("2026-09-17", 9), model: "sonnet-5" })]),
+    fetchedAt,
+  });
+  const ok = (envId: string, fetchedAt?: number): HostScanState => ({
+    status: "ok",
+    scan: scanOf(envId, fetchedAt),
+  });
+  const failed = (error: string, scan?: HostUsageScan): HostScanState => ({
+    status: "error",
+    error,
+    scan,
+  });
+
+  it("carries every target's status and folds only the hosts that answered", () => {
+    const view = deriveUsageView(targets, { local: ok("local"), beta: failed("connection lost") });
+    expect(view.hosts).toEqual([
+      { id: "local", name: "This Mac", status: "ok", error: null },
+      { id: "beta", name: "Beta", status: "error", error: "connection lost" },
+    ]);
+    // One host down beside one that answered takes nothing off the screen.
+    expect(view.error).toBeNull();
+    expect(view.loading).toBe(false);
+    expect(view.scans.map((s) => s.envId)).toEqual(["local"]);
+  });
+
+  it("errors only once every host in the selection has failed", () => {
+    const view = deriveUsageView(targets, {
+      local: failed("no transcripts dir"),
+      beta: failed("connection lost"),
+    });
+    expect(view.error).toBe("no transcripts dir");
+    expect(view.loading).toBe(false);
+    expect(view.scans).toEqual([]);
+  });
+
+  it("answers a selected host's failure with its error, not with skeletons", () => {
+    const view = deriveUsageView(
+      targets,
+      { local: ok("local"), beta: failed("connection lost") },
+      "beta",
+    );
+    expect(view.error).toBe("connection lost");
+    expect(view.loading).toBe(false);
+    expect(view.scans).toEqual([]);
+  });
+
+  it("ignores a host that is no longer a target", () => {
+    // `beta` disconnected while its scan was running and settled afterwards:
+    // its entry is still in the map and must change nothing on screen.
+    const view = deriveUsageView([local], { local: ok("local"), beta: ok("beta") });
+    expect(view.hosts.map((h) => h.id)).toEqual(["local"]);
+    expect(view.scans.map((s) => s.envId)).toEqual(["local"]);
+  });
+
+  it("loads until a host answers, then refreshes behind the numbers", () => {
+    const cold = deriveUsageView(targets, { local: { status: "loading" }, beta: ok("beta") });
+    expect(cold).toMatchObject({ loading: false, refreshing: true });
+
+    const empty = deriveUsageView(targets, { local: { status: "loading" } });
+    // A target with no entry yet is a host we intend to ask: still loading.
+    expect(empty.hosts.map((h) => h.status)).toEqual(["loading", "loading"]);
+    expect(empty).toMatchObject({ loading: true, refreshing: false, scannedAt: null });
+
+    const rescan = deriveUsageView(targets, {
+      local: { status: "loading", scan: scanOf("local") },
+      beta: ok("beta"),
+    });
+    expect(rescan).toMatchObject({ loading: false, refreshing: true });
+    expect(rescan.scans).toHaveLength(2);
+  });
+
+  it("keeps a failed host's last scan on screen", () => {
+    const view = deriveUsageView([local], { local: failed("disk busy", scanOf("local")) });
+    expect(view.error).toBe("disk busy");
+    expect(view.loading).toBe(false);
+    expect(view.scans).toHaveLength(1);
+  });
+
+  it("ages the view by its oldest scan and labels scans with current names", () => {
+    const view = deriveUsageView(targets, { local: ok("local", 1_000), beta: ok("beta", 2_000) });
+    expect(view.scannedAt).toBe(1_000);
+    expect(view.scans.map((s) => s.envName)).toEqual(["This Mac", "Beta"]);
+  });
 });
 
 describe("usageScanHosts", () => {
-  const env = (e: Partial<EnvironmentEntry> & Pick<EnvironmentEntry, "id">): EnvironmentEntry => ({
-    name: e.id,
-    kind: "remote",
-    connection: "connected",
-    ...e,
-  });
   const supports = (ops: string[]) => ({ version: 2, ops, events: [], features: [] });
   const ids = (envs: EnvironmentEntry[]) =>
     usageScanHosts(Object.fromEntries(envs.map((e) => [e.id, e]))).map((e) => e.id);
