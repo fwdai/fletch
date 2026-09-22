@@ -13,9 +13,20 @@ host refuses to start rather than run an agent outside the boundary it promised.
 
 ## Install
 
-Each release publishes `fletch-host-<version>-<target>.tar.gz`, a matching
-`.sha256`, and a `.sig` (minisign, the same key the desktop's updater trusts —
-`fletch-host update` checks both):
+```sh
+curl -fsSL https://raw.githubusercontent.com/fwdai/fletch/main/scripts/install-host.sh | bash
+```
+
+That downloads this machine's tarball, verifies it, installs the binary, runs
+`fletch-host service install` and ends at the pairing QR — the manual steps
+below, in one command. Run it again to upgrade. Two env vars configure it:
+`FLETCH_HOST_VERSION=0.8.0` pins a release instead of taking the latest, and
+`FLETCH_HOST_INSTALL_DIR` moves the binary off `~/.local/bin`.
+
+By hand instead. Each release publishes
+`fletch-host-<version>-<target>.tar.gz`, a matching `.sha256`, and a `.sig`
+(minisign, the same key the desktop's updater trusts — `fletch-host update`
+checks both):
 
 ```sh
 V=<the release version>                       # e.g. 0.7.32, without the leading v
