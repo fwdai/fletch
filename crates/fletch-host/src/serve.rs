@@ -117,8 +117,10 @@ fn claim_state_roots(data_dir: &Path) {
 /// Boot the engine and start answering on the admin socket.
 ///
 /// The half `serve` shares with the end-to-end test: everything except waiting
-/// forever. The listener is bound before the accept loop is spawned, so once
-/// this returns a client can connect without racing.
+/// forever. The accept loop starts *before* the engine boots, so a client that
+/// connects during a long start (a migration on a big data dir) is answered
+/// — with `ops::STARTING` until the engine lands — rather than left waiting on
+/// a listener nobody is accepting on.
 pub async fn start(config: Config) -> Result<Arc<Admin>, String> {
     let Config {
         data_dir,
@@ -131,6 +133,9 @@ pub async fn start(config: Config) -> Result<Arc<Admin>, String> {
     prepare_data_dir(&data_dir)?;
     let listener = admin::bind(&data_dir).await?;
     let socket = admin::socket_path(&data_dir);
+
+    let admin = Arc::new(Admin::new(data_dir.clone()));
+    tokio::spawn(admin::serve(admin.clone(), listener));
 
     let engine = match host::boot(BootConfig {
         data_dir: data_dir.clone(),
@@ -171,17 +176,18 @@ pub async fn start(config: Config) -> Result<Arc<Admin>, String> {
     }) {
         Ok(engine) => engine,
         Err(e) => {
-            // The socket was bound before the engine came up (so that a client
-            // cannot beat it there); a host that never started must not leave it
-            // behind for the next one to reason about.
+            // The socket was answering before the engine came up (so that a
+            // client cannot beat it there); a host that never started must not
+            // leave it behind for the next one to reason about. Unlinking it
+            // ends the accept loop's usefulness — nothing can connect to a
+            // socket with no name — and this process is about to exit anyway.
             let _ = std::fs::remove_file(admin::socket_path(&data_dir));
             return Err(boot_failure(e, &data_dir));
         }
     };
 
     log_where_we_are(&engine, &data_dir);
-    let admin = Arc::new(Admin::new(engine, data_dir));
-    tokio::spawn(admin::serve(admin.clone(), listener));
+    admin.attach(engine);
     Ok(admin)
 }
 

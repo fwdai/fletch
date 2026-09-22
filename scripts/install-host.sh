@@ -8,7 +8,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/fwdai/fletch/main/scripts/install-host.sh | bash
 #
 # This script bootstraps once; upgrades belong to the binary it installed. A
-# re-run finds that binary and hands over to `fletch-host update`, which
+# re-run with the same FLETCH_HOST_INSTALL_DIR finds that binary — that
+# directory's, never another one on PATH — and hands over to `fletch-host
+# update`, which
 # verifies the same way, copies the database aside and restarts the service
 # through the unit it already has — rather than re-running `service install`,
 # which would rewrite that unit from this script's (absent) --port/--name/
@@ -61,13 +63,14 @@ minisign_hint() {
   esac
 }
 
-# A fletch-host already on this machine: the install dir's first, since that is
-# the one this script would replace, then whatever is on PATH.
+# The fletch-host this script would replace: the one in $INSTALL_DIR, and only
+# that one. Deliberately not "whatever is on PATH" — the service unit names an
+# absolute path, so a PATH hit can be a different binary in a different
+# directory, and handing the upgrade to it would update something the service
+# never runs while leaving the service's own binary untouched.
 installed_host() {
   if [ -x "$INSTALL_DIR/fletch-host" ]; then
     echo "$INSTALL_DIR/fletch-host"
-  else
-    command -v fletch-host 2>/dev/null || true
   fi
 }
 
@@ -233,8 +236,9 @@ main() {
 
   echo
   printf 'waiting for the host to answer'
-  # Wall clock, not a count of the sleeps: `status` takes its own time (it has
-  # its own timeout on the admin socket), so counting sleeps would promise 30s
+  # Wall clock, not a count of the sleeps: `status` takes its own time (a host
+  # that is still booting answers "the host is still starting" as soon as it is
+  # asked, but the ask itself is not free), so counting sleeps would promise 30s
   # and wait much longer.
   DEADLINE=$((SECONDS + 30))
   until "$BIN" status >/dev/null 2>&1; do

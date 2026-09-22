@@ -25,11 +25,17 @@ signature is what makes the download the project's binary rather than whoever
 answered, so a missing minisign or a missing `.sig` stops the install instead of
 warning and carrying on.
 
-Run it again and it installs nothing: it finds the binary already there and
-hands the upgrade to `fletch-host update`, which verifies the same two ways,
-copies the database aside and restarts the service through the unit it already
-has — rather than re-running `service install`, which would rewrite that unit
-and reset the `--port`, `--name` or `--system` you installed it with.
+Run it again with the same `FLETCH_HOST_INSTALL_DIR` and it installs nothing: it
+finds the binary already in that directory and hands the upgrade to
+`fletch-host update`, which verifies the same two ways, copies the database
+aside and restarts the service through the unit it already has — rather than
+re-running `service install`, which would rewrite that unit and reset the
+`--port`, `--name` or `--system` you installed it with. Only that directory
+counts, never another `fletch-host` that happens to be on `PATH`: the service
+unit names an absolute path, so upgrading a binary somewhere else would leave
+the one the service actually runs behind. Point `FLETCH_HOST_INSTALL_DIR`
+somewhere new and it is a fresh install instead, whose `service install`
+re-points the unit at the new binary.
 
 Three env vars configure it: `FLETCH_HOST_VERSION=0.8.0` pins a release instead
 of taking the latest (and is what a re-run passes to `update`),
@@ -288,6 +294,10 @@ reachable `addresses`, the paired `devices`, the `relay` link, any standing
 Everything except `serve` talks to the running host over its admin socket, and
 takes the same `--data-dir` to find it. With no host running they print
 `fletch-host is not running; start it with 'fletch-host serve'` and exit 1.
+A host that is up but still booting — a migration on a big data dir takes a
+while — answers `the host is still starting` straight away, so these never hang
+waiting on a start; and none of them is otherwise time-limited, because
+`project clone` on a large repository is minutes of honest work.
 
 ## Approvals
 
