@@ -183,31 +183,60 @@ async fn discard_failed_spawn(checkout: Option<&Path>, parent_dir: &Path) {
 /// which reuse the same checkout), and the stale task then removes the live
 /// workspace out from under the running process.
 ///
-/// So the check and the delete both happen under the per-agent lifecycle lock,
-/// the same lock every one of those paths holds while it sets `Spawning`: a
-/// live status (`Spawning`/`Running`/`Idle`) means a newer attempt owns the
-/// paths and we must not touch them, and a resume cannot interleave between
-/// our reading that and removing the tree. Anything else (`Error`, `Stopped`,
-/// or no entry at all) means the attempt we belong to is still the last word,
-/// and its leftovers are ours to clean up.
-async fn discard_if_still_dead(
-    sup: &Supervisor,
-    agent_id: &str,
-    checkout: Option<&Path>,
-    parent_dir: &Path,
-) {
-    let _lifecycle_guard = sup.agent_lifecycle.lock().await;
-    if matches!(
-        sup.live_status(agent_id),
-        Some(AgentStatus::Spawning | AgentStatus::Running | AgentStatus::Idle)
-    ) {
-        tracing::debug!(
-            agent_id,
-            "abandoned spawn: agent is live again; leaving its checkout in place"
-        );
-        return;
-    }
-    discard_failed_spawn(checkout, parent_dir).await;
+/// So the ownership check happens under the lifecycle lock, the same lock every
+/// one of those paths holds while it sets `Spawning`: a live status
+/// (`Spawning`/`Running`/`Idle`) means a newer attempt owns the paths and we
+/// must not touch them. Anything else (`Error`, `Stopped`, or no entry at all)
+/// means the attempt we belong to is still the last word, and its leftovers
+/// are ours to clean up.
+///
+/// The lock is supervisor-wide, so the slow part must not run under it: a
+/// large checkout's recursive delete would stall every other agent's spawn,
+/// resume, switch and restore meanwhile. Instead the agent dir is renamed to a
+/// sibling tombstone while the lock is held — one atomic, cheap `rename` — and
+/// the tombstone is removed after the lock is released. A resume that comes
+/// after the rename finds no checkout at the agent's path, exactly what it
+/// would have found had the whole delete happened under the lock.
+async fn discard_if_still_dead(sup: &Supervisor, agent_id: &str, parent_dir: &Path) {
+    let tombstone = {
+        let _lifecycle_guard = sup.agent_lifecycle.lock().await;
+        if matches!(
+            sup.live_status(agent_id),
+            Some(AgentStatus::Spawning | AgentStatus::Running | AgentStatus::Idle)
+        ) {
+            tracing::debug!(
+                agent_id,
+                "abandoned spawn: agent is live again; leaving its checkout in place"
+            );
+            return;
+        }
+        let name = parent_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| agent_id.to_string());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tombstone = parent_dir.with_file_name(format!("{name}.discarding-{nonce}"));
+        match tokio::fs::rename(parent_dir, &tombstone).await {
+            Ok(()) => tombstone,
+            // Nothing there: the attempt never got as far as creating it.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            // A sibling rename should not fail; if it does, correctness beats
+            // speed and the delete runs under the lock as a one-off.
+            Err(e) => {
+                tracing::warn!(
+                    agent_id,
+                    error = %e,
+                    "abandoned spawn: could not set its dir aside; removing in place"
+                );
+                discard_failed_spawn(None, parent_dir).await;
+                return;
+            }
+        }
+    };
+    let _ = tokio::fs::remove_dir_all(&tombstone).await;
 }
 
 /// Resolved, per-spawn inputs for `spawn_agent_process` — everything that
@@ -603,7 +632,7 @@ impl Supervisor {
             // The agent dir exists from here on, but no checkout does yet — so
             // that dir is the whole of what this task has to undo.
             if !adopted_for_task && !progress(SpawnStage::Cloning, None) {
-                discard_if_still_dead(&sup, &id_for_task, None, &parent_dir).await;
+                discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
                 return;
             }
             let provision_result = match &run_repo_for_task {
@@ -672,8 +701,7 @@ impl Supervisor {
             // indexing is off or under Docker). Runs the cheap copy inline and
             // advances the mirror in the background.
             if !progress(SpawnStage::Indexing, None) {
-                discard_if_still_dead(&sup, &id_for_task, owned_checkout.as_deref(), &parent_dir)
-                    .await;
+                discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
                 return;
             }
             provision_codegraph_index(
@@ -695,13 +723,7 @@ impl Supervisor {
             // step never carries, so this is always a non-run clone).
             if let Some(src) = &carry_from_task {
                 if !progress(SpawnStage::Carrying, None) {
-                    discard_if_still_dead(
-                        &sup,
-                        &id_for_task,
-                        owned_checkout.as_deref(),
-                        &parent_dir,
-                    )
-                    .await;
+                    discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
                     return;
                 }
                 let carried = match &base_sha {
@@ -736,13 +758,7 @@ impl Supervisor {
                         SpawnStage::AttachingRepos,
                         source.file_name().map(|n| n.to_string_lossy().into_owned()),
                     ) {
-                        discard_if_still_dead(
-                            &sup,
-                            &id_for_task,
-                            owned_checkout.as_deref(),
-                            &parent_dir,
-                        )
-                        .await;
+                        discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
                         return;
                     }
                     if let Err(e) = sup
@@ -762,8 +778,7 @@ impl Supervisor {
             }
 
             if !progress(SpawnStage::Starting, None) {
-                discard_if_still_dead(&sup, &id_for_task, owned_checkout.as_deref(), &parent_dir)
-                    .await;
+                discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
                 return;
             }
             tokio::time::sleep(Duration::from_millis(350)).await;
@@ -2050,21 +2065,33 @@ mod tests {
         sup.statuses
             .lock()
             .insert("resumed".into(), AgentStatus::Spawning);
-        discard_if_still_dead(&sup, "resumed", None, &resumed).await;
+        discard_if_still_dead(&sup, "resumed", &resumed).await;
         assert!(
             resumed.is_dir(),
             "a newer attempt owns these paths; the stale task must not delete them"
         );
 
         let failed = td.path().join("failed");
-        std::fs::create_dir_all(&failed).unwrap();
+        std::fs::create_dir_all(failed.join("checkout")).unwrap();
         sup.statuses
             .lock()
             .insert("failed".into(), AgentStatus::Error);
-        discard_if_still_dead(&sup, "failed", None, &failed).await;
+        discard_if_still_dead(&sup, "failed", &failed).await;
         assert!(
             !failed.exists(),
             "nobody took the agent back, so the failed spawn's dir goes"
         );
+        // The tree is set aside under the lock and deleted after it; neither
+        // the dir nor its tombstone may survive.
+        let leftovers: Vec<_> = std::fs::read_dir(td.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("failed"))
+            .collect();
+        assert!(leftovers.is_empty(), "tombstone left behind: {leftovers:?}");
+
+        // A dir the attempt never created is nothing to clean up, and not an
+        // error either.
+        discard_if_still_dead(&sup, "failed", &td.path().join("never-made")).await;
     }
 }
