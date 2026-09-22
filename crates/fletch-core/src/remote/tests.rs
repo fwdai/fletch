@@ -650,6 +650,7 @@ fn allowlist_matches_the_protocol_table() {
         "roadmap_accept_brief_proposal",
         "roadmap_reject_brief_proposal",
         "host_providers",
+        "scan_usage_transcripts",
         "register_push",
     ];
     assert_eq!(

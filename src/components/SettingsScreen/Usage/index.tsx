@@ -1,5 +1,11 @@
-import { useMemo, useState } from "react";
-import { rangeBounds, type UsageMetric, type UsageRange, useUsageStats } from "@/data/usage";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ALL_HOSTS,
+  rangeBounds,
+  type UsageMetric,
+  type UsageRange,
+  useUsageStats,
+} from "@/data/usage";
 import { SetSeg } from "../primitives";
 import { UsageBreakdown } from "./UsageBreakdown";
 import { UsageChart } from "./UsageChart";
@@ -13,18 +19,30 @@ const METRICS: { value: UsageMetric; label: string }[] = [
   { value: "tokens", label: "Tokens" },
 ];
 
-/** What every Claude Code and Codex session on this machine has burned, read
- *  from the transcripts on disk rather than from anything Fletch itself ran —
- *  so sessions started outside the app count too. */
+/** What every Claude Code and Codex session has burned — on this machine and on
+ *  every connected host — read from the transcripts on those disks rather than
+ *  from anything Fletch itself ran, so sessions started outside the app count
+ *  too. The host filter narrows it to one machine; with only this one, there is
+ *  nothing to filter and the control stays hidden. */
 export function UsagePane() {
   const [range, setRange] = useState<UsageRange>("30d");
   const [metric, setMetric] = useState<UsageMetric>("cost");
-  const { stats, loading, refreshing, error, refresh, scannedAt, catalogReady } =
-    useUsageStats(range);
+  const [host, setHost] = useState<string>(ALL_HOSTS);
+  const { stats, hosts, loading, refreshing, error, refresh, scannedAt, catalogReady } =
+    useUsageStats(range, host);
 
-  // The header describes the *selected* window immediately; `stats.range` is
-  // the window the data in hand covers, which lags by one scan.
-  const bounds = useMemo(() => rangeBounds(range, Date.now()), [range]);
+  // A host picked and then disconnected would leave the pane filtered to
+  // nothing, with no control to undo it once the filter hides itself again.
+  useEffect(() => {
+    if (host !== ALL_HOSTS && !hosts.some((h) => h.id === host)) setHost(ALL_HOSTS);
+  }, [host, hosts]);
+
+  // The header names the window the numbers on screen actually cover, so it
+  // reads `stats.range` — already clamped to the scans behind it — rather than
+  // recomputing the selected window and claiming days no host answered for.
+  // Before the first scan lands there are no numbers to describe, only the
+  // window the control selects.
+  const bounds = useMemo(() => stats?.range ?? rangeBounds(range, Date.now()), [stats, range]);
   const empty = !!stats?.empty;
   // A failed first scan leaves nothing to show but the error; a failed re-scan
   // still has the previous numbers behind it.
@@ -35,6 +53,9 @@ export function UsagePane() {
       <UsageHeader
         range={range}
         onRange={setRange}
+        hosts={hosts}
+        host={host}
+        onHost={setHost}
         bounds={bounds}
         busy={loading || refreshing}
         scannedAt={scannedAt}
