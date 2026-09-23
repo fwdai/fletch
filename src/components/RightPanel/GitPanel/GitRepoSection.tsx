@@ -82,9 +82,9 @@ export function GitRepoSection({
   useEffect(() => {
     setViewing((prev) => (prev && gitState?.files.some((f) => f.path === prev) ? prev : null));
   }, [gitState]);
-  // `get_file_diff` resolves paths against the primary checkout, so a
-  // secondary repo's rows stay read-only until the command learns `subdir`.
-  const canOpenDiff = subdir === undefined;
+  // A multi-repo agent's checkout paths are addressed as `<subdir>/<path>` (as
+  // in the Code tab's tree), which is how `get_file_diff` picks the checkout.
+  const repoDir = agent.repos.length > 1 ? repo?.subdir : undefined;
 
   const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
   const hasOrigin = gitState?.has_origin ?? true;
@@ -195,6 +195,7 @@ export function GitRepoSection({
             agentId={agent.id}
             files={gitState?.files ?? []}
             path={viewing}
+            repoDir={repoDir}
             onSelect={setViewing}
             onBack={() => setViewing(null)}
           />
@@ -215,7 +216,7 @@ export function GitRepoSection({
             {showFiles && (
               <ChangesList
                 files={gitState?.files ?? []}
-                onOpen={canOpenDiff ? setViewing : undefined}
+                onOpen={setViewing}
                 onRefresh={() => void fetchGitState(agent.id)}
               />
             )}

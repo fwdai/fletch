@@ -14,6 +14,7 @@ export function FileDiffView({
   agentId,
   files,
   path,
+  repoDir,
   onSelect,
   onBack,
 }: {
@@ -21,6 +22,9 @@ export function FileDiffView({
   /** The changes list, in display order — drives prev/next. */
   files: FileStatus[];
   path: string;
+  /** The repo's folder, prefixed to `path` for the diff fetch in multi-repo
+   *  agents; undefined for single-repo agents. */
+  repoDir?: string;
   onSelect: (path: string) => void;
   onBack: () => void;
 }) {
@@ -68,7 +72,7 @@ export function FileDiffView({
       {/* The list's +/− counts are vs the latest commit, so the diff is too. */}
       <FileDiff
         agentId={agentId}
-        path={path}
+        path={repoDir ? `${repoDir}/${path}` : path}
         lang={extOf(path)}
         isBuiltInTheme={isBuiltInTheme}
         base="head"
