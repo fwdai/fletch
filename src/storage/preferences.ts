@@ -14,7 +14,6 @@ export type SettingsSection =
   | "git"
   | "sandbox"
   | "remote"
-  | "dictation"
   | "providers"
   | "agents"
   | "skills"

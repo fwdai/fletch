@@ -3,12 +3,10 @@ import { Icon, type IconName } from "@/components/Icon";
 import type { SettingsSection } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
-import { IS_MAC } from "@/util/platform";
 import { WorkflowsPane } from "@/workflows/builder";
 import pkg from "../../../package.json";
 import { AccountPane } from "./AccountPane";
 import { CustomAgentsPane } from "./CustomAgents";
-import { DictationPane } from "./Dictation";
 import { ExperimentalPane } from "./ExperimentalPane";
 import { GeneralPane } from "./GeneralPane";
 import { GitPane } from "./GitPane";
@@ -54,9 +52,11 @@ const AGENTS_GROUP = "Agents";
 // network or secrets settings belong here too. "Checkouts" or "Isolation" would
 // read as plain worktree-running, which is exactly the framing to avoid.
 const GUARDRAILS_GROUP = "Guardrails";
-// Devices on both ends: phones paired to this host, other hosts this machine
-// drives, and this machine's own microphone. Says nothing about the platform,
-// so a Linux or Windows build needs no rename.
+// Devices on both ends: phones paired to this host and other hosts this machine
+// drives; cloud environments join here when they get settings of their own.
+// Says nothing about the platform, so a Linux or Windows build needs no rename.
+// One entry today — the header still earns its place by saying what Remote
+// control is about, and by marking where the next device-side section goes.
 const DEVICES_GROUP = "Devices";
 
 // General holds the app-wide basics (appearance, panels, composer, alerts);
@@ -84,16 +84,6 @@ const NAV: NavItem[] = [
 ];
 // Stable sort by weight keeps contribution order on ties.
 NAV.sort((a, b) => a.order - b.order);
-
-// Dictation replaces Apple's recognizer, so there is nothing to configure on
-// other platforms; the entry is added at render only on macOS.
-const DICTATION_NAV: NavItem = {
-  id: "dictation",
-  label: "Dictation",
-  icon: "mic",
-  order: 53,
-  group: DEVICES_GROUP,
-};
 
 // Developer is appended at render only when unlocked (dev build or admin user),
 // so it slots by `order` among the base entries above.
@@ -129,14 +119,13 @@ export function SettingsScreen() {
       [
         ...NAV,
         ...(workflowGate ? [] : [WORKFLOWS_NAV]),
-        ...(IS_MAC ? [DICTATION_NAV] : []),
         ...(showDeveloper ? [DEVELOPER_NAV] : []),
       ].sort((a, b) => a.order - b.order),
     [showDeveloper, workflowGate],
   );
 
   // A section with no nav entry (a stale "developer" after the admin flag
-  // flipped off, or "dictation" off-Mac) falls back to General.
+  // flipped off, or "workflows" once the gate closed) falls back to General.
   const visible = nav.some((n) => n.id === section || n.subsections?.includes(section));
 
   return (
@@ -194,7 +183,6 @@ export function SettingsScreen() {
           {visible && section === "git" && <GitPane />}
           {visible && section === "sandbox" && <SandboxPane />}
           {visible && section === "remote" && <RemoteControlPane />}
-          {visible && section === "dictation" && <DictationPane />}
           {visible && section === "providers" && <ProvidersPane />}
           {visible && section === "agents" && <CustomAgentsPane />}
           {visible && section === "workflows" && <WorkflowsPane />}

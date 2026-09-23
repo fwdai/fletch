@@ -5,6 +5,8 @@ import { CODE_THEMES } from "@/data/codeThemes";
 import { ACCENTS } from "@/data/providers";
 import type { ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { IS_MAC } from "@/util/platform";
+import { DictationGroup } from "./Dictation";
 import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 const CODE_THEME_OPTIONS = CODE_THEMES.map((t) => ({ value: t.id, label: t.label }));
@@ -49,9 +51,10 @@ function FeatureRows({ items }: { items: FeatureItem[] }) {
 }
 
 /** App-wide basics: look, which panels and composer controls appear around an
- *  agent, alerts, and diagnostics. Anything with more than a knob or two (git,
- *  sandboxing, dictation) has its own section. Group labels and order match the
- *  quick-settings popover so the same setting reads the same on both. */
+ *  agent, how you dictate to it, alerts, and diagnostics. Anything with more
+ *  than a knob or two (git, sandboxing, remote control) has its own section.
+ *  Group labels and order match the quick-settings popover so the same setting
+ *  reads the same on both. */
 export function GeneralPane() {
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
@@ -74,7 +77,7 @@ export function GeneralPane() {
       <SetHead
         eyebrow="Settings · General"
         title="General"
-        desc="How Fletch looks, which panels and composer controls appear around an agent, when it alerts you, and what it shares."
+        desc="How Fletch looks, which panels and composer controls appear around an agent, how you dictate to it, when it alerts you, and what it shares."
       />
 
       <SetGroup label="Appearance">
@@ -122,6 +125,10 @@ export function GeneralPane() {
       <SetGroup label="Composer">
         <FeatureRows items={COMPOSER} />
       </SetGroup>
+
+      {/* Right under Composer: dictation is another way of talking to it.
+          macOS-only, like the recognizer it replaces. */}
+      {IS_MAC && <DictationGroup />}
 
       <SetGroup label="Notifications">
         <SetRow title="Sound" sub="Play a chime when an agent finishes or needs your input.">
