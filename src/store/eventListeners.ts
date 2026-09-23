@@ -72,9 +72,9 @@ import {
 import { getAllSettings } from "@/storage/settings";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { notify } from "@/util/notify";
-import { playAgentDone } from "@/util/sound";
+import { playSound, type SoundKind } from "@/util/sound";
 import { reduceInstallEvent } from "./agentInstall";
-import { interruptedAgents } from "./interrupted";
+import { erroredAgents, interruptedAgents } from "./interrupted";
 import { stampPrWrite } from "./prWriteOrder";
 import { refreshWorkspace } from "./refreshWorkspace";
 import { applyBuildEvent } from "./sandbox";
@@ -93,12 +93,20 @@ const watchingChat = (get: AppGet, agentId: string) =>
 
 const agentName = (get: AppGet, agentId: string) => agentRecord(get(), agentId)?.name ?? "Agent";
 
-// Signal an out-of-app event for an agent the user isn't watching: a chime and
-// a native notification, each unless muted in settings.
-const signalAway = (get: AppGet, agentId: string, title: string) => {
+// Signal an out-of-app event for an agent the user isn't watching: the event's
+// sound and a native notification, each unless muted in settings.
+const signalAway = (get: AppGet, agentId: string, title: string, sound: SoundKind) => {
   if (watchingChat(get, agentId)) return;
-  if (get().soundEnabled) playAgentDone();
+  if (get().soundEnabled) playSound(sound);
   if (get().notifyEnabled) notify(title, agentName(get, agentId));
+};
+
+// Errors always signal, like needed input — but once per failure (see
+// `erroredAgents`), however many ways the failure reports itself.
+const signalError = (get: AppGet, agentId: string, title: string) => {
+  if (erroredAgents.has(agentId)) return;
+  erroredAgents.add(agentId);
+  signalAway(get, agentId, title, "error");
 };
 
 type AgentPatch = Partial<AgentRecord> | ((a: AgentRecord) => Partial<AgentRecord>);
@@ -289,7 +297,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
             },
           }));
           // The only out-of-app signal this widget has ever had.
-          if (wasIdle) signalAway(get, e.agent_id, "Needs your input");
+          if (wasIdle) signalAway(get, e.agent_id, "Needs your input", "alert");
         }
         return;
       }
@@ -306,9 +314,11 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       const derived = getAdapter(providerFor(get(), e.agent_id)).taskEvents?.(ev) ?? [];
       for (const task of derived) get().applyBackgroundTaskEvent(e.agent_id, task);
       let turnEnded = false;
+      let turnFailed = false;
       set((state) => {
         const result = applyEvent(state, e.agent_id, e.event as RawEvent);
         turnEnded = result.turnEnded;
+        turnFailed = result.turnFailed;
         return result.patch;
       });
       // Capture usage that lives only on the live stream (cursor) into
@@ -333,10 +343,13 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
         // flag once and gate both the chime and the unseen-results marker on
         // a genuine completion (a manual stop is neither).
         if (!interruptedAgents.delete(e.agent_id)) {
-          // Notify (chime + native) when you're NOT watching this agent —
+          // Notify (sound + native) when you're NOT watching this agent —
           // skipped when you already are, see signalAway. "Needs your input"
-          // always signals; a finished turn only if the user kept that alert on.
-          if (get().notifyTurnComplete) signalAway(get, e.agent_id, "Turn complete");
+          // and failures always signal; a finished turn only if the user kept
+          // that alert on.
+          if (turnFailed) signalError(get, e.agent_id, "Turn failed");
+          else if (get().notifyTurnComplete)
+            signalAway(get, e.agent_id, "Turn complete", "success");
           // Flag results for review on any agent the user isn't currently
           // looking at — this is the only signal for research-only turns that
           // leave no diff behind. Cleared when the agent is selected. Never set
@@ -480,7 +493,12 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       // A new turn starting clears any stale stop-suppression flag: if the
       // killed process never flushed a turn_end, this ensures the next genuine
       // completion still chimes.
-      if (e.status === "running") interruptedAgents.delete(e.agent_id);
+      if (e.status === "running") {
+        interruptedAgents.delete(e.agent_id);
+        erroredAgents.delete(e.agent_id);
+      }
+      // A crash or failed spawn. A user stop is `stopped`, never `error`.
+      if (e.status === "error") signalError(get, e.agent_id, "Agent error");
       // The process is gone, and its sub-agents with it: whatever tasks we held
       // as running can no longer report, so drop them rather than strand them.
       // `idle` is NOT a clear — background tasks outlive the main turn.
