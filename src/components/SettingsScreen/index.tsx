@@ -27,7 +27,7 @@ const DeveloperPane = lazy(() =>
 
 // Built-in sections carry explicit order weights so extension panes can slot
 // *between* them via their own `order`, not just append. Each `group` owns a
-// contiguous band of weights (Agents 30s, Checkouts 40s, This Mac 50s), so a
+// contiguous band of weights (Agents 30s, Guardrails 40s, Devices 50s), so a
 // conditional entry lands inside its group whenever it is shown. `group` is the
 // display label of the nav header the entry sits under; entries without one
 // render headerless. `subsections` groups several sections behind a single nav
@@ -48,8 +48,16 @@ type NavItem = {
 const CUSTOMIZE_IDS: SettingsSection[] = ["agents", "tools", "skills"];
 
 const AGENTS_GROUP = "Agents";
-const CHECKOUTS_GROUP = "Checkouts";
-const MAC_GROUP = "This Mac";
+// Named for what the group is *for*, not the mechanism: what agents may touch
+// (sandbox isolation, engine, container auth) and how their work is allowed to
+// leave (approval wait, ask before publishing, draft PRs). Future permission,
+// network or secrets settings belong here too. "Checkouts" or "Isolation" would
+// read as plain worktree-running, which is exactly the framing to avoid.
+const GUARDRAILS_GROUP = "Guardrails";
+// Devices on both ends: phones paired to this host, other hosts this machine
+// drives, and this machine's own microphone. Says nothing about the platform,
+// so a Linux or Windows build needs no rename.
+const DEVICES_GROUP = "Devices";
 
 // General holds the app-wide basics (appearance, panels, composer, alerts);
 // every feature with more than a knob or two gets its own entry so its settings
@@ -66,11 +74,12 @@ const NAV: NavItem[] = [
     group: AGENTS_GROUP,
     subsections: CUSTOMIZE_IDS,
   },
-  { id: "git", label: "Git", icon: "branch", order: 40, group: CHECKOUTS_GROUP },
-  // The box is the app's existing sandbox glyph (SandboxBadge, the env-vars
-  // sandbox toggle), so the nav entry matches it.
-  { id: "sandbox", label: "Sandbox", icon: "cube", order: 43, group: CHECKOUTS_GROUP },
-  { id: "remote", label: "Remote control", icon: "phone", order: 50, group: MAC_GROUP },
+  // Sandbox leads the group so the header's meaning lands at a glance. The box
+  // is the app's existing sandbox glyph (SandboxBadge, the env-vars sandbox
+  // toggle), so the nav entry matches it.
+  { id: "sandbox", label: "Sandbox", icon: "cube", order: 40, group: GUARDRAILS_GROUP },
+  { id: "git", label: "Git", icon: "branch", order: 43, group: GUARDRAILS_GROUP },
+  { id: "remote", label: "Remote control", icon: "phone", order: 50, group: DEVICES_GROUP },
   { id: "experimental", label: "Experimental", icon: "flask", order: 60 },
 ];
 // Stable sort by weight keeps contribution order on ties.
@@ -83,7 +92,7 @@ const DICTATION_NAV: NavItem = {
   label: "Dictation",
   icon: "mic",
   order: 53,
-  group: MAC_GROUP,
+  group: DEVICES_GROUP,
 };
 
 // Developer is appended at render only when unlocked (dev build or admin user),
