@@ -9,6 +9,8 @@ import { formatTokens } from "@/util/format";
  *  that goes somewhere rather than a line of stats. Tokens, not dollars: the
  *  cost is a list-price estimate and most people here pay a subscription, so
  *  the figure that is actually true leads and the estimate rides in the tip.
+ *  The figure stands alone ("12.4M"): the unit would double the chip's width,
+ *  and the tip names it.
  *
  *  Mounting starts the same transcript scan the Usage screen runs (shared
  *  cache, one scan per host, five-minute TTL), so the number lands a moment
@@ -44,7 +46,7 @@ export function SidebarUsage() {
       onClick={openUsageScreen}
     >
       <Icon name="activity" />
-      <span className="mono">{formatTokens(stats.totalTokens)} tokens</span>
+      <span className="mono">{formatTokens(stats.totalTokens)}</span>
       <Icon name="chevR" className="side-usage-chev" />
     </Chip>
   );
