@@ -680,3 +680,19 @@
   padding: 0 7px;
   font-variant-numeric: tabular-nums;
 }
+/* First scan still running: the chip keeps its final width and breathes
+   quietly rather than popping in once the number lands. */
+.side-foot .side-usage.pending {
+  opacity: 0.55;
+  animation: sideUsagePending 1.4s ease-in-out infinite;
+}
+@keyframes sideUsagePending {
+  50% {
+    opacity: 0.78;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-foot .side-usage.pending {
+    animation: none;
+  }
+}
