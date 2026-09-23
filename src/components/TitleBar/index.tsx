@@ -6,7 +6,7 @@ import { OpenInEditor } from "./OpenInEditor";
 import { WorkspaceStatus } from "./WorkspaceStatus";
 
 /** Top-of-window bar. Houses the workspace-status capsule (center) and the
- *  history + settings controls (right). Drag + native double-click-to-zoom is
+ *  feedback, history + settings controls (right). Drag + native double-click-to-zoom is
  *  handled by Tauri via the `data-tauri-drag-region` attribute — any click
  *  whose target carries that attribute is processed by the runtime; clicks on
  *  the capsule and buttons fall through normally. */
@@ -15,6 +15,7 @@ export function TitleBar() {
   const toggleSettings = useAppStore((s) => s.toggleSettings);
   const historyOpen = useAppStore((s) => s.historyOpen);
   const toggleHistory = useAppStore((s) => s.toggleHistory);
+  const openFeedback = useAppStore((s) => s.openFeedback);
 
   return (
     <div className="tb flex-center" data-tauri-drag-region>
@@ -31,6 +32,9 @@ export function TitleBar() {
       </div>
       <div className="tb-right flex-center">
         <OpenInEditor />
+        <IconButton tip="Send feedback" onClick={openFeedback} aria-label="Send feedback">
+          <Icon name="feedback" />
+        </IconButton>
         <IconButton tip="History" active={historyOpen} onClick={() => toggleHistory()}>
           <Icon name="history" />
         </IconButton>

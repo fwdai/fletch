@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { SetSeg } from "@/components/SettingsScreen/primitives";
 import { formatHeatDay, Skeleton } from "@/components/Stats";
 import { providerChip } from "@/data/providers";
 import { type CostLabel, coverageLabel, modelCostLabel, type UsageStats } from "@/data/usage";
 import { formatPercent, formatTokens } from "@/util/format";
-import { SetSeg } from "../primitives";
 import { UsageGroupHead } from "./UsageGroupHead";
 
 type Mode = "model" | "day";

@@ -11,6 +11,7 @@ export function useGlobalShortcuts() {
   const toggleSettings = useAppStore((s) => s.toggleSettings);
   const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
   const closeProjectScreen = useAppStore((s) => s.closeProjectScreen);
+  const closeUsageScreen = useAppStore((s) => s.closeUsageScreen);
   const setTheme = useAppStore((s) => s.setTheme);
   const theme = useAppStore((s) => s.theme);
   const createDraft = useAppStore((s) => s.createDraft);
@@ -64,6 +65,7 @@ export function useGlobalShortcuts() {
         toggleSettings(false);
         closeSettingsScreen();
         closeProjectScreen();
+        closeUsageScreen();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -75,6 +77,7 @@ export function useGlobalShortcuts() {
     toggleSettings,
     closeSettingsScreen,
     closeProjectScreen,
+    closeUsageScreen,
     setTheme,
     theme,
     createDraft,

@@ -48,5 +48,6 @@ export {
   type UsageStatsResult,
   type UsageView,
   usageScanHosts,
+  useCachedUsageStats,
   useUsageStats,
 } from "./useUsageStats";

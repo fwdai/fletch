@@ -55,9 +55,10 @@
 @import "./styles/shared/error-boundary.css";
 @import "./components/ProviderReadiness/ProviderReadiness.css";
 @import "./components/SettingsScreen/CustomAgents/CustomAgents.css";
-/* After SettingsScreen.css and Stats.css — the Usage pane composes on the
-   settings shell (`.set-group`) and on the shared chart + stat primitives. */
-@import "./components/SettingsScreen/Usage/Usage.css";
+/* After SettingsScreen.css and Stats.css — the Usage screen composes on the
+   settings shell (`.set-screen`, `.set-group`) and on the shared chart + stat
+   primitives. */
+@import "./components/UsageScreen/Usage.css";
 @import "./components/ui/Loader.css";
 @import "./components/ui/Select.css";
 @import "./components/ui/Scrim.css";

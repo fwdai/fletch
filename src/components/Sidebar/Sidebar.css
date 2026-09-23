@@ -673,3 +673,10 @@
     opacity: 1;
   }
 }
+
+/* Footer usage chip: the 7-day spend beside the account block, opening the
+   Usage screen. Composes on `.c-chip`; only the tighter fit is set here. */
+.side-foot .side-usage {
+  padding: 0 7px;
+  font-variant-numeric: tabular-nums;
+}

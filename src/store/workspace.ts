@@ -321,6 +321,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       historyOpen: false,
       selectedHistoryAgentId: null,
       settingsScreenOpen: false,
+      usageScreenOpen: false,
     }),
 
   // Select a run and focus one of its step agents' chats in the monitor. The
@@ -336,6 +337,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       historyOpen: false,
       selectedHistoryAgentId: null,
       settingsScreenOpen: false,
+      usageScreenOpen: false,
     }),
   clearFocusedStepAgent: () => set({ focusedStepAgentId: null }),
 

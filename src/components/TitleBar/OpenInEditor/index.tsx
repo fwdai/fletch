@@ -104,13 +104,14 @@ function Menu({
   );
 }
 
-/** The selected real agent's id, or null when at Home / a draft / settings —
- *  i.e. when there is no checkout to open. */
+/** The selected real agent's id, or null when at Home / a draft / settings /
+ *  usage — i.e. when there is no checkout to open. */
 function useActiveAgentId(): string | null {
   const selectedId = useAppStore((s) => s.selectedAgentId);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
+  const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
   const agent = useAppStore((s) => s.workspace?.agents.find((a) => a.id === selectedId));
-  if (activeDraftId || settingsScreenOpen || !agent) return null;
+  if (activeDraftId || settingsScreenOpen || usageScreenOpen || !agent) return null;
   return agent.id;
 }

@@ -31,6 +31,7 @@ const FEATURE_GROUPS: { label: string; items: FeatureItem[] }[] = [
     items: [
       { key: "thinkingBudget", title: "Thinking budget", sub: "Low / medium / high cap" },
       { key: "tokenUsage", title: "Token usage", sub: "Context window % meter in the composer" },
+      { key: "sidebarCost", title: "Cost in sidebar", sub: "7-day spend next to your account" },
     ],
   },
 ];

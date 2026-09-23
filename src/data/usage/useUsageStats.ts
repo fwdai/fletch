@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { UsageScan } from "@/api";
 import { api } from "@/api";
+import type { SlimCatalog } from "@/data/modelCatalog";
 import { hostSupports } from "@/remote/types";
 import { useAppStore } from "@/store";
 import type { EnvironmentEntry, EnvironmentId } from "@/store/environments";
@@ -87,8 +88,27 @@ export function isFresh(fetchedAt: number, nowMs: number, ttlMs = SCAN_TTL_MS): 
 // come and go independently, and one host's answer must never be served as
 // another's. `inFlight` collapses the concurrent callers (StrictMode's double
 // mount, a refresh during a revalidate) onto one scan per host.
-const cache = new Map<EnvironmentId, HostUsageScan>();
+//
+// Replaced, never mutated, on every write, and announced to `cacheListeners`:
+// that is what lets `useCachedUsageStats` read it as an external store and
+// pick up a scan the Usage screen ran without ever starting one itself.
+let cache: ReadonlyMap<EnvironmentId, HostUsageScan> = new Map();
+const cacheListeners = new Set<() => void>();
 const inFlight = new Map<EnvironmentId, Promise<void>>();
+
+function writeCache(entry: HostUsageScan): void {
+  cache = new Map(cache).set(entry.envId, entry);
+  for (const l of cacheListeners) l();
+}
+
+function subscribeCache(listener: () => void): () => void {
+  cacheListeners.add(listener);
+  return () => {
+    cacheListeners.delete(listener);
+  };
+}
+
+const readCache = () => cache;
 
 /** Which environments to ask. Local always — its transcripts are on this disk
  *  whatever environment the UI is driving. A remote host only when it is
@@ -122,7 +142,7 @@ function scanHost(env: EnvironmentEntry): Promise<void> {
     : api.scanUsageTranscripts(sinceMs, untilMs);
   const run = call
     .then((scan) => {
-      cache.set(env.id, { envId: env.id, envName: env.name, scan, fetchedAt: Date.now() });
+      writeCache({ envId: env.id, envName: env.name, scan, fetchedAt: Date.now() });
     })
     .finally(() => {
       inFlight.delete(env.id);
@@ -134,10 +154,13 @@ function scanHost(env: EnvironmentEntry): Promise<void> {
 /** The cached scans for `hosts` as already-settled state, so reopening the pane
  *  shows the last scan instantly instead of skeletons. A host with nothing
  *  cached is left out and `load` puts it in as `"loading"`. */
-function seedStates(hosts: readonly EnvironmentEntry[]): HostScanStates {
+function seedStates(
+  hosts: readonly EnvironmentEntry[],
+  scans: ReadonlyMap<EnvironmentId, HostUsageScan> = cache,
+): HostScanStates {
   const seeded: HostScanStates = {};
   for (const h of hosts) {
-    const hit = cache.get(h.id);
+    const hit = scans.get(h.id);
     if (hit) seeded[h.id] = { status: "ok", scan: hit };
   }
   return seeded;
@@ -208,6 +231,41 @@ export function deriveUsageView(
     error,
     scannedAt: scans.length > 0 ? Math.min(...scans.map((s) => s.fetchedAt)) : null,
   };
+}
+
+/** Fold the scans in hand into the stats for `range`, or null with none. */
+function statsFor(
+  scans: HostUsageScan[],
+  catalog: SlimCatalog,
+  range: UsageRange,
+): UsageStats | null {
+  if (scans.length === 0) return null;
+  const merged = mergeScans(scans);
+  // A sub-range is a slice of the merged scan, so it is clamped to both of
+  // that scan's edges: it ends where the scans ended, and it opens no earlier
+  // than the window every contributing host covered. Either way no range can
+  // claim hours the data in hand does not answer for.
+  return aggregateUsage(merged, catalog, clampToScan(rangeBounds(range, merged.untilMs), merged));
+}
+
+/** Whatever `useUsageStats` has already scanned, never a scan of its own: null
+ *  until something (the Usage screen) has read the disks this session, then the
+ *  cached numbers, updated as later scans land. For glanceable surfaces that
+ *  must not pay for a multi-second transcript walk just by rendering — the
+ *  sidebar footer mounts on every launch. */
+export function useCachedUsageStats(
+  range: UsageRange,
+  host: string = ALL_HOSTS,
+): UsageStats | null {
+  const catalog = useAppStore((s) => s.modelCatalog);
+  const environments = useAppStore((s) => s.environments);
+  const targets = useMemo(() => usageScanHosts(environments), [environments]);
+  const scans = useSyncExternalStore(subscribeCache, readCache);
+
+  return useMemo(() => {
+    const view = deriveUsageView(targets, seedStates(targets, scans), host);
+    return statsFor(view.scans, catalog, range);
+  }, [targets, scans, host, catalog, range]);
 }
 
 /** Scan every connected host's Claude Code / Codex transcripts once, then
@@ -295,15 +353,7 @@ export function useUsageStats(range: UsageRange, host: string = ALL_HOSTS): Usag
 
   const view = useMemo(() => deriveUsageView(targets, states, host), [targets, states, host]);
 
-  const stats = useMemo(() => {
-    if (view.scans.length === 0) return null;
-    const merged = mergeScans(view.scans);
-    // A sub-range is a slice of the merged scan, so it is clamped to both of
-    // that scan's edges: it ends where the scans ended, and it opens no earlier
-    // than the window every contributing host covered. Either way no range can
-    // claim hours the data in hand does not answer for.
-    return aggregateUsage(merged, catalog, clampToScan(rangeBounds(range, merged.untilMs), merged));
-  }, [view.scans, catalog, range]);
+  const stats = useMemo(() => statsFor(view.scans, catalog, range), [view.scans, catalog, range]);
 
   const refresh = useCallback(() => load(targets, true), [load, targets]);
 
