@@ -493,10 +493,10 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       // A new turn starting clears any stale stop-suppression flag: if the
       // killed process never flushed a turn_end, this ensures the next genuine
       // completion still chimes.
-      if (e.status === "running") {
-        interruptedAgents.delete(e.agent_id);
-        erroredAgents.delete(e.agent_id);
-      }
+      if (e.status === "running") interruptedAgents.delete(e.agent_id);
+      // A spawn retry can fail again without ever reaching `running`, so a new
+      // attempt re-arms the error signal too.
+      if (e.status === "running" || e.status === "spawning") erroredAgents.delete(e.agent_id);
       // A crash or failed spawn. A user stop is `stopped`, never `error`.
       if (e.status === "error") signalError(get, e.agent_id, "Agent error");
       // The process is gone, and its sub-agents with it: whatever tasks we held
