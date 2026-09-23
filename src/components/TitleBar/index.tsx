@@ -33,7 +33,7 @@ export function TitleBar() {
       <div className="tb-right flex-center">
         <OpenInEditor />
         <IconButton tip="Send feedback" onClick={openFeedback} aria-label="Send feedback">
-          <Icon name="megaphone" />
+          <Icon name="megaphone" className="tb-megaphone" />
         </IconButton>
         <IconButton tip="History" active={historyOpen} onClick={() => toggleHistory()}>
           <Icon name="history" />
