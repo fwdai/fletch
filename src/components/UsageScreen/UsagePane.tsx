@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { SetSeg } from "@/components/SettingsScreen/primitives";
 import {
   ALL_HOSTS,
   rangeBounds,
@@ -6,7 +7,6 @@ import {
   type UsageRange,
   useUsageStats,
 } from "@/data/usage";
-import { SetSeg } from "../primitives";
 import { UsageBreakdown } from "./UsageBreakdown";
 import { UsageChart } from "./UsageChart";
 import { UsageGroupHead } from "./UsageGroupHead";

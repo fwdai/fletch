@@ -1,9 +1,9 @@
 import { Icon } from "@/components/Icon";
+import { SetHead, SetSeg } from "@/components/SettingsScreen/primitives";
 import { formatDayTick } from "@/components/Stats";
 import { IconButton } from "@/components/ui";
 import { ALL_HOSTS, type UsageHost, type UsageRange, type UsageRangeBounds } from "@/data/usage";
 import { formatAge, formatClockTime, localDay } from "@/util/format";
-import { SetHead, SetSeg } from "../primitives";
 
 const RANGES: { value: UsageRange; label: string; tip?: string }[] = [
   // Buckets are hourly, so "24h" opens on the hour containing 24 hours ago —
@@ -89,7 +89,7 @@ export function UsageHeader({
 
   return (
     <SetHead
-      eyebrow="Settings · Usage"
+      eyebrow="Usage"
       eyebrowAside={
         <div className="usg-actions">
           {hosts.length > 1 && (

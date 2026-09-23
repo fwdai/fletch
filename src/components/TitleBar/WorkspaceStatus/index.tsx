@@ -7,11 +7,13 @@ import { StatusDot } from "./StatusDot";
 
 /** The center of the title bar. Adapts to context: the active agent's live
  *  status capsule, a draft's pending name, a quiet fleet summary at Home, or a
- *  plain crumb in the settings / project screens. Replaces the old repo/agent
+ *  plain crumb in the settings / usage / project screens. Replaces the old repo/agent
  *  breadcrumb. */
 export function WorkspaceStatus() {
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
   const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
+  const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
+  const closeUsageScreen = useAppStore((s) => s.closeUsageScreen);
   const projectScreenRepoPath = useAppStore((s) => s.projectScreenRepoPath);
   const workspace = useAppStore((s) => s.workspace);
   const selectedId = useAppStore((s) => s.selectedAgentId);
@@ -24,7 +26,8 @@ export function WorkspaceStatus() {
   const projectName = (repoPath: string) =>
     workspace?.projects.find((p) => p.path === repoPath)?.name ?? basename(repoPath);
 
-  if (settingsScreenOpen) return <SettingsCrumb onHome={closeSettingsScreen} />;
+  if (settingsScreenOpen) return <ScreenCrumb label="Settings" onHome={closeSettingsScreen} />;
+  if (usageScreenOpen) return <ScreenCrumb label="Usage" onHome={closeUsageScreen} />;
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
   const agent = !draft && selectedId ? workspace?.agents.find((a) => a.id === selectedId) : null;
@@ -124,15 +127,15 @@ function DraftCapsule({
   );
 }
 
-/** Settings screen — a plain crumb back to Home. */
-function SettingsCrumb({ onHome }: { onHome: () => void }) {
+/** A full-screen surface (settings, usage) — a plain crumb back to Home. */
+function ScreenCrumb({ label, onHome }: { label: string; onHome: () => void }) {
   return (
     <div className="ws-plain">
       <button type="button" className="ws-plain-btn" onClick={onHome}>
         fletch
       </button>
       <span className="ws-plain-sep">/</span>
-      <span className="ws-plain-active">Settings</span>
+      <span className="ws-plain-active">{label}</span>
     </div>
   );
 }

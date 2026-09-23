@@ -673,3 +673,38 @@
     opacity: 1;
   }
 }
+
+/* Footer usage chip: the 7-day token count beside the account block, opening
+   the Usage screen. Composes on `.c-chip` (bordered), with a raised surface and
+   a trailing chevron so it reads as a button that goes somewhere, not as a
+   stat printed in the footer. */
+.side-foot .side-usage {
+  padding: 0 5px 0 8px;
+  background: var(--bg-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.side-foot .side-usage:hover {
+  border-color: var(--fg-3);
+}
+.side-foot .side-usage .side-usage-chev {
+  width: 12px;
+  height: 12px;
+  margin-left: -2px;
+  color: var(--fg-3);
+}
+/* First scan still running: breathe quietly until the number lands. */
+.side-foot .side-usage.pending {
+  opacity: 0.55;
+  animation: sideUsagePending 1.4s ease-in-out infinite;
+}
+@keyframes sideUsagePending {
+  50% {
+    opacity: 0.78;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-foot .side-usage.pending {
+    animation: none;
+  }
+}

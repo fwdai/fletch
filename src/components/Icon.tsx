@@ -43,6 +43,7 @@ import {
   LayoutGrid,
   ListChecks,
   Map as MapIcon,
+  Megaphone,
   MessageSquare,
   MessageSquarePlus,
   Mic,
@@ -185,6 +186,9 @@ const ICON_COMPONENTS = {
   hand: Hand,
   grip: GripVertical,
   feedback: MessageSquare,
+  // "Send feedback" to the Fletch team — a megaphone, not a speech bubble,
+  // which reads as a chat in an app whose main surface is one.
+  megaphone: Megaphone,
   chatPlus: MessageSquarePlus,
   image: Image,
   activity: Activity,

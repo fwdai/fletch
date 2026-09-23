@@ -21,7 +21,6 @@ export type SettingsSection =
   | "skills"
   | "tools"
   | "workflows"
-  | "usage"
   | "experimental"
   | "developer";
 
@@ -37,6 +36,9 @@ export interface FeatureFlags {
   thinkingBudget: boolean;
   /** Show the context-window usage meter in the composer foot. */
   tokenUsage: boolean;
+  /** Show the 7-day token count on the sidebar footer's usage chip. Off leaves
+   *  the chip as a bare icon into the Usage screen. */
+  sidebarUsage: boolean;
   /** Experimental: expose the Custom/Native view switcher so agents can be
    *  driven through the provider's own terminal UI. Off by default — native
    *  mode isn't equally solid across providers yet. */
@@ -54,6 +56,7 @@ export const DEFAULT_FEATURES: FeatureFlags = {
   terminal: false,
   thinkingBudget: true,
   tokenUsage: true,
+  sidebarUsage: true,
   nativeView: false,
   missionControl: false,
 };

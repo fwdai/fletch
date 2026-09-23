@@ -76,6 +76,12 @@
   gap: 4px;
   -webkit-app-region: no-drag;
 }
+/* The megaphone fills its box edge to edge where the round history and gear
+   glyphs leave air, so it sits a pixel under the icon-button default. */
+.tb-right .tb-megaphone {
+  width: 15px;
+  height: 15px;
+}
 .tb-vdiv {
   width: 1px;
   height: 16px;

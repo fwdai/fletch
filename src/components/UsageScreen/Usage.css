@@ -1,11 +1,19 @@
-/* ─── Settings · Usage ────────────────────────────────────────────────────
- * The all-sessions token/cost pane. Composes on the settings shell
- * (`.set-pane`, `.set-group`, `.set-group-h`) and on the shared chart + stat
- * primitives in Stats.css (`.mb-*`, `.stat-row`); only what's specific to this
- * pane lives here.
+/* ─── Usage screen ────────────────────────────────────────────────────────
+ * The all-sessions token/cost report. Composes on the settings shell
+ * (`.set-screen`, `.set-pane`, `.set-group`, `.set-group-h`) and on the shared
+ * chart + stat primitives in Stats.css (`.mb-*`, `.stat-row`); only what's
+ * specific to this screen lives here.
  *
  * Imported AFTER SettingsScreen.css and Stats.css — see the manifest in
  * app.css. */
+
+/* ── screen shell ── */
+/* No nav column here, so the back control sits atop the content column,
+   sized to its label and nudged so its text lines up with the header. */
+.usg-screen .set-back {
+  width: fit-content;
+  margin-left: -10px;
+}
 
 /* ── header controls ── */
 .usg-actions {

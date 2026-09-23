@@ -29,6 +29,9 @@ export interface UiSlice {
    *  by the target pane on mount (e.g. open the new-custom-agent editor
    *  straight from the composer's agent picker). */
   settingsIntent: SettingsIntent | null;
+  /** Full-screen usage report. Replaces the workspace panes while open, like
+   *  the settings screen; the two never show at once. */
+  usageScreenOpen: boolean;
   /** GitHub connect modal: a small app-level overlay that runs the OAuth
    *  device flow inline, so any "Connect GitHub" affordance (e.g. the Git
    *  panel) can start signing in on the first click instead of detouring
@@ -106,6 +109,8 @@ export interface UiSlice {
   setSettingsSection: (section: SettingsSection) => void;
   /** Clear a consumed `settingsIntent` so it fires only once. */
   clearSettingsIntent: () => void;
+  openUsageScreen: () => void;
+  closeUsageScreen: () => void;
   /** Open / close the GitHub connect modal (the device flow starts on open). */
   openGithubConnect: () => void;
   closeGithubConnect: () => void;
@@ -156,6 +161,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   settingsScreenOpen: false,
   settingsSection: "general" as SettingsSection,
   settingsIntent: null,
+  usageScreenOpen: false,
   githubConnectOpen: false,
   feedbackOpen: false,
   onboardingOpen: false,
@@ -185,14 +191,25 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       settingsIntent: intent ?? null,
       // The full screen takes over — dismiss the quick popover behind it, any
       // selected workflow run (its main view would be hidden anyway), and the
-      // project screen (only one full-screen surface at a time).
+      // project and usage screens (only one full-screen surface at a time).
       settingsOpen: false,
       selectedRunId: null,
       projectScreenRepoPath: null,
+      usageScreenOpen: false,
     })),
   closeSettingsScreen: () => set({ settingsScreenOpen: false }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   clearSettingsIntent: () => set({ settingsIntent: null }),
+  openUsageScreen: () =>
+    set({
+      usageScreenOpen: true,
+      // Same takeover rules as the settings screen.
+      settingsScreenOpen: false,
+      settingsOpen: false,
+      selectedRunId: null,
+      projectScreenRepoPath: null,
+    }),
+  closeUsageScreen: () => set({ usageScreenOpen: false }),
   openGithubConnect: () => set({ githubConnectOpen: true }),
   closeGithubConnect: () => set({ githubConnectOpen: false }),
   openFeedback: () => set({ feedbackOpen: true }),
@@ -225,6 +242,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       // Same takeover rules as the settings screen: one full-screen surface
       // at a time, and a hidden run view shouldn't stay selected.
       settingsScreenOpen: false,
+      usageScreenOpen: false,
       selectedRunId: null,
       // A plain open must not inherit someone else's jump request.
       roadmapFocusCode: null,

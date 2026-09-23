@@ -15,6 +15,7 @@ import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
 import { TooltipLayer } from "./components/TooltipLayer";
 import { UpdateToast } from "./components/UpdateToast";
+import { UsageScreen } from "./components/UsageScreen";
 import { Workspace } from "./components/Workspace";
 import { ACCENT_VALUES } from "./data/providers";
 import { useAppStore } from "./store";
@@ -51,6 +52,7 @@ export function App() {
   const workspace = useAppStore((s) => s.workspace);
   const historyOpen = useAppStore((s) => s.historyOpen);
   const settingsScreenOpen = useAppStore((s) => s.settingsScreenOpen);
+  const usageScreenOpen = useAppStore((s) => s.usageScreenOpen);
   const onboardingOpen = useAppStore((s) => s.onboardingOpen);
   const projectScreenRepoPath = useAppStore((s) => s.projectScreenRepoPath);
   // Count of agents that finished a turn while the user wasn't looking at them
@@ -104,6 +106,8 @@ export function App() {
       <div className="main">
         {settingsScreenOpen ? (
           <SettingsScreen />
+        ) : usageScreenOpen ? (
+          <UsageScreen />
         ) : projectScreenRepoPath ? (
           <ProjectScreen repoPath={projectScreenRepoPath} />
         ) : (
