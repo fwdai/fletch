@@ -5,7 +5,7 @@ name = "fletch-host"
 # four agree. It is what `fletch-host --version` and `fletch-host status` print,
 # and the release job names this binary's archives from the same number. Bump
 # all four together; see docs/RELEASING.md.
-version = "0.8.0"
+version = "0.8.1"
 description = "The headless Fletch host: runs the engine with no window, controllable by a paired phone or desktop over LAN or relay"
 authors = ["Alex Chaplinsky", "fwdai.org"]
 license = "AGPL-3.0-only"
