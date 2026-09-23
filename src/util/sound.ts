@@ -1,20 +1,31 @@
 // Best-effort notification sounds. Assets live in public/ and are served at
 // the web root, so no bundler import is needed.
 
-let agentDone: HTMLAudioElement | null = null;
+/** One sound per kind of out-of-app event, so each is recognisable by ear. */
+const SOUNDS = {
+  success: "/success.mp3",
+  alert: "/alert.mp3",
+  error: "/error.mp3",
+} as const;
 
-/** Play the chime that signals an agent turn finished successfully. Reuses a
- *  single Audio element and rewinds it so back-to-back turn-ends each chime.
- *  All failures (missing file, autoplay policy, no audio device) are swallowed —
- *  a notification sound is never important enough to surface as an error. */
-export function playAgentDone(): void {
+export type SoundKind = keyof typeof SOUNDS;
+
+const cache: Partial<Record<SoundKind, HTMLAudioElement>> = {};
+
+/** Play the sound for `kind`. Reuses one Audio element per kind and rewinds it
+ *  so back-to-back events each play. All failures (missing file, autoplay
+ *  policy, no audio device) are swallowed — a notification sound is never
+ *  important enough to surface as an error. */
+export function playSound(kind: SoundKind): void {
   try {
-    if (!agentDone) {
-      agentDone = new Audio("/agent_done.mp3");
-      agentDone.volume = 0.5;
+    let audio = cache[kind];
+    if (!audio) {
+      audio = new Audio(SOUNDS[kind]);
+      audio.volume = 0.5;
+      cache[kind] = audio;
     }
-    agentDone.currentTime = 0;
-    void agentDone.play().catch(() => {});
+    audio.currentTime = 0;
+    void audio.play().catch(() => {});
   } catch {
     // ignore — audio is best-effort
   }

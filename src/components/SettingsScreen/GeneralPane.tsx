@@ -75,18 +75,21 @@ export function GeneralPane() {
       </SetGroup>
 
       <SetGroup label="Notifications">
-        <SetRow title="Sound" sub="Play a chime when an agent finishes or needs your input.">
+        <SetRow
+          title="Sound"
+          sub="Play a sound when an agent finishes, needs your input, or hits an error — each has its own."
+        >
           <SetToggle on={soundEnabled} onClick={() => setSoundEnabled(!soundEnabled)} />
         </SetRow>
         <SetRow
           title="Desktop notifications"
-          sub="Show a system notification when an agent finishes or needs your input."
+          sub="Show a system notification when an agent finishes, needs your input, or hits an error."
         >
           <SetToggle on={notifyEnabled} onClick={() => setNotifyEnabled(!notifyEnabled)} />
         </SetRow>
         <SetRow
           title="Turn finished"
-          sub="Also alert when an agent finishes a turn. Alerts for needed input are always sent."
+          sub="Also alert when an agent finishes a turn. Alerts for needed input and errors are always sent."
         >
           <SetToggle
             on={notifyTurnComplete}

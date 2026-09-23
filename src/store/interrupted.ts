@@ -1,4 +1,7 @@
-// Agents the user just stopped. A killed turn may still flush a final `result`
-// event (→ turn_end) as it dies; this set suppresses the completion chime for
-// that one turn_end so a manual stop doesn't sound like a successful finish.
 export const interruptedAgents = new Set<string>();
+
+/** Agents whose current turn already signalled an error. One failure can arrive
+ *  twice — a failed turn_end, then the process exiting into `error` status — so
+ *  whichever lands first signals and the other is skipped. Cleared on `running`
+ *  and `spawning` — the start of a new turn or spawn attempt. */
+export const erroredAgents = new Set<string>();

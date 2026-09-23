@@ -44,7 +44,7 @@
 
 import type { EnvironmentId } from "./environments";
 import { detachEventListeners, registerEventListeners } from "./eventListeners";
-import { interruptedAgents } from "./interrupted";
+import { erroredAgents, interruptedAgents } from "./interrupted";
 import { clearPendingHides } from "./pendingHides";
 import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppState, SliceCreator } from "./types";
@@ -263,6 +263,7 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
       // clearing them beats namespacing: left in place, a suppressed chime or a
       // hidden row would land on the same-named agent of the other host.
       interruptedAgents.clear();
+      erroredAgents.clear();
       clearPendingHides();
 
       // The subscriptions resolved `activeTransport()` when they were made, so

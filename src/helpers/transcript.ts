@@ -250,7 +250,7 @@ export function applyEvent(
   state: AppState,
   agentId: string,
   rawEvent: RawEvent,
-): { patch: Partial<AppState>; turnEnded: boolean } {
+): { patch: Partial<AppState>; turnEnded: boolean; turnFailed: boolean } {
   const adapter = getAdapter(providerFor(state, agentId));
   const prev = state.managedLogs[agentId] ?? [];
   let next: ChatItem[];
@@ -262,21 +262,23 @@ export function applyEvent(
       type: rawEvent.type,
       err,
     });
-    return { patch: {}, turnEnded: false };
+    return { patch: {}, turnEnded: false, turnFailed: false };
   }
-  if (next === prev) return { patch: {}, turnEnded: false };
+  if (next === prev) return { patch: {}, turnEnded: false, turnFailed: false };
 
   // `result` events signal turn end for claude; mirror that state on the
   // store so the composer re-enables. Adapter-agnostic: any notice with
   // subtype "turn_end" appended this tick clears managedBusy. The `next !== prev`
   // guard above means this is true exactly once per turn-end.
+  const last = next[next.length - 1] as { kind?: string; subtype?: string; text?: string };
   const turnEnded =
-    next.length > prev.length &&
-    next[next.length - 1]?.kind === "notice" &&
-    (next[next.length - 1] as { subtype?: string }).subtype === "turn_end";
+    next.length > prev.length && last?.kind === "notice" && last.subtype === "turn_end";
+  // Adapters close a failed turn with the same notice, text "error".
+  const turnFailed = turnEnded && last.text === "error";
 
   return {
     turnEnded,
+    turnFailed,
     patch: {
       managedLogs: { ...state.managedLogs, [agentId]: next },
       managedBusy: turnEnded ? { ...state.managedBusy, [agentId]: false } : state.managedBusy,
