@@ -81,7 +81,7 @@
   border-radius: 0 2px 2px 0;
   background: var(--accent);
 }
-/* Non-interactive group header between nav entries; empty = plain spacer. */
+/* Non-interactive group header between nav entries. */
 .set-nav-group {
   margin-top: 14px;
   padding: 0 11px 4px;
@@ -90,9 +90,6 @@
   text-transform: uppercase;
   color: var(--fg-3);
   user-select: none;
-}
-.set-nav-group:empty {
-  padding: 0;
 }
 
 .set-nav-foot {

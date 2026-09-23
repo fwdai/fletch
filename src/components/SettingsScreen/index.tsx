@@ -29,10 +29,10 @@ const DeveloperPane = lazy(() =>
 // Built-in sections carry explicit order weights so extension panes can slot
 // *between* them via their own `order`, not just append. Each `group` owns a
 // contiguous band of weights (Interface 30s, Agents 40s, Guardrails 50s,
-// Devices 60s, the headerless foot 70s), so a
-// conditional entry lands inside its group whenever it is shown. `group` is the
-// display label of the nav header the entry sits under; entries without one
-// render headerless. `subsections` groups several sections behind a single nav
+// Devices 60s, Advanced 70s), so a conditional entry lands inside its group
+// whenever it is shown. `group` is the display label of the nav header the
+// entry sits under; only the Account / General basics at the top go without
+// one. `subsections` groups several sections behind a single nav
 // entry, surfaced as an in-pane segmented switch (see CUSTOMIZE_IDS below).
 type NavItem = {
   id: SettingsSection;
@@ -66,6 +66,10 @@ const GUARDRAILS_GROUP = "Guardrails";
 // One entry today — the header still earns its place by saying what Remote
 // control is about, and by marking where the next device-side section goes.
 const DEVICES_GROUP = "Devices";
+// The conventional tail: things most people never open. A regular user sees
+// "Advanced › Experimental" — a deliberate category, not a stray entry under
+// Devices — and an admin's Developer slots in under the same header.
+const ADVANCED_GROUP = "Advanced";
 
 // General holds only what has no better home (appearance, alerts, privacy);
 // every feature with more than a knob or two gets its own entry so its settings
@@ -89,14 +93,20 @@ const NAV: NavItem[] = [
   { id: "sandbox", label: "Sandbox", icon: "cube", order: 50, group: GUARDRAILS_GROUP },
   { id: "git", label: "Git", icon: "branch", order: 53, group: GUARDRAILS_GROUP },
   { id: "remote", label: "Remote control", icon: "phone", order: 60, group: DEVICES_GROUP },
-  { id: "experimental", label: "Experimental", icon: "flask", order: 70 },
+  { id: "experimental", label: "Experimental", icon: "flask", order: 70, group: ADVANCED_GROUP },
 ];
 // Stable sort by weight keeps contribution order on ties.
 NAV.sort((a, b) => a.order - b.order);
 
 // Developer is appended at render only when unlocked (dev build or admin user),
 // so it slots by `order` among the base entries above.
-const DEVELOPER_NAV: NavItem = { id: "developer", label: "Developer", icon: "wrench", order: 73 };
+const DEVELOPER_NAV: NavItem = {
+  id: "developer",
+  label: "Developer",
+  icon: "wrench",
+  order: 73,
+  group: ADVANCED_GROUP,
+};
 
 // Dictation replaces Apple's recognizer, so there is nothing to configure on
 // other platforms; the entry is added at render only on macOS. Its own entry
@@ -160,23 +170,15 @@ export function SettingsScreen() {
         <div className="set-nav-list">
           {nav.map((n, i) => {
             // A header opens wherever the group changes between consecutive
-            // visible entries, so a group with nothing visible never shows
-            // one. Falling back to headerless entries after a group (the
-            // Experimental / Developer foot) renders an empty spacer instead,
-            // so they don't read as part of the group above.
-            const prev = nav[i - 1];
-            const opensGroup = prev ? n.group !== prev.group : !!n.group;
+            // visible entries, so a group with nothing visible never shows one.
+            const opensGroup = !!n.group && n.group !== nav[i - 1]?.group;
             // A grouped entry stays active for any of its sub-sections, and
             // clicking it while already inside the group keeps the current
             // sub-tab rather than snapping back to the default.
             const active = n.subsections ? n.subsections.includes(section) : section === n.id;
             return (
               <Fragment key={n.id}>
-                {opensGroup && (
-                  <div className="set-nav-group mono text-xs" aria-hidden={!n.group}>
-                    {n.group}
-                  </div>
-                )}
+                {opensGroup && <div className="set-nav-group mono text-xs">{n.group}</div>}
                 <button
                   className={`set-nav-item flex-center text-base ${active ? "active" : ""}`}
                   onClick={() => {
