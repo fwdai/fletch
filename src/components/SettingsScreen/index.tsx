@@ -3,13 +3,16 @@ import { Icon, type IconName } from "@/components/Icon";
 import type { SettingsSection } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
+import { IS_MAC } from "@/util/platform";
 import { WorkflowsPane } from "@/workflows/builder";
 import pkg from "../../../package.json";
 import { AccountPane } from "./AccountPane";
 import { CustomAgentsPane } from "./CustomAgents";
+import { DictationPane } from "./Dictation";
 import { ExperimentalPane } from "./ExperimentalPane";
 import { GeneralPane } from "./GeneralPane";
 import { GitPane } from "./GitPane";
+import { LayoutPane } from "./LayoutPane";
 import { McpServersPane } from "./McpServers";
 import { ProvidersPane } from "./ProvidersPane";
 import { RemoteControlPane } from "./RemoteControl";
@@ -25,7 +28,8 @@ const DeveloperPane = lazy(() =>
 
 // Built-in sections carry explicit order weights so extension panes can slot
 // *between* them via their own `order`, not just append. Each `group` owns a
-// contiguous band of weights (Agents 30s, Guardrails 40s, Devices 50s), so a
+// contiguous band of weights (Interface 30s, Agents 40s, Guardrails 50s,
+// Devices 60s, the headerless foot 70s), so a
 // conditional entry lands inside its group whenever it is shown. `group` is the
 // display label of the nav header the entry sits under; entries without one
 // render headerless. `subsections` groups several sections behind a single nav
@@ -45,6 +49,10 @@ type NavItem = {
 // The nav entry's `id` is the default sub-tab.
 const CUSTOMIZE_IDS: SettingsSection[] = ["agents", "tools", "skills"];
 
+// The agent view itself: what appears around an agent and how you talk to it.
+// Not "Workspace" — the title bar already calls agent sessions workspaces, and
+// a Workspace group would read as settings about those.
+const INTERFACE_GROUP = "Interface";
 const AGENTS_GROUP = "Agents";
 // Named for what the group is *for*, not the mechanism: what agents may touch
 // (sandbox isolation, engine, container auth) and how their work is allowed to
@@ -59,35 +67,48 @@ const GUARDRAILS_GROUP = "Guardrails";
 // control is about, and by marking where the next device-side section goes.
 const DEVICES_GROUP = "Devices";
 
-// General holds the app-wide basics (appearance, panels, composer, alerts);
+// General holds only what has no better home (appearance, alerts, privacy);
 // every feature with more than a knob or two gets its own entry so its settings
 // aren't buried in a long General page.
 const NAV: NavItem[] = [
   { id: "account", label: "Account", icon: "user", order: 10 },
   { id: "general", label: "General", icon: "settings", order: 20 },
-  { id: "providers", label: "Providers", icon: "blocks", order: 30, group: AGENTS_GROUP },
+  { id: "layout", label: "Layout", icon: "panelGrid", order: 30, group: INTERFACE_GROUP },
+  { id: "providers", label: "Providers", icon: "blocks", order: 40, group: AGENTS_GROUP },
   {
     id: "agents",
     label: "Customize",
     icon: "shapes",
-    order: 33,
+    order: 43,
     group: AGENTS_GROUP,
     subsections: CUSTOMIZE_IDS,
   },
   // Sandbox leads the group so the header's meaning lands at a glance. The box
   // is the app's existing sandbox glyph (SandboxBadge, the env-vars sandbox
   // toggle), so the nav entry matches it.
-  { id: "sandbox", label: "Sandbox", icon: "cube", order: 40, group: GUARDRAILS_GROUP },
-  { id: "git", label: "Git", icon: "branch", order: 43, group: GUARDRAILS_GROUP },
-  { id: "remote", label: "Remote control", icon: "phone", order: 50, group: DEVICES_GROUP },
-  { id: "experimental", label: "Experimental", icon: "flask", order: 60 },
+  { id: "sandbox", label: "Sandbox", icon: "cube", order: 50, group: GUARDRAILS_GROUP },
+  { id: "git", label: "Git", icon: "branch", order: 53, group: GUARDRAILS_GROUP },
+  { id: "remote", label: "Remote control", icon: "phone", order: 60, group: DEVICES_GROUP },
+  { id: "experimental", label: "Experimental", icon: "flask", order: 70 },
 ];
 // Stable sort by weight keeps contribution order on ties.
 NAV.sort((a, b) => a.order - b.order);
 
 // Developer is appended at render only when unlocked (dev build or admin user),
 // so it slots by `order` among the base entries above.
-const DEVELOPER_NAV: NavItem = { id: "developer", label: "Developer", icon: "wrench", order: 63 };
+const DEVELOPER_NAV: NavItem = { id: "developer", label: "Developer", icon: "wrench", order: 73 };
+
+// Dictation replaces Apple's recognizer, so there is nothing to configure on
+// other platforms; the entry is added at render only on macOS. Its own entry
+// rather than a group in Layout: besides the two toggles it owns the model
+// choice and the weights download, which is a feature, not a display option.
+const DICTATION_NAV: NavItem = {
+  id: "dictation",
+  label: "Dictation",
+  icon: "mic",
+  order: 33,
+  group: INTERFACE_GROUP,
+};
 
 // Right after Customize — workflows chain those custom agents. Added at render
 // because a host answers no `wf_*` op (docs/multi-host-plan.md §5.3, item 2):
@@ -98,7 +119,7 @@ const WORKFLOWS_NAV: NavItem = {
   id: "workflows",
   label: "Workflows",
   icon: "combine",
-  order: 36,
+  order: 46,
   group: AGENTS_GROUP,
 };
 
@@ -119,13 +140,14 @@ export function SettingsScreen() {
       [
         ...NAV,
         ...(workflowGate ? [] : [WORKFLOWS_NAV]),
+        ...(IS_MAC ? [DICTATION_NAV] : []),
         ...(showDeveloper ? [DEVELOPER_NAV] : []),
       ].sort((a, b) => a.order - b.order),
     [showDeveloper, workflowGate],
   );
 
   // A section with no nav entry (a stale "developer" after the admin flag
-  // flipped off, or "workflows" once the gate closed) falls back to General.
+  // flipped off, or "dictation" off-Mac) falls back to General.
   const visible = nav.some((n) => n.id === section || n.subsections?.includes(section));
 
   return (
@@ -180,6 +202,8 @@ export function SettingsScreen() {
           {!visible && <GeneralPane />}
           {visible && section === "general" && <GeneralPane />}
           {visible && section === "account" && <AccountPane />}
+          {visible && section === "layout" && <LayoutPane />}
+          {visible && section === "dictation" && <DictationPane />}
           {visible && section === "git" && <GitPane />}
           {visible && section === "sandbox" && <SandboxPane />}
           {visible && section === "remote" && <RemoteControlPane />}

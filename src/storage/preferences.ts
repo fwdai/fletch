@@ -11,6 +11,8 @@ export type ThemeMode = "dark" | "light";
 export type SettingsSection =
   | "general"
   | "account"
+  | "layout"
+  | "dictation"
   | "git"
   | "sandbox"
   | "remote"

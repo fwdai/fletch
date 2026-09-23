@@ -5,56 +5,12 @@ import { CODE_THEMES } from "@/data/codeThemes";
 import { ACCENTS } from "@/data/providers";
 import type { ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
-import { IS_MAC } from "@/util/platform";
-import { DictationGroup } from "./Dictation";
-import { type FeatureItem, SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
+import { SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 const CODE_THEME_OPTIONS = CODE_THEMES.map((t) => ({ value: t.id, label: t.label }));
 
-const SIDE_PANELS: FeatureItem[] = [
-  { key: "git", title: "Git", sub: "Branch, changed files, and commit, push, and PR actions." },
-  {
-    key: "code",
-    title: "Code",
-    sub: "Browse and edit checkout files, with a live feed of the agent's diffs.",
-  },
-  {
-    key: "run",
-    title: "Run",
-    sub: "Start the project's dev server with auto-detected, editable config.",
-  },
-  { key: "terminal", title: "Terminal", sub: "Interactive shell scoped to the checkout." },
-];
-
-const COMPOSER: FeatureItem[] = [
-  {
-    key: "thinkingBudget",
-    title: "Thinking budget",
-    sub: "Show a low / medium / high reasoning cap in the composer.",
-  },
-  {
-    key: "tokenUsage",
-    title: "Token usage",
-    sub: "Show the context-window usage meter in the composer.",
-  },
-];
-
-/** One toggle row per feature flag. */
-function FeatureRows({ items }: { items: FeatureItem[] }) {
-  const features = useAppStore((s) => s.features);
-  const setFeature = useAppStore((s) => s.setFeature);
-  return items.map((it) => (
-    <SetRow key={it.key} title={it.title} sub={it.sub}>
-      <SetToggle on={!!features[it.key]} onClick={() => setFeature(it.key, !features[it.key])} />
-    </SetRow>
-  ));
-}
-
-/** App-wide basics: look, which panels and composer controls appear around an
- *  agent, how you dictate to it, alerts, and diagnostics. Anything with more
- *  than a knob or two (git, sandboxing, remote control) has its own section.
- *  Group labels and order match the quick-settings popover so the same setting
- *  reads the same on both. */
+/** App-wide basics only. Anything scoped to a feature (workspace panels, git,
+ *  sandboxing, dictation) has its own section. */
 export function GeneralPane() {
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
@@ -77,7 +33,7 @@ export function GeneralPane() {
       <SetHead
         eyebrow="Settings · General"
         title="General"
-        desc="How Fletch looks, which panels and composer controls appear around an agent, how you dictate to it, when it alerts you, and what it shares."
+        desc="How Fletch looks, when it alerts you, and what it shares."
       />
 
       <SetGroup label="Appearance">
@@ -117,18 +73,6 @@ export function GeneralPane() {
           />
         </SetRow>
       </SetGroup>
-
-      <SetGroup label="Side panels">
-        <FeatureRows items={SIDE_PANELS} />
-      </SetGroup>
-
-      <SetGroup label="Composer">
-        <FeatureRows items={COMPOSER} />
-      </SetGroup>
-
-      {/* Right under Composer: dictation is another way of talking to it.
-          macOS-only, like the recognizer it replaces. */}
-      {IS_MAC && <DictationGroup />}
 
       <SetGroup label="Notifications">
         <SetRow title="Sound" sub="Play a chime when an agent finishes or needs your input.">
