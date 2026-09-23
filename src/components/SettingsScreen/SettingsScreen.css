@@ -14,6 +14,10 @@
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  /* Bounded by the row it sits in, not by its content: at the 600px window
+     minimum the full macOS/admin list is taller than the column, and the list
+     below scrolls inside it rather than pushing entries out of reach. */
+  min-height: 0;
   background: var(--bg-0);
   border-right: 1px solid var(--bd-soft);
   padding: 14px 12px 10px;
@@ -43,6 +47,15 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
+  /* The one part of the column that scrolls; the back button above and the
+     version foot below stay pinned. The horizontal margin/padding pair widens
+     the scroll box over the nav's own padding so the active item's accent bar
+     (`::before`, 12px to the left) stays inside it instead of being clipped. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 -12px;
+  padding: 0 12px;
 }
 .set-nav-item {
   gap: 11px;
@@ -80,6 +93,16 @@
   width: 2px;
   border-radius: 0 2px 2px 0;
   background: var(--accent);
+}
+/* Non-interactive group header between nav entries. */
+.set-nav-group {
+  margin-top: 14px;
+  padding: 0 11px 4px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  user-select: none;
 }
 
 .set-nav-foot {

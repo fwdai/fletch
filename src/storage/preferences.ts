@@ -11,11 +11,11 @@ export type ThemeMode = "dark" | "light";
 export type SettingsSection =
   | "general"
   | "account"
-  | "workspace"
+  | "layout"
+  | "dictation"
   | "git"
   | "sandbox"
   | "remote"
-  | "dictation"
   | "providers"
   | "agents"
   | "skills"

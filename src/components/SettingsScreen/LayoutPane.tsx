@@ -29,39 +29,48 @@ const COMPOSER: FeatureItem[] = [
   },
 ];
 
-/** Which surfaces appear around an agent: the right-rail panels and the
- *  composer's optional controls. */
-export function WorkspacePane() {
+const SIDEBAR: FeatureItem[] = [
+  {
+    key: "sidebarUsage",
+    title: "Usage chip",
+    sub: "Show the past 7 days' token count next to your account, opening the Usage screen.",
+  },
+];
+
+/** One toggle row per feature flag. */
+function FeatureRows({ items }: { items: FeatureItem[] }) {
   const features = useAppStore((s) => s.features);
   const setFeature = useAppStore((s) => s.setFeature);
-
-  const FeatureRow = ({ item }: { item: FeatureItem }) => (
-    <SetRow title={item.title} sub={item.sub}>
-      <SetToggle
-        on={!!features[item.key]}
-        onClick={() => setFeature(item.key, !features[item.key])}
-      />
+  return items.map((it) => (
+    <SetRow key={it.key} title={it.title} sub={it.sub}>
+      <SetToggle on={!!features[it.key]} onClick={() => setFeature(it.key, !features[it.key])} />
     </SetRow>
-  );
+  ));
+}
 
+/** Settings › Interface › Layout: what appears where around an agent — the
+ *  right-rail panels, the composer's optional controls, and the sidebar's
+ *  extras. Group labels and order match the quick-settings popover so the same
+ *  toggle reads the same on both. */
+export function LayoutPane() {
   return (
     <div className="set-pane">
       <SetHead
-        eyebrow="Settings · Workspace"
-        title="Workspace"
-        desc="Choose which panels and composer controls appear while you work with an agent."
+        eyebrow="Settings · Layout"
+        title="Layout"
+        desc="Choose which panels, composer controls and sidebar extras appear while you work with an agent."
       />
 
       <SetGroup label="Side panels">
-        {SIDE_PANELS.map((it) => (
-          <FeatureRow key={it.key} item={it} />
-        ))}
+        <FeatureRows items={SIDE_PANELS} />
       </SetGroup>
 
-      <SetGroup label="Composer" last>
-        {COMPOSER.map((it) => (
-          <FeatureRow key={it.key} item={it} />
-        ))}
+      <SetGroup label="Composer">
+        <FeatureRows items={COMPOSER} />
+      </SetGroup>
+
+      <SetGroup label="Sidebar" last>
+        <FeatureRows items={SIDEBAR} />
       </SetGroup>
     </div>
   );
