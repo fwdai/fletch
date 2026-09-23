@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo } from "react";
+import { Fragment, lazy, Suspense, useMemo } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import type { SettingsSection } from "@/storage/preferences";
 import { useAppStore } from "@/store";
@@ -17,7 +17,6 @@ import { ProvidersPane } from "./ProvidersPane";
 import { RemoteControlPane } from "./RemoteControl";
 import { SandboxPane } from "./Sandbox";
 import { SkillsPane } from "./Skills";
-import { WorkspacePane } from "./WorkspacePane";
 
 // Lazily loaded — code-split into its own chunk, fetched only when the Developer
 // section is actually opened. Visibility is gated at render (dev builds, or an
@@ -26,15 +25,19 @@ const DeveloperPane = lazy(() =>
   import("./DeveloperPane").then((m) => ({ default: m.DeveloperPane })),
 );
 
-// Built-in sections carry explicit order weights (spaced by 10) so extension
-// panes can slot *between* them via their own `order`, not just append.
-// `subsections` groups several sections behind a single nav entry, surfaced as
-// an in-pane segmented switch (see CUSTOMIZE_IDS below).
+// Built-in sections carry explicit order weights so extension panes can slot
+// *between* them via their own `order`, not just append. Each `group` owns a
+// contiguous band of weights (Agents 30s, Checkouts 40s, This Mac 50s), so a
+// conditional entry lands inside its group whenever it is shown. `group` is the
+// display label of the nav header the entry sits under; entries without one
+// render headerless. `subsections` groups several sections behind a single nav
+// entry, surfaced as an in-pane segmented switch (see CUSTOMIZE_IDS below).
 type NavItem = {
   id: SettingsSection;
   label: string;
   icon: IconName;
   order: number;
+  group?: string;
   subsections?: SettingsSection[];
 };
 
@@ -44,44 +47,61 @@ type NavItem = {
 // The nav entry's `id` is the default sub-tab.
 const CUSTOMIZE_IDS: SettingsSection[] = ["agents", "tools", "skills"];
 
-// General holds only app-wide basics; every feature with more than a knob or
-// two gets its own entry so its settings aren't buried in a long General page.
+const AGENTS_GROUP = "Agents";
+const CHECKOUTS_GROUP = "Checkouts";
+const MAC_GROUP = "This Mac";
+
+// General holds the app-wide basics (appearance, panels, composer, alerts);
+// every feature with more than a knob or two gets its own entry so its settings
+// aren't buried in a long General page.
 const NAV: NavItem[] = [
   { id: "account", label: "Account", icon: "user", order: 10 },
   { id: "general", label: "General", icon: "settings", order: 20 },
-  { id: "workspace", label: "Workspace", icon: "laptop", order: 25 },
-  { id: "providers", label: "Providers", icon: "blocks", order: 30 },
-  { id: "git", label: "Git", icon: "branch", order: 33 },
-  // The box is the app's existing sandbox glyph (SandboxBadge, the env-vars
-  // sandbox toggle), so the nav entry matches it.
-  { id: "sandbox", label: "Sandbox", icon: "cube", order: 36 },
+  { id: "providers", label: "Providers", icon: "blocks", order: 30, group: AGENTS_GROUP },
   {
     id: "agents",
     label: "Customize",
     icon: "shapes",
-    order: 40,
+    order: 33,
+    group: AGENTS_GROUP,
     subsections: CUSTOMIZE_IDS,
   },
-  { id: "remote", label: "Remote control", icon: "phone", order: 45 },
-  { id: "experimental", label: "Experimental", icon: "flask", order: 50 },
+  { id: "git", label: "Git", icon: "branch", order: 40, group: CHECKOUTS_GROUP },
+  // The box is the app's existing sandbox glyph (SandboxBadge, the env-vars
+  // sandbox toggle), so the nav entry matches it.
+  { id: "sandbox", label: "Sandbox", icon: "cube", order: 43, group: CHECKOUTS_GROUP },
+  { id: "remote", label: "Remote control", icon: "phone", order: 50, group: MAC_GROUP },
+  { id: "experimental", label: "Experimental", icon: "flask", order: 60 },
 ];
 // Stable sort by weight keeps contribution order on ties.
 NAV.sort((a, b) => a.order - b.order);
 
 // Dictation replaces Apple's recognizer, so there is nothing to configure on
 // other platforms; the entry is added at render only on macOS.
-const DICTATION_NAV: NavItem = { id: "dictation", label: "Dictation", icon: "mic", order: 47 };
+const DICTATION_NAV: NavItem = {
+  id: "dictation",
+  label: "Dictation",
+  icon: "mic",
+  order: 53,
+  group: MAC_GROUP,
+};
 
 // Developer is appended at render only when unlocked (dev build or admin user),
 // so it slots by `order` among the base entries above.
-const DEVELOPER_NAV: NavItem = { id: "developer", label: "Developer", icon: "wrench", order: 60 };
+const DEVELOPER_NAV: NavItem = { id: "developer", label: "Developer", icon: "wrench", order: 63 };
 
 // Right after Customize — workflows chain those custom agents. Added at render
 // because a host answers no `wf_*` op (docs/multi-host-plan.md §5.3, item 2):
 // on a remote environment a run launched from here could not start, so the
 // section is not offered. Everything else in Settings is about this desktop and
 // stays put whatever environment is active.
-const WORKFLOWS_NAV: NavItem = { id: "workflows", label: "Workflows", icon: "combine", order: 41 };
+const WORKFLOWS_NAV: NavItem = {
+  id: "workflows",
+  label: "Workflows",
+  icon: "combine",
+  order: 36,
+  group: AGENTS_GROUP,
+};
 
 /** Dedicated full-screen settings surface. Rendered in place of the workspace
  *  panes while `settingsScreenOpen` is true. The quick-settings popover stays
@@ -118,23 +138,36 @@ export function SettingsScreen() {
           <span>Back to app</span>
         </button>
         <div className="set-nav-list">
-          {nav.map((n) => {
+          {nav.map((n, i) => {
+            // A header opens wherever the group changes between consecutive
+            // visible entries, so a group with nothing visible never shows
+            // one. Falling back to headerless entries after a group (the
+            // Experimental / Developer foot) renders an empty spacer instead,
+            // so they don't read as part of the group above.
+            const prev = nav[i - 1];
+            const opensGroup = prev ? n.group !== prev.group : !!n.group;
             // A grouped entry stays active for any of its sub-sections, and
             // clicking it while already inside the group keeps the current
             // sub-tab rather than snapping back to the default.
             const active = n.subsections ? n.subsections.includes(section) : section === n.id;
             return (
-              <button
-                key={n.id}
-                className={`set-nav-item flex-center text-base ${active ? "active" : ""}`}
-                onClick={() => {
-                  if (active && n.subsections) return;
-                  setSection(n.id);
-                }}
-              >
-                <Icon name={n.icon} size={14} />
-                <span>{n.label}</span>
-              </button>
+              <Fragment key={n.id}>
+                {opensGroup && (
+                  <div className="set-nav-group mono text-xs" aria-hidden={!n.group}>
+                    {n.group}
+                  </div>
+                )}
+                <button
+                  className={`set-nav-item flex-center text-base ${active ? "active" : ""}`}
+                  onClick={() => {
+                    if (active && n.subsections) return;
+                    setSection(n.id);
+                  }}
+                >
+                  <Icon name={n.icon} size={14} />
+                  <span>{n.label}</span>
+                </button>
+              </Fragment>
             );
           })}
         </div>
@@ -149,7 +182,6 @@ export function SettingsScreen() {
           {!visible && <GeneralPane />}
           {visible && section === "general" && <GeneralPane />}
           {visible && section === "account" && <AccountPane />}
-          {visible && section === "workspace" && <WorkspacePane />}
           {visible && section === "git" && <GitPane />}
           {visible && section === "sandbox" && <SandboxPane />}
           {visible && section === "remote" && <RemoteControlPane />}
