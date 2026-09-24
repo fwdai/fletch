@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { AgentRecord, WfRun } from "@/api";
 import { Icon } from "@/components/Icon";
 import type { DraftAgent } from "@/store";
@@ -6,6 +6,7 @@ import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { RunRow } from "@/workflows/run/RunRow";
 import { AgentRow } from "./AgentRow";
+import { foldAgents } from "./foldAgents";
 
 interface Props {
   /** Project display name. */
@@ -23,6 +24,9 @@ interface Props {
   /** Whether the user has expanded this group. */
   open: boolean;
   onToggle: () => void;
+  /** Fold stale and over-cap workspaces behind an "older" row (see
+   *  `foldAgents`). Off while searching: every remaining row is a match. */
+  fold: boolean;
   /** Whether this group can be dragged to reorder (disabled while searching). */
   reorderable: boolean;
   /** This group is the one currently being dragged. */
@@ -44,6 +48,7 @@ export function ProjectGroup({
   runs,
   open,
   onToggle,
+  fold,
   reorderable,
   dragging,
   dropIndicator,
@@ -60,6 +65,21 @@ export function ProjectGroup({
   const roadmapGate = useGate("roadmap");
 
   const count = agents.length + drafts.length + runs.length;
+
+  // "Show N older" unfolds the group until it is folded again; the choice is
+  // per group and per mount, so a fresh launch starts tidy. The rows above the
+  // fold keep their places either way: the older ones are revealed BELOW the
+  // fold row, never re-interleaved by date, so a pinned (selected / running)
+  // row that predates some hidden ones doesn't watch them jump in above it.
+  const [unfolded, setUnfolded] = useState(false);
+  const { shown, hidden } = useMemo(
+    () =>
+      fold
+        ? foldAgents(agents, { now: Date.now(), selectedId: selectedAgentId })
+        : { shown: agents, hidden: [] },
+    [fold, agents, selectedAgentId],
+  );
+  const foldable = hidden.length > 0;
 
   function onAddAgent(e: React.MouseEvent) {
     e.stopPropagation();
@@ -138,7 +158,7 @@ export function ProjectGroup({
             onClick={() => selectDraft(d.id)}
           />
         ))}
-        {agents.map((a) => (
+        {shown.map((a) => (
           <AgentRow
             key={a.id}
             kind="real"
@@ -147,6 +167,28 @@ export function ProjectGroup({
             onClick={() => selectAgent(a.id)}
           />
         ))}
+        {unfolded &&
+          hidden.map((a) => (
+            <AgentRow
+              key={a.id}
+              kind="real"
+              agent={a}
+              active={a.id === selectedAgentId}
+              onClick={() => selectAgent(a.id)}
+            />
+          ))}
+        {/* The toggle closes the list either way: "N older" under the recent
+            rows, "Show fewer" under the revealed ones, where the eye is. */}
+        {foldable && (
+          <button
+            type="button"
+            className="agents-fold text-sm"
+            onClick={() => setUnfolded((v) => !v)}
+          >
+            <Icon name={unfolded ? "chevU" : "chevD"} size={10} />
+            {unfolded ? "Show fewer" : `${hidden.length} older`}
+          </button>
+        )}
         {runs
           .filter((run) => !run.parent_run_id)
           .flatMap((run) => [

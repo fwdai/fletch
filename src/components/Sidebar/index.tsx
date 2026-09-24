@@ -348,6 +348,7 @@ export function Sidebar() {
                   runs={g.runs}
                   open={isGroupOpen(g.key, searching, openMap, searchOpenMap)}
                   onToggle={() => toggleGroup(g.key)}
+                  fold={!searching}
                   reorderable={reorderable}
                   dragging={dragPath === g.primaryPath}
                   dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}

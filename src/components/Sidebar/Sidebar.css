@@ -335,6 +335,31 @@
   overflow: hidden;
 }
 
+/* The fold row under a project's recent workspaces: the rest of the list,
+ * one click away. Sits on the row grid (same left inset as `.agent`) but
+ * stays muted, and is not a selectable row — the arrow keys step past it. */
+.agents-fold {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 5px 9px 5px 13px;
+  border-radius: var(--r-sm);
+  color: var(--fg-3);
+  text-align: left;
+  transition:
+    color 0.12s,
+    background 0.12s;
+}
+.agents-fold:hover {
+  color: var(--fg-1);
+  background: color-mix(in oklch, var(--bd-soft) 50%, transparent);
+}
+.agents-fold:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: -1px;
+}
+
 .agent {
   --ag-sync: 2.4s;
   display: block;
