@@ -23,6 +23,12 @@ export interface GitSlice {
    *  its repos). For sidebar shortstats / right-rail badges of other agents,
    *  read from `gitShortstats` instead. */
   gitStates: Record<string, GitState>;
+  /** Config keys Fletch refuses to run git over, by `checkoutKey`, for each
+   *  checkout whose last poll came back blocked (`GitState.blocked_config`).
+   *  Kept out of `gitStates` on purpose: a blocked reply is a zero-state — no
+   *  files, nothing unpushed — which delegation, autopilot and the badges would
+   *  read as "committed and pushed". They keep the last real state instead. */
+  gitBlocked: Record<string, string[]>;
   /** Compact per-agent shortstats (additions / deletions / file count),
    *  keyed by agent_id. Updated for every live agent on the app-wide 5s
    *  poll — kept in its own map so the focused agent's richer `gitStates`
@@ -153,6 +159,9 @@ export interface GitSlice {
   stashChanges: (agentId: string, subdir?: string) => Promise<void>;
   discardChanges: (agentId: string, subdir?: string) => Promise<void>;
   abortMerge: (agentId: string, subdir?: string) => Promise<void>;
+  /** Remove the config keys blocking the checkout (`GitState.blocked_config`).
+   *  True once they are gone and the panel has re-read the checkout. */
+  clearCheckoutConfig: (agentId: string, subdir?: string) => Promise<boolean>;
   deleteBranch: (agentId: string, subdir?: string) => Promise<void>;
   createPr: (
     agentId: string,
@@ -265,6 +274,7 @@ const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   gitStates: {},
+  gitBlocked: {},
   gitShortstats: {},
   gitMeta: {},
   prStates: {},
@@ -281,9 +291,17 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   fetchGitState: async (agentId, subdir) => {
     try {
       const state = await api.getGitState(agentId, subdir);
-      if (state) {
-        set((s) => ({ gitStates: { ...s.gitStates, [checkoutKey(agentId, subdir)]: state } }));
+      if (!state) return;
+      const key = checkoutKey(agentId, subdir);
+      const blocked = state.blocked_config ?? [];
+      if (blocked.length > 0) {
+        set((s) => ({ gitBlocked: { ...s.gitBlocked, [key]: blocked } }));
+        return;
       }
+      set((s) => {
+        const { [key]: _cleared, ...gitBlocked } = s.gitBlocked;
+        return { gitStates: { ...s.gitStates, [key]: state }, gitBlocked };
+      });
     } catch {
       // non-fatal — next poll tick will retry
     }
@@ -587,6 +605,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   abortMerge: async (agentId, subdir) => {
     await runGitMutation(get, agentId, () => api.abortMergeAgent(agentId, subdir), subdir);
   },
+
+  clearCheckoutConfig: (agentId, subdir) =>
+    runGitMutation(get, agentId, () => api.clearCheckoutConfig(agentId, subdir), subdir),
 
   deleteBranch: async (agentId, subdir) => {
     await runGitMutation(get, agentId, () => api.deleteBranchAgent(agentId, subdir), subdir);

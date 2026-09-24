@@ -427,7 +427,7 @@ The six scopes, and what each one covers:
 | scope | covers |
 |---|---|
 | `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `scan_usage_transcripts`, `approvals_list` |
-| `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`) |
+| `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`, `clear_checkout_config`) |
 | `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos |
 | `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
@@ -531,7 +531,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `read_user_turns` | `{ agentId }` | `UserTurn[]` |
 | `sync_session` | `{ agentId }` | `null` |
 | `read_live_turn` | `{ agentId }` — the `event` payloads of the agent's current turn, oldest first, as they were forwarded on `agent:event`; `dropped` counts events cut from the head when the turn outgrew the host's buffer; `next_seq` is the `seq` the agent's next `agent:event` will carry, so a frame with `seq >= next_seq` is one the snapshot does not hold. Empty for a turn that ran under a previous host process or in the native view. No desktop command of this name yet | `{ events: object[], dropped: number, next_seq: number }` |
-| `get_git_state` | `{ agentId }` | `GitState \| null` |
+| `get_git_state` | `{ agentId }` — a checkout whose config Fletch refuses to run git over comes back as a zero-state with the keys in `blocked_config` | `GitState \| null` |
 | `get_all_shortstats` | `{}` — uncommitted working-tree stats for every live agent; archived and still-cloning agents are omitted | `Record<agentId, ShortStats>` |
 | `get_all_git_meta` | `{}` — advisory local-git metadata per checkout (base staleness, changed paths), keyed like the PR maps (`agentId` for the primary repo, `"{agentId}::{subdir}"` for secondaries); no network | `Record<gitKey, GitMeta>` |
 | `list_checkout_tree` | as command | `CheckoutFile[]` |
@@ -544,6 +544,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `stash_agent` | as command — stashes the working tree, untracked files included | `null` |
 | `discard_agent_changes` | as command — destructive: every uncommitted change in the checkout goes. Not `discard_agent`, which takes the whole session | `null` |
 | `abort_merge_agent` | as command — `git merge --abort` in the checkout | `null` |
+| `clear_checkout_config` | as command — unsets the config keys a `GitState.blocked_config` names, in the checkout's own `.git/config`; fails naming any key it could not reach | `null` |
 | `create_pr` | as command | `PrState` |
 | `merge_pr` | as command — merges the open PR on the targeted repo's branch | `null` |
 | `get_pr_state` | as command | `PrState \| null` |

@@ -72,6 +72,17 @@ pub async fn abort_merge_agent(
     fletch_core::commands::abort_merge_agent_impl(&supervisor, &agent_id, subdir.as_deref()).await
 }
 
+/// Remove the config keys that make Fletch refuse to run git in the checkout.
+#[tauri::command]
+pub async fn clear_checkout_config(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+) -> Result<()> {
+    fletch_core::commands::clear_checkout_config_impl(&supervisor, &agent_id, subdir.as_deref())
+        .await
+}
+
 /// List all local branches in a repo. Used by the new-agent composer to
 /// let the user pick the base branch before spawning.
 #[tauri::command]

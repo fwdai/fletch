@@ -53,4 +53,8 @@ export interface GitState {
   has_origin: boolean;
   /** HEAD commit SHA, for a single-commit link when one commit is ahead. */
   head_sha?: string | null;
+  /** Config keys Fletch refuses to run git over in this checkout. Non-empty
+   *  means every other field is a zero-state; the panel offers to remove them.
+   *  Absent from hosts that predate the field. */
+  blocked_config?: string[];
 }

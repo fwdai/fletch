@@ -143,6 +143,7 @@ describe("gateReason", () => {
     expect(gateReason(old, "stash")).toBe(GATES.stash.reason);
     expect(gateReason(old, "discardChanges")).toBe(GATES.discardChanges.reason);
     expect(gateReason(old, "abortMerge")).toBe(GATES.abortMerge.reason);
+    expect(gateReason(old, "clearCheckoutConfig")).toBe(GATES.clearCheckoutConfig.reason);
   });
 
   it("opens the newly exposed ops on a host that advertises them", () => {
@@ -155,6 +156,7 @@ describe("gateReason", () => {
       "stash_agent",
       "discard_agent_changes",
       "abort_merge_agent",
+      "clear_checkout_config",
     ]);
 
     expect(gateReason(current, "mergePr")).toBeNull();
@@ -164,6 +166,7 @@ describe("gateReason", () => {
     expect(gateReason(current, "stash")).toBeNull();
     expect(gateReason(current, "discardChanges")).toBeNull();
     expect(gateReason(current, "abortMerge")).toBeNull();
+    expect(gateReason(current, "clearCheckoutConfig")).toBeNull();
   });
 
   it("keeps the withheld branch delete closed on a host that answers everything else", () => {

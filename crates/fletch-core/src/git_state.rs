@@ -36,6 +36,39 @@ pub struct GitState {
     /// HEAD commit SHA, used to build a single-commit link when exactly one
     /// commit is ahead. `None` on an empty repo / detached read failure.
     pub head_sha: Option<String>,
+    /// Config keys Fletch refuses to run git over in this checkout
+    /// (`git::hardening`). Non-empty means every other field is a zero-state:
+    /// the panel names these keys and offers to remove them instead.
+    pub blocked_config: Vec<String>,
+}
+
+impl GitState {
+    /// The state of a checkout with nothing to report — no HEAD yet, or git
+    /// refused to read it.
+    fn empty(parent_branch: String) -> Self {
+        GitState {
+            branch: String::new(),
+            parent_branch,
+            ahead: 0,
+            behind: 0,
+            unpushed: 0,
+            files: vec![],
+            additions: 0,
+            deletions: 0,
+            remote_url: None,
+            has_origin: false,
+            head_sha: None,
+            blocked_config: vec![],
+        }
+    }
+
+    /// A checkout Fletch will not run git in until `keys` are removed.
+    pub fn blocked(parent_branch: String, keys: Vec<String>) -> Self {
+        GitState {
+            blocked_config: keys,
+            ..Self::empty(parent_branch)
+        }
+    }
 }
 
 /// Compact projection of GitState used by the app-wide bulk poll —
@@ -105,21 +138,7 @@ pub async fn query(checkout_path: &Path, base: &crate::git::ResolvedBase) -> Res
         Ok(Some(b)) => b,
         Ok(None) => String::new(),
         // Empty repo / no HEAD — return a zero-state
-        Err(_) => {
-            return Ok(GitState {
-                branch: String::new(),
-                parent_branch: base.name.clone(),
-                ahead: 0,
-                behind: 0,
-                unpushed: 0,
-                files: vec![],
-                additions: 0,
-                deletions: 0,
-                remote_url: None,
-                has_origin: false,
-                head_sha: None,
-            });
-        }
+        Err(_) => return Ok(GitState::empty(base.name.clone())),
     };
 
     // 2. Ahead / behind (vs the base's tip), and unpushed (vs origin). An
@@ -190,6 +209,7 @@ pub async fn query(checkout_path: &Path, base: &crate::git::ResolvedBase) -> Res
         remote_url,
         has_origin,
         head_sha,
+        blocked_config: vec![],
     })
 }
 

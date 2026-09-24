@@ -25,6 +25,14 @@ pub async fn get_git_state_impl(
     let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
         return Ok(None);
     };
+    // A refused checkout answers with the keys to remove rather than an error:
+    // the panel polls this, and a failing poll just freezes it on stale state.
+    // Checked before resolving the base, which runs git there too.
+    let blocked = crate::git::hardening::steerable_config(&checkout).await?;
+    if !blocked.is_empty() {
+        let parent = repo.parent_branch.clone().unwrap_or_default();
+        return Ok(Some(GitState::blocked(parent, blocked)));
+    }
     let base = repo.resolve_base(&checkout).await;
     let state = git_state::query(&checkout, &base).await?;
     Ok(Some(state))

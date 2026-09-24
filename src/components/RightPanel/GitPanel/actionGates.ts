@@ -23,6 +23,7 @@ export const ACTION_GATES: Partial<Record<string, GateName>> = {
   stash: "stash",
   discard: "discardChanges",
   abort: "abortMerge",
+  "clear-config": "clearCheckoutConfig",
   "delete-branch": "deleteBranch",
 };
 

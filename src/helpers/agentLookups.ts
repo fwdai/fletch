@@ -72,6 +72,7 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   // The git/PR/delegation maps are checkout-scoped: a multi-repo agent also
   // holds `id::subdir` keys, which must not outlive it.
   const gitStates = dropScopedEntries(state.gitStates, id);
+  const gitBlocked = dropScopedEntries(state.gitBlocked, id);
   const prStates = dropScopedEntries(state.prStates, id);
   const prChecks = dropScopedEntries(state.prChecks, id);
   const prComments = dropScopedEntries(state.prComments, id);
@@ -109,6 +110,7 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     turnStartedAt,
     usage,
     gitStates,
+    gitBlocked,
     gitShortstats,
     prStates,
     prChecks,

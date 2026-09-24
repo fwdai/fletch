@@ -353,6 +353,15 @@
   background: color-mix(in oklch, var(--att), transparent 90%);
   color: var(--att);
 }
+/* refused checkout: heading, the keys, why, and the way out, stacked */
+.git-blocked {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.git-blocked-h {
+  gap: 8px;
+}
 
 .git-card {
   padding: 18px;

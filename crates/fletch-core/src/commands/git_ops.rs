@@ -1,5 +1,6 @@
 //! Per-agent git actions shared with the remote dispatcher: commit, push, and
-//! the Git panel's working-tree moves (pull, rebase, stash, discard, abort).
+//! the Git panel's working-tree moves (pull, rebase, stash, discard, abort),
+//! and clearing the config keys that block a checkout.
 //!
 //! Every one of them acts inside the agent's own checkout and nowhere else,
 //! which is the reach `commit_agent_impl` has always had. `delete_branch_agent`
@@ -103,4 +104,16 @@ pub async fn abort_merge_agent_impl(
 ) -> Result<()> {
     let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     git::merge_abort(&checkout).await
+}
+
+/// Remove the config keys that make Fletch refuse to run git in the checkout
+/// (`GitState.blocked_config`) — the user's way out of that refusal. Writes only
+/// the checkout's own `.git/config`. Shared with the remote dispatcher.
+pub async fn clear_checkout_config_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<()> {
+    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    git::hardening::remove_steerable_config(&checkout).await
 }

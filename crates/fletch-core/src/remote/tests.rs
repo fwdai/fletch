@@ -564,6 +564,7 @@ fn allowlist_matches_the_protocol_table() {
         "stash_agent",
         "discard_agent_changes",
         "abort_merge_agent",
+        "clear_checkout_config",
         "create_pr",
         "merge_pr",
         "get_pr_state",

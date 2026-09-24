@@ -86,6 +86,10 @@ agent-writable as `.git/config` — a key smuggled there was once invisible to a
 `--local` listing. Scoped to agent checkouts: a user's own repository legitimately
 carries these keys — husky sets `core.hooksPath`, git-lfs sets `filter.lfs.*` —
 and isn't agent-writable anyway, and its `global`/`system` config is skipped.
+A refused checkout is not a dead end: the Git panel names the offending keys and,
+on an explicit click, unsets them from the checkout's own config and re-reads it
+— a key it cannot reach (one pulled in through `include.path`) still fails,
+naming what is left (`git/hardening.rs`, `remove_steerable_config`).
 
 The refusal covers every command that can trigger an executable setting: the
 `git::cmd` helper seam that `run_git`/`git_output` funnel through, plus the paths

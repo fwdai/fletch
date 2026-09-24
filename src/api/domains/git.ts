@@ -26,6 +26,9 @@ export const gitApi = {
     invoke<void>("stash_agent", { agentId, subdir }),
   abortMergeAgent: (agentId: string, subdir?: string) =>
     invoke<void>("abort_merge_agent", { agentId, subdir }),
+  /** Unset the config keys `GitState.blocked_config` names. */
+  clearCheckoutConfig: (agentId: string, subdir?: string) =>
+    invoke<void>("clear_checkout_config", { agentId, subdir }),
   deleteBranchAgent: (agentId: string, subdir?: string) =>
     invoke<void>("delete_branch_agent", { agentId, subdir }),
   listRepoBranches: (repoPath: string) => invoke<string[]>("list_repo_branches", { repoPath }),
