@@ -46,7 +46,8 @@
   align-items: center;
   gap: 4px;
   border: 0;
-  font: inherit;
+  /* family only — the `font` shorthand would also reset the .text-xs size */
+  font-family: inherit;
   font-weight: 700;
   cursor: pointer;
   transition: filter 0.12s;
