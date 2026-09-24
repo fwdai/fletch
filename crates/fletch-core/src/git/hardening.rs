@@ -106,17 +106,17 @@ pub(crate) fn config_overrides() -> Vec<String> {
 /// without ever being enumerated.
 ///
 /// Both ends are compared lowercased, because `git config --list` lowercases the
-/// section and leaf while preserving the subsection's case — `core.hooksPath`
-/// comes back as `core.hookspath`, and a case-sensitive match would miss it.
+/// section and leaf while preserving the subsection's case — `filter.X.Clean`
+/// comes back as `filter.X.clean`, and a case-sensitive match would miss it.
+///
+/// Deliberately absent: every [`NEUTRALISED`] key. `-c` outranks repo config, so
+/// a checkout's `core.hooksPath` can never reach host-side git — and refusing it
+/// anyway bricked any checkout whose `npm install` ran a husky-style
+/// `prepare` script, for no protection gained.
 const EXEC_CONFIG: &[(&str, &str)] = &[
-    ("core", "hookspath"),
-    ("core", "fsmonitor"),
     ("core", "sshcommand"),
     ("core", "gitproxy"),
     ("core", "alternaterefscommand"),
-    ("core", "pager"),
-    ("core", "editor"),
-    ("sequence", "editor"),
     ("gpg", "program"),
     ("credential", "helper"),
     ("diff", "external"),
@@ -343,14 +343,14 @@ mod tests {
     }
 
     /// `git config --list` lowercases the section and leaf but preserves the
-    /// subsection's case — `core.hooksPath` comes back `core.hookspath`. A
+    /// subsection's case — `core.sshCommand` comes back `core.sshcommand`. A
     /// case-sensitive match would silently miss every one of these.
     #[test]
     fn matching_survives_gits_key_normalisation() {
         for key in [
-            "core.hookspath",
-            "core.hooksPath",
-            "CORE.HOOKSPATH",
+            "core.sshcommand",
+            "core.sshCommand",
+            "CORE.SSHCOMMAND",
             "filter.MixedCase.clean",
         ] {
             assert!(executes_a_program(key), "{key} must be caught");
@@ -392,19 +392,35 @@ mod tests {
     /// scope/key/value split, and every offending key in an agent-writable scope
     /// is reported so the message tells the user what to remove. The `worktree`
     /// scope counts (`.git/config.worktree` is agent-writable), while a `global`
-    /// exec key is the *user's* — husky's `core.hooksPath` — and must be spared.
+    /// exec key is the *user's* — their own `core.sshCommand` — and must be spared.
     #[test]
     fn steerable_keys_reports_each_scoped_offender() {
-        let listing = "local\tcore.hookspath=/tmp/h\n\
+        let listing = "local\tcore.sshcommand=/tmp/h\n\
                        local\tfilter.evil.clean=/bin/sh -c 'x=1'\n\
                        worktree\tfilter.wt.smudge=/tmp/wt.sh\n\
-                       global\tcore.hookspath=/usr/share/husky\n\
+                       global\tcore.sshcommand=ssh -i ~/.ssh/work\n\
                        local\tbranch.main.merge=refs/heads/main\n";
         let found = steerable_keys(listing);
         assert_eq!(
             found,
-            vec!["core.hookspath", "filter.evil.clean", "filter.wt.smudge"]
+            vec!["core.sshcommand", "filter.evil.clean", "filter.wt.smudge"]
         );
+    }
+
+    /// A key the `-c` overrides already neutralise can never reach host-side git,
+    /// so refusing it only bricks the checkout — which is exactly what a
+    /// husky-style `prepare` script (`git config core.hooksPath .githooks`) did on
+    /// every `npm install`. The two lists must stay disjoint.
+    #[test]
+    fn neutralised_keys_are_never_refused() {
+        for (key, _) in NEUTRALISED {
+            assert!(
+                !executes_a_program(key),
+                "{key} is neutralised by -c, so refusing it gains nothing"
+            );
+        }
+        let listing = "local\tcore.hookspath=.githooks\n";
+        assert!(steerable_keys(listing).is_empty());
     }
 
     /// A repo Fletch did not provision is never refused: a user's own repository
@@ -611,5 +627,62 @@ mod tests {
             !fired.exists(),
             "a planted hook/fsmonitor executed despite the overrides"
         );
+    }
+
+    /// The case `core.hooksPath` left the refusal list for, end to end: a
+    /// husky-style `prepare` script points hooks at a tracked (agent-writable)
+    /// directory. The checkout must be accepted, and a host-side commit must
+    /// still not run the hook there — `-c core.hooksPath=/dev/null` is now the
+    /// only thing standing in its way.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_custom_hooks_path_is_accepted_but_its_hooks_never_fire() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("workspaces");
+        let repo = root.join("agent-1/repo");
+        let fired = td.path().join("fired");
+        std::fs::create_dir_all(repo.join(".githooks")).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        let overrides = config_overrides();
+        let hardened = |args: &[&str]| {
+            let mut all: Vec<&str> = overrides.iter().map(String::as_str).collect();
+            all.extend(args);
+            git(&all)
+        };
+
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "core.hooksPath", ".githooks"]);
+        let hook = repo.join(".githooks/pre-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", fired.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        refuse_steerable_config_under(&repo, &root)
+            .await
+            .expect("a custom hooks path must not refuse the checkout");
+
+        std::fs::write(repo.join("f.txt"), "a").unwrap();
+        hardened(&["add", "-A"]);
+        let commit = hardened(&["commit", "-m", "hardened"]);
+        assert!(commit.status.success(), "the hardened commit must land");
+        assert!(
+            !fired.exists(),
+            "a hook under a repo-set core.hooksPath ran on a host-side commit"
+        );
+
+        // Control: the same hook does fire on unhardened git, so the assertion
+        // above is about the override and not a hook that could never run.
+        std::fs::write(repo.join("f.txt"), "b").unwrap();
+        git(&["commit", "-qam", "plain"]);
+        assert!(fired.exists(), "the control commit should run the hook");
     }
 }

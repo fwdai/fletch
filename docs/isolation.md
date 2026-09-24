@@ -78,8 +78,12 @@ up: before running git in an agent checkout, Fletch reads that checkout's config
 and **refuses if any setting would execute a program** — matched on
 `(section, leaf)` with the subsection ignored, so `filter.<any-name>.clean` is
 caught even though the driver name is chosen by the agent's own `.gitattributes`
-and can never be enumerated (`git/hardening.rs`). It reads whatever config git is
-about to read, so it doesn't care how that config got there. It reads via
+and can never be enumerated (`git/hardening.rs`). Keys the `-c` overrides
+already neutralise (`core.hooksPath`, `core.fsmonitor`, the pager and editors)
+are *not* refused: they can never reach host-side git, and refusing them bricked
+every checkout whose `npm install` ran a husky-style `prepare` script. It reads
+whatever config git is about to read, so it doesn't care how that config got
+there. It reads via
 `--show-scope` and considers the **local and worktree** scopes, because
 `.git/config.worktree` (honoured when `extensions.worktreeConfig=true`) is as
 agent-writable as `.git/config` — a key smuggled there was once invisible to a
