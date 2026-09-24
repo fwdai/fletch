@@ -127,6 +127,9 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
 
   theme: ThemeMode;
   systemTheme: "light" | "dark";
+  /** Home lists projects with recent agent activity first (see
+   *  `lib/activeProjects`). Off keeps the host's order. */
+  activeFirst: boolean;
   nav: NavItem[];
   sheet: SheetState | null;
   lastError: string | null;
@@ -142,6 +145,7 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   setRelay(url: string | null): Promise<void>;
   setTheme(theme: ThemeMode): void;
   setSystemTheme(t: "light" | "dark"): void;
+  setActiveFirst(on: boolean): void;
   clearError(): void;
   /** Whether the connected host answers `op` (docs/remote-protocol.md,
    *  "Compatibility"). Everything on the v1 allowlist is always true, so only a
@@ -508,6 +512,7 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   theme: "dark",
   systemTheme: "dark",
+  activeFirst: true,
   nav: [{ key: 1, screen: "home", props: {}, phase: "idle" }],
   sheet: null,
   lastError: null,
@@ -604,7 +609,13 @@ export const useStore = create<MobileState>()((set, get) => ({
     // notification tap has to be checked against — a tap must not wait out a
     // connection attempt to open its agent.
     const hostKey = saved.host && saved.hostKey ? saved.hostKey : null;
-    set({ ready: true, theme: saved.theme ?? "dark", relay: saved.relay ?? null, hostKey });
+    set({
+      ready: true,
+      theme: saved.theme ?? "dark",
+      activeFirst: saved.activeFirst ?? true,
+      relay: saved.relay ?? null,
+      hostKey,
+    });
     if (queuedPush) {
       const fletch = queuedPush;
       queuedPush = null;
@@ -754,6 +765,10 @@ export const useStore = create<MobileState>()((set, get) => ({
   setTheme(theme) {
     set({ theme });
     void saveSettings({ theme });
+  },
+  setActiveFirst(activeFirst) {
+    set({ activeFirst });
+    void saveSettings({ activeFirst });
   },
   setSystemTheme(systemTheme) {
     set({ systemTheme });
