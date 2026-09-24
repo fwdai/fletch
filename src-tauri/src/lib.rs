@@ -1676,6 +1676,7 @@ pub fn run() {
             commands::discard_agent_changes,
             commands::stash_agent,
             commands::abort_merge_agent,
+            commands::clear_checkout_config,
             commands::delete_branch_agent,
             commands::list_repo_branches,
             commands::repo_default_branch,

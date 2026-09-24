@@ -77,6 +77,7 @@ export function useGitActions(ctx: GitActionsCtx) {
   const stashChanges = useAppStore((s) => s.stashChanges);
   const discardChanges = useAppStore((s) => s.discardChanges);
   const abortMerge = useAppStore((s) => s.abortMerge);
+  const clearCheckoutConfig = useAppStore((s) => s.clearCheckoutConfig);
   const deleteBranch = useAppStore((s) => s.deleteBranch);
   const delegateAction = useAppStore((s) => s.delegateAction);
   const seedComposer = useAppStore((s) => s.seedComposer);
@@ -265,6 +266,11 @@ export function useGitActions(ctx: GitActionsCtx) {
         break;
       case "abort":
         void runBusy("Aborting…", () => abortMerge(agentId, subdir));
+        break;
+      case "clear-config":
+        void runBusy("Removing settings…", async () => {
+          if (await clearCheckoutConfig(agentId, subdir)) showNotice("Git settings removed");
+        });
         break;
       case "delete-branch":
         void runBusy("Deleting branch…", () => deleteBranch(agentId, subdir));

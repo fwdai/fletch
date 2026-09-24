@@ -83,6 +83,7 @@ const STASH_KEYS = [
   // Per-checkout git / PR / delegation state. All of it is polled, so a stale
   // stash is corrected within one cadence of switching back.
   "gitStates",
+  "gitBlocked",
   "gitShortstats",
   "gitMeta",
   "prStates",
@@ -148,6 +149,7 @@ const BLANK: Pick<AppState, StashKey> = {
   runPhases: {},
   runPorts: {},
   gitStates: {},
+  gitBlocked: {},
   gitShortstats: {},
   gitMeta: {},
   prStates: {},

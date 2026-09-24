@@ -150,15 +150,61 @@ const EXEC_CONFIG: &[(&str, &str)] = &[
 /// self-healing but has to reach through `include.path` indirection and
 /// multi-valued keys, and a half-working sanitiser is worse than a clean refusal —
 /// which also surfaces the attack instead of quietly repairing it. The agent's own
-/// sandboxed git keeps working; what stops is Fletch acting on the checkout.
+/// sandboxed git keeps working; what stops is Fletch acting on the checkout. The
+/// way back is [`remove_steerable_config`], which runs only when the user asks.
 pub(crate) async fn refuse_steerable_config(dir: &Path) -> Result<()> {
-    if let Ok(root) = crate::workspace::checkouts_root() {
-        refuse_steerable_config_under(dir, &root).await?;
+    refuse(dir, steerable_config(dir).await?)
+}
+
+/// The keys [`refuse_steerable_config`] would refuse `dir` over — empty for a
+/// directory outside every agent-writable tree. Lets the Git panel name what is
+/// blocking a checkout instead of failing its poll.
+pub(crate) async fn steerable_config(dir: &Path) -> Result<Vec<String>> {
+    match agent_writable_root(dir) {
+        Some(root) => steerable_config_under(dir, &root).await,
+        None => Ok(Vec::new()),
     }
-    if let Ok(root) = crate::workflow::blackboard::runs_root() {
-        refuse_steerable_config_under(dir, &root).await?;
+}
+
+/// Unset every key [`refuse_steerable_config`] refuses `dir` over, at the user's
+/// request — the way out of a refusal that is otherwise a dead end. A Run-panel
+/// `git lfs install --local` plants `filter.lfs.*` exactly as an attacker would,
+/// and the user needs a way to clear it that isn't a terminal.
+///
+/// The case against sanitising above is against a *silent* repair that
+/// half-works. This is neither: it runs only on an explicit click, after the
+/// panel has named the keys, and re-reads the config afterwards — so a key it
+/// cannot reach (one pulled in through `include.path`, which lists as `local`
+/// but lives in another file) still fails, naming what is left.
+pub(crate) async fn remove_steerable_config(dir: &Path) -> Result<()> {
+    match agent_writable_root(dir) {
+        Some(root) => remove_steerable_config_under(dir, &root).await,
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// The agent-writable tree `dir` sits in — agent checkouts or run directories
+/// (see [`refuse_steerable_config`]) — or `None` for any other repository.
+fn agent_writable_root(dir: &Path) -> Option<std::path::PathBuf> {
+    [
+        crate::workspace::checkouts_root().ok(),
+        crate::workflow::blackboard::runs_root().ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|root| is_inside(dir, root))
+}
+
+fn refuse(dir: &Path, offending: Vec<String>) -> Result<()> {
+    if offending.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Git(format!(
+        "refusing to run git in {}: its config would execute a program ({}). \
+         Fletch will not act on this checkout until those settings are removed.",
+        dir.display(),
+        offending.join(", ")
+    )))
 }
 
 /// Whether git may be run in `dir` — [`refuse_steerable_config`] for callers whose
@@ -181,9 +227,43 @@ pub(crate) async fn config_is_safe(dir: &Path) -> bool {
 /// explicitly. Split so the scoping, the subprocess and the refusal are all
 /// testable without mutating `$FLETCH_WORKSPACES_ROOT`, which parallel tests race
 /// on — the same seam pattern [`crate::sandbox::policy`] uses for `$XDG_*`.
+#[cfg(test)]
 async fn refuse_steerable_config_under(dir: &Path, checkouts_root: &Path) -> Result<()> {
-    if !is_inside(dir, checkouts_root) {
+    refuse(dir, steerable_config_under(dir, checkouts_root).await?)
+}
+
+/// Pure-seam core of [`remove_steerable_config`] (see
+/// [`refuse_steerable_config_under`]).
+async fn remove_steerable_config_under(dir: &Path, checkouts_root: &Path) -> Result<()> {
+    for key in steerable_config_under(dir, checkouts_root).await? {
+        // Both agent-writable scopes, since the listing does not say which one a
+        // key came from. `--unset-all` covers a multi-valued key. The exit status
+        // is ignored on purpose: 5 just means "not set in this scope", and the
+        // re-read below is the real verdict.
+        for scope in ["--local", "--worktree"] {
+            crate::git_dist::command(dir)
+                .args(["config", scope, "--unset-all", key.as_str()])
+                .output()
+                .await?;
+        }
+    }
+    let left = steerable_config_under(dir, checkouts_root).await?;
+    if left.is_empty() {
         return Ok(());
+    }
+    Err(Error::Git(format!(
+        "could not remove {} from {}: they are likely set in a file its config \
+         includes (include.path). Remove them by hand.",
+        left.join(", "),
+        dir.display()
+    )))
+}
+
+/// The steerable keys in `dir`'s agent-writable config scopes, or none when `dir`
+/// is outside `checkouts_root`.
+async fn steerable_config_under(dir: &Path, checkouts_root: &Path) -> Result<Vec<String>> {
+    if !is_inside(dir, checkouts_root) {
+        return Ok(Vec::new());
     }
     // Spawned through `git_dist` directly, never through this module's callers in
     // `git::cmd` — those call *this*, so routing back through them would recurse.
@@ -204,18 +284,9 @@ async fn refuse_steerable_config_under(dir: &Path, checkouts_root: &Path) -> Res
     // A non-zero exit means no local config to read (not yet a repo, no config
     // file); there is nothing to refuse.
     if !out.status.success() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let offending = steerable_keys(&String::from_utf8_lossy(&out.stdout));
-    if offending.is_empty() {
-        return Ok(());
-    }
-    Err(Error::Git(format!(
-        "refusing to run git in {}: its config would execute a program ({}). \
-         Fletch will not act on this checkout until those settings are removed.",
-        dir.display(),
-        offending.join(", ")
-    )))
+    Ok(steerable_keys(&String::from_utf8_lossy(&out.stdout)))
 }
 
 /// The config scopes an agent can write, and thus the only ones whose keys can
@@ -227,10 +298,10 @@ async fn refuse_steerable_config_under(dir: &Path, checkouts_root: &Path) -> Res
 const AGENT_WRITABLE_SCOPES: &[&str] = &["local", "worktree"];
 
 /// The keys in a `git config --list --show-scope` listing that would make git run
-/// a program *and* sit in an agent-writable scope. Pure, so the matching is
-/// testable without a repository.
+/// a program *and* sit in an agent-writable scope, each named once however many
+/// values it carries. Pure, so the matching is testable without a repository.
 fn steerable_keys(listing: &str) -> Vec<String> {
-    listing
+    let mut keys: Vec<String> = listing
         .lines()
         .filter_map(|line| {
             // `--show-scope` prefixes each entry with `<scope>\t`; the scope never
@@ -246,7 +317,10 @@ fn steerable_keys(listing: &str) -> Vec<String> {
             let key = entry.split('=').next()?.trim();
             (!key.is_empty() && executes_a_program(key)).then(|| key.to_string())
         })
-        .collect()
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    keys.retain(|k| seen.insert(k.clone()));
+    keys
 }
 
 /// Whether `key` names an executable setting, comparing only its first and last
@@ -572,6 +646,99 @@ mod tests {
             assert!(err.contains(&leaf), "expected {leaf} in: {err}");
             git(&["config", "--unset", key]);
         }
+    }
+
+    /// A fresh repo at `<tmp>/workspaces/agent-1/repo`, with `workspaces` as its
+    /// agent-writable root, plus a git runner for it.
+    fn scoped_repo() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        impl Fn(&[&str]) -> std::process::Output,
+    ) {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("workspaces");
+        let repo = root.join("agent-1/repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let dir = repo.clone();
+        let git = move |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        git(&["init", "-q"]);
+        (td, root, repo, git)
+    }
+
+    /// The recovery path clears every steerable key it can reach — across both
+    /// agent-writable scopes and every value of a multi-valued key — and leaves
+    /// the rest of the config alone, so the checkout is usable again.
+    #[tokio::test]
+    async fn removal_clears_every_scope_and_spares_ordinary_config() {
+        let (_td, root, repo, git) = scoped_repo();
+        git(&["config", "user.name", "Tester"]);
+        git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"]);
+        git(&["config", "--add", "remote.origin.receivepack", "/tmp/a"]);
+        git(&["config", "--add", "remote.origin.receivepack", "/tmp/b"]);
+        git(&["config", "extensions.worktreeConfig", "true"]);
+        git(&["config", "--worktree", "filter.wt.smudge", "/tmp/wt.sh"]);
+
+        let found = steerable_config_under(&repo, &root).await.unwrap();
+        assert_eq!(
+            found,
+            vec![
+                "filter.lfs.clean",
+                "remote.origin.receivepack",
+                "filter.wt.smudge"
+            ],
+            "a multi-valued key is named once"
+        );
+
+        remove_steerable_config_under(&repo, &root).await.unwrap();
+
+        refuse_steerable_config_under(&repo, &root)
+            .await
+            .expect("nothing steerable is left");
+        let name = git(&["config", "user.name"]);
+        assert_eq!(String::from_utf8_lossy(&name.stdout).trim(), "Tester");
+    }
+
+    /// A key pulled in through `include.path` lives in another file, which
+    /// `--unset-all` on the checkout's own config cannot reach. The removal must
+    /// say so rather than report success over a checkout that is still refused.
+    #[tokio::test]
+    async fn removal_fails_naming_a_key_it_cannot_reach() {
+        let (_td, root, repo, git) = scoped_repo();
+        std::fs::write(
+            repo.join(".git/extra"),
+            "[filter \"evil\"]\n\tclean = /tmp/pwn.sh\n",
+        )
+        .unwrap();
+        git(&["config", "include.path", "extra"]);
+
+        let err = remove_steerable_config_under(&repo, &root)
+            .await
+            .expect_err("an included key survives the unset")
+            .to_string();
+        assert!(err.contains("filter.evil.clean"), "got: {err}");
+        assert!(err.contains("include.path"), "got: {err}");
+    }
+
+    /// Like the refusal, the removal never touches a repo outside the
+    /// agent-writable roots — a user's own `filter.lfs.*` is theirs to keep.
+    #[tokio::test]
+    async fn removal_spares_repositories_fletch_does_not_own() {
+        let (td, _root, repo, git) = scoped_repo();
+        git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"]);
+
+        remove_steerable_config_under(&repo, &td.path().join("elsewhere"))
+            .await
+            .unwrap();
+
+        let kept = git(&["config", "filter.lfs.clean"]);
+        assert!(kept.status.success(), "an out-of-scope key must survive");
     }
 
     /// The guard end to end, against a real repo carrying a real payload: the

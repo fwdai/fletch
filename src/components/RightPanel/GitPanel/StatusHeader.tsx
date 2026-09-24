@@ -101,6 +101,11 @@ export function describeHeader(
   }
 }
 
+/** A checkout Fletch will not run git in (`GitState.blocked_config`). Its git
+ *  state is the last one read before the block, so nothing from it — branch,
+ *  diff, merge gate — is shown: the header says what the body card says. */
+const BLOCKED_HEADER: HeaderInfo = { kind: "att", pill: "Git paused", text: "blocking settings" };
+
 export function StatusHeader({
   state,
   branch,
@@ -109,6 +114,7 @@ export function StatusHeader({
   pr,
   mergeState,
   checksFailed,
+  blocked = false,
   controls,
 }: {
   state: GitPanelState;
@@ -118,12 +124,16 @@ export function StatusHeader({
   pr: PrState | null;
   mergeState: MergeState | null;
   checksFailed: number;
+  /** The checkout's config blocks git; overrides `state`, whose data is stale. */
+  blocked?: boolean;
   /** Quiet per-workspace controls for the trailing meta slot (the autopilot
    *  switch) — rendered after the state's own meta, so the GitHub link and the
    *  diff summary keep their places. */
   controls?: ReactNode;
 }) {
-  const h = describeHeader(state, branch, base, pr, mergeState, checksFailed);
+  const h = blocked
+    ? BLOCKED_HEADER
+    : describeHeader(state, branch, base, pr, mergeState, checksFailed);
   const adds = git?.additions ?? 0;
   const dels = git?.deletions ?? 0;
   return (

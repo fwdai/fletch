@@ -146,6 +146,7 @@ pub const OPS: &[&str] = &[
     "stash_agent",
     "discard_agent_changes",
     "abort_merge_agent",
+    "clear_checkout_config",
     "create_pr",
     "merge_pr",
     "get_pr_state",
@@ -387,6 +388,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("stash_agent", Scope::Agents),
     ("discard_agent_changes", Scope::Agents),
     ("abort_merge_agent", Scope::Agents),
+    ("clear_checkout_config", Scope::Agents),
     ("create_pr", Scope::Publish),
     ("merge_pr", Scope::Publish),
     ("get_pr_state", Scope::Observe),
@@ -832,6 +834,16 @@ impl Dispatch for SupervisorDispatch {
                 "abort_merge_agent" => {
                     let a: AgentSubdirArgs = parse(args)?;
                     res(crate::commands::abort_merge_agent_impl(
+                        sup,
+                        &a.agent_id,
+                        a.subdir.as_deref(),
+                    )
+                    .await)
+                }
+
+                "clear_checkout_config" => {
+                    let a: AgentSubdirArgs = parse(args)?;
+                    res(crate::commands::clear_checkout_config_impl(
                         sup,
                         &a.agent_id,
                         a.subdir.as_deref(),

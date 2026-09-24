@@ -168,6 +168,13 @@ export const GATES = {
     label: "Aborting a merge",
     reason: "This host is too old to abort the merge — abort on the host.",
   },
+  /** Clearing the config keys a refused checkout names. Writes only the
+   *  checkout's own `.git/config`, so it is on the wire like the five above. */
+  clearCheckoutConfig: {
+    op: "clear_checkout_config",
+    label: "Removing blocking git settings",
+    reason: "This host is too old to remove these settings — remove them on the host.",
+  },
   /** The one Git-panel action deliberately withheld rather than pending: it
    *  runs `git branch -D` in the user's real clone, outside every checkout
    *  (docs/remote-protocol.md, "Withheld on policy"). No host advertises the

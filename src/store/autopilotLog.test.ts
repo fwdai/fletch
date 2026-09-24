@@ -166,6 +166,7 @@ const EMPTY_MAPS = {
   turnStartedAt: {},
   usage: {},
   gitStates: {},
+  gitBlocked: {},
   prStates: {},
   prChecks: {},
   prComments: {},

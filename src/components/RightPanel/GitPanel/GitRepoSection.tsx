@@ -7,7 +7,7 @@ import { ActionBar } from "./ActionBar";
 import { AutopilotHistory, AutopilotSwitch } from "./Autopilot";
 import { ChangesList } from "./ChangesList";
 import { CommitComposer, CommitStatus } from "./CommitComposer";
-import { ClosedPRCard, ConflictCard, PRCard } from "./cards";
+import { BlockedConfigCard, ClosedPRCard, ConflictCard, PRCard } from "./cards";
 import { EmptyState } from "./EmptyState";
 import { FileDiffView } from "./FileDiffView";
 import { useActionBarModel } from "./hooks/useActionBarModel";
@@ -148,6 +148,11 @@ export function GitRepoSection({
   // The commit composer yields while the agent holds a delegation.
   const showFiles = panelState === "changes" || panelState === "conflicts";
   const showCommit = panelState === "changes" && !delegation;
+  // Keys Fletch refuses to run git over here. While any remain, the git state is
+  // stale and every action would fail, so the header says so, the card replaces
+  // the body and the footer steps aside.
+  const blockedConfig = useAppStore((s) => s.gitBlocked[key]);
+  const blocked = blockedConfig != null;
 
   // The PRs this checkout held before the current one — a workspace that kept
   // working after a merge has them. Each is a linked pill, so landed work stays
@@ -165,6 +170,7 @@ export function GitRepoSection({
         pr={prState}
         mergeState={mergeState}
         checksFailed={checks?.failed ?? 0}
+        blocked={blocked}
         controls={
           autopilotSwitch && <AutopilotSwitch agentId={agent.id} projectId={agent.project_id} />
         }
@@ -190,7 +196,13 @@ export function GitRepoSection({
 
       {/* ── scrollable body: the changes are the focus ── */}
       <div className={`git-body ${busy ? "busy" : ""}`}>
-        {showFiles && viewing ? (
+        {blockedConfig ? (
+          <BlockedConfigCard
+            keys={blockedConfig}
+            busy={busy != null}
+            onRemove={() => runAction("clear-config")}
+          />
+        ) : showFiles && viewing ? (
           <FileDiffView
             agentId={agent.id}
             files={gitState?.files ?? []}
@@ -232,7 +244,7 @@ export function GitRepoSection({
 
       {/* ── pinned footer: one row of status + action, with the commit
              message field unfolding above it only when the user opts in ── */}
-      <div className="git-foot">
+      <div className="git-foot" hidden={blocked}>
         {showCommit && (
           <CommitComposer
             writing={override}
