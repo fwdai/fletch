@@ -12,6 +12,7 @@ import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { actionProvesKind, type Delegation, type DelegationKind } from "@/delegation";
 import { DEFAULT_PUBLISH_APPROVAL_WAIT } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
+import { forActiveEnvironment } from "./environments";
 import { acceptPrWrite, issuePrWrite, stampPrWrite } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
 
@@ -290,7 +291,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
 
   fetchGitState: async (agentId, subdir) => {
     try {
-      const state = await api.getGitState(agentId, subdir);
+      // Dropped if the user switched environment mid-poll: agent ids recur
+      // across hosts, so a late answer would land on the new host's checkout.
+      const state = await forActiveEnvironment(() => api.getGitState(agentId, subdir));
       if (!state) return;
       const key = checkoutKey(agentId, subdir);
       const blocked = state.blocked_config ?? [];

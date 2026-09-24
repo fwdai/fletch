@@ -10,8 +10,12 @@ const { getGitState } = vi.hoisted(() => ({ getGitState: vi.fn() }));
 vi.mock("@/api", () => ({ api: { getGitState } }));
 
 import type { GitState } from "@/api";
+import { type EnvironmentId, setEnvironmentsSource } from "./environments";
 import { createGitSlice } from "./git";
 import type { AppState } from "./types";
+
+let activeEnv: EnvironmentId = "local";
+setEnvironmentsSource(() => ({ environments: {}, activeEnvironmentId: activeEnv }));
 
 const state = (over: Partial<GitState> = {}): GitState => ({
   branch: "fix/x",
@@ -30,7 +34,24 @@ const makeStore = () =>
   create<AppState>()((...a) => ({ ...createGitSlice(...a) }) as unknown as AppState);
 
 describe("fetchGitState on a refused checkout", () => {
-  beforeEach(() => getGitState.mockReset());
+  beforeEach(() => {
+    getGitState.mockReset();
+    activeEnv = "local";
+  });
+
+  it("drops an answer that lands after an environment switch", async () => {
+    const store = makeStore();
+    // Agent ids recur across hosts, so the old host's `a1` answering after the
+    // switch must not block (or overwrite) the new host's `a1`.
+    getGitState.mockImplementationOnce(async () => {
+      activeEnv = "host-2";
+      return state({ blocked_config: ["filter.lfs.clean"] });
+    });
+    await store.getState().fetchGitState("a1");
+
+    expect(store.getState().gitBlocked).toEqual({});
+    expect(store.getState().gitStates).toEqual({});
+  });
 
   it("records the blocking keys and keeps the last real state", async () => {
     const store = makeStore();
