@@ -2,6 +2,7 @@ import type { ProjectRef } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { AgentRow } from "../../components/AgentRow";
 import { Swatch } from "../../components/ui";
+import { useOrderedProjects } from "../../lib/activeProjects";
 import { agentsOfProject, baseOf, isActive, isBusy, repoLabel } from "../../lib/agents";
 import { useStore } from "../../store";
 import { ConnectionBanner } from "./ConnectionBanner";
@@ -88,7 +89,7 @@ function ProjectCard({ project }: { project: ProjectRef }) {
 
 export function HomeScreen() {
   const workspace = useStore((s) => s.workspace);
-  const projects = workspace?.projects ?? [];
+  const projects = useOrderedProjects();
   const agents = workspace?.agents ?? [];
   const pendingTotal = useStore((s) =>
     Object.values(s.pendingToolUse).reduce((n, m) => n + Object.keys(m).length, 0),

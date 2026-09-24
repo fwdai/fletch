@@ -31,6 +31,11 @@ const COMPOSER: FeatureItem[] = [
 
 const SIDEBAR: FeatureItem[] = [
   {
+    key: "sidebarActiveFirst",
+    title: "Active projects first",
+    sub: "Float projects with running or recently launched agents to the top. The rest keep the order you drag them into.",
+  },
+  {
     key: "sidebarUsage",
     title: "Usage chip",
     sub: "Show the past 7 days' token count next to your account, opening the Usage screen.",

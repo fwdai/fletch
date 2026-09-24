@@ -2,15 +2,22 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRecord, ProjectRef, WfRun } from "@/api";
 import { Icon } from "@/components/Icon";
 import { NewProject, type NewProjectMode } from "@/components/NewProject";
+import {
+  loadProjectActivity,
+  type ProjectActivity,
+  stampProjectActivity,
+} from "@/storage/projectActivity";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { useAnyGate } from "@/store/capabilities";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
+import { useMinuteClock } from "@/util/hooks";
 import { useRuns } from "@/workflows/run/useRuns";
 import { isGroupOpen, type OpenMap } from "./groupOpen";
 import { NewProjectPopover } from "./NewProjectPopover";
 import { ProjectGroup } from "./ProjectGroup";
+import { bubbleActive } from "./recentProjects";
 import { focusRow, rowOf, visibleRows } from "./rowNav";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarHeader } from "./SidebarHeader";
@@ -201,9 +208,51 @@ export function Sidebar() {
   }, [workspace?.projects, liveAgents, drafts, runs, sortPaths]);
   const filtered = useMemo(() => applySearch(groups, query), [groups, query]);
 
-  // Reordering is only meaningful over the full, unfiltered list.
+  // Projects the user is working in float to the top (see `bubbleActive`);
+  // the quiet ones keep the manual order beneath them. This is what the user
+  // did by hand — drag today's project up — automated, and it can be switched
+  // off in Settings › Layout. Off while searching too: the result set is
+  // short and its order should match the list it came from.
+  //
+  // Launches are on the agent records; turns are not, so each turn start is
+  // stamped on its project here and kept locally. A resumed idle workspace
+  // then counts as activity the moment its message is sent.
+  const activeFirst = useAppStore((s) => s.features.sidebarActiveFirst);
+  const turnStartedAt = useAppStore((s) => s.turnStartedAt);
+  const [turns, setTurns] = useState(loadProjectActivity);
+  useEffect(() => {
+    const stamps: ProjectActivity = {};
+    for (const g of groups) {
+      for (const a of g.agents) {
+        const t = turnStartedAt[a.id];
+        if (t !== undefined && t > (stamps[g.key] ?? 0)) stamps[g.key] = t;
+      }
+    }
+    // Only a newer start than the one on record is a change; otherwise this
+    // would re-stamp (and re-render) on every groups update.
+    setTurns((prev) => {
+      const fresh = Object.entries(stamps).some(([k, t]) => t > (prev[k] ?? 0));
+      return fresh ? stampProjectActivity(stamps) : prev;
+    });
+  }, [groups, turnStartedAt]);
+  // The age cutoffs here and in each group's fold are re-checked once a minute,
+  // so a project (or a row) that ages out while the app sits open settles back
+  // without waiting for the next snapshot. One clock, shared with the groups.
+  const now = useMinuteClock();
+  const { active, rest } = useMemo(
+    () =>
+      activeFirst && !searching
+        ? bubbleActive(filtered, now, turns)
+        : { active: [], rest: filtered },
+    [filtered, searching, activeFirst, turns, now],
+  );
+
+  // Reordering is only meaningful over the full, unfiltered list, and only
+  // between the groups still in manual order — a floated group is neither
+  // draggable nor a drop target, since its position is computed.
   const reorderable = !searching;
   const orderedPaths = useMemo(() => groups.map((g) => g.primaryPath), [groups]);
+  const restPaths = useMemo(() => new Set(rest.map((g) => g.primaryPath)), [rest]);
 
   // Begin a pointer-driven reorder. `markDragged` lets the group swallow the
   // trailing click so a real drag doesn't also toggle it open/closed. The order
@@ -226,7 +275,8 @@ export function Sidebar() {
       const target = document
         .elementFromPoint(ev.clientX, ev.clientY)
         ?.closest<HTMLElement>("[data-repo-path]");
-      const over = target?.dataset.repoPath ?? null;
+      const hovered = target?.dataset.repoPath ?? null;
+      const over = hovered && restPaths.has(hovered) ? hovered : null;
       info.over = over;
       setOverPath(over);
     };
@@ -302,6 +352,35 @@ export function Sidebar() {
     });
   }, [groups, selectedAgentId, activeDraftId, selectedRunId]);
 
+  function renderGroup(g: ProjectGroupData, canReorder: boolean) {
+    const isOver = canReorder && overPath === g.primaryPath && dragPath !== g.primaryPath;
+    const dropAfter =
+      isOver &&
+      dragPath != null &&
+      orderedPaths.indexOf(dragPath) < orderedPaths.indexOf(g.primaryPath);
+    return (
+      <ProjectGroup
+        key={g.key}
+        label={g.label}
+        repoPath={g.primaryPath}
+        repoPaths={g.repoPaths}
+        agents={g.agents}
+        drafts={g.drafts}
+        runs={g.runs}
+        open={isGroupOpen(g.key, searching, openMap, searchOpenMap)}
+        onToggle={() => toggleGroup(g.key)}
+        fold={!searching}
+        now={now}
+        reorderable={canReorder}
+        dragging={dragPath === g.primaryPath}
+        dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}
+        onReorderPointerDown={
+          canReorder ? (e, markDragged) => startReorder(g.primaryPath, e, markDragged) : undefined
+        }
+      />
+    );
+  }
+
   return (
     <>
       <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
@@ -330,35 +409,10 @@ export function Sidebar() {
               <div>{query ? "Try a different search." : "Add a repo to get started."}</div>
             </div>
           ) : (
-            filtered.map((g) => {
-              const isOver =
-                reorderable && overPath === g.primaryPath && dragPath !== g.primaryPath;
-              const dropAfter =
-                isOver &&
-                dragPath != null &&
-                orderedPaths.indexOf(dragPath) < orderedPaths.indexOf(g.primaryPath);
-              return (
-                <ProjectGroup
-                  key={g.key}
-                  label={g.label}
-                  repoPath={g.primaryPath}
-                  repoPaths={g.repoPaths}
-                  agents={g.agents}
-                  drafts={g.drafts}
-                  runs={g.runs}
-                  open={isGroupOpen(g.key, searching, openMap, searchOpenMap)}
-                  onToggle={() => toggleGroup(g.key)}
-                  reorderable={reorderable}
-                  dragging={dragPath === g.primaryPath}
-                  dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}
-                  onReorderPointerDown={
-                    reorderable
-                      ? (e, markDragged) => startReorder(g.primaryPath, e, markDragged)
-                      : undefined
-                  }
-                />
-              );
-            })
+            <>
+              {active.map((g) => renderGroup(g, false))}
+              {rest.map((g) => renderGroup(g, reorderable))}
+            </>
           )}
         </div>
       </div>

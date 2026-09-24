@@ -1,6 +1,6 @@
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
-import { Segmented, Sheet } from "../components/ui";
+import { Segmented, Sheet, Toggle } from "../components/ui";
 import { ignore } from "../lib/ignore";
 import { client, useStore } from "../store";
 
@@ -25,6 +25,8 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
   const connection = useStore((s) => s.connection);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  const activeFirst = useStore((s) => s.activeFirst);
+  const setActiveFirst = useStore((s) => s.setActiveFirst);
   const reconnect = useStore((s) => s.reconnect);
   const unpair = useStore((s) => s.unpair);
   const hostKey = useStore((s) => s.hostKey);
@@ -127,6 +129,13 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
               value={theme}
               onChange={(id) => setTheme(id as "system" | "light" | "dark")}
             />
+          </span>
+        </div>
+        {/* Same switch as the desktop sidebar's "Active projects first". */}
+        <div className="kv" style={{ alignItems: "center" }}>
+          <span>Active projects first</span>
+          <span style={{ fontFamily: "inherit" }}>
+            <Toggle on={activeFirst} onChange={setActiveFirst} />
           </span>
         </div>
       </div>

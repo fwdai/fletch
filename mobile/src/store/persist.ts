@@ -27,6 +27,9 @@ export interface Persisted {
    *  and remembered so no host is ever asked twice. */
   pushPermission?: Record<string, "granted" | "denied" | "prompt">;
   theme?: "system" | "light" | "dark";
+  /** Float projects with recent agent activity to the top of Home. Absent
+   *  means on — the desktop sidebar's default. */
+  activeFirst?: boolean;
 }
 
 let cache: Persisted | null = null;
@@ -94,9 +97,10 @@ export async function saveDestParent(hostKey: string | null, parent: string): Pr
  *  the notification answers record what iOS has already been asked, which
  *  unpairing does not undo. */
 export async function clearHost(): Promise<void> {
-  const { theme, destParents, pushPermission } = await readAll();
+  const { theme, activeFirst, destParents, pushPermission } = await readAll();
   await writeAll({
     ...(theme ? { theme } : {}),
+    ...(activeFirst !== undefined ? { activeFirst } : {}),
     ...(destParents ? { destParents } : {}),
     ...(pushPermission ? { pushPermission } : {}),
   });
