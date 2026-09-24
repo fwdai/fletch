@@ -628,4 +628,61 @@ mod tests {
             "a planted hook/fsmonitor executed despite the overrides"
         );
     }
+
+    /// The case `core.hooksPath` left the refusal list for, end to end: a
+    /// husky-style `prepare` script points hooks at a tracked (agent-writable)
+    /// directory. The checkout must be accepted, and a host-side commit must
+    /// still not run the hook there — `-c core.hooksPath=/dev/null` is now the
+    /// only thing standing in its way.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_custom_hooks_path_is_accepted_but_its_hooks_never_fire() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("workspaces");
+        let repo = root.join("agent-1/repo");
+        let fired = td.path().join("fired");
+        std::fs::create_dir_all(repo.join(".githooks")).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .expect("git")
+        };
+        let overrides = config_overrides();
+        let hardened = |args: &[&str]| {
+            let mut all: Vec<&str> = overrides.iter().map(String::as_str).collect();
+            all.extend(args);
+            git(&all)
+        };
+
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "core.hooksPath", ".githooks"]);
+        let hook = repo.join(".githooks/pre-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", fired.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        refuse_steerable_config_under(&repo, &root)
+            .await
+            .expect("a custom hooks path must not refuse the checkout");
+
+        std::fs::write(repo.join("f.txt"), "a").unwrap();
+        hardened(&["add", "-A"]);
+        let commit = hardened(&["commit", "-m", "hardened"]);
+        assert!(commit.status.success(), "the hardened commit must land");
+        assert!(
+            !fired.exists(),
+            "a hook under a repo-set core.hooksPath ran on a host-side commit"
+        );
+
+        // Control: the same hook does fire on unhardened git, so the assertion
+        // above is about the override and not a hook that could never run.
+        std::fs::write(repo.join("f.txt"), "b").unwrap();
+        git(&["commit", "-qam", "plain"]);
+        assert!(fired.exists(), "the control commit should run the hook");
+    }
 }
