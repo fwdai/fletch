@@ -181,7 +181,7 @@ export function AgentEditor({
         </div>
 
         <div className="ca-inject flex-center text-sm">
-          <Icon name="zap" size={13} />
+          <Icon name="terminal" size={13} />
           <span>
             Instructions injected via <b>{INJECTION_HINT[form.base] ?? "the agent's CLI"}</b>
           </span>

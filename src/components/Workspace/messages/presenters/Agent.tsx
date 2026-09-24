@@ -3,7 +3,7 @@ import type { ToolPresenter } from "./types";
 import { getStringField, renderToolResult } from "./util";
 
 export const agentPresenter: ToolPresenter = {
-  icon: "zap",
+  icon: "subagent",
   summary: (call) => {
     const subagentType = getStringField(call.input, "subagent_type");
     const description = getStringField(call.input, "description");

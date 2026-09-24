@@ -99,7 +99,7 @@ export function McpServersPane() {
       before={<BuiltInTools />}
       newLabel="New server"
       emptyLabel="Add your first MCP server"
-      icon="zap"
+      icon="webhook"
       items={servers}
       row={(s) => {
         const count = usedBy(s.id);

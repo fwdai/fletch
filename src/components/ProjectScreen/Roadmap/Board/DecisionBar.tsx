@@ -59,7 +59,7 @@ export function DecisionBar({
       )}
       {onAcceptQueue && queueLabel && (
         <Button variant="outline" size="sm" onClick={onAcceptQueue}>
-          <Icon name="zap" size={11} /> {queueLabel}
+          <Icon name="sparkle" size={11} /> {queueLabel}
         </Button>
       )}
       {onAccept && (
@@ -112,7 +112,7 @@ export function BoardRulingActions({
       )}
       {onAcceptQueue && queueLabel && (
         <button type="button" className="rm-props-q iflex-center" onClick={onAcceptQueue}>
-          <Icon name="zap" size={11} /> {queueLabel}
+          <Icon name="sparkle" size={11} /> {queueLabel}
         </button>
       )}
       {onAccept && (

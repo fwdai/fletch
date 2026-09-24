@@ -87,7 +87,7 @@ function Evidence({
         </div>
         <div className="rv-tile rv-tile-budget">
           <span className="rv-tile-label">
-            <Icon name="zap" size={12} /> Budget
+            <Icon name="gauge" size={12} /> Budget
           </span>
           <BudgetSummary budget={evidence.budget} />
         </div>

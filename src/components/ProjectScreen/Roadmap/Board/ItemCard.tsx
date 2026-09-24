@@ -346,7 +346,7 @@ export function ItemCard({
                 closeProjectScreen();
               }}
             >
-              <Icon name="zap" size={11} />
+              <Icon name="sparkle" size={11} />
               <span className="rm-handoff-t truncate">Handed to {agentName}</span>
               <Icon name="arrowR" size={11} className="rm-handoff-go" />
             </button>
@@ -355,7 +355,7 @@ export function ItemCard({
             // is a statement rather than a link — but the stamp is still what
             // keeps the row out of the queue, so it has to be visible.
             <span className="rm-handoff flex-center text-xs">
-              <Icon name="zap" size={11} />
+              <Icon name="sparkle" size={11} />
               <span className="rm-handoff-t truncate">
                 Handed to an agent that no longer exists
               </span>
@@ -480,7 +480,7 @@ export function ItemCard({
                     if (draftId) closeProjectScreen();
                   }}
                 >
-                  <Icon name="zap" size={11} /> Send to an agent
+                  <Icon name="sparkle" size={11} /> Send to an agent
                 </Button>
               )}
               {/* An item in review is waiting on a PR, so the PR is the thing to

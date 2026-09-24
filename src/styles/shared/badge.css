@@ -114,7 +114,7 @@
 }
 /* "base moved" cue — quiet information, not an alarm (a moved base is normal in
  * a parallel fleet), so it's muted like a-time, never a warning color. The
- * running sub-agents count shares its metrics (a zap + count) but takes the
+ * running sub-agents count shares its metrics (a glyph + count) but takes the
  * accent: it is live activity, the reason the row is still working. */
 .agent-sub .a-stale,
 .agent-sub .a-subagents {
