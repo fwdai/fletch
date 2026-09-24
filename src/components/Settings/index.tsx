@@ -36,6 +36,11 @@ const FEATURE_GROUPS: { label: string; items: FeatureItem[] }[] = [
   {
     label: "Sidebar",
     items: [
+      {
+        key: "sidebarActiveFirst",
+        title: "Active projects first",
+        sub: "Projects with recent agents float to the top",
+      },
       { key: "sidebarUsage", title: "Usage chip", sub: "7-day token count next to your account" },
     ],
   },

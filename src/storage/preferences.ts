@@ -39,6 +39,10 @@ export interface FeatureFlags {
   /** Show the 7-day token count on the sidebar footer's usage chip. Off leaves
    *  the chip as a bare icon into the Usage screen. */
   sidebarUsage: boolean;
+  /** Float projects with recently launched or running agents to the top of
+   *  the sidebar; the quiet ones keep the manual order beneath them. Off keeps
+   *  the whole list in manual order. */
+  sidebarActiveFirst: boolean;
   /** Experimental: expose the Custom/Native view switcher so agents can be
    *  driven through the provider's own terminal UI. Off by default — native
    *  mode isn't equally solid across providers yet. */
@@ -57,6 +61,7 @@ export const DEFAULT_FEATURES: FeatureFlags = {
   thinkingBudget: true,
   tokenUsage: true,
   sidebarUsage: true,
+  sidebarActiveFirst: true,
   nativeView: false,
   missionControl: false,
 };
