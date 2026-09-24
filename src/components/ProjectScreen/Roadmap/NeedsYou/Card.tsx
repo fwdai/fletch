@@ -20,7 +20,7 @@ const GLYPH: Record<NeedsReason, IconName> = {
   "workflow-question": "feedback",
   "workflow-approval": "diff",
   "workflow-conflict": "merge",
-  "workflow-budget": "zap",
+  "workflow-budget": "gauge",
   "item-blocked": "graph",
   "item-held": "pause",
   "project-held": "pause",

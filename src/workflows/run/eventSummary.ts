@@ -138,10 +138,10 @@ export function summarizeEvent(ev: WfEvent): EventSummary {
       return { icon: "clock", tone: AMBER, title: "No activity — nudging the agent" };
 
     case "budget_tick":
-      return { icon: "zap", tone: MUTED, title: "Budget updated" };
+      return { icon: "gauge", tone: MUTED, title: "Budget updated" };
     case "budget_exceeded":
       return {
-        icon: "zap",
+        icon: "gauge",
         tone: AMBER,
         title: `Budget reached${str(p, "which") ? ` — ${str(p, "which")}` : ""}`,
       };

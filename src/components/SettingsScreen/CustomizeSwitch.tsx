@@ -8,7 +8,7 @@ import { useAppStore } from "@/store";
  *  the list panes can drop it in without threading section state through. */
 const TABS: { id: SettingsSection; label: string; icon: IconName }[] = [
   { id: "agents", label: "Custom agents", icon: "bot" },
-  { id: "tools", label: "Tools", icon: "zap" },
+  { id: "tools", label: "Tools", icon: "webhook" },
   { id: "skills", label: "Skills", icon: "notebookPen" },
 ];
 

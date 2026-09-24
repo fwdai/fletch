@@ -150,7 +150,7 @@ function ModeSwitch({
         data-tip="Watch the agent's changes as they happen"
         onClick={() => onChange("live")}
       >
-        <Icon name="zap" size={12} />
+        <Icon name="radio" size={12} />
         <span>Live</span>
         {(hasChanges || busy) && <span className={`cms-live-dot ${busy ? "on" : ""}`}></span>}
       </button>

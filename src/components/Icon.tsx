@@ -28,6 +28,7 @@ import {
   FileDiff,
   FlaskConical,
   Folder,
+  Gauge,
   GitBranch,
   GitCommitHorizontal,
   GitMerge,
@@ -51,6 +52,7 @@ import {
   Minus,
   Moon,
   MoreHorizontal,
+  Network,
   NotebookPen,
   PanelLeft,
   PanelRight,
@@ -59,6 +61,7 @@ import {
   Pencil,
   Play,
   Plus,
+  Radio,
   RefreshCw,
   Repeat,
   Search,
@@ -75,6 +78,7 @@ import {
   Upload,
   User,
   Waypoints,
+  Webhook,
   Wrench,
   X,
   Zap,
@@ -180,8 +184,17 @@ const ICON_COMPONENTS = {
   archiveRestore: ArchiveRestore,
   moon: Moon,
   sun: Sun,
+  // Autopilot's glyph, and only autopilot's: lit = on, struck = off.
   zap: Zap,
   zapOff: ZapOff,
+  // A main agent fanning out to the sub-agents it launched.
+  subagent: Network,
+  // "Watch it happen" — the live code view.
+  radio: Radio,
+  // External tools an agent hooks into (MCP servers).
+  webhook: Webhook,
+  // Spend against a budget.
+  gauge: Gauge,
   clock: Clock,
   hand: Hand,
   grip: GripVertical,

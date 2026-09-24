@@ -307,7 +307,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
               data-tip={runningTip(subagents)}
               aria-label={`${subRunning} sub-agent${subRunning === 1 ? "" : "s"} running`}
             >
-              <Icon name="zap" size={9} />
+              <Icon name="subagent" size={10} />
               {subRunning}
             </span>
           )}
