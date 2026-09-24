@@ -13,6 +13,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../store";
 import { agentsOfProject } from "./agents";
+import { useTick } from "./hooks";
 
 /** Projects with recent activity first, most recent first; the others keep
  *  their incoming order. `turns` is the last turn start per project id. */
@@ -53,8 +54,12 @@ export function useOrderedProjects(): ProjectRef[] {
       return fresh ? stampProjectActivity(stamps) : prev;
     });
   }, [workspace, turnStartedAt]);
+  // Once a minute, so a project that ages past the window while the app is
+  // open settles back without waiting for the next snapshot.
+  useTick(60_000, activeFirst);
+  const now = Date.now();
   return useMemo(
-    () => (activeFirst ? orderProjects(workspace, turns, Date.now()) : (workspace?.projects ?? [])),
-    [workspace, turns, activeFirst],
+    () => (activeFirst ? orderProjects(workspace, turns, now) : (workspace?.projects ?? [])),
+    [workspace, turns, activeFirst, now],
   );
 }

@@ -27,6 +27,8 @@ interface Props {
   /** Fold stale and over-cap workspaces behind an "older" row (see
    *  `foldAgents`). Off while searching: every remaining row is a match. */
   fold: boolean;
+  /** The sidebar's minute clock, so the fold's age cutoff moves with time. */
+  now: number;
   /** Whether this group can be dragged to reorder (disabled while searching). */
   reorderable: boolean;
   /** This group is the one currently being dragged. */
@@ -49,6 +51,7 @@ export function ProjectGroup({
   open,
   onToggle,
   fold,
+  now,
   reorderable,
   dragging,
   dropIndicator,
@@ -75,9 +78,9 @@ export function ProjectGroup({
   const { shown, hidden } = useMemo(
     () =>
       fold
-        ? foldAgents(agents, { now: Date.now(), selectedId: selectedAgentId })
+        ? foldAgents(agents, { now, selectedId: selectedAgentId })
         : { shown: agents, hidden: [] },
-    [fold, agents, selectedAgentId],
+    [fold, agents, selectedAgentId, now],
   );
   const foldable = hidden.length > 0;
 

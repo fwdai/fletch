@@ -12,6 +12,7 @@ import { useAppStore } from "@/store";
 import { useAnyGate } from "@/store/capabilities";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
+import { useMinuteClock } from "@/util/hooks";
 import { useRuns } from "@/workflows/run/useRuns";
 import { isGroupOpen, type OpenMap } from "./groupOpen";
 import { NewProjectPopover } from "./NewProjectPopover";
@@ -234,12 +235,16 @@ export function Sidebar() {
       return fresh ? stampProjectActivity(stamps) : prev;
     });
   }, [groups, turnStartedAt]);
+  // The age cutoffs here and in each group's fold are re-checked once a minute,
+  // so a project (or a row) that ages out while the app sits open settles back
+  // without waiting for the next snapshot. One clock, shared with the groups.
+  const now = useMinuteClock();
   const { active, rest } = useMemo(
     () =>
       activeFirst && !searching
-        ? bubbleActive(filtered, Date.now(), turns)
+        ? bubbleActive(filtered, now, turns)
         : { active: [], rest: filtered },
-    [filtered, searching, activeFirst, turns],
+    [filtered, searching, activeFirst, turns, now],
   );
 
   // Reordering is only meaningful over the full, unfiltered list, and only
@@ -365,6 +370,7 @@ export function Sidebar() {
         open={isGroupOpen(g.key, searching, openMap, searchOpenMap)}
         onToggle={() => toggleGroup(g.key)}
         fold={!searching}
+        now={now}
         reorderable={canReorder}
         dragging={dragPath === g.primaryPath}
         dropIndicator={isOver ? (dropAfter ? "after" : "before") : null}
