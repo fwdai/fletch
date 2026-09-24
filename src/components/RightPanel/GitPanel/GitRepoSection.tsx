@@ -149,8 +149,8 @@ export function GitRepoSection({
   const showFiles = panelState === "changes" || panelState === "conflicts";
   const showCommit = panelState === "changes" && !delegation;
   // Keys Fletch refuses to run git over here. While any remain, the git state is
-  // stale and every action would fail, so the card replaces the body and the
-  // footer steps aside.
+  // stale and every action would fail, so the header says so, the card replaces
+  // the body and the footer steps aside.
   const blockedConfig = useAppStore((s) => s.gitBlocked[key]);
   const blocked = blockedConfig != null;
 
@@ -170,6 +170,7 @@ export function GitRepoSection({
         pr={prState}
         mergeState={mergeState}
         checksFailed={checks?.failed ?? 0}
+        blocked={blocked}
         controls={
           autopilotSwitch && <AutopilotSwitch agentId={agent.id} projectId={agent.project_id} />
         }
