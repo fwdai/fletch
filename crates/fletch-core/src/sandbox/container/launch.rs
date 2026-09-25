@@ -4,7 +4,8 @@
 //! Both runtime engines call [`prepare`] and hand the result to
 //! [`run_args`](super::run_args), so they launch byte-identically.
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::sandbox::engine::AgentLaunchCtx;
@@ -18,7 +19,7 @@ use super::launch_auth::{
     apply_container_auth, prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch,
     prepare_pi_launch, present_api_keys,
 };
-use super::run_args::{prepare_config_mount_dir, ProviderMounts, CREDENTIALS_FILE};
+use super::run_args::{prepare_config_mount_dir, ProviderMounts, CREDENTIALS_FILE, PASSWD_FILE};
 use super::ContainerProvider;
 
 /// The launch inputs [`prepare`] resolved: the CLI process env, the object
@@ -111,10 +112,13 @@ impl ContainerLaunch {
 /// Resolve everything a container launch of `provider` needs, creating the
 /// mount sources first and failing the launch rather than handing `-v` a
 /// missing one — the runtime would materialize it root-owned, silently cutting
-/// the agent off from its own auth/config/transcripts.
+/// the agent off from its own auth/config/transcripts. `run_as_user` is the
+/// [`RunSpec::run_as_user`](super::run_args::RunSpec::run_as_user) the launch
+/// will pass.
 pub(crate) fn prepare(
     ctx: &AgentLaunchCtx,
     provider: ContainerProvider,
+    run_as_user: Option<&str>,
 ) -> Result<ContainerLaunch> {
     // Derived from `ctx.source_repos` (every tracked repo, not just the
     // primary), never from the checkout's own `.git/objects/info/alternates`:
@@ -160,6 +164,13 @@ pub(crate) fn prepare(
                 tree.display()
             )));
         }
+    }
+
+    // The mapped uid is in no passwd file of the image, so anything that looks
+    // itself up (`os.userInfo()`, `whoami`) fails; `run_args` binds this over
+    // `/etc/passwd`.
+    if let Some(user) = run_as_user {
+        write_passwd_file(ctx.writable_root, user, ctx.home)?;
     }
 
     // Owned per-provider mount inputs, borrowed into a `ProviderMounts` by
@@ -311,4 +322,69 @@ pub(crate) fn prepare(
         pi_data,
         cursor_data,
     })
+}
+
+/// The `/etc/passwd` of a uid-mapped container: root, plus the mapped `user`
+/// (`uid:gid`) with the container's `$HOME`.
+fn passwd_contents(user: &str, home: &Path) -> String {
+    format!(
+        "root:x:0:0:root:/root:/bin/sh\nfletch:x:{user}:fletch:{}:/bin/sh\n",
+        home.display()
+    )
+}
+
+/// Write [`passwd_contents`] to the [`PASSWD_FILE`] `run_args` binds. Under the
+/// writable root so archive teardown's `rm -rf` reclaims it — which also makes
+/// it agent-writable, so whatever an agent left there (a symlink to a host
+/// file, say) is unlinked and replaced, never followed.
+pub(crate) fn write_passwd_file(writable_root: &Path, user: &str, home: &Path) -> Result<()> {
+    let path = writable_root.join(PASSWD_FILE);
+    let write = || -> std::io::Result<()> {
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?
+            .write_all(passwd_contents(user, home).as_bytes())
+    };
+    write().map_err(|e| {
+        Error::Other(format!(
+            "preparing container passwd file {} failed: {e}",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mapped uid must resolve (`getpwuid`) to a user whose home is the
+    /// container's `$HOME`; root keeps its entry.
+    #[test]
+    fn passwd_names_root_and_the_mapped_user() {
+        assert_eq!(
+            passwd_contents("12345:12345", Path::new("/home/svc")),
+            "root:x:0:0:root:/root:/bin/sh\nfletch:x:12345:12345:fletch:/home/svc:/bin/sh\n",
+        );
+    }
+
+    /// The file sits in the agent-writable root: a planted symlink must be
+    /// replaced, not written through to its target.
+    #[test]
+    fn passwd_file_replaces_a_planted_symlink() {
+        let td = tempfile::tempdir().unwrap();
+        let target = td.path().join("host-file");
+        std::fs::write(&target, "keep").unwrap();
+        std::os::unix::fs::symlink(&target, td.path().join(PASSWD_FILE)).unwrap();
+
+        write_passwd_file(td.path(), "1000:1000", Path::new("/home/svc")).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        let written = std::fs::read_to_string(td.path().join(PASSWD_FILE)).unwrap();
+        assert!(written.contains("fletch:x:1000:1000:"), "{written}");
+    }
 }

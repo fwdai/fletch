@@ -54,7 +54,8 @@
 //! user's file outside it. On Linux there is no VM and no mapping, so a rootful
 //! daemon would hand the service user back a `root:root` checkout it cannot
 //! delete and RPC replies it cannot read; there, the launch adds
-//! `--user <uid>:<gid>` plus the writable `$HOME` that non-root agent needs
+//! `--user <uid>:<gid>` plus the writable `$HOME` and `/etc/passwd` entry that
+//! non-root agent needs
 //! ([`util::launch_user`], [`run_args`]). A *rootless* daemon already maps
 //! container root to the user and is left alone. Consequences on a mapped
 //! launch, both documented in `crates/fletch-host/README.md`: an agent can no
@@ -214,17 +215,18 @@ impl SandboxEngine for DockerEngine {
         let settings = LAUNCH_SETTINGS.read().clone();
         let image = self.resolve_image_cached(provider, settings.image_override.as_deref())?;
         let name = container_name(ctx.agent_id);
+        // Owned for the duration of the launch: the probe behind it may decline
+        // to cache its answer, so there is no `&'static str` to borrow (see
+        // `util::launch_user`).
+        let run_as_user = launch_user();
         // Everything about *what* to mount, set, and authenticate is
         // runtime-neutral policy; this engine only decides which binary carries
         // it out.
-        let prep = crate::sandbox::container::launch::prepare(ctx, provider)?;
+        let prep =
+            crate::sandbox::container::launch::prepare(ctx, provider, run_as_user.as_deref())?;
 
         let prefix_args = {
             let auth_vars = prep.auth_vars();
-            // Owned for the duration of the argv build: the probe behind it may
-            // decline to cache its answer, so there is no `&'static str` to
-            // borrow (see `util::launch_user`).
-            let run_as_user = launch_user();
             run_args(&RunSpec {
                 interactive: ctx.interactive,
                 name: &name,

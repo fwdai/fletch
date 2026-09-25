@@ -33,6 +33,10 @@ pub(crate) const DEFAULT_CPUS: &str = "2";
 /// cache should hit `ENOSPC` rather than the OOM killer.
 const HOME_TMPFS_OPTS: &str = "rw,mode=1777,size=1g";
 
+/// The generated passwd file a uid-mapped launch binds over `/etc/passwd`,
+/// under the writable root (see `launch::write_passwd_file`).
+pub(crate) const PASSWD_FILE: &str = ".fletch-passwd";
+
 /// Mount options for the [`EPHEMERAL_RUNTIME_SUBDIRS`] overlays on a uid-mapped
 /// launch. A bare `--tmpfs` is `0755 root:root`, which a non-root agent cannot
 /// write — claude `mkdir`s into both every session.
@@ -175,6 +179,16 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         // increasing path depth, whatever the argv order.
         args.push("--tmpfs".into());
         args.push(format!("{}:{HOME_TMPFS_OPTS}", spec.home.to_string_lossy()));
+        // So the mapped uid resolves (`os.userInfo()`, `whoami`). Its source is
+        // agent-writable through the writable-root bind, so no setuid binary
+        // (`su`) may honour an entry an agent rewrote.
+        args.push("-v".into());
+        args.push(format!(
+            "{}:/etc/passwd:ro",
+            spec.writable_root.join(PASSWD_FILE).to_string_lossy()
+        ));
+        args.push("--security-opt".into());
+        args.push("no-new-privileges".into());
     }
     // Mounts at identical host paths (invariant 1). Exactly these — nothing
     // else from the host enters the container.
@@ -295,10 +309,11 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
 }
 
 /// Every *host* path [`run_args`] turns into a bind mount, in argv order —
-/// excluding the tmpfs overlays (no source) and the `projects/` target (its
-/// source, `projects_src`, is listed). A runtime that vets mount sources before
-/// launching (see `podman::machine`) must see exactly what will be bound, so a
-/// mount added to [`run_args`] without an entry here would go unvetted.
+/// excluding the tmpfs overlays (no source), the `projects/` target (its
+/// source, `projects_src`, is listed) and the [`PASSWD_FILE`] (inside
+/// `writable_root`). A runtime that vets mount sources before launching (see
+/// `podman::machine`) must see exactly what will be bound, so a mount added to
+/// [`run_args`] without an entry here would go unvetted.
 pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = vec![spec.writable_root.into(), spec.rpc_dir.into()];
     if let Some(board) = spec.blackboard {

@@ -143,7 +143,8 @@ impl SandboxEngine for PodmanEngine {
         let connection = target.connection.clone();
         let settings = LAUNCH_SETTINGS.read().clone();
         let name = container_name(ctx.agent_id);
-        let prep = crate::sandbox::container::launch::prepare(ctx, provider)?;
+        // Never uid-mapped (see `run_as_user` below), so no passwd file.
+        let prep = crate::sandbox::container::launch::prepare(ctx, provider, None)?;
 
         let prefix_args = {
             let auth_vars = prep.auth_vars();

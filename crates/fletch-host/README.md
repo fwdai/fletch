@@ -247,7 +247,9 @@ container's root really is the machine's root:
 
 - With a **rootful Docker daemon** the launch adds `--user <uid>:<gid>` so the
   agent's checkout, its RPC replies and claude's transcripts come back owned by
-  the service user instead of by root. That also means an agent cannot
+  the service user instead of by root. It also binds a generated `/etc/passwd`
+  (and sets `no-new-privileges`) so the service user's uid resolves inside the
+  container. Running as that user also means an agent cannot
   `apt-get install` inside its own container: bake what your project needs into
   a custom image (`docker_image` in Settings) instead. The **Cursor** image is
   the one provider this breaks — its CLI installs under `/root`, which only
