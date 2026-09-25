@@ -63,6 +63,9 @@ pub async fn provision_run_repo(source_repo: &Path, run_dir: &Path) -> Result<Pa
     .await?;
     rewrite_origin(source_repo, &dest).await?;
     seed_identity(source_repo, &dest).await?;
+    // The kernel runner's step agents adopt this tree and commit in it directly,
+    // so it needs the same attribution hook as an agent workspace.
+    crate::attribution::install_hook(&dest).await?;
     Ok(dest)
 }
 

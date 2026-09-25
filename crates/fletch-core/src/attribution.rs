@@ -10,14 +10,16 @@
 //! - **Claude's own switch** — `--settings` layers `attribution.commit/pr = ""`
 //!   over the user's `settings.json` (flag settings outrank user/project/local),
 //!   so Claude Code stops asking for attribution at all.
-//! - **Commits** — a `commit-msg` hook ([`commit_msg_hook`]) installed into every
-//!   checkout Fletch clones strips attribution trailers from the agent's own
-//!   `git commit`, whichever agent made it. That is the only lever for Cursor,
-//!   whose trailer is added by its tooling rather than the model, and for Codex,
-//!   whose attribution is a ChatGPT account policy with no local override. The
-//!   hook is always installed and gated at run time on [`ENV`], which the spawn
-//!   path sets from this switch — so a toggle reaches existing checkouts on the
-//!   agent's next spawn, without rewriting any hook.
+//! - **Commits** — a `commit-msg` hook ([`commit_msg_hook`], placed by
+//!   [`install_hook`]) in every clone Fletch makes for agents to commit in — agent
+//!   workspaces (`sandbox::provision`) and workflow run repositories, which the
+//!   kernel runner's steps adopt (`workflow::gitops`). It strips attribution
+//!   trailers from the agent's own `git commit`, whichever agent made it. That is
+//!   the only lever for Cursor, whose trailer is added by its tooling rather than
+//!   the model, and for Codex, whose attribution is a ChatGPT account policy with
+//!   no local override. The hook is always installed and gated at run time on
+//!   [`ENV`], which the spawn path sets from this switch — so a toggle reaches
+//!   existing checkouts on the agent's next spawn, without rewriting any hook.
 //! - **Pull requests** — every PR Fletch opens goes through
 //!   `github::pr_create_head`, which runs the body through [`scrub_pr_body`].
 //! - **Everyone** — [`note`] asks agents not to write it in the first place,
@@ -33,8 +35,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Settings key: remove agent attribution. Opt-in — only `"true"` enables.
 pub const SETTING: &str = "agent_attribution_removed";
 
-/// Env var set to `1` on agent processes while the switch is on. The
-/// `commit-msg` hook strips only when it sees it.
+/// Env var set on every agent process: `1` while the switch is on, `0`
+/// otherwise. The `commit-msg` hook strips only on `1`.
 pub const ENV: &str = "FLETCH_REMOVE_ATTRIBUTION";
 
 /// Claude Code settings hiding both attributions: an empty string is its
@@ -95,14 +97,13 @@ fn claude_settings_args_for(removed: bool) -> Vec<String> {
     }
 }
 
-/// The env arming the `commit-msg` hook, for every agent process. Empty when
-/// the switch is off, so the hook stays inert.
+/// The env arming (or disarming) the `commit-msg` hook, for every agent
+/// process. Always set, never omitted: agent env layers over what Fletch itself
+/// inherited, so leaving it out when the switch is off would let an inherited
+/// `1` keep the hook stripping behind an "off" toggle.
 pub(crate) fn agent_env() -> Vec<(String, String)> {
-    if removed() {
-        vec![(ENV.to_string(), "1".to_string())]
-    } else {
-        Vec::new()
-    }
+    let value = if removed() { "1" } else { "0" };
+    vec![(ENV.to_string(), value.to_string())]
 }
 
 /// The per-session instruction asking agents not to add attribution. `None`
@@ -124,7 +125,8 @@ fn note_for(removed: bool) -> Option<String> {
 
 /// A pull request body with attribution lines removed, or `body` unchanged when
 /// the switch is off. Removing a footer leaves the blank line that preceded it,
-/// so runs of blank lines collapse and trailing whitespace goes.
+/// so runs of blank lines collapse and trailing whitespace goes. Fenced code
+/// blocks are left verbatim: a line there is an example, not a footer.
 pub fn scrub_pr_body(body: &str) -> String {
     if removed() {
         scrub(body)
@@ -135,10 +137,22 @@ pub fn scrub_pr_body(body: &str) -> String {
 
 fn scrub(text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
-    for line in text.lines().filter(|l| !is_attribution_line(l)) {
-        let blank = line.trim().is_empty();
-        if blank && out.last().map_or(true, |prev| prev.trim().is_empty()) {
-            continue;
+    let mut in_fence = false;
+    for line in text.lines() {
+        let fence = {
+            let t = line.trim_start();
+            t.starts_with("```") || t.starts_with("~~~")
+        };
+        if fence {
+            in_fence = !in_fence;
+        } else if !in_fence {
+            if is_attribution_line(line) {
+                continue;
+            }
+            let blank = line.trim().is_empty();
+            if blank && out.last().map_or(true, |prev| prev.trim().is_empty()) {
+                continue;
+            }
         }
         out.push(line);
     }
@@ -155,7 +169,12 @@ fn is_attribution_line(line: &str) -> bool {
     if let Some(rest) = l.strip_prefix("made-with:") {
         return rest.trim_start().starts_with("cursor");
     }
-    let text = l.trim_start_matches(|c: char| !c.is_alphanumeric());
+    // A footer may open with an emoji (`🤖 Generated with …`) or markdown
+    // emphasis, but not with ASCII punctuation: `// Generated with …` or
+    // `# Generated with …` is a quoted example, not attribution. Matches the
+    // hook's `([[:space:]*_]|[^ -~])*` under `LC_ALL=C`.
+    let text =
+        l.trim_start_matches(|c: char| c.is_whitespace() || c == '*' || c == '_' || !c.is_ascii());
     let Some(rest) = text
         .strip_prefix("generated with")
         .or_else(|| text.strip_prefix("made with"))
@@ -175,7 +194,8 @@ fn is_attribution_line(line: &str) -> bool {
 /// only when [`ENV`] is set — drops attribution lines. git's own message
 /// cleanup runs after the hook, collapsing the blank lines a removed footer
 /// leaves. POSIX `sh` + `grep -E`: runs under macOS `/bin/sh` and the container
-/// image alike.
+/// image alike. `LC_ALL=C` makes `[^ -~]` (any byte outside printable ASCII —
+/// an emoji's bytes) mean the same thing whatever the agent's locale is.
 pub(crate) fn commit_msg_hook() -> String {
     let emails = AGENT_EMAILS
         .iter()
@@ -193,16 +213,53 @@ if [ -x "$0.orig" ]; then
 fi
 [ "${ENV}" = "1" ] || exit 0
 tmp="$1.fletch.$$"
-grep -v -i -E \
+LC_ALL=C grep -v -i -E \
   -e '^[[:space:]]*co-authored-by:.*({emails})>' \
   -e '^[[:space:]]*made-with:[[:space:]]*cursor' \
-  -e '^[^[:alnum:]]*(generated|made) with[[:space:]]+\[?({names})' \
+  -e '^([[:space:]*_]|[^ -~])*(generated|made) with[[:space:]]+\[?({names})' \
   "$1" > "$tmp"
 # grep exits 1 when every line matched; that is still a valid (empty) result.
 if [ $? -le 1 ]; then mv "$tmp" "$1"; else rm -f "$tmp"; fi
 exit 0
 "#
     )
+}
+
+/// Put [`commit_msg_hook`] in `checkout/.git/hooks/commit-msg`, for a clone
+/// Fletch owns (never a linked worktree, whose hooks are the user's real repo's).
+///
+/// Always installed, whatever the switch says: the hook is inert unless the
+/// agent's env arms it, so flipping the switch later needs no reinstall.
+/// Host-side git never runs it (`git::hardening` points `core.hooksPath` at
+/// `/dev/null`) and agents cannot rewrite `.git/hooks`
+/// (`sandbox::policy::GIT_EXEC_CONFIG_DIRS`).
+///
+/// A `commit-msg` the clone already has (an `init.templateDir` hook such as
+/// Gerrit's Change-Id) is moved aside to `commit-msg.orig`, which the new hook
+/// runs first. If `commit-msg.orig` is somehow taken too, nothing is touched:
+/// losing the user's hook is worse than keeping attribution in this clone.
+pub(crate) async fn install_hook(checkout: &std::path::Path) -> crate::error::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks_dir = checkout.join(".git/hooks");
+    tokio::fs::create_dir_all(&hooks_dir).await?;
+    let hook = hooks_dir.join("commit-msg");
+    if let Ok(existing) = tokio::fs::read_to_string(&hook).await {
+        if !existing.contains(HOOK_MARKER) {
+            let orig = hooks_dir.join("commit-msg.orig");
+            if tokio::fs::try_exists(&orig).await.unwrap_or(true) {
+                tracing::warn!(
+                    checkout = %checkout.display(),
+                    "commit-msg and commit-msg.orig both exist; leaving them alone, \
+                     so agent attribution is not stripped from commits in this checkout"
+                );
+                return Ok(());
+            }
+            tokio::fs::rename(&hook, &orig).await?;
+        }
+    }
+    tokio::fs::write(&hook, commit_msg_hook()).await?;
+    tokio::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -254,6 +311,11 @@ mod tests {
         "Fix the cursor position after paste",
         "Generated with care by the release script",
         "Update codex parser",
+        // Quoted examples, not footers: ASCII punctuation before the phrase.
+        "// Generated with Claude Code",
+        "# Generated with Codex",
+        "> Made with Cursor",
+        "`Generated with Codex`",
     ];
 
     #[test]
@@ -273,6 +335,78 @@ mod tests {
         let middle = "one\n\nMade with [Cursor](https://cursor.com)\n\ntwo";
         assert_eq!(scrub(middle), "one\n\ntwo");
         assert_eq!(scrub("untouched\n\nbody"), "untouched\n\nbody");
+    }
+
+    #[test]
+    fn scrub_leaves_fenced_code_verbatim() {
+        let body = "Example:\n\n```\nGenerated with Codex.\n\n\nCo-authored-by: Codex <noreply@openai.com>\n```\n\nGenerated with Codex.";
+        assert_eq!(
+            scrub(body),
+            "Example:\n\n```\nGenerated with Codex.\n\n\nCo-authored-by: Codex <noreply@openai.com>\n```"
+        );
+    }
+
+    #[test]
+    fn agent_env_always_sets_the_flag() {
+        // Never omitted, so an inherited `1` can't outlive an "off" toggle.
+        set_removed(false);
+        assert_eq!(agent_env(), vec![(ENV.to_string(), "0".to_string())]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn install_hook_chains_an_existing_hook_once() {
+        let td = tempfile::tempdir().unwrap();
+        let hooks = td.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(hooks.join("commit-msg"), "#!/bin/sh\n# gerrit\n").unwrap();
+
+        install_hook(td.path()).await.unwrap();
+        // The user's hook moved aside; ours in its place.
+        let ours = std::fs::read_to_string(hooks.join("commit-msg")).unwrap();
+        assert!(ours.contains(HOOK_MARKER));
+        let orig = std::fs::read_to_string(hooks.join("commit-msg.orig")).unwrap();
+        assert!(orig.contains("gerrit"));
+
+        // Reinstalling over our own hook must not chain it to itself.
+        install_hook(td.path()).await.unwrap();
+        let orig = std::fs::read_to_string(hooks.join("commit-msg.orig")).unwrap();
+        assert!(orig.contains("gerrit"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn install_hook_never_overwrites_a_hook_it_cannot_move_aside() {
+        let td = tempfile::tempdir().unwrap();
+        let hooks = td.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(hooks.join("commit-msg"), "#!/bin/sh\n# active\n").unwrap();
+        std::fs::write(hooks.join("commit-msg.orig"), "#!/bin/sh\n# taken\n").unwrap();
+
+        install_hook(td.path()).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(hooks.join("commit-msg")).unwrap(),
+            "#!/bin/sh\n# active\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(hooks.join("commit-msg.orig")).unwrap(),
+            "#!/bin/sh\n# taken\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn install_hook_writes_an_executable_hook_into_a_fresh_clone() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        install_hook(td.path()).await.unwrap();
+        let hook = td.path().join(".git/hooks/commit-msg");
+        assert!(std::fs::read_to_string(&hook)
+            .unwrap()
+            .contains(HOOK_MARKER));
+        let mode = std::fs::metadata(&hook).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+        assert!(!td.path().join(".git/hooks/commit-msg.orig").exists());
     }
 
     /// The hook's `grep` must agree with [`is_attribution_line`] line for line,

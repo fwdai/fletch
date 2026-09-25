@@ -443,7 +443,7 @@ where
         rewrite_origin(spec).await?;
         seed_identity(spec).await?;
         install_delegation_hooks(spec.dest).await?;
-        install_attribution_hook(spec.dest).await?;
+        crate::attribution::install_hook(spec.dest).await?;
         // Snapshot before the checkout so the cleanup below can tell the heads
         // `git clone` handed us from any branch the checkout step creates.
         let inherited = local_heads(spec.dest).await;
@@ -680,31 +680,6 @@ async fn install_delegation_hooks(dest: &Path) -> Result<()> {
     tokio::fs::write(&post_commit, delegation_hook_script(set_action)).await?;
     set_executable(&post_commit).await?;
     Ok(())
-}
-
-/// Install the "Remove agent attribution" `commit-msg` hook
-/// ([`crate::attribution::commit_msg_hook`]) into the clone's `.git/hooks`.
-///
-/// Always installed, whatever the switch says: the hook is inert unless the
-/// agent's env arms it, so flipping the switch later needs no reinstall. Same
-/// containment as [`install_delegation_hooks`] — never run by host-side git,
-/// not writable by the agent. A `commit-msg` the clone already has (a
-/// `init.templateDir` hook such as Gerrit's Change-Id) is moved aside to
-/// `commit-msg.orig`, which the new hook runs first.
-async fn install_attribution_hook(dest: &Path) -> Result<()> {
-    let hooks_dir = dest.join(".git/hooks");
-    tokio::fs::create_dir_all(&hooks_dir).await?;
-    let hook = hooks_dir.join("commit-msg");
-    if let Ok(existing) = tokio::fs::read_to_string(&hook).await {
-        let orig = hooks_dir.join("commit-msg.orig");
-        if !existing.contains(crate::attribution::HOOK_MARKER)
-            && !tokio::fs::try_exists(&orig).await.unwrap_or(false)
-        {
-            tokio::fs::rename(&hook, &orig).await?;
-        }
-    }
-    tokio::fs::write(&hook, crate::attribution::commit_msg_hook()).await?;
-    set_executable(&hook).await
 }
 
 /// The body of a delegation hook. `set_action` is a shell fragment that assigns
