@@ -19,6 +19,8 @@ mod editors;
 mod oauth;
 mod provider_login;
 mod sentry_scrub;
+#[cfg(target_os = "macos")]
+mod zoom;
 
 // ── The engine (`fletch-core`) ────────────────────────────────────────────
 // Re-exported rather than imported at each use site: these were `mod`
@@ -1510,6 +1512,16 @@ pub fn run() {
             // already have been counted before the tray appeared.
             if let Err(e) = setup_tray(app.handle(), &tray_status_slot) {
                 tracing::error!(error = %e, "menu-bar tray setup failed; continuing without it");
+            }
+
+            // Non-blocking zoom so the page follows the window (zoom.rs).
+            #[cfg(target_os = "macos")]
+            match app.get_webview_window("main").map(|w| w.ns_window()) {
+                Some(Ok(ns_window)) => zoom::install(ns_window),
+                Some(Err(e)) => {
+                    tracing::warn!(error = %e, "no NSWindow for main; zoom stays native")
+                }
+                None => tracing::warn!("no main window at setup; zoom stays native"),
             }
 
             Ok(())
