@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   bindingProblem,
   comboFromEvent,
@@ -13,6 +13,10 @@ import {
   SHORTCUT_GROUPS,
   visibleShortcutGroups,
 } from "./keymap";
+
+// The tests are written from a Mac: Mod is ⌘. One case below passes the
+// platform explicitly to cover the other.
+vi.mock("@/util/platform", () => ({ IS_MAC: true, IS_WINDOWS: false }));
 
 function key(init: Partial<KeyboardEvent> & { key: string; code?: string }): KeyboardEvent {
   return {
@@ -43,9 +47,17 @@ describe("matchesCombo", () => {
     expect(matchesCombo(key({ key: "L", metaKey: true, shiftKey: true }), "Mod+Shift+L")).toBe(
       true,
     );
+    // Control is not Command on a Mac; on Windows and Linux it is the modifier
+    // and the Windows key is not.
     expect(matchesCombo(key({ key: "l", ctrlKey: true, shiftKey: true }), "Mod+Shift+L")).toBe(
-      true,
+      false,
     );
+    expect(
+      matchesCombo(key({ key: "l", ctrlKey: true, shiftKey: true }), "Mod+Shift+L", false),
+    ).toBe(true);
+    expect(
+      matchesCombo(key({ key: "l", metaKey: true, shiftKey: true }), "Mod+Shift+L", false),
+    ).toBe(false);
     expect(matchesCombo(key({ key: "l", metaKey: true }), "Mod+Shift+L")).toBe(false);
     expect(matchesCombo(key({ key: "l", metaKey: true, altKey: true }), "Mod+L")).toBe(false);
   });
