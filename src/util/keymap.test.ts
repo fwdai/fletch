@@ -119,6 +119,32 @@ describe("matchesCombo", () => {
     expect(matchesCombo(key({ key: " " }), "Space")).toBe(true);
     expect(matchesCombo(key({ key: "ArrowUp", altKey: true }), "Alt+ArrowUp")).toBe(true);
   });
+
+  it("follows the layout's own keys, falling back to the physical key only for symbols", () => {
+    // Dvorak: S on the physical semicolon, a comma on the physical W, and the
+    // bracket on the physical minus — each is what the layout says it is.
+    const dvorakS = key({ key: "s", code: "Semicolon", metaKey: true });
+    expect(matchesCombo(dvorakS, "Mod+S")).toBe(true);
+    expect(matchesCombo(dvorakS, "Mod+;")).toBe(false);
+    const dvorakComma = key({ key: ",", code: "KeyW", metaKey: true });
+    expect(matchesCombo(dvorakComma, "Mod+,")).toBe(true);
+    expect(matchesCombo(dvorakComma, "Mod+W")).toBe(false);
+    const dvorakBrace = key({ key: "{", code: "Minus", metaKey: true, shiftKey: true });
+    expect(matchesCombo(dvorakBrace, "Mod+Shift+[")).toBe(true);
+    expect(matchesCombo(dvorakBrace, "Mod+Shift+-")).toBe(false);
+    // Option on macOS leaves no name (⌥N is "˜"); the physical key stands in.
+    expect(
+      matchesCombo(key({ key: "˜", code: "KeyN", altKey: true, metaKey: true }), "Mod+Alt+N"),
+    ).toBe(true);
+    // A layout with `!` on a key of its own, pressed without Shift, is not 1.
+    const bareBang = key({ key: "!", code: "Slash", metaKey: true });
+    expect(matchesCombo(bareBang, "Mod+1")).toBe(false);
+    expect(matchesCombo(bareBang, "Mod+Shift+1")).toBe(false);
+    // A keypress never answers to two chords, whatever the layout.
+    const altLetter = key({ key: "x", code: "KeyY", altKey: true, metaKey: true });
+    expect(matchesCombo(altLetter, "Mod+Alt+X")).toBe(true);
+    expect(matchesCombo(altLetter, "Mod+Alt+Y")).toBe(false);
+  });
 });
 
 describe("formatCombo", () => {

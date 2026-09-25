@@ -9,7 +9,7 @@ import {
 } from "@/storage/projectActivity";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { useAnyGate } from "@/store/capabilities";
+import { ADD_PROJECT_GATES, useAnyGate } from "@/store/capabilities";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
@@ -18,7 +18,7 @@ import { isGroupOpen, type OpenMap } from "./groupOpen";
 import { NewProjectPopover } from "./NewProjectPopover";
 import { ProjectGroup } from "./ProjectGroup";
 import { bubbleActive } from "./recentProjects";
-import { focusRow, rowOf, visibleRows } from "./rowNav";
+import { focusRow, rowOf, SIDEBAR_LIST_ID, visibleRows } from "./rowNav";
 import { SidebarFooter } from "./SidebarFooter";
 import { SidebarHeader } from "./SidebarHeader";
 import { useProjectReorder } from "./useProjectReorder";
@@ -139,10 +139,6 @@ function applySearch(groups: ProjectGroupData[], q: string): ProjectGroupData[] 
     );
 }
 
-/** What the "+" button leads to. It is closed only when the environment can
- *  run none of them — each row inside says for itself whether it can. */
-const ADD_PROJECT_GATES = ["openProject", "cloneProject", "createProject"] as const;
-
 export function Sidebar() {
   const addProjectGate = useAnyGate(ADD_PROJECT_GATES);
   const workspace = useAppStore((s) => s.workspace);
@@ -167,10 +163,12 @@ export function Sidebar() {
     const fallback = searching; // isGroupOpen's default for the active map
     setMap((m) => ({ ...m, [key]: !(m[key] ?? fallback) }));
   }
-  // The popover's open flag lives in the store (⌘O opens it from anywhere);
-  // the modal it leads to is this component's own.
+  // The popover's open flag lives in the store (⌘O opens it from anywhere,
+  // and the store applies the gate); the modal it leads to is this
+  // component's own.
   const npOpen = useAppStore((s) => s.addProjectOpen);
-  const setNpOpen = useAppStore((s) => s.setAddProjectOpen);
+  const openAddProject = useAppStore((s) => s.openAddProject);
+  const closeAddProject = useAppStore((s) => s.closeAddProject);
   const [npMode, setNpMode] = useState<NewProjectMode | null>(null);
   // Transient drag state for reordering: the group being dragged and the one
   // currently hovered as a drop target. Driven by pointer events (not the HTML5
@@ -320,7 +318,7 @@ export function Sidebar() {
   // The add-project popover's flag outlives this component (it is in the
   // store so ⌘O can raise it); drop it on unmount so a popover left open when
   // a full-screen surface took over doesn't reappear when that surface closes.
-  useEffect(() => () => setNpOpen(false), [setNpOpen]);
+  useEffect(() => () => closeAddProject(), [closeAddProject]);
 
   // ↑/↓ (Home/End) step through the visible rows and select as they go. Scoped
   // to keys fired inside the list, so the composer, chat, and dropdowns keep
@@ -392,7 +390,7 @@ export function Sidebar() {
   return (
     <>
       <SidebarHeader query={query} onChange={onQueryChange} onArrowDown={enterList} />
-      <div className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
+      <div id={SIDEBAR_LIST_ID} className="side-scroll" ref={listRef} onKeyDown={onListKeyDown}>
         <div className="side-section">
           {/* Open while the environment can run any of the three flows behind
               it — this Mac always can, a host by its descriptor — and closed,
@@ -402,7 +400,7 @@ export function Sidebar() {
           <span className={addProjectGate ? "tip" : undefined} data-tip={addProjectGate}>
             <button
               className="add-proj-cta flex-center text-sm"
-              onClick={() => setNpOpen(true)}
+              onClick={openAddProject}
               disabled={addProjectGate !== null}
               aria-label="Add project"
             >
@@ -427,13 +425,11 @@ export function Sidebar() {
 
       <SidebarFooter />
 
-      {/* Gated like the button above: the shortcut path has no disabled state
-          to stop at, so an environment that can add nothing shows nothing. */}
-      {npOpen && addProjectGate === null && (
+      {npOpen && (
         <NewProjectPopover
-          onClose={() => setNpOpen(false)}
+          onClose={closeAddProject}
           onChoose={(mode) => {
-            setNpOpen(false);
+            closeAddProject();
             setNpMode(mode);
           }}
         />

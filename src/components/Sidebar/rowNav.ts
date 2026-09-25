@@ -27,3 +27,23 @@ export function focusRow(row: HTMLElement) {
   row.scrollIntoView({ block: "nearest" });
   row.click();
 }
+
+/** The list the rows live in; mounted with the sidebar. */
+export const SIDEBAR_LIST_ID = "sidebar-list";
+
+/** Select the row after (or before) the selected one, wrapping at the ends,
+ *  without moving keyboard focus — the whole-window shortcut's version of the
+ *  arrow keys, over the very same rows, so the two can never disagree about
+ *  what "next" is. Nothing selected steps in from the top (or bottom). Does
+ *  nothing while the sidebar is unmounted; the caller reveals it first. */
+export function stepSelection(dir: 1 | -1) {
+  const rows = visibleRows(document.getElementById(SIDEBAR_LIST_ID));
+  if (rows.length === 0) return;
+  const current = rows.findIndex((r) => r.classList.contains("active"));
+  const next =
+    current < 0
+      ? rows[dir > 0 ? 0 : rows.length - 1]
+      : rows[(current + dir + rows.length) % rows.length];
+  next.scrollIntoView({ block: "nearest" });
+  next.click();
+}
