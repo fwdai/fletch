@@ -43,8 +43,13 @@
 //! `settings` table carries the GitHub token in plaintext plus the host's Noise
 //! identity. Because a host hangs its checkouts and RPC mailboxes off that same
 //! directory, that deny is immediately followed by re-allows for the two roots
-//! this profile is handed, plus a read-only one for the portable git a host may
-//! have put on the agent's PATH — see [`deny_engine_data_dir`].
+//! this profile is handed — see [`deny_engine_data_dir`].
+//!
+//! One thing is given back out of *either* data-dir deny, read-only: Fletch's
+//! portable git at `<data dir>/git-dist`. Every engine installs it there, and
+//! on a machine with no usable system git it is the `git` the engine puts on the
+//! agent's PATH — a read-denied binary can't be stat'ed, so PATH lookup would
+//! skip it and fall through to the Xcode CLT shim.
 
 use std::path::{Path, PathBuf};
 
@@ -157,9 +162,10 @@ fn deny_app_data_dir(home_s: &str) -> String {
 /// from agents the other spawns.
 ///
 /// Returns empty when no data dir was published (every unit test, and any caller
-/// that is not `host::boot`) or when the published dir already sits under the
-/// bundle-id deny — which is the desktop, debug (`<BUNDLE_ID>/dev`) and release
-/// (`<BUNDLE_ID>`) alike, so the desktop's profile text is unchanged.
+/// that is not `host::boot`). When the published dir already sits under the
+/// bundle-id deny — the desktop, debug (`<BUNDLE_ID>/dev`) and release
+/// (`<BUNDLE_ID>`) alike — the deny is not repeated, but the read-only
+/// portable-git exception still is: see [`engine_data_dir_rules`].
 fn deny_engine_data_dir(home_s: &str, state_roots: &[&Path]) -> String {
     match super::configured_data_dir() {
         Some(dir) => engine_data_dir_rules(&dir, home_s, state_roots),
@@ -177,11 +183,15 @@ fn deny_engine_data_dir(home_s: &str, state_roots: &[&Path]) -> String {
 /// not match and the one that could be an invalid SBPL subpath.
 ///
 /// Two things are given back after the deny. The first is read-only: Fletch's
-/// portable git under `<data dir>/git-dist`, which a host with no usable system
-/// git puts on the agent's own PATH ([`crate::git_dist::child_env`]), so denying
-/// reads there would leave those agents with no `git` at all. It stays
-/// write-denied — the agent executes those binaries, and the host runs the same
-/// ones unsandboxed.
+/// portable git under `<data dir>/git-dist`, which an engine with no usable
+/// system git puts on the agent's own PATH ([`crate::git_dist::child_env`]).
+/// Every engine — desktop or `fletch-host` — installs it at that path
+/// (`host::boot` points `git_dist::init` at the same `data_dir` it publishes
+/// here), so this exception is emitted for the desktop too, where the bundle-id
+/// deny would otherwise swallow it. Without it the agent's shell cannot `stat`
+/// the binary, PATH lookup skips the directory, and `git` resolves to the Xcode
+/// CLT shim on a machine that has no other git. It stays write-denied — the
+/// agent executes those binaries, and the engine runs the same ones unsandboxed.
 ///
 /// The second is `state_roots`: the roots this profile was handed — the agent's
 /// writable checkout parent and its RPC mailbox — which a host derives under its data
@@ -203,10 +213,28 @@ fn engine_data_dir_rules(data_dir: &Path, home_s: &str, state_roots: &[&Path]) -
         "{home_s}/Library/Application Support/{}",
         crate::BUNDLE_ID
     ));
-    // Already covered by `deny_app_data_dir` — the desktop, whose data dir *is*
-    // the bundle dir (or its `dev` subdir under a debug build).
+    let git_dist = sbpl_string(
+        &data_dir
+            .join(crate::git_dist::INSTALL_DIR_NAME)
+            .to_string_lossy(),
+    );
+    // The desktop, whose data dir *is* the bundle dir (or its `dev` subdir under
+    // a debug build): the deny is already emitted by `deny_app_data_dir`, and
+    // the desktop hangs no agent state off its data dir (checkouts and mailboxes
+    // live under `~/.fletch`), so only the portable-git exception applies.
     if data_dir.starts_with(&bundle_dir) {
-        return String::new();
+        return format!(
+            ";; Exception, read-only: Fletch's portable git lives inside the bundle-id\n\
+             ;; deny above (`<data dir>/git-dist/<dist tag>/bin/git`), and on a machine\n\
+             ;; with no usable system git the agent's PATH is pointed at it\n\
+             ;; (`git_dist::child_env`). A read-denied binary cannot be stat'ed, so\n\
+             ;; PATH lookup skips it and `git` falls through to the Xcode CLT shim.\n\
+             ;; Reads only: the agent executes these binaries, so it must not be able\n\
+             ;; to rewrite one and have the app run it unsandboxed on the next `git`\n\
+             ;; invocation. Nothing secret is under it — it is an unpacked upstream\n\
+             ;; tarball. Last-match-wins, so this must follow the deny.\n\
+             (allow file-read* (subpath {git_dist}))"
+        );
     }
     let reallows = state_roots
         .iter()
@@ -218,11 +246,6 @@ fn engine_data_dir_rules(data_dir: &Path, home_s: &str, state_roots: &[&Path]) -
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let git_dist = sbpl_string(
-        &data_dir
-            .join(crate::git_dist::INSTALL_DIR_NAME)
-            .to_string_lossy(),
-    );
     format!(
         ";; The same carve-out for the data dir THIS engine was configured with\n\
          ;; (`fletch-host --data-dir`, default `~/Library/Application Support/\n\
@@ -239,9 +262,7 @@ fn engine_data_dir_rules(data_dir: &Path, home_s: &str, state_roots: &[&Path]) -
          ;; Reads only: the agent executes these binaries, so it must not be able to\n\
          ;; rewrite one and have the host run it unsandboxed on the next `git`\n\
          ;; invocation. Nothing secret is under it — it is an unpacked upstream\n\
-         ;; tarball. (The desktop's own git-dist sits inside the bundle-id deny above\n\
-         ;; and is read-denied there today; that is pre-existing and out of scope\n\
-         ;; here, which is why this rule rides the host-only block.)\n\
+         ;; tarball. (The desktop emits the same exception against its bundle dir.)\n\
          (allow file-read* (subpath {git_dist}))\n\
          \n\
          ;; Exception: a host derives the agent checkouts root and the RPC mailbox\n\
@@ -506,7 +527,8 @@ pub fn build_run_profile(
     // …and this engine's own data dir, which no bundle-id rule matches. A Run
     // command's `writable_root` is the checkout it runs in, which on a host is
     // under that data dir, so it is the one root given back here (a Run process
-    // has no mailbox). Empty on the desktop — see `deny_engine_data_dir`.
+    // has no mailbox). On the desktop only the read-only portable-git exception
+    // is emitted — see `deny_engine_data_dir`.
     let deny_engine_data = block_after(deny_engine_data_dir(&home_s, &[writable_root.as_path()]));
     let app_data_dev = sbpl_string(&format!(
         "{home_s}/Library/Application Support/{}/dev",
@@ -760,8 +782,8 @@ pub fn build_profile(
     let deny_app_data = deny_app_data_dir(&home_s);
     // …plus the data dir this engine was actually configured with, which nothing
     // bundle-id-derived matches. A host derives both roots below it, so the deny
-    // hands back exactly the two this profile was given. Empty on the desktop —
-    // see `deny_engine_data_dir`.
+    // hands back exactly the two this profile was given. On the desktop only the
+    // read-only portable-git exception is emitted — see `deny_engine_data_dir`.
     let deny_engine_data = block_after(deny_engine_data_dir(
         &home_s,
         &[writable_root.as_path(), rpc_root.as_path()],
@@ -881,9 +903,10 @@ pub fn profile_args(text: &str) -> [String; 2] {
 }
 
 /// Splice an optional rule block into a profile template: a blank line and the
-/// block, or nothing at all. Keeps a profile that has no such block — every
-/// desktop one, where [`deny_engine_data_dir`] is a no-op — byte-for-byte what
-/// it was before the block existed, rather than gaining a stray blank line.
+/// block, or nothing at all. Keeps a profile that has no such block — any
+/// caller that never published a data dir, where [`deny_engine_data_dir`] is a
+/// no-op — byte-for-byte what it was before the block existed, rather than
+/// gaining a stray blank line.
 fn block_after(block: String) -> String {
     if block.is_empty() {
         block
@@ -1790,19 +1813,36 @@ mod tests {
 
     /// The desktop case, on the pure core so it needs no process-global: its data
     /// dir *is* the bundle dir (release) or its `dev` subdir (debug), which
-    /// `deny_app_data_dir` already covers — so nothing is emitted and the
-    /// desktop's profile text is exactly what it was.
+    /// `deny_app_data_dir` already covers — so no second deny and no state-root
+    /// re-allow. What IS emitted is the read-only portable-git exception, against
+    /// the configured dir (so a debug build's `dev/git-dist` is found too): the
+    /// desktop installs git-dist at the same place a host does, and without the
+    /// exception a fresh Mac with no CLT has agents whose `git` is the Xcode shim.
     #[test]
-    fn a_data_dir_under_the_bundle_dir_adds_no_rules() {
+    fn a_data_dir_under_the_bundle_dir_reallows_only_portable_git() {
         let home_s = "/Users/agent";
         let bundle = format!("{home_s}/Library/Application Support/{}", crate::BUNDLE_ID);
         let root = PathBuf::from("/Users/agent/.fletch/workspaces/fuji");
         for same in [PathBuf::from(&bundle), PathBuf::from(&bundle).join("dev")] {
-            assert_eq!(
-                engine_data_dir_rules(&same, home_s, &[root.as_path()]),
-                "",
-                "{} is already covered by the bundle-id deny",
+            let rules = engine_data_dir_rules(&same, home_s, &[root.as_path()]);
+            let git = format!(
+                "(allow file-read* (subpath \"{}/{}\"))",
+                same.display(),
+                crate::git_dist::INSTALL_DIR_NAME
+            );
+            assert!(rules.contains(&git), "missing {git} in:\n{rules}");
+            assert!(
+                !rules.contains("(deny "),
+                "{} is already denied by the bundle-id rule; no second deny:\n{rules}",
                 same.display()
+            );
+            assert!(
+                !rules.contains("file-write*"),
+                "the desktop block must grant no writes at all:\n{rules}"
+            );
+            assert!(
+                !rules.contains(&root.display().to_string()),
+                "desktop state roots live under ~/.fletch, not the data dir:\n{rules}"
             );
         }
         // A host's dir, by contrast, is denied and its root given back — in that
@@ -1898,6 +1938,20 @@ mod tests {
             "the portable git must stay executable — an agent on a host without \
              system git has no other one"
         );
+        // Executable by absolute path is not enough: `process-exec` is allowed
+        // even where reads are denied, but a shell's PATH search `stat`s each
+        // candidate and skips one it cannot see. This is exactly how the desktop
+        // regressed — `git` silently fell through to the Xcode CLT shim — so
+        // check resolution the way the agent's shell does it.
+        let bin_dir = portable_git.parent().unwrap();
+        assert!(
+            allowed(format!(
+                "test \"$(PATH={}:/usr/bin:/bin command -v git)\" = {}",
+                bin_dir.display(),
+                portable_git.display()
+            )),
+            "PATH lookup must find the portable git — read access is needed for stat"
+        );
         // …but read-only. An agent that could rewrite one of these binaries would
         // own the host, which runs the same ones unsandboxed.
         assert!(
@@ -1927,12 +1981,14 @@ mod tests {
     #[test]
     fn agent_profile_does_not_reallow_dev_data_dir() {
         // Agents never legitimately touch any Fletch data dir — no `dev`
-        // exception (that carve-out is Run-profile-only).
+        // exception (that carve-out is Run-profile-only). The one thing an agent
+        // profile may name under `dev` is the read-only portable-git exception,
+        // so the check is on the write grant, not the bare path.
         let (_td, root, rpc, home) = sandbox_dirs();
         let profile = build_profile(&root, &rpc, &home, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let dev = format!(
-            "{}/Library/Application Support/{}/dev",
+            "(allow file-read* file-write* (subpath \"{}/Library/Application Support/{}/dev\"))",
             canonical_home.display(),
             crate::BUNDLE_ID
         );

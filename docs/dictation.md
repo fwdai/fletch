@@ -355,7 +355,8 @@ recognizer. `dictation_availability` reports the answer as `engine`, so the UI
 never has to guess which one a click will get.
 
 whisper.cpp is compiled from source by `whisper-rs-sys`, which needs **cmake**
-on the build host. The dependency lives under
+on the build host (`scripts/doctor.sh`, run by `bun tauri dev`/`build`, checks
+for it and says how to install it). The dependency lives under
 `[target.'cfg(target_os = "macos")'.dependencies]` for two reasons: `metal`
 puts inference on the GPU, and the Linux CI build has no business compiling a
 C++ tree it will never run. No link flags of our own are needed;

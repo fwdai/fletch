@@ -34,10 +34,17 @@ export interface Availability {
    *  send button says "…yet — switch to Claude to send" where the picker row
    *  just says why. Null exactly when `reason` is. */
   fix: string | null;
+  /** False only for the "not installed" refusal; other refusals keep it true. */
+  installed: boolean;
 }
 
 /** Spawnable: no reason, no fix, and whatever version there is to show. */
-const open = (note: string): Availability => ({ reason: null, note, fix: null });
+const open = (note: string): Availability => ({
+  reason: null,
+  note,
+  fix: null,
+  installed: true,
+});
 
 /** The facts an availability decision is made from. Everything the hook reads
  *  out of the store, named, so the rule itself is a pure function of them and
@@ -68,19 +75,26 @@ function onHost(env: EnvironmentEntry, providerId: string): Availability {
   const reason = providerReason(env, providerId);
   const row = env.providers?.find((p) => p.id === providerId);
   if (!reason) return open(row?.version ?? "");
+  const installed = !!row?.installed;
   return {
     reason,
-    note: row?.installed ? "Signed out" : "Not installed",
+    note: installed ? "Signed out" : "Not installed",
     // No `fix`: `providerReason` already ends in the remedy (the command to
     // run on the host, or where the credential has to come from), and the
     // desktop has nothing to add — installing and signing in are never on the
     // wire. A second clause here would only read as two dashes in a row.
     fix: null,
+    installed,
   };
 }
 
 function onThisMac(facts: AvailabilityFacts, providerId: string): Availability {
   const { sandboxEngine, providerPaths, providerVersions, providersProbed } = facts;
+  // Fail open on the install gate: only enforce it once a probe has actually
+  // succeeded (`providersProbed`). While probing, or if the probe failed,
+  // treat as installed so a transient detection error never disables an agent
+  // the user really has.
+  const installed = !providersProbed || !!providerPaths[providerId];
   // The container gate is checked first: a non-container provider is blocked
   // regardless of install state, and that's the more useful reason. Mirrors
   // `ensure_engine_supports_provider`, which gates on `is_container()` rather
@@ -92,17 +106,15 @@ function onThisMac(facts: AvailabilityFacts, providerId: string): Availability {
       reason: `${providerLabel(providerId)} isn't available in ${label} sandboxes yet`,
       note: `Not in ${label} yet`,
       fix: "switch to Claude to send",
+      installed,
     };
   }
-  // Fail open on the install gate: only enforce it once a probe has actually
-  // succeeded (`providersProbed`). While probing, or if the probe failed,
-  // treat as installed so a transient detection error never disables an agent
-  // the user really has.
-  if (providersProbed && !providerPaths[providerId]) {
+  if (!installed) {
     return {
       reason: "Not installed — see Settings › Providers",
       note: "Not installed",
       fix: "install it in Settings › Providers",
+      installed: false,
     };
   }
   return open(providerVersions[providerId] ?? "");
