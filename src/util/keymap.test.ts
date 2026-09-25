@@ -9,6 +9,7 @@ import {
   matchesCombo,
   parseCombo,
   REBINDABLE_IDS,
+  resetProblem,
   SHORTCUT_BY_ID,
   SHORTCUT_GROUPS,
   visibleShortcutGroups,
@@ -141,7 +142,7 @@ describe("comboFromEvent", () => {
   it("writes a chord the matcher accepts back", () => {
     const events = [
       key({ key: "k", code: "KeyK", metaKey: true }),
-      key({ key: "L", code: "KeyL", ctrlKey: true, shiftKey: true }),
+      key({ key: "L", code: "KeyL", metaKey: true, shiftKey: true }),
       key({ key: "{", code: "BracketLeft", metaKey: true, shiftKey: true }),
       key({ key: "?", code: "Slash", metaKey: true, shiftKey: true }),
       key({ key: "Backspace", code: "Backspace", metaKey: true }),
@@ -206,6 +207,24 @@ describe("overrides", () => {
     expect(bindingProblem("search", "Mod+F", {})).toMatch(/Find in the conversation/);
     expect(bindingProblem("search", "Mod+S", {})).toMatch(/Save the file/);
     expect(bindingProblem("search", "Mod+Enter", {})).toMatch(/Commit/);
+  });
+
+  it("blocks a reset whose default another shortcut has since taken", () => {
+    // Search moved off ⌘K, History moved onto it: Search can't go back yet.
+    const overrides = { search: ["Mod+P"], history: ["Mod+K"] };
+    expect(resetProblem("search", overrides)).toMatch(/History/);
+    expect(resetProblem("history", overrides)).toBeNull();
+    // Once History is reset, Search can be.
+    expect(resetProblem("search", { search: ["Mod+P"] })).toBeNull();
+    // A shortcut on its defaults has nothing to reset.
+    expect(resetProblem("search", { history: ["Mod+K"] })).toBeNull();
+  });
+
+  it("records the platform's own modifier, not the other one", () => {
+    const ctrlK = key({ key: "k", code: "KeyK", ctrlKey: true });
+    expect(comboFromEvent(ctrlK)).toBe("K");
+    expect(comboFromEvent(ctrlK, false)).toBe("Mod+K");
+    expect(comboFromEvent(key({ key: "k", code: "KeyK", metaKey: true }), false)).toBe("K");
   });
 
   it("knows which ids may be rebound", () => {

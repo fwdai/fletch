@@ -7,7 +7,7 @@ import {
 } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
 import { createKeyedQueue } from "@/util/keyedQueue";
-import type { Combo, ShortcutOverrides } from "@/util/keymap";
+import { type Combo, resetProblem, type ShortcutOverrides } from "@/util/keymap";
 import type { SliceCreator } from "./types";
 
 /** Right-rail panel tabs. Mirrors the `Tab` ids in RightPanel; kept here so the
@@ -325,7 +325,9 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     }),
   resetShortcut: (id) =>
     set((s) => {
-      if (!(id in s.shortcutOverrides)) return s;
+      // The pane disables the control with the reason; this is the backstop
+      // so no path can restore a default another shortcut now sits on.
+      if (!(id in s.shortcutOverrides) || resetProblem(id, s.shortcutOverrides)) return s;
       const { [id]: _dropped, ...shortcutOverrides } = s.shortcutOverrides;
       persistShortcutOverrides(shortcutOverrides);
       return { shortcutOverrides };

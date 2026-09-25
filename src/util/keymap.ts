@@ -299,6 +299,20 @@ export function bindingProblem(
   return null;
 }
 
+/** Why shortcut `id` can't go back to its defaults right now, or null when it
+ *  can: another shortcut may have been rebound onto one of them since. Putting
+ *  the defaults back regardless would leave two actions on one chord, with
+ *  only the first in dispatch order reachable. */
+export function resetProblem(id: string, overrides: ShortcutOverrides): string | null {
+  const shortcut = SHORTCUT_BY_ID[id];
+  if (!shortcut || !(id in overrides)) return null;
+  for (const combo of shortcut.combos) {
+    const why = bindingProblem(id, combo, overrides);
+    if (why) return why;
+  }
+  return null;
+}
+
 /** The groups worth showing on this platform. */
 export function visibleShortcutGroups(mac = IS_MAC): ShortcutGroup[] {
   return SHORTCUT_GROUPS.map((g) => ({
@@ -445,10 +459,10 @@ function keyOf(e: KeyboardEvent): string | null {
 /** The chord `e` is, written the way the map writes them — the recorder's
  *  half of `matchesCombo`. Null when [`keyOf`] has no name for the key, so
  *  the recorder keeps waiting. */
-export function comboFromEvent(e: KeyboardEvent): Combo | null {
+export function comboFromEvent(e: KeyboardEvent, mac = IS_MAC): Combo | null {
   const key = keyOf(e);
   if (key === null) return null;
-  const mods = [(e.metaKey || e.ctrlKey) && "Mod", e.altKey && "Alt", e.shiftKey && "Shift"];
+  const mods = [isModDown(e, mac) && "Mod", e.altKey && "Alt", e.shiftKey && "Shift"];
   return [...mods.filter(Boolean), key].join("+");
 }
 

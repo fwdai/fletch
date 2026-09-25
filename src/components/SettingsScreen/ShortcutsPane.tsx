@@ -10,6 +10,7 @@ import {
   effectiveCombos,
   formatCombo,
   REBINDABLE_IDS,
+  resetProblem,
   type Shortcut,
   visibleShortcutGroups,
 } from "@/util/keymap";
@@ -48,6 +49,8 @@ function Recorder({
   const resetShortcut = useAppStore((s) => s.resetShortcut);
   const [problem, setProblem] = useState<string | null>(null);
   const overridden = shortcut.id in overrides;
+  // Why the defaults can't come back right now (another row took one), or null.
+  const blocked = overridden ? resetProblem(shortcut.id, overrides) : null;
 
   useEffect(() => {
     if (!recording) return;
@@ -97,13 +100,22 @@ function Recorder({
         )}
       </button>
       {overridden && !recording && (
-        <IconButton
-          size="sm"
-          tip={`Reset to ${shortcut.combos.map((c) => formatCombo(c)).join(" / ")}`}
-          onClick={() => resetShortcut(shortcut.id)}
+        // A disabled button gets no pointer events in the WebView, so the
+        // tooltip trigger has to be a wrapper (as SetToggle does) — the state
+        // that needs explaining is exactly the one that can't be hovered.
+        <span
+          className="tip"
+          data-tip={blocked ?? `Reset to ${shortcut.combos.map((c) => formatCombo(c)).join(" / ")}`}
         >
-          <Icon name="refresh" />
-        </IconButton>
+          <IconButton
+            size="sm"
+            disabled={blocked !== null}
+            aria-label={`Reset ${shortcut.label} shortcut`}
+            onClick={() => resetShortcut(shortcut.id)}
+          >
+            <Icon name="refresh" />
+          </IconButton>
+        </span>
       )}
     </>
   );
