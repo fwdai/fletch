@@ -6,6 +6,8 @@ import {
   type SettingsSection,
 } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
+import { activeEnvironment } from "./environments";
+import { ADD_PROJECT_GATES, anyGateReason, gateReason } from "./gates";
 import type { SliceCreator } from "./types";
 
 /** Right-rail panel tabs. Mirrors the `Tab` ids in RightPanel; kept here so the
@@ -43,7 +45,7 @@ export interface UiSlice {
   feedbackOpen: boolean;
   /** The sidebar's add-project popover (open a folder / clone / create). In
    *  the store rather than the sidebar's own state so ⌘O can open it from
-   *  anywhere; the sidebar renders and dismisses it. */
+   *  anywhere; the sidebar renders it and clears the flag when it unmounts. */
   addProjectOpen: boolean;
   /** First-run onboarding overlay. `onboardingComplete` is persisted (DB
    *  settings); the overlay auto-opens for new users on init and is
@@ -121,7 +123,11 @@ export interface UiSlice {
   /** Open / close the send-feedback modal. */
   openFeedback: () => void;
   closeFeedback: () => void;
-  setAddProjectOpen: (open: boolean) => void;
+  /** Raise the add-project popover. Refused when the active environment can
+   *  run none of its flows — the gate lives here, not in each caller, so the
+   *  sidebar button, ⌘O and anything later all get the same answer. */
+  openAddProject: () => void;
+  closeAddProject: () => void;
   /** Open the onboarding overlay (e.g. "Replay tour" from Settings). */
   openOnboarding: () => void;
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
@@ -220,7 +226,11 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   closeGithubConnect: () => set({ githubConnectOpen: false }),
   openFeedback: () => set({ feedbackOpen: true }),
   closeFeedback: () => set({ feedbackOpen: false }),
-  setAddProjectOpen: (open) => set({ addProjectOpen: open }),
+  openAddProject: () => {
+    if (anyGateReason(activeEnvironment(), ADD_PROJECT_GATES)) return;
+    set({ addProjectOpen: true });
+  },
+  closeAddProject: () => set({ addProjectOpen: false }),
   openOnboarding: () => set({ onboardingOpen: true }),
   closeOnboarding: () => {
     const firstCompletion = !get().onboardingComplete;
@@ -242,7 +252,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       return next ? { historyOpen: true } : { historyOpen: false, selectedHistoryAgentId: null };
     }),
   selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
-  openProjectScreen: (repoPath, tab = "roadmap") =>
+  openProjectScreen: (repoPath, tab = "roadmap") => {
+    // The project page is the roadmap, the activity feed and the local
+    // `project_settings` table — none of which a host answers for. The
+    // sidebar hides its button behind this gate; every other way in (⌘⇧,,
+    // a roadmap chip) is refused here so none can slip past it.
+    if (gateReason(activeEnvironment(), "roadmap")) return;
     set({
       projectScreenRepoPath: repoPath,
       projectScreenTab: tab,
@@ -253,7 +268,8 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       selectedRunId: null,
       // A plain open must not inherit someone else's jump request.
       roadmapFocusCode: null,
-    }),
+    });
+  },
   closeProjectScreen: () => set({ projectScreenRepoPath: null, roadmapFocusCode: null }),
   setProjectScreenTab: (tab) => set({ projectScreenTab: tab }),
   focusRoadmapItem: (repoPath, code) => {

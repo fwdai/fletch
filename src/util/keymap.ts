@@ -46,14 +46,15 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       {
         id: "prevAgent",
         combos: ["Mod+Shift+["],
-        label: "Previous agent",
-        description: "Select the row above the current one in the sidebar.",
+        label: "Previous in the sidebar",
+        description:
+          "Select the row above — agents, drafts and workflow runs, in the order shown. Shows the sidebar if hidden.",
       },
       {
         id: "nextAgent",
         combos: ["Mod+Shift+]"],
-        label: "Next agent",
-        description: "Select the row below the current one in the sidebar.",
+        label: "Next in the sidebar",
+        description: "Select the row below, wrapping at the end.",
       },
       {
         id: "home",
@@ -255,9 +256,8 @@ export function parseCombo(combo: Combo): ParsedCombo {
   return { mod: mods.has("Mod"), shift: mods.has("Shift"), alt: mods.has("Alt"), key };
 }
 
-/** Punctuation is matched on the physical key: with Shift (or Option on macOS)
- *  held, `KeyboardEvent.key` reports the shifted character — `{` for ⌘⇧[ —
- *  and the chord would never match on `key`. */
+/** The punctuation the map may name, with the physical key each sits on in the
+ *  US layout — the stand-in when a modifier has left `key` with no name. */
 const PUNCTUATION_CODES: Record<string, string> = {
   "[": "BracketLeft",
   "]": "BracketRight",
@@ -279,16 +279,83 @@ export function isModDown(e: KeyboardEvent, mac = IS_MAC): boolean {
   return mac ? e.metaKey : e.ctrlKey;
 }
 
-/** Whether `e` is `combo`. */
+/** Whether `e` is `combo`. The key is whatever [`keyOf`] says the event is, so
+ *  a keypress answers to exactly one chord. */
 export function matchesCombo(e: KeyboardEvent, combo: Combo, mac = IS_MAC): boolean {
   const c = parseCombo(combo);
   if (c.mod !== isModDown(e, mac)) return false;
   if (c.shift !== e.shiftKey) return false;
   if (c.alt !== e.altKey) return false;
-  const code = PUNCTUATION_CODES[c.key];
-  if (code) return e.code === code;
-  if (c.key === "Space") return e.key === " ";
-  return c.key.length === 1 ? e.key.toLowerCase() === c.key.toLowerCase() : e.key === c.key;
+  const key = keyOf(e);
+  if (key === null) return false;
+  return key.length === 1 ? key === c.key.toUpperCase() : key === c.key;
+}
+
+const CODE_TO_PUNCTUATION: Record<string, string> = Object.fromEntries(
+  Object.entries(PUNCTUATION_CODES).map(([key, code]) => [code, key]),
+);
+
+const NAMED_KEYS: ReadonlySet<string> = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Enter",
+  "Backspace",
+  "Delete",
+  "Escape",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "Tab",
+]);
+
+/** What Shift makes of each unshifted key on a US layout, inverted, so a
+ *  shifted press still names the key the layout has there. */
+const UNSHIFTED: Record<string, string> = {
+  "!": "1",
+  "@": "2",
+  "#": "3",
+  $: "4",
+  "%": "5",
+  "^": "6",
+  "&": "7",
+  "*": "8",
+  "(": "9",
+  ")": "0",
+  "{": "[",
+  "}": "]",
+  "<": ",",
+  ">": ".",
+  "?": "/",
+  "|": "\\",
+  "~": "`",
+  _: "-",
+  "+": "=",
+  ":": ";",
+  '"': "'",
+};
+
+/** The one key name `e` stands for, as the map writes it, or null for a lone
+ *  modifier or a key the map has no name for. The layout's own key first (a
+ *  Dvorak ⌘S is S, its ⌘, is a comma wherever the key sits, ⌘⇧1 is 1), and
+ *  only when a modifier has turned the key into something with no name
+ *  (Option on macOS: ⌥N is `˜`) does the physical key stand in. One answer
+ *  per keypress, so nothing can match two chords. */
+export function keyOf(e: KeyboardEvent): string | null {
+  // Unshifting undoes Shift, so it only applies while Shift is held: a layout
+  // that has `!` on a key of its own must not read as the digit under US-`!`.
+  const typed = (e.shiftKey && UNSHIFTED[e.key]) || e.key;
+  if (/^[a-z0-9]$/i.test(typed)) return typed.toUpperCase();
+  if (typed in PUNCTUATION_CODES) return typed;
+  if (typed === " ") return "Space";
+  if (NAMED_KEYS.has(typed) || /^F([1-9]|1[0-2])$/.test(typed)) return typed;
+  const punctuation = CODE_TO_PUNCTUATION[e.code];
+  if (punctuation) return punctuation;
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
+  if (/^Digit[0-9]$/.test(e.code)) return e.code.slice(5);
+  return null;
 }
 
 const MAC_KEYS: Record<string, string> = {
