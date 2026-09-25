@@ -6,6 +6,7 @@
 //! the window's animator on the ordinary run loop instead. The method is added
 //! to tao's window delegate at runtime, since tao does not implement it.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Mutex;
 
@@ -15,9 +16,10 @@ use objc2::{ffi, msg_send, sel};
 use objc2_app_kit::{NSAnimationContext, NSWindow};
 use objc2_foundation::NSRect;
 
-/// Pre-zoom frame to restore on un-zoom. AppKit's own record is taken during
-/// the zoom we veto, so it cannot be used.
-static RESTORE: Mutex<Option<NSRect>> = Mutex::new(None);
+/// Pre-zoom frame to restore on un-zoom, per window (the hook is added to the
+/// delegate class, so every tao window shares it). AppKit's own record is
+/// taken during the zoom we veto, so it cannot be used.
+static RESTORE: Mutex<Option<HashMap<usize, NSRect>>> = Mutex::new(None);
 
 /// Route the zoom of `ns_window` (`*mut NSWindow`) through the animator.
 /// Main thread only.
@@ -57,15 +59,18 @@ extern "C-unwind" fn should_zoom(
     window: &NSWindow,
     proposed: NSRect,
 ) -> Bool {
-    let mut restore = RESTORE.lock().unwrap_or_else(|e| e.into_inner());
-    let target = if window.isZoomed() {
-        // Launched already zoomed: nothing saved, AppKit's proposal is best.
-        restore.take().unwrap_or(proposed)
-    } else {
-        *restore = Some(window.frame());
-        proposed
+    let key = window as *const NSWindow as usize;
+    let target = {
+        let mut guard = RESTORE.lock().unwrap_or_else(|e| e.into_inner());
+        let restore = guard.get_or_insert_with(HashMap::new);
+        if window.isZoomed() {
+            // Launched already zoomed: nothing saved, AppKit's proposal is best.
+            restore.remove(&key).unwrap_or(proposed)
+        } else {
+            restore.insert(key, window.frame());
+            proposed
+        }
     };
-    drop(restore);
 
     unsafe {
         NSAnimationContext::beginGrouping();
