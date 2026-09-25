@@ -109,10 +109,11 @@ Reproducible bugs belong in [Issues](https://github.com/fwdai/fletch/issues). Co
 
 ```bash
 bun install
+bun run doctor   # checks the macOS toolchain and prints the fix for anything missing
 bun tauri dev
 ```
 
-**Toolchain:** [Bun](https://bun.com) 1.3+ and a stable Rust toolchain. React 18 + TypeScript + Zustand + xterm.js frontend; Rust backend via [Tauri 2](https://tauri.app).
+**Toolchain:** [Bun](https://bun.com) 1.3+, a Rust toolchain via [rustup](https://rustup.rs) (the version is pinned in `rust-toolchain.toml`), Xcode Command Line Tools with the macOS 26 SDK, and `cmake` (`brew install cmake`; whisper.cpp is built from source for local dictation). `bun tauri dev` and `bun tauri build` run the same doctor check first, so a fresh machine fails fast with instructions rather than deep inside a dependency's build script; `bun run doctor --fix` installs what Homebrew can. React 18 + TypeScript + Zustand + xterm.js frontend; Rust backend via [Tauri 2](https://tauri.app).
 
 ```
 src/                         frontend (store, adapters, workflows, components)
