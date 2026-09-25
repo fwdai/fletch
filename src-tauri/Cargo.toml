@@ -107,6 +107,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSResponder",
     "NSWindow",
     "NSAnimationContext",
+    "NSEvent",
 ] }
 objc2-avf-audio = { version = "0.3", default-features = false, features = [
     "std",

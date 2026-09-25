@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
 use objc2::{ffi, msg_send, sel};
-use objc2_app_kit::{NSAnimationContext, NSWindow};
+use objc2_app_kit::{NSAnimationContext, NSEvent, NSWindow};
 use objc2_foundation::NSRect;
 
 /// Pre-zoom frame to restore on un-zoom, per window (the hook is added to the
@@ -60,6 +60,19 @@ extern "C-unwind" fn should_zoom(
     proposed: NSRect,
 ) -> Bool {
     let key = window as *const NSWindow as usize;
+
+    // Since macOS 15, dragging a zoomed window by its title bar un-zooms it
+    // first and asks us the same question. Moving the frame ourselves mid-drag
+    // ends the drag, so let AppKit un-zoom natively; its proposal is the right
+    // pre-zoom frame. Every user-requested zoom arrives with the button up.
+    if NSEvent::pressedMouseButtons() & 1 != 0 {
+        let mut guard = RESTORE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(restore) = guard.as_mut() {
+            restore.remove(&key);
+        }
+        return Bool::YES;
+    }
+
     let target = {
         let mut guard = RESTORE.lock().unwrap_or_else(|e| e.into_inner());
         let restore = guard.get_or_insert_with(HashMap::new);
