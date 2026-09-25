@@ -358,17 +358,30 @@ fn passwd_contents(user: &str, home: &Path) -> String {
 /// the file must sit where no agent can swap it for a symlink between this
 /// write and the mount: the data dir is the engine's own (0700, never bound
 /// into a container), unlike the agent's writable root or RPC dir.
+///
+/// Replaced atomically (temp file in the same dir, then rename): every mapped
+/// launch rewrites this one path, and a running container has the previous
+/// file bind-mounted as its `/etc/passwd` — a truncating write would leave it
+/// empty mid-write, the very lookup failure the file exists to prevent. The
+/// old inode stays intact for the containers holding it; new launches bind
+/// the new one.
 pub(crate) fn write_passwd_file(data_dir: &Path, user: &str, home: &Path) -> Result<PathBuf> {
+    use std::io::Write;
     let dir = data_dir.join("sandbox");
     let path = dir.join("passwd");
-    std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::write(&path, passwd_contents(user, home)))
-        .map_err(|e| {
-            Error::Other(format!(
-                "preparing container passwd file {} failed: {e}",
-                path.display()
-            ))
-        })?;
+    let write = || -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+        tmp.write_all(passwd_contents(user, home).as_bytes())?;
+        tmp.persist(&path)?;
+        Ok(())
+    };
+    write().map_err(|e| {
+        Error::Other(format!(
+            "preparing container passwd file {} failed: {e}",
+            path.display()
+        ))
+    })?;
     Ok(path)
 }
 
@@ -396,10 +409,22 @@ mod tests {
         assert!(std::fs::read_to_string(&path)
             .unwrap()
             .contains("fletch:x:1000:1000:"));
-        // A second launch as another uid replaces, not appends.
+        // A second launch as another uid replaces, not appends — by rename, so
+        // a container still holding the first file (an open handle here stands
+        // in for its bind mount) keeps the full old contents throughout.
+        let mut held = std::fs::File::open(&path).unwrap();
         let again = write_passwd_file(td.path(), "2000:2000", Path::new("/home/svc")).unwrap();
-        let written = std::fs::read_to_string(again).unwrap();
+        let written = std::fs::read_to_string(&again).unwrap();
         assert!(written.contains("fletch:x:2000:2000:"), "{written}");
         assert!(!written.contains("1000"), "{written}");
+        let mut old = String::new();
+        std::io::Read::read_to_string(&mut held, &mut old).unwrap();
+        assert!(old.contains("fletch:x:1000:1000:"), "{old}");
+        // Nothing but the live file is left behind: no temp files.
+        let entries: Vec<_> = std::fs::read_dir(td.path().join("sandbox"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("passwd")]);
     }
 }
