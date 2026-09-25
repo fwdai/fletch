@@ -413,7 +413,9 @@ individually, so an agent keeps its own checkout and its own RPC mailbox and
 nothing else — a sibling agent's mailbox is not readable either. The one further
 exception is `git-dist/`, the portable git Fletch downloads when the machine has
 no usable system git: an agent may read and execute it (it is on the agent's
-PATH, and is an unpacked upstream tarball, not a secret) but not write it. A Run panel
+PATH, and is an unpacked upstream tarball, not a secret) but not write it. The
+desktop app carries the same read-only exception against its own data dir, since
+a shell's PATH search has to `stat` the binary before it will run it. A Run panel
 command gets the same deny, with its checkout re-allowed. On Linux the question
 does not arise: a container sees only the paths bound into it, and the data dir
 is not one of them. None of this helps against anything *outside* the sandbox,
