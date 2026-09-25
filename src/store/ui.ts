@@ -6,6 +6,10 @@ import {
   type SettingsSection,
 } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
+import { createKeyedQueue } from "@/util/keyedQueue";
+import { type Combo, resetProblem, type ShortcutOverrides } from "@/util/keymap";
+import { activeEnvironment } from "./environments";
+import { ADD_PROJECT_GATES, anyGateReason, gateReason } from "./gates";
 import type { SliceCreator } from "./types";
 
 /** Right-rail panel tabs. Mirrors the `Tab` ids in RightPanel; kept here so the
@@ -41,6 +45,10 @@ export interface UiSlice {
    *  (not local state) because the trigger is in `SidebarFooter` while the
    *  modal mounts at app root, like every other centered modal. */
   feedbackOpen: boolean;
+  /** The sidebar's add-project popover (open a folder / clone / create). In
+   *  the store rather than the sidebar's own state so ⌘O can open it from
+   *  anywhere; the sidebar renders it and clears the flag when it unmounts. */
+  addProjectOpen: boolean;
   /** First-run onboarding overlay. `onboardingComplete` is persisted (DB
    *  settings); the overlay auto-opens for new users on init and is
    *  re-openable from Settings › Developer (dev builds and admins). */
@@ -98,6 +106,10 @@ export interface UiSlice {
    *  still matches, so a dismissed item resurfaces when its signal changes.
    *  Persisted in settings (`reviewDismissed`); hydrated on init. */
   reviewDismissed: Record<string, string>;
+  /** The user's keyboard rebindings (see `util/keymap.ts`), shortcut id →
+   *  chords. Persisted whole in settings (`shortcutOverrides`); hydrated on
+   *  init. An id absent here is on its defaults. */
+  shortcutOverrides: ShortcutOverrides;
   /** Whether the current user is an admin — set from the `admin` row in the
    *  settings table (`value === "true"`). Unlocks the Developer settings
    *  section in production builds (dev builds always show it). */
@@ -117,6 +129,11 @@ export interface UiSlice {
   /** Open / close the send-feedback modal. */
   openFeedback: () => void;
   closeFeedback: () => void;
+  /** Raise the add-project popover. Refused when the active environment can
+   *  run none of its flows — the gate lives here, not in each caller, so the
+   *  sidebar button, ⌘O and anything later all get the same answer. */
+  openAddProject: () => void;
+  closeAddProject: () => void;
   /** Open the onboarding overlay (e.g. "Replay tour" from Settings). */
   openOnboarding: () => void;
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
@@ -154,6 +171,11 @@ export interface UiSlice {
    *  signature; persists the mark so it survives reloads (until the signal
    *  changes and the signature no longer matches). */
   dismissReviewItem: (id: string, signature: string) => void;
+  /** Rebind a global shortcut; persists the whole override map. */
+  setShortcut: (id: string, combos: Combo[]) => void;
+  /** Put one shortcut back on its defaults. */
+  resetShortcut: (id: string) => void;
+  resetAllShortcuts: () => void;
 }
 
 export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
@@ -164,6 +186,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   usageScreenOpen: false,
   githubConnectOpen: false,
   feedbackOpen: false,
+  addProjectOpen: false,
   onboardingOpen: false,
   onboardingComplete: false,
   historyOpen: false,
@@ -180,6 +203,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   roadmapBoardWidth: null,
   rightPanelTabs: {},
   reviewDismissed: {},
+  shortcutOverrides: {},
   admin: false,
 
   // ── UI ──────────────────────────────────────────────────────────────────────
@@ -214,6 +238,11 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   closeGithubConnect: () => set({ githubConnectOpen: false }),
   openFeedback: () => set({ feedbackOpen: true }),
   closeFeedback: () => set({ feedbackOpen: false }),
+  openAddProject: () => {
+    if (anyGateReason(activeEnvironment(), ADD_PROJECT_GATES)) return;
+    set({ addProjectOpen: true });
+  },
+  closeAddProject: () => set({ addProjectOpen: false }),
   openOnboarding: () => set({ onboardingOpen: true }),
   closeOnboarding: () => {
     const firstCompletion = !get().onboardingComplete;
@@ -235,7 +264,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       return next ? { historyOpen: true } : { historyOpen: false, selectedHistoryAgentId: null };
     }),
   selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
-  openProjectScreen: (repoPath, tab = "roadmap") =>
+  openProjectScreen: (repoPath, tab = "roadmap") => {
+    // The project page is the roadmap, the activity feed and the local
+    // `project_settings` table — none of which a host answers for. The
+    // sidebar hides its button behind this gate; every other way in (⌘⇧,,
+    // a roadmap chip) is refused here so none can slip past it.
+    if (gateReason(activeEnvironment(), "roadmap")) return;
     set({
       projectScreenRepoPath: repoPath,
       projectScreenTab: tab,
@@ -246,7 +280,8 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       selectedRunId: null,
       // A plain open must not inherit someone else's jump request.
       roadmapFocusCode: null,
-    }),
+    });
+  },
   closeProjectScreen: () => set({ projectScreenRepoPath: null, roadmapFocusCode: null }),
   setProjectScreenTab: (tab) => set({ projectScreenTab: tab }),
   focusRoadmapItem: (repoPath, code) => {
@@ -298,4 +333,31 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       setSetting("reviewDismissed", reviewDismissed);
       return { reviewDismissed };
     }),
+  setShortcut: (id, combos) =>
+    set((s) => {
+      const shortcutOverrides = { ...s.shortcutOverrides, [id]: combos };
+      persistShortcutOverrides(shortcutOverrides);
+      return { shortcutOverrides };
+    }),
+  resetShortcut: (id) =>
+    set((s) => {
+      // The pane disables the control with the reason; this is the backstop
+      // so no path can restore a default another shortcut now sits on.
+      if (!(id in s.shortcutOverrides) || resetProblem(id, s.shortcutOverrides)) return s;
+      const { [id]: _dropped, ...shortcutOverrides } = s.shortcutOverrides;
+      persistShortcutOverrides(shortcutOverrides);
+      return { shortcutOverrides };
+    }),
+  resetAllShortcuts: () => {
+    persistShortcutOverrides({});
+    set({ shortcutOverrides: {} });
+  },
 });
+
+/** The override map is written whole, and a record-then-reset lands two writes
+ *  in quick succession; the queue keeps them in issue order so the earlier one
+ *  can't finish last and resurrect the binding the user just dropped. */
+const shortcutWrites = createKeyedQueue();
+function persistShortcutOverrides(overrides: ShortcutOverrides) {
+  void shortcutWrites.run("shortcutOverrides", () => setSetting("shortcutOverrides", overrides));
+}

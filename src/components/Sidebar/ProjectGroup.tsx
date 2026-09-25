@@ -4,6 +4,7 @@ import { Icon } from "@/components/Icon";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
+import { useShortcutKeys } from "@/util/shortcuts";
 import { RunRow } from "@/workflows/run/RunRow";
 import { AgentRow } from "./AgentRow";
 import { foldAgents } from "./foldAgents";
@@ -66,6 +67,7 @@ export function ProjectGroup({
   const createDraft = useAppStore((s) => s.createDraft);
   const openProjectScreen = useAppStore((s) => s.openProjectScreen);
   const roadmapGate = useGate("roadmap");
+  const newAgentKeys = useShortcutKeys("newAgent");
 
   const count = agents.length + drafts.length + runs.length;
 
@@ -143,7 +145,7 @@ export function ProjectGroup({
         )}
         <button
           className="padd tip"
-          data-tip="New agent  ⌘N"
+          data-tip={`New agent  ${newAgentKeys}`}
           onClick={onAddAgent}
           aria-label="New agent"
         >

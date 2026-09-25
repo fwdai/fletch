@@ -17,6 +17,7 @@ import { McpServersPane } from "./McpServers";
 import { ProvidersPane } from "./ProvidersPane";
 import { RemoteControlPane } from "./RemoteControl";
 import { SandboxPane } from "./Sandbox";
+import { ShortcutsPane } from "./ShortcutsPane";
 import { SkillsPane } from "./Skills";
 
 // Lazily loaded — code-split into its own chunk, fetched only when the Developer
@@ -78,6 +79,7 @@ const NAV: NavItem[] = [
   { id: "account", label: "Account", icon: "user", order: 10 },
   { id: "general", label: "General", icon: "settings", order: 20 },
   { id: "layout", label: "Layout", icon: "panelGrid", order: 30, group: INTERFACE_GROUP },
+  { id: "shortcuts", label: "Shortcuts", icon: "keyboard", order: 36, group: INTERFACE_GROUP },
   { id: "providers", label: "Providers", icon: "blocks", order: 40, group: AGENTS_GROUP },
   {
     id: "agents",
@@ -205,6 +207,7 @@ export function SettingsScreen() {
           {visible && section === "general" && <GeneralPane />}
           {visible && section === "account" && <AccountPane />}
           {visible && section === "layout" && <LayoutPane />}
+          {visible && section === "shortcuts" && <ShortcutsPane />}
           {visible && section === "dictation" && <DictationPane />}
           {visible && section === "git" && <GitPane />}
           {visible && section === "sandbox" && <SandboxPane />}

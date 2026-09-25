@@ -154,6 +154,19 @@ describe("switchEnvironment", () => {
     });
   });
 
+  it("parks the add-project popover with the view it was raised over", async () => {
+    const store = newStore();
+    store.setState({ addProjectOpen: true });
+
+    await store.getState().switchEnvironment(HOST);
+    // The host starts without it, whatever it can or cannot offer; its own
+    // gate decides whether one can be raised there.
+    expect(store.getState().addProjectOpen).toBe(false);
+
+    await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
+    expect(store.getState().addProjectOpen).toBe(true);
+  });
+
   it("does not let an autopilot enrolment answer for the host's same-named agent", async () => {
     const store = newStore();
     // Agent ids are recycled place names, so the host has a `fuji` too — and

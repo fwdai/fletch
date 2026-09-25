@@ -265,6 +265,53 @@
   width: 240px;
 }
 
+/* Shortcuts: a keycap per chord. Body-sized and raised off the page (a lifted
+   face with a heavier bottom edge) so the key is the thing the eye lands on
+   in the row, not the label; alternatives sit either side of a dim slash. */
+.set-kbd {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 5px 11px;
+  min-width: 40px;
+  text-align: center;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border-color: var(--bd);
+  border-bottom: 2px solid var(--bd-strong);
+  border-radius: var(--r-sm);
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.18);
+}
+.set-kbd-sep {
+  color: var(--fg-3);
+}
+/* A rebindable row's keycaps are one button: hover lifts them, and while
+   recording the cap turns accent and says what it is waiting for. */
+.set-kbd-btn {
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  border-radius: var(--r-xs);
+}
+.set-kbd-btn:hover .set-kbd {
+  border-color: var(--fg-3);
+  color: var(--fg-0);
+}
+.set-kbd-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.set-kbd-rec {
+  font-family: inherit;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.set-kbd-problem {
+  color: var(--danger);
+}
+
 /* premium toggle */
 .set-toggle {
   position: relative;

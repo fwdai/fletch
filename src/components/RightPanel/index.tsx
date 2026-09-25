@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { AgentRecord } from "@/api";
 import { Icon, type IconName } from "@/components/Icon";
 import { useAppStore } from "@/store";
@@ -52,23 +51,15 @@ export function RightPanel({ agent }: { agent: AgentRecord }) {
     features.terminal && !shellGate && { id: "term", label: "Terminal", icon: "terminal" },
   ].filter(Boolean) as Tab[];
 
-  // Restore the tab this agent was last viewing (the panel remounts per agent),
-  // falling back to the first enabled tab. Guard against a saved tab whose
-  // feature has since been disabled.
+  // The store remembers the tab per agent, so switching back to an agent lands
+  // on the tab it was on — and ⌘1–⌘4 can pick one from anywhere. A remembered
+  // tab may no longer be offered: its feature was switched off, or the panel
+  // was kept across an environment switch (it is keyed by agent id, and ids
+  // repeat across hosts). Fall back to the first tab rather than an empty body.
   const savedTab = useAppStore((s) => s.rightPanelTabs[agent.id]);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
-  const [tab, setTab] = useState<TabId>(
-    savedTab && tabs.some((t) => t.id === savedTab) ? savedTab : (tabs[0]?.id ?? "git"),
-  );
-  const selectTab = (id: TabId) => {
-    setTab(id);
-    setRightPanelTab(agent.id, id);
-  };
-  // The panel is keyed by agent id, and agent ids repeat across hosts — so a
-  // switch between two environments whose selected agents share a name does not
-  // remount it, and the tab it was on may no longer be offered here. Fall back
-  // the same way the initial pick does, rather than render an empty body.
-  const shown = tabs.some((t) => t.id === tab) ? tab : (tabs[0]?.id ?? "git");
+  const selectTab = (id: TabId) => setRightPanelTab(agent.id, id);
+  const shown = savedTab && tabs.some((t) => t.id === savedTab) ? savedTab : (tabs[0]?.id ?? "git");
 
   if (tabs.length === 0) {
     return (
