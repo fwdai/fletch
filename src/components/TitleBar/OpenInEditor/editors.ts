@@ -39,3 +39,13 @@ export function detectEditors(): Promise<DetectedEditor[]> {
 }
 
 export const EDITOR_PREF_KEY = "fletch:openInEditor";
+
+/** Open an agent's checkout in the editor the title-bar launcher last used
+ *  (its first detected one until a pick is made). Resolves without doing
+ *  anything when no editor is installed. */
+export async function openInPreferredEditor(agentId: string): Promise<void> {
+  const editors = await detectEditors();
+  const pref = localStorage.getItem(EDITOR_PREF_KEY);
+  const editor = editors.find((e) => e.id === pref) ?? editors[0];
+  if (editor) await api.openInEditor(agentId, editor.id);
+}

@@ -167,7 +167,10 @@ export function Sidebar() {
     const fallback = searching; // isGroupOpen's default for the active map
     setMap((m) => ({ ...m, [key]: !(m[key] ?? fallback) }));
   }
-  const [npOpen, setNpOpen] = useState(false);
+  // The popover's open flag lives in the store (⌘O opens it from anywhere);
+  // the modal it leads to is this component's own.
+  const npOpen = useAppStore((s) => s.addProjectOpen);
+  const setNpOpen = useAppStore((s) => s.setAddProjectOpen);
   const [npMode, setNpMode] = useState<NewProjectMode | null>(null);
   // Transient drag state for reordering: the group being dragged and the one
   // currently hovered as a drop target. Driven by pointer events (not the HTML5
@@ -419,7 +422,9 @@ export function Sidebar() {
 
       <SidebarFooter />
 
-      {npOpen && (
+      {/* Gated like the button above: the shortcut path has no disabled state
+          to stop at, so an environment that can add nothing shows nothing. */}
+      {npOpen && addProjectGate === null && (
         <NewProjectPopover
           onClose={() => setNpOpen(false)}
           onChoose={(mode) => {

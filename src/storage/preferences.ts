@@ -12,6 +12,7 @@ export type SettingsSection =
   | "general"
   | "account"
   | "layout"
+  | "shortcuts"
   | "dictation"
   | "git"
   | "sandbox"

@@ -35,7 +35,7 @@ export function TitleBar() {
         <IconButton tip="Send feedback" onClick={openFeedback} aria-label="Send feedback">
           <Icon name="megaphone" className="tb-megaphone" />
         </IconButton>
-        <IconButton tip="History" active={historyOpen} onClick={() => toggleHistory()}>
+        <IconButton tip="History (⌘Y)" active={historyOpen} onClick={() => toggleHistory()}>
           <Icon name="history" />
         </IconButton>
         <IconButton tip="Settings (⌘,)" active={settingsOpen} onClick={() => toggleSettings()}>

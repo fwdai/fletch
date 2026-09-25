@@ -163,6 +163,7 @@ export function Home() {
               <Tip k="⌘ N" label="New agent" />
               <Tip k="⌘ K" label="Search" />
               <Tip k="⌘ B" label="Sidebar" />
+              <Tip k="⌘ ⇧ /" label="All shortcuts" />
             </div>
           )}
         </div>

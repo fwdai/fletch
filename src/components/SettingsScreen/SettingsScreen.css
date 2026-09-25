@@ -265,6 +265,20 @@
   width: 240px;
 }
 
+/* Shortcuts: a keycap per chord, sized up from the sidebar's ⌘K hint so a
+   three-symbol chord reads at arm's length; alternatives sit either side of
+   a dim slash. */
+.set-kbd {
+  font-size: var(--fs-sm);
+  padding: 3px 8px;
+  min-width: 30px;
+  text-align: center;
+  color: var(--fg-1);
+}
+.set-kbd-sep {
+  color: var(--fg-3);
+}
+
 /* premium toggle */
 .set-toggle {
   position: relative;

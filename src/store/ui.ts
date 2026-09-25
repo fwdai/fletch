@@ -41,6 +41,10 @@ export interface UiSlice {
    *  (not local state) because the trigger is in `SidebarFooter` while the
    *  modal mounts at app root, like every other centered modal. */
   feedbackOpen: boolean;
+  /** The sidebar's add-project popover (open a folder / clone / create). In
+   *  the store rather than the sidebar's own state so ⌘O can open it from
+   *  anywhere; the sidebar renders and dismisses it. */
+  addProjectOpen: boolean;
   /** First-run onboarding overlay. `onboardingComplete` is persisted (DB
    *  settings); the overlay auto-opens for new users on init and is
    *  re-openable from Settings › Developer (dev builds and admins). */
@@ -117,6 +121,7 @@ export interface UiSlice {
   /** Open / close the send-feedback modal. */
   openFeedback: () => void;
   closeFeedback: () => void;
+  setAddProjectOpen: (open: boolean) => void;
   /** Open the onboarding overlay (e.g. "Replay tour" from Settings). */
   openOnboarding: () => void;
   /** Dismiss onboarding and mark it complete so it won't auto-open again. */
@@ -164,6 +169,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   usageScreenOpen: false,
   githubConnectOpen: false,
   feedbackOpen: false,
+  addProjectOpen: false,
   onboardingOpen: false,
   onboardingComplete: false,
   historyOpen: false,
@@ -214,6 +220,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   closeGithubConnect: () => set({ githubConnectOpen: false }),
   openFeedback: () => set({ feedbackOpen: true }),
   closeFeedback: () => set({ feedbackOpen: false }),
+  setAddProjectOpen: (open) => set({ addProjectOpen: open }),
   openOnboarding: () => set({ onboardingOpen: true }),
   closeOnboarding: () => {
     const firstCompletion = !get().onboardingComplete;

@@ -43,7 +43,7 @@ export function OpenInEditor() {
         <button
           type="button"
           className="oe-main tip"
-          data-tip={`Open in ${current.label}`}
+          data-tip={`Open in ${current.label} (⌘⇧O)`}
           onClick={() => openIn(current.id)}
         >
           <EditorTile editor={current} />
