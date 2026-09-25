@@ -13,7 +13,7 @@ use crate::sandbox::container::launch_auth::{
     NO_OPENCODE_AUTH_MSG, NO_PI_AUTH_MSG,
 };
 use crate::sandbox::container::run_args::{
-    mount_sources, prepare_config_mount_dir, ProviderMounts,
+    mount_sources, prepare_config_mount_dir, ProviderMounts, PASSWD_FILE,
 };
 
 /// The version-refresh loop guard: exact-pair matching, per-provider
@@ -1374,6 +1374,20 @@ fn run_mapped(
     let projects_src = root.join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME);
     std::fs::create_dir_all(&projects_src).unwrap();
     write_passwd_file(&root, user, &home).unwrap();
+    // In production the mapped uid owns these paths. A *synthetic* uid does
+    // not, so give them the modes a default umask would — a host umask of 077
+    // would otherwise fail the run before it reaches the passwd lookup.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for dir in [&root, &rpc, &projects_src, &home.join(".claude")] {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::set_permissions(
+            root.join(PASSWD_FILE),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+    }
     let name = container_name("uid-map-test");
     let mut spec = test_spec(false);
     spec.name = &name;
@@ -1480,6 +1494,26 @@ fn docker_run_as_unknown_uid_resolves_in_node() {
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
         format!("fletch {}", td.path().join("home").display()),
+    );
+}
+
+/// Integration: the embedded Cursor image must run its CLI as a uid the image
+/// does not know. Its installer used to land under `/root` (mode 700), which a
+/// `--user` launch could not traverse — exit 126 before the CLI ran. Builds the
+/// real image (minutes, cold), so it is opt-in like the rest.
+/// `FLETCH_DOCKER_TESTS=1 cargo test -- --ignored`
+#[test]
+#[ignore = "requires Docker; opt in via FLETCH_DOCKER_TESTS=1"]
+fn docker_cursor_image_runs_as_unknown_uid() {
+    if !crate::sandbox::docker::docker_tests_enabled() {
+        return;
+    }
+    let tag = crate::sandbox::container::images::image_tag(DockerProvider::Cursor);
+    crate::sandbox::docker::image::ensure_image(DockerProvider::Cursor, &tag, &|_| {}).unwrap();
+    let (out, _td) = run_mapped("12345:12345", &tag, "cursor-agent", &["--version"]);
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        "cursor-agent --version printed nothing",
     );
 }
 
