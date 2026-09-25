@@ -336,32 +336,18 @@ const PUNCTUATION_CODES: Record<string, string> = {
   "'": "Quote",
 };
 
-/** The physical key for a letter or digit — `KeyN`, `Digit1`. */
-function codeForChar(key: string): string {
-  return /[0-9]/.test(key) ? `Digit${key}` : `Key${key.toUpperCase()}`;
-}
-
 /** Whether `e` is `combo`. `Mod` is either ⌘ or Ctrl on every platform — Ctrl
- *  chords on a Mac are harmless and this keeps one code path.
- *
- *  Letters and digits compare on `key`, what the layout produces, so a Dvorak
- *  ⌘S is the S the user typed. Except when a modifier has turned the key into
- *  a symbol — Option on macOS (⌥N is `˜`), Shift on a digit (⌘⇧1 is `!`) —
- *  where the physical key stands in, exactly as `comboFromEvent` records it.
- *  The fallback is limited to those cases so a plain ⌘O on Dvorak (physical
- *  KeyS) can't also answer to ⌘S. */
+ *  chords on a Mac are harmless and this keeps one code path. The key is
+ *  whatever [`keyOf`] says the event is, the same answer the recorder writes,
+ *  so a keypress answers to exactly one chord. */
 export function matchesCombo(e: KeyboardEvent, combo: Combo): boolean {
   const c = parseCombo(combo);
   if (c.mod !== (e.metaKey || e.ctrlKey)) return false;
   if (c.shift !== e.shiftKey) return false;
   if (c.alt !== e.altKey) return false;
-  const code = PUNCTUATION_CODES[c.key];
-  if (code) return e.code === code;
-  if (c.key === "Space") return e.key === " ";
-  if (c.key.length !== 1) return e.key === c.key;
-  if (e.key.toLowerCase() === c.key.toLowerCase()) return true;
-  const symbolic = e.altKey || (e.shiftKey && /[0-9]/.test(c.key));
-  return symbolic && e.code === codeForChar(c.key);
+  const key = keyOf(e);
+  if (key === null) return false;
+  return key.length === 1 ? key === c.key.toUpperCase() : key === c.key;
 }
 
 /** Whether `combo` is well-formed: known modifiers, no repeats, and a key the
@@ -401,20 +387,57 @@ const NAMED_KEYS: ReadonlySet<string> = new Set([
   "Tab",
 ]);
 
+/** What Shift makes of each unshifted key on a US layout, inverted, so a
+ *  shifted press still names the key the layout has there. */
+const UNSHIFTED: Record<string, string> = {
+  "!": "1",
+  "@": "2",
+  "#": "3",
+  $: "4",
+  "%": "5",
+  "^": "6",
+  "&": "7",
+  "*": "8",
+  "(": "9",
+  ")": "0",
+  "{": "[",
+  "}": "]",
+  "<": ",",
+  ">": ".",
+  "?": "/",
+  "|": "\\",
+  "~": "`",
+  _: "-",
+  "+": "=",
+  ":": ";",
+  '"': "'",
+};
+
+/** The one key name `e` stands for, as the map writes it, or null for a lone
+ *  modifier or a key the map has no name for. Shared by the recorder and the
+ *  matcher, so what one writes the other fires on and nothing else — the
+ *  layout's own key first (a Dvorak ⌘S is S, its ⌘, is a comma, ⌘⇧1 is 1),
+ *  and only when a modifier has turned the key into something with no name
+ *  (Option on macOS: ⌥N is `˜`) does the physical key stand in. */
+function keyOf(e: KeyboardEvent): string | null {
+  const typed = UNSHIFTED[e.key] ?? e.key;
+  if (/^[a-z0-9]$/i.test(typed)) return typed.toUpperCase();
+  if (typed in PUNCTUATION_CODES) return typed;
+  if (typed === " ") return "Space";
+  if (NAMED_KEYS.has(typed) || /^F([1-9]|1[0-2])$/.test(typed)) return typed;
+  const punctuation = CODE_TO_PUNCTUATION[e.code];
+  if (punctuation) return punctuation;
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
+  if (/^Digit[0-9]$/.test(e.code)) return e.code.slice(5);
+  return null;
+}
+
 /** The chord `e` is, written the way the map writes them — the recorder's
- *  half of `matchesCombo`. Null for a lone modifier or a key the map has no
- *  name for, so the recorder keeps waiting. Letters and digits come from
- *  `key` (what the layout produces, which is what the matcher compares) unless
- *  a modifier has turned it into a symbol; then the physical key stands in. */
+ *  half of `matchesCombo`. Null when [`keyOf`] has no name for the key, so
+ *  the recorder keeps waiting. */
 export function comboFromEvent(e: KeyboardEvent): Combo | null {
-  let key: string | null = null;
-  if (/^[a-z0-9]$/i.test(e.key)) key = e.key.toUpperCase();
-  else if (CODE_TO_PUNCTUATION[e.code]) key = CODE_TO_PUNCTUATION[e.code];
-  else if (/^Key[A-Z]$/.test(e.code)) key = e.code.slice(3);
-  else if (/^Digit[0-9]$/.test(e.code)) key = e.code.slice(5);
-  else if (e.key === " ") key = "Space";
-  else if (NAMED_KEYS.has(e.key) || /^F([1-9]|1[0-2])$/.test(e.key)) key = e.key;
-  if (!key) return null;
+  const key = keyOf(e);
+  if (key === null) return null;
   const mods = [(e.metaKey || e.ctrlKey) && "Mod", e.altKey && "Alt", e.shiftKey && "Shift"];
   return [...mods.filter(Boolean), key].join("+");
 }

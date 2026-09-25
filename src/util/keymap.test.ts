@@ -72,6 +72,29 @@ describe("matchesCombo", () => {
     expect(matchesCombo(key({ key: "o", code: "KeyS", metaKey: true }), "Mod+O")).toBe(true);
   });
 
+  it("answers to exactly one chord per keypress, whatever the layout", () => {
+    // A layout that yields a letter with Option held: the letter it yields,
+    // never also the physical key underneath it.
+    const altLetter = key({ key: "x", code: "KeyY", altKey: true, metaKey: true });
+    expect(matchesCombo(altLetter, "Mod+Alt+X")).toBe(true);
+    expect(matchesCombo(altLetter, "Mod+Alt+Y")).toBe(false);
+    // Dvorak puts S on the physical semicolon and a comma on the physical W.
+    const dvorakS = key({ key: "s", code: "Semicolon", metaKey: true });
+    expect(matchesCombo(dvorakS, "Mod+S")).toBe(true);
+    expect(matchesCombo(dvorakS, "Mod+;")).toBe(false);
+    const dvorakComma = key({ key: ",", code: "KeyW", metaKey: true });
+    expect(matchesCombo(dvorakComma, "Mod+,")).toBe(true);
+    expect(matchesCombo(dvorakComma, "Mod+W")).toBe(false);
+    // …and its bracket sits on the physical minus; shifted it still reads as [.
+    const dvorakBrace = key({ key: "{", code: "Minus", metaKey: true, shiftKey: true });
+    expect(matchesCombo(dvorakBrace, "Mod+Shift+[")).toBe(true);
+    expect(matchesCombo(dvorakBrace, "Mod+Shift+-")).toBe(false);
+    // The recorder agrees with the matcher on every one of them.
+    for (const e of [altLetter, dvorakS, dvorakComma, dvorakBrace]) {
+      expect(matchesCombo(e, comboFromEvent(e) as string)).toBe(true);
+    }
+  });
+
   it("matches named keys and Space by name", () => {
     expect(matchesCombo(key({ key: "Escape" }), "Escape")).toBe(true);
     expect(matchesCombo(key({ key: "Backspace", metaKey: true }), "Mod+Backspace")).toBe(true);
