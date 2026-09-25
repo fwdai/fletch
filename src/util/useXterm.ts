@@ -1,3 +1,4 @@
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import type { ITerminalOptions, Terminal } from "@xterm/xterm";
 import { type DependencyList, useEffect, useRef } from "react";
 import { acquireTerminal, createTerminal, disposeTerminal } from "@/pty/terminals";
@@ -11,6 +12,14 @@ const XTERM_BASE_OPTIONS: ITerminalOptions = {
   cursorStyle: "block",
   allowProposedApi: false,
   macOptionIsMeta: true,
+  // OSC 8 hyperlinks; xterm's default runs `confirm()`, which the Tauri webview can't.
+  linkHandler: {
+    activate: (_event, uri) => {
+      openExternal(uri).catch((err) => {
+        console.error("open link failed", err);
+      });
+    },
+  },
 };
 
 /** Mount an xterm `Terminal` + `FitAddon` into a host element and own the
