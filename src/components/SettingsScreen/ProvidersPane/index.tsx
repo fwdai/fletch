@@ -112,8 +112,8 @@ export function ProvidersPane() {
   );
 }
 
-/** Two states, each named in the subtitle. Agents read the setting when they
- *  start, so running ones keep the old state until restarted. */
+/** Two states, each named in the subtitle. PRs read the setting as they open;
+ *  an agent's commit hook takes it from the env it started with. */
 function AttributionRow() {
   const removed = useAppStore((s) => s.agentAttributionRemoved);
   const setRemoved = useAppStore((s) => s.setAgentAttributionRemoved);
@@ -124,7 +124,7 @@ function AttributionRow() {
         removed
           ? "Removed. Fletch strips agents' Co-Authored-By trailers and “Generated with” footers from commits and PRs, whatever the agents' own settings say."
           : "Following your agent settings. Commits and PRs carry whatever attribution your agents' own settings add."
-      } Changes apply when an agent next starts.`}
+      } Applies to PRs right away, and to an agent's commits from its next start.`}
     >
       <SetToggle on={removed} onClick={() => void setRemoved(!removed)} />
     </SetRow>
