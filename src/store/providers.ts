@@ -37,8 +37,13 @@ export interface ProvidersSlice {
    *  resolves, and `"unknown"` when the backend has no cheap check for that
    *  CLI's credential store — both render as no claim either way. */
   providerAuth: Record<string, ProviderAuthStatus>;
+  /** Strip agents' commit/PR attribution regardless of their own settings.
+   *  Mirrors the backend-owned `agent_attribution_removed`; false (the default)
+   *  leaves each agent's own settings in charge. */
+  agentAttributionRemoved: boolean;
 
   setProviderEnabled: (id: string, enabled: boolean) => void;
+  setAgentAttributionRemoved: (removed: boolean) => Promise<void>;
   /** Re-probe installed provider CLIs for versions + binary paths, then their
    *  sign-in state. Runs once on init and again when the user re-scans from the
    *  Providers settings. */
@@ -68,6 +73,7 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
   modelCatalog: cachedCatalog.byId,
   modelsByAgent: cachedCatalog.byAgent,
   providerAuth: {},
+  agentAttributionRemoved: false,
 
   setProviderEnabled: (id, enabled) =>
     set((s) => {
@@ -75,6 +81,10 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
       setSetting("providers", next);
       return { providerFlags: next };
     }),
+  setAgentAttributionRemoved: async (removed) => {
+    await api.setAgentAttributionRemoved(removed);
+    set({ agentAttributionRemoved: removed });
+  },
   refreshProviderVersions: async () => {
     try {
       const probes = await api.probeProviderVersions();

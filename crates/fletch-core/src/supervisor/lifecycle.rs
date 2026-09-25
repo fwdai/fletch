@@ -1156,6 +1156,9 @@ impl Supervisor {
         // respawn), not just fresh spawns: not every provider is wired up to run
         // under a container engine.
         ensure_engine_supports_provider(engine, &record.provider)?;
+        // Every launch path, so a checkout older than the attribution hook
+        // gets it on the agent's next start.
+        crate::attribution::refresh_hooks(agent_id, &record.repos).await;
 
         // Dynamically fold the codegraph MCP server into the session's snapshot
         // for this launch, when code indexing is on, the engine isn't a

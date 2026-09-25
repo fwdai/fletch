@@ -14,12 +14,16 @@
 #
 # whisper-rs-sys forwards every `GGML_*` env var to cmake as a define, and
 # `check_cxx_source_runs` skips a probe whose result variable is already
-# defined. So answer the two probes that fault on Apple Silicon up front:
+# defined. So answer the probes that fault on some Apple Silicon up front:
 # no Mac has SVE (Apple never implemented it), and SME (M4 onwards) buys ggml
-# nothing here — its SME kernels live behind KleidiAI, which is off. dotprod
-# and i8mm keep being probed; those succeed, and never crash.
+# nothing here — its SME kernels live behind KleidiAI, which is off. i8mm
+# (int8 matmul) is M2 onwards, so its probe faults on every M1; answering "no"
+# only costs M2+ a CPU matmul path, and dictation runs on the GPU via Metal.
+# dotprod keeps being probed: every Apple Silicon chip has it, so it never
+# crashes.
 GGML_MACHINE_SUPPORTS_sve = "0"
 GGML_MACHINE_SUPPORTS_sme = "0"
+GGML_MACHINE_SUPPORTS_i8mm = "0"
 
 # Xcode 27's SwiftPM internalizes the SwiftRs runtime's @_cdecl exports, and
 # they must be re-exported from exactly ONE archive or the linker sees duplicate

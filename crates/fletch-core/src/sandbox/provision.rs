@@ -443,6 +443,7 @@ where
         rewrite_origin(spec).await?;
         seed_identity(spec).await?;
         install_delegation_hooks(spec.dest).await?;
+        crate::attribution::install_hook(spec.dest).await?;
         // Snapshot before the checkout so the cleanup below can tell the heads
         // `git clone` handed us from any branch the checkout step creates.
         let inherited = local_heads(spec.dest).await;
@@ -1469,6 +1470,66 @@ mod tests {
         let body = std::fs::read_to_string(entries[0].path()).unwrap();
         assert!(body.contains(r#""op":"signal_git_action""#), "body: {body}");
         assert!(body.contains(r#""action":"git_commit""#), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn attribution_hook_strips_agent_trailers_only_when_armed() {
+        // End-to-end through a real clone: the installed commit-msg hook drops
+        // agent trailers — including one added by `--trailer`, the way Cursor's
+        // tooling adds its own — keeps a human co-author, and does nothing at
+        // all without the env the spawn path sets.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+        provision(&spec).await.unwrap();
+        run(&dest, &["checkout", "-q", "-b", "work"]);
+
+        let commit = |armed: bool, file: &str| {
+            std::fs::write(dest.join(file), b"x").unwrap();
+            run(&dest, &["add", "-A"]);
+            let mut cmd = std::process::Command::new("git");
+            cmd.current_dir(&dest).env_remove(crate::attribution::ENV);
+            if armed {
+                cmd.env(crate::attribution::ENV, "1");
+            }
+            let out = cmd
+                .args([
+                    "commit",
+                    "-q",
+                    "-m",
+                    "feat: x",
+                    "-m",
+                    "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+                    "-m",
+                    "Co-Authored-By: Claude <noreply@anthropic.com>",
+                    "--trailer",
+                    "Co-authored-by: Cursor <cursoragent@cursor.com>",
+                    "--trailer",
+                    "Co-authored-by: Jane <jane@example.com>",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            run(&dest, &["log", "-1", "--format=%B"])
+        };
+
+        let armed = commit(true, "a.txt");
+        assert_eq!(
+            armed.trim_end(),
+            "feat: x\n\nCo-authored-by: Jane <jane@example.com>"
+        );
+        let unarmed = commit(false, "b.txt");
+        assert!(unarmed.contains("noreply@anthropic.com"), "{unarmed}");
+        assert!(unarmed.contains("cursoragent@cursor.com"), "{unarmed}");
     }
 
     #[tokio::test]

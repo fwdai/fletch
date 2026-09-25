@@ -250,6 +250,9 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     // Bare `-e NAME` forwards from the runtime CLI's own environment, so no
     // value appears in argv (invariant 3).
     let mut forwarded: Vec<&str> = vec!["HOME", "FLETCH_RPC_DIR", "TERM", "COLORTERM"];
+    // Arms (`1`) or disarms (`0`) the attribution `commit-msg` hook; set on the
+    // runtime CLI's env by the spawn path (`attribution::agent_env`).
+    forwarded.push(crate::attribution::ENV);
     if spec.blackboard.is_some() {
         forwarded.push(crate::workflow::blackboard::WF_BLACKBOARD_ENV);
     }

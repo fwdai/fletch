@@ -334,6 +334,11 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         publish_prefs::set_draft_prs(publish_prefs::parse_draft_prs(
             database::get_setting(&db.lock(), publish_prefs::DRAFT_PRS_SETTING).as_deref(),
         ));
+        // The attribution switch, read by the agent arg builders and the spawn
+        // path's instruction notes.
+        crate::attribution::set_removed(crate::attribution::parse(
+            database::get_setting(&db.lock(), crate::attribution::SETTING).as_deref(),
+        ));
         // The alert opt-out, read off threads with no DB handle. (Dictation's
         // is the desktop's to seed — it belongs to a capture session, not to
         // the engine.)
