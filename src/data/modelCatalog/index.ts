@@ -11,7 +11,6 @@ import { fetchModelsDevIndex } from "./modelsDev";
 import type { AgentModels, UnifiedCatalog } from "./types";
 
 export { modelSummary } from "./build";
-export { agentIdentityTip, dropSharedBrand, modelDisplayName } from "./display";
 export { lookupModel, lookupModelInList } from "./normalize";
 export type { ModelCost } from "./pricing";
 export { cacheSavingsUsd, modelCost, priceTokens } from "./pricing";

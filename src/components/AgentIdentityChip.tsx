@@ -1,7 +1,8 @@
 import type { AgentRecord } from "@/api";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
-import { agentIdentityTip } from "@/data/modelCatalog";
+import { lookupModel } from "@/data/modelCatalog";
+import { effortLabel } from "@/data/providerDetail";
 import { providerChip, providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
 
@@ -11,22 +12,24 @@ import { useAppStore } from "@/store";
  *  custom-agent lookup + provider fallback lives here once, not per call-site.
  *
  *  The glyph already says which agent it is, so the tooltip adds what it can't
- *  show: the model ("Claude Code · Fable 5.1") and, for claude, the session's
- *  effort level. */
+ *  show: the model ("Claude Code · Claude Fable 5.1") and, for claude, the
+ *  session's effort level. The model is the one chosen at spawn, else the one
+ *  the transcript last reported (a default-model session). */
 export function AgentIdentityChip({ agent, size = 14 }: { agent: AgentRecord; size?: number }) {
   const customAgent = useAppStore((s) =>
     agent.custom_agent_id ? s.customAgents.find((a) => a.id === agent.custom_agent_id) : undefined,
   );
   const catalog = useAppStore((s) => s.modelCatalog);
   const liveModel = useAppStore((s) => s.usage[agent.id]?.context.model);
-  const tip = agentIdentityTip({
-    providerLabel: providerLabel(agent.provider),
-    customAgentName: customAgent?.name,
-    catalog,
-    model: agent.model,
-    liveModel,
-    effort: agent.effort,
-  });
+  const modelId = agent.model ?? liveModel;
+  const tip = [
+    customAgent?.name,
+    providerLabel(agent.provider),
+    modelId && (lookupModel(catalog, modelId)?.name ?? modelId),
+    agent.effort && `${effortLabel(agent.effort)} effort`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <span className="ag-prov-chip tip" data-tip={tip}>
       {customAgent ? (

@@ -6,7 +6,6 @@ import { AgentIdentityChip } from "@/components/AgentIdentityChip";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
-import { agentIdentityTip } from "@/data/modelCatalog";
 import { providerChip, providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import type { DraftAgent } from "@/store";
@@ -347,12 +346,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
 
 function DraftRow({ draft, active, onClick }: DraftRowProps) {
   const removeDraft = useAppStore((s) => s.removeDraft);
-  const catalog = useAppStore((s) => s.modelCatalog);
-  const chipTip = agentIdentityTip({
-    providerLabel: providerLabel(draft.provider),
-    catalog,
-    model: draft.model,
-  });
 
   function onDiscard(e: React.MouseEvent) {
     e.stopPropagation();
@@ -388,7 +381,7 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
         </span>
       </div>
       <div className="agent-sub flex-center">
-        <span className="ag-prov-chip tip" data-tip={chipTip}>
+        <span className="ag-prov-chip tip" data-tip={providerLabel(draft.provider)}>
           <ProviderIcon slug={draft.provider} {...providerChip(draft.provider)} size={12} />
         </span>
         <span className="a-task a-codename">{draft.name}</span>
