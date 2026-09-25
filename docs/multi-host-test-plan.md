@@ -176,7 +176,7 @@ Debug on purpose: `data_dir_under` only appends `dev` under `debug_assertions`
 | 5.4 | Login shell | `$SHELL` is respected for PATH discovery (`bin_resolve`); `claude` installed via Linuxbrew is found. |
 | 5.5 | `service install` (systemd user) | Unit at `~/.config/systemd/user/fletch-host.service`; prints `loginctl enable-linger <user>`; survives SSH logout only after linger. `--system --user NAME` under sudo writes `/etc/systemd/system/…` with `User=` and the user's data dir; `--system` without a user or with root → refused. |
 | 5.6 | Full acceptance | Phone pairs over LAN and relay, spawns, approves a push, opens a PR; `kill -TERM` mid-run then restart resumes. |
-| 5.7 | Cursor on Linux | Known unusable in a mapped container; confirm the failure is legible. |
+| 5.7 | Cursor on Linux | Runs under `--user uid:gid` (CLI installed under `/opt/cursor-agent`, world-readable); a turn completes. |
 
 ## 6. Things the audit flagged as likely bugs (verify, then file)
 

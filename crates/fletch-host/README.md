@@ -247,11 +247,12 @@ container's root really is the machine's root:
 
 - With a **rootful Docker daemon** the launch adds `--user <uid>:<gid>` so the
   agent's checkout, its RPC replies and claude's transcripts come back owned by
-  the service user instead of by root. That also means an agent cannot
+  the service user instead of by root. It also binds a generated `/etc/passwd`
+  (kept under the host's data dir, where no agent can touch it) so the service
+  user's uid resolves inside the container, and sets `no-new-privileges` so
+  the image's setuid binaries stay inert. Running as that user also means an agent cannot
   `apt-get install` inside its own container: bake what your project needs into
-  a custom image (`docker_image` in Settings) instead. The **Cursor** image is
-  the one provider this breaks — its CLI installs under `/root`, which only
-  root can read — so use Cursor on a macOS host, or another provider here.
+  a custom image (`docker_image` in Settings) instead.
 - **Rootless Docker and Podman** already map the container's root to your user,
   so they are left exactly as they are.
 
@@ -481,7 +482,6 @@ them when they are unset, and then keeping them unique per host is yours to do.
 
 - **No PTY streaming**: a remote client sees agent status and events, not a live
   terminal. That is Phase 5 of the multi-host plan.
-- **Cursor cannot run in a container on a Linux host** (see "The sandbox").
 - **No unattended upgrades and no rollback**: `fletch-host update` exists (see
   "Update"), but running it is yours to do, and undoing one is restoring the
   database copy it left behind by hand.

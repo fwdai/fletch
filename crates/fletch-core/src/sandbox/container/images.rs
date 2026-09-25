@@ -111,10 +111,15 @@ exec "$@"
 "#;
 
 /// Cursor's image. Base byte-identical to [`DOCKERFILE`]'s for cache reuse;
-/// cursor-agent installs via its official installer into `~/.local`, so the
-/// symlink puts it on PATH for the in-image `agent_bin`. The trailing
-/// `--version` is load-bearing: `ln -s` creates dangling links happily, so
-/// without it an installer relocation would only surface as exit-127 launches.
+/// cursor-agent installs via its official installer into `$HOME/.local`, so
+/// `HOME` points it at a world-readable `/opt/cursor-agent` rather than `/root`
+/// (mode 700), which a `--user <uid>:<gid>` launch cannot traverse; the
+/// symlink puts it on PATH for the in-image `agent_bin`. Not `/opt/cursor`:
+/// the CLI treats that path as its worker data dir. At runtime it writes only
+/// under the launch's `$HOME` (self-updates included), never its install tree.
+/// The trailing `--version` is load-bearing: `ln -s` creates dangling links
+/// happily, so without it an installer relocation would only surface as
+/// exit-127 launches.
 /// Auth is the forwarded `CURSOR_API_KEY` (see [`launch_auth`](super::launch_auth))
 /// — `cursor-agent login` writes the host keychain, which a container can't read.
 pub(crate) const CURSOR_DOCKERFILE: &str = r#"FROM node:22-slim
@@ -122,8 +127,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates ripgrep jq procps \
  && rm -rf /var/lib/apt/lists/*
 LABEL fletch.agent=cursor
-RUN curl -fsSL https://cursor.com/install | bash \
- && ln -s /root/.local/bin/cursor-agent /usr/local/bin/cursor-agent \
+RUN curl -fsSL https://cursor.com/install | HOME=/opt/cursor-agent bash \
+ && chmod -R a+rX /opt/cursor-agent \
+ && ln -s /opt/cursor-agent/.local/bin/cursor-agent /usr/local/bin/cursor-agent \
  && cursor-agent --version
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -374,6 +380,8 @@ mod tests {
         );
         assert!(CURSOR_DOCKERFILE.contains("cursor.com/install"));
         assert!(CURSOR_DOCKERFILE.contains("cursor-agent"));
+        // `/root` is 0700: an install there cannot run under `--user uid:gid`.
+        assert!(!CURSOR_DOCKERFILE.contains("/root"));
         assert!(!CURSOR_DOCKERFILE.contains("claude-code"));
         assert!(!CURSOR_DOCKERFILE.contains("@openai/codex"));
         assert!(!CURSOR_DOCKERFILE.contains("opencode-ai"));

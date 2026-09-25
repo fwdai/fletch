@@ -4,7 +4,7 @@
 //! Both runtime engines call [`prepare`] and hand the result to
 //! [`run_args`](super::run_args), so they launch byte-identically.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::sandbox::engine::AgentLaunchCtx;
@@ -18,7 +18,7 @@ use super::launch_auth::{
     apply_container_auth, prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch,
     prepare_pi_launch, present_api_keys,
 };
-use super::run_args::{prepare_config_mount_dir, ProviderMounts, CREDENTIALS_FILE};
+use super::run_args::{prepare_config_mount_dir, MappedUser, ProviderMounts, CREDENTIALS_FILE};
 use super::ContainerProvider;
 
 /// The launch inputs [`prepare`] resolved: the CLI process env, the object
@@ -52,9 +52,19 @@ pub(crate) struct ContainerLaunch {
     forward_xdg_config_home: bool,
     pi_data: Option<PathBuf>,
     cursor_data: Option<PathBuf>,
+    /// `(uid:gid, passwd file)` of a uid-mapped launch — see
+    /// [`MappedUser`].
+    mapped: Option<(String, PathBuf)>,
 }
 
 impl ContainerLaunch {
+    /// The user the container runs as, with its passwd file, when mapped.
+    pub(crate) fn mapped_user(&self) -> Option<MappedUser<'_>> {
+        self.mapped
+            .as_ref()
+            .map(|(user, passwd_file)| MappedUser { user, passwd_file })
+    }
+
     /// The auth var *names* to forward — exactly the tail [`prepare`] appended.
     pub(crate) fn auth_vars(&self) -> Vec<&str> {
         self.env[self.auth_start..]
@@ -111,10 +121,13 @@ impl ContainerLaunch {
 /// Resolve everything a container launch of `provider` needs, creating the
 /// mount sources first and failing the launch rather than handing `-v` a
 /// missing one — the runtime would materialize it root-owned, silently cutting
-/// the agent off from its own auth/config/transcripts.
+/// the agent off from its own auth/config/transcripts. `run_as_user` is the
+/// [`RunSpec::run_as_user`](super::run_args::RunSpec::run_as_user) the launch
+/// will pass.
 pub(crate) fn prepare(
     ctx: &AgentLaunchCtx,
     provider: ContainerProvider,
+    run_as_user: Option<&str>,
 ) -> Result<ContainerLaunch> {
     // Derived from `ctx.source_repos` (every tracked repo, not just the
     // primary), never from the checkout's own `.git/objects/info/alternates`:
@@ -161,6 +174,23 @@ pub(crate) fn prepare(
             )));
         }
     }
+
+    // The mapped uid is in no passwd file of the image, so anything that looks
+    // itself up (`os.userInfo()`, `whoami`) fails; `run_args` binds this over
+    // `/etc/passwd`. It lives under this engine's data dir — the one root a
+    // container never sees — never under a bind an agent can write.
+    let mapped = match run_as_user {
+        Some(user) => {
+            let data_dir = crate::sandbox::configured_data_dir().ok_or_else(|| {
+                Error::Other("uid-mapped launch before the host published its data dir".into())
+            })?;
+            Some((
+                user.to_string(),
+                write_passwd_file(&data_dir, user, ctx.home)?,
+            ))
+        }
+        None => None,
+    };
 
     // Owned per-provider mount inputs, borrowed into a `ProviderMounts` by
     // `ContainerLaunch::mounts`. Only the matched arm fills any of these in.
@@ -310,5 +340,91 @@ pub(crate) fn prepare(
         forward_xdg_config_home,
         pi_data,
         cursor_data,
+        mapped,
     })
+}
+
+/// The `/etc/passwd` of a uid-mapped container: root, plus the mapped `user`
+/// (`uid:gid`) with the container's `$HOME`.
+fn passwd_contents(user: &str, home: &Path) -> String {
+    format!(
+        "root:x:0:0:root:/root:/bin/sh\nfletch:x:{user}:fletch:{}:/bin/sh\n",
+        home.display()
+    )
+}
+
+/// Write [`passwd_contents`] to `<data_dir>/sandbox/passwd` and return that
+/// path for `run_args` to bind. The daemon resolves a bind source as root, so
+/// the file must sit where no agent can swap it for a symlink between this
+/// write and the mount: the data dir is the engine's own (0700, never bound
+/// into a container), unlike the agent's writable root or RPC dir.
+///
+/// Replaced atomically (temp file in the same dir, then rename): every mapped
+/// launch rewrites this one path, and a running container has the previous
+/// file bind-mounted as its `/etc/passwd` — a truncating write would leave it
+/// empty mid-write, the very lookup failure the file exists to prevent. The
+/// old inode stays intact for the containers holding it; new launches bind
+/// the new one.
+pub(crate) fn write_passwd_file(data_dir: &Path, user: &str, home: &Path) -> Result<PathBuf> {
+    use std::io::Write;
+    let dir = data_dir.join("sandbox");
+    let path = dir.join("passwd");
+    let write = || -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+        tmp.write_all(passwd_contents(user, home).as_bytes())?;
+        tmp.persist(&path)?;
+        Ok(())
+    };
+    write().map_err(|e| {
+        Error::Other(format!(
+            "preparing container passwd file {} failed: {e}",
+            path.display()
+        ))
+    })?;
+    Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mapped uid must resolve (`getpwuid`) to a user whose home is the
+    /// container's `$HOME`; root keeps its entry.
+    #[test]
+    fn passwd_names_root_and_the_mapped_user() {
+        assert_eq!(
+            passwd_contents("12345:12345", Path::new("/home/svc")),
+            "root:x:0:0:root:/root:/bin/sh\nfletch:x:12345:12345:fletch:/home/svc:/bin/sh\n",
+        );
+    }
+
+    /// The file lands under the data dir handed in — never under a path an
+    /// agent's container has read-write — and is rewritten in place each time.
+    #[test]
+    fn passwd_file_lives_under_the_data_dir() {
+        let td = tempfile::tempdir().unwrap();
+        let path = write_passwd_file(td.path(), "1000:1000", Path::new("/home/svc")).unwrap();
+        assert_eq!(path, td.path().join("sandbox").join("passwd"));
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("fletch:x:1000:1000:"));
+        // A second launch as another uid replaces, not appends — by rename, so
+        // a container still holding the first file (an open handle here stands
+        // in for its bind mount) keeps the full old contents throughout.
+        let mut held = std::fs::File::open(&path).unwrap();
+        let again = write_passwd_file(td.path(), "2000:2000", Path::new("/home/svc")).unwrap();
+        let written = std::fs::read_to_string(&again).unwrap();
+        assert!(written.contains("fletch:x:2000:2000:"), "{written}");
+        assert!(!written.contains("1000"), "{written}");
+        let mut old = String::new();
+        std::io::Read::read_to_string(&mut held, &mut old).unwrap();
+        assert!(old.contains("fletch:x:1000:1000:"), "{old}");
+        // Nothing but the live file is left behind: no temp files.
+        let entries: Vec<_> = std::fs::read_dir(td.path().join("sandbox"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("passwd")]);
+    }
 }
