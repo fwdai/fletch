@@ -112,21 +112,19 @@ export function ProvidersPane() {
   );
 }
 
-/** One switch, two states: attribution removed, or each agent's own settings
- *  in charge. The subtitle names the current state so neither reads as the
- *  other. Removal is enforced where Fletch sits in the path — a commit-msg hook
- *  in the checkouts it clones and the PR it opens (see `attribution.rs`). */
+/** Two states, each named in the subtitle. Agents read the setting when they
+ *  start, so running ones keep the old state until restarted. */
 function AttributionRow() {
   const removed = useAppStore((s) => s.agentAttributionRemoved);
   const setRemoved = useAppStore((s) => s.setAgentAttributionRemoved);
   return (
     <SetRow
       title="Remove agent attribution"
-      sub={
+      sub={`${
         removed
-          ? "Removed. Fletch strips agents' Co-Authored-By trailers and “Generated with” lines from commits and PRs, whatever the agents' own settings say."
+          ? "Removed. Fletch strips agents' Co-Authored-By trailers and “Generated with” footers from commits and PRs, whatever the agents' own settings say."
           : "Following your agent settings. Commits and PRs carry whatever attribution your agents' own settings add."
-      }
+      } Changes apply when an agent next starts.`}
     >
       <SetToggle on={removed} onClick={() => void setRemoved(!removed)} />
     </SetRow>

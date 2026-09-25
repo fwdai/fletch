@@ -1156,6 +1156,9 @@ impl Supervisor {
         // respawn), not just fresh spawns: not every provider is wired up to run
         // under a container engine.
         ensure_engine_supports_provider(engine, &record.provider)?;
+        // Every launch path, so a checkout older than the attribution hook
+        // gets it on the agent's next start.
+        crate::attribution::refresh_hooks(agent_id, &record.repos).await;
 
         // Dynamically fold the codegraph MCP server into the session's snapshot
         // for this launch, when code indexing is on, the engine isn't a
@@ -1206,12 +1209,7 @@ impl Supervisor {
                 .run_env_key_names(&record.project_id, &primary.repo_path);
             crate::instructions::env_awareness_note(&shared, &unshared)
         });
-        // "Remove agent attribution" (Settings › Providers). Enforced by the
-        // commit-msg hook and the PR path (see `attribution`); the note just
-        // keeps agents from writing it at all. Read per launch, so a toggle
-        // lands on the next spawn.
-        let attribution_note = crate::attribution::note();
-        let notes = [stale_note, workspace_note, env_note, attribution_note]
+        let notes = [stale_note, workspace_note, env_note]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
