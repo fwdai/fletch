@@ -98,8 +98,16 @@ whisper-rs = { version = "0.16", features = ["metal", "tracing_backend"] }
 # *every* class in the framework — we name only the handful of classes and the
 # `block2` bridge (completion handlers, the tap block) that the mic path needs.
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString", "objc2-core-foundation"] }
 block2 = "0.6"
+# Non-blocking window zoom (zoom.rs).
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "NSResponder",
+    "NSWindow",
+    "NSAnimationContext",
+] }
 objc2-avf-audio = { version = "0.3", default-features = false, features = [
     "std",
     "block2",
