@@ -89,8 +89,13 @@ describe("matchesCombo", () => {
     const dvorakBrace = key({ key: "{", code: "Minus", metaKey: true, shiftKey: true });
     expect(matchesCombo(dvorakBrace, "Mod+Shift+[")).toBe(true);
     expect(matchesCombo(dvorakBrace, "Mod+Shift+-")).toBe(false);
+    // A layout with `!` on a key of its own (AZERTY, physical Slash), pressed
+    // without Shift: not the 1 that US-Shift-1 would be.
+    const bareBang = key({ key: "!", code: "Slash", metaKey: true });
+    expect(matchesCombo(bareBang, "Mod+1")).toBe(false);
+    expect(matchesCombo(bareBang, "Mod+Shift+1")).toBe(false);
     // The recorder agrees with the matcher on every one of them.
-    for (const e of [altLetter, dvorakS, dvorakComma, dvorakBrace]) {
+    for (const e of [altLetter, dvorakS, dvorakComma, dvorakBrace, bareBang]) {
       expect(matchesCombo(e, comboFromEvent(e) as string)).toBe(true);
     }
   });

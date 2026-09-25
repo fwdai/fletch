@@ -420,7 +420,9 @@ const UNSHIFTED: Record<string, string> = {
  *  and only when a modifier has turned the key into something with no name
  *  (Option on macOS: ⌥N is `˜`) does the physical key stand in. */
 function keyOf(e: KeyboardEvent): string | null {
-  const typed = UNSHIFTED[e.key] ?? e.key;
+  // Unshifting undoes Shift, so it only applies while Shift is held: a layout
+  // that has `!` on a key of its own must not read as the digit under US-`!`.
+  const typed = (e.shiftKey && UNSHIFTED[e.key]) || e.key;
   if (/^[a-z0-9]$/i.test(typed)) return typed.toUpperCase();
   if (typed in PUNCTUATION_CODES) return typed;
   if (typed === " ") return "Space";
