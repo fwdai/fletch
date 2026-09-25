@@ -22,14 +22,14 @@ const SIDES: Record<Side, SideSpec> = {
   left: {
     icon: "sidebarL",
     noun: "sidebar",
-    kbd: "⌘B",
+    kbd: "⌘[",
     collapsed: (s) => s.leftCollapsed,
     toggle: (s) => s.toggleLeft,
   },
   right: {
     icon: "sidebarR",
     noun: "panel",
-    kbd: "⌘/",
+    kbd: "⌘]",
     collapsed: (s) => s.rightCollapsed,
     toggle: (s) => s.toggleRight,
   },

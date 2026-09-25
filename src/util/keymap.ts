@@ -87,7 +87,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       },
       {
         id: "shortcuts",
-        combos: ["Mod+Shift+/"],
+        combos: ["Mod+/"],
         label: "Keyboard shortcuts",
         description: "Open this list.",
       },
@@ -145,8 +145,10 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
     label: "Panels",
     global: true,
     items: [
-      { id: "toggleSidebar", combos: ["Mod+B"], label: "Toggle the sidebar" },
-      { id: "togglePanel", combos: ["Mod+/"], label: "Toggle the side panel" },
+      // Left bracket, left rail; right bracket, right rail. Shift on the same
+      // keys steps through agents, so the brackets are one small family.
+      { id: "toggleSidebar", combos: ["Mod+["], label: "Toggle the sidebar" },
+      { id: "togglePanel", combos: ["Mod+]"], label: "Toggle the side panel" },
       {
         id: "panelCode",
         combos: ["Mod+1"],

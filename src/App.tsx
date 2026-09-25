@@ -96,7 +96,7 @@ export function App() {
 
   const selectedAgent = workspace?.agents.find((a) => a.id === selectedAgentId);
   // The right rail serves two masters: an agent's Code/Git/Run/Terminal panels,
-  // and a workflow run's Activity panel. Same pane, same splitter, same ⌘/.
+  // and a workflow run's Activity panel. Same pane, same splitter, same ⌘].
   const rightPaneContent = selectedAgent || selectedRunId;
   const rightPaneVisible = !rightCollapsed && !activeDraftId && rightPaneContent;
 
