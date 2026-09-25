@@ -57,10 +57,9 @@
 //! `--user <uid>:<gid>` plus the writable `$HOME` and `/etc/passwd` entry that
 //! non-root agent needs
 //! ([`util::launch_user`], [`run_args`]). A *rootless* daemon already maps
-//! container root to the user and is left alone. Consequences on a mapped
-//! launch, both documented in `crates/fletch-host/README.md`: an agent can no
-//! longer `apt-get install` inside its container, and the Cursor image — whose
-//! CLI installs under `/root` (mode 700) — cannot run.
+//! container root to the user and is left alone. Consequence on a mapped
+//! launch, documented in `crates/fletch-host/README.md`: an agent can no
+//! longer `apt-get install` inside its container.
 //!
 //! Layout: this module folder splits the engine into
 //! - [`settings`] — launch knobs and the version-refresh guard
