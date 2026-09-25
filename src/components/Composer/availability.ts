@@ -94,27 +94,27 @@ function onHost(env: EnvironmentEntry, providerId: string): Availability {
 
 function onThisMac(facts: AvailabilityFacts, providerId: string): Availability {
   const { sandboxEngine, providerPaths, providerVersions, providersProbed } = facts;
+  // Fail open on the install gate: only enforce it once a probe has actually
+  // succeeded (`providersProbed`). While probing, or if the probe failed,
+  // treat as installed so a transient detection error never disables an agent
+  // the user really has — nor hides it from a list.
+  const installed = !providersProbed || !!providerPaths[providerId];
   // The container gate is checked first: a non-container provider is blocked
   // regardless of install state, and that's the more useful reason. Mirrors
   // `ensure_engine_supports_provider`, which gates on `is_container()` rather
   // than on one runtime — container support is a property of the image set
-  // both Docker and Podman build.
+  // both Docker and Podman build. `installed` is still the probe's answer,
+  // though: an absent binary is absent whichever refusal it is reported under.
   if (isContainerEngine(sandboxEngine) && !isDockerSupported(providerId)) {
     const label = sandboxEngineLabel(sandboxEngine);
     return {
       reason: `${providerLabel(providerId)} isn't available in ${label} sandboxes yet`,
       note: `Not in ${label} yet`,
       fix: "switch to Claude to send",
-      // Checked before the probe, so this is "present or not yet known": a
-      // list must keep the row (with its reason) rather than drop it.
-      installed: true,
+      installed,
     };
   }
-  // Fail open on the install gate: only enforce it once a probe has actually
-  // succeeded (`providersProbed`). While probing, or if the probe failed,
-  // treat as installed so a transient detection error never disables an agent
-  // the user really has.
-  if (providersProbed && !providerPaths[providerId]) {
+  if (!installed) {
     return {
       reason: "Not installed — see Settings › Providers",
       note: "Not installed",

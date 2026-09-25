@@ -72,11 +72,24 @@ describe("agentAvailability, on This Mac", () => {
 
   it("blocks a provider with no container image while a container engine is on", () => {
     // antigravity is the one provider the backend has no image for.
-    const a = agentAvailability(facts({ sandboxEngine: "docker" }), "antigravity");
+    const paths = { claude: "/usr/local/bin/claude", antigravity: "/usr/local/bin/agy" };
+    const a = agentAvailability(
+      facts({ sandboxEngine: "docker", providerPaths: paths }),
+      "antigravity",
+    );
     expect(a.reason).toBe("Antigravity isn't available in Docker sandboxes yet");
     expect(a.note).toBe("Not in Docker yet");
     // Present, just not container-ready: the picker keeps the row and says why.
     expect(a.installed).toBe(true);
+  });
+
+  it("still marks a container-blocked provider absent when the probe found no binary", () => {
+    // The container refusal wins the wording, but must not vouch for a binary
+    // that isn't there — or the picker would keep a row for an agent that is
+    // both uninstalled and unrunnable.
+    const a = agentAvailability(facts({ sandboxEngine: "docker" }), "antigravity");
+    expect(a.reason).toBe("Antigravity isn't available in Docker sandboxes yet");
+    expect(a.installed).toBe(false);
   });
 });
 
