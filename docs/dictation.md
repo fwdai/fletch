@@ -364,12 +364,12 @@ itself.
 
 ggml's CMake detects ARM CPU features by compiling probe programs with
 `-mcpu=native+<feature>` and running them; the probes for features the CPU
-lacks (SVE and SME on Apple Silicon) are meant to die with SIGILL. Under a
-sandbox that stalls crash handling they can instead hang forever, and the whole
-cargo build with them — silently, at the cmake configure step. The repo-root
-`.cargo/config.toml` therefore pre-answers those two probes through the
-`GGML_MACHINE_SUPPORTS_sve` / `GGML_MACHINE_SUPPORTS_sme` env vars, which
-`whisper-rs-sys` forwards to cmake as defines. If a build ever sits in
+lacks (SVE and SME on Apple Silicon, and i8mm on M1) are meant to die with
+SIGILL. Under a sandbox that stalls crash handling they can instead hang
+forever, and the whole cargo build with them — silently, at the cmake configure
+step. The repo-root `.cargo/config.toml` therefore pre-answers those three
+probes through the `GGML_MACHINE_SUPPORTS_sve` / `_sme` / `_i8mm` env vars,
+which `whisper-rs-sys` forwards to cmake as defines. If a build ever sits in
 `whisper-rs-sys` with no output, look for a `cmTC_*` process and check
 `CMakeConfigureLog.yaml` under its `out/build` for which probe is running.
 
