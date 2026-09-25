@@ -1,6 +1,6 @@
 // run/ActivityPanel.tsx — the workflow run's side panel, mounted by App in the
 // same right rail the agent panels (Code / Git / Run / Terminal) use, so a run
-// gets the layout primitives an agent already has: the ⌘/ toggle, the splitter,
+// gets the layout primitives an agent already has: the ⌘] toggle, the splitter,
 // the persisted width. One tab for now — Activity, the run's event log — with
 // the sub-runs of a composed run (§10.3) listed above it as navigation.
 
