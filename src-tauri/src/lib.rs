@@ -669,6 +669,27 @@ fn set_draft_prs(enabled: bool, state: tauri::State<'_, DbState>) -> Result<(), 
     Ok(())
 }
 
+/// "Remove agent attribution": on strips agents' co-author trailers and
+/// "Generated with" lines regardless of their own settings; off leaves those
+/// settings in charge. Applies from each agent's next spawn or resume.
+#[tauri::command]
+fn set_agent_attribution_removed(
+    removed: bool,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(
+            &conn,
+            fletch_core::attribution::SETTING,
+            if removed { "true" } else { "false" },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    fletch_core::attribution::set_removed(removed);
+    Ok(())
+}
+
 /// Change the sandbox engine stamped onto *new* agents. Container engines are
 /// validated live before being accepted — Docker against a daemon probe, Podman
 /// against `sandbox::podman::availability` plus
@@ -1566,6 +1587,7 @@ pub fn run() {
             set_publish_approval_wait,
             set_branch_prefix,
             set_draft_prs,
+            set_agent_attribution_removed,
             set_notify_turn_complete,
             probe_docker_engine,
             probe_podman_engine,

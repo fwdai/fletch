@@ -1206,7 +1206,12 @@ impl Supervisor {
                 .run_env_key_names(&record.project_id, &primary.repo_path);
             crate::instructions::env_awareness_note(&shared, &unshared)
         });
-        let notes = [stale_note, workspace_note, env_note]
+        // "Remove agent attribution" (Settings › Providers). Enforced by the
+        // commit-msg hook and the PR path (see `attribution`); the note just
+        // keeps agents from writing it at all. Read per launch, so a toggle
+        // lands on the next spawn.
+        let attribution_note = crate::attribution::note();
+        let notes = [stale_note, workspace_note, env_note, attribution_note]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()

@@ -244,6 +244,9 @@ pub async fn pr_create_head(
     } else {
         (title.to_string(), body.to_string())
     };
+    // Every PR Fletch opens passes here — the agent's `open_pr` and the panel
+    // alike — so this is where "Remove agent attribution" holds for PRs.
+    let body = crate::attribution::scrub_pr_body(&body);
 
     let client = client::Client::new()?;
     let path = format!("/repos/{owner}/{repo}/pulls");

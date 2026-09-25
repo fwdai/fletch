@@ -110,13 +110,17 @@ pub struct SpawnSpec<'a> {
 }
 
 /// The environment Fletch injects into every agent child: the absolute path to
-/// its file-mailbox RPC dir. The agent posts requests there for the app to
-/// execute (see `rpc.rs`). Layered on top of the inherited environment.
+/// its file-mailbox RPC dir (the agent posts requests there for the app to
+/// execute, see `rpc.rs`), plus the flag arming the attribution `commit-msg`
+/// hook while "Remove agent attribution" is on (see `attribution`). Layered on
+/// top of the inherited environment.
 fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
-    vec![(
+    let mut env = vec![(
         "FLETCH_RPC_DIR".to_string(),
         rpc_dir.to_string_lossy().into_owned(),
-    )]
+    )];
+    env.extend(crate::attribution::agent_env());
+    env
 }
 
 /// Run `provider`'s MCP-delivery builder over the session's snapshot, writing

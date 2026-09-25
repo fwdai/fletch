@@ -63,6 +63,7 @@ pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) -> Vec
     args.extend(effort_args(spec.effort));
     args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args(spec.instructions));
+    args.extend(crate::attribution::claude_settings_args());
     args.extend_from_slice(mcp_args);
     args.extend(subagent_args(spec.codegraph_available));
 
@@ -105,6 +106,7 @@ pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) ->
     args.extend(effort_args(spec.effort));
     args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args(spec.instructions));
+    args.extend(crate::attribution::claude_settings_args());
     args.extend_from_slice(mcp_args);
     args.extend(subagent_args(spec.codegraph_available));
 

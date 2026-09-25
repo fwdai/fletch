@@ -13,7 +13,7 @@ import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { activeEntry } from "@/store/capabilities";
 import { useProviderPoll } from "@/util/useProviderPoll";
-import { SetGroup, SetHead } from "../primitives";
+import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
 import { ProviderRow } from "./ProviderRow";
 
 export function ProvidersPane() {
@@ -97,13 +97,38 @@ export function ProvidersPane() {
         </p>
       )}
 
-      <SetGroup label="Agents on this system" last>
+      <SetGroup label="Agents on this system">
         <div className="set-prov-list">
           {PROVIDERS.map((p) => (
             <ProviderRow key={p.id} provider={p} />
           ))}
         </div>
       </SetGroup>
+
+      <SetGroup label="Commits & pull requests" last>
+        <AttributionRow />
+      </SetGroup>
     </div>
+  );
+}
+
+/** One switch, two states: attribution removed, or each agent's own settings
+ *  in charge. The subtitle names the current state so neither reads as the
+ *  other. Removal is enforced where Fletch sits in the path — a commit-msg hook
+ *  in the checkouts it clones and the PR it opens (see `attribution.rs`). */
+function AttributionRow() {
+  const removed = useAppStore((s) => s.agentAttributionRemoved);
+  const setRemoved = useAppStore((s) => s.setAgentAttributionRemoved);
+  return (
+    <SetRow
+      title="Remove agent attribution"
+      sub={
+        removed
+          ? "Removed. Fletch strips agents' Co-Authored-By trailers and “Generated with” lines from commits and PRs, whatever the agents' own settings say."
+          : "Following your agent settings. Commits and PRs carry whatever attribution your agents' own settings add."
+      }
+    >
+      <SetToggle on={removed} onClick={() => void setRemoved(!removed)} />
+    </SetRow>
   );
 }

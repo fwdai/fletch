@@ -153,6 +153,9 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       notifyTurnComplete: s.notify_turn_complete !== "false",
       providerFlags: parseProviderFlags(s.providers),
       providerPathOverrides: parseProviderPathOverrides(s),
+      // Opt-in, backend-owned (`set_agent_attribution_removed`): only an explicit
+      // "true" removes attribution, matching Rust's `attribution::parse`.
+      agentAttributionRemoved: s.agent_attribution_removed === "true",
       newDraftProvider,
       newDraftModel,
       newDraftCustomAgentId,
