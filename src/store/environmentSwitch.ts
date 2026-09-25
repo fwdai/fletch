@@ -63,6 +63,10 @@ const STASH_KEYS = [
   "selectedHistoryAgentId",
   "projectScreenRepoPath",
   "attendedChatId",
+  // The add-project popover: a way into the environment's own repos, so it
+  // is parked with the view it was raised over, and an environment entered
+  // starts without one — its own gate decides whether it can be raised.
+  "addProjectOpen",
   // Per-agent chat state.
   "offSidebarAgents",
   "managedLogs",
@@ -132,6 +136,7 @@ const BLANK: Pick<AppState, StashKey> = {
   selectedHistoryAgentId: null,
   projectScreenRepoPath: null,
   attendedChatId: null,
+  addProjectOpen: false,
   offSidebarAgents: {},
   managedLogs: {},
   pendingToolUse: {},
