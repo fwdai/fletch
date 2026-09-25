@@ -11,10 +11,10 @@ import { useAppStore } from "@/store";
  *  by the sidebar row and Mission Control so both read the same identity — the
  *  custom-agent lookup + provider fallback lives here once, not per call-site.
  *
- *  The glyph already says which agent it is, so the tooltip adds what it can't
- *  show: the model ("Claude Code · Claude Fable 5.1") and, for claude, the
- *  session's effort level. The model is the one chosen at spawn, else the one
- *  the transcript last reported (a default-model session). */
+ *  The glyph already says which agent it is, so the tooltip shows what it
+ *  can't: the model and, for claude, the effort ("Claude Fable 5.1 · High").
+ *  The model is the one chosen at spawn, else the one the transcript last
+ *  reported; until either is known the tip falls back to the agent's name. */
 export function AgentIdentityChip({ agent, size = 14 }: { agent: AgentRecord; size?: number }) {
   const customAgent = useAppStore((s) =>
     agent.custom_agent_id ? s.customAgents.find((a) => a.id === agent.custom_agent_id) : undefined,
@@ -24,9 +24,8 @@ export function AgentIdentityChip({ agent, size = 14 }: { agent: AgentRecord; si
   const modelId = agent.model ?? liveModel;
   const tip = [
     customAgent?.name,
-    providerLabel(agent.provider),
-    modelId && (lookupModel(catalog, modelId)?.name ?? modelId),
-    agent.effort && `${effortLabel(agent.effort)} effort`,
+    modelId ? (lookupModel(catalog, modelId)?.name ?? modelId) : providerLabel(agent.provider),
+    agent.effort && effortLabel(agent.effort),
   ]
     .filter(Boolean)
     .join(" · ");
