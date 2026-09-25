@@ -137,26 +137,44 @@ pub fn scrub_pr_body(body: &str) -> String {
 
 fn scrub(text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
-    let mut in_fence = false;
+    // The fence currently open, as (char, length): CommonMark closes it only on
+    // a bare run of the same char at least as long, so a ```` block can quote a
+    // ``` one without the inner fence ending it.
+    let mut open: Option<(char, usize)> = None;
     for line in text.lines() {
-        let fence = {
-            let t = line.trim_start();
-            t.starts_with("```") || t.starts_with("~~~")
-        };
-        if fence {
-            in_fence = !in_fence;
-        } else if !in_fence {
-            if is_attribution_line(line) {
-                continue;
+        match open {
+            Some((ch, len)) => {
+                if let Some((c, n, rest)) = fence_run(line) {
+                    if c == ch && n >= len && rest.trim().is_empty() {
+                        open = None;
+                    }
+                }
             }
-            let blank = line.trim().is_empty();
-            if blank && out.last().map_or(true, |prev| prev.trim().is_empty()) {
-                continue;
+            None => {
+                if let Some((c, n, _)) = fence_run(line) {
+                    open = Some((c, n));
+                } else if is_attribution_line(line)
+                    // A blank line right after another (or at the top) is the
+                    // gap a removed footer left behind.
+                    || (line.trim().is_empty()
+                        && out.last().map_or(true, |prev| prev.trim().is_empty()))
+                {
+                    continue;
+                }
             }
         }
         out.push(line);
     }
     out.join("\n").trim_end().to_string()
+}
+
+/// A code-fence line: a run of three or more backticks or tildes, returned as
+/// (char, run length, text after the run).
+fn fence_run(line: &str) -> Option<(char, usize, &str)> {
+    let t = line.trim_start();
+    let ch = t.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let len = t.chars().take_while(|c| *c == ch).count();
+    (len >= 3).then(|| (ch, len, &t[len..]))
 }
 
 /// Whether `line` is agent attribution. Mirrors [`commit_msg_hook`]'s `grep`
@@ -243,10 +261,17 @@ pub(crate) async fn install_hook(checkout: &std::path::Path) -> crate::error::Re
     let hooks_dir = checkout.join(".git/hooks");
     tokio::fs::create_dir_all(&hooks_dir).await?;
     let hook = hooks_dir.join("commit-msg");
-    if let Ok(existing) = tokio::fs::read_to_string(&hook).await {
-        if !existing.contains(HOOK_MARKER) {
+    // Existence from `symlink_metadata`, and ownership from raw bytes: a hook
+    // that can't be read as text (a compiled binary, a dangling symlink, an
+    // unreadable file) is still somebody's hook, never an empty slot.
+    if tokio::fs::symlink_metadata(&hook).await.is_ok() {
+        let marker = HOOK_MARKER.as_bytes();
+        let ours = tokio::fs::read(&hook)
+            .await
+            .is_ok_and(|bytes| bytes.windows(marker.len()).any(|w| w == marker));
+        if !ours {
             let orig = hooks_dir.join("commit-msg.orig");
-            if tokio::fs::try_exists(&orig).await.unwrap_or(true) {
+            if tokio::fs::symlink_metadata(&orig).await.is_ok() {
                 tracing::warn!(
                     checkout = %checkout.display(),
                     "commit-msg and commit-msg.orig both exist; leaving them alone, \
@@ -347,6 +372,25 @@ mod tests {
     }
 
     #[test]
+    fn scrub_honours_nested_fence_lengths() {
+        // A ```` block quoting a ``` one: the inner fence neither closes it (so
+        // the example stays verbatim) nor leaves the real footer after it
+        // looking like code.
+        let body =
+            "Usage:\n\n````md\n```\nGenerated with Codex.\n```\n````\n\nGenerated with Codex.";
+        assert_eq!(
+            scrub(body),
+            "Usage:\n\n````md\n```\nGenerated with Codex.\n```\n````"
+        );
+        // A closing fence may be longer than the opener, never shorter or
+        // carrying an info string.
+        let body = "```\nGenerated with Codex.\n```` \n\nGenerated with Codex.";
+        assert_eq!(scrub(body), "```\nGenerated with Codex.\n````");
+        let body = "```\n```rust\nGenerated with Codex.\n```\nGenerated with Codex.";
+        assert_eq!(scrub(body), "```\n```rust\nGenerated with Codex.\n```");
+    }
+
+    #[test]
     fn agent_env_always_sets_the_flag() {
         // Never omitted, so an inherited `1` can't outlive an "off" toggle.
         set_removed(false);
@@ -372,6 +416,38 @@ mod tests {
         install_hook(td.path()).await.unwrap();
         let orig = std::fs::read_to_string(hooks.join("commit-msg.orig")).unwrap();
         assert!(orig.contains("gerrit"));
+    }
+
+    /// A hook that isn't text — a compiled binary, a dangling symlink — is still
+    /// the user's, and must be moved aside rather than written over.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn install_hook_preserves_hooks_it_cannot_read_as_text() {
+        let td = tempfile::tempdir().unwrap();
+        let hooks = td.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let binary = [0x7f, b'E', b'L', b'F', 0xff, 0xfe, 0x00, 0x80];
+        std::fs::write(hooks.join("commit-msg"), binary).unwrap();
+
+        install_hook(td.path()).await.unwrap();
+        assert_eq!(
+            std::fs::read(hooks.join("commit-msg.orig")).unwrap(),
+            binary
+        );
+        assert!(std::fs::read_to_string(hooks.join("commit-msg"))
+            .unwrap()
+            .contains(HOOK_MARKER));
+
+        let td = tempfile::tempdir().unwrap();
+        let hooks = td.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/hook", hooks.join("commit-msg")).unwrap();
+
+        install_hook(td.path()).await.unwrap();
+        assert_eq!(
+            std::fs::read_link(hooks.join("commit-msg.orig")).unwrap(),
+            std::path::Path::new("/nonexistent/hook")
+        );
     }
 
     #[cfg(unix)]
