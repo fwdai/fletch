@@ -4,7 +4,7 @@ import { openInPreferredEditor } from "@/components/TitleBar/OpenInEditor/editor
 import type { FeatureFlags } from "@/storage/preferences";
 import type { AppState } from "@/store";
 import { useAppStore } from "@/store";
-import { activeGateReason } from "@/store/capabilities";
+import { activeGateReason, type GateName } from "@/store/capabilities";
 import type { RightPanelTab } from "@/store/types";
 import { GLOBAL_SHORTCUTS, matchesCombo } from "./keymap";
 
@@ -76,10 +76,13 @@ function stepAgent(dir: 1 | -1) {
 
 /** Show one right-rail tab for the open agent, opening the rail if hidden. A
  *  tab whose feature is off in Settings › Layout is not there to show. */
-function showPanel(tab: RightPanelTab, feature: keyof FeatureFlags) {
+function showPanel(tab: RightPanelTab, feature: keyof FeatureFlags, gate?: GateName) {
   const s = useAppStore.getState();
   const agent = shownAgent(s);
   if (!agent || !s.features[feature]) return;
+  // The rail drops a tab the environment can't serve (see RightPanel); the
+  // shortcut must not open the rail onto a different tab in its place.
+  if (gate && activeGateReason(gate)) return;
   s.setRightPanelTab(agent.id, tab);
   if (s.rightCollapsed) s.toggleRight();
 }
@@ -198,8 +201,8 @@ const ACTIONS: Record<string, Action> = {
   togglePanel: { whileTyping: true, run: () => useAppStore.getState().toggleRight() },
   panelCode: { whileTyping: true, run: () => showPanel("code", "code") },
   panelGit: { whileTyping: true, run: () => showPanel("git", "git") },
-  panelRun: { whileTyping: true, run: () => showPanel("run", "run") },
-  panelTerminal: { whileTyping: true, run: () => showPanel("term", "terminal") },
+  panelRun: { whileTyping: true, run: () => showPanel("run", "run", "runScripts") },
+  panelTerminal: { whileTyping: true, run: () => showPanel("term", "terminal", "sideShell") },
   toggleTheme: {
     whileTyping: true,
     run: () => {

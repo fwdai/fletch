@@ -317,6 +317,11 @@ export function Sidebar() {
   // so they don't leak past this component's life.
   useEffect(() => () => dragCleanup.current?.(), []);
 
+  // The add-project popover's flag outlives this component (it is in the
+  // store so ⌘O can raise it); drop it on unmount so a popover left open when
+  // a full-screen surface took over doesn't reappear when that surface closes.
+  useEffect(() => () => setNpOpen(false), [setNpOpen]);
+
   // ↑/↓ (Home/End) step through the visible rows and select as they go. Scoped
   // to keys fired inside the list, so the composer, chat, and dropdowns keep
   // their arrows; modifier chords pass through (Alt+↑/↓ belongs to ChatNav).

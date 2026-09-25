@@ -147,7 +147,9 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
     items: [
       // Left bracket, left rail; right bracket, right rail. Shift on the same
       // keys steps through agents, so the brackets are one small family.
-      { id: "toggleSidebar", combos: ["Mod+["], label: "Toggle the sidebar" },
+      // ⌘B stays as an alternative: it was the binding before the brackets, and
+      // it is what VS Code and Cursor hands reach for.
+      { id: "toggleSidebar", combos: ["Mod+[", "Mod+B"], label: "Toggle the sidebar" },
       { id: "togglePanel", combos: ["Mod+]"], label: "Toggle the side panel" },
       {
         id: "panelCode",
@@ -270,11 +272,17 @@ const PUNCTUATION_CODES: Record<string, string> = {
   "'": "Quote",
 };
 
-/** Whether `e` is `combo`. `Mod` is either ⌘ or Ctrl on every platform — Ctrl
- *  chords on a Mac are harmless and this keeps one code path. */
-export function matchesCombo(e: KeyboardEvent, combo: Combo): boolean {
+/** The platform's command modifier: ⌘ on macOS, Ctrl elsewhere. The other one
+ *  is not a stand-in — a ⌃ chord on a Mac is its own thing (Emacs bindings in
+ *  a text field), and the Windows key is never a shortcut modifier. */
+export function isModDown(e: KeyboardEvent, mac = IS_MAC): boolean {
+  return mac ? e.metaKey : e.ctrlKey;
+}
+
+/** Whether `e` is `combo`. */
+export function matchesCombo(e: KeyboardEvent, combo: Combo, mac = IS_MAC): boolean {
   const c = parseCombo(combo);
-  if (c.mod !== (e.metaKey || e.ctrlKey)) return false;
+  if (c.mod !== isModDown(e, mac)) return false;
   if (c.shift !== e.shiftKey) return false;
   if (c.alt !== e.altKey) return false;
   const code = PUNCTUATION_CODES[c.key];
