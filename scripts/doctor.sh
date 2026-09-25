@@ -82,45 +82,66 @@ if [[ $clt_ok -eq 1 ]]; then
   printf 'int main(void){return 0;}\n' > "$probe_dir/probe.c"
 
   links_with() {
-    # $1: SDKROOT to use, or "" for clang's default.
+    # $1: SDKROOT to use, or "" for clang's own default — which means the
+    # ambient SDKROOT must be *removed*, not merely left unset by us.
     if [[ -n "$1" ]]; then
       SDKROOT="$1" cc "$probe_dir/probe.c" -o "$probe_dir/probe" 2> "$probe_dir/err"
     else
-      cc "$probe_dir/probe.c" -o "$probe_dir/probe" 2> "$probe_dir/err"
+      env -u SDKROOT cc "$probe_dir/probe.c" -o "$probe_dir/probe" 2> "$probe_dir/err"
     fi
   }
 
-  selected_sdk="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+  # What clang links against by default: `--sdk macosx` makes xcrun ignore
+  # SDKROOT, so this is the newest SDK under the selected developer dir.
+  default_sdk="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+  # What the build will actually use.
+  selected_sdk="${SDKROOT:-$default_sdk}"
   if links_with "${SDKROOT:-}"; then
     ok "C toolchain links against ${selected_sdk:-the default SDK}"
   else
-    # The linker's last lines, one array element each so `fail` indents every
-    # line (macOS ships bash 3.2, so no `mapfile`).
+    # The linker's last lines from *this* failure — captured before any
+    # further probe overwrites them — one array element each so `fail`
+    # indents every line (macOS ships bash 3.2, so no `mapfile`).
     err_tail=()
     while IFS= read -r line; do err_tail+=("    $line"); done < <(tail -n 3 "$probe_dir/err")
-    sdks_root="$(dirname "$selected_sdk")"
-    # The SDK this CLT/Xcode actually shipped is what `MacOSX.sdk` points at.
-    shipped="$(readlink "$sdks_root/MacOSX.sdk" 2>/dev/null || true)"
-    if [[ -n "$shipped" && "$sdks_root/$shipped" != "$selected_sdk" ]] \
-       && links_with "$sdks_root/$shipped"; then
-      # A stale SDK is shadowing the shipped one. Name it, and every version
-      # symlink that points at it, so the removal is one copy-paste.
-      stale=("$selected_sdk")
-      for link in "$sdks_root"/MacOSX*.sdk; do
-        [[ -L "$link" && "$(readlink "$link")" == "$(basename "$selected_sdk")" ]] && stale+=("$link")
-      done
-      fail "The linker rejects the selected SDK ($(basename "$selected_sdk")); it is newer than the installed tools" \
-        "$(basename "$selected_sdk") is a leftover (a beta CLT, most likely) beside the SDK these tools shipped with ($shipped)." \
-        "clang picks the newest SDK it sees, and this linker can't read that one's library stubs:" \
+    if [[ -n "${SDKROOT:-}" ]] && links_with ""; then
+      # The override is the problem, not the tools: the default SDK links fine.
+      fail "The linker rejects SDKROOT=$SDKROOT, but the default SDK ($default_sdk) links fine" \
         ${err_tail[@]+"${err_tail[@]}"} \
-        "Fix (either):" \
-        "  sudo rm -rf ${stale[*]}" \
-        "  export SDKROOT=$sdks_root/$shipped   # in your shell profile, if you'd rather keep it"
+        "Fix:  unset SDKROOT   # and remove it from your shell profile"
     else
-      fail "The C toolchain can't link a trivial program" \
-        ${err_tail[@]+"${err_tail[@]}"} \
-        "Fix:  reinstall the Command Line Tools —" \
-        "      sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install"
+      # No override in play (or the default fails too): diagnose the default.
+      # When an override was set, the default probe just ran — show its output
+      # rather than the override's.
+      if [[ -n "${SDKROOT:-}" ]]; then
+        err_tail=()
+        while IFS= read -r line; do err_tail+=("    $line"); done < <(tail -n 3 "$probe_dir/err")
+      fi
+      selected_sdk="$default_sdk"
+      sdks_root="$(dirname "$selected_sdk")"
+      # The SDK this CLT/Xcode actually shipped is what `MacOSX.sdk` points at.
+      shipped="$(readlink "$sdks_root/MacOSX.sdk" 2>/dev/null || true)"
+      if [[ -n "$shipped" && "$sdks_root/$shipped" != "$selected_sdk" ]] \
+         && links_with "$sdks_root/$shipped"; then
+        # A stale SDK is shadowing the shipped one. Name it, and every version
+        # symlink that points at it, so the removal is one copy-paste.
+        stale=("$selected_sdk")
+        for link in "$sdks_root"/MacOSX*.sdk; do
+          [[ -L "$link" && "$(readlink "$link")" == "$(basename "$selected_sdk")" ]] && stale+=("$link")
+        done
+        fail "The linker rejects the selected SDK ($(basename "$selected_sdk")); it is newer than the installed tools" \
+          "$(basename "$selected_sdk") is a leftover (a beta CLT, most likely) beside the SDK these tools shipped with ($shipped)." \
+          "clang picks the newest SDK it sees, and this linker can't read that one's library stubs:" \
+          ${err_tail[@]+"${err_tail[@]}"} \
+          "Fix (either):" \
+          "  sudo rm -rf ${stale[*]}" \
+          "  export SDKROOT=$sdks_root/$shipped   # in your shell profile, if you'd rather keep it"
+      else
+        fail "The C toolchain can't link a trivial program" \
+          ${err_tail[@]+"${err_tail[@]}"} \
+          "Fix:  reinstall the Command Line Tools —" \
+          "      sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install"
+      fi
     fi
   fi
 
@@ -160,8 +181,15 @@ fi
 # --- Rust -------------------------------------------------------------------
 
 if command -v cargo > /dev/null 2>&1; then
-  # rust-toolchain.toml pins the version; rustup installs it on first use.
-  ok "$(cargo --version 2>/dev/null || echo cargo)"
+  # rust-toolchain.toml pins the version; rustup installs it on first use — so
+  # a rustup proxy with no toolchain behind it (or an install that can't reach
+  # the network) is a `cargo` that exists but does not run.
+  if cargo_version="$(cargo --version 2>&1)"; then
+    ok "$cargo_version"
+  else
+    fail "cargo is on PATH but doesn't run: ${cargo_version:-no output}" \
+      "Fix:  rustup toolchain install   # installs the version pinned in rust-toolchain.toml"
+  fi
 else
   fail "Rust is not installed" \
     "Fix:  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" \
