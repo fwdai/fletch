@@ -4,6 +4,7 @@
 // the same one-liner — "Claude Code · Fable 5.1" — so the naming lives here
 // once rather than per call-site.
 
+import { effortLabel } from "../providerDetail";
 import { lookupModel } from "./normalize";
 import type { SlimCatalog } from "./types";
 
@@ -50,7 +51,8 @@ export function agentIdentityTip(opts: {
     opts.customAgentName,
     opts.providerLabel,
     model && dropSharedBrand(model, opts.providerLabel),
-    opts.effort && `${opts.effort} effort`,
+    // The same label the thinking picker shows ("xhigh" → "xHigh").
+    opts.effort && `${effortLabel(opts.effort)} effort`,
   ]
     .filter(Boolean)
     .join(" · ");

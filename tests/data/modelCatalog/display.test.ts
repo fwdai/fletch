@@ -52,7 +52,18 @@ describe("agentIdentityTip", () => {
         model: "claude-fable-5-1",
         effort: "high",
       }),
-    ).toBe("Claude Code · Fable 5.1 · high effort");
+    ).toBe("Claude Code · Fable 5.1 · High effort");
+  });
+
+  it("labels effort the way the thinking picker does", () => {
+    expect(
+      agentIdentityTip({
+        providerLabel: "Claude Code",
+        catalog: CATALOG,
+        model: "claude-fable-5-1",
+        effort: "xhigh",
+      }),
+    ).toBe("Claude Code · Fable 5.1 · xHigh effort");
   });
 
   it("falls back to the transcript-reported model for a default-model session", () => {
