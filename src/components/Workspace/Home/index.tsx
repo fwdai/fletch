@@ -3,6 +3,7 @@ import { pickFolder } from "@/components/FolderPicker";
 import { PanelToggle } from "@/components/PanelToggle";
 import { useAppStore } from "@/store";
 import { activeEntry, useGate } from "@/store/capabilities";
+import { useShortcutKeys } from "@/util/shortcuts";
 import { ActionCard } from "./ActionCard";
 import { greeting } from "./greeting";
 
@@ -25,6 +26,12 @@ export function Home() {
 
   const [adding, setAdding] = useState(false);
   const openProjectGate = useGate("openProject");
+  const keys = {
+    newAgent: useShortcutKeys("newAgent"),
+    search: useShortcutKeys("search"),
+    sidebar: useShortcutKeys("toggleSidebar"),
+    shortcuts: useShortcutKeys("shortcuts"),
+  };
   const remote = useAppStore((s) => activeEntry(s).kind === "remote");
 
   const repos = workspace?.repos ?? [];
@@ -108,7 +115,7 @@ export function Home() {
               <ActionCard
                 tone="primary"
                 icon="sparkle"
-                kbd="⌘ N"
+                kbd={keys.newAgent}
                 title="New agent"
                 sub={targetName ? `Start a coding agent in ${targetName}` : "Start a coding agent"}
                 onClick={newAgent}
@@ -160,10 +167,10 @@ export function Home() {
 
           {hasProjects && (
             <div className="home-tips flex-center">
-              <Tip k="⌘ N" label="New agent" />
-              <Tip k="⌘ K" label="Search" />
-              <Tip k="⌘ B" label="Sidebar" />
-              <Tip k="⌘ ⇧ /" label="All shortcuts" />
+              <Tip k={keys.newAgent} label="New agent" />
+              <Tip k={keys.search} label="Search" />
+              <Tip k={keys.sidebar} label="Sidebar" />
+              <Tip k={keys.shortcuts} label="All shortcuts" />
             </div>
           )}
         </div>

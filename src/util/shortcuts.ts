@@ -6,7 +6,23 @@ import type { AppState } from "@/store";
 import { useAppStore } from "@/store";
 import { activeGateReason } from "@/store/capabilities";
 import type { RightPanelTab } from "@/store/types";
-import { GLOBAL_SHORTCUTS, matchesCombo } from "./keymap";
+import {
+  effectiveCombos,
+  formatCombo,
+  GLOBAL_SHORTCUTS,
+  matchesCombo,
+  SHORTCUT_BY_ID,
+} from "./keymap";
+
+/** The first chord bound to shortcut `id`, written for the platform — for the
+ *  tooltips and hints that advertise a key, so a rebinding shows up wherever
+ *  the default used to. Empty for an unknown id. */
+export function useShortcutKeys(id: string): string {
+  const overrides = useAppStore((s) => s.shortcutOverrides);
+  const shortcut = SHORTCUT_BY_ID[id];
+  const combo = shortcut ? effectiveCombos(shortcut, overrides)[0] : undefined;
+  return combo ? formatCombo(combo) : "";
+}
 
 /** One global shortcut's behavior. `whileTyping` lets it fire with a text field
  *  focused; the default skips it there, for chords the field itself uses
@@ -220,8 +236,9 @@ export function useGlobalShortcuts() {
         tag === "INPUT" ||
         tag === "TEXTAREA" ||
         !!(e.target as HTMLElement | null)?.isContentEditable;
+      const overrides = useAppStore.getState().shortcutOverrides;
       for (const shortcut of GLOBAL_SHORTCUTS) {
-        if (!shortcut.combos.some((c) => matchesCombo(e, c))) continue;
+        if (!effectiveCombos(shortcut, overrides).some((c) => matchesCombo(e, c))) continue;
         const action = ACTIONS[shortcut.id];
         if (!action || (typing && !action.whileTyping)) return;
         // Escape is a signal other layers (menus, search) also listen for;

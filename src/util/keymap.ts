@@ -21,6 +21,8 @@ export interface Shortcut {
   description?: string;
   /** Only offered on macOS (dictation depends on Apple's recognizer). */
   macOnly?: boolean;
+  /** Global but not rebindable — Escape is a convention, not a preference. */
+  fixed?: boolean;
 }
 
 export interface ShortcutGroup {
@@ -96,6 +98,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
         combos: ["Escape"],
         label: "Close",
         description: "Dismiss the open screen, popover or menu.",
+        fixed: true,
       },
     ],
   },
@@ -229,6 +232,56 @@ export const GLOBAL_SHORTCUTS: readonly Shortcut[] = SHORTCUT_GROUPS.filter(
   (g) => g.global,
 ).flatMap((g) => g.items);
 
+export const SHORTCUT_BY_ID: Readonly<Record<string, Shortcut>> = Object.fromEntries(
+  SHORTCUT_GROUPS.flatMap((g) => g.items).map((it) => [it.id, it]),
+);
+
+// ---- User overrides ----------------------------------------------------------
+
+/** The user's rebindings: shortcut id → the chords that replace its defaults.
+ *  Only global shortcuts are rebindable; contextual ones are handled by their
+ *  components and read this map not at all. */
+export type ShortcutOverrides = Record<string, Combo[]>;
+
+/** The chords `shortcut` answers to right now: the override when there is one,
+ *  else its defaults. */
+export function effectiveCombos(shortcut: Shortcut, overrides: ShortcutOverrides): Combo[] {
+  return overrides[shortcut.id] ?? shortcut.combos;
+}
+
+/** Chords the native macOS menu owns; the app never sees them, so binding one
+ *  would look like a shortcut that does nothing (or closes the window). */
+const RESERVED_COMBOS: ReadonlySet<Combo> = new Set([
+  "Mod+W",
+  "Mod+Q",
+  "Mod+M",
+  "Mod+H",
+  "Mod+Alt+H",
+  "Mod+Z",
+  "Mod+Shift+Z",
+  "Mod+X",
+  "Mod+C",
+  "Mod+V",
+  "Mod+A",
+]);
+
+/** Why `combo` can't be bound to shortcut `id`, or null when it can. A global
+ *  chord needs a modifier so it never fights a text field for a plain key. */
+export function bindingProblem(
+  id: string,
+  combo: Combo,
+  overrides: ShortcutOverrides,
+): string | null {
+  if (!parseCombo(combo).mod) return "Global shortcuts need ⌘ or Ctrl";
+  if (RESERVED_COMBOS.has(combo)) return "Taken by the system menu";
+  for (const other of GLOBAL_SHORTCUTS) {
+    if (other.id !== id && effectiveCombos(other, overrides).includes(combo)) {
+      return `Already bound to “${other.label}”`;
+    }
+  }
+  return null;
+}
+
 /** The groups worth showing on this platform. */
 export function visibleShortcutGroups(mac = IS_MAC): ShortcutGroup[] {
   return SHORTCUT_GROUPS.map((g) => ({
@@ -279,6 +332,44 @@ export function matchesCombo(e: KeyboardEvent, combo: Combo): boolean {
   if (code) return e.code === code;
   if (c.key === "Space") return e.key === " ";
   return c.key.length === 1 ? e.key.toLowerCase() === c.key.toLowerCase() : e.key === c.key;
+}
+
+const CODE_TO_PUNCTUATION: Record<string, string> = Object.fromEntries(
+  Object.entries(PUNCTUATION_CODES).map(([key, code]) => [code, key]),
+);
+
+const NAMED_KEYS: ReadonlySet<string> = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Enter",
+  "Backspace",
+  "Delete",
+  "Escape",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "Tab",
+]);
+
+/** The chord `e` is, written the way the map writes them — the recorder's
+ *  half of `matchesCombo`. Null for a lone modifier or a key the map has no
+ *  name for, so the recorder keeps waiting. Letters and digits come from
+ *  `key` (what the layout produces, which is what the matcher compares) unless
+ *  a modifier has turned it into a symbol; then the physical key stands in. */
+export function comboFromEvent(e: KeyboardEvent): Combo | null {
+  let key: string | null = null;
+  if (/^[a-z0-9]$/i.test(e.key)) key = e.key.toUpperCase();
+  else if (CODE_TO_PUNCTUATION[e.code]) key = CODE_TO_PUNCTUATION[e.code];
+  else if (/^Key[A-Z]$/.test(e.code)) key = e.code.slice(3);
+  else if (/^Digit[0-9]$/.test(e.code)) key = e.code.slice(5);
+  else if (e.key === " ") key = "Space";
+  else if (NAMED_KEYS.has(e.key) || /^F([1-9]|1[0-2])$/.test(e.key)) key = e.key;
+  if (!key) return null;
+  const mods = [(e.metaKey || e.ctrlKey) && "Mod", e.altKey && "Alt", e.shiftKey && "Shift"];
+  return [...mods.filter(Boolean), key].join("+");
 }
 
 const MAC_KEYS: Record<string, string> = {

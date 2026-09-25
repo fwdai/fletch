@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  bindingProblem,
+  comboFromEvent,
+  effectiveCombos,
   formatCombo,
   GLOBAL_SHORTCUTS,
   matchesCombo,
   parseCombo,
+  SHORTCUT_BY_ID,
   SHORTCUT_GROUPS,
   visibleShortcutGroups,
 } from "./keymap";
@@ -75,6 +79,70 @@ describe("formatCombo", () => {
     expect(formatCombo("Alt+ArrowDown", false)).toBe("Alt+↓");
     expect(formatCombo("Mod+Backspace", false)).toBe("Ctrl+Backspace");
     expect(formatCombo("Enter", false)).toBe("Enter");
+  });
+});
+
+describe("comboFromEvent", () => {
+  it("writes a chord the matcher accepts back", () => {
+    const events = [
+      key({ key: "k", code: "KeyK", metaKey: true }),
+      key({ key: "L", code: "KeyL", ctrlKey: true, shiftKey: true }),
+      key({ key: "{", code: "BracketLeft", metaKey: true, shiftKey: true }),
+      key({ key: "?", code: "Slash", metaKey: true, shiftKey: true }),
+      key({ key: "Backspace", code: "Backspace", metaKey: true }),
+      key({ key: "ArrowUp", code: "ArrowUp", altKey: true }),
+      key({ key: " ", code: "Space" }),
+    ];
+    for (const e of events) {
+      const combo = comboFromEvent(e);
+      expect(combo, e.key).not.toBeNull();
+      expect(matchesCombo(e, combo as string), combo as string).toBe(true);
+    }
+    expect(comboFromEvent(key({ key: "k", code: "KeyK", metaKey: true }))).toBe("Mod+K");
+    expect(
+      comboFromEvent(key({ key: "{", code: "BracketLeft", metaKey: true, shiftKey: true })),
+    ).toBe("Mod+Shift+[");
+  });
+
+  it("falls back to the physical key when a modifier turns the key into a symbol", () => {
+    // ⌥N on macOS reports "˜"; ⌘⇧1 reports "!".
+    expect(comboFromEvent(key({ key: "˜", code: "KeyN", altKey: true }))).toBe("Alt+N");
+    expect(comboFromEvent(key({ key: "!", code: "Digit1", metaKey: true, shiftKey: true }))).toBe(
+      "Mod+Shift+1",
+    );
+  });
+
+  it("returns null for a lone modifier or an unnamed key", () => {
+    expect(comboFromEvent(key({ key: "Meta", code: "MetaLeft", metaKey: true }))).toBeNull();
+    expect(comboFromEvent(key({ key: "Shift", code: "ShiftLeft", shiftKey: true }))).toBeNull();
+    expect(comboFromEvent(key({ key: "CapsLock", code: "CapsLock" }))).toBeNull();
+  });
+});
+
+describe("overrides", () => {
+  const search = SHORTCUT_BY_ID.search;
+
+  it("uses the override when present and the defaults otherwise", () => {
+    expect(effectiveCombos(search, {})).toEqual(["Mod+K"]);
+    expect(effectiveCombos(search, { search: ["Mod+P"] })).toEqual(["Mod+P"]);
+  });
+
+  it("refuses a chord without a modifier", () => {
+    expect(bindingProblem("search", "K", {})).toMatch(/need/);
+    expect(bindingProblem("search", "Shift+K", {})).toMatch(/need/);
+  });
+
+  it("refuses chords the system menu owns", () => {
+    expect(bindingProblem("search", "Mod+W", {})).toMatch(/system menu/);
+    expect(bindingProblem("search", "Mod+Q", {})).toMatch(/system menu/);
+  });
+
+  it("refuses a chord another global shortcut answers to, defaults or override", () => {
+    expect(bindingProblem("search", "Mod+B", {})).toMatch(/Toggle the sidebar/);
+    expect(bindingProblem("search", "Mod+P", { home: ["Mod+P"] })).toMatch(/Home/);
+    // Rebinding to its own current chord, or one moved away by an override, is fine.
+    expect(bindingProblem("search", "Mod+K", {})).toBeNull();
+    expect(bindingProblem("search", "Mod+B", { toggleSidebar: ["Mod+P"] })).toBeNull();
   });
 });
 

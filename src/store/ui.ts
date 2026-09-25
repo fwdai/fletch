@@ -6,6 +6,7 @@ import {
   type SettingsSection,
 } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
+import type { Combo, ShortcutOverrides } from "@/util/keymap";
 import type { SliceCreator } from "./types";
 
 /** Right-rail panel tabs. Mirrors the `Tab` ids in RightPanel; kept here so the
@@ -102,6 +103,10 @@ export interface UiSlice {
    *  still matches, so a dismissed item resurfaces when its signal changes.
    *  Persisted in settings (`reviewDismissed`); hydrated on init. */
   reviewDismissed: Record<string, string>;
+  /** The user's keyboard rebindings (see `util/keymap.ts`), shortcut id →
+   *  chords. Persisted whole in settings (`shortcutOverrides`); hydrated on
+   *  init. An id absent here is on its defaults. */
+  shortcutOverrides: ShortcutOverrides;
   /** Whether the current user is an admin — set from the `admin` row in the
    *  settings table (`value === "true"`). Unlocks the Developer settings
    *  section in production builds (dev builds always show it). */
@@ -159,6 +164,11 @@ export interface UiSlice {
    *  signature; persists the mark so it survives reloads (until the signal
    *  changes and the signature no longer matches). */
   dismissReviewItem: (id: string, signature: string) => void;
+  /** Rebind a global shortcut; persists the whole override map. */
+  setShortcut: (id: string, combos: Combo[]) => void;
+  /** Put one shortcut back on its defaults. */
+  resetShortcut: (id: string) => void;
+  resetAllShortcuts: () => void;
 }
 
 export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
@@ -186,6 +196,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   roadmapBoardWidth: null,
   rightPanelTabs: {},
   reviewDismissed: {},
+  shortcutOverrides: {},
   admin: false,
 
   // ── UI ──────────────────────────────────────────────────────────────────────
@@ -305,4 +316,21 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
       setSetting("reviewDismissed", reviewDismissed);
       return { reviewDismissed };
     }),
+  setShortcut: (id, combos) =>
+    set((s) => {
+      const shortcutOverrides = { ...s.shortcutOverrides, [id]: combos };
+      setSetting("shortcutOverrides", shortcutOverrides);
+      return { shortcutOverrides };
+    }),
+  resetShortcut: (id) =>
+    set((s) => {
+      if (!(id in s.shortcutOverrides)) return s;
+      const { [id]: _dropped, ...shortcutOverrides } = s.shortcutOverrides;
+      setSetting("shortcutOverrides", shortcutOverrides);
+      return { shortcutOverrides };
+    }),
+  resetAllShortcuts: () => {
+    setSetting("shortcutOverrides", {});
+    set({ shortcutOverrides: {} });
+  },
 });

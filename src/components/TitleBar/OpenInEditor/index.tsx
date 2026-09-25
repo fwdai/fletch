@@ -4,6 +4,7 @@ import { api } from "@/api";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { useDismiss } from "@/util/hooks";
+import { useShortcutKeys } from "@/util/shortcuts";
 import { EditorTile } from "./EditorTile";
 import { detectEditors, EDITOR_PREF_KEY } from "./editors";
 
@@ -18,6 +19,7 @@ export function OpenInEditor() {
   const [selectedId, setSelectedId] = useState(() => localStorage.getItem(EDITOR_PREF_KEY));
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const keys = useShortcutKeys("openInEditor");
 
   useEffect(() => {
     detectEditors().then(setEditors);
@@ -43,7 +45,7 @@ export function OpenInEditor() {
         <button
           type="button"
           className="oe-main tip"
-          data-tip={`Open in ${current.label} (⌘⇧O)`}
+          data-tip={`Open in ${current.label} (${keys})`}
           onClick={() => openIn(current.id)}
         >
           <EditorTile editor={current} />

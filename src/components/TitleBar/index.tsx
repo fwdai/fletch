@@ -2,6 +2,7 @@ import { FletchMark } from "@/components/FletchMark";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
+import { useShortcutKeys } from "@/util/shortcuts";
 import { OpenInEditor } from "./OpenInEditor";
 import { WorkspaceStatus } from "./WorkspaceStatus";
 
@@ -16,6 +17,8 @@ export function TitleBar() {
   const historyOpen = useAppStore((s) => s.historyOpen);
   const toggleHistory = useAppStore((s) => s.toggleHistory);
   const openFeedback = useAppStore((s) => s.openFeedback);
+  const historyKeys = useShortcutKeys("history");
+  const settingsKeys = useShortcutKeys("quickSettings");
 
   return (
     <div className="tb flex-center" data-tauri-drag-region>
@@ -35,10 +38,18 @@ export function TitleBar() {
         <IconButton tip="Send feedback" onClick={openFeedback} aria-label="Send feedback">
           <Icon name="megaphone" className="tb-megaphone" />
         </IconButton>
-        <IconButton tip="History (⌘Y)" active={historyOpen} onClick={() => toggleHistory()}>
+        <IconButton
+          tip={`History (${historyKeys})`}
+          active={historyOpen}
+          onClick={() => toggleHistory()}
+        >
           <Icon name="history" />
         </IconButton>
-        <IconButton tip="Settings (⌘,)" active={settingsOpen} onClick={() => toggleSettings()}>
+        <IconButton
+          tip={`Settings (${settingsKeys})`}
+          active={settingsOpen}
+          onClick={() => toggleSettings()}
+        >
           <Icon name="settings" />
         </IconButton>
       </div>

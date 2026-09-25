@@ -2,6 +2,7 @@ import { Icon, type IconName } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import type { AppState } from "@/store";
 import { useAppStore } from "@/store";
+import { useShortcutKeys } from "@/util/shortcuts";
 
 type Side = "left" | "right";
 
@@ -9,7 +10,8 @@ interface SideSpec {
   icon: IconName;
   /** What the tooltip calls this rail — "Show sidebar" / "Hide panel". */
   noun: string;
-  kbd: string;
+  /** The keymap id whose chord the tooltip shows. */
+  shortcut: string;
   collapsed: (s: AppState) => boolean;
   toggle: (s: AppState) => () => void;
 }
@@ -22,14 +24,14 @@ const SIDES: Record<Side, SideSpec> = {
   left: {
     icon: "sidebarL",
     noun: "sidebar",
-    kbd: "⌘B",
+    shortcut: "toggleSidebar",
     collapsed: (s) => s.leftCollapsed,
     toggle: (s) => s.toggleLeft,
   },
   right: {
     icon: "sidebarR",
     noun: "panel",
-    kbd: "⌘/",
+    shortcut: "togglePanel",
     collapsed: (s) => s.rightCollapsed,
     toggle: (s) => s.toggleRight,
   },
@@ -49,9 +51,10 @@ const SIDES: Record<Side, SideSpec> = {
  *  click will do; that's the whole signal. Reserve `IconButton`'s `active` for
  *  states that are off by default, the way the composer's pickers use it. */
 export function PanelToggle({ side }: { side: Side }) {
-  const { icon, noun, kbd } = SIDES[side];
+  const { icon, noun, shortcut } = SIDES[side];
   const collapsed = useAppStore(SIDES[side].collapsed);
   const toggle = useAppStore(SIDES[side].toggle);
+  const kbd = useShortcutKeys(shortcut);
   return (
     <IconButton tip={`${collapsed ? "Show" : "Hide"} ${noun} (${kbd})`} onClick={toggle}>
       <Icon name={icon} />

@@ -67,6 +67,7 @@ import {
   parseReviewDismissed,
   parseRoadmapBoardWidth,
   parseSandboxEngine,
+  parseShortcutOverrides,
   type ThemeMode,
 } from "@/storage/preferences";
 import { getAllSettings } from "@/storage/settings";
@@ -213,6 +214,8 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       // Mission Control's dismissed review-queue marks (item id → signal
       // signature); the queue honors a mark only while the signature matches.
       reviewDismissed: parseReviewDismissed(s.reviewDismissed),
+      // Keyboard rebindings; an id missing from the map is on its defaults.
+      shortcutOverrides: parseShortcutOverrides(s.shortcutOverrides),
       // Workspaces whose autopilot the user switched off from the Git panel.
       autopilotPausedAgents: parseAutopilotPausedAgents(s.autopilotPausedAgents),
       // Admin unlocks the Developer settings section in production. Opt-in:

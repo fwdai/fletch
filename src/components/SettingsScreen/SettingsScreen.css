@@ -278,6 +278,32 @@
 .set-kbd-sep {
   color: var(--fg-3);
 }
+/* A rebindable row's keycaps are one button: hover lifts them, and while
+   recording the cap turns accent and says what it is waiting for. */
+.set-kbd-btn {
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  border-radius: var(--r-xs);
+}
+.set-kbd-btn:hover .set-kbd {
+  border-color: var(--fg-3);
+  color: var(--fg-0);
+}
+.set-kbd-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.set-kbd-rec {
+  font-family: inherit;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.set-kbd-problem {
+  color: var(--danger);
+}
 
 /* premium toggle */
 .set-toggle {

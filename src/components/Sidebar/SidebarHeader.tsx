@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
+import { useShortcutKeys } from "@/util/shortcuts";
 import { EnvironmentSwitcher } from "./EnvironmentSwitcher";
 
 /** Search input that filters the agent list, and — once a host is paired — the
@@ -14,6 +15,7 @@ interface Props {
 
 export function SidebarHeader({ query, onChange, onArrowDown }: Props) {
   const [focused, setFocused] = useState(false);
+  const keys = useShortcutKeys("search");
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
@@ -39,7 +41,7 @@ export function SidebarHeader({ query, onChange, onArrowDown }: Props) {
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
         />
-        {!focused && <span className="kbd">⌘K</span>}
+        {!focused && <span className="kbd">{keys}</span>}
       </div>
     </div>
   );
