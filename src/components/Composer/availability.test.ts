@@ -51,24 +51,39 @@ describe("agentAvailability, on This Mac", () => {
     expect(a.reason).toBeNull();
     expect(a.fix).toBeNull();
     expect(a.note).toBe("2.1.4");
+    expect(a.installed).toBe(true);
   });
 
-  it("blocks a provider the probe did not find", () => {
+  it("blocks a provider the probe did not find, and marks it absent", () => {
     const a = agentAvailability(facts(), "cursor");
     expect(a.reason).toBe("Not installed — see Settings › Providers");
     expect(a.note).toBe("Not installed");
+    expect(a.installed).toBe(false);
   });
 
   it("fails open until the probe has actually run", () => {
     // A transient detection failure must never disable an agent the user has.
-    expect(agentAvailability(facts({ providersProbed: false }), "cursor").reason).toBeNull();
+    const a = agentAvailability(facts({ providersProbed: false }), "cursor");
+    expect(a.reason).toBeNull();
+    expect(a.installed).toBe(true);
   });
 
   it("blocks a provider with no container image while a container engine is on", () => {
     // antigravity is the one provider the backend has no image for.
-    const a = agentAvailability(facts({ sandboxEngine: "docker" }), "antigravity");
+    const paths = { claude: "/usr/local/bin/claude", antigravity: "/usr/local/bin/agy" };
+    const a = agentAvailability(
+      facts({ sandboxEngine: "docker", providerPaths: paths }),
+      "antigravity",
+    );
     expect(a.reason).toBe("Antigravity isn't available in Docker sandboxes yet");
     expect(a.note).toBe("Not in Docker yet");
+    expect(a.installed).toBe(true);
+  });
+
+  it("still marks a container-blocked provider absent when the probe found no binary", () => {
+    const a = agentAvailability(facts({ sandboxEngine: "docker" }), "antigravity");
+    expect(a.reason).toBe("Antigravity isn't available in Docker sandboxes yet");
+    expect(a.installed).toBe(false);
   });
 });
 
@@ -100,11 +115,12 @@ describe("agentAvailability, on a paired host", () => {
     expect(a.reason).toBeNull();
   });
 
-  it("blocks a provider the host has not got", () => {
+  it("blocks a provider the host has not got, and marks it absent", () => {
     const env = host([provider({ id: "cursor", installed: false, version: null, auth: null })]);
     const a = agentAvailability(facts({ env }), "cursor");
     expect(a.reason).toBe("Not installed on Cloud box");
     expect(a.note).toBe("Not installed");
+    expect(a.installed).toBe(false);
   });
 
   it("blocks a provider the host is signed out of", () => {
@@ -114,6 +130,7 @@ describe("agentAvailability, on a paired host", () => {
       "Not signed in on Cloud box — run `fletch-host provider login claude` there",
     );
     expect(a.note).toBe("Signed out");
+    expect(a.installed).toBe(true);
   });
 
   it("blocks nothing while the host has said nothing", () => {
@@ -122,6 +139,7 @@ describe("agentAvailability, on a paired host", () => {
     const a = agentAvailability(facts({ env: host(), sandboxEngine: "docker" }), "antigravity");
     expect(a.reason).toBeNull();
     expect(a.note).toBe("");
+    expect(a.installed).toBe(true);
   });
 });
 

@@ -7,6 +7,7 @@ import { Scrim } from "@/components/ui/Scrim";
 import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import { PROVIDERS, providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { activeEntry } from "@/store/capabilities";
 import { useAgentAvailability } from "./availability";
 import { ModelOptions } from "./ModelOptions";
 
@@ -53,9 +54,12 @@ export function ModelPicker({
   // container-ready when the Docker engine is on. Matches the backend refusal
   // in supervisor/lifecycle.rs.
   const availability = useAgentAvailability();
+  const env = useAppStore(activeEntry);
 
   const selected = PROVIDERS.find((p) => p.id === provider) ?? PROVIDERS[0];
-  const enabled = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
+  // Not-installed agents are hidden; agents blocked for other reasons stay, disabled.
+  const installedProviders = PROVIDERS.filter((p) => availability(p.id).installed);
+  const enabled = installedProviders.filter((p) => providerFlags[p.id] !== false);
   const currentModel = useMemo(() => {
     const list = modelsByAgent[provider] ?? [];
     return list.find((m) => m.id === model);
@@ -70,7 +74,7 @@ export function ModelPicker({
   const activeCustom = customAgents.find((a) => a.id === customAgentId);
   const selectableCustom = customAgents.filter((a) => providerFlags[a.base] !== false);
   // The coding agent whose model panel is currently shown (null = none).
-  const hoveredAgent = hovered ? (PROVIDERS.find((p) => p.id === hovered) ?? null) : null;
+  const hoveredAgent = hovered ? (enabled.find((p) => p.id === hovered) ?? null) : null;
 
   // Reset the flyout each time the dropdown opens.
   useEffect(() => {
@@ -115,6 +119,41 @@ export function ModelPicker({
       />
     );
   }
+
+  // Settings › Providers installs on this Mac only, so a paired host gets a note, not a button.
+  const emptyState =
+    env.kind === "remote" ? (
+      <div className="model-empty text-sm">
+        No coding agents installed on {env.name}. Install one on the host and it appears here.
+      </div>
+    ) : (
+      <button
+        type="button"
+        className="model-custom-cta flex-center"
+        onMouseEnter={() => setHovered(null)}
+        onClick={() => {
+          setOpen(false);
+          openSettingsScreen("providers");
+        }}
+      >
+        <span className="model-custom-cta-icon">
+          <Icon name={installedProviders.length > 0 ? "blocks" : "arrowDown"} size={14} />
+        </span>
+        <span className="model-custom-text">
+          {installedProviders.length > 0 ? (
+            <>
+              <span>All coding agents are switched off</span>
+              <span>Turn one on in Settings › Providers</span>
+            </>
+          ) : (
+            <>
+              <span>No coding agents installed</span>
+              <span>Install one in Settings › Providers</span>
+            </>
+          )}
+        </span>
+      </button>
+    );
 
   const customSection = (
     <>
@@ -213,9 +252,10 @@ export function ModelPicker({
                 <span>Coding agents</span>
                 <span className="model-sect-line" />
               </div>
+              {enabled.length === 0 && emptyState}
               {enabled.map((p) => {
-                // Installed, and container-ready if Docker is on — the shared
-                // gate the spawn path enforces.
+                // Container-ready if Docker is on — the shared gate the spawn
+                // path enforces.
                 const { reason, note } = availability(p.id);
                 const disabled = reason !== null;
                 const isSelected = p.id === provider && !customAgentId;
