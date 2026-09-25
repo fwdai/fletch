@@ -267,8 +267,15 @@ const RESERVED_COMBOS: ReadonlySet<Combo> = new Set([
   "Mod+A",
 ]);
 
+/** Ids the user may rebind: global, and not one of the fixed conventions. */
+export const REBINDABLE_IDS: ReadonlySet<string> = new Set(
+  GLOBAL_SHORTCUTS.filter((it) => !it.fixed).map((it) => it.id),
+);
+
 /** Why `combo` can't be bound to shortcut `id`, or null when it can. A global
- *  chord needs a modifier so it never fights a text field for a plain key. */
+ *  chord needs a modifier so it never fights a text field for a plain key, and
+ *  it can't be one a contextual surface already answers to — those listeners
+ *  are fixed, so the chord would fire both. */
 export function bindingProblem(
   id: string,
   combo: Combo,
@@ -276,9 +283,15 @@ export function bindingProblem(
 ): string | null {
   if (!parseCombo(combo).mod) return "Global shortcuts need ⌘ or Ctrl";
   if (RESERVED_COMBOS.has(combo)) return "Taken by the system menu";
-  for (const other of GLOBAL_SHORTCUTS) {
-    if (other.id !== id && effectiveCombos(other, overrides).includes(combo)) {
-      return `Already bound to “${other.label}”`;
+  for (const group of SHORTCUT_GROUPS) {
+    for (const other of group.items) {
+      if (other.id === id) continue;
+      const combos = group.global ? effectiveCombos(other, overrides) : other.combos;
+      if (combos.includes(combo)) {
+        return group.global
+          ? `Already bound to “${other.label}”`
+          : `Used by “${other.label}” (${group.label})`;
+      }
     }
   }
   return null;
@@ -323,8 +336,20 @@ const PUNCTUATION_CODES: Record<string, string> = {
   "'": "Quote",
 };
 
+/** The physical key for a letter or digit — `KeyN`, `Digit1`. */
+function codeForChar(key: string): string {
+  return /[0-9]/.test(key) ? `Digit${key}` : `Key${key.toUpperCase()}`;
+}
+
 /** Whether `e` is `combo`. `Mod` is either ⌘ or Ctrl on every platform — Ctrl
- *  chords on a Mac are harmless and this keeps one code path. */
+ *  chords on a Mac are harmless and this keeps one code path.
+ *
+ *  Letters and digits compare on `key`, what the layout produces, so a Dvorak
+ *  ⌘S is the S the user typed. Except when a modifier has turned the key into
+ *  a symbol — Option on macOS (⌥N is `˜`), Shift on a digit (⌘⇧1 is `!`) —
+ *  where the physical key stands in, exactly as `comboFromEvent` records it.
+ *  The fallback is limited to those cases so a plain ⌘O on Dvorak (physical
+ *  KeyS) can't also answer to ⌘S. */
 export function matchesCombo(e: KeyboardEvent, combo: Combo): boolean {
   const c = parseCombo(combo);
   if (c.mod !== (e.metaKey || e.ctrlKey)) return false;
@@ -333,7 +358,27 @@ export function matchesCombo(e: KeyboardEvent, combo: Combo): boolean {
   const code = PUNCTUATION_CODES[c.key];
   if (code) return e.code === code;
   if (c.key === "Space") return e.key === " ";
-  return c.key.length === 1 ? e.key.toLowerCase() === c.key.toLowerCase() : e.key === c.key;
+  if (c.key.length !== 1) return e.key === c.key;
+  if (e.key.toLowerCase() === c.key.toLowerCase()) return true;
+  const symbolic = e.altKey || (e.shiftKey && /[0-9]/.test(c.key));
+  return symbolic && e.code === codeForChar(c.key);
+}
+
+/** Whether `combo` is well-formed: known modifiers, no repeats, and a key the
+ *  map can match and format. Guards what comes back from storage; the recorder
+ *  only ever produces well-formed chords. */
+export function isValidCombo(combo: Combo): boolean {
+  const parts = combo.split("+");
+  const key = parts.pop() ?? "";
+  if (parts.length !== new Set(parts).size) return false;
+  if (!parts.every((p) => p === "Mod" || p === "Shift" || p === "Alt")) return false;
+  return (
+    /^[A-Za-z0-9]$/.test(key) ||
+    key in PUNCTUATION_CODES ||
+    key === "Space" ||
+    NAMED_KEYS.has(key) ||
+    /^F([1-9]|1[0-2])$/.test(key)
+  );
 }
 
 const CODE_TO_PUNCTUATION: Record<string, string> = Object.fromEntries(

@@ -9,6 +9,7 @@ import {
   comboFromEvent,
   effectiveCombos,
   formatCombo,
+  REBINDABLE_IDS,
   type Shortcut,
   visibleShortcutGroups,
 } from "@/util/keymap";
@@ -28,12 +29,23 @@ function Keys({ combos }: { combos: Combo[] }) {
  *  clicked, and a reset once the row is off its defaults. Recording captures
  *  the next keydown ahead of every other listener (so ⌘K rebinds rather than
  *  opening search), Esc backs out, and a chord the map refuses stays in the
- *  row with the reason until a good one lands. */
-function Recorder({ shortcut, combos }: { shortcut: Shortcut; combos: Combo[] }) {
+ *  row with the reason until a good one lands. The pane owns which row is
+ *  recording, so clicking another row hands the listener over rather than
+ *  stacking a second one. */
+function Recorder({
+  shortcut,
+  combos,
+  recording,
+  onRecord,
+}: {
+  shortcut: Shortcut;
+  combos: Combo[];
+  recording: boolean;
+  onRecord: (on: boolean) => void;
+}) {
   const overrides = useAppStore((s) => s.shortcutOverrides);
   const setShortcut = useAppStore((s) => s.setShortcut);
   const resetShortcut = useAppStore((s) => s.resetShortcut);
-  const [recording, setRecording] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const overridden = shortcut.id in overrides;
 
@@ -43,7 +55,7 @@ function Recorder({ shortcut, combos }: { shortcut: Shortcut; combos: Combo[] })
       e.preventDefault();
       e.stopImmediatePropagation();
       if (e.key === "Escape") {
-        setRecording(false);
+        onRecord(false);
         return;
       }
       const combo = comboFromEvent(e);
@@ -53,17 +65,17 @@ function Recorder({ shortcut, combos }: { shortcut: Shortcut; combos: Combo[] })
         setProblem(why);
         return;
       }
-      setRecording(false);
+      onRecord(false);
       if (!combos.includes(combo)) setShortcut(shortcut.id, [combo]);
     };
-    const stop = () => setRecording(false);
+    const stop = () => onRecord(false);
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("blur", stop);
     return () => {
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("blur", stop);
     };
-  }, [recording, overrides, combos, shortcut.id, setShortcut]);
+  }, [recording, onRecord, overrides, combos, shortcut.id, setShortcut]);
 
   return (
     <>
@@ -75,7 +87,7 @@ function Recorder({ shortcut, combos }: { shortcut: Shortcut; combos: Combo[] })
         aria-label={`Change ${shortcut.label} shortcut`}
         onClick={() => {
           setProblem(null);
-          setRecording(true);
+          onRecord(true);
         }}
       >
         {recording ? (
@@ -103,6 +115,8 @@ function Recorder({ shortcut, combos }: { shortcut: Shortcut; combos: Combo[] })
 export function ShortcutsPane() {
   const overrides = useAppStore((s) => s.shortcutOverrides);
   const resetAll = useAppStore((s) => s.resetAllShortcuts);
+  // At most one row records at a time: the id of the row that is, or null.
+  const [recordingId, setRecordingId] = useState<string | null>(null);
   const groups = visibleShortcutGroups();
   const customized = Object.keys(overrides).length > 0;
   return (
@@ -124,8 +138,15 @@ export function ShortcutsPane() {
         <SetGroup key={g.label} label={g.label} last={i === groups.length - 1}>
           {g.items.map((it) => (
             <SetRow key={it.id} title={it.label} sub={it.description}>
-              {g.global && !it.fixed ? (
-                <Recorder shortcut={it} combos={effectiveCombos(it, overrides)} />
+              {REBINDABLE_IDS.has(it.id) ? (
+                <Recorder
+                  shortcut={it}
+                  combos={effectiveCombos(it, overrides)}
+                  recording={recordingId === it.id}
+                  onRecord={(on) =>
+                    setRecordingId((cur) => (on ? it.id : cur === it.id ? null : cur))
+                  }
+                />
               ) : (
                 <Keys combos={it.combos} />
               )}

@@ -20,6 +20,16 @@ describe("parseShortcutOverrides", () => {
     expect(parseShortcutOverrides(raw)).toEqual({ search: ["Mod+P"] });
   });
 
+  it("drops chords that aren't well-formed or lack a modifier, and ids that are fixed", () => {
+    const raw = JSON.stringify({
+      search: ["Cmd+P", "P", "Mod+Mod+P", "Mod+Shift+P"],
+      escape: ["Mod+E"],
+      send: ["Mod+Enter"],
+      home: ["Shift+H"],
+    });
+    expect(parseShortcutOverrides(raw)).toEqual({ search: ["Mod+Shift+P"] });
+  });
+
   it("reads a missing or corrupt blob as all defaults", () => {
     expect(parseShortcutOverrides(undefined)).toEqual({});
     expect(parseShortcutOverrides("")).toEqual({});

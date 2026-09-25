@@ -1,5 +1,5 @@
 import { DEFAULT_PROVIDER_ID } from "@/data/providers";
-import { SHORTCUT_BY_ID, type ShortcutOverrides } from "@/util/keymap";
+import { isValidCombo, parseCombo, REBINDABLE_IDS, type ShortcutOverrides } from "@/util/keymap";
 
 // Typed app-preference parsers: turn the flat string→string settings blob read
 // by ./settings.ts into the structured values the store holds. Kept out of the
@@ -205,8 +205,10 @@ export function parseReviewDismissed(raw: string | undefined): Record<string, st
 // ---- Keyboard shortcut overrides ---------------------------------------------
 
 /** The user's rebindings (see `util/keymap.ts`): shortcut id → chords. Stored
- *  as one JSON object under `shortcutOverrides`. Ids the map no longer knows
- *  and malformed entries are dropped; a corrupt or missing blob reads as "all
+ *  as one JSON object under `shortcutOverrides`. Only rebindable ids survive,
+ *  and only well-formed chords with a modifier (what the recorder writes), so
+ *  a hand-edited or stale blob can't leave a shortcut unreachable or move a
+ *  binding the pane says is fixed; a corrupt or missing blob reads as "all
  *  defaults". */
 export function parseShortcutOverrides(raw: string | undefined): ShortcutOverrides {
   if (!raw) return {};
@@ -215,8 +217,10 @@ export function parseShortcutOverrides(raw: string | undefined): ShortcutOverrid
     if (!saved || typeof saved !== "object") return {};
     const out: ShortcutOverrides = {};
     for (const [id, v] of Object.entries(saved as Record<string, unknown>)) {
-      if (!SHORTCUT_BY_ID[id] || !Array.isArray(v)) continue;
-      const combos = v.filter((c): c is string => typeof c === "string" && c.length > 0);
+      if (!REBINDABLE_IDS.has(id) || !Array.isArray(v)) continue;
+      const combos = v.filter(
+        (c): c is string => typeof c === "string" && isValidCombo(c) && parseCombo(c).mod,
+      );
       if (combos.length > 0) out[id] = combos;
     }
     return out;

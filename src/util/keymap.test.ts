@@ -5,8 +5,10 @@ import {
   effectiveCombos,
   formatCombo,
   GLOBAL_SHORTCUTS,
+  isValidCombo,
   matchesCombo,
   parseCombo,
+  REBINDABLE_IDS,
   SHORTCUT_BY_ID,
   SHORTCUT_GROUPS,
   visibleShortcutGroups,
@@ -57,6 +59,19 @@ describe("matchesCombo", () => {
     ).toBe(true);
   });
 
+  it("falls back to the physical key only when a modifier has turned it into a symbol", () => {
+    // ⌘⇧1 reports "!" and ⌥N reports "˜" on macOS; both must still fire.
+    expect(
+      matchesCombo(key({ key: "!", code: "Digit1", metaKey: true, shiftKey: true }), "Mod+Shift+1"),
+    ).toBe(true);
+    expect(
+      matchesCombo(key({ key: "˜", code: "KeyN", altKey: true, metaKey: true }), "Mod+Alt+N"),
+    ).toBe(true);
+    // A plain ⌘O on Dvorak sits on the physical KeyS; it is not ⌘S.
+    expect(matchesCombo(key({ key: "o", code: "KeyS", metaKey: true }), "Mod+S")).toBe(false);
+    expect(matchesCombo(key({ key: "o", code: "KeyS", metaKey: true }), "Mod+O")).toBe(true);
+  });
+
   it("matches named keys and Space by name", () => {
     expect(matchesCombo(key({ key: "Escape" }), "Escape")).toBe(true);
     expect(matchesCombo(key({ key: "Backspace", metaKey: true }), "Mod+Backspace")).toBe(true);
@@ -105,11 +120,13 @@ describe("comboFromEvent", () => {
   });
 
   it("falls back to the physical key when a modifier turns the key into a symbol", () => {
-    // ⌥N on macOS reports "˜"; ⌘⇧1 reports "!".
-    expect(comboFromEvent(key({ key: "˜", code: "KeyN", altKey: true }))).toBe("Alt+N");
-    expect(comboFromEvent(key({ key: "!", code: "Digit1", metaKey: true, shiftKey: true }))).toBe(
-      "Mod+Shift+1",
-    );
+    // ⌥N on macOS reports "˜"; ⌘⇧1 reports "!". What it records, the matcher fires on.
+    const optN = key({ key: "˜", code: "KeyN", altKey: true, metaKey: true });
+    const shift1 = key({ key: "!", code: "Digit1", metaKey: true, shiftKey: true });
+    expect(comboFromEvent(optN)).toBe("Mod+Alt+N");
+    expect(comboFromEvent(shift1)).toBe("Mod+Shift+1");
+    expect(matchesCombo(optN, "Mod+Alt+N")).toBe(true);
+    expect(matchesCombo(shift1, "Mod+Shift+1")).toBe(true);
   });
 
   it("returns null for a lone modifier or an unnamed key", () => {
@@ -138,11 +155,40 @@ describe("overrides", () => {
   });
 
   it("refuses a chord another global shortcut answers to, defaults or override", () => {
-    expect(bindingProblem("search", "Mod+B", {})).toMatch(/Toggle the sidebar/);
+    expect(bindingProblem("search", "Mod+[", {})).toMatch(/Toggle the sidebar/);
     expect(bindingProblem("search", "Mod+P", { home: ["Mod+P"] })).toMatch(/Home/);
     // Rebinding to its own current chord, or one moved away by an override, is fine.
     expect(bindingProblem("search", "Mod+K", {})).toBeNull();
-    expect(bindingProblem("search", "Mod+B", { toggleSidebar: ["Mod+P"] })).toBeNull();
+    expect(bindingProblem("search", "Mod+[", { toggleSidebar: ["Mod+P"] })).toBeNull();
+  });
+
+  it("refuses a chord a contextual surface answers to, since that listener is fixed", () => {
+    expect(bindingProblem("search", "Mod+F", {})).toMatch(/Find in the conversation/);
+    expect(bindingProblem("search", "Mod+S", {})).toMatch(/Save the file/);
+    expect(bindingProblem("search", "Mod+Enter", {})).toMatch(/Commit/);
+  });
+
+  it("knows which ids may be rebound", () => {
+    expect(REBINDABLE_IDS.has("search")).toBe(true);
+    expect(REBINDABLE_IDS.has("escape")).toBe(false);
+    expect(REBINDABLE_IDS.has("send")).toBe(false);
+  });
+});
+
+describe("isValidCombo", () => {
+  it("accepts what the map and recorder write", () => {
+    for (const c of ["Mod+K", "Mod+Shift+[", "Alt+ArrowUp", "Mod+Backspace", "Space", "F5", "j"]) {
+      expect(isValidCombo(c), c).toBe(true);
+    }
+    for (const it of SHORTCUT_GROUPS.flatMap((g) => g.items)) {
+      for (const c of it.combos) expect(isValidCombo(c), c).toBe(true);
+    }
+  });
+
+  it("rejects unknown modifiers, repeats, and keys the map can't match", () => {
+    for (const c of ["Cmd+K", "Mod+Mod+K", "Mod+", "Mod+KK", "Mod+Fn", "", "Mod+F13", "Mod+é"]) {
+      expect(isValidCombo(c), c).toBe(false);
+    }
   });
 });
 

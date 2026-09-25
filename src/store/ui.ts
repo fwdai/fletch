@@ -6,6 +6,7 @@ import {
   type SettingsSection,
 } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
+import { createKeyedQueue } from "@/util/keyedQueue";
 import type { Combo, ShortcutOverrides } from "@/util/keymap";
 import type { SliceCreator } from "./types";
 
@@ -319,18 +320,26 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   setShortcut: (id, combos) =>
     set((s) => {
       const shortcutOverrides = { ...s.shortcutOverrides, [id]: combos };
-      setSetting("shortcutOverrides", shortcutOverrides);
+      persistShortcutOverrides(shortcutOverrides);
       return { shortcutOverrides };
     }),
   resetShortcut: (id) =>
     set((s) => {
       if (!(id in s.shortcutOverrides)) return s;
       const { [id]: _dropped, ...shortcutOverrides } = s.shortcutOverrides;
-      setSetting("shortcutOverrides", shortcutOverrides);
+      persistShortcutOverrides(shortcutOverrides);
       return { shortcutOverrides };
     }),
   resetAllShortcuts: () => {
-    setSetting("shortcutOverrides", {});
+    persistShortcutOverrides({});
     set({ shortcutOverrides: {} });
   },
 });
+
+/** The override map is written whole, and a record-then-reset lands two writes
+ *  in quick succession; the queue keeps them in issue order so the earlier one
+ *  can't finish last and resurrect the binding the user just dropped. */
+const shortcutWrites = createKeyedQueue();
+function persistShortcutOverrides(overrides: ShortcutOverrides) {
+  void shortcutWrites.run("shortcutOverrides", () => setSetting("shortcutOverrides", overrides));
+}
