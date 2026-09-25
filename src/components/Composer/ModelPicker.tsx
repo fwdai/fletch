@@ -54,17 +54,10 @@ export function ModelPicker({
   // container-ready when the Docker engine is on. Matches the backend refusal
   // in supervisor/lifecycle.rs.
   const availability = useAgentAvailability();
-  // Where the agents would run — decides what an empty list can be told to do
-  // about it (see `emptyState`).
   const env = useAppStore(activeEntry);
 
   const selected = PROVIDERS.find((p) => p.id === provider) ?? PROVIDERS[0];
-  // Offered: switched on in Settings › Providers, and actually installed where
-  // the agent would run. An absent binary is left out rather than shown greyed
-  // — a row that can never be clicked is noise, and Settings is where it gets
-  // installed. Agents that are present but blocked for another reason (no
-  // container image under Docker, signed out on a host) stay, disabled, with
-  // that reason as their tooltip.
+  // Not-installed agents are hidden; agents blocked for other reasons stay, disabled.
   const installedProviders = PROVIDERS.filter((p) => availability(p.id).installed);
   const enabled = installedProviders.filter((p) => providerFlags[p.id] !== false);
   const currentModel = useMemo(() => {
@@ -81,9 +74,6 @@ export function ModelPicker({
   const activeCustom = customAgents.find((a) => a.id === customAgentId);
   const selectableCustom = customAgents.filter((a) => providerFlags[a.base] !== false);
   // The coding agent whose model panel is currently shown (null = none).
-  // Resolved against the offered list, not the full registry: a probe that
-  // lands mid-hover and finds the agent absent takes its row away, and the
-  // flyout must go with it rather than keep offering that agent's models.
   const hoveredAgent = hovered ? (enabled.find((p) => p.id === hovered) ?? null) : null;
 
   // Reset the flyout each time the dropdown opens.
@@ -130,14 +120,7 @@ export function ModelPicker({
     );
   }
 
-  /** What the coding-agents section shows when the filter left nothing. Three
-   *  different situations, each with its own next step:
-   *    - a paired host with nothing installed: Settings › Providers installs on
-   *      *this Mac*, which cannot help — say where the install has to happen,
-   *      and offer no button that would lead somewhere useless;
-   *    - agents installed here but every one switched off: they need turning
-   *      on, not installing — telling the user to install would be wrong;
-   *    - nothing installed here: the install lives in Settings › Providers. */
+  // Settings › Providers installs on this Mac only, so a paired host gets a note, not a button.
   const emptyState =
     env.kind === "remote" ? (
       <div className="model-empty text-sm">
@@ -272,7 +255,7 @@ export function ModelPicker({
               {enabled.length === 0 && emptyState}
               {enabled.map((p) => {
                 // Container-ready if Docker is on — the shared gate the spawn
-                // path enforces. (Install state is already filtered above.)
+                // path enforces.
                 const { reason, note } = availability(p.id);
                 const disabled = reason !== null;
                 const isSelected = p.id === provider && !customAgentId;

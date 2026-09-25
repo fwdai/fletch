@@ -58,13 +58,11 @@ describe("agentAvailability, on This Mac", () => {
     const a = agentAvailability(facts(), "cursor");
     expect(a.reason).toBe("Not installed — see Settings › Providers");
     expect(a.note).toBe("Not installed");
-    // The one refusal a listing surface drops the row for, rather than greys.
     expect(a.installed).toBe(false);
   });
 
   it("fails open until the probe has actually run", () => {
-    // A transient detection failure must never disable an agent the user has —
-    // nor hide it from the picker.
+    // A transient detection failure must never disable an agent the user has.
     const a = agentAvailability(facts({ providersProbed: false }), "cursor");
     expect(a.reason).toBeNull();
     expect(a.installed).toBe(true);
@@ -79,14 +77,10 @@ describe("agentAvailability, on This Mac", () => {
     );
     expect(a.reason).toBe("Antigravity isn't available in Docker sandboxes yet");
     expect(a.note).toBe("Not in Docker yet");
-    // Present, just not container-ready: the picker keeps the row and says why.
     expect(a.installed).toBe(true);
   });
 
   it("still marks a container-blocked provider absent when the probe found no binary", () => {
-    // The container refusal wins the wording, but must not vouch for a binary
-    // that isn't there — or the picker would keep a row for an agent that is
-    // both uninstalled and unrunnable.
     const a = agentAvailability(facts({ sandboxEngine: "docker" }), "antigravity");
     expect(a.reason).toBe("Antigravity isn't available in Docker sandboxes yet");
     expect(a.installed).toBe(false);
@@ -136,7 +130,6 @@ describe("agentAvailability, on a paired host", () => {
       "Not signed in on Cloud box — run `fletch-host provider login claude` there",
     );
     expect(a.note).toBe("Signed out");
-    // Installed there, just no account: stays listed with the reason.
     expect(a.installed).toBe(true);
   });
 

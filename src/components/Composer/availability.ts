@@ -34,11 +34,7 @@ export interface Availability {
    *  send button says "…yet — switch to Claude to send" where the picker row
    *  just says why. Null exactly when `reason` is. */
   fix: string | null;
-  /** Whether the agent's binary exists on the machine it would run on. False
-   *  only for the "not installed" refusal: an agent that is present but
-   *  blocked for another reason (signed out on the host, no container image)
-   *  is still `installed`, and a surface that lists agents shows it, greyed,
-   *  with that reason — where an absent one is left out of the list entirely. */
+  /** False only for the "not installed" refusal; other refusals keep it true. */
   installed: boolean;
 }
 
@@ -97,14 +93,13 @@ function onThisMac(facts: AvailabilityFacts, providerId: string): Availability {
   // Fail open on the install gate: only enforce it once a probe has actually
   // succeeded (`providersProbed`). While probing, or if the probe failed,
   // treat as installed so a transient detection error never disables an agent
-  // the user really has — nor hides it from a list.
+  // the user really has.
   const installed = !providersProbed || !!providerPaths[providerId];
   // The container gate is checked first: a non-container provider is blocked
   // regardless of install state, and that's the more useful reason. Mirrors
   // `ensure_engine_supports_provider`, which gates on `is_container()` rather
   // than on one runtime — container support is a property of the image set
-  // both Docker and Podman build. `installed` is still the probe's answer,
-  // though: an absent binary is absent whichever refusal it is reported under.
+  // both Docker and Podman build.
   if (isContainerEngine(sandboxEngine) && !isDockerSupported(providerId)) {
     const label = sandboxEngineLabel(sandboxEngine);
     return {
