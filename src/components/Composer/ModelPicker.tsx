@@ -55,7 +55,15 @@ export function ModelPicker({
   const availability = useAgentAvailability();
 
   const selected = PROVIDERS.find((p) => p.id === provider) ?? PROVIDERS[0];
-  const enabled = PROVIDERS.filter((p) => providerFlags[p.id] !== false);
+  // Offered: switched on in Settings › Providers, and actually installed where
+  // the agent would run. An absent binary is left out rather than shown greyed
+  // — a row that can never be clicked is noise, and Settings is where it gets
+  // installed. Agents that are present but blocked for another reason (no
+  // container image under Docker, signed out on a host) stay, disabled, with
+  // that reason as their tooltip.
+  const enabled = PROVIDERS.filter(
+    (p) => providerFlags[p.id] !== false && availability(p.id).installed,
+  );
   const currentModel = useMemo(() => {
     const list = modelsByAgent[provider] ?? [];
     return list.find((m) => m.id === model);
@@ -213,9 +221,28 @@ export function ModelPicker({
                 <span>Coding agents</span>
                 <span className="model-sect-line" />
               </div>
+              {enabled.length === 0 && (
+                <button
+                  type="button"
+                  className="model-custom-cta flex-center"
+                  onMouseEnter={() => setHovered(null)}
+                  onClick={() => {
+                    setOpen(false);
+                    openSettingsScreen("providers");
+                  }}
+                >
+                  <span className="model-custom-cta-icon">
+                    <Icon name="arrowDown" size={14} />
+                  </span>
+                  <span className="model-custom-text">
+                    <span>No coding agents installed</span>
+                    <span>Install one in Settings › Providers</span>
+                  </span>
+                </button>
+              )}
               {enabled.map((p) => {
-                // Installed, and container-ready if Docker is on — the shared
-                // gate the spawn path enforces.
+                // Container-ready if Docker is on — the shared gate the spawn
+                // path enforces. (Install state is already filtered above.)
                 const { reason, note } = availability(p.id);
                 const disabled = reason !== null;
                 const isSelected = p.id === provider && !customAgentId;
