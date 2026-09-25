@@ -4,7 +4,6 @@
 //! Both runtime engines call [`prepare`] and hand the result to
 //! [`run_args`](super::run_args), so they launch byte-identically.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -19,7 +18,7 @@ use super::launch_auth::{
     apply_container_auth, prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch,
     prepare_pi_launch, present_api_keys,
 };
-use super::run_args::{prepare_config_mount_dir, ProviderMounts, CREDENTIALS_FILE, PASSWD_FILE};
+use super::run_args::{prepare_config_mount_dir, MappedUser, ProviderMounts, CREDENTIALS_FILE};
 use super::ContainerProvider;
 
 /// The launch inputs [`prepare`] resolved: the CLI process env, the object
@@ -53,9 +52,19 @@ pub(crate) struct ContainerLaunch {
     forward_xdg_config_home: bool,
     pi_data: Option<PathBuf>,
     cursor_data: Option<PathBuf>,
+    /// `(uid:gid, passwd file)` of a uid-mapped launch — see
+    /// [`MappedUser`].
+    mapped: Option<(String, PathBuf)>,
 }
 
 impl ContainerLaunch {
+    /// The user the container runs as, with its passwd file, when mapped.
+    pub(crate) fn mapped_user(&self) -> Option<MappedUser<'_>> {
+        self.mapped
+            .as_ref()
+            .map(|(user, passwd_file)| MappedUser { user, passwd_file })
+    }
+
     /// The auth var *names* to forward — exactly the tail [`prepare`] appended.
     pub(crate) fn auth_vars(&self) -> Vec<&str> {
         self.env[self.auth_start..]
@@ -168,10 +177,20 @@ pub(crate) fn prepare(
 
     // The mapped uid is in no passwd file of the image, so anything that looks
     // itself up (`os.userInfo()`, `whoami`) fails; `run_args` binds this over
-    // `/etc/passwd`.
-    if let Some(user) = run_as_user {
-        write_passwd_file(ctx.writable_root, user, ctx.home)?;
-    }
+    // `/etc/passwd`. It lives under this engine's data dir — the one root a
+    // container never sees — never under a bind an agent can write.
+    let mapped = match run_as_user {
+        Some(user) => {
+            let data_dir = crate::sandbox::configured_data_dir().ok_or_else(|| {
+                Error::Other("uid-mapped launch before the host published its data dir".into())
+            })?;
+            Some((
+                user.to_string(),
+                write_passwd_file(&data_dir, user, ctx.home)?,
+            ))
+        }
+        None => None,
+    };
 
     // Owned per-provider mount inputs, borrowed into a `ProviderMounts` by
     // `ContainerLaunch::mounts`. Only the matched arm fills any of these in.
@@ -321,6 +340,7 @@ pub(crate) fn prepare(
         forward_xdg_config_home,
         pi_data,
         cursor_data,
+        mapped,
     })
 }
 
@@ -333,29 +353,23 @@ fn passwd_contents(user: &str, home: &Path) -> String {
     )
 }
 
-/// Write [`passwd_contents`] to the [`PASSWD_FILE`] `run_args` binds. Under the
-/// writable root so archive teardown's `rm -rf` reclaims it — which also makes
-/// it agent-writable, so whatever an agent left there (a symlink to a host
-/// file, say) is unlinked and replaced, never followed.
-pub(crate) fn write_passwd_file(writable_root: &Path, user: &str, home: &Path) -> Result<()> {
-    let path = writable_root.join(PASSWD_FILE);
-    let write = || -> std::io::Result<()> {
-        match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        }
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?
-            .write_all(passwd_contents(user, home).as_bytes())
-    };
-    write().map_err(|e| {
-        Error::Other(format!(
-            "preparing container passwd file {} failed: {e}",
-            path.display()
-        ))
-    })
+/// Write [`passwd_contents`] to `<data_dir>/sandbox/passwd` and return that
+/// path for `run_args` to bind. The daemon resolves a bind source as root, so
+/// the file must sit where no agent can swap it for a symlink between this
+/// write and the mount: the data dir is the engine's own (0700, never bound
+/// into a container), unlike the agent's writable root or RPC dir.
+pub(crate) fn write_passwd_file(data_dir: &Path, user: &str, home: &Path) -> Result<PathBuf> {
+    let dir = data_dir.join("sandbox");
+    let path = dir.join("passwd");
+    std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&path, passwd_contents(user, home)))
+        .map_err(|e| {
+            Error::Other(format!(
+                "preparing container passwd file {} failed: {e}",
+                path.display()
+            ))
+        })?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -372,19 +386,20 @@ mod tests {
         );
     }
 
-    /// The file sits in the agent-writable root: a planted symlink must be
-    /// replaced, not written through to its target.
+    /// The file lands under the data dir handed in — never under a path an
+    /// agent's container has read-write — and is rewritten in place each time.
     #[test]
-    fn passwd_file_replaces_a_planted_symlink() {
+    fn passwd_file_lives_under_the_data_dir() {
         let td = tempfile::tempdir().unwrap();
-        let target = td.path().join("host-file");
-        std::fs::write(&target, "keep").unwrap();
-        std::os::unix::fs::symlink(&target, td.path().join(PASSWD_FILE)).unwrap();
-
-        write_passwd_file(td.path(), "1000:1000", Path::new("/home/svc")).unwrap();
-
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
-        let written = std::fs::read_to_string(td.path().join(PASSWD_FILE)).unwrap();
-        assert!(written.contains("fletch:x:1000:1000:"), "{written}");
+        let path = write_passwd_file(td.path(), "1000:1000", Path::new("/home/svc")).unwrap();
+        assert_eq!(path, td.path().join("sandbox").join("passwd"));
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("fletch:x:1000:1000:"));
+        // A second launch as another uid replaces, not appends.
+        let again = write_passwd_file(td.path(), "2000:2000", Path::new("/home/svc")).unwrap();
+        let written = std::fs::read_to_string(again).unwrap();
+        assert!(written.contains("fletch:x:2000:2000:"), "{written}");
+        assert!(!written.contains("1000"), "{written}");
     }
 }

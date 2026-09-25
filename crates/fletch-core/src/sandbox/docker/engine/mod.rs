@@ -214,15 +214,11 @@ impl SandboxEngine for DockerEngine {
         let settings = LAUNCH_SETTINGS.read().clone();
         let image = self.resolve_image_cached(provider, settings.image_override.as_deref())?;
         let name = container_name(ctx.agent_id);
-        // Owned for the duration of the launch: the probe behind it may decline
-        // to cache its answer, so there is no `&'static str` to borrow (see
-        // `util::launch_user`).
-        let run_as_user = launch_user();
         // Everything about *what* to mount, set, and authenticate is
         // runtime-neutral policy; this engine only decides which binary carries
-        // it out.
+        // it out — and, on Linux, which user it runs as (`util::launch_user`).
         let prep =
-            crate::sandbox::container::launch::prepare(ctx, provider, run_as_user.as_deref())?;
+            crate::sandbox::container::launch::prepare(ctx, provider, launch_user().as_deref())?;
 
         let prefix_args = {
             let auth_vars = prep.auth_vars();
@@ -240,7 +236,7 @@ impl SandboxEngine for DockerEngine {
                 borrowed_object_stores: &prep.borrowed_object_stores,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
                 cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
-                run_as_user: run_as_user.as_deref(),
+                run_as_user: prep.mapped_user(),
                 image: &image,
                 agent_bin,
                 auth_vars: &auth_vars,

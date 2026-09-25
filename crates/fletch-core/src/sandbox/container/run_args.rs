@@ -33,10 +33,6 @@ pub(crate) const DEFAULT_CPUS: &str = "2";
 /// cache should hit `ENOSPC` rather than the OOM killer.
 const HOME_TMPFS_OPTS: &str = "rw,mode=1777,size=1g";
 
-/// The generated passwd file a uid-mapped launch binds over `/etc/passwd`,
-/// under the writable root (see `launch::write_passwd_file`).
-pub(crate) const PASSWD_FILE: &str = ".fletch-passwd";
-
 /// Mount options for the [`EPHEMERAL_RUNTIME_SUBDIRS`] overlays on a uid-mapped
 /// launch. A bare `--tmpfs` is `0755 root:root`, which a non-root agent cannot
 /// write — claude `mkdir`s into both every session.
@@ -102,6 +98,20 @@ pub(crate) enum ProviderMounts<'a> {
     Cursor { data_dir: &'a Path },
 }
 
+/// The user a uid-mapped launch runs as, and the passwd file that names it.
+/// One value, so a launch cannot be mapped without the entry that makes the
+/// uid resolve. `passwd_file` must live where no agent can write — the daemon
+/// resolves the bind source as root, so a path an agent could swap for a
+/// symlink between the write and the mount would expose any host file (see
+/// `launch::write_passwd_file`).
+#[derive(Clone, Copy)]
+pub(crate) struct MappedUser<'a> {
+    /// `uid:gid`.
+    pub user: &'a str,
+    /// Bound read-only over `/etc/passwd`.
+    pub passwd_file: &'a Path,
+}
+
 /// Everything [`run_args`] needs, bundled so the builder stays pure.
 pub(crate) struct RunSpec<'a> {
     pub interactive: bool,
@@ -127,7 +137,7 @@ pub(crate) struct RunSpec<'a> {
     pub borrowed_object_stores: &'a [PathBuf],
     pub memory: &'a str,
     pub cpus: &'a str,
-    /// `uid:gid` to run the container as, or `None` to run it as the image's
+    /// The user to run the container as, or `None` to run it as the image's
     /// user (root, for every embedded image). `Some` only on a Linux host with
     /// a runtime whose container root *is* host root: there, every file the
     /// agent writes into the read-write binds comes back `root:root` and the
@@ -135,7 +145,7 @@ pub(crate) struct RunSpec<'a> {
     /// maps ownership to the user whatever the container runs as, and a
     /// rootless runtime already maps container root to the user, so both pass
     /// `None` — see `sandbox::container::util::linux_host_user`.
-    pub run_as_user: Option<&'a str>,
+    pub run_as_user: Option<MappedUser<'a>>,
     pub image: &'a str,
     pub agent_bin: &'a str,
     /// Auth var *names* the chain resolved ([`resolve`]), forwarded as bare
@@ -166,9 +176,9 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args.push(labels::agent_id_label(spec.agent_id));
     // Ownership mapping on a Linux host (see [`RunSpec::run_as_user`]). The uid
     // is not a secret, so it may ride in argv; nothing else here does.
-    if let Some(user) = spec.run_as_user {
+    if let Some(mapped) = spec.run_as_user {
         args.push("--user".into());
-        args.push(user.into());
+        args.push(mapped.user.into());
         // `$HOME` itself is not a mount — the runtime materializes it
         // `root:root` as the parent of the config-dir binds — so a non-root
         // agent could write neither the `~/.claude.json` the entrypoint seeds
@@ -179,14 +189,14 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         // increasing path depth, whatever the argv order.
         args.push("--tmpfs".into());
         args.push(format!("{}:{HOME_TMPFS_OPTS}", spec.home.to_string_lossy()));
-        // So the mapped uid resolves (`os.userInfo()`, `whoami`). Its source is
-        // agent-writable through the writable-root bind, so no setuid binary
-        // (`su`) may honour an entry an agent rewrote.
+        // So the mapped uid resolves (`os.userInfo()`, `whoami`).
         args.push("-v".into());
         args.push(format!(
             "{}:/etc/passwd:ro",
-            spec.writable_root.join(PASSWD_FILE).to_string_lossy()
+            mapped.passwd_file.to_string_lossy()
         ));
+        // A mapped agent has no business regaining root through the image's
+        // setuid binaries (`su`); the mapping exists to keep it the user.
         args.push("--security-opt".into());
         args.push("no-new-privileges".into());
     }
@@ -309,13 +319,15 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
 }
 
 /// Every *host* path [`run_args`] turns into a bind mount, in argv order —
-/// excluding the tmpfs overlays (no source), the `projects/` target (its
-/// source, `projects_src`, is listed) and the [`PASSWD_FILE`] (inside
-/// `writable_root`). A runtime that vets mount sources before launching (see
-/// `podman::machine`) must see exactly what will be bound, so a mount added to
-/// [`run_args`] without an entry here would go unvetted.
+/// excluding the tmpfs overlays (no source) and the `projects/` target (its
+/// source, `projects_src`, is listed). A runtime that vets mount sources before
+/// launching (see `podman::machine`) must see exactly what will be bound, so a
+/// mount added to [`run_args`] without an entry here would go unvetted.
 pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = vec![spec.writable_root.into(), spec.rpc_dir.into()];
+    if let Some(mapped) = spec.run_as_user {
+        out.push(mapped.passwd_file.into());
+    }
     if let Some(board) = spec.blackboard {
         out.push(board.into());
     }
@@ -489,7 +501,10 @@ mod tests {
                 borrowed_object_stores: &stores,
                 memory: DEFAULT_MEMORY,
                 cpus: DEFAULT_CPUS,
-                run_as_user: Some("1000:1000"),
+                run_as_user: Some(MappedUser {
+                    user: "1000:1000",
+                    passwd_file: Path::new("/tmp/fletch-run-args/data/sandbox/passwd"),
+                }),
                 image: "fletch-agent:cafe00000000",
                 agent_bin: "claude",
                 auth_vars: &["ANTHROPIC_API_KEY"],

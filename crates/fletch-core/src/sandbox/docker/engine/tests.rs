@@ -13,7 +13,7 @@ use crate::sandbox::container::launch_auth::{
     NO_OPENCODE_AUTH_MSG, NO_PI_AUTH_MSG,
 };
 use crate::sandbox::container::run_args::{
-    mount_sources, prepare_config_mount_dir, ProviderMounts, PASSWD_FILE,
+    mount_sources, prepare_config_mount_dir, MappedUser, ProviderMounts,
 };
 
 /// The version-refresh loop guard: exact-pair matching, per-provider
@@ -210,7 +210,11 @@ fn argv_mounts_exactly_the_three_dirs_at_identical_paths() {
 #[test]
 fn argv_maps_the_host_user_on_linux() {
     let mut spec = test_spec(false);
-    spec.run_as_user = Some("1000:1000");
+    let passwd = Path::new("/Users/u/Library/Application Support/fletch-host/sandbox/passwd");
+    spec.run_as_user = Some(MappedUser {
+        user: "1000:1000",
+        passwd_file: passwd,
+    });
     let args = run_args(&spec);
 
     assert_eq!(values_of(&args, "--user"), vec!["1000:1000"]);
@@ -218,11 +222,12 @@ fn argv_maps_the_host_user_on_linux() {
     // identical host paths (invariant 1), `~/.claude` still read-only
     // (invariant 5) — but for a read-only generated `/etc/passwd`, so the
     // mapped uid resolves (`os.userInfo()`, `whoami`). Its source is under the
-    // agent-writable root, hence no setuid binary may act on it.
+    // engine's data dir, which no bind reaches, so an agent cannot swap it for
+    // a symlink before the daemon resolves the mount.
     assert_eq!(
         values_of(&args, "-v"),
         vec![
-            "/Users/u/.fletch/worktrees/orkney/.fletch-passwd:/etc/passwd:ro",
+            "/Users/u/Library/Application Support/fletch-host/sandbox/passwd:/etc/passwd:ro",
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
             "/Users/u/.claude:/Users/u/.claude:ro",
@@ -233,6 +238,8 @@ fn argv_maps_the_host_user_on_linux() {
         values_of(&args, "--security-opt"),
         vec!["no-new-privileges"]
     );
+    // The passwd source is a bind the podman preflight would have to vet.
+    assert!(mount_sources(&spec).contains(&passwd.to_path_buf()));
     // A writable `$HOME`: the runtime materializes the real one `root:root` as
     // the parent of the `~/.claude` bind, so without this the entrypoint's
     // `~/.claude.json` seed fails under `set -e` and the container never
@@ -1305,9 +1312,9 @@ fn docker_run_echo_round_trip() {
     std::fs::create_dir_all(&projects_src).unwrap();
     let name = container_name("b2-int-test");
     let user = launch_user();
-    if let Some(user) = &user {
-        write_passwd_file(&root, user, &home).unwrap();
-    }
+    let passwd = user
+        .as_deref()
+        .map(|u| write_passwd_file(td.path(), u, &home).unwrap());
     let args = run_args(&RunSpec {
         interactive: false,
         name: &name,
@@ -1329,7 +1336,10 @@ fn docker_run_echo_round_trip() {
         cpus: "1",
         // What this machine's daemon would really be launched with, so the
         // round-trip covers the mapping on a Linux runner too.
-        run_as_user: user.as_deref(),
+        run_as_user: user
+            .as_deref()
+            .zip(passwd.as_deref())
+            .map(|(user, passwd_file)| MappedUser { user, passwd_file }),
         image: "busybox",
         agent_bin: "echo",
         auth_vars: &[],
@@ -1373,7 +1383,8 @@ fn run_mapped(
     prepare_config_mount_dir(&home.join(".claude")).unwrap();
     let projects_src = root.join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME);
     std::fs::create_dir_all(&projects_src).unwrap();
-    write_passwd_file(&root, user, &home).unwrap();
+    // The temp dir stands in for the engine's data dir: outside every bind.
+    let passwd = write_passwd_file(td.path(), user, &home).unwrap();
     // In production the mapped uid owns these paths. A *synthetic* uid does
     // not, so give them the modes a default umask would — a host umask of 077
     // would otherwise fail the run before it reaches the passwd lookup.
@@ -1382,11 +1393,7 @@ fn run_mapped(
         for dir in [&root, &rpc, &projects_src, &home.join(".claude")] {
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        std::fs::set_permissions(
-            root.join(PASSWD_FILE),
-            std::fs::Permissions::from_mode(0o644),
-        )
-        .unwrap();
+        std::fs::set_permissions(&passwd, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
     let name = container_name("uid-map-test");
     let mut spec = test_spec(false);
@@ -1404,7 +1411,10 @@ fn run_mapped(
     };
     spec.memory = "256m";
     spec.cpus = "1";
-    spec.run_as_user = Some(user);
+    spec.run_as_user = Some(MappedUser {
+        user,
+        passwd_file: &passwd,
+    });
     spec.image = image;
     spec.agent_bin = bin;
     spec.auth_vars = &[];
