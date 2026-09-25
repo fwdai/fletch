@@ -1,6 +1,7 @@
 import type { ITerminalOptions, Terminal } from "@xterm/xterm";
 import { type DependencyList, useEffect, useRef } from "react";
 import { acquireTerminal, createTerminal, disposeTerminal } from "@/pty/terminals";
+import { hyperlinkHandler } from "./xtermLinks";
 import { resolveTheme } from "./xtermTheme";
 import "@xterm/xterm/css/xterm.css";
 
@@ -11,6 +12,7 @@ const XTERM_BASE_OPTIONS: ITerminalOptions = {
   cursorStyle: "block",
   allowProposedApi: false,
   macOptionIsMeta: true,
+  linkHandler: hyperlinkHandler,
 };
 
 /** Mount an xterm `Terminal` + `FitAddon` into a host element and own the
