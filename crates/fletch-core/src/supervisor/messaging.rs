@@ -38,7 +38,19 @@ impl Supervisor {
         // adopting attachments: adoption writes into the agent's workspace dir
         // (derived by id), so a stale/invalid id would otherwise move the file
         // into an orphan dir nothing sweeps and then fail the send, losing it.
-        let mode = injection_mode(&self.workspace.agent(agent_id)?.provider);
+        let record = self.workspace.agent(agent_id)?;
+        // An archived agent has no checkout and no process; one being archived
+        // is about to have neither. Refuse now, before the turn is persisted or
+        // announced, rather than deliver into a teardown or queue a message the
+        // archive is about to drop.
+        if record.archive.is_some() {
+            return Err(Error::Other("agent is archived".into()));
+        }
+        // Open for the whole routing below: every arm either delivers now or
+        // leaves the message queued, and an archive must see neither half-done
+        // (`Supervisor::open_route`).
+        let _route = self.open_route(agent_id)?;
+        let mode = injection_mode(&record.provider);
 
         // Move any pasted attachments out of the app-data staging area into
         // this agent's workspace before the paths are persisted or handed to the
@@ -486,6 +498,11 @@ pub(super) fn flush_queued(
     ctx: &Arc<EngineCtx>,
     agent_id: &str,
 ) -> Result<bool> {
+    // Open from the pop through delivery and the Running flip, so an archive
+    // cannot reserve the agent while a queued message is in hand
+    // (`Supervisor::open_route`). Refused when one already holds the agent; the
+    // follow-ups stay queued for the archive to dispose of as its trigger allows.
+    let _route = sup.open_route(agent_id)?;
     let count = sup.message_queue.lock().len(agent_id);
     let Some(coalesced) = sup.message_queue.lock().drain_coalesced(agent_id) else {
         return Ok(false);

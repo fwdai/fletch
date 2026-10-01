@@ -123,6 +123,14 @@ export interface Workspace {
   agents: AgentRecord[];
 }
 
+/** One auto-archive pass that moved something to History
+ *  (`workspace:auto-archived`). `workspace:changed` already reloaded the
+ *  sidebar; this names what went so the user can be told. */
+export interface WorkspaceAutoArchivedEvent {
+  agent_ids: string[];
+  names: string[];
+}
+
 export interface ProjectDeleteResult {
   workspace: Workspace;
   deleted_agent_ids: string[];

@@ -640,6 +640,20 @@ fn set_publish_approval_wait(secs: u64, state: tauri::State<'_, DbState>) -> Res
     Ok(())
 }
 
+/// Days a sidebar workspace may sit idle before the hourly sweep archives it;
+/// `0` turns the sweep off. The sweep reads the setting on every pass, so
+/// there is no in-process mirror to update.
+#[tauri::command]
+fn set_auto_archive_idle_days(days: u32, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    let conn = state.lock();
+    database::set_setting(
+        &conn,
+        supervisor::auto_archive::IDLE_DAYS_SETTING,
+        &days.to_string(),
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// The prefix prepended to every branch an agent creates. Validated and
 /// trimmed; the stored form is returned so the UI shows exactly what applies.
 /// Empty clears it.
@@ -1597,6 +1611,7 @@ pub fn run() {
             set_publish_confirmation,
             answer_publish_approval,
             set_publish_approval_wait,
+            set_auto_archive_idle_days,
             set_branch_prefix,
             set_draft_prs,
             set_agent_attribution_removed,

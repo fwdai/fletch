@@ -1408,6 +1408,9 @@ impl Supervisor {
         if deletion_guard.contains(&project_id) {
             return Err(Error::Other("project deletion is in progress".into()));
         }
+        // A keystroke is input too: refused once an archive holds the agent, and
+        // it keeps the archive out while the bytes land (`Supervisor::open_route`).
+        let _route = self.open_route(agent_id)?;
         self.live_agent(agent_id)?.write_pty(bytes)?;
         let submitted = self
             .native_inputs

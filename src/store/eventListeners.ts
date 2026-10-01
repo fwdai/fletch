@@ -34,6 +34,7 @@ import {
   onTurnSent,
   onTurnStarted,
   onVerificationReport,
+  onWorkspaceAutoArchived,
   onWorkspaceChanged,
 } from "@/api";
 import type { UnlistenFn } from "@/api/transport";
@@ -56,6 +57,7 @@ import { getOrCreateAccount, toProfile } from "@/storage/accounts";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
+  parseAutoArchiveIdleDays,
   parseAutopilotPausedAgents,
   parseDraftBaseBranches,
   parseFeatures,
@@ -193,6 +195,8 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       // Publishing preferences, all backend-owned (snake_case, written by
       // `set_publish_approval_wait` / `set_branch_prefix` / `set_draft_prs`).
       publishApprovalWait: parsePublishApprovalWait(s.publish_approval_wait),
+      // Backend-owned (`set_auto_archive_idle_days`); the sweep reads the key.
+      autoArchiveIdleDays: parseAutoArchiveIdleDays(s.auto_archive_idle_days),
       branchPrefix: s.git_branch_prefix || "",
       draftPrs: s.github_draft_prs === "true",
       // Advanced per-runtime launch knobs — backend-owned (snake_case, written
@@ -620,6 +624,20 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   await bind(
     onWorkspaceChanged(async () => {
       await refreshWorkspace(set);
+    }),
+  );
+
+  // The idle sweep archived something while nobody asked it to; say what went
+  // and where to get it back, through the same native-notification path the
+  // turn signals use (and the same mute).
+  await bind(
+    onWorkspaceAutoArchived((e) => {
+      if (!get().notifyEnabled || e.names.length === 0) return;
+      const n = e.names.length;
+      notify(
+        `Archived ${n} idle workspace${n === 1 ? "" : "s"}`,
+        `${e.names.join(", ")}. Restore from History.`,
+      );
     }),
   );
 

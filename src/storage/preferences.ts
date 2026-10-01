@@ -314,6 +314,17 @@ export function parsePublishApprovalWait(raw: string | undefined): number {
   return Number.isInteger(n) && n >= 0 ? n : DEFAULT_PUBLISH_APPROVAL_WAIT;
 }
 
+/** Days an idle sidebar workspace waits before the backend's auto-archive sweep
+ *  takes it — the backend's `auto_archive::DEFAULT_IDLE_DAYS`. */
+export const DEFAULT_AUTO_ARCHIVE_IDLE_DAYS = 7;
+
+/** Parse the backend-owned `auto_archive_idle_days` setting (days; 0 = off).
+ *  Anything unparsable is the default, matching Rust's `parse_idle_days`. */
+export function parseAutoArchiveIdleDays(raw: string | undefined): number {
+  const n = Number.parseInt(raw ?? "", 10);
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_AUTO_ARCHIVE_IDLE_DAYS;
+}
+
 /** Whether an engine runs the agent inside a container — mirrors the backend's
  *  `EngineKind::is_container`. Every "containerized" gate calls this rather
  *  than comparing against `"docker"`. Takes a loose string because callers read

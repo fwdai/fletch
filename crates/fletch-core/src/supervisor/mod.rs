@@ -1,5 +1,6 @@
 //! Coordinator between Tauri IPC commands and the running agents.
 
+pub mod auto_archive;
 mod disposition;
 mod events;
 mod fork;
@@ -12,6 +13,7 @@ pub(crate) mod run;
 mod session_sync;
 mod shell;
 
+pub use disposition::ArchiveTrigger;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};
 pub use lifecycle::SpawnRequest;
@@ -94,6 +96,9 @@ pub struct Supervisor {
     /// Project ids currently being deleted. Fresh turns check and transition
     /// to Running while holding this lock, closing the idle-to-running race.
     pub(super) deleting_projects: Mutex<HashSet<String>>,
+    /// Archive reservations and open input routes, per agent — the per-agent
+    /// counterpart of `deleting_projects`. See `disposition::Disposal`.
+    pub(super) disposal: Mutex<disposition::Disposal>,
     /// Agent ids whose binary-path change couldn't be applied immediately
     /// because the agent was mid-turn. Drained at the next turn-end Idle
     /// transition (see `transition_active`), which respawns them onto the
@@ -159,6 +164,7 @@ impl Supervisor {
             runs: Mutex::new(HashMap::new()),
             agent_lifecycle: tokio::sync::Mutex::new(()),
             deleting_projects: Mutex::new(HashSet::new()),
+            disposal: Mutex::new(disposition::Disposal::default()),
             respawn_pending: Mutex::new(HashSet::new()),
             message_queue: Mutex::new(MessageQueue::new()),
             stale_base: Mutex::new(HashSet::new()),

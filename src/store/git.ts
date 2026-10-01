@@ -10,7 +10,10 @@ import {
 } from "@/api";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { actionProvesKind, type Delegation, type DelegationKind } from "@/delegation";
-import { DEFAULT_PUBLISH_APPROVAL_WAIT } from "@/storage/preferences";
+import {
+  DEFAULT_AUTO_ARCHIVE_IDLE_DAYS,
+  DEFAULT_PUBLISH_APPROVAL_WAIT,
+} from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
 import { forActiveEnvironment } from "./environments";
 import { acceptPrWrite, issuePrWrite, stampPrWrite } from "./prWriteOrder";
@@ -79,6 +82,11 @@ export interface GitSlice {
   /** Prefix prepended to every branch an agent creates ("" = none). Mirrors the
    *  backend-owned `git_branch_prefix` setting. */
   branchPrefix: string;
+  /** Days an idle, clean, fully pushed workspace waits before the backend's
+   *  sweep archives it; 0 = off. Mirrors the backend-owned
+   *  `auto_archive_idle_days` setting. Lives here with the other backend-owned
+   *  workspace preferences, though it is not a git setting. */
+  autoArchiveIdleDays: number;
   /** Open pull requests as drafts. Mirrors the backend-owned `github_draft_prs`
    *  setting. */
   draftPrs: boolean;
@@ -143,6 +151,7 @@ export interface GitSlice {
   noteDelegationOutcome: (key: string, text: string) => void;
   setGitCommitAction: (action: GitCommitAction) => void;
   setPublishApprovalWait: (secs: number) => Promise<void>;
+  setAutoArchiveIdleDays: (days: number) => Promise<void>;
   /** Rejects with the backend's validation message; the store is untouched then. */
   setBranchPrefix: (prefix: string) => Promise<void>;
   setDraftPrs: (enabled: boolean) => Promise<void>;
@@ -286,6 +295,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   verificationReports: {},
   gitCommitAction: "agent-commit-pr" as GitCommitAction,
   publishApprovalWait: DEFAULT_PUBLISH_APPROVAL_WAIT,
+  autoArchiveIdleDays: DEFAULT_AUTO_ARCHIVE_IDLE_DAYS,
   branchPrefix: "",
   draftPrs: false,
 
@@ -544,6 +554,11 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   setPublishApprovalWait: async (secs) => {
     await api.setPublishApprovalWait(secs);
     set({ publishApprovalWait: secs });
+  },
+
+  setAutoArchiveIdleDays: async (days) => {
+    await api.setAutoArchiveIdleDays(days);
+    set({ autoArchiveIdleDays: days });
   },
 
   setBranchPrefix: async (prefix) => {

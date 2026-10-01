@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -339,6 +339,45 @@ pub async fn git_meta(checkout_path: &Path, base: &crate::git::ResolvedBase) -> 
     }
 }
 
+/// The two facts a caller about to *delete* a checkout needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisposalCheck {
+    /// `git status` reported nothing — no modified, staged, or untracked file.
+    pub clean_tree: bool,
+    /// Commits no `origin` ref contains (the same measure as `GitState::unpushed`).
+    pub unpushed: u32,
+}
+
+/// Fail-closed read of [`DisposalCheck`] for a checkout.
+///
+/// [`query`] is built for the panel, where a git read that fails should degrade
+/// to "nothing to show": an unreadable HEAD becomes an empty state, a failed
+/// `git status` an empty file list, a failed count zero. For a caller that will
+/// `rm -rf` on the answer, each of those degradations reads a corrupt or
+/// half-provisioned checkout as clean and pushed. Every probe here propagates
+/// its failure instead, so the caller's only safe move on `Err` is to wait.
+pub async fn check_for_disposal(checkout_path: &Path) -> Result<DisposalCheck> {
+    crate::git::hardening::refuse_steerable_config(checkout_path).await?;
+    let fail = |what: &str| Error::Other(format!("{}: {what}", checkout_path.display()));
+    // No HEAD is an empty or broken repo, not a clean one.
+    query_head_sha(checkout_path)
+        .await
+        .ok_or_else(|| fail("HEAD does not resolve"))?;
+    let status = run_status_strict(checkout_path).await?;
+    // Against origin's refs, whatever upstream the branch tracks: restore
+    // refetches from origin, so a commit only some other remote holds is as
+    // unrecoverable as one never pushed. A repo with no origin at all counts
+    // its whole history, which is the conservative answer. No answer is a
+    // failure, never zero.
+    let unpushed = rev_list_count(checkout_path, &["HEAD", "--not", "--remotes=origin"])
+        .await
+        .ok_or_else(|| fail("unpushed commit count failed"))?;
+    Ok(DisposalCheck {
+        clean_tree: status.trim().is_empty(),
+        unpushed,
+    })
+}
+
 /// `git rev-list --count <args>`, or `None` when the revisions don't resolve
 /// (e.g. an object the shared store doesn't hold, or a branch with no
 /// upstream). One number — unlike `rev_list_counts`, which reads both sides of
@@ -559,7 +598,22 @@ async fn rev_list_counts(checkout_path: &Path, base: &str) -> Option<(u32, u32)>
     Some(parse_ahead_behind(s.trim()))
 }
 
+/// `git status --porcelain`, with a failed command read as an empty tree — the
+/// panel's contract ("no news is zero"). Deletion decisions must not use this;
+/// see [`check_for_disposal`].
 async fn run_status(checkout_path: &Path) -> Result<String> {
+    match run_status_strict(checkout_path).await {
+        Ok(out) => Ok(out),
+        Err(Error::Other(msg)) => {
+            tracing::warn!(error = %msg, "git status --porcelain=v1 failed");
+            Ok(String::new())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// `git status --porcelain`, failing when git does.
+async fn run_status_strict(checkout_path: &Path) -> Result<String> {
     let out = read_command(checkout_path)
         // `-uall` lists each file inside an untracked directory individually
         // (the default collapses them into one `dir/` entry, which can't be
@@ -568,8 +622,10 @@ async fn run_status(checkout_path: &Path) -> Result<String> {
         .output()
         .await?;
     if !out.status.success() {
-        tracing::warn!(stderr = %String::from_utf8_lossy(&out.stderr).trim(), "git status --porcelain=v1 failed");
-        return Ok(String::new());
+        return Err(Error::Other(format!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -783,6 +839,87 @@ fn parse_numstat(output: &str) -> HashMap<String, (u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- check_for_disposal (fail-closed) ---
+
+    fn git(repo: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A repo with one commit on `main`, an `origin` that already has it, and
+    /// `main` tracking `origin/main` — the shape of a pushed workspace.
+    fn pushed_repo(td: &Path) -> std::path::PathBuf {
+        let origin = td.join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "--bare"]);
+        let repo = td.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "Tester"]);
+        std::fs::write(repo.join("a.txt"), "one").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "first"]);
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&repo, &["push", "-q", "-u", "origin", "main"]);
+        repo
+    }
+
+    /// The contract the archive sweep deletes on: a readable, pushed, clean
+    /// checkout answers; anything less is an error, never a reassuring zero.
+    #[tokio::test]
+    async fn check_for_disposal_answers_only_for_a_readable_checkout() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = pushed_repo(td.path());
+        assert_eq!(
+            check_for_disposal(&repo).await.unwrap(),
+            DisposalCheck {
+                clean_tree: true,
+                unpushed: 0
+            }
+        );
+
+        // Local work shows up on both axes, not as a clean zero.
+        std::fs::write(repo.join("b.txt"), "two").unwrap();
+        assert!(!check_for_disposal(&repo).await.unwrap().clean_tree);
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "second"]);
+        assert_eq!(check_for_disposal(&repo).await.unwrap().unpushed, 1);
+
+        // Pushed somewhere that is not origin is still unpushed here: restore
+        // refetches from origin, so another remote cannot recover the commit —
+        // even as the branch's upstream.
+        let other = td.path().join("other.git");
+        std::fs::create_dir_all(&other).unwrap();
+        git(&other, &["init", "-q", "--bare"]);
+        git(&repo, &["remote", "add", "other", other.to_str().unwrap()]);
+        git(&repo, &["push", "-q", "-u", "other", "main"]);
+        assert_eq!(check_for_disposal(&repo).await.unwrap().unpushed, 1);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        assert_eq!(check_for_disposal(&repo).await.unwrap().unpushed, 0);
+
+        // Where `query` would hand back an empty state, this refuses: a dir
+        // that is not a repo, and a repo with no HEAD to measure from.
+        let not_a_repo = td.path().join("plain");
+        std::fs::create_dir_all(&not_a_repo).unwrap();
+        assert!(check_for_disposal(&not_a_repo).await.is_err());
+        let empty = td.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        git(&empty, &["init", "-q"]);
+        assert!(check_for_disposal(&empty).await.is_err());
+    }
 
     // --- untracked_additions (read budget) ---
 
