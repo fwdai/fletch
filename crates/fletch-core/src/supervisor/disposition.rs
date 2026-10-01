@@ -1,6 +1,7 @@
 //! Agent disposition: archive, restore, and discard, plus the repo
 //! snapshot/teardown helpers they share.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -37,13 +38,25 @@ impl Supervisor {
     /// (`finish_archive`) rather than returned, so the caller never sees an
     /// error for an archive that did happen.
     pub async fn archive_agent(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
+        self.archive_agent_as(ctx, agent_id, ArchiveTrigger::User)
+            .await
+    }
+
+    /// [`Self::archive_agent`] with the trigger spelled out — see
+    /// [`ArchiveTrigger`] for the one thing it changes.
+    pub async fn archive_agent_as(
+        self: Arc<Self>,
+        ctx: Arc<EngineCtx>,
+        agent_id: &str,
+        trigger: ArchiveTrigger,
+    ) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
         if record.archive.is_some() {
             return Err(Error::Other("agent is already archived".into()));
         }
-        // Held to the end: a send that arrives from here on is refused rather
-        // than delivered into a process about to be detached.
-        let _disposal = self.reserve_disposal(agent_id, &record)?;
+        // Held to the end: input that arrives from here on is refused rather
+        // than delivered into — or queued behind — a runtime about to go.
+        let _disposal = self.reserve_disposal(agent_id, &record, trigger)?;
 
         self.workspace.begin_archive(agent_id)?;
         emit_workspace_changed(ctx.sink.as_ref());
@@ -95,22 +108,27 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Reserve `agent_id` for archive, or refuse while it is mid-turn.
+    /// Reserve `agent_id` for archive — see [`Disposal`] for the contract.
     ///
-    /// The idle check and the reservation happen under `disposing_agents`, the
-    /// lock a fresh turn holds from its own check through delivery and the
-    /// Running flip (`messaging::deliver_as_turn`). So either the turn landed
-    /// first and the status here reads Running, or the reservation landed first
-    /// and the turn is refused — a message can no longer be delivered to an
-    /// agent whose checkout is about to go. Released when the guard drops.
+    /// Refused while a route into the agent is open, while it is mid-turn, and
+    /// (for [`ArchiveTrigger::Sweep`]) while a follow-up sits in its queue:
+    /// each of those is a user message that would otherwise vanish with the
+    /// runtime. Every check and the mark happen under the one lock. Released
+    /// when the guard drops.
     pub(super) fn reserve_disposal(
         &self,
         agent_id: &str,
         record: &AgentRecord,
+        trigger: ArchiveTrigger,
     ) -> Result<DisposalGuard<'_>> {
-        let mut disposing = self.disposing_agents.lock();
-        if disposing.contains(agent_id) {
+        let mut disposal = self.disposal.lock();
+        if disposal.reserved.contains(agent_id) {
             return Err(Error::Other("archive is already in progress".into()));
+        }
+        if disposal.routing.get(agent_id).is_some_and(|n| *n > 0) {
+            return Err(Error::Other(
+                "agent is receiving a message; try again".into(),
+            ));
         }
         if matches!(
             self.effective_status(agent_id, record),
@@ -120,8 +138,28 @@ impl Supervisor {
                 "agent must be idle, stopped, or in error before archiving".into(),
             ));
         }
-        disposing.insert(agent_id.to_string());
+        if trigger == ArchiveTrigger::Sweep && !self.message_queue.lock().is_empty(agent_id) {
+            return Err(Error::Other("agent has queued messages".into()));
+        }
+        disposal.reserved.insert(agent_id.to_string());
         Ok(DisposalGuard {
+            sup: self,
+            agent_id: agent_id.to_string(),
+        })
+    }
+
+    /// Open a route for input into `agent_id`: a user message about to be
+    /// routed, a queued follow-up about to be flushed, a native keystroke about
+    /// to be written. Refused while an archive holds the agent, so no input is
+    /// delivered into — or queued behind — a runtime about to be torn down.
+    /// While the guard lives, [`Self::reserve_disposal`] refuses in turn.
+    pub(super) fn open_route(&self, agent_id: &str) -> Result<RouteGuard<'_>> {
+        let mut disposal = self.disposal.lock();
+        if disposal.reserved.contains(agent_id) {
+            return Err(Error::Other("agent is being archived".into()));
+        }
+        *disposal.routing.entry(agent_id.to_string()).or_insert(0) += 1;
+        Ok(RouteGuard {
             sup: self,
             agent_id: agent_id.to_string(),
         })
@@ -622,8 +660,40 @@ async fn remove_agent_dir(agent_id: &str, op: &str) -> bool {
     !parent.exists()
 }
 
+/// Who asked for an archive. Decides one thing: what becomes of follow-ups
+/// still queued for the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveTrigger {
+    /// The user asked (a click, a remote command, a finished workflow step).
+    /// Queued follow-ups are theirs to abandon and go with the runtime, as they
+    /// always have.
+    User,
+    /// An unattended rule asked (`auto_archive`). Nothing the user wrote may be
+    /// lost on their behalf, so a queued follow-up refuses the archive.
+    Sweep,
+}
+
+/// Per-agent exclusion between archive and input (`Supervisor::disposal`).
+///
+/// Two things must never overlap on one agent: an archive tearing its runtime
+/// and checkout down, and a message or keystroke on its way in. Both go
+/// through here. A route opens with [`Supervisor::open_route`] and is refused
+/// while the agent is reserved; an archive reserves with
+/// [`Supervisor::reserve_disposal`] and is refused while any route is open.
+/// Each check and its mark happen under the one lock, so neither side can slip
+/// between the other's check and its act — the shape `deleting_projects`
+/// already gives project deletion, per agent.
+#[derive(Default)]
+pub(crate) struct Disposal {
+    /// Agents an archive holds, from reservation to the end of teardown.
+    reserved: HashSet<String>,
+    /// Agents with input mid-route — a send being routed, a queue flush being
+    /// delivered, a native keystroke being written — by open count.
+    routing: HashMap<String, usize>,
+}
+
 /// An agent's archive reservation (`Supervisor::reserve_disposal`); dropping it
-/// lets turns through again. Dropped on every exit from `archive_agent`, so a
+/// lets input through again. Dropped on every exit from `archive_agent_as`, so a
 /// failed archive — or a later restore under the same id — is never wedged.
 pub(super) struct DisposalGuard<'a> {
     sup: &'a Supervisor,
@@ -632,13 +702,33 @@ pub(super) struct DisposalGuard<'a> {
 
 impl Drop for DisposalGuard<'_> {
     fn drop(&mut self) {
-        self.sup.disposing_agents.lock().remove(&self.agent_id);
+        self.sup.disposal.lock().reserved.remove(&self.agent_id);
+    }
+}
+
+/// An open input route (`Supervisor::open_route`); dropping it closes the route.
+pub(super) struct RouteGuard<'a> {
+    sup: &'a Supervisor,
+    agent_id: String,
+}
+
+impl Drop for RouteGuard<'_> {
+    fn drop(&mut self) {
+        let mut disposal = self.sup.disposal.lock();
+        if let Some(open) = disposal.routing.get_mut(&self.agent_id) {
+            *open -= 1;
+            if *open > 0 {
+                return;
+            }
+        }
+        disposal.routing.remove(&self.agent_id);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message_queue::PendingMsg;
     use crate::supervisor::tests::{record_with_status, test_supervisor};
     use std::path::Path;
 
@@ -646,24 +736,70 @@ mod tests {
     fn a_disposal_reservation_is_exclusive_and_released_on_drop() {
         let sup = test_supervisor();
         let record = record_with_status("denali", AgentStatus::Idle);
+        let user = ArchiveTrigger::User;
 
-        let held = sup.reserve_disposal("denali", &record).unwrap();
+        let held = sup.reserve_disposal("denali", &record, user).unwrap();
         assert!(
-            sup.reserve_disposal("denali", &record).is_err(),
+            sup.reserve_disposal("denali", &record, user).is_err(),
             "a second archive of the same agent must be refused"
         );
         drop(held);
-        assert!(sup.reserve_disposal("denali", &record).is_ok());
+        assert!(sup.reserve_disposal("denali", &record, user).is_ok());
 
         // A turn that won the race reads as Running here and wins outright.
         sup.statuses
             .lock()
             .insert("denali".to_string(), AgentStatus::Running);
-        assert!(sup.reserve_disposal("denali", &record).is_err());
+        assert!(sup.reserve_disposal("denali", &record, user).is_err());
         assert!(
-            !sup.disposing_agents.lock().contains("denali"),
+            !sup.disposal.lock().reserved.contains("denali"),
             "a refused reservation must not leave the agent reserved"
         );
+    }
+
+    #[test]
+    fn an_open_route_and_a_reservation_exclude_each_other() {
+        let sup = test_supervisor();
+        let record = record_with_status("denali", AgentStatus::Idle);
+        let sweep = ArchiveTrigger::Sweep;
+
+        // Input mid-route keeps archive out — for as long as any route is open.
+        let first = sup.open_route("denali").unwrap();
+        let second = sup.open_route("denali").unwrap();
+        assert!(sup.reserve_disposal("denali", &record, sweep).is_err());
+        drop(first);
+        assert!(
+            sup.reserve_disposal("denali", &record, sweep).is_err(),
+            "one of two routes closing is not enough"
+        );
+        drop(second);
+
+        // And a reservation keeps input out, for this agent only.
+        let held = sup.reserve_disposal("denali", &record, sweep).unwrap();
+        assert!(sup.open_route("denali").is_err());
+        assert!(sup.open_route("rainier").is_ok());
+        drop(held);
+        assert!(sup.open_route("denali").is_ok());
+    }
+
+    #[test]
+    fn a_queued_follow_up_refuses_the_sweep_but_not_the_user() {
+        let sup = test_supervisor();
+        let record = record_with_status("denali", AgentStatus::Idle);
+        sup.message_queue.lock().enqueue(
+            "denali",
+            PendingMsg {
+                turn_id: "t1".into(),
+                text: "and then this".into(),
+                attachments: vec![],
+            },
+        );
+        assert!(sup
+            .reserve_disposal("denali", &record, ArchiveTrigger::Sweep)
+            .is_err());
+        assert!(sup
+            .reserve_disposal("denali", &record, ArchiveTrigger::User)
+            .is_ok());
     }
 
     fn git(repo: &Path, args: &[&str]) {

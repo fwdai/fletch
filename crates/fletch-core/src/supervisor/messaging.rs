@@ -46,9 +46,10 @@ impl Supervisor {
         if record.archive.is_some() {
             return Err(Error::Other("agent is archived".into()));
         }
-        if self.disposing_agents.lock().contains(agent_id) {
-            return Err(Error::Other("agent is being archived".into()));
-        }
+        // Open for the whole routing below: every arm either delivers now or
+        // leaves the message queued, and an archive must see neither half-done
+        // (`Supervisor::open_route`).
+        let _route = self.open_route(agent_id)?;
         let mode = injection_mode(&record.provider);
 
         // Move any pasted attachments out of the app-data staging area into
@@ -460,14 +461,6 @@ fn deliver_as_turn(
     if deletion_guard.contains(&project_id) {
         return Err(Error::Other("project deletion is in progress".into()));
     }
-    // Same shape, per agent: archive checks idleness and reserves under this
-    // lock (`Supervisor::reserve_disposal`), so holding it through delivery and
-    // the Running flip means an archive sees either Running or nothing in
-    // flight — never a turn it can tear down from under.
-    let disposal_guard = sup.disposing_agents.lock();
-    if disposal_guard.contains(agent_id) {
-        return Err(Error::Other("agent is being archived".into()));
-    }
     // The previous turn is in `session_records` by now; from here the live
     // buffer holds this one (see `live_turn`). Emptied *before* the message
     // goes out: the agent's first event can land on the event callback before
@@ -487,7 +480,6 @@ fn deliver_as_turn(
         agent_id.to_string(),
         msg.text.clone(),
     );
-    drop(disposal_guard);
     drop(deletion_guard);
     Ok(())
 }
@@ -506,6 +498,11 @@ pub(super) fn flush_queued(
     ctx: &Arc<EngineCtx>,
     agent_id: &str,
 ) -> Result<bool> {
+    // Open from the pop through delivery and the Running flip, so an archive
+    // cannot reserve the agent while a queued message is in hand
+    // (`Supervisor::open_route`). Refused when one already holds the agent; the
+    // follow-ups stay queued for the archive to dispose of as its trigger allows.
+    let _route = sup.open_route(agent_id)?;
     let count = sup.message_queue.lock().len(agent_id);
     let Some(coalesced) = sup.message_queue.lock().drain_coalesced(agent_id) else {
         return Ok(false);

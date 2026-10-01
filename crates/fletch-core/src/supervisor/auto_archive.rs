@@ -18,7 +18,7 @@ use crate::host::EngineCtx;
 use crate::workspace::{AgentRecord, AgentStatus};
 use crate::DbState;
 
-use super::Supervisor;
+use super::{ArchiveTrigger, Supervisor};
 
 /// Settings key: days a workspace may sit idle before the sweep archives it,
 /// as an integer string. `0` turns the sweep off. Written by the desktop's
@@ -212,9 +212,11 @@ async fn sweep(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, db: &DbState)
         {
             continue;
         }
+        // `Sweep`: a follow-up still queued for the agent refuses the archive
+        // rather than vanishing with it — nobody is here to decide otherwise.
         match supervisor
             .clone()
-            .archive_agent(ctx.clone(), &record.id)
+            .archive_agent_as(ctx.clone(), &record.id, ArchiveTrigger::Sweep)
             .await
         {
             Ok(()) => {

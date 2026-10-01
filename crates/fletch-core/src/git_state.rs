@@ -364,16 +364,14 @@ pub async fn check_for_disposal(checkout_path: &Path) -> Result<DisposalCheck> {
         .await
         .ok_or_else(|| fail("HEAD does not resolve"))?;
     let status = run_status_strict(checkout_path).await?;
-    // Against the upstream when one is configured; otherwise against every
-    // origin branch — a repo with no origin at all then counts its whole
-    // history, which is the conservative answer. Neither probe answering is a
+    // Against origin's refs, whatever upstream the branch tracks: restore
+    // refetches from origin, so a commit only some other remote holds is as
+    // unrecoverable as one never pushed. A repo with no origin at all counts
+    // its whole history, which is the conservative answer. No answer is a
     // failure, never zero.
-    let unpushed = match rev_list_count(checkout_path, &["@{upstream}..HEAD"]).await {
-        Some(n) => n,
-        None => rev_list_count(checkout_path, &["HEAD", "--not", "--remotes=origin"])
-            .await
-            .ok_or_else(|| fail("unpushed commit count failed"))?,
-    };
+    let unpushed = rev_list_count(checkout_path, &["HEAD", "--not", "--remotes=origin"])
+        .await
+        .ok_or_else(|| fail("unpushed commit count failed"))?;
     Ok(DisposalCheck {
         clean_tree: status.trim().is_empty(),
         unpushed,
@@ -899,6 +897,18 @@ mod tests {
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-q", "-m", "second"]);
         assert_eq!(check_for_disposal(&repo).await.unwrap().unpushed, 1);
+
+        // Pushed somewhere that is not origin is still unpushed here: restore
+        // refetches from origin, so another remote cannot recover the commit —
+        // even as the branch's upstream.
+        let other = td.path().join("other.git");
+        std::fs::create_dir_all(&other).unwrap();
+        git(&other, &["init", "-q", "--bare"]);
+        git(&repo, &["remote", "add", "other", other.to_str().unwrap()]);
+        git(&repo, &["push", "-q", "-u", "other", "main"]);
+        assert_eq!(check_for_disposal(&repo).await.unwrap().unpushed, 1);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        assert_eq!(check_for_disposal(&repo).await.unwrap().unpushed, 0);
 
         // Where `query` would hand back an empty state, this refuses: a dir
         // that is not a repo, and a repo with no HEAD to measure from.
