@@ -32,3 +32,14 @@ GGML_MACHINE_SUPPORTS_i8mm = "0"
 # `tauri ios build` runs cargo from mobile/, so a config under mobile/src-tauri/
 # is never discovered.
 SWIFT_RS_RUNTIME_ARCHIVE = "Tauri"
+
+# Debug builds (`cargo build`, `cargo test`, `tauri dev`) carry full DWARF for
+# every crate by default, and on macOS the dev profile keeps that debuginfo in
+# per-crate `.o` files under `target/debug/deps` — in practice 20+ GB of a 40 GB
+# target dir, most of it type information nobody ever loads into a debugger.
+# Line tables keep file:line in panics and backtraces, which is all a test run
+# or an agent reading one needs. Lives here rather than in a Cargo.toml because
+# there is no `[workspace]`: each of the six manifests is its own profile root,
+# and this file is the one place every build (app, crates, mobile, CI) reads.
+[profile.dev]
+debug = "line-tables-only"
