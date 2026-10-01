@@ -13,6 +13,7 @@ import type {
   AgentTitleEvent,
   AgentViewEvent,
   ShellOutputEvent,
+  WorkspaceAutoArchivedEvent,
 } from "./types/agent";
 import type {
   DictationLevelEvent,
@@ -314,6 +315,13 @@ export function onAgentGitAction(cb: (e: AgentGitActionEvent) => void): Promise<
 
 export function onWorkspaceChanged(cb: () => void): Promise<UnlistenFn> {
   return on<unknown>("workspace:changed", () => cb());
+}
+
+/** The idle-workspace sweep archived something; names what, for a notice. */
+export function onWorkspaceAutoArchived(
+  cb: (e: WorkspaceAutoArchivedEvent) => void,
+): Promise<UnlistenFn> {
+  return on<WorkspaceAutoArchivedEvent>("workspace:auto-archived", cb);
 }
 
 export function onPrStateChanged(cb: (e: PrStateChangedEvent) => void): Promise<UnlistenFn> {

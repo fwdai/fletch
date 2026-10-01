@@ -1,5 +1,6 @@
 //! Coordinator between Tauri IPC commands and the running agents.
 
+pub mod auto_archive;
 mod disposition;
 mod events;
 mod fork;

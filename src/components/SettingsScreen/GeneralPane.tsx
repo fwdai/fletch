@@ -9,6 +9,15 @@ import { SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 const CODE_THEME_OPTIONS = CODE_THEMES.map((t) => ({ value: t.id, label: t.label }));
 
+/** The Select wants string values; the store keeps days. `0` = off. */
+const AUTO_ARCHIVE_OPTIONS: { value: string; label: string }[] = [
+  { value: "0", label: "Off" },
+  { value: "3", label: "3 days" },
+  { value: "7", label: "7 days" },
+  { value: "14", label: "14 days" },
+  { value: "30", label: "30 days" },
+];
+
 /** App-wide basics only. Anything scoped to a feature (workspace panels, git,
  *  sandboxing, dictation) has its own section. */
 export function GeneralPane() {
@@ -26,6 +35,8 @@ export function GeneralPane() {
   const setNotifyTurnComplete = useAppStore((s) => s.setNotifyTurnComplete);
   const telemetryEnabled = useAppStore((s) => s.telemetryEnabled);
   const setTelemetryEnabled = useAppStore((s) => s.setTelemetryEnabled);
+  const autoArchiveIdleDays = useAppStore((s) => s.autoArchiveIdleDays);
+  const setAutoArchiveIdleDays = useAppStore((s) => s.setAutoArchiveIdleDays);
   const revealLogs = useAppStore((s) => s.revealLogs);
 
   return (
@@ -94,6 +105,20 @@ export function GeneralPane() {
           <SetToggle
             on={notifyTurnComplete}
             onClick={() => setNotifyTurnComplete(!notifyTurnComplete)}
+          />
+        </SetRow>
+      </SetGroup>
+
+      <SetGroup label="Workspaces">
+        <SetRow
+          title="Auto-archive idle workspaces"
+          sub="Archive a workspace once it has sat idle this long. Only workspaces with no uncommitted changes and no unpushed commits are archived; a workspace whose PR has merged or closed goes after a day. Archived workspaces can be restored from History."
+        >
+          <Select
+            value={String(autoArchiveIdleDays)}
+            ariaLabel="Auto-archive idle workspaces"
+            options={AUTO_ARCHIVE_OPTIONS}
+            onChange={(v) => void setAutoArchiveIdleDays(Number(v))}
           />
         </SetRow>
       </SetGroup>
