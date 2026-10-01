@@ -46,14 +46,15 @@ pub fn parse_idle_days(raw: Option<&str>) -> u32 {
         .unwrap_or(DEFAULT_IDLE_DAYS)
 }
 
-/// One checkout's state as the sweep saw it. `pr_state` is the record's
-/// last-known snapshot, not a live fetch — database truth that survives a
-/// GitHub outage, and the same thing the sidebar shows.
+/// One checkout's state as the sweep saw it. `clean_tree` and `unpushed` come
+/// from the fail-closed `git_state::check_for_disposal`, so a value here means
+/// git actually answered. `pr_state` is the record's last-known snapshot, not
+/// a live fetch — database truth that survives a GitHub outage, and the same
+/// thing the sidebar shows.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RepoSummary {
     pub clean_tree: bool,
     pub unpushed: u32,
-    pub blocked_config: bool,
     pub pr_state: Option<PrStatus>,
     /// When the checkout directory was created — the spawn, or the restore
     /// that rebuilt it. A restored workspace keeps its old session records, so
@@ -102,10 +103,7 @@ pub(crate) fn eligible(c: &Candidate, now_ms: i64, threshold_days: u32) -> Optio
     if c.repos.is_empty() {
         return None;
     }
-    let all_pushed = c
-        .repos
-        .iter()
-        .all(|r| r.clean_tree && r.unpushed == 0 && !r.blocked_config);
+    let all_pushed = c.repos.iter().all(|r| r.clean_tree && r.unpushed == 0);
     if !all_pushed {
         return None;
     }
@@ -244,8 +242,10 @@ async fn sweep(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, db: &DbState)
     }
 }
 
-/// Read every owned checkout's git state. `None` when any read fails — an
-/// unreadable tree might hold anything, so the agent sits this pass out.
+/// Read every owned checkout fail-closed. `None` when any probe fails — an
+/// unreadable tree might hold anything, so the agent sits this pass out. Not
+/// `git_state::query`: that one degrades a failed read to an empty, "clean"
+/// state for the panel, which is exactly the answer a deletion must not trust.
 async fn summarize_repos(record: &AgentRecord) -> Option<Vec<RepoSummary>> {
     let mut out = Vec::new();
     for repo in record.repos.iter().filter(|r| !r.is_adopted()) {
@@ -256,18 +256,16 @@ async fn summarize_repos(record: &AgentRecord) -> Option<Vec<RepoSummary>> {
                 return None;
             }
         };
-        let base = repo.resolve_base(&checkout).await;
-        let state = match crate::git_state::query(&checkout, &base).await {
-            Ok(s) => s,
+        let check = match crate::git_state::check_for_disposal(&checkout).await {
+            Ok(c) => c,
             Err(e) => {
                 tracing::debug!(agent_id = %record.id, error = %e, "auto-archive: git read failed");
                 return None;
             }
         };
         out.push(RepoSummary {
-            clean_tree: state.files.is_empty(),
-            unpushed: state.unpushed,
-            blocked_config: !state.blocked_config.is_empty(),
+            clean_tree: check.clean_tree,
+            unpushed: check.unpushed,
             pr_state: repo.pr_state.as_deref().and_then(PrStatus::parse),
             provisioned_ms: provisioned_at(&checkout),
         });
@@ -295,7 +293,6 @@ mod tests {
         RepoSummary {
             clean_tree: true,
             unpushed: 0,
-            blocked_config: false,
             pr_state,
             provisioned_ms: Some(NOW - 100 * DAY_MS),
         }
@@ -391,13 +388,6 @@ mod tests {
     fn unpushed_commits_are_never_archived() {
         let mut c = idle_for(30);
         c.repos[0].unpushed = 1;
-        assert_eq!(eligible(&c, NOW, 7), None);
-    }
-
-    #[test]
-    fn blocked_config_is_an_unreadable_tree() {
-        let mut c = idle_for(30);
-        c.repos[0].blocked_config = true;
         assert_eq!(eligible(&c, NOW, 7), None);
     }
 

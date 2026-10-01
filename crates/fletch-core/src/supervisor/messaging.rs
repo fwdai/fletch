@@ -38,7 +38,18 @@ impl Supervisor {
         // adopting attachments: adoption writes into the agent's workspace dir
         // (derived by id), so a stale/invalid id would otherwise move the file
         // into an orphan dir nothing sweeps and then fail the send, losing it.
-        let mode = injection_mode(&self.workspace.agent(agent_id)?.provider);
+        let record = self.workspace.agent(agent_id)?;
+        // An archived agent has no checkout and no process; one being archived
+        // is about to have neither. Refuse now, before the turn is persisted or
+        // announced, rather than deliver into a teardown or queue a message the
+        // archive is about to drop.
+        if record.archive.is_some() {
+            return Err(Error::Other("agent is archived".into()));
+        }
+        if self.disposing_agents.lock().contains(agent_id) {
+            return Err(Error::Other("agent is being archived".into()));
+        }
+        let mode = injection_mode(&record.provider);
 
         // Move any pasted attachments out of the app-data staging area into
         // this agent's workspace before the paths are persisted or handed to the
@@ -449,6 +460,14 @@ fn deliver_as_turn(
     if deletion_guard.contains(&project_id) {
         return Err(Error::Other("project deletion is in progress".into()));
     }
+    // Same shape, per agent: archive checks idleness and reserves under this
+    // lock (`Supervisor::reserve_disposal`), so holding it through delivery and
+    // the Running flip means an archive sees either Running or nothing in
+    // flight — never a turn it can tear down from under.
+    let disposal_guard = sup.disposing_agents.lock();
+    if disposal_guard.contains(agent_id) {
+        return Err(Error::Other("agent is being archived".into()));
+    }
     // The previous turn is in `session_records` by now; from here the live
     // buffer holds this one (see `live_turn`). Emptied *before* the message
     // goes out: the agent's first event can land on the event callback before
@@ -468,6 +487,7 @@ fn deliver_as_turn(
         agent_id.to_string(),
         msg.text.clone(),
     );
+    drop(disposal_guard);
     drop(deletion_guard);
     Ok(())
 }

@@ -41,14 +41,9 @@ impl Supervisor {
         if record.archive.is_some() {
             return Err(Error::Other("agent is already archived".into()));
         }
-        if matches!(
-            self.effective_status(agent_id, &record),
-            AgentStatus::Spawning | AgentStatus::Running
-        ) {
-            return Err(Error::Other(
-                "agent must be idle, stopped, or in error before archiving".into(),
-            ));
-        }
+        // Held to the end: a send that arrives from here on is refused rather
+        // than delivered into a process about to be detached.
+        let _disposal = self.reserve_disposal(agent_id, &record)?;
 
         self.workspace.begin_archive(agent_id)?;
         emit_workspace_changed(ctx.sink.as_ref());
@@ -98,6 +93,38 @@ impl Supervisor {
         // workspace now that History has something to show.
         emit_workspace_changed(ctx.sink.as_ref());
         Ok(())
+    }
+
+    /// Reserve `agent_id` for archive, or refuse while it is mid-turn.
+    ///
+    /// The idle check and the reservation happen under `disposing_agents`, the
+    /// lock a fresh turn holds from its own check through delivery and the
+    /// Running flip (`messaging::deliver_as_turn`). So either the turn landed
+    /// first and the status here reads Running, or the reservation landed first
+    /// and the turn is refused — a message can no longer be delivered to an
+    /// agent whose checkout is about to go. Released when the guard drops.
+    pub(super) fn reserve_disposal(
+        &self,
+        agent_id: &str,
+        record: &AgentRecord,
+    ) -> Result<DisposalGuard<'_>> {
+        let mut disposing = self.disposing_agents.lock();
+        if disposing.contains(agent_id) {
+            return Err(Error::Other("archive is already in progress".into()));
+        }
+        if matches!(
+            self.effective_status(agent_id, record),
+            AgentStatus::Spawning | AgentStatus::Running
+        ) {
+            return Err(Error::Other(
+                "agent must be idle, stopped, or in error before archiving".into(),
+            ));
+        }
+        disposing.insert(agent_id.to_string());
+        Ok(DisposalGuard {
+            sup: self,
+            agent_id: agent_id.to_string(),
+        })
     }
 
     /// Pull an archived agent back into the live sidebar: recreate
@@ -595,10 +622,49 @@ async fn remove_agent_dir(agent_id: &str, op: &str) -> bool {
     !parent.exists()
 }
 
+/// An agent's archive reservation (`Supervisor::reserve_disposal`); dropping it
+/// lets turns through again. Dropped on every exit from `archive_agent`, so a
+/// failed archive — or a later restore under the same id — is never wedged.
+pub(super) struct DisposalGuard<'a> {
+    sup: &'a Supervisor,
+    agent_id: String,
+}
+
+impl Drop for DisposalGuard<'_> {
+    fn drop(&mut self) {
+        self.sup.disposing_agents.lock().remove(&self.agent_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::supervisor::tests::{record_with_status, test_supervisor};
     use std::path::Path;
+
+    #[test]
+    fn a_disposal_reservation_is_exclusive_and_released_on_drop() {
+        let sup = test_supervisor();
+        let record = record_with_status("denali", AgentStatus::Idle);
+
+        let held = sup.reserve_disposal("denali", &record).unwrap();
+        assert!(
+            sup.reserve_disposal("denali", &record).is_err(),
+            "a second archive of the same agent must be refused"
+        );
+        drop(held);
+        assert!(sup.reserve_disposal("denali", &record).is_ok());
+
+        // A turn that won the race reads as Running here and wins outright.
+        sup.statuses
+            .lock()
+            .insert("denali".to_string(), AgentStatus::Running);
+        assert!(sup.reserve_disposal("denali", &record).is_err());
+        assert!(
+            !sup.disposing_agents.lock().contains("denali"),
+            "a refused reservation must not leave the agent reserved"
+        );
+    }
 
     fn git(repo: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")
