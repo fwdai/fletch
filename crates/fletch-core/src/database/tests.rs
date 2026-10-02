@@ -323,6 +323,47 @@ fn handoff_context_migration_keeps_a_forks_carried_context() {
     );
 }
 
+/// Schema version just before the transcript prefix (0045).
+const V_RECORD_WATERMARK: usize = 44;
+
+/// The branch point goes (0045): no session starts as a CLI fork any more.
+/// Every existing session continues no written transcript, so it drops
+/// nothing it ingests.
+#[test]
+fn transcript_prefix_migration_replaces_the_branch_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_RECORD_WATERMARK)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w', 'p', 'ws', 0);
+         INSERT INTO sessions (id, workspace_id, created_at, branch_from_session, branch_at_message)
+              VALUES ('branched', 'w', 1, 'src', 'm1');",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = init(dir.path()).unwrap();
+    let conn = db.lock();
+    let prefix: i64 = conn
+        .query_row(
+            "SELECT transcript_prefix FROM sessions WHERE id = 'branched'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(prefix, 0);
+    for gone in ["branch_from_session", "branch_at_message"] {
+        assert!(
+            conn.prepare(&format!("SELECT {gone} FROM sessions"))
+                .is_err(),
+            "{gone} is gone"
+        );
+    }
+}
+
 /// The roadmap table (0026) lands on an existing install with the shape the DAO
 /// assumes: per-project unique codes, cascade from the owning project, and no
 /// generic-CRUD access (typed commands only, like the `wf_*` tables).

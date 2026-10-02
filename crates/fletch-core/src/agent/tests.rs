@@ -39,34 +39,11 @@ fn claude_spec(start: SessionStart) -> SpawnSpec<'static> {
     }
 }
 
-fn branch(at_message: Option<&str>) -> SessionStart {
-    SessionStart::Branch(BranchPoint {
-        from_session: "src".into(),
-        at_message: at_message.map(str::to_string),
-    })
-}
-
 #[test]
 fn claude_session_flags_match_the_start_in_both_views() {
     let cases = [
         (SessionStart::Fresh, vec!["--session-id", "own"]),
         (SessionStart::Resume, vec!["--resume", "own"]),
-        (
-            branch(Some("m1")),
-            vec![
-                "--resume",
-                "src",
-                "--fork-session",
-                "--session-id",
-                "own",
-                "--resume-session-at",
-                "m1",
-            ],
-        ),
-        (
-            branch(None),
-            vec!["--resume", "src", "--fork-session", "--session-id", "own"],
-        ),
     ];
     let session_flags = |args: &[String]| {
         args.iter()
@@ -85,16 +62,6 @@ fn claude_session_flags_match_the_start_in_both_views() {
             assert_eq!(session_flags(&args), session_flags(&flags), "{args:?}");
         }
     }
-}
-
-#[test]
-fn claude_tui_refuses_a_branch_cut_at_a_message() {
-    // Claude's TUI ignores `--resume-session-at` and would open the whole
-    // source session, so the launch must fail rather than show the wrong history.
-    let err = Agent::spawn_pty(claude_spec(branch(Some("m1"))), |_| {}, |_| {})
-        .err()
-        .expect("a TUI branch cut at a message must be refused");
-    assert!(err.to_string().contains("chat view"), "{err}");
 }
 
 // ── native (PTY) view input ───────────────────────────────────────────

@@ -8,8 +8,8 @@
 //! - **Managed** (claude custom view): a sandboxed, persistent
 //!   `claude --print` stream-json subprocess; the app renders structured
 //!   chat. Both claude shapes attach to the same conversation via
-//!   `--session-id <uuid>` on first spawn and `--resume <uuid>` after
-//!   (`SessionStart`), or start it as a branch of another session.
+//!   `--session-id <uuid>` until its transcript holds a message and
+//!   `--resume <uuid>` after (`SessionStart`).
 //! - **CodexManaged** (codex custom view): codex's `exec` runs one turn
 //!   and exits, so there's no persistent process — each user message
 //!   spawns a fresh `codex exec [resume <id>]` (see `codex_session`).
@@ -45,9 +45,8 @@ pub use probe::{
     BinValidation, ProviderProbe, ToolStatus,
 };
 pub use probe::{parse_semver, resolve_agent_bin};
-pub use providers::claude::claude_branch_before;
 pub(crate) use providers::claude::claude_session_has_messages;
-pub use spawn::{BranchPoint, PerTurnSpec, SessionStart, SpawnSpec};
+pub use spawn::{PerTurnSpec, SessionStart, SpawnSpec};
 pub use transcript::{read_jsonl_tail, ReadDiagnostics, SubagentLayout, TranscriptReader};
 
 pub enum Agent {

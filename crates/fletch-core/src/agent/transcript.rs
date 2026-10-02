@@ -1,8 +1,11 @@
-//! Transcript record types and generic JSONL reading.
+//! Transcript record types, generic JSONL reading, and writing a session file.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+
+use crate::error::{Error, Result};
 
 /// One verbatim durable record from an agent's transcript: the raw body in the
 /// agent's own shape plus a stable per-record dedup key (`native_id`).
@@ -99,6 +102,15 @@ pub struct SubagentLayout {
     pub id_field: Option<&'static str>,
 }
 
+/// Writes `bodies` as session `session_id`'s own transcript, where the
+/// provider's CLI looks for it when it runs in `cwd` (`container`: in a
+/// container sandbox), so the CLI resumes it like any session of its own. The
+/// mirror image of `locate` / `read`: the bodies go out as they are, with only
+/// the session-identity fields the format requires naming the new session.
+/// `Ok(None)` when they hold nothing the CLI can resume, so nothing is written.
+pub type TranscriptWrite =
+    fn(session_id: &str, cwd: &Path, container: bool, bodies: &[Value]) -> Result<Option<PathBuf>>;
+
 /// How to find and parse a provider's on-disk transcript into ordered records.
 pub struct TranscriptReader {
     /// Ordered transcript artifact paths for a session (empty if none / not
@@ -117,6 +129,11 @@ pub struct TranscriptReader {
     /// always a single JSONL, so it is tailed by byte offset even when the main
     /// transcript can't be (codex's multi-file locate).
     pub subagents: Option<SubagentLayout>,
+    /// Set when Fletch can write the provider's session file (claude, codex,
+    /// pi), so a new session can continue a conversation natively
+    /// (`Supervisor::materialize`). `None` where the CLI keeps private storage
+    /// (cursor, antigravity) or a copy would re-key every record (opencode).
+    pub write: Option<TranscriptWrite>,
 }
 
 // ── Transcript readers ──────────────────────────────────────────────────────
@@ -280,4 +297,38 @@ pub(crate) fn json_files_in(dir: &Path) -> Vec<PathBuf> {
 
 pub(crate) fn read_json_value(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+// ── Transcript writers ──────────────────────────────────────────────────────
+
+/// Write `lines` as a new JSONL file at `path`, one value per line, creating
+/// its directory. It goes through a temp file in the same directory, renamed
+/// into place, so nothing ever reads half of it; a file already at `path` is
+/// an error, never replaced.
+pub(crate) fn write_new_jsonl(path: &Path, lines: &[Value]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?;
+    std::fs::create_dir_all(dir)?;
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    {
+        let mut out = std::io::BufWriter::new(file.as_file_mut());
+        for line in lines {
+            serde_json::to_writer(&mut out, line)?;
+            out.write_all(b"\n")?;
+        }
+        out.flush()?;
+    }
+    file.persist_noclobber(path)
+        .map_err(|e| Error::Io(e.error))?;
+    Ok(())
+}
+
+/// Set `body[key]` to `value` when `body` already has that key. A session
+/// writer re-points the identity fields a line carries without adding any it
+/// doesn't.
+pub(crate) fn replace_field(body: &mut Value, key: &str, value: &str) {
+    if let Some(field) = body.get_mut(key) {
+        *field = Value::String(value.to_string());
+    }
 }

@@ -759,7 +759,10 @@ impl Supervisor {
 /// agent's full re-parse can't stall another's poll. Same pattern as
 /// `codegraph::mirror`'s per-path locks; the map is only ever added to, bounded
 /// by the number of distinct agent ids this process touches.
-fn agent_sync_lock(agent_id: &str) -> Arc<Mutex<()>> {
+///
+/// `Supervisor::materialize` holds it too, while it writes a session's
+/// transcript and records its prefix, so no pass reads one without the other.
+pub(super) fn agent_sync_lock(agent_id: &str) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
     LOCKS
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -1113,10 +1116,20 @@ fn ingest_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Optio
     // way) — consume it. Persistent writers (claude) keep the file open, so a
     // trailing line may be mid-write; hold it until it's newline-terminated.
     let consume_trailing = !is_persistent_runner(&record);
-    let (records, new_offset) = match (reader.tail, paths.as_slice()) {
+    // A session that continues a conversation natively opens its transcript
+    // with that conversation (`Supervisor::materialize`), which it already
+    // shows through lineage. Those first `prefix` records are numbered like
+    // any line, so positional ids match a full read's, and then dropped. A
+    // read from the top holds all of them (the file was whole before the
+    // session first launched); a tail read past it, none.
+    let prefix = workspace.session_transcript_prefix(agent_id).unwrap_or(0);
+    let (records, new_offset, from_top) = match (reader.tail, paths.as_slice()) {
         (Some(tail), [path]) => {
             let offset = workspace.session_ingest_offset(agent_id).unwrap_or(0);
-            let start_index = workspace.session_record_count(agent_id).unwrap_or(0);
+            let start_index = match offset {
+                0 => 0,
+                _ => prefix + workspace.session_record_count(agent_id).unwrap_or(0),
+            };
             let (recs, next) = crate::agent::read_jsonl_tail(
                 path,
                 offset,
@@ -1125,13 +1138,15 @@ fn ingest_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Optio
                 consume_trailing,
                 &mut diagnostics,
             );
-            (recs, Some(next))
+            (recs, Some(next), offset == 0)
         }
-        _ => ((reader.read)(&paths, &mut diagnostics), None),
+        _ => ((reader.read)(&paths, &mut diagnostics), None, true),
     };
+    let inherited = if from_top { prefix } else { 0 };
 
     let batch: Vec<(&str, &serde_json::Value)> = records
         .iter()
+        .skip(inherited)
         .map(|r| (r.native_id.as_str(), &r.body))
         .collect();
     let inserted = match workspace.append_session_records(
@@ -1219,6 +1234,12 @@ struct SubagentCursor {
     /// ids, for layouts without an id field (codex, cursor).
     records: usize,
 }
+
+/// The top-level field every ingested sub-agent record is tagged with: the
+/// tool_use id that spawned it, as the live stream carries it. No main
+/// transcript line has it, so it is also what tells a stored sub-agent record
+/// from the session's own conversation.
+pub(super) const SUBAGENT_TAG: &str = "parent_tool_use_id";
 
 fn subagent_cursors() -> &'static Mutex<HashMap<PathBuf, SubagentCursor>> {
     static CURSORS: OnceLock<Mutex<HashMap<PathBuf, SubagentCursor>>> = OnceLock::new();
@@ -1309,7 +1330,7 @@ fn ingest_subagents(
                 };
                 r.body
                     .as_object_mut()?
-                    .insert("parent_tool_use_id".into(), parent.clone().into());
+                    .insert(SUBAGENT_TAG.into(), parent.clone().into());
                 Some((native_id, r.body))
             })
             .collect();
@@ -1346,14 +1367,15 @@ fn ingest_subagents(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::agent::ReadDiagnostics;
     use std::path::Path;
 
-    // Serialize the two env-var drift tests: they mutate process-global
-    // CODEX_HOME / CLAUDE_CONFIG_DIR, and cargo runs tests in parallel.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Serialize the tests that mutate process-global CODEX_HOME /
+    // CLAUDE_CONFIG_DIR (these and `materialize`'s), since cargo runs tests in
+    // parallel.
+    pub(in crate::supervisor) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A pass that ingested `n` records off a healthy transcript.
     fn healthy(n: usize) -> Option<SyncOutcome> {

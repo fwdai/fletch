@@ -43,7 +43,7 @@ pub async fn spawn_agent_impl(
             instructions,
             // A carried conversation and its lineage are set only by the fork
             // path.
-            handoff_transcript: None,
+            handoff: None,
             lineage: None,
             custom_agent_id,
             skills: skills.unwrap_or_default(),

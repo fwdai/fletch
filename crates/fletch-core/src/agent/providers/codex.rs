@@ -36,8 +36,11 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::agent::args::{model_args, push_opt};
-use crate::agent::transcript::{records_with_id, RawRecord, ReadDiagnostics, SubagentLayout};
+use crate::agent::transcript::{
+    records_with_id, replace_field, write_new_jsonl, RawRecord, ReadDiagnostics, SubagentLayout,
+};
 use crate::agent::TurnArgs;
+use crate::error::{Error, Result};
 use crate::instructions;
 
 use super::gated_session_id;
@@ -56,6 +59,56 @@ pub(crate) fn codex_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<R
         .flat_map(|p| crate::transcripts::read_jsonl_values(p, diag))
         .collect();
     records_with_id(values, None)
+}
+
+/// Write `bodies` as codex thread `session_id`, run in `cwd`: a rollout
+/// `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<local time>-<id>.jsonl`, named
+/// as codex names its own (0.153.4). `codex exec resume <id>` finds it by the
+/// id at the end of its name, as [`codex_locate`] does. Its `session_meta`
+/// names the new thread (`id`, and `session_id` and `cwd` where present);
+/// everything else is copied as is.
+pub(crate) fn codex_write(
+    session_id: &str,
+    cwd: &Path,
+    _container: bool,
+    bodies: &[Value],
+) -> Result<Option<PathBuf>> {
+    let sessions = crate::transcripts::codex_sessions_dir()
+        .ok_or_else(|| Error::Other("codex's sessions directory can't be resolved".into()))?;
+    codex_write_in(&sessions, session_id, cwd, bodies).map(Some)
+}
+
+/// [`codex_write`] under the `sessions` root given.
+fn codex_write_in(
+    sessions: &Path,
+    session_id: &str,
+    cwd: &Path,
+    bodies: &[Value],
+) -> Result<PathBuf> {
+    let cwd = cwd.to_string_lossy();
+    let lines: Vec<Value> = bodies
+        .iter()
+        .map(|body| {
+            let mut line = body.clone();
+            if line.get("type").and_then(Value::as_str) == Some("session_meta") {
+                if let Some(meta) = line.get_mut("payload") {
+                    replace_field(meta, "id", session_id);
+                    replace_field(meta, "session_id", session_id);
+                    replace_field(meta, "cwd", &cwd);
+                }
+            }
+            line
+        })
+        .collect();
+    let now = chrono::Local::now();
+    let path = sessions
+        .join(now.format("%Y/%m/%d").to_string())
+        .join(format!(
+            "rollout-{}-{session_id}.jsonl",
+            now.format("%Y-%m-%dT%H-%M-%S")
+        ));
+    write_new_jsonl(&path, &lines)?;
+    Ok(path)
 }
 
 /// A rollout's first line, unparsed. Every rollout (parent or child, all 236
@@ -434,5 +487,59 @@ mod tests {
             "call_id": "call_spawn", "arguments": "{\"task_name\":\"task\"}" } });
         assert_eq!(codex_subagent_parent(&[call], "child-1"), None);
         assert_eq!(codex_subagent_parent(&[], "child-1"), None);
+    }
+
+    // ── writing a thread ──────────────────────────────────────────────────
+
+    const NEW: &str = "6f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a0b";
+
+    /// A real exec rollout (0.153.4): `session_meta`, a turn with reasoning,
+    /// a tool call and its output, token counts.
+    fn rollout_lines() -> Vec<Value> {
+        include_str!("../../../../../tests/adapters/codex/fixtures/rollout-0153.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_written_thread_is_where_codex_resumes_it_with_only_its_identity_changed() {
+        let td = tempfile::tempdir().unwrap();
+        let sessions = td.path().join("sessions");
+        let cwd = Path::new("/Users/u/.fletch/workspaces/new/repo");
+        let lines = rollout_lines();
+
+        let path = codex_write_in(&sessions, NEW, cwd, &lines).unwrap();
+
+        // Found by the id ending its name, in the `YYYY/MM/DD` tree.
+        let mut diag = ReadDiagnostics::default();
+        let located = crate::transcripts::find_codex_rollouts_in(&sessions, NEW, &mut diag);
+        assert_eq!(located, std::slice::from_ref(&path));
+        let read = codex_read(&located, &mut diag);
+        assert_eq!(read.len(), lines.len());
+        for (back, line) in read.iter().zip(&lines) {
+            let mut expected = line.clone();
+            if line["type"] == "session_meta" {
+                expected["payload"]["id"] = json!(NEW);
+                expected["payload"]["session_id"] = json!(NEW);
+                expected["payload"]["cwd"] = json!(cwd.to_string_lossy());
+            }
+            assert_eq!(back.body, expected);
+        }
+        // What was the old thread's per-turn context stays as it was.
+        assert_eq!(read[4].body["payload"]["cwd"], "/tmp/codex-spike");
+        // The new thread is the rollout's own: none of the old one's
+        // sub-agents are taken for its.
+        assert!(codex_subagent_files(&path).is_empty());
+        // And every turn resumes it.
+        let turn = codex_build_args(&TurnArgs {
+            prompt: "go on",
+            session_id: Some(NEW),
+            ..Default::default()
+        });
+        assert_eq!(turn[..3], ["exec", "resume", NEW]);
+        assert!(
+            codex_pty_args(Some(NEW), None, None, &[]).ends_with(&["resume".into(), NEW.into()])
+        );
     }
 }

@@ -57,15 +57,13 @@ pub struct PerTurnSpec {
 }
 
 /// How a claude launch attaches to its conversation (see `args::session_args`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStart {
     /// A new, empty conversation under the agent's own session id.
     Fresh,
-    /// Continue the agent's own session.
+    /// Continue the agent's own session — one it ran, or one Fletch wrote for
+    /// it (`Supervisor::materialize`).
     Resume,
-    /// Start the agent's own session as a native, lossless copy of another
-    /// session, cut at a message — rewind's `Exact` handoff.
-    Branch(BranchPoint),
 }
 
 impl SessionStart {
@@ -74,19 +72,8 @@ impl SessionStart {
         match self {
             Self::Fresh => "fresh",
             Self::Resume => "resume",
-            Self::Branch(_) => "branch",
         }
     }
-}
-
-/// Where a [`SessionStart::Branch`] copies its history from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchPoint {
-    /// The provider session to copy.
-    pub from_session: String,
-    /// The last message the branch keeps: for claude, any chain entry's `uuid`
-    /// (see `claude_branch_before`). `None` keeps the whole session.
-    pub at_message: Option<String>,
 }
 
 pub struct SpawnSpec<'a> {
@@ -103,10 +90,9 @@ pub struct SpawnSpec<'a> {
     /// never from the agent-writable checkout alternates (see `AgentLaunchCtx`).
     pub source_repos: &'a [PathBuf],
     pub session_id: &'a str,
-    /// How claude attaches to `session_id`: fresh on the agent's first spawn,
-    /// resumed on every later launch (view switch, respawn, restore), or
-    /// branched from another session. Per-turn agents' native view always
-    /// resumes and ignores it.
+    /// How claude attaches to `session_id`: fresh until its transcript holds a
+    /// message, resumed from then on (view switch, respawn, restore). Per-turn
+    /// agents' native view always resumes and ignores it.
     pub start: SessionStart,
     /// Claude's session-level effort (`--effort <level>`), chosen at session
     /// creation and persisted on the `AgentRecord`. Applied on every spawn
@@ -198,17 +184,6 @@ impl Agent {
         F: Fn(Vec<u8>) + Send + 'static,
         G: Fn(PtyExit) + Send + 'static,
     {
-        // Claude honors `--resume-session-at` in print mode only; its TUI would
-        // silently open the whole source session instead of the cut branch.
-        if let SessionStart::Branch(BranchPoint {
-            at_message: Some(_),
-            ..
-        }) = spec.start
-        {
-            return Err(Error::Other(
-                "A conversation branched at a message opens in the chat view first".into(),
-            ));
-        }
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let engine = sandbox::engine_for(spec.engine)?;
