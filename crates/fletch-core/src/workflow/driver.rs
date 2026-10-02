@@ -164,7 +164,7 @@ impl AgentDriver for SupervisorDriver {
                         run_repo,
                         owner_run_id: Some(owner_run_id),
                         existing_workspace,
-                        carry_from: None,
+                        code_from: Vec::new(),
                         // Workflow-step spawns aren't issue-intake spawns.
                         issue_ref: None,
                         // A step agent is hidden by its `owner_run_id`, not by a

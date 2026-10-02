@@ -1,6 +1,7 @@
 //! Turn checkpoints for an agent's workspace: before a turn reaches the agent,
 //! pin every checkout as it stands (`git::checkpoint`), so the code as of that
-//! message outlives the edits the turn goes on to make.
+//! message outlives the edits the turn goes on to make. A new workspace can
+//! start from such a pinned snapshot ([`CodeSource`]): a fork's code.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -27,6 +28,20 @@ pub struct RepoCheckpoint {
     /// the turn: it was attached after the turn, or capture was skipped or
     /// failed.
     pub sha: Option<String>,
+}
+
+/// A snapshot pinned in one checkout (`git::checkpoint`) that a new
+/// workspace's checkout of the same subdir starts from — a fork's code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeSource {
+    /// The tracked repo's subdir (`TrackedRepo::subdir`); the new checkout of
+    /// the same subdir starts from this snapshot.
+    pub subdir: String,
+    /// The checkout the snapshot is pinned in.
+    pub checkout: PathBuf,
+    /// The key it is pinned under: a turn id, or a key of its own for code
+    /// pinned on demand ([`Supervisor::pin_code`]).
+    pub key: String,
 }
 
 impl Supervisor {
@@ -94,13 +109,50 @@ impl Supervisor {
         }
         Ok(checkpoints)
     }
+
+    /// Pin every checkout of `agent_id` as it stands now, under one fresh key
+    /// — its current code, for a new workspace to start from.
+    pub async fn pin_code(&self, agent_id: &str) -> Result<Vec<CodeSource>> {
+        let record = self.workspace.agent(agent_id)?;
+        let key = uuid::Uuid::new_v4().to_string();
+        let mut code = Vec::with_capacity(record.repos.len());
+        for repo in &record.repos {
+            let checkout = repo.checkout_path(agent_id)?;
+            checkpoint::capture(&checkout, &key).await?;
+            code.push(CodeSource {
+                subdir: repo.subdir.clone(),
+                checkout,
+                key: key.clone(),
+            });
+        }
+        Ok(code)
+    }
+
+    /// Start each of `agent_id`'s checkouts that has a source in `code` from
+    /// it: its working tree becomes the snapshot's, and its HEAD the commit
+    /// the snapshot was taken on. Committed work stays committed and
+    /// uncommitted work uncommitted, as it was in the source.
+    pub async fn start_from(&self, agent_id: &str, code: &[CodeSource]) -> Result<()> {
+        let record = self.workspace.agent(agent_id)?;
+        for repo in &record.repos {
+            let Some(source) = code.iter().find(|s| s.subdir == repo.subdir) else {
+                continue;
+            };
+            let checkout = repo.checkout_path(agent_id)?;
+            let sha = checkpoint::fetch_into(&checkout, &source.checkout, &source.key).await?;
+            checkpoint::restore(&checkout, &sha).await?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::run_git;
     use crate::supervisor::tests::{committed_repo, record_in_checkouts, test_supervisor};
     use crate::workspace::AgentStatus;
+    use std::path::Path;
 
     const TURN: &str = "2c9d7e41-5a0b-4f6e-8d13-9b7a6c5e4f30";
 
@@ -165,5 +217,77 @@ mod tests {
         sup.checkpoint_turn("denali", TURN).await;
 
         assert!(checkpoint::resolve(&kept, TURN).await.unwrap().is_some());
+    }
+
+    /// A `--shared` clone of `source` at `<dir>/<name>`, the shape of every
+    /// checkout, with an identity to commit with.
+    async fn checkout_of(source: &Path, dir: &Path, name: &str) -> PathBuf {
+        let dest = dir.join(name);
+        let (source, dest_str) = (source.to_str().unwrap(), dest.to_str().unwrap());
+        run_git(dir, &["clone", "-q", "--shared", source, dest_str], "clone")
+            .await
+            .unwrap();
+        for (key, value) in [("user.email", "t@example.com"), ("user.name", "Tester")] {
+            run_git(&dest, &["config", key, value], "config")
+                .await
+                .unwrap();
+        }
+        dest
+    }
+
+    async fn head(checkout: &Path) -> String {
+        crate::git::rev_parse(checkout, "HEAD").await.unwrap()
+    }
+
+    async fn status(checkout: &Path) -> String {
+        let out = run_git(checkout, &["status", "--porcelain"], "status")
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_workspace_starts_from_pinned_code_as_it_was_committed_and_not() {
+        let td = tempfile::tempdir().unwrap();
+        let sources = [
+            committed_repo(td.path(), "src-a").await,
+            committed_repo(td.path(), "src-b").await,
+        ];
+        let mut parent = Vec::new();
+        let mut child = Vec::new();
+        for (i, source) in sources.iter().enumerate() {
+            parent.push(checkout_of(source, td.path(), &format!("parent-{i}")).await);
+            child.push(checkout_of(source, td.path(), &format!("child-{i}")).await);
+        }
+        // The parent's work: a commit then an edit in one repo, a new file
+        // in the other.
+        std::fs::write(parent[0].join("committed.txt"), b"committed").unwrap();
+        crate::git::commit_all(&parent[0], "work").await.unwrap();
+        std::fs::write(parent[0].join("a.txt"), b"edited").unwrap();
+        std::fs::write(parent[1].join("new.txt"), b"untracked").unwrap();
+        let sup = test_supervisor();
+        let mut record = record_in_checkouts(&sup, "denali", &parent);
+        sup.workspace.add_agent(&mut record).unwrap();
+        let mut record = record_in_checkouts(&sup, "fuji", &child);
+        sup.workspace.add_agent(&mut record).unwrap();
+
+        let code = sup.pin_code("denali").await.unwrap();
+        let subdirs: Vec<&str> = code.iter().map(|c| c.subdir.as_str()).collect();
+        assert_eq!(subdirs, ["repo-0", "repo-1"]);
+        assert_eq!(code[0].key, code[1].key, "pinned under one key");
+        sup.start_from("fuji", &code).await.unwrap();
+
+        // Each repo, matched by subdir: HEAD is the commit the snapshot was
+        // taken on, and what was uncommitted there is uncommitted here.
+        for (parent, child) in parent.iter().zip(&child) {
+            assert_eq!(head(child).await, head(parent).await);
+            assert_eq!(status(child).await, status(parent).await);
+        }
+        let read = |path: PathBuf| std::fs::read(path).unwrap();
+        assert_eq!(read(child[0].join("committed.txt")), b"committed");
+        assert_eq!(read(child[0].join("a.txt")), b"edited");
+        assert_eq!(read(child[1].join("new.txt")), b"untracked");
+        // The parent is left as it was.
+        assert_eq!(status(&parent[0]).await, " M a.txt\n");
     }
 }

@@ -120,7 +120,8 @@ work, excluding gitignored files, as a commit whose parent is HEAD. It is
 pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 
 - The code **before T** is checkpoint(T). The code **through T** is
-  checkpoint(next turn), or the live tree if T is the latest turn.
+  checkpoint(the next turn in T's session), taken in the checkout of the
+  workspace that ran it, or the live tree if T is the latest turn.
 - Capture is best-effort and never fails or delays a send beyond the snapshot
   itself. The snapshot seeds a temporary index from the real one, so only
   changed files are re-hashed.
@@ -129,8 +130,11 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
   (`owner_run_id`, which share a tree).
 - Checkpoints live in the checkout, so they disappear when the checkout is
   deleted on archive. "Code as of this message" is then unavailable.
-- A child receives a checkpoint by fetching its ref from the parent's checkout
-  and reusing `carry_worktree`.
+- A child receives a checkpoint by fetching its ref from the checkout that
+  holds it and restoring it, in each checkout with the same subdir: the tree
+  is the snapshot's and HEAD the snapshot's parent, so commits stay commits
+  and uncommitted work stays uncommitted. A fork of the current code pins the
+  parent's live tree the same way, under a key of its own.
 
 ## Flows
 

@@ -4,11 +4,12 @@ export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
 export type AgentView = "custom" | "native";
 
-/** What a forked workspace's worktree starts from. `clean` forks the parent's
- *  base branch; `carry` overlays the parent's current working tree (incl.
- *  uncommitted work) so the fork builds on unmerged work. Mirrors the backend
- *  `ForkCode`. */
-export type ForkCode = "clean" | "carry";
+/** What a forked workspace's checkouts start from: `clean` — the parent's base
+ *  branch; `current` — the parent's code now; `at_message` — the code as the
+ *  anchor message's reply left it (message forks only). The last two copy the
+ *  code faithfully, commits as commits and uncommitted work as uncommitted.
+ *  Mirrors the backend `ForkCode`. */
+export type ForkCode = "clean" | "current" | "at_message";
 
 /** What a forked session knows of the parent conversation up to the fork's
  *  anchor: nothing, or a summary (and the chat shows the history it covers).

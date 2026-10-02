@@ -12,9 +12,9 @@ export function ForkButton({ agentId, turnId }: { agentId: string; turnId: strin
       context: "summary",
     },
     {
-      key: "carry",
+      key: "current",
       label: "Fork here · with current code",
-      code: "carry",
+      code: "current",
       context: "summary",
     },
   ];

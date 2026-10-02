@@ -20,15 +20,15 @@ const HEADER_FORK_OPTIONS: ForkOption[] = [
     context: "summary",
   },
   {
-    key: "full-carry",
+    key: "full-current",
     label: "Full history · with current code",
-    code: "carry",
+    code: "current",
     context: "summary",
   },
   {
-    key: "fresh-carry",
+    key: "fresh-current",
     label: "Fresh chat · with current code",
-    code: "carry",
+    code: "current",
     context: "none",
   },
 ];

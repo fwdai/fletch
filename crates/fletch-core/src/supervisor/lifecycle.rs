@@ -368,11 +368,10 @@ pub struct SpawnRequest {
     /// and teardown must never remove the directory: the run owns it, not the
     /// agent. `None` for every non-kernel spawn.
     pub existing_workspace: Option<PathBuf>,
-    /// Fork "carry code": another workspace's primary checkout whose current
-    /// working tree (incl. uncommitted work) is overlaid onto this fresh
-    /// checkout after provisioning, so the fork starts from that workspace's
-    /// state. `None` for a normal spawn or a clean fork.
-    pub carry_from: Option<PathBuf>,
+    /// A fork's code: snapshots the new checkouts start from once they are
+    /// provisioned, matched to them by subdir (`Supervisor::start_from`).
+    /// Empty for a normal spawn or a clean fork.
+    pub code_from: Vec<super::CodeSource>,
     /// The GitHub issue this spawn originates from (bare issue number as text),
     /// set by the Home inbox's "Start work". Persisted on the workspace so the
     /// agent's PR closes it. `None` for a spawn not tied to an issue.
@@ -414,7 +413,7 @@ impl Supervisor {
             run_repo,
             owner_run_id,
             existing_workspace,
-            carry_from,
+            code_from,
             issue_ref,
             purpose,
             task,
@@ -500,9 +499,6 @@ impl Supervisor {
         let subdir_for_fork = subdir.clone();
         // A workflow step forks from its `fork_base` ref in this run repo.
         let run_repo_for_task = run_repo.clone();
-        // Fork "carry code": the source checkout whose working tree is overlaid
-        // onto the fresh checkout once it's provisioned.
-        let carry_from_task = carry_from.clone();
 
         let primary = TrackedRepo {
             repo_path: repo_path.clone(),
@@ -761,33 +757,6 @@ impl Supervisor {
             )
             .await;
 
-            // Fork "carry code": overlay the source workspace's current working
-            // tree onto the fresh checkout, so the fork starts from that
-            // workspace's uncommitted work. Fatal on failure — the user asked to
-            // carry, so silently producing a clean fork would drop their changes.
-            // Tears down like the start_process failure path below (a workflow
-            // step never carries, so this is always a non-run clone).
-            if let Some(src) = &carry_from_task {
-                if !progress(SpawnStage::Carrying, None) {
-                    discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
-                    return;
-                }
-                let carried = match &base_sha {
-                    Some(base) => match git::snapshot_worktree(src).await {
-                        Ok(snap) => git::carry_worktree(&primary_checkout, src, &snap, base).await,
-                        Err(e) => Err(e),
-                    },
-                    None => Err(Error::Other(
-                        "cannot carry working tree without a base commit".into(),
-                    )),
-                };
-                if let Err(e) = carried {
-                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
-                    fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
-                    return;
-                }
-            }
-
             // Multi-repo project: fork a checkout of every *other* repo of the
             // project too, so the agent works across all of them from turn one
             // (untouched repos are just clean clones). Runs before
@@ -820,6 +789,23 @@ impl Supervisor {
                         );
                         return;
                     }
+                }
+            }
+
+            // A fork's code: every checkout with a snapshot starts from it,
+            // once all of them exist. Fatal on failure — the user asked for
+            // this code, so silently producing a clean fork would drop it. A
+            // workflow step never forks code, so this is always a non-run
+            // clone, torn down like the start_process failure path below.
+            if !code_from.is_empty() {
+                if !progress(SpawnStage::Carrying, None) {
+                    discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
+                    return;
+                }
+                if let Err(e) = sup.start_from(&id_for_task, &code_from).await {
+                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                    fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+                    return;
                 }
             }
 
