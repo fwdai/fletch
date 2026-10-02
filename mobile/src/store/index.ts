@@ -875,9 +875,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       ]);
       // The host ingests a turn's transcript into session_records only at
       // turn-end, and that ingest can insert nothing (session id not captured
-      // yet, transcript not located). Mirror the desktop's readReducedLog: ask
+      // yet, transcript not located). Mirror the desktop's readHistory: with no
+      // records of the agent's own (a fork may still show inherited ones), ask
       // for a backfill and read again before concluding there is no history.
-      if (records.length === 0) {
+      if (records.every((r) => r.inherited)) {
         await api.syncSession(agentId);
         [records, turns] = await Promise.all([
           api.readSessionRecords(agentId),

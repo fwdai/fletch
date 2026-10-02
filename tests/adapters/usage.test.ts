@@ -198,6 +198,30 @@ describe("claude usage", () => {
   });
 });
 
+// A fork shows its parent's conversation through session lineage. That spend
+// was the parent's and is counted there — never billed to the fork again.
+describe("inherited history", () => {
+  const inherited = (body: RawEvent, seq: number): SessionRecord => ({
+    ...record("claude", body, seq),
+    inherited: true,
+  });
+
+  it("counts only the session's own records", () => {
+    const u = usageFromRecords("claude", [
+      inherited(claudeAssistant({ msgId: "m1", requestId: "r1", input: 1000, output: 500 }), 1),
+      record("claude", claudeAssistant({ msgId: "m2", requestId: "r2", input: 7, output: 3 }), 1),
+    ]);
+    expect(u.spend.tokens).toEqual({ input: 7, output: 3, cacheRead: 0, cacheWrite: 0 });
+  });
+
+  it("reports nothing for a fork that hasn't run a turn of its own", () => {
+    const u = usageFromRecords("claude", [
+      inherited(claudeAssistant({ msgId: "m1", input: 1000, cacheRead: 50_000 }), 1),
+    ]);
+    expect(u).toBe(EMPTY_SNAPSHOT);
+  });
+});
+
 describe("claude compaction", () => {
   const boundary = (compactMetadata?: Record<string, unknown>): RawEvent =>
     ({

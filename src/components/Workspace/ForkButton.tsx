@@ -1,10 +1,10 @@
 import { ForkMenu, type ForkOption } from "./ForkMenu";
 
 /** "Fork from here" affordance under an ended turn: forks a new workspace
- *  carrying the conversation up to this turn, with a choice of clean vs. current
- *  code. The token-slicing / branch-a-direction entry point. */
-export function ForkButton({ agentId, upToPrompt }: { agentId: string; upToPrompt: number }) {
-  const context = { kind: "up_to_message", prompt: upToPrompt } as const;
+ *  carrying the conversation through `turnId`, with a choice of clean vs.
+ *  current code. The token-slicing / branch-a-direction entry point. */
+export function ForkButton({ agentId, turnId }: { agentId: string; turnId: string }) {
+  const context = { kind: "through", turn_id: turnId } as const;
   const options: ForkOption[] = [
     {
       key: "clean",

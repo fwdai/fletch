@@ -5,14 +5,15 @@ import { APP_ACTION_PREFIX } from "@/delegation";
 import { stripInjectedInstructions } from "@/util/instructions";
 
 // Assembles the prose a fork carries into the child agent's brief. The caller
-// (workspace.ts forkAgent) feeds these the SAME record-derived, policy-filtered
-// chat items the child transcript renders, so the injected context never
-// diverges from the copied history — for any provider.
+// (workspace.ts forkAgent) feeds these the parent's record-derived,
+// policy-filtered history — the same history the child shows through its
+// session lineage — so the injected context never diverges from what the child
+// displays, for any provider.
 
 /** Serialize one chat item into a line of the fork brief, or null to skip it.
  *  Covers every kind the child transcript can render (tool calls/results,
  *  reasoning, error notices) — not just messages — so the injected context
- *  carries the tool output and diagnostics the copied history shows. */
+ *  carries the tool output and diagnostics the inherited history shows. */
 export function serializeForkItem(it: ChatItem): string | null {
   switch (it.kind) {
     case "user_message":
@@ -41,37 +42,30 @@ export function serializeForkItem(it: ChatItem): string | null {
       if (it.subtype === "reasoning") return `Assistant (thinking): ${it.text}`;
       if (it.subtype === "error") return `Error: ${it.text}`;
       return it.text;
-    // Optimistic, store-only item never present in copied records.
+    // Optimistic, store-only item never present in stored records.
     case "queued_message":
       return null;
   }
 }
 
-/** Assemble the prose a fork carries into the child's brief. Built from the same
- *  record-derived, policy-filtered surface the child renders (see forkAgent), so
- *  it stays in step with the copied history for every provider. Mirrors the
- *  backend's record cutoff: navigable prompts only (git-action turns excluded),
- *  up to the chosen point. Returns null when nothing is carried. */
+/** Assemble the prose a fork carries into the child's brief. Mirrors the
+ *  backend's cut: everything through the anchor turn, stopping at the next turn
+ *  (a user message carrying a turn id); the whole log when the anchor is the
+ *  end (`turn_id: null`). Returns null when nothing is carried, or when the
+ *  anchor isn't in the log. */
 export function forkContextDigest(log: ChatItem[], context: ForkContext): string | null {
   if (context.kind === "none") return null;
 
-  const isPrompt = (it: ChatItem) =>
-    it.kind === "user_message" && !it.text.startsWith(APP_ACTION_PREFIX);
+  const turnIdOf = (it: ChatItem) => (it.kind === "user_message" ? it.turnId : undefined);
 
-  // Exclusive item cutoff. `full` carries everything; `up_to_message` stops just
-  // before the prompt that follows the selected navigable ordinal.
+  // Exclusive item cutoff.
   let cutoff = log.length;
-  if (context.kind === "up_to_message") {
-    let seen = -1;
-    for (let i = 0; i < log.length; i += 1) {
-      if (isPrompt(log[i])) {
-        seen += 1;
-        if (seen === context.prompt + 1) {
-          cutoff = i;
-          break;
-        }
-      }
-    }
+  if (context.turn_id !== null) {
+    const anchorId = context.turn_id;
+    const anchor = log.findIndex((it) => turnIdOf(it) === anchorId);
+    if (anchor === -1) return null;
+    const next = log.findIndex((it, i) => i > anchor && turnIdOf(it) !== undefined);
+    if (next !== -1) cutoff = next;
   }
 
   const lines: string[] = [];
