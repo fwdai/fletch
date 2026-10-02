@@ -6,8 +6,14 @@
 //! work, minus ignored files, with the HEAD at capture as its parent — pinned
 //! at `refs/fletch/checkpoints/<turn_id>` so gc keeps it. It lives in the
 //! checkout's own object store, so it goes when the checkout does.
+//!
+//! A restore is undone the same way: [`capture_undo`] pins the checkout as it
+//! stands under `refs/fletch/undo/<id>` first, and [`restore`] of that ref
+//! puts it back.
 
 use std::path::Path;
+
+use serde::Serialize;
 
 use crate::error::{Error, Result};
 
@@ -18,9 +24,22 @@ use super::worktree::{apply_snapshot, snapshot_worktree};
 /// Snapshot `checkout` and pin it as `turn_id`'s checkpoint, replacing any
 /// earlier one. Returns the snapshot's sha.
 pub async fn capture(checkout: &Path, turn_id: &str) -> Result<String> {
-    let refname = checkpoint_ref(turn_id)?;
+    pin_snapshot(checkout, &checkpoint_ref(turn_id)?).await
+}
+
+/// Snapshot `checkout` under a new undo ref, for undoing the [`restore`]
+/// about to change it, and return the ref; `restore(checkout, &ref)` undoes.
+/// Undo points have a namespace of their own: one under the checkpoints' could
+/// clash with a turn's ref.
+pub async fn capture_undo(checkout: &Path) -> Result<String> {
+    let refname = format!("refs/fletch/undo/{}", uuid::Uuid::new_v4());
+    pin_snapshot(checkout, &refname).await?;
+    Ok(refname)
+}
+
+async fn pin_snapshot(checkout: &Path, refname: &str) -> Result<String> {
     let sha = snapshot_worktree(checkout).await?;
-    run_git(checkout, &["update-ref", &refname, &sha], "pin checkpoint").await?;
+    run_git(checkout, &["update-ref", refname, &sha], "pin snapshot").await?;
     Ok(sha)
 }
 
@@ -69,6 +88,46 @@ pub async fn fetch_into(dest: &Path, source: &Path, turn_id: &str) -> Result<Str
 /// ignored files stay as they are.
 pub async fn restore(checkout: &Path, sha: &str) -> Result<()> {
     apply_snapshot(checkout, sha, &format!("{sha}^")).await
+}
+
+/// A commit that restoring a checkpoint takes off the checkout's branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LeavingCommit {
+    pub sha: String,
+    pub subject: String,
+    /// Some `origin` branch already has it, so it lives on there; dropping it
+    /// from a branch that was pushed takes a force push.
+    pub pushed: bool,
+}
+
+/// The commits restoring checkpoint `sha` takes off the branch in `checkout`:
+/// those HEAD reaches and the checkpoint's HEAD doesn't, newest first.
+/// "Pushed" is measured against `origin`'s refs, as the disposal check does.
+pub async fn leaving_commits(checkout: &Path, sha: &str) -> Result<Vec<LeavingCommit>> {
+    let target = format!("{sha}^");
+    let log = run_git(
+        checkout,
+        &["log", "--format=%H%x09%s", "HEAD", "--not", &target],
+        "list leaving commits",
+    )
+    .await?;
+    let unpushed = run_git(
+        checkout,
+        &["rev-list", "HEAD", "--not", &target, "--remotes=origin"],
+        "list unpushed commits",
+    )
+    .await?;
+    let unpushed = String::from_utf8_lossy(&unpushed.stdout);
+    let unpushed: Vec<&str> = unpushed.lines().collect();
+    Ok(String::from_utf8_lossy(&log.stdout)
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(sha, subject)| LeavingCommit {
+            pushed: !unpushed.contains(&sha),
+            sha: sha.to_string(),
+            subject: subject.to_string(),
+        })
+        .collect())
 }
 
 /// The ref `turn_id`'s checkpoint is pinned at. Turn ids are client-minted
