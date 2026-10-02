@@ -26,7 +26,7 @@ describe("applyUserTurns", () => {
 
     const out = applyUserTurns(items, turns);
     expect(out).toEqual([
-      { kind: "user_message", text: "look", attachments: ["/tmp/a.png"] },
+      { kind: "user_message", text: "look", attachments: ["/tmp/a.png"], turnId: "t" },
       { kind: "agent_message", text: "ok" },
     ]);
   });
@@ -38,7 +38,24 @@ describe("applyUserTurns", () => {
 
     const out = applyUserTurns(items, turns);
     expect(out[0]).toEqual({ kind: "user_message", text: "old" }); // untouched
-    expect(out[2]).toEqual({ kind: "user_message", text: "new", attachments: ["/tmp/x"] });
+    expect(out[2]).toEqual({
+      kind: "user_message",
+      text: "new",
+      attachments: ["/tmp/x"],
+      turnId: "t",
+    });
+  });
+
+  it("tags each overlaid message with its turn's id, the anchor a fork names", () => {
+    const items = [userMsg("first"), agentMsg("a"), userMsg("second"), agentMsg("b")];
+    const turns = [
+      turn({ turn_id: "t1", native_id: "rec-1", text: "first", inherited: true }),
+      turn({ turn_id: "t2", native_id: "rec-2", text: "second" }),
+    ];
+
+    const out = applyUserTurns(items, turns);
+    expect(out[0]).toMatchObject({ turnId: "t1" });
+    expect(out[2]).toMatchObject({ turnId: "t2" });
   });
 
   it("claims a pending turn the transcript already carries instead of duplicating it", () => {
@@ -58,6 +75,7 @@ describe("applyUserTurns", () => {
       text: "delivered",
       startedAt: 10,
       endedAt: 90,
+      turnId: "t",
     });
   });
 
@@ -72,7 +90,7 @@ describe("applyUserTurns", () => {
     const out = applyUserTurns(items, turns);
 
     expect(out.filter((it) => it.kind === "user_message")).toHaveLength(2);
-    expect(out[out.length - 1]).toEqual({ kind: "user_message", text: "Proceed" });
+    expect(out[out.length - 1]).toEqual({ kind: "user_message", text: "Proceed", turnId: "t" });
   });
 
   it("claims a pending turn by its attachment path when the prompt text is empty", () => {
@@ -99,7 +117,7 @@ describe("applyUserTurns", () => {
     // The pending turn found no unclaimed message that accounts for it, so it
     // renders standalone rather than folding into the matched turn's bubble.
     expect(out).toHaveLength(5);
-    expect(out[out.length - 1]).toEqual({ kind: "user_message", text: "second" });
+    expect(out[out.length - 1]).toEqual({ kind: "user_message", text: "second", turnId: "t" });
   });
 
   it("renders a pending (unmatched) turn standalone so a failed send survives", () => {
@@ -114,6 +132,7 @@ describe("applyUserTurns", () => {
       kind: "user_message",
       text: "never sent",
       attachments: ["/tmp/lost"],
+      turnId: "t",
     });
   });
 
@@ -138,6 +157,7 @@ describe("applyUserTurns", () => {
       kind: "user_message",
       text: "What's on this image?",
       attachments: ["/Users/alex/Downloads/Clair.png"],
+      turnId: "t",
     });
   });
 
@@ -152,6 +172,7 @@ describe("applyUserTurns", () => {
       kind: "user_message",
       text: "totally different message",
       attachments: ["/tmp/x"],
+      turnId: "t",
     });
   });
 

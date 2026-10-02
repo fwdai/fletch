@@ -1,16 +1,21 @@
 // Unit tests for the fork-brief serializer. These exercise the pure prose
 // assembly in isolation — the forkAgent path is what guarantees the input log
-// is the record-only, policy-filtered surface the child renders (so pending
-// turns and hidden items never reach here); this file pins the serialization
-// and the up_to_message cutoff.
+// is the record-derived, policy-filtered history with only matched turns
+// overlaid (so pending turns and hidden items never reach here); this file pins
+// the serialization and the cut at the anchor turn.
 
 import { describe, expect, it } from "vitest";
 import type { ChatItem } from "@/adapters";
 import { APP_ACTION_PREFIX } from "@/delegation";
 import { FORK_TOOL_TEXT_MAX, forkContextDigest, serializeForkItem } from "./forkDigest";
 
-const user = (text: string): ChatItem => ({ kind: "user_message", text });
+const user = (text: string, turnId?: string): ChatItem => ({
+  kind: "user_message",
+  text,
+  ...(turnId ? { turnId } : {}),
+});
 const agent = (text: string): ChatItem => ({ kind: "agent_message", text });
+const through = (turnId: string | null) => ({ kind: "through", turn_id: turnId }) as const;
 
 describe("serializeForkItem", () => {
   it("renders user and agent messages", () => {
@@ -166,18 +171,18 @@ describe("forkContextDigest", () => {
   });
 
   it("returns null when the carried range has no prose", () => {
-    expect(forkContextDigest([], { kind: "full" })).toBeNull();
-    expect(forkContextDigest([user(`${APP_ACTION_PREFIX}x`)], { kind: "full" })).toBeNull();
+    expect(forkContextDigest([], through(null))).toBeNull();
+    expect(forkContextDigest([user(`${APP_ACTION_PREFIX}x`)], through(null))).toBeNull();
   });
 
-  it("joins the full conversation, including tool context", () => {
+  it("joins the whole conversation when forking through the end, tool context included", () => {
     const log: ChatItem[] = [
       user("run the tests"),
       { kind: "tool_call", id: "t1", name: "Bash", input: { command: "npm test" } },
       { kind: "tool_result", tool_use_id: "t1", content: "3 failing", is_error: true },
       agent("two are flaky"),
     ];
-    const digest = forkContextDigest(log, { kind: "full" });
+    const digest = forkContextDigest(log, through(null));
     expect(digest).toBe(
       [
         "User: run the tests",
@@ -188,36 +193,53 @@ describe("forkContextDigest", () => {
     );
   });
 
-  // Navigable prompt ordinals (0-based, git actions excluded). up_to_message
-  // stops just before the prompt that follows the selected ordinal.
-  const conversation: ChatItem[] = [user("q0"), agent("a0"), user("q1"), agent("a1"), user("q2")];
+  const conversation: ChatItem[] = [
+    user("q0", "t0"),
+    agent("a0"),
+    user("q1", "t1"),
+    agent("a1"),
+    user("q2", "t2"),
+  ];
 
-  it("up_to_message keeps history through the selected prompt's answer", () => {
-    expect(forkContextDigest(conversation, { kind: "up_to_message", prompt: 0 })).toBe(
-      "User: q0\n\nAssistant: a0",
-    );
-    expect(forkContextDigest(conversation, { kind: "up_to_message", prompt: 1 })).toBe(
+  it("keeps history through the anchor turn's answer", () => {
+    expect(forkContextDigest(conversation, through("t0"))).toBe("User: q0\n\nAssistant: a0");
+    expect(forkContextDigest(conversation, through("t1"))).toBe(
       "User: q0\n\nAssistant: a0\n\nUser: q1\n\nAssistant: a1",
     );
   });
 
-  it("up_to_message on the last prompt carries the whole conversation", () => {
-    expect(forkContextDigest(conversation, { kind: "up_to_message", prompt: 2 })).toBe(
+  it("carries the whole conversation through the last turn", () => {
+    expect(forkContextDigest(conversation, through("t2"))).toBe(
       "User: q0\n\nAssistant: a0\n\nUser: q1\n\nAssistant: a1\n\nUser: q2",
     );
   });
 
-  it("skips app-action turns when counting the ordinal", () => {
+  it("stops at the next turn of any kind, app actions included", () => {
+    // App-action turns are ordinary turns to the backend cut, so the digest
+    // must stop there too or it would brief the child on what it doesn't show.
     const log: ChatItem[] = [
-      user("q0"),
-      user(`${APP_ACTION_PREFIX}open_pr`),
+      user("q0", "t0"),
       agent("a0"),
-      user("q1"),
+      user(`${APP_ACTION_PREFIX}open_pr`, "t-pr"),
+      agent("pr opened"),
+      user("q1", "t1"),
     ];
-    // prompt 0 is q0; the next navigable prompt is q1, so the app action and a0
-    // are carried but q1 is not.
-    expect(forkContextDigest(log, { kind: "up_to_message", prompt: 0 })).toBe(
-      "User: q0\n\nAssistant: a0",
+    expect(forkContextDigest(log, through("t0"))).toBe("User: q0\n\nAssistant: a0");
+    expect(forkContextDigest(log, through("t-pr"))).toBe(
+      "User: q0\n\nAssistant: a0\n\nAssistant: pr opened",
     );
+  });
+
+  it("does not let a user message without a turn row bound the cut", () => {
+    // The backend cuts at the next *matched* turn; a message with no turn row
+    // (typed into the native view) sits inside the carried range.
+    const log: ChatItem[] = [user("q0", "t0"), agent("a0"), user("typed"), agent("a1")];
+    expect(forkContextDigest(log, through("t0"))).toBe(
+      "User: q0\n\nAssistant: a0\n\nUser: typed\n\nAssistant: a1",
+    );
+  });
+
+  it("carries nothing when the anchor isn't in the log", () => {
+    expect(forkContextDigest(conversation, through("gone"))).toBeNull();
   });
 });

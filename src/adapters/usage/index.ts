@@ -95,6 +95,10 @@ export function hasUsage(u: UsageSnapshot): boolean {
  *  record carried any. Cursor is included: its live `result` is persisted into
  *  session_records (see `persistLiveUsage`), so it aggregates like the rest.
  *
+ *  Only the session's own records count. Inherited ones (a fork's parent
+ *  history, shown through lineage) were spent by the parent and are counted
+ *  there; including them would bill every fork for its parent again.
+ *
  *  Defensive: a record we can't read costs one record, not the session. */
 export function usageFromRecords(
   provider: string | undefined,
@@ -105,6 +109,7 @@ export function usageFromRecords(
 
   const events: UsageEvent[] = [];
   for (const rec of records) {
+    if (rec.inherited) continue;
     try {
       events.push(...adapter.usageEvents(rec.body));
     } catch {
@@ -132,9 +137,9 @@ export function aggregate(events: UsageEvent[], coverage: Coverage = "complete")
 
   // Codex reports a running total instead of individual calls. Neither summing
   // (it re-emits identical snapshots) nor "latest wins" (it restarts at zero in
-  // a resumed rollout, or when a fork inherits its parent's records) is right,
-  // so consecutive snapshots are differenced, and a snapshot where ANY category
-  // went backwards is treated as a restart whose whole value is new spend.
+  // a resumed rollout) is right, so consecutive snapshots are differenced, and
+  // a snapshot where ANY category went backwards is treated as a restart whose
+  // whole value is new spend.
   let counter: TokenCounts | undefined;
 
   let state: ContextState = "unknown";

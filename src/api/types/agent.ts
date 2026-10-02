@@ -10,12 +10,18 @@ export type AgentView = "custom" | "native";
  *  `ForkCode`. */
 export type ForkCode = "clean" | "carry";
 
-/** How much of the parent conversation a fork carries. Mirrors the backend
- *  `ForkContext`. Summarized context ships in a follow-up slice. */
-export type ForkContext =
-  | { kind: "none" }
-  | { kind: "full" }
-  | { kind: "up_to_message"; prompt: number };
+/** What of the parent conversation a fork continues. Mirrors the backend
+ *  `ForkContext`: nothing, or everything through the turn `turn_id` names
+ *  (`null` = through the end of the parent's session). */
+export type ForkContext = { kind: "none" } | { kind: "through"; turn_id: string | null };
+
+/** Where an agent's session branches off an earlier one: the parent session
+ *  and the exclusive record seq below which it shows the parent's history.
+ *  Mirrors the backend `SessionLineage`. */
+export interface SessionLineage {
+  parent_session_id: string;
+  cut_seq: number;
+}
 
 export interface TrackedRepo {
   repo_path: string;
@@ -66,6 +72,9 @@ export interface AgentRecord {
   status: AgentStatus;
   view: AgentView;
   session_id?: string | null;
+  /** Set when the agent's session continues an earlier conversation (a fork),
+   *  whose history it shows before its own. */
+  lineage?: SessionLineage | null;
   created_at: string;
   last_error?: string | null;
   /** Set when the agent has been archived. Live agents have null. */
