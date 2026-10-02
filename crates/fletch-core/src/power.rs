@@ -390,9 +390,10 @@ mod tests {
     // id) must stay active until the *last* driver deregisters, and a sub-run
     // finishing must never clear the parent's own activity. Exercised on a
     // standalone armed monitor so the shared global stays unarmed for other
-    // tests; the IOKit FFI is bypassed under `cfg(test)`.
-    #[test]
-    fn active_run_count_tracks_parent_and_subruns_independently() {
+    // tests; the IOKit FFI is bypassed under `cfg(test)`. A runtime because
+    // going idle schedules the debounced release on it.
+    #[tokio::test]
+    async fn active_run_count_tracks_parent_and_subruns_independently() {
         let m = ActivityMonitor::fresh();
         m.arm(std::sync::Arc::new(|_, _| {}));
 
@@ -422,8 +423,8 @@ mod tests {
     // signal) is tracked exactly as if the tray existed. Mirrors the real
     // `TrayStatusSlot` (an `Option` the callback checks): here the slot stays
     // `None`, standing in for a tray that never built.
-    #[test]
-    fn activity_tracked_when_tray_callback_is_a_noop() {
+    #[tokio::test]
+    async fn activity_tracked_when_tray_callback_is_a_noop() {
         let tray_slot: std::sync::Arc<Mutex<Option<()>>> = std::sync::Arc::new(Mutex::new(None));
         let m = ActivityMonitor::fresh();
         let slot = tray_slot.clone();
