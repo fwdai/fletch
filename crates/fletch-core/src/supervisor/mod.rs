@@ -9,6 +9,7 @@ mod lifecycle;
 mod live_turn;
 mod messaging;
 mod pr_set;
+mod rewind;
 mod rpc_watch;
 pub(crate) mod run;
 mod session_switch;
@@ -22,6 +23,7 @@ pub use fork::{ForkCode, ForkContext};
 pub use lifecycle::SpawnRequest;
 pub use live_turn::LiveTurnSnapshot;
 pub use pr_set::sync_pr_set_links;
+pub use rewind::{RewindOutcome, RewindScope};
 pub use run::ProjectRunConfig;
 pub use session_sync::{
     persist_pr_snapshot, pr_map_key, resolve_all_pr_status, resolve_pr_state, AgentPrStatus,

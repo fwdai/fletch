@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::git::checkpoint::{self, LeavingCommit};
@@ -51,14 +51,15 @@ pub struct CodeSource {
 /// What restoring a turn's code does to an agent's checkouts, in `repos`
 /// order: what a confirmation shows before
 /// ([`Supervisor::preview_turn_code_restore`]) and what an undo needs after
-/// ([`Supervisor::restore_turn_code`]).
-#[derive(Debug, Clone, Serialize)]
+/// ([`Supervisor::restore_turn_code`]). A client hands it back to undo
+/// (`Supervisor::undo_code_restore`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreReport {
     pub repos: Vec<RepoRestore>,
 }
 
 /// One checkout in a [`RestoreReport`].
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoRestore {
     /// The tracked repo's subdir within the workspace (`TrackedRepo::subdir`).
     pub subdir: String,
@@ -72,7 +73,7 @@ pub struct RepoRestore {
     pub leaving: Vec<LeavingCommit>,
     /// Where the checkout as it stood before the restore is pinned, to undo it
     /// (`git::checkpoint::restore` to this ref). `None` in a preview, and for
-    /// a checkout the restore left alone.
+    /// a checkout the restore left alone. Uncommitted work is in it too.
     pub undo_ref: Option<String>,
 }
 

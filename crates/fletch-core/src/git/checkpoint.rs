@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
@@ -27,14 +27,25 @@ pub async fn capture(checkout: &Path, turn_id: &str) -> Result<String> {
     pin_snapshot(checkout, &checkpoint_ref(turn_id)?).await
 }
 
+/// Where undo points are pinned. A namespace of their own: one under the
+/// checkpoints' could clash with a turn's ref.
+const UNDO_REFS: &str = "refs/fletch/undo/";
+
 /// Snapshot `checkout` under a new undo ref, for undoing the [`restore`]
 /// about to change it, and return the ref; `restore(checkout, &ref)` undoes.
-/// Undo points have a namespace of their own: one under the checkpoints' could
-/// clash with a turn's ref.
 pub async fn capture_undo(checkout: &Path) -> Result<String> {
-    let refname = format!("refs/fletch/undo/{}", uuid::Uuid::new_v4());
+    let refname = format!("{UNDO_REFS}{}", uuid::Uuid::new_v4());
     pin_snapshot(checkout, &refname).await?;
     Ok(refname)
+}
+
+/// Whether `refname` is the shape of a ref [`capture_undo`] returns, for a
+/// caller about to restore one it was handed back: nothing else, an option
+/// included, reaches git as an undo point.
+pub fn is_undo_ref(refname: &str) -> bool {
+    refname.strip_prefix(UNDO_REFS).is_some_and(|id| {
+        !id.is_empty() && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    })
 }
 
 async fn pin_snapshot(checkout: &Path, refname: &str) -> Result<String> {
@@ -90,7 +101,7 @@ pub async fn restore(checkout: &Path, sha: &str) -> Result<()> {
 }
 
 /// A commit that restoring a checkpoint takes off the checkout's branch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeavingCommit {
     pub sha: String,
     pub subject: String,
@@ -268,6 +279,23 @@ mod tests {
         ] {
             assert!(capture(&repo, bad).await.is_err(), "{bad:?}");
             assert!(resolve(&repo, bad).await.is_err(), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_an_undo_point_reads_as_one() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = repo(td.path(), "repo").await;
+        assert!(is_undo_ref(&capture_undo(&repo).await.unwrap()));
+        for not_one in [
+            "",
+            "refs/fletch/undo/",
+            "--upload-pack=x",
+            "refs/heads/main",
+            "refs/fletch/undo/../../heads/main",
+            &format!("refs/fletch/checkpoints/{TURN}"),
+        ] {
+            assert!(!is_undo_ref(not_one), "{not_one:?}");
         }
     }
 

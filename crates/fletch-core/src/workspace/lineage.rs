@@ -12,8 +12,9 @@
 //! The operations: resolving an [`Anchor`] into the [`SessionLineage`] a new
 //! session is created with (`insert_agent` and `start_session` write it with
 //! the session row), the stitched reads, the history a branched transcript
-//! repeats ([`RepeatedHistory`]), and [`detach_children`] for every path that
-//! deletes sessions. See docs/fork-and-rewind.md.
+//! repeats ([`RepeatedHistory`]), the session a turn ran in ([`TurnSession`]),
+//! and [`detach_children`] for every path that deletes sessions. See
+//! docs/fork-and-rewind.md.
 
 use rusqlite::OptionalExtension;
 
@@ -41,6 +42,25 @@ pub enum Anchor<'a> {
     Before(&'a str),
     /// Everything through turn T and its reply, up to the next turn.
     Through(&'a str),
+}
+
+/// The session that ran a turn, as a rewind to just before that turn needs it
+/// (`Supervisor::rewind`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnSession {
+    /// The provider's id for the session: what a native branch resumes.
+    pub provider_session_id: Option<String>,
+    /// The turn's matched prompt record (`native_id`); `None` while syncing.
+    pub prompt: Option<String>,
+    /// Whether the asking workspace ran the session itself — its current
+    /// session or one it rewound away from — rather than inheriting it from
+    /// another workspace (a fork's parent, or a session `detach_children`
+    /// handed it, told apart by age as in `read_superseded_records`). Only
+    /// then are the turn's checkpoints in this workspace's checkouts, and the
+    /// session's transcript where this workspace's agent can resume it.
+    pub own: bool,
+    /// What the session's agent was told of the conversation it continued.
+    pub handoff_context: Option<String>,
 }
 
 /// One session of a history chain, and the exclusive seq below which the chain
@@ -238,6 +258,59 @@ impl WorkspaceManager {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?)
+    }
+
+    /// The session that ran turn `turn_id`, as seen from `workspace_id`.
+    pub fn turn_session(&self, workspace_id: &str, turn_id: &str) -> Result<TurnSession> {
+        let conn = self.db.lock();
+        conn.query_row(
+            "SELECT t.native_id, s.provider_session_id, s.handoff_context,
+                    s.workspace_id = w.id AND s.created_at >= w.created_at
+               FROM session_user_turns t
+               JOIN sessions s ON s.id = t.session_id
+               JOIN workspaces w ON w.id = ?2
+              WHERE t.turn_id = ?1",
+            [turn_id, workspace_id],
+            |r| {
+                Ok(TurnSession {
+                    prompt: r.get(0)?,
+                    provider_session_id: r.get(1)?,
+                    handoff_context: r.get(2)?,
+                    own: r.get(3)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| Error::Other(format!("unknown turn {turn_id}")))
+    }
+
+    /// The bodies of turn `turn_id`'s session's records from its prompt on,
+    /// in seq order: what the session's transcript holds from the turn on,
+    /// for asking whether the provider can still cut it there
+    /// (`agent::claude_branch_before`). All of the session's own records,
+    /// not only what a workspace's history shows of it: a part a later
+    /// rewind left behind is still in the transcript a resume loads. Empty
+    /// while the prompt is unmatched.
+    pub fn bodies_from_turn(&self, turn_id: &str) -> Result<Vec<serde_json::Value>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT r.body
+               FROM session_user_turns t
+               JOIN session_records p ON p.session_id = t.session_id AND p.native_id = t.native_id
+               JOIN session_records r ON r.session_id = t.session_id AND r.seq >= p.seq
+              WHERE t.turn_id = ?1
+              ORDER BY r.seq",
+        )?;
+        let bodies: Vec<String> = stmt
+            .query_map([turn_id], |r| r.get(0))?
+            .collect::<std::result::Result<_, rusqlite::Error>>()?;
+        bodies
+            .iter()
+            .map(|text| {
+                serde_json::from_str(text)
+                    .map_err(|e| Error::Other(format!("deserialize record body: {e}")))
+            })
+            .collect()
     }
 
     /// The current session's display history: each ancestor's records below
@@ -517,6 +590,41 @@ mod tests {
         wm.insert_user_turn("a", "a4", "in flight", &[]).unwrap();
         assert_eq!(after("a3"), Some(("a".into(), "a4".into())));
         assert_eq!(after("nope"), None);
+    }
+
+    #[test]
+    fn a_turns_session_is_the_workspaces_own_only_if_it_ran_it() {
+        let wm = three_level_chain();
+        let own = |ws: &str, turn: &str| wm.turn_session(ws, turn).unwrap().own;
+        assert!(own("c", "c1"));
+        assert!(!own("c", "b1"), "inherited from a fork's parent");
+        assert!(!own("c", "a1"));
+        assert!(own("a", "a1"));
+        let c1 = wm.turn_session("c", "c1").unwrap();
+        assert_eq!(c1.prompt.as_deref(), Some("c1-u"));
+        assert_eq!(c1.provider_session_id, wm.agent("c").unwrap().session_id);
+
+        // A session it rewound away from is still its own.
+        let before = wm.resolve_anchor("c", Anchor::Before("c1")).unwrap();
+        wm.start_session("c", &before, None).unwrap();
+        assert!(own("c", "c1"));
+        assert!(wm.turn_session("c", "nope").is_err());
+    }
+
+    #[test]
+    fn a_turns_bodies_run_from_its_prompt_to_its_sessions_end() {
+        let wm = three_level_chain();
+        let texts = |turn: &str| -> Vec<String> {
+            wm.bodies_from_turn(turn)
+                .unwrap()
+                .iter()
+                .map(|b| b["text"].as_str().unwrap().to_string())
+                .collect()
+        };
+        // Past the cut `b` branched at: the session's transcript has it all.
+        assert_eq!(texts("a2"), ["bravo", "re bravo", "charlie", "re charlie"]);
+        wm.insert_user_turn("c", "c2", "unsynced", &[]).unwrap();
+        assert!(texts("c2").is_empty());
     }
 
     #[test]
