@@ -1029,7 +1029,26 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
     // whole sequence, and only ever taken *outside* the workspace db lock.
     let serialize = agent_sync_lock(agent_id);
     let _pass = serialize.lock();
+    ingest_session_records(workspace, agent_id)
+}
 
+impl Supervisor {
+    /// Ingest `agent_id`'s current session one last time, then run `switch`,
+    /// which replaces that session, before another pass can start. Nothing
+    /// ingests into a superseded session, so whatever its transcript holds has
+    /// to be in first; and a pass that read the old session's transcript must
+    /// not append it to the new one, which the held lock rules out.
+    pub(super) fn finish_ingest<T>(&self, agent_id: &str, switch: impl FnOnce() -> T) -> T {
+        let serialize = agent_sync_lock(agent_id);
+        let _pass = serialize.lock();
+        ingest_session_records(&self.workspace, agent_id);
+        switch()
+    }
+}
+
+/// The body of [`sync_session_records`], for a caller already holding the
+/// agent's sync lock.
+fn ingest_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<SyncOutcome> {
     let record = workspace.agent(agent_id).ok()?;
     let reader = crate::agent::transcript_reader(&record.provider)?;
 
@@ -1056,18 +1075,22 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
 
     // Resolve the session id. Event-stream agents have it on the record already;
     // plaintext agents (agy) read it from the filesystem at turn-end — persist
-    // it here so the next turn can resume.
+    // it here so the next turn can resume. The filesystem names the checkout's
+    // latest conversation, which until a session started in place has run its
+    // first turn is the one it superseded: `set_agent_session_id` refuses that.
     let session_id = match record.session_id.clone() {
         Some(id) => id,
         None => {
             let captured = per_turn_descriptor(&record.provider)
                 .and_then(|d| d.session_id_from_cwd)
-                .and_then(|f| f(&cwd));
+                .and_then(|f| f(&cwd))
+                .filter(|id| {
+                    workspace
+                        .set_agent_session_id(agent_id, id)
+                        .unwrap_or(false)
+                });
             match captured {
-                Some(id) => {
-                    let _ = workspace.set_agent_session_id(agent_id, &id);
-                    id
-                }
+                Some(id) => id,
                 None => return Some(pending()),
             }
         }
@@ -1174,6 +1197,10 @@ fn sync_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Option<
 /// Read cursor for one sub-agent transcript file: the tool_use id it was linked
 /// to, the byte offset ingested so far, and how many records that was (the
 /// start index for the next positional id, where the layout has no id field).
+///
+/// Keyed by path, and a sub-agent file belongs to one provider session, so a
+/// session started in place (a rewind), which gets a provider session of its
+/// own, never meets its predecessor's cursors.
 ///
 /// Process-lifetime rather than persisted: after a restart each file is
 /// re-read once from the top and `append_session_records` ignores the rows

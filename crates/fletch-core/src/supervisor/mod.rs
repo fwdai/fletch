@@ -11,10 +11,11 @@ mod messaging;
 mod pr_set;
 mod rpc_watch;
 pub(crate) mod run;
+mod session_switch;
 mod session_sync;
 mod shell;
 
-pub use checkpoints::{CodeSource, RepoCheckpoint};
+pub use checkpoints::{CodeSource, RepoCheckpoint, RepoRestore, RestoreReport};
 pub use disposition::ArchiveTrigger;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};

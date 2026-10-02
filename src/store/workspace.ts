@@ -21,13 +21,13 @@ import {
   expandSlashCommand,
   passthroughSlashName,
   providerFor,
+  recordWorkspaceUsage,
   reduceRecords,
   repoPathFor,
   resolveBaseBranch,
   unsupportedManagedCommand,
 } from "@/helpers";
 import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
-import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { createKeyedQueue } from "@/util/keyedQueue";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { interruptedAgents } from "./interrupted";
@@ -835,7 +835,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       if (hasUsage(usage)) {
         // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
         // spend belongs to its project like anyone else's.
-        recordUsageSnapshot(id, agentRecord(get(), id)?.project_id, usage);
+        void recordWorkspaceUsage(id, agentRecord(get(), id)?.project_id, usage);
       }
       set((state) => {
         // Nothing stored but a live turn is already rendering — don't clobber it.
