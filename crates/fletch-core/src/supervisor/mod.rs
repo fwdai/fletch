@@ -32,7 +32,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::activity::Activity;
-use crate::agent::Agent;
+use crate::agent::{Agent, BranchPoint};
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::message_queue::MessageQueue;
@@ -117,6 +117,10 @@ pub struct Supervisor {
     /// restart clears it, which is fine — the warning is only useful while the
     /// workspace is new.
     pub stale_base: Mutex<HashSet<String>>,
+    /// Branches an agent's next launch starts instead of resuming its own
+    /// session, kept until the branch lands (see
+    /// [`Supervisor::set_pending_branch`]). In-memory only.
+    pub(super) pending_branches: Mutex<HashMap<String, BranchPoint>>,
     /// Agent ids whose current turn was stopped by the user. The dying process
     /// still converges on the Idle transition, so this flag lets the turn-end
     /// flush distinguish a natural completion (flush queued follow-ups) from a
@@ -168,6 +172,7 @@ impl Supervisor {
             respawn_pending: Mutex::new(HashSet::new()),
             message_queue: Mutex::new(MessageQueue::new()),
             stale_base: Mutex::new(HashSet::new()),
+            pending_branches: Mutex::new(HashMap::new()),
             interrupted: Mutex::new(HashSet::new()),
             sync_health: Arc::new(Mutex::new(HashMap::new())),
             verify_inflight: Arc::new(Mutex::new(HashSet::new())),
