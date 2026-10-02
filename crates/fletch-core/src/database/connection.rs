@@ -76,6 +76,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0040_workspace_title.sql"),
     include_str!("../../migrations/0041_session_lineage.sql"),
     include_str!("../../migrations/0042_session_branch_point.sql"),
+    include_str!("../../migrations/0043_session_handoff_context.sql"),
 ];
 
 pub(crate) fn get_migrations() -> Migrations<'static> {

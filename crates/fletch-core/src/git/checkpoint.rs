@@ -63,8 +63,7 @@ pub async fn resolve(checkout: &Path, turn_id: &str) -> Result<Option<String>> {
 /// Copy `turn_id`'s checkpoint from the `source` checkout (a fork's parent)
 /// into `dest` under the same ref, and return its sha. Fetched by ref rather
 /// than by sha, so `source` needs no `allowAnySHA1InWant`, and the pin keeps
-/// it in `dest` until it is applied (`git::apply_snapshot`, with the fork's
-/// base as `head`).
+/// it in `dest` until it is applied ([`restore`]).
 pub async fn fetch_into(dest: &Path, source: &Path, turn_id: &str) -> Result<String> {
     let refname = checkpoint_ref(turn_id)?;
     let source = source
@@ -344,9 +343,13 @@ mod tests {
         let recaptured = capture(&parent, TURN).await.unwrap();
         assert_eq!(fetch_into(&fork, &parent, TURN).await.unwrap(), recaptured);
 
-        // Applied at the fork's base, the parent's work arrives uncommitted.
-        apply_snapshot(&fork, &recaptured, &base).await.unwrap();
-        assert_eq!(rev_parse(&fork, "HEAD").await.unwrap(), base);
+        // Restored, the fork has the parent's code as it was: HEAD on the
+        // parent's commit (not the fork's base), the edits uncommitted on top.
+        restore(&fork, &recaptured).await.unwrap();
+        let parent_head = rev_parse(&parent, "HEAD").await.unwrap();
+        assert_ne!(parent_head, base);
+        assert_eq!(rev_parse(&fork, "HEAD").await.unwrap(), parent_head);
+        assert_eq!(status(&fork).await, status(&parent).await);
         let read = |name| std::fs::read(fork.join(name)).ok();
         assert_eq!(read("new.txt").as_deref(), Some(&b"added again"[..]));
         assert_eq!(read("committed.txt").as_deref(), Some(&b"committed"[..]));

@@ -1112,13 +1112,13 @@ fn custom_agent_instructions_and_id_round_trip() {
 }
 
 #[test]
-fn forked_context_round_trips_separately_from_the_brief() {
+fn handoff_context_round_trips_separately_from_the_brief() {
     let db = test_db();
     let wm = WorkspaceManager::new(db.clone());
     seed_repo(&db, "/r");
 
-    // A forked session persists the user brief and the carried digest in
-    // separate columns; both must survive a round-trip, kept distinct.
+    // A session continuing a conversation persists the user brief and its
+    // handoff context in separate columns; both survive a round-trip, distinct.
     let mut rec = new_agent_record(
         "rainier".into(),
         "a".into(),
@@ -1129,15 +1129,19 @@ fn forked_context_round_trips_separately_from_the_brief() {
     );
     let id = rec.id.clone();
     rec.instructions = Some("Be terse.".into());
-    rec.forked_context = Some("<!-- ctx -->\nprior convo\n<!-- /ctx -->".into());
     wm.add_agent(&mut rec).unwrap();
+    assert_eq!(wm.agent(&id).unwrap().handoff_context, None);
+
+    // Written once the spawn has summarized, onto the current session.
+    wm.set_handoff_context(&id, "Goal: ship the fork UI")
+        .unwrap();
 
     // Single-row path (load_agent → map_agent_row).
     let loaded = wm.agent(&id).unwrap();
     assert_eq!(loaded.instructions.as_deref(), Some("Be terse."));
     assert_eq!(
-        loaded.forked_context.as_deref(),
-        Some("<!-- ctx -->\nprior convo\n<!-- /ctx -->")
+        loaded.handoff_context.as_deref(),
+        Some("Goal: ship the fork UI")
     );
 
     // Full-list path (query_all_agents → map_agent_row) decodes it too.
@@ -1149,22 +1153,12 @@ fn forked_context_round_trips_separately_from_the_brief() {
         .find(|a| a.id == id)
         .unwrap();
     assert_eq!(
-        listed.forked_context.as_deref(),
-        Some("<!-- ctx -->\nprior convo\n<!-- /ctx -->")
+        listed.handoff_context.as_deref(),
+        Some("Goal: ship the fork UI")
     );
 
-    // A non-fork session leaves the column null.
-    let mut plain = new_agent_record(
-        "hood".into(),
-        "b".into(),
-        "claude".into(),
-        mk_repo("/r"),
-        "task".into(),
-        AgentView::Custom,
-    );
-    let plain_id = plain.id.clone();
-    wm.add_agent(&mut plain).unwrap();
-    assert_eq!(wm.agent(&plain_id).unwrap().forked_context, None);
+    // A workspace without a session has nowhere to put one.
+    assert!(wm.set_handoff_context("nonesuch", "x").is_err());
 }
 
 #[test]

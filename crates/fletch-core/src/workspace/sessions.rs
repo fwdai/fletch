@@ -292,6 +292,20 @@ impl WorkspaceManager {
             .collect()
     }
 
+    /// Store what the current session's agent is told about the conversation
+    /// it continues (`crate::handoff`), composed into its instructions from
+    /// the next launch on.
+    pub fn set_handoff_context(&self, workspace_id: &str, context: &str) -> Result<()> {
+        let conn = self.db.lock();
+        let sid = current_session_id(&conn, workspace_id)
+            .ok_or_else(|| Error::AgentNotFound(workspace_id.to_string()))?;
+        conn.execute(
+            "UPDATE sessions SET handoff_context = ?2 WHERE id = ?1",
+            rusqlite::params![sid, context],
+        )?;
+        Ok(())
+    }
+
     /// The branch point the current session starts from, if any.
     pub fn session_branch_point(&self, workspace_id: &str) -> Result<Option<BranchPoint>> {
         let conn = self.db.lock();

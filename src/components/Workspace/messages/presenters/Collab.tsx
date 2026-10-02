@@ -1,5 +1,6 @@
+import { renderToolResult, stringifyInput } from "@/util/toolText";
 import type { ToolPresenter } from "./types";
-import { renderToolResult, stringifyInput, ToolBlock } from "./util";
+import { ToolBlock } from "./util";
 
 /** Codex's multi-agent coordination calls (`collab.<tool>`, see the codex
  *  reducer): what the parent does *about* its sub-agents — wait for them, send

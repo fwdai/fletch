@@ -143,7 +143,7 @@ impl WorkspaceManager {
             None => (None, None),
         };
         tx.execute(
-            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, instructions, forked_context, custom_agent_id, skills, mcp_servers, parent_session_id, parent_cut_seq, created_at)
+            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, instructions, handoff_context, custom_agent_id, skills, mcp_servers, parent_session_id, parent_cut_seq, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             rusqlite::params![
                 session_id,
@@ -155,7 +155,7 @@ impl WorkspaceManager {
                 record.effort,
                 record.model,
                 record.instructions,
-                record.forked_context,
+                record.handoff_context,
                 record.custom_agent_id,
                 encode_json_vec(&record.skills),
                 encode_json_vec(&record.mcp_servers),

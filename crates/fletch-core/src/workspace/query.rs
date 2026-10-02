@@ -468,7 +468,7 @@ impl WorkspaceManager {
             effort,
             model,
             instructions,
-            forked_context,
+            handoff_context,
             custom_agent_id,
             skills_json,
             mcp_servers_json,
@@ -513,7 +513,7 @@ impl WorkspaceManager {
             effort,
             model,
             instructions,
-            forked_context,
+            handoff_context,
             // The schema sets both columns or neither.
             lineage: parent_session_id
                 .zip(parent_cut_seq)

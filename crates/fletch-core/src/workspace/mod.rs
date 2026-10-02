@@ -265,13 +265,14 @@ pub struct AgentRecord {
     /// even if the custom agent is later edited or deleted.
     #[serde(default)]
     pub instructions: Option<String>,
-    /// Prior-conversation digest injected into a forked agent's brief, kept in
-    /// its own field so it is never co-mingled with (and heuristically parsed
-    /// out of) the user brief above. Composed after `instructions` on every
-    /// spawn. `None` for a non-fork session. A fork rebuilds this fresh from the
-    /// parent's records and never inherits the parent's value.
-    #[serde(default)]
-    pub forked_context: Option<String>,
+    /// What the session's agent is told about the conversation it continues: a
+    /// summary written when it was created, or that conversation's tail
+    /// (`crate::handoff`). Kept apart from the brief above, which is never
+    /// parsed or mutated, and composed after it on every launch. `None` for a
+    /// session that continues nothing. Engine state only: no client reads it,
+    /// so it stays off the wire.
+    #[serde(default, skip_serializing)]
+    pub handoff_context: Option<String>,
     /// Where the current session's history branches off an earlier session (a
     /// fork's parent), so it shows that history before its own. Written once,
     /// with the session row; `None` for a session that starts empty.
@@ -522,7 +523,7 @@ pub struct WorkspaceManager {
 const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
             w.stopped_at, w.archived_at,
             s.provider, s.view, s.provider_session_id, s.last_error,
-            s.effort, s.model, s.instructions, s.forked_context, s.custom_agent_id,
+            s.effort, s.model, s.instructions, s.handoff_context, s.custom_agent_id,
             s.skills, s.mcp_servers,
             w.sandbox_engine, w.owner_run_id, w.issue_ref, w.purpose, w.title,
             s.parent_session_id, s.parent_cut_seq
@@ -545,7 +546,7 @@ type AgentRow = (
     Option<String>, // s.effort
     Option<String>, // s.model
     Option<String>, // s.instructions
-    Option<String>, // s.forked_context
+    Option<String>, // s.handoff_context
     Option<String>, // s.custom_agent_id
     Option<String>, // s.skills (JSON array of SkillSnapshot)
     Option<String>, // s.mcp_servers (JSON array of McpServerSnapshot)

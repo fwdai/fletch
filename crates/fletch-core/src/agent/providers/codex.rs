@@ -203,6 +203,31 @@ pub(crate) fn codex_build_args(turn: &TurnArgs) -> Vec<String> {
     args
 }
 
+/// Codex as a one-shot completion (`OneShot`), per `codex exec --help`
+/// (0.153.4): `exec` given no prompt reads it from stdin, `--sandbox
+/// read-only` lets any command it runs only read, approvals never block,
+/// `--skip-git-repo-check` lets it run in the empty scratch dir, and
+/// `--ephemeral` persists no session. The answer is read back from the file
+/// `--output-last-message` writes (the descriptor's `reply_flag`), so nothing
+/// else codex prints can leak into it.
+pub(crate) fn codex_one_shot_args(model: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "exec",
+        "--sandbox",
+        "read-only",
+        "-c",
+        "approval_policy=\"never\"",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--color",
+        "never",
+    ]
+    .map(String::from)
+    .into();
+    args.extend(model_args(model));
+    args
+}
+
 /// Codex assigns its thread id on the first turn via `thread.started`.
 pub(crate) fn codex_session_id(event: &Value) -> Option<String> {
     gated_session_id(event, Some("thread.started"), None, "thread_id")

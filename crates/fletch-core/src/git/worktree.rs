@@ -1,6 +1,6 @@
 //! Repo/worktree lifecycle: init, commit-all, the working-tree snapshot behind
-//! fork carry and turn checkpoints, worktree removal/prune, and the unborn-HEAD
-//! seed used before forking a checkout.
+//! checkpoints, worktree removal/prune, and the unborn-HEAD seed used before
+//! forking a checkout.
 
 use std::path::Path;
 
@@ -58,9 +58,8 @@ pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
 /// touching the checkout's real index, HEAD, or working tree, and return its
 /// sha. The snapshot is created in the checkout's own object store (so a live
 /// agent is left undisturbed) and its parent is the checkout's HEAD, so it
-/// records the full state (committed + uncommitted). Used by fork "carry code"
-/// (fetched into the fork by [`carry_worktree`]) and by turn checkpoints
-/// (`git::checkpoint`); `apply_snapshot` is its inverse.
+/// records the full state (committed + uncommitted). What `git::checkpoint`
+/// pins; [`apply_snapshot`] is its inverse.
 pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
     // A throwaway index so `add -A` never stages into the live agent's index.
     let tmp = tempfile::Builder::new()
@@ -172,8 +171,8 @@ fn copy_index(live: &Path, dest: &Path) -> std::io::Result<()> {
 /// branch it is on, if any) at `head`, so the snapshot's delta from `head`
 /// reads as uncommitted changes — the inverse of [`snapshot_worktree`].
 /// Untracked files the snapshot lacks are removed; ignored files are never
-/// touched (no `clean -x`). Used by fork "carry code" (`head` = the fork's
-/// base) and checkpoint restore (`head` = the HEAD the snapshot was taken on).
+/// touched (no `clean -x`). Used by checkpoint restore (`head` = the HEAD the
+/// snapshot was taken on).
 pub(crate) async fn apply_snapshot(checkout: &Path, snapshot: &str, head: &str) -> Result<()> {
     // Materialize the snapshot exactly (adds/mods/dels), drop what it doesn't
     // track, then move HEAD + index to `head`, leaving the working tree.
@@ -191,24 +190,6 @@ pub(crate) async fn apply_snapshot(checkout: &Path, snapshot: &str, head: &str) 
     )
     .await?;
     Ok(())
-}
-
-/// Point `dest`'s working tree at `snapshot` (fetched from the `source`
-/// checkout) while keeping `dest`'s HEAD on `base` — so the carried work shows
-/// as uncommitted changes against the fork's base, mirroring the parent's own
-/// diff. Used by fork "carry code" after `dest` is provisioned clean at `base`.
-pub async fn carry_worktree(dest: &Path, source: &Path, snapshot: &str, base: &str) -> Result<()> {
-    let source_str = source
-        .to_str()
-        .ok_or_else(|| Error::InvalidPath(source.display().to_string()))?;
-    // Bring the snapshot commit + its reachable objects into the fork's store.
-    run_git(
-        dest,
-        &["fetch", "--no-tags", source_str, snapshot],
-        "carry fetch",
-    )
-    .await?;
-    apply_snapshot(dest, snapshot, base).await
 }
 
 pub async fn worktree_remove(repo: &Path, worktree_path: &Path, force: bool) -> Result<()> {
@@ -339,59 +320,6 @@ mod tests {
         // And the commit actually landed.
         let log = run_git(repo, &["log", "--oneline"], "log").await.unwrap();
         assert!(String::from_utf8_lossy(&log.stdout).contains("first"));
-    }
-
-    #[tokio::test]
-    async fn snapshot_and_carry_reproduce_working_tree_at_base() {
-        // Parent checkout: a base commit (with a .gitignore), then uncommitted
-        // work covering every case — modify, delete, add, and an ignored file.
-        let td = tempfile::tempdir().unwrap();
-        let src = td.path().join("src");
-        std::fs::create_dir(&src).unwrap();
-        init_repo(&src).await.unwrap();
-        config(&src, "user.email", "t@example.com").await;
-        config(&src, "user.name", "Tester").await;
-        std::fs::write(src.join(".gitignore"), b"ignored.txt\n").unwrap();
-        std::fs::write(src.join("keep.txt"), b"base").unwrap();
-        std::fs::write(src.join("drop.txt"), b"remove me").unwrap();
-        commit_all(&src, "base").await.unwrap();
-        let base = rev_parse(&src, "HEAD").await.unwrap();
-
-        std::fs::write(src.join("keep.txt"), b"modified").unwrap();
-        std::fs::remove_file(src.join("drop.txt")).unwrap();
-        std::fs::write(src.join("new.txt"), b"added").unwrap();
-        std::fs::write(src.join("ignored.txt"), b"secret").unwrap();
-
-        let snap = snapshot_worktree(&src).await.unwrap();
-        // No side effects on the live checkout: HEAD is untouched.
-        assert_eq!(rev_parse(&src, "HEAD").await.unwrap(), base);
-
-        // Fork checkout: a clone sitting at base, like a freshly-provisioned one.
-        let dst = td.path().join("dst");
-        let clone = Command::new("git")
-            .args(["clone", "-q", src.to_str().unwrap(), dst.to_str().unwrap()])
-            .output()
-            .await
-            .unwrap();
-        assert!(clone.status.success());
-
-        carry_worktree(&dst, &src, &snap, &base).await.unwrap();
-
-        // Working tree now mirrors the parent's: mod/add applied, deletion gone,
-        // ignored file never carried.
-        assert_eq!(std::fs::read(dst.join("keep.txt")).unwrap(), b"modified");
-        assert_eq!(std::fs::read(dst.join("new.txt")).unwrap(), b"added");
-        assert!(!dst.join("drop.txt").exists());
-        assert!(!dst.join("ignored.txt").exists());
-        // HEAD stays at base — the carried work reads as uncommitted changes.
-        assert_eq!(rev_parse(&dst, "HEAD").await.unwrap(), base);
-        let status = run_git(&dst, &["status", "--porcelain"], "status")
-            .await
-            .unwrap();
-        assert!(
-            !String::from_utf8_lossy(&status.stdout).trim().is_empty(),
-            "carried changes should show as uncommitted"
-        );
     }
 
     /// A committed repo with a `.gitignore`, then uncommitted work of every

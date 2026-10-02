@@ -70,6 +70,26 @@ pub(crate) fn pi_build_args(turn: &TurnArgs) -> Vec<String> {
     args
 }
 
+/// Pi as a one-shot completion (`OneShot`), per `pi --help` (0.78.0): print
+/// mode with a plain-text answer, `--no-tools` (built-in and extension tools
+/// alike), `--no-session` so nothing is saved, and `--no-context-files` so no
+/// AGENTS.md/CLAUDE.md is pulled in. In print mode pi takes piped stdin as the
+/// message (its `readPipedStdin`, not in the help).
+pub(crate) fn pi_one_shot_args(model: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-p",
+        "--mode",
+        "text",
+        "--no-tools",
+        "--no-session",
+        "--no-context-files",
+    ]
+    .map(String::from)
+    .into();
+    args.extend(model_args(model));
+    args
+}
+
 /// Pi reports its session id on the first `{"type":"session","id":"…"}` event.
 pub(crate) fn pi_session_id(event: &Value) -> Option<String> {
     gated_session_id(event, Some("session"), None, "id")

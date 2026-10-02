@@ -4,16 +4,17 @@ export type AgentStatus = "spawning" | "running" | "idle" | "stopped" | "error";
 
 export type AgentView = "custom" | "native";
 
-/** What a forked workspace's worktree starts from. `clean` forks the parent's
- *  base branch; `carry` overlays the parent's current working tree (incl.
- *  uncommitted work) so the fork builds on unmerged work. Mirrors the backend
- *  `ForkCode`. */
-export type ForkCode = "clean" | "carry";
+/** What a forked workspace's checkouts start from: `clean` — the parent's base
+ *  branch; `current` — the parent's code now; `at_message` — the code as the
+ *  anchor message's reply left it (message forks only). The last two copy the
+ *  code faithfully, commits as commits and uncommitted work as uncommitted.
+ *  Mirrors the backend `ForkCode`. */
+export type ForkCode = "clean" | "current" | "at_message";
 
-/** What of the parent conversation a fork continues. Mirrors the backend
- *  `ForkContext`: nothing, or everything through the turn `turn_id` names
- *  (`null` = through the end of the parent's session). */
-export type ForkContext = { kind: "none" } | { kind: "through"; turn_id: string | null };
+/** What a forked session knows of the parent conversation up to the fork's
+ *  anchor: nothing, or a summary (and the chat shows the history it covers).
+ *  Mirrors the backend `ForkContext`. */
+export type ForkContext = "none" | "summary";
 
 /** Where an agent's session branches off an earlier one: the parent session
  *  and the exclusive record seq below which it shows the parent's history.
@@ -176,8 +177,9 @@ export type SpawnStage =
   | "preparing"
   | "cloning"
   | "indexing"
-  | "carrying"
   | "attaching_repos"
+  | "carrying"
+  | "summarizing"
   | "starting";
 
 /** Progress behind the `spawning` status — a label for the wait, never
