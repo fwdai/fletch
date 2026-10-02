@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use tokio::sync::OwnedMutexGuard;
+
 use crate::agent::injection_mode;
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
@@ -28,7 +30,8 @@ impl Supervisor {
     /// is; any variant that actually delivers returns `false`.
     ///
     /// Async because a turn delivered now is checkpointed first (see
-    /// `deliver_as_turn`).
+    /// `deliver_as_turn`), and a send that arrives meanwhile waits for that
+    /// turn to start before it routes (`Supervisor::delivery_locks`).
     pub async fn send_user_message(
         self: Arc<Self>,
         ctx: &Arc<EngineCtx>,
@@ -49,6 +52,11 @@ impl Supervisor {
         if record.archive.is_some() {
             return Err(Error::Other("agent is archived".into()));
         }
+        // One delivery at a time: wait out any in flight for this agent, so the
+        // routing below sees the turn it started (`Supervisor::delivery_locks`).
+        // Taken after the existence check, so an unknown id never creates a
+        // lock; if an archive took the agent meanwhile, `open_route` refuses.
+        let _delivering = self.lock_delivery(agent_id).await;
         // Open for the whole routing below: every arm either delivers now or
         // leaves the message queued, and an archive must see neither half-done
         // (`Supervisor::open_route`).
@@ -128,9 +136,9 @@ impl Supervisor {
                     // message then runs under the new config (CQ3-C). If there
                     // was no teardown to race and simply no process at all, the
                     // revive below is what picks the message up. The same
-                    // re-queue holds a message that lost the turn start to
-                    // another send during the checkpoint: it waits for the
-                    // next turn boundary.
+                    // re-queue holds a message whose turn start was refused
+                    // because the agent went busy outside the delivery lock
+                    // while it was checkpointed (see `deliver_as_turn`).
                     tracing::warn!(error = %e, agent_id, "deliver-now failed; re-queueing");
                     self.persist_and_enqueue(agent_id, msg);
                     flush_queued(&self, ctx, agent_id).await?
@@ -239,11 +247,25 @@ impl Supervisor {
             // `start_process` drains the queue itself on the spawn-completion
             // Idle, so this is usually a no-op. It still matters when the revive
             // no-oped because a concurrent respawn had already restored the
-            // agent — then nobody else owns this message.
+            // agent — then nobody else owns this message. Locked for the flush
+            // only, never across the spawn (`Supervisor::delivery_locks`).
+            let _delivering = self.lock_delivery(&agent_id).await;
             if let Err(e) = flush_queued(&self, &ctx, &agent_id).await {
                 tracing::warn!(error = %e, agent_id, "post-revive queue flush failed");
             }
         });
+    }
+
+    /// Wait for `agent_id`'s delivery lock (`Supervisor::delivery_locks`), for
+    /// a top-level entry point to hold until its turn has started.
+    pub(super) async fn lock_delivery(&self, agent_id: &str) -> OwnedMutexGuard<()> {
+        let lock = self
+            .delivery_locks
+            .lock()
+            .entry(agent_id.to_string())
+            .or_default()
+            .clone();
+        lock.lock_owned().await
     }
 
     /// Inject a message into the running turn over the managed agent's open
@@ -456,6 +478,7 @@ pub(super) fn mark_user_turn_started(
 /// Deliver a single message as a fresh turn: checkpoint the workspace, persist
 /// the message durably, hand it to the agent, and mark the turn started. The
 /// pre-existing send path, now shared by the direct-send and queue-flush routes.
+/// Runs under the caller's delivery lock (`Supervisor::delivery_locks`).
 async fn deliver_as_turn(
     sup: &Arc<Supervisor>,
     ctx: &Arc<EngineCtx>,
@@ -471,10 +494,11 @@ async fn deliver_as_turn(
     if deletion_guard.contains(&project_id) {
         return Err(Error::Other("project deletion is in progress".into()));
     }
-    // One turn at a time. Another send that also found the agent idle can
-    // start its turn while the checkpoint above runs; checked under the lock
-    // the Running flip below happens under, so the later one is held for the
-    // next turn boundary rather than superseding the turn already running.
+    // Never start a turn over a running one. The delivery lock orders every
+    // turn Fletch starts, but not one the user types into the native TUI
+    // (`write_to_agent`), nor a respawn's Spawning; either can land during the
+    // checkpoint above. Checked under the lock the Running flip below happens
+    // under; the caller then holds the message for the next turn boundary.
     if sup.is_busy(agent_id) {
         return Err(Error::Other("a turn is already in progress".into()));
     }
@@ -510,6 +534,8 @@ async fn deliver_as_turn(
 /// (still held for a later boundary); `false` when they were delivered as a
 /// turn or the queue was already empty (drained elsewhere). Callers reporting a
 /// "queued" state to the frontend key off this so the badge tracks reality.
+///
+/// The caller holds the agent's delivery lock (`Supervisor::delivery_locks`).
 pub(super) async fn flush_queued(
     sup: &Arc<Supervisor>,
     ctx: &Arc<EngineCtx>,
@@ -598,6 +624,7 @@ pub(super) fn drain_message_queue(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_
     let ctx = ctx.clone();
     let agent_id = agent_id.to_string();
     crate::host::spawn(async move {
+        let _delivering = sup_arc.lock_delivery(&agent_id).await;
         if let Err(e) = flush_queued(&sup_arc, &ctx, &agent_id).await {
             tracing::warn!(error = %e, agent_id, "flush queued follow-up messages failed");
         }
@@ -634,9 +661,11 @@ mod tests {
     use super::*;
     use crate::error::Error;
     use crate::git::checkpoint;
+    use crate::supervisor::checkpoints::CAPTURE_TIMEOUT;
     use crate::supervisor::tests::{
         committed_repo, record_in_checkouts, record_with_status, test_supervisor,
     };
+    use std::time::Duration;
 
     #[test]
     fn delivery_to_unready_agent_leaves_canonical_store_clean_but_captures_turn() {
@@ -748,13 +777,25 @@ mod tests {
 
     /// An idle agent in a fresh checkout, with no process: delivery gets as
     /// far as handing the prompt over, which fails `AgentNotFound` — so
-    /// whatever happened before the hand-off is observable.
+    /// whatever happened before the hand-off is observable. It has no session
+    /// to resume, so the revive a held message asks for fails at once rather
+    /// than launching a real agent.
     async fn idle_agent_in(dir: &std::path::Path) -> (Arc<Supervisor>, std::path::PathBuf) {
         let checkout = committed_repo(dir, "repo").await;
         let sup = Arc::new(test_supervisor());
         let mut record = record_in_checkouts(&sup, "yosemite", std::slice::from_ref(&checkout));
+        record.session_id = None;
         sup.workspace.add_agent(&mut record).unwrap();
         (sup, checkout)
+    }
+
+    /// The `turn:sent` payloads emitted so far, in order.
+    fn turns_sent(sink: &crate::host::sink::RecordingSink) -> Vec<serde_json::Value> {
+        sink.events()
+            .into_iter()
+            .filter(|(name, _)| name == "turn:sent")
+            .map(|(_, payload)| payload)
+            .collect()
     }
 
     #[tokio::test]
@@ -792,27 +833,118 @@ mod tests {
         assert_eq!(turns.len(), 1, "the turn was persisted past the checkpoint");
     }
 
-    /// A send that finds a turn already running — one that started while this
-    /// one was checkpointing — is refused before anything is captured or
-    /// persisted, and a flush holds it for the next boundary.
+    /// A checkout too slow to snapshot can't hold the send past the capture
+    /// deadline: the checkpoint is dropped and the turn goes out regardless.
     #[tokio::test]
-    async fn a_turn_does_not_start_over_a_running_one() {
+    async fn a_checkpoint_past_its_deadline_is_skipped_and_the_send_goes_on() {
         let td = tempfile::tempdir().unwrap();
         let (sup, checkout) = idle_agent_in(td.path()).await;
         let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
-        sup.statuses
-            .lock()
-            .insert("yosemite".to_string(), AgentStatus::Running);
 
+        // Paused, the clock jumps to the next timer whenever the runtime would
+        // otherwise wait — the capture deadline, while git is still running.
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
         let err = deliver_as_turn(&sup, &ctx, "yosemite", &pending(TURN))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("already in progress"), "got {err}");
+        let waited = started.elapsed();
+        tokio::time::resume();
+
+        // Cut off at the capture deadline, not git's own 120s per command.
+        assert!(
+            waited >= CAPTURE_TIMEOUT && waited < CAPTURE_TIMEOUT + Duration::from_secs(1),
+            "waited {waited:?}"
+        );
+        assert!(matches!(err, Error::AgentNotFound(_)), "got {err}");
+        let turns = sup.workspace.read_user_turns("yosemite").unwrap();
+        assert_eq!(turns.len(), 1, "the turn went out past the timeout");
+        assert_eq!(checkpoint::resolve(&checkout, TURN).await.unwrap(), None);
+    }
+
+    const FIRST: &str = "0a1b2c3d-0000-4000-8000-000000000001";
+    const SECOND: &str = "0a1b2c3d-0000-4000-8000-000000000002";
+
+    /// A send that arrives while a delivery is in flight waits for that turn
+    /// to start, then routes as its follow-up rather than a turn of its own.
+    #[tokio::test]
+    async fn a_send_during_a_delivery_waits_and_follows_its_turn() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkout) = idle_agent_in(td.path()).await;
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+
+        // The first message's delivery holds the lock while it checkpoints.
+        let first_delivery = sup.lock_delivery("yosemite").await;
+        let second = tokio::spawn({
+            let (sup, ctx) = (sup.clone(), ctx.clone());
+            async move {
+                sup.send_user_message(&ctx, "yosemite", SECOND, "second", &[])
+                    .await
+            }
+        });
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        assert!(turns_sent(&sink).is_empty(), "not routed mid-delivery");
+
+        // The first turn starts, and its delivery lets go.
+        mark_user_turn_started(&sup, &ctx, "yosemite", Some(FIRST));
+        drop(first_delivery);
+
+        assert!(second.await.unwrap().unwrap(), "held for the turn boundary");
+        let sent = turns_sent(&sink);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["follow_up"], true);
+        assert_eq!(sup.message_queue.lock().turn_ids("yosemite"), [SECOND]);
+        assert_eq!(checkpoint::resolve(&checkout, SECOND).await.unwrap(), None);
+    }
+
+    /// Two sends racing into an idle agent are routed in send order: the second
+    /// waits out the first's checkpoint and queues behind it. (With no process
+    /// both end up held; their order is what this checks.)
+    #[tokio::test]
+    async fn concurrent_sends_reach_the_agent_in_send_order() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkout) = idle_agent_in(td.path()).await;
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+
+        let (first, second) = tokio::join!(
+            sup.clone()
+                .send_user_message(&ctx, "yosemite", FIRST, "first", &[]),
+            sup.clone()
+                .send_user_message(&ctx, "yosemite", SECOND, "second", &[]),
+        );
+
+        assert!(first.unwrap() && second.unwrap(), "both held");
+        let held = sup
+            .message_queue
+            .lock()
+            .drain_coalesced("yosemite")
+            .unwrap();
+        assert_eq!(held.text, "first\n\nsecond");
+        assert_eq!(held.turn_id, SECOND);
+        assert!(checkpoint::resolve(&checkout, FIRST)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    /// The delivery lock orders the turns Fletch starts, not one the user
+    /// types into the native TUI. A flush that finds such a turn running holds
+    /// its message for that turn's boundary, with nothing captured or
+    /// persisted.
+    #[tokio::test]
+    async fn a_turn_typed_into_the_native_tui_is_not_superseded() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkout) = idle_agent_in(td.path()).await;
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        // What `write_to_agent` does when the typed line is submitted.
+        mark_user_turn_started(&sup, &ctx, "yosemite", None);
 
         sup.persist_and_enqueue("yosemite", pending(TURN));
         assert!(flush_queued(&sup, &ctx, "yosemite").await.unwrap(), "held");
-        assert_eq!(sup.message_queue.lock().len("yosemite"), 1);
 
+        assert_eq!(sup.message_queue.lock().turn_ids("yosemite"), [TURN]);
         assert_eq!(checkpoint::resolve(&checkout, TURN).await.unwrap(), None);
         assert!(sup
             .workspace

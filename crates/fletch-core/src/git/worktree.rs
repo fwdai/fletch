@@ -130,11 +130,10 @@ async fn seed_index_from_live(checkout: &Path, tmp: &Path, index_env: &[(String,
     };
     // Relative to the checkout (`.git/index`), or absolute in a linked worktree.
     let live = checkout.join(String::from_utf8_lossy(&out.stdout).trim());
-    let dest = tmp.to_path_buf();
-    if !matches!(
-        tokio::task::spawn_blocking(move || copy_index(&live, &dest)).await,
-        Ok(Ok(()))
-    ) {
+    // Inline rather than on a blocking thread: a local copy of a few MB at
+    // most, and a snapshot abandoned mid-copy (a checkpoint timing out) must
+    // not leave a detached copy to recreate the temp file after its cleanup.
+    if copy_index(&live, tmp).is_err() {
         return false;
     }
     // `ls-files -v` tags assume-unchanged entries lowercase and skip-worktree

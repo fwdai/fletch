@@ -1594,7 +1594,7 @@ impl Supervisor {
         // transition mutually exclusive with project deletion. The deletion
         // marker is installed before that path waits for this lifecycle lock,
         // so a respawn that won the lock but lost the marker race also stops.
-        let _lifecycle_guard = self.agent_lifecycle.lock().await;
+        let lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = match self.workspace.agent(agent_id) {
             Ok(r) => r,
             Err(_) => {
@@ -1657,8 +1657,12 @@ impl Supervisor {
         // This respawn passed through a turn-end Idle where the normal queue
         // drain deferred to us (see `drain_message_queue`). Now that the agent
         // is back, deliver any follow-ups queued during that turn — unless the
-        // user stopped (A2-A), which we own the interrupt check for here.
+        // user stopped (A2-A), which we own the interrupt check for here. The
+        // restart is done, so release the app-wide lifecycle lock first rather
+        // than hold it while this agent's delivery lock is awaited.
+        drop(lifecycle_guard);
         if !self.interrupted.lock().remove(agent_id) {
+            let _delivering = self.lock_delivery(agent_id).await;
             if let Err(e) = flush_queued(self, ctx, agent_id).await {
                 tracing::warn!(agent_id, error = %e, "post-respawn queue flush failed");
             }

@@ -3,11 +3,19 @@
 //! message outlives the edits the turn goes on to make.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::error::Result;
 use crate::git::checkpoint;
 
 use super::Supervisor;
+
+/// How long a turn's checkpoint may hold up its delivery, across all of the
+/// workspace's checkouts. A snapshot normally takes well under a second; this
+/// bounds a pathological checkout (a vast untracked tree, a wedged filesystem)
+/// that git's own 120s-per-command cap would let stall the send. On expiry the
+/// running git is killed and the turn goes out without a checkpoint.
+pub(super) const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One checkout of a workspace and its checkpoint for a turn.
 #[derive(Debug, Clone)]
@@ -26,10 +34,11 @@ impl Supervisor {
     /// turn is delivered, before the agent sees it (`deliver_as_turn`).
     ///
     /// Best-effort: a checkout that can't be captured (a config the hardening
-    /// refuses, a vanished directory) is logged and skipped, and the send goes
-    /// ahead regardless. Nothing is captured when there is no settled tree:
-    /// - mid-turn, the agent is editing it — a delivery that lost a race to
-    ///   another turn start, which `deliver_as_turn` then refuses;
+    /// refuses, a vanished directory) is logged and skipped, and the whole
+    /// capture gives up after [`CAPTURE_TIMEOUT`]; the send goes ahead either
+    /// way. Nothing is captured when there is no settled tree:
+    /// - mid-turn or mid-spawn — `deliver_as_turn` then holds the message
+    ///   rather than start its turn;
     /// - a workflow step agent (`owner_run_id`) works in a tree its run shares.
     ///
     /// Live-injected messages and native PTY typing never get here.
@@ -40,14 +49,27 @@ impl Supervisor {
         if record.owner_run_id.is_some() || self.is_busy(agent_id) {
             return;
         }
-        for repo in &record.repos {
-            let captured = match repo.checkout_path(agent_id) {
-                Ok(checkout) => checkpoint::capture(&checkout, turn_id).await,
-                Err(e) => Err(e),
-            };
-            if let Err(e) = captured {
-                tracing::warn!(error = %e, agent_id, turn_id, subdir = %repo.subdir, "turn checkpoint failed");
+        let capture_all = async {
+            for repo in &record.repos {
+                let captured = match repo.checkout_path(agent_id) {
+                    Ok(checkout) => checkpoint::capture(&checkout, turn_id).await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = captured {
+                    tracing::warn!(error = %e, agent_id, turn_id, subdir = %repo.subdir, "turn checkpoint failed");
+                }
             }
+        };
+        if tokio::time::timeout(CAPTURE_TIMEOUT, capture_all)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                agent_id,
+                turn_id,
+                "turn checkpoint timed out after {}s; delivering without it",
+                CAPTURE_TIMEOUT.as_secs()
+            );
         }
     }
 

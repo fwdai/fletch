@@ -101,6 +101,18 @@ pub struct Supervisor {
     /// Archive reservations and open input routes, per agent — the per-agent
     /// counterpart of `deleting_projects`. See `disposition::Disposal`.
     pub(super) disposal: Mutex<disposition::Disposal>,
+    /// One delivery at a time per agent. Each top-level entry point that can
+    /// start a turn — `send_user_message`, and the queue flushes at turn end,
+    /// after a spawn, a revive or a respawn — holds its agent's lock from the
+    /// routing decision until the turn has started (`Supervisor::lock_delivery`).
+    /// A delivery checkpoints before its turn starts; without this a message
+    /// routed in that window could start its turn first. A send that waits
+    /// here routes against the state the one before it left: as its follow-up.
+    ///
+    /// Never taken by `deliver_as_turn` or `flush_queued`, which run under it,
+    /// and never held across a spawn (whose completion drains under it).
+    /// Created on first use; dropped with the runtime (`detach_runtime`).
+    pub(super) delivery_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Agent ids whose binary-path change couldn't be applied immediately
     /// because the agent was mid-turn. Drained at the next turn-end Idle
     /// transition (see `transition_active`), which respawns them onto the
@@ -167,6 +179,7 @@ impl Supervisor {
             agent_lifecycle: tokio::sync::Mutex::new(()),
             deleting_projects: Mutex::new(HashSet::new()),
             disposal: Mutex::new(disposition::Disposal::default()),
+            delivery_locks: Mutex::new(HashMap::new()),
             respawn_pending: Mutex::new(HashSet::new()),
             message_queue: Mutex::new(MessageQueue::new()),
             stale_base: Mutex::new(HashSet::new()),
