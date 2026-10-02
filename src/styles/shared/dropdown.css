@@ -71,3 +71,31 @@
   text-transform: uppercase;
   color: var(--fg-3);
 }
+
+/* A menu anchored to its trigger (`MenuButton`). The scrim is a full-viewport
+   click-catcher for outside-dismiss; the menu anchors to the trigger's right
+   edge and opens down by default, flipping up (`.up`) when the trigger sits
+   too close to the bottom of its scroller (the chat, above the composer) for
+   the list to fit below. */
+.dd-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.dd-anchor-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+}
+.dd-anchor > .dd {
+  right: 0;
+  z-index: 200;
+  white-space: nowrap;
+}
+.dd-anchor > .dd.down {
+  top: 100%;
+  margin-top: 4px;
+}
+.dd-anchor > .dd.up {
+  bottom: 100%;
+  margin-bottom: 4px;
+}
