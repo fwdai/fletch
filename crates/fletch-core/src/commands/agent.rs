@@ -56,7 +56,7 @@ pub async fn spawn_agent_impl(
             // Adopting a shared run workspace is a workflow-kernel-only path.
             existing_workspace: None,
             // Starting from another workspace's code is a fork-only path.
-            code_from: Vec::new(),
+            code_from: None,
             // Set when the spawn originates from a Home-inbox issue.
             issue_ref,
             purpose,

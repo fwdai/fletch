@@ -135,10 +135,14 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 - Checkpoints live in the checkout, so they disappear when the checkout is
   deleted on archive. "Code as of this message" is then unavailable.
 - A child receives a checkpoint by fetching its ref from the checkout that
-  holds it and restoring it, in each checkout with the same subdir: the tree
-  is the snapshot's and HEAD the snapshot's parent, so commits stay commits
-  and uncommitted work stays uncommitted. A fork of the current code pins the
+  holds it and restoring it, in its checkout of the same repo: the tree is
+  the snapshot's and HEAD the snapshot's parent, so commits stay commits and
+  uncommitted work stays uncommitted. A fork of the current code pins the
   parent's live tree the same way, under a key of its own.
+- A fork takes the code of every checkout of the source workspace or none of
+  it: a checkout without the checkpoint, or a repo the child doesn't check
+  out, fails the fork and names the repos. A repo the child checks out but
+  the source never had keeps its clean base.
 
 ## Flows
 

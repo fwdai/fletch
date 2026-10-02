@@ -15,7 +15,7 @@ mod session_switch;
 mod session_sync;
 mod shell;
 
-pub use checkpoints::{CodeSource, RepoCheckpoint, RepoRestore, RestoreReport};
+pub use checkpoints::{PinnedCheckout, PinnedCode, RepoCheckpoint, RepoRestore, RestoreReport};
 pub use disposition::ArchiveTrigger;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};
