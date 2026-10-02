@@ -10,10 +10,45 @@ import { stripInjectedInstructions } from "@/util/instructions";
 // session lineage — so the injected context never diverges from what the child
 // displays, for any provider.
 
+/** Max chars of a single tool input or tool result carried into the brief.
+ *  Tool output (file dumps, logs) dominates long conversations, and the whole
+ *  digest reaches the child agent as one command-line argument, which the OS
+ *  caps. The backend enforces a hard byte cap on the total as well. */
+export const FORK_TOOL_TEXT_MAX = 2_000;
+
+/** Cut `text` to `FORK_TOOL_TEXT_MAX` chars, noting how much was dropped. */
+function capText(text: string): string {
+  const max = FORK_TOOL_TEXT_MAX;
+  if (text.length <= max) return text;
+  // Don't split a surrogate pair: a lone surrogate fails to deserialize
+  // backend-side and would sink the whole fork.
+  const end = /[\uD800-\uDBFF]/.test(text[max - 1]) ? max - 1 : max;
+  return `${text.slice(0, end)}\n[… ${(text.length - end).toLocaleString("en-US")} more chars]`;
+}
+
+/** Flatten a tool_result payload for the brief. Unlike the chat's
+ *  `renderToolResult`, non-text content blocks (images, documents) become a
+ *  short placeholder instead of their JSON — a base64 screenshot is megabytes
+ *  of noise to the child. */
+function toolResultText(content: unknown): string {
+  if (!Array.isArray(content)) return renderToolResult(content);
+  return content
+    .map((block: unknown) => {
+      if (typeof block === "string") return block;
+      if (block && typeof block === "object") {
+        if ("text" in block) return String(block.text ?? "");
+        if ("type" in block) return `[${String(block.type)}]`;
+      }
+      return "[non-text content]";
+    })
+    .join("\n");
+}
+
 /** Serialize one chat item into a line of the fork brief, or null to skip it.
  *  Covers every kind the child transcript can render (tool calls/results,
  *  reasoning, error notices) — not just messages — so the injected context
- *  carries the tool output and diagnostics the inherited history shows. */
+ *  carries the tool output and diagnostics the inherited history shows. Tool
+ *  inputs and results are capped at `FORK_TOOL_TEXT_MAX` each. */
 export function serializeForkItem(it: ChatItem): string | null {
   switch (it.kind) {
     case "user_message":
@@ -24,16 +59,17 @@ export function serializeForkItem(it: ChatItem): string | null {
     case "agent_message":
       return it.text ? `Assistant: ${it.text}` : null;
     case "tool_call": {
-      const input = stringifyInput(it.input, 2).trim();
+      const input = capText(stringifyInput(it.input, 2).trim());
       const head = `Assistant used tool \`${it.name}\`${input ? `:\n${input}` : ""}`;
-      // Flatten a subagent's nested conversation under the call that spawned it.
+      // Flatten a subagent's nested conversation under the call that spawned it
+      // (recursion applies the same caps to its items).
       const nested = (it.children ?? [])
         .map(serializeForkItem)
         .filter((line): line is string => line !== null);
       return nested.length > 0 ? `${head}\n${nested.join("\n\n")}` : head;
     }
     case "tool_result": {
-      const text = renderToolResult(it.content).trim();
+      const text = capText(toolResultText(it.content).trim());
       if (!text) return null;
       return `${it.is_error ? "Tool error" : "Tool result"}:\n${text}`;
     }
