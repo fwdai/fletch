@@ -6,32 +6,8 @@ import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
-import { ForkMenu, type ForkOption } from "./ForkMenu";
+import { ForkMenu } from "./ForkMenu";
 import { ViewToggle } from "./ViewToggle";
-
-/** Workspace-level fork options — the "start a new thread of work" entry point,
- *  spanning both axes. There's no single message to anchor on here, so context
- *  is the whole conversation or none. */
-const HEADER_FORK_OPTIONS: ForkOption[] = [
-  {
-    key: "full-clean",
-    label: "Full history · clean workspace",
-    code: "clean",
-    context: "summary",
-  },
-  {
-    key: "full-current",
-    label: "Full history · with current code",
-    code: "current",
-    context: "summary",
-  },
-  {
-    key: "fresh-current",
-    label: "Fresh chat · with current code",
-    code: "current",
-    context: "none",
-  },
-];
 
 /** Header strip above the workspace body. Houses the left-sidebar
  *  toggle, the agent task + meta line, the Custom/Native view
@@ -112,13 +88,9 @@ export function WorkspaceHeader({ agent }: Props) {
         </IconButton>
       )}
 
-      {/* Hides itself on a remote environment — see ForkMenu. */}
-      <ForkMenu
-        agentId={agent.id}
-        turnId={null}
-        options={HEADER_FORK_OPTIONS}
-        tip="Fork this workspace and conversation"
-      />
+      {/* The "start a new thread of work" entry point, anchored on the whole
+          conversation. Hides itself on a remote environment — see ForkMenu. */}
+      <ForkMenu agentId={agent.id} turnId={null} tip="Fork this workspace and conversation" />
 
       <PanelToggle side="right" />
     </div>

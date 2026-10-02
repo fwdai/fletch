@@ -177,8 +177,8 @@ export type SpawnStage =
   | "preparing"
   | "cloning"
   | "indexing"
-  | "carrying"
   | "attaching_repos"
+  | "carrying"
   | "summarizing"
   | "starting";
 
