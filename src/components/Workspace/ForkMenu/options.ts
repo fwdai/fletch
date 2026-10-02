@@ -1,22 +1,38 @@
 import type { ForkCode, ForkContext } from "@/api";
+import { hasTranscriptWriter, providerLabel } from "@/data/providers";
 
-/** One selectable value of a fork axis, with how the menu reads it. */
+/** One selectable value of a fork axis, with how the menu reads it and why it
+ *  can't be picked (null when it can). */
 export interface ForkChoice<T> {
   value: T;
   label: string;
+  reason: string | null;
 }
 
 /** What a fork is anchored on: a message (the menu under a turn), or the
  *  whole conversation (the workspace header). */
 export type ForkScope = "message" | "conversation";
 
-/** What the forked agent knows of the conversation up to the anchor. */
-export function contextChoices(scope: ForkScope): ForkChoice<ForkContext>[] {
+/** How the forked agent knows the conversation up to the anchor, for an agent
+ *  of `provider`: the full conversation, resumed as its own transcript, needs
+ *  a provider Fletch can write transcripts for; a summary works for any. */
+export function contextChoices(
+  scope: ForkScope,
+  provider: string | undefined,
+): ForkChoice<ForkContext>[] {
+  const message = scope === "message";
   return [
-    { value: "none", label: "Fresh conversation" },
+    {
+      value: "full",
+      label: message ? "Full conversation up to here" : "Full conversation",
+      reason: hasTranscriptWriter(provider)
+        ? null
+        : `${providerLabel(provider)} can only carry a summary.`,
+    },
     {
       value: "summary",
-      label: scope === "message" ? "Summary up to here" : "Summary of the conversation",
+      label: message ? "Summary up to here" : "Summary of the conversation",
+      reason: null,
     },
   ];
 }
@@ -25,14 +41,18 @@ export function contextChoices(scope: ForkScope): ForkChoice<ForkContext>[] {
  *  its own to go back to. */
 export function codeChoices(scope: ForkScope): ForkChoice<ForkCode>[] {
   const choices: ForkChoice<ForkCode>[] = [
-    { value: "clean", label: "Clean from base" },
-    { value: "current", label: "Current code" },
+    { value: "clean", label: "Clean from base", reason: null },
+    { value: "current", label: "Current code", reason: null },
   ];
   return scope === "message"
-    ? [...choices, { value: "at_message", label: "Code as of this message" }]
+    ? [...choices, { value: "at_message", label: "Code as of this message", reason: null }]
     : choices;
 }
 
-/** The selection a menu opens with. */
-export const DEFAULT_CONTEXT: ForkContext = "summary";
+/** The context a menu opens with: the full conversation where it can be
+ *  carried, else its summary. */
+export function defaultContext(provider: string | undefined): ForkContext {
+  return hasTranscriptWriter(provider) ? "full" : "summary";
+}
+
 export const DEFAULT_CODE: ForkCode = "clean";

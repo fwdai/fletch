@@ -3,16 +3,18 @@ import type { ForkCode, ForkContext } from "@/api";
 import { Icon } from "@/components/Icon";
 import { DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
 import { MenuButton } from "@/components/ui/MenuButton";
+import { providerFor } from "@/helpers";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { ChoiceGroup } from "./ChoiceGroup";
-import { codeChoices, contextChoices, DEFAULT_CODE, DEFAULT_CONTEXT } from "./options";
+import { codeChoices, contextChoices, DEFAULT_CODE, defaultContext } from "./options";
 
-/** A split-icon button that opens the fork menu: pick what the new agent knows
- *  (context) and what its code starts from (code), then fork — creating and
- *  opening the new workspace via the store. Anchored on the turn `turnId`
- *  names (the menu under a turn) or, when null, on the whole conversation (the
- *  workspace header), which has no code of its own to go back to. */
+/** A split-icon button that opens the fork menu: pick how the new agent knows
+ *  the conversation (context) and what its code starts from (code), then fork —
+ *  creating and opening the new workspace via the store. Anchored on the turn
+ *  `turnId` names (the menu under a turn) or, when null, on the whole
+ *  conversation (the workspace header), which has no code of its own to go
+ *  back to. */
 export function ForkMenu({
   agentId,
   turnId,
@@ -29,8 +31,9 @@ export function ForkMenu({
   // workspace header and each turn footer) because this is where they meet.
   const forkGate = useGate("fork");
   const forkAgent = useAppStore((s) => s.forkAgent);
+  const provider = useAppStore((s) => providerFor(s, agentId));
   const [busy, setBusy] = useState(false);
-  const [context, setContext] = useState<ForkContext>(DEFAULT_CONTEXT);
+  const [context, setContext] = useState<ForkContext>(() => defaultContext(provider));
   const [code, setCode] = useState<ForkCode>(DEFAULT_CODE);
   const scope = turnId === null ? "conversation" : "message";
 
@@ -51,7 +54,7 @@ export function ForkMenu({
         <>
           <ChoiceGroup
             title="Context"
-            choices={contextChoices(scope)}
+            choices={contextChoices(scope, provider)}
             value={context}
             onChange={setContext}
           />

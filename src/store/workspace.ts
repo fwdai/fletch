@@ -446,19 +446,19 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     set({ busy: true, lastError: null });
     try {
       // Render the transcript to summarize from the history the child will
-      // show (see handoffLog).
+      // show (see handoffLog). A full fork needs none: the backend writes the
+      // conversation itself as the child's own transcript.
       let transcript: string | null = null;
       if (context === "summary") {
         const log = await handoffLog(providerFor(get(), parentId), parentId);
         transcript = handoffTranscript(log, turnId);
       }
       const rec = await api.forkAgent(parentId, turnId, code, context, transcript);
-      // No optimistic managedLogs seed. A fork that carries context is created
-      // with lineage, so opening it triggers loadHistoryTranscript to render the
-      // parent's history; a context-less fork opens as an empty chat. Set the
-      // selection ahead of the guarded refresh so it survives a superseding
-      // concurrent refresh, with the record in the same update so a recycled
-      // name can't mount against its archived predecessor (see
+      // No optimistic managedLogs seed. Every fork is created with lineage, so
+      // opening it triggers loadHistoryTranscript to render the parent's
+      // history. Set the selection ahead of the guarded refresh so it survives
+      // a superseding concurrent refresh, with the record in the same update
+      // so a recycled name can't mount against its archived predecessor (see
       // adoptSpawnedAgent).
       set((state) => ({
         workspace: adoptSpawnedAgent(state.workspace, rec),

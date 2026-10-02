@@ -39,10 +39,15 @@ describe("rewind menu availability", () => {
     }
   });
 
-  it("offers nothing in the native view: rewind lives in the chat view", () => {
-    const blocker = rewindBlocker({ ...idle, view: "native" });
-    expect(blocker).toBe("Rewind from the chat view.");
-    expect(reasons(blocker, "checking").every(([, reason]) => reason === blocker)).toBe(true);
+  it("offers every rewind in the native view too", () => {
+    const native = { ...idle, view: "native" as AgentView };
+    const blocker = rewindBlocker(native);
+    expect(blocker).toBeNull();
+    expect(reasons(blocker, { report })).toEqual([
+      ["conversation", null],
+      ["code", null],
+      ["both", null],
+    ]);
   });
 
   it("keeps the conversation when the code can't be restored, and says why", () => {

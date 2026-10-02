@@ -781,8 +781,8 @@
   max-width: none;
 }
 
-/* Rewind menu: an option that can't be picked says why, under its label. */
-.rewind-why {
+/* Fork and rewind menus: an option that can't be picked says why, under its label. */
+.option-why {
   display: block;
   max-width: 280px;
   white-space: normal;

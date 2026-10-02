@@ -69,14 +69,14 @@ export const agentsApi = {
     invoke<AgentRecord[]>("list_project_chats", { projectId, purpose }),
   /** Fork an existing workspace into a new one at an anchor — through the turn
    *  `turnId` names, or the end of the parent's session when `null` — seeding
-   *  its worktree (`code`) and conversation (`context`) independently. A
-   *  carried conversation is referenced, not copied: the child's history
-   *  starts with the parent's, through the anchor.
+   *  its worktree (`code`) and conversation (`context`) independently. The
+   *  conversation is referenced, not copied: the child's history starts with
+   *  the parent's, through the anchor.
    *
-   *  `transcript` is the carried range rendered as text (adapters/handoff),
-   *  from the normalized chat log so it works uniformly across every provider;
-   *  the backend summarizes it to brief the child's fresh agent. `null` when
-   *  nothing is carried. */
+   *  `transcript` is that range rendered as text (adapters/handoff), from the
+   *  normalized chat log so it works uniformly across every provider; for a
+   *  `summary` the backend summarizes it to brief the child's fresh agent.
+   *  `null` for a `full` fork, whose agent resumes the conversation itself. */
   forkAgent: (
     parentId: string,
     turnId: string | null,
