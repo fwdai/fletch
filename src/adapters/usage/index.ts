@@ -121,26 +121,26 @@ export function usageFromRecords(
   return hasUsage(snapshot) ? snapshot : EMPTY_SNAPSHOT;
 }
 
-/** A workspace's usage: `usage` — its current conversation's — with the spend
- *  of the sessions the workspace superseded added in (`readSupersededRecords`,
- *  one record list per session). A rewind starts a new session in place, and
- *  what the abandoned branch spent is still the workspace's, so its recorded
- *  spend never drops. Each session is folded on its own, as it ran: a running
- *  counter restarts with a session. The context is left alone; it measures the
- *  conversation the agent is in now. */
-export function withSupersededSpend(
-  usage: UsageSnapshot,
-  superseded: SessionRecord[][],
-): UsageSnapshot {
-  let spend = usage.spend;
-  for (const records of superseded) {
-    const prior = usageFromRecords(records[0]?.provider, records);
-    if (hasUsage(prior)) spend = addSpend(spend, prior.spend);
-  }
-  return spend === usage.spend ? usage : { ...usage, spend };
+export type Spend = UsageSnapshot["spend"];
+
+/** What one session spent, from its own records — folded on its own, as it
+ *  ran: a running counter restarts with a session, so folding two sessions as
+ *  one could read the second's counter as the first's going on. */
+export function sessionSpend(records: SessionRecord[]): Spend {
+  return usageFromRecords(records[0]?.provider, records).spend;
 }
 
-function addSpend(a: UsageSnapshot["spend"], b: UsageSnapshot["spend"]): UsageSnapshot["spend"] {
+/** A workspace's usage: `usage` — its current conversation's — with what the
+ *  sessions the workspace superseded spent (`sessionSpend` of each) added in.
+ *  A rewind starts a new session in place, and what the abandoned branch spent
+ *  is still the workspace's, so its recorded spend never drops. The context is
+ *  left alone; it measures the conversation the agent is in now. */
+export function withSupersededSpend(usage: UsageSnapshot, superseded: Spend[]): UsageSnapshot {
+  if (superseded.length === 0) return usage;
+  return { ...usage, spend: superseded.reduce(addSpend, usage.spend) };
+}
+
+function addSpend(a: Spend, b: Spend): Spend {
   const byModel = { ...a.byModel };
   for (const [model, tokens] of Object.entries(b.byModel)) {
     byModel[model] = addTokens(byModel[model] ?? NO_TOKENS, tokens);

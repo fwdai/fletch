@@ -10,6 +10,7 @@ import {
   EMPTY_SNAPSHOT,
   hasUsage,
   priceSnapshot,
+  sessionSpend,
   totalTokens,
   usageFromRecords,
   withSupersededSpend,
@@ -440,7 +441,7 @@ describe("superseded sessions", () => {
     const before = withSupersededSpend(usageFromRecords("claude", old), []);
     const current = [shown, record("claude", call("m3", 7, 3), 1)];
 
-    const after = withSupersededSpend(usageFromRecords("claude", current), [old]);
+    const after = withSupersededSpend(usageFromRecords("claude", current), [sessionSpend(old)]);
 
     expect(after.spend.tokens).toEqual({ input: 307, output: 33, cacheRead: 0, cacheWrite: 0 });
     expect(totalTokens(after.spend.tokens)).toBeGreaterThan(totalTokens(before.spend.tokens));
@@ -451,7 +452,7 @@ describe("superseded sessions", () => {
   });
 
   it("holds the total through a rewind that hasn't spent anything yet", () => {
-    const after = withSupersededSpend(usageFromRecords("claude", [shown]), [old]);
+    const after = withSupersededSpend(usageFromRecords("claude", [shown]), [sessionSpend(old)]);
     expect(hasUsage(after)).toBe(true);
     expect(after.spend.tokens).toEqual(usageFromRecords("claude", old).spend.tokens);
   });
@@ -461,7 +462,7 @@ describe("superseded sessions", () => {
   it("folds each session on its own, so a counter that restarts with it counts whole", () => {
     const first = records("codex", [codexCounter({ input: 500, output: 50 })]);
     const second = records("codex", [codexCounter({ input: 600, output: 60 })]);
-    const u = withSupersededSpend(usageFromRecords("codex", second), [first]);
+    const u = withSupersededSpend(usageFromRecords("codex", second), [sessionSpend(first)]);
     expect(u.spend.tokens.input).toBe(1_100);
     expect(u.spend.tokens.output).toBe(110);
   });
@@ -478,7 +479,7 @@ describe("superseded sessions", () => {
         },
       } as RawEvent);
     const u = withSupersededSpend(usageFromRecords("pi", [priced("b", 0.25)]), [
-      [priced("a", 0.5)],
+      sessionSpend([priced("a", 0.5)]),
     ]);
     expect(u.spend.costUsd).toBeCloseTo(0.75);
   });

@@ -467,6 +467,14 @@ pub struct SessionRecord {
     pub inherited: bool,
 }
 
+/// One session a workspace has superseded, with its own records — or none,
+/// when the caller already has them (see `read_superseded_records`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SupersededSession {
+    pub session_id: String,
+    pub records: Vec<SessionRecord>,
+}
+
 /// One Fletch-origin outgoing user message (the `session_user_turns` table).
 /// Carries the attachment metadata the transcript doesn't, plus a `native_id`
 /// link to the canonical `session_records` row once matched at turn-end.

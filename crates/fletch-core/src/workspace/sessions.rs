@@ -245,11 +245,15 @@ impl WorkspaceManager {
         Ok(id)
     }
 
-    /// Every record of the sessions `workspace_id` has superseded — the
-    /// conversations it rewound away from — one list per session, oldest
-    /// first. A rewind leaves the abandoned branch's records where they are,
-    /// and what it spent is still the workspace's, so its usage folds these
-    /// in. Each record is its own session's (`inherited: false`).
+    /// The sessions `workspace_id` has superseded — the conversations it
+    /// rewound away from — oldest first, each with its records. A rewind
+    /// leaves the abandoned branch's records where they are, and what it
+    /// spent is still the workspace's, so its usage folds these in. Each
+    /// record is its own session's (`inherited: false`).
+    ///
+    /// A superseded session never changes again (nothing ingests into it), so
+    /// a caller folds each one once: every session is listed, but those in
+    /// `known` come without their records.
     ///
     /// Sessions `detach_children` handed over from a deleted workspace are
     /// left out: what they spent was that workspace's. They are told apart by
@@ -257,7 +261,11 @@ impl WorkspaceManager {
     /// from, which all existed before it, while every session it starts is as
     /// old as it is or younger (`insert_agent` stamps the first one with the
     /// workspace's own `created_at`).
-    pub fn read_superseded_records(&self, workspace_id: &str) -> Result<Vec<Vec<SessionRecord>>> {
+    pub fn read_superseded_records(
+        &self,
+        workspace_id: &str,
+        known: &[String],
+    ) -> Result<Vec<SupersededSession>> {
         let conn = self.db.lock();
         let mut stmt = conn.prepare(
             "SELECT s.id FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
@@ -269,8 +277,18 @@ impl WorkspaceManager {
             .query_map([workspace_id], |r| r.get(0))?
             .collect::<std::result::Result<_, rusqlite::Error>>()?;
         sessions
-            .iter()
-            .map(|sid| query_records(&conn, sid, i64::MAX, false))
+            .into_iter()
+            .map(|session_id| {
+                let records = if known.contains(&session_id) {
+                    Vec::new()
+                } else {
+                    query_records(&conn, &session_id, i64::MAX, false)?
+                };
+                Ok(SupersededSession {
+                    session_id,
+                    records,
+                })
+            })
             .collect()
     }
 
@@ -661,29 +679,74 @@ mod tests {
         );
     }
 
-    fn native_ids(sessions: Vec<Vec<SessionRecord>>) -> Vec<Vec<String>> {
-        sessions
+    /// `ws`'s superseded sessions, given the `known` ones, as `(session id,
+    /// native ids)`.
+    fn superseded(wm: &WorkspaceManager, ws: &str, known: &[String]) -> Vec<(String, Vec<String>)> {
+        wm.read_superseded_records(ws, known)
+            .unwrap()
             .into_iter()
-            .map(|records| {
-                assert!(records.iter().all(|r| !r.inherited));
-                records.into_iter().map(|r| r.native_id).collect()
+            .map(|s| {
+                assert!(s.records.iter().all(|r| !r.inherited));
+                let ids = s.records.into_iter().map(|r| r.native_id).collect();
+                (s.session_id, ids)
             })
             .collect()
     }
 
-    #[test]
-    fn superseded_sessions_keep_their_records_for_the_workspace() {
+    fn native_ids(sessions: Vec<(String, Vec<String>)>) -> Vec<Vec<String>> {
+        sessions.into_iter().map(|(_, ids)| ids).collect()
+    }
+
+    /// `a` rewound twice: before bravo, then before delta.
+    fn rewound_twice() -> (WorkspaceManager, [String; 2]) {
         let wm = talked();
-        assert!(wm.read_superseded_records("a").unwrap().is_empty());
+        let first = session_of(&wm, "a");
         rewound(&wm, None);
+        let second = session_of(&wm, "a");
         exchange(&wm, "a", "n1", "delta");
         let lineage = wm.resolve_anchor("a", Anchor::Before("n1")).unwrap();
         wm.start_session("a", &lineage, None).unwrap();
         exchange(&wm, "a", "m1", "echo");
+        (wm, [first, second])
+    }
+
+    #[test]
+    fn superseded_sessions_keep_their_records_for_the_workspace() {
+        assert!(superseded(&talked(), "a", &[]).is_empty());
+        let (wm, ids) = rewound_twice();
+
+        let sessions = superseded(&wm, "a", &[]);
 
         assert_eq!(
-            native_ids(wm.read_superseded_records("a").unwrap()),
+            sessions
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(
+            native_ids(sessions),
             vec![vec!["a1-u", "a1-a", "a2-u", "a2-a"], vec!["n1-u", "n1-a"]]
+        );
+    }
+
+    /// A caller folds a superseded session once: those it names come back
+    /// listed, so it still learns the whole set, but without their records.
+    #[test]
+    fn known_superseded_sessions_come_back_without_their_records() {
+        let (wm, [first, second]) = rewound_twice();
+
+        assert_eq!(
+            superseded(&wm, "a", std::slice::from_ref(&first)),
+            vec![
+                (first.clone(), vec![]),
+                (second.clone(), vec!["n1-u".into(), "n1-a".into()])
+            ]
+        );
+        let both = [first.clone(), second.clone(), "elsewhere".into()];
+        assert_eq!(
+            superseded(&wm, "a", &both),
+            vec![(first, vec![]), (second, vec![])]
         );
     }
 
@@ -714,12 +777,12 @@ mod tests {
         exchange(&wm, "f", "f1", "bravo");
 
         wm.remove_agent("p").unwrap();
-        assert!(wm.read_superseded_records("f").unwrap().is_empty());
+        assert!(superseded(&wm, "f", &[]).is_empty());
 
         let lineage = wm.resolve_anchor("f", Anchor::Before("f1")).unwrap();
         wm.start_session("f", &lineage, None).unwrap();
         assert_eq!(
-            native_ids(wm.read_superseded_records("f").unwrap()),
+            native_ids(superseded(&wm, "f", &[])),
             vec![vec!["f1-u", "f1-a"]]
         );
     }

@@ -5,6 +5,8 @@
 import { getAdapter, type RawEvent } from "../adapters";
 import {
   hasUsage,
+  type Spend,
+  sessionSpend,
   type UsageSnapshot,
   usageFromRecords,
   withSupersededSpend,
@@ -16,17 +18,38 @@ import { agentRecord, providerFor } from "./agentLookups";
 
 /** Record what a workspace has spent: `usage`, its current conversation's,
  *  plus what the sessions it superseded spent (see `withSupersededSpend`).
- *  Returns that total. A host that can't list superseded sessions (one that
- *  predates rewind) has none, so the conversation's spend is the total. */
+ *  Returns that total. */
 export async function recordWorkspaceUsage(
   workspaceId: string,
   projectId: string | undefined,
   usage: UsageSnapshot,
 ): Promise<UsageSnapshot> {
-  const superseded = await api.readSupersededRecords(workspaceId).catch(() => []);
-  const total = withSupersededSpend(usage, superseded);
+  const total = withSupersededSpend(usage, await supersededSpend(workspaceId));
   if (hasUsage(total)) recordUsageSnapshot(workspaceId, projectId, total);
   return total;
+}
+
+/** Each superseded session's spend, by session id. A superseded session never
+ *  changes again (nothing ingests into it), so it is folded once; ids are
+ *  unique across workspaces and hosts, so one map serves them all. */
+const foldedSessions = new Map<string, Spend>();
+
+/** What each of `workspaceId`'s superseded sessions spent. The host lists
+ *  them all but sends records only for those not folded yet, so once they are,
+ *  this is one query that returns ids. A host that can't list them (one that
+ *  predates rewind) has none. */
+async function supersededSpend(workspaceId: string): Promise<Spend[]> {
+  const sessions = await api
+    .readSupersededRecords(workspaceId, [...foldedSessions.keys()])
+    .catch(() => []);
+  return sessions.map(({ session_id, records }) => {
+    let spend = foldedSessions.get(session_id);
+    if (!spend) {
+      spend = sessionSpend(records);
+      foldedSessions.set(session_id, spend);
+    }
+    return spend;
+  });
 }
 
 /** Cursor and OpenCode report token usage only on their live stream (never on

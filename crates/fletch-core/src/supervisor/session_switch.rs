@@ -200,9 +200,9 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         // The old session was ingested to its end before it was superseded.
-        let superseded = sup.workspace.read_superseded_records(AGENT).unwrap();
+        let superseded = sup.workspace.read_superseded_records(AGENT, &[]).unwrap();
         assert_eq!(superseded.len(), 1);
-        assert_eq!(ids(&superseded[0]), ["u1", "a1", "u2", "a2"]);
+        assert_eq!(ids(&superseded[0].records), ["u1", "a1", "u2", "a2"]);
         // The new one shows the history it continues, and nothing of its own:
         // a later pass reads its own transcript, not the old one.
         sup.sync_session(AGENT);
