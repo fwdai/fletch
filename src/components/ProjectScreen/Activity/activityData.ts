@@ -1,8 +1,8 @@
 import { hasUsage, priceSnapshot, usageFromRecords } from "@/adapters/usage";
 import { api } from "@/api";
 import type { SlimCatalog } from "@/data/modelCatalog";
+import { recordWorkspaceUsage } from "@/helpers/usage";
 import { dbQuery } from "@/storage/db";
-import { recordUsageSnapshot } from "@/storage/usageDaily";
 import {
   dailySpend,
   type MergeStats,
@@ -149,8 +149,12 @@ export async function loadPulseUsage(projectId: string, catalog: SlimCatalog): P
       rows.slice(i, i + CHUNK).map(async (r) => {
         try {
           const records = await api.readSessionRecords(r.id);
-          if (records.length === 0) return;
-          const usage = usageFromRecords(r.provider ?? undefined, records);
+          // The workspace's spend, its rewound-away sessions' included.
+          const usage = await recordWorkspaceUsage(
+            r.id,
+            projectId,
+            usageFromRecords(r.provider ?? undefined, records),
+          );
           if (!hasUsage(usage)) return;
           // Fresh input + output: the tokens the project actually generated.
           // Cache reads are excluded on purpose — the same cached prefix is
@@ -158,7 +162,6 @@ export async function loadPulseUsage(projectId: string, catalog: SlimCatalog): P
           // look like an order of magnitude more work than it was.
           tokens += usage.spend.tokens.input + usage.spend.tokens.output;
           costUsd += priceSnapshot(catalog, usage) ?? 0;
-          recordUsageSnapshot(r.id, projectId, usage);
         } catch {
           // Unreadable session (e.g. cleaned-up archive) — skip, don't abort.
         }

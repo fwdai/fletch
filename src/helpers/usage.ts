@@ -1,13 +1,33 @@
 // Usage persistence: fold a live-only usage event (cursor's `result`) into
 // session_records so token usage survives restarts and folds like every other
-// agent.
+// agent, and record a workspace's spend for the day.
 
 import { getAdapter, type RawEvent } from "../adapters";
-import { hasUsage, usageFromRecords } from "../adapters/usage";
+import {
+  hasUsage,
+  type UsageSnapshot,
+  usageFromRecords,
+  withSupersededSpend,
+} from "../adapters/usage";
 import { api } from "../api";
 import { recordUsageSnapshot } from "../storage/usageDaily";
 import type { AppState } from "../store";
 import { agentRecord, providerFor } from "./agentLookups";
+
+/** Record what a workspace has spent: `usage`, its current conversation's,
+ *  plus what the sessions it superseded spent (see `withSupersededSpend`).
+ *  Returns that total. A host that can't list superseded sessions (one that
+ *  predates rewind) has none, so the conversation's spend is the total. */
+export async function recordWorkspaceUsage(
+  workspaceId: string,
+  projectId: string | undefined,
+  usage: UsageSnapshot,
+): Promise<UsageSnapshot> {
+  const superseded = await api.readSupersededRecords(workspaceId).catch(() => []);
+  const total = withSupersededSpend(usage, superseded);
+  if (hasUsage(total)) recordUsageSnapshot(workspaceId, projectId, total);
+  return total;
+}
 
 /** Cursor and OpenCode report token usage only on their live stream (never on
  *  disk), so persist that event into session_records (`live_compiled`) when it
@@ -45,7 +65,7 @@ export async function persistLiveUsage(
       set({ usage: { ...get().usage, [agentId]: usage } });
       // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
       // spend belongs to its project like anyone else's.
-      recordUsageSnapshot(agentId, agentRecord(get(), agentId)?.project_id, usage);
+      await recordWorkspaceUsage(agentId, agentRecord(get(), agentId)?.project_id, usage);
     }
   } catch {
     // Non-critical: the next records refresh or restart re-aggregates it.

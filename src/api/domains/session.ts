@@ -4,6 +4,10 @@ import type { SessionRecord, UserTurn } from "../types/session";
 export const sessionApi = {
   readSessionRecords: (agentId: string) =>
     invoke<SessionRecord[]>("read_session_records", { agentId }),
+  /** The records of the sessions the agent's workspace has superseded — a
+   *  rewind's abandoned branches — one list per session, for its spend. */
+  readSupersededRecords: (agentId: string) =>
+    invoke<SessionRecord[][]>("read_superseded_records", { agentId }),
   readUserTurns: (agentId: string) => invoke<UserTurn[]>("read_user_turns", { agentId }),
   syncSession: (agentId: string) => invoke<void>("sync_session", { agentId }),
   /** Persist a runtime-compiled record (e.g. cursor's per-turn usage from its

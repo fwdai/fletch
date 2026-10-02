@@ -121,6 +121,35 @@ export function usageFromRecords(
   return hasUsage(snapshot) ? snapshot : EMPTY_SNAPSHOT;
 }
 
+/** A workspace's usage: `usage` — its current conversation's — with the spend
+ *  of the sessions the workspace superseded added in (`readSupersededRecords`,
+ *  one record list per session). A rewind starts a new session in place, and
+ *  what the abandoned branch spent is still the workspace's, so its recorded
+ *  spend never drops. Each session is folded on its own, as it ran: a running
+ *  counter restarts with a session. The context is left alone; it measures the
+ *  conversation the agent is in now. */
+export function withSupersededSpend(
+  usage: UsageSnapshot,
+  superseded: SessionRecord[][],
+): UsageSnapshot {
+  let spend = usage.spend;
+  for (const records of superseded) {
+    const prior = usageFromRecords(records[0]?.provider, records);
+    if (hasUsage(prior)) spend = addSpend(spend, prior.spend);
+  }
+  return spend === usage.spend ? usage : { ...usage, spend };
+}
+
+function addSpend(a: UsageSnapshot["spend"], b: UsageSnapshot["spend"]): UsageSnapshot["spend"] {
+  const byModel = { ...a.byModel };
+  for (const [model, tokens] of Object.entries(b.byModel)) {
+    byModel[model] = addTokens(byModel[model] ?? NO_TOKENS, tokens);
+  }
+  const costUsd =
+    a.costUsd == null && b.costUsd == null ? null : (a.costUsd ?? 0) + (b.costUsd ?? 0);
+  return { tokens: addTokens(a.tokens, b.tokens), costUsd, byModel };
+}
+
 /** Fold events into a snapshot. Exported for tests; production callers go
  *  through `usageFromRecords`. */
 export function aggregate(events: UsageEvent[], coverage: Coverage = "complete"): UsageSnapshot {

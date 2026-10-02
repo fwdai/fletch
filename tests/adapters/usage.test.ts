@@ -6,7 +6,14 @@ import { cursorAdapter } from "@/adapters/cursor";
 import { opencodeAdapter } from "@/adapters/opencode";
 import { piAdapter } from "@/adapters/pi";
 import type { RawEvent } from "@/adapters/types";
-import { EMPTY_SNAPSHOT, priceSnapshot, usageFromRecords } from "@/adapters/usage";
+import {
+  EMPTY_SNAPSHOT,
+  hasUsage,
+  priceSnapshot,
+  totalTokens,
+  usageFromRecords,
+  withSupersededSpend,
+} from "@/adapters/usage";
 import type { SessionRecord } from "@/api";
 import { indexModelsDev } from "@/data/modelCatalog/modelsDev";
 
@@ -414,6 +421,71 @@ describe("codex usage", () => {
         record("codex", { type: "event_msg", payload: { type: "agent_message" } } as RawEvent),
       ]),
     ).toBe(EMPTY_SNAPSHOT);
+  });
+});
+
+// ── sessions a rewind superseded ─────────────────────────────────────────────
+
+// A rewind starts a new session in place and leaves the old one's records where
+// they are. The workspace spent both, so its recorded total keeps the old one's
+// spend and never drops.
+describe("superseded sessions", () => {
+  const call = (msgId: string, input: number, output: number) =>
+    claudeAssistant({ msgId, requestId: msgId, input, output, model: "claude-x" });
+  // Said m1, then m2; the rewind goes back to before m2.
+  const old = [record("claude", call("m1", 100, 10), 1), record("claude", call("m2", 200, 20), 2)];
+  const shown = { ...record("claude", call("m1", 100, 10), 1), inherited: true };
+
+  it("keeps the abandoned branch's spend in the workspace's, so it never drops", () => {
+    const before = withSupersededSpend(usageFromRecords("claude", old), []);
+    const current = [shown, record("claude", call("m3", 7, 3), 1)];
+
+    const after = withSupersededSpend(usageFromRecords("claude", current), [old]);
+
+    expect(after.spend.tokens).toEqual({ input: 307, output: 33, cacheRead: 0, cacheWrite: 0 });
+    expect(totalTokens(after.spend.tokens)).toBeGreaterThan(totalTokens(before.spend.tokens));
+    expect(after.spend.byModel).toEqual({ "claude-x": after.spend.tokens });
+    expect(after.spend.costUsd).toBeNull();
+    // The gauge is the conversation the agent is in, not the abandoned one.
+    expect(after.context).toEqual(usageFromRecords("claude", current).context);
+  });
+
+  it("holds the total through a rewind that hasn't spent anything yet", () => {
+    const after = withSupersededSpend(usageFromRecords("claude", [shown]), [old]);
+    expect(hasUsage(after)).toBe(true);
+    expect(after.spend.tokens).toEqual(usageFromRecords("claude", old).spend.tokens);
+  });
+
+  // One fold over both would read the second session's counter, at or above
+  // the first's final reading in every category, as the same rollout going on.
+  it("folds each session on its own, so a counter that restarts with it counts whole", () => {
+    const first = records("codex", [codexCounter({ input: 500, output: 50 })]);
+    const second = records("codex", [codexCounter({ input: 600, output: 60 })]);
+    const u = withSupersededSpend(usageFromRecords("codex", second), [first]);
+    expect(u.spend.tokens.input).toBe(1_100);
+    expect(u.spend.tokens.output).toBe(110);
+  });
+
+  it("adds a provider's own cost", () => {
+    const priced = (id: string, cost: number) =>
+      record("pi", {
+        type: "message",
+        message: {
+          id,
+          role: "assistant",
+          model: "m",
+          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: cost } },
+        },
+      } as RawEvent);
+    const u = withSupersededSpend(usageFromRecords("pi", [priced("b", 0.25)]), [
+      [priced("a", 0.5)],
+    ]);
+    expect(u.spend.costUsd).toBeCloseTo(0.75);
+  });
+
+  it("is the conversation's own usage when nothing was superseded", () => {
+    const u = usageFromRecords("claude", old);
+    expect(withSupersededSpend(u, [])).toBe(u);
   });
 });
 
