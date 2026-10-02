@@ -29,6 +29,7 @@
 //! backend only decides the record cutoff (for the display copy) and wraps the
 //! digest into the brief.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -55,6 +56,19 @@ const APP_ACTION_PREFIX: &str = "[app-action] ";
 /// simply drops the parent's `forked_context` and rebuilds a fresh one.
 const FORK_CONTEXT_OPEN: &str = "<!-- fletch:forked-conversation-context -->";
 const FORK_CONTEXT_CLOSE: &str = "<!-- /fletch:forked-conversation-context -->";
+
+/// Hard cap, in bytes, on the stored forked context. It reaches the agent
+/// inside a single argv element (e.g. `--append-system-prompt <text>`), and the
+/// OS rejects oversized arguments with E2BIG ("Argument list too long"): Linux
+/// caps any one argument at 128 KiB (`MAX_ARG_STRLEN`), macOS caps argv + env
+/// together at 1 MiB (`ARG_MAX`). 64 KiB leaves room for the rest of the brief.
+/// Enforced here, not just by the frontend, because remote clients send their
+/// own digest.
+const MAX_FORKED_CONTEXT_BYTES: usize = 64 * 1024;
+
+/// First line of a digest that [`keep_tail`] had to cut.
+const OMITTED_NOTE: &str =
+    "[Earlier conversation omitted to fit the size limit; the most recent part follows.]\n";
 
 /// What the forked workspace's worktree starts from. Defined as an enum (rather
 /// than a bool) so `Carry` — bring the parent's current working tree, incl.
@@ -271,16 +285,46 @@ fn fork_cutoff_seq(
 }
 
 /// Wrap the frontend-supplied conversation prose in the fork sentinels plus a
-/// short framing line the agent reads as instructions.
+/// short framing line the agent reads as instructions, keeping only as much of
+/// the prose's tail as fits the whole thing in [`MAX_FORKED_CONTEXT_BYTES`].
 fn wrap_context(prose: &str) -> String {
-    format!(
-        "{FORK_CONTEXT_OPEN}\n\
-         The conversation below is the prior context this session was forked from. \
-         Treat it as already-established history and continue from where it left off; \
-         do not redo work that is already complete.\n\n\
-         {prose}\n\
-         {FORK_CONTEXT_CLOSE}"
-    )
+    let frame = |prose: &str| {
+        format!(
+            "{FORK_CONTEXT_OPEN}\n\
+             The conversation below is the prior context this session was forked from. \
+             Treat it as already-established history and continue from where it left off; \
+             do not redo work that is already complete.\n\n\
+             {prose}\n\
+             {FORK_CONTEXT_CLOSE}"
+        )
+    };
+    let budget = MAX_FORKED_CONTEXT_BYTES - frame("").len();
+    frame(&keep_tail(prose, budget))
+}
+
+/// Fit `text` into `max` bytes (`max` must exceed [`OMITTED_NOTE`]) by keeping
+/// its most recent tail — the end of the conversation is what the fork
+/// continues from — behind [`OMITTED_NOTE`]. The cut lands on a char boundary
+/// and, when one is near, at the start of a line.
+fn keep_tail(text: &str, max: usize) -> Cow<'_, str> {
+    if text.len() <= max {
+        return Cow::Borrowed(text);
+    }
+    // How far past the byte cut to look for a line start before settling for
+    // a mid-line cut, rather than give up most of the budget to reach one.
+    const LINE_SEARCH: usize = 1024;
+
+    let mut start = text.len() - (max - OMITTED_NOTE.len());
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    if !text[..start].ends_with('\n') {
+        let window = &text.as_bytes()[start..text.len().min(start + LINE_SEARCH)];
+        if let Some(nl) = window.iter().position(|&b| b == b'\n') {
+            start += nl + 1;
+        }
+    }
+    Cow::Owned(format!("{OMITTED_NOTE}{}", &text[start..]))
 }
 
 /// First non-empty candidate, falling back to the last.
@@ -448,6 +492,65 @@ mod tests {
         assert!(w.trim_end().ends_with(FORK_CONTEXT_CLOSE));
         assert!(w.contains("User: hi"));
         assert!(w.contains("Assistant: hey"));
+        assert!(!w.contains(OMITTED_NOTE));
+    }
+
+    #[test]
+    fn wrap_caps_an_oversized_digest_keeping_its_tail() {
+        // ~3 MB, the size of the real forks that blew past ARG_MAX.
+        let prose: String = (0..100_000)
+            .map(|i| format!("User: message {i:06}\n\n"))
+            .collect();
+        let w = wrap_context(&prose);
+        assert!(w.len() <= MAX_FORKED_CONTEXT_BYTES);
+        assert!(w.starts_with(FORK_CONTEXT_OPEN));
+        assert!(w.ends_with(FORK_CONTEXT_CLOSE));
+        assert!(w.contains(OMITTED_NOTE));
+        assert!(!w.contains("message 000000"));
+        assert!(w.contains("User: message 099999\n"));
+        // The cut snapped to a line start, so the first kept line is whole.
+        let after_note = w.split(OMITTED_NOTE).nth(1).unwrap();
+        assert!(after_note.trim_start().starts_with("User: message "));
+    }
+
+    #[test]
+    fn keep_tail_passes_text_within_the_cap_through() {
+        assert_eq!(keep_tail("short", 100), "short");
+        let exact = "x".repeat(100);
+        assert_eq!(keep_tail(&exact, 100), exact);
+    }
+
+    #[test]
+    fn keep_tail_prefers_a_line_start() {
+        let text = format!("{}\nkept line\n", "a".repeat(200));
+        let max = OMITTED_NOTE.len() + 14;
+        // The byte cut lands mid-way through the "a" run; the next line start
+        // is close, so the cut moves there.
+        assert_eq!(keep_tail(&text, max), format!("{OMITTED_NOTE}kept line\n"));
+    }
+
+    #[test]
+    fn keep_tail_cuts_mid_line_when_no_line_start_is_near() {
+        let text = "a".repeat(10_000);
+        let max = OMITTED_NOTE.len() + 100;
+        let kept = keep_tail(&text, max);
+        assert_eq!(kept, format!("{OMITTED_NOTE}{}", "a".repeat(100)));
+    }
+
+    #[test]
+    fn keep_tail_never_splits_a_multibyte_char() {
+        // 4-byte chars with every leading pad, so the raw byte cut falls at each
+        // offset within a char. Slicing off a boundary would panic.
+        for pad in 0..4 {
+            let text = format!("{}{}", "x".repeat(pad), "😀".repeat(1_000));
+            for budget in 1..12 {
+                let max = OMITTED_NOTE.len() + budget;
+                let kept = keep_tail(&text, max);
+                assert!(kept.len() <= max, "pad {pad}, budget {budget}");
+                let tail = kept.strip_prefix(OMITTED_NOTE).unwrap();
+                assert_eq!(tail, "😀".repeat(budget / 4), "pad {pad}, budget {budget}");
+            }
+        }
     }
 
     #[test]

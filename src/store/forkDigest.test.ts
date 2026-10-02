@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatItem } from "@/adapters";
 import { APP_ACTION_PREFIX } from "@/delegation";
-import { forkContextDigest, serializeForkItem } from "./forkDigest";
+import { FORK_TOOL_TEXT_MAX, forkContextDigest, serializeForkItem } from "./forkDigest";
 
 const user = (text: string): ChatItem => ({ kind: "user_message", text });
 const agent = (text: string): ChatItem => ({ kind: "agent_message", text });
@@ -71,6 +71,77 @@ describe("serializeForkItem", () => {
       content: [{ type: "text", text: "line one" }],
     });
     expect(line).toBe("Tool result:\nline one");
+  });
+
+  it("renders non-text result blocks as a placeholder, not their JSON", () => {
+    const line = serializeForkItem({
+      kind: "tool_result",
+      tool_use_id: "t1",
+      content: [
+        { type: "text", text: "screenshot taken" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0K" } },
+      ],
+    });
+    expect(line).toBe("Tool result:\nscreenshot taken\n[image]");
+  });
+
+  it("caps a long tool result, noting how much was dropped", () => {
+    const line = serializeForkItem({
+      kind: "tool_result",
+      tool_use_id: "t1",
+      content: "x".repeat(FORK_TOOL_TEXT_MAX + 12_345),
+    });
+    expect(line).toBe(`Tool result:\n${"x".repeat(FORK_TOOL_TEXT_MAX)}\n[… 12,345 more chars]`);
+  });
+
+  it("leaves a result at exactly the cap untouched", () => {
+    const content = "x".repeat(FORK_TOOL_TEXT_MAX);
+    expect(serializeForkItem({ kind: "tool_result", tool_use_id: "t1", content })).toBe(
+      `Tool result:\n${content}`,
+    );
+  });
+
+  it("caps a long tool input", () => {
+    const line = serializeForkItem({
+      kind: "tool_call",
+      id: "t1",
+      name: "Write",
+      input: "y".repeat(FORK_TOOL_TEXT_MAX + 500),
+    });
+    expect(line).toBe(
+      `Assistant used tool \`Write\`:\n${"y".repeat(FORK_TOOL_TEXT_MAX)}\n[… 500 more chars]`,
+    );
+  });
+
+  it("never splits a surrogate pair at the cap", () => {
+    // An emoji straddles the cut: its high surrogate is the last unit kept.
+    const content = `${"x".repeat(FORK_TOOL_TEXT_MAX - 1)}😀${"x".repeat(10)}`;
+    const line = serializeForkItem({ kind: "tool_result", tool_use_id: "t1", content });
+    expect(line).toBe(`Tool result:\n${"x".repeat(FORK_TOOL_TEXT_MAX - 1)}\n[… 12 more chars]`);
+  });
+
+  it("applies the same caps to a subagent's nested items", () => {
+    const line = serializeForkItem({
+      kind: "tool_call",
+      id: "t1",
+      name: "Agent",
+      input: {},
+      children: [
+        { kind: "tool_call", id: "t2", name: "Bash", input: "z".repeat(FORK_TOOL_TEXT_MAX + 1) },
+        {
+          kind: "tool_result",
+          tool_use_id: "t2",
+          content: [
+            { type: "text", text: "w".repeat(FORK_TOOL_TEXT_MAX + 2) },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+          ],
+        },
+      ],
+    });
+    expect(line).toContain(`${"z".repeat(FORK_TOOL_TEXT_MAX)}\n[… 1 more chars]`);
+    // The text block plus "\n[image]" overflow the cap by 10 chars.
+    expect(line).toContain(`Tool result:\n${"w".repeat(FORK_TOOL_TEXT_MAX)}\n[… 10 more chars]`);
+    expect(line).not.toContain("AAAA");
   });
 
   it("labels reasoning and error notices, passes others through", () => {
