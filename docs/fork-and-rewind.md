@@ -102,30 +102,57 @@ a single-statement update) uses the same predicate, `superseded_at IS NULL`.
 
 ### 4. Handoff context: what a new session's agent knows
 
+A fork's or a rewind's new session continues its lineage's history, and the
+chat shows it. Its agent knows it one of two ways:
+
 | Mode | Used by | What the agent gets |
 |---|---|---|
-| `None` | fork "fresh" | nothing carried |
-| `Summary` | fork; rewind fallback | an LLM-written summary of the history up to the anchor, stored on the session and injected through the normal instruction path (bounded, so it fits argv on every OS) |
-| `Exact` | rewind (supported providers) | a native lossless continuation: the provider resumes its own session truncated at the anchor (Claude: `--resume <src> --fork-session --session-id <new> --resume-session-at <msg>`) |
+| Native (fork `Full`, rewind `Exact`) | fork, by default; rewind, for every provider with a transcript writer | the history itself: it is written as the new session's own provider transcript, which the CLI resumes like any session (*materialize*, below). The agent is also told what the session it continues was told (that session's handoff context), so a part that session knew only as a summary stays known |
+| `Summary` | fork, on request; rewind for a provider without a writer or a mixed-provider history | an LLM-written summary of the history up to the anchor, stored on the session and injected through the normal instruction path (bounded, so it fits argv on every OS) |
 
 `Summary` is provider-neutral prose, so it also enables cross-provider forks
 later.
 
-`Exact` (Claude) facts, from the 2.1.287 binary:
-- `--resume-session-at` takes the uuid of the last chain entry to *keep*. To
-  rewind before prompt T, pass T's `parentUuid` (`agent::claude_branch_before`).
-- It is honored only in print mode, so `Exact` works in the chat view only.
-  Switching to the native view is refused until the branch has its first
-  message.
-- A resume can't cut before the last compaction. Such cuts fall back to
-  `Summary`.
-- The branched transcript repeats the kept history under the same `uuid`s.
-  Ingestion for a branched session skips records whose `native_id` is already
-  in its inherited history.
-- The branch point is persisted on the session (`branch_from_session`,
-  `branch_at_message`, migration 0042). A launch branches while the session's
-  own transcript has no message yet, so it survives restarts with no in-memory
-  state.
+**Materialize** (`supervisor/materialize.rs`). Fletch stores every provider's
+transcript lines verbatim, and each reader knows where its CLI keeps sessions
+(`TranscriptReader::locate`). So a native continuation needs no CLI fork
+feature: Fletch writes the session file and the CLI resumes it.
+- *What is copied:* the stitched history below the cut
+  (`read_lineage_records`, the same records the new session shows), only
+  `source = 'transcript'` main-transcript records. Sub-agent records (ingested
+  from their own files, tagged `parent_tool_use_id`) and live-compiled records
+  stay out. A record of another provider makes a native continuation
+  impossible: the fork is refused, and the rewind summarizes.
+- *The writer* (`TranscriptReader::write`, beside each reader in
+  `agent/providers/<p>.rs`) writes the bodies as they are, changing only the
+  session-identity fields, where the launcher will look:
+
+  | Provider | File | Identity fields |
+  |---|---|---|
+  | claude | `<projects>/<cwd, non-alphanumerics as '-'>/<id>.jsonl`; `<projects>` is the per-agent `.fletch-claude-projects` beside the checkout in a container sandbox, else `CLAUDE_CONFIG_DIR`'s or `~/.claude`'s | every line's `sessionId` and `cwd` |
+  | codex | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<local time>-<id>.jsonl` | the `session_meta` payload's `id`, `session_id`, `cwd` |
+  | pi | `~/.pi/agent/sessions/<cwd slug>/<UTC time>_<id>.jsonl` | the `session` header's `id` and `cwd` |
+
+  Cursor and Antigravity keep private storage, and an OpenCode copy would
+  re-key every message and part, so they have no writer and carry a summary
+  only (`AgentCapabilities::transcript_writer`, mirrored by the client's
+  `transcriptWriter`). A claude history with no message (only what precedes
+  the first prompt) is not written: claude can neither resume it nor start a
+  fresh session under an id whose file exists.
+- *Counted, not double-stored:* the file is read back with the provider's own
+  `locate` and `read`; the record count is stored as
+  `sessions.transcript_prefix` (migration 0045). Ingestion numbers a
+  transcript's records as usual, so positional ids are the lines' places in
+  the file, then drops the first `transcript_prefix` of a read from the top
+  (every full read; a tail read from offset 0). A tail read past the top
+  numbers on from `transcript_prefix` plus what was ingested. That is the one
+  rule, in `ingest_session_records`.
+- *Launch:* the session has its provider session id before its first launch:
+  claude's minted with the row, a per-turn provider's set to the one the file
+  was written as. Claude's fresh-or-resume choice is read from its own
+  transcript, so it resumes; codex and pi resume by id on every turn.
+- A cut after a compaction needs nothing special: the copied lines hold the
+  provider's own compaction records, which its resume honors.
 
 The summarizer runs once at fork or rewind time, as a provisioning stage
 (`Summarizing`). It uses the parent's provider and model in a one-shot,
@@ -169,16 +196,22 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 ## Flows
 
 ### Fork `(parent, anchor?, code, context)`
-1. Resolve the anchor to `(origin_session, cut_seq)`.
-2. Create the child workspace and session. If `context != None`, set
-   `parent_session_id = origin_session` and `parent_cut_seq = cut_seq`.
+1. Resolve the anchor to `(origin_session, cut_seq)`. `Full` is refused here,
+   before anything is created, for a provider without a transcript writer or a
+   history that is partly another provider's.
+2. Create the child workspace and session with `parent_session_id =
+   origin_session` and `parent_cut_seq = cut_seq`. For `Full`, the session is
+   told what the origin session was told.
 3. Code:
    - `Clean`: the parent's base branch.
    - `Current`: snapshot the parent now.
    - `AtMessage`: the checkpoint for "through T".
-4. Context `Summary`: run the summarizer stage and store the summary on the
-   child session.
-5. Spawn the agent (fresh provider session).
+4. Context, once the child's checkouts exist:
+   - `Full`: materialize the history into the child's session. A failure
+     fails the spawn.
+   - `Summary`: run the summarizer stage and store the summary on the child
+     session.
+5. Spawn the agent: it resumes the written session (`Full`), or starts fresh.
 
 ### Rewind `(agent, turn T, conversation | code | both)`
 `Supervisor::rewind`, from the per-message rewind menu in the chat. It holds
@@ -186,10 +219,8 @@ the agent's delivery lock and input route throughout, so no message starts a
 turn and no archive takes the workspace halfway through.
 
 - **Refused** while a turn runs or the agent starts ("stop the agent first"),
-  in the native view (rewind lives in the chat view, the only one in which
-  claude resumes a conversation cut at a message), and for a workflow step.
-  Everything that can refuse (the anchor, the code's checkpoint) is checked
-  before anything changes.
+  and for a workflow step. Either view will do. Everything that can refuse
+  (the anchor, the code's checkpoint) is checked before anything changes.
 - **Code:** in each checkout, restore checkpoint(T): files and HEAD
   (`restore_turn_code`). Only for a turn of a session the workspace ran
   itself: an inherited turn's checkpoints are in the other workspace's
@@ -214,16 +245,21 @@ turn and no archive takes the workspace halfway through.
 - **Conversation:**
   1. Resolve `Before(T)` to the lineage `(session owning T, cut before T)`.
   2. Choose the handoff (below).
-  3. `start_session`: a new current session with that lineage, natively
-     branched for `Exact`; the old session is superseded, its idle process
-     stopped and its queued messages dropped. The agent goes `Spawning`. The
-     lifecycle lock is held over the switch, as a spawn holds it.
-  4. For `Summary`, the summarizer runs in the `Summarizing` stage, as a fork's
-     does, and its context is stored on the new session.
-  5. Launch `Fresh` (an `Exact` session launches as its branch until the
-     branch lands). A launch that fails leaves the agent in error, as a failed
-     spawn does; resuming it launches the rewound session.
-  6. The client rebuilds the chat from the new history and prefills the
+  3. For `Exact`, write the history before T as a new provider session
+     (materialize), before anything changes: a failure to write it leaves the
+     conversation as it was.
+  4. `start_session`: a new current session with that lineage, as the
+     written provider session with its `transcript_prefix` for `Exact`; the old
+     session is superseded, its idle process stopped and its queued messages
+     dropped. The agent goes `Spawning`. The lifecycle lock is held over the
+     switch, as a spawn holds it.
+  5. `Exact`: the new session is told what T's session was told. `Summary`:
+     the summarizer runs in the `Summarizing` stage, as a fork's does. Either
+     context is stored on the new session.
+  6. Launch: the written session resumes, anything else starts fresh. A
+     launch that fails leaves the agent in error, as a failed spawn does;
+     resuming it launches the rewound session.
+  7. The client rebuilds the chat from the new history and prefills the
      composer with T's text.
 - **Both:** code first, then the conversation. A conversation that can't be
   rewound after the code was restored comes back in the outcome as an error
@@ -233,23 +269,14 @@ The client offers the undo while `has_code_undo` says there is one: right
 after the restore, and again when the agent's chat opens. Dismissing it
 discards the point, and the agent's next turn retires it.
 
-**`Exact` or `Summary`.** `Exact` when all of these hold:
-- the provider can branch a session at a message (claude);
-- the workspace ran T's session itself (its current session or one it
-  superseded, not one inherited from another workspace or handed over by
-  `detach_children`), since claude finds a session's transcript by the working
-  directory;
-- the session can still be cut before T (`claude_branch_before`): its records
-  from T's prompt on hold no compaction. That is all of the session's own
-  records, including any part a later rewind left behind, which a resume still
-  loads.
-
-Then the new session branches at T's prompt's parent. When T opened its
-session there is nothing in it to keep: the new session starts fresh, told what
-that session's agent was told (its handoff context, nothing for a workspace's
-first session). Otherwise it's `Summary`: the client renders the history
-before T (`handoffTranscriptBefore`), and the summary of it falls back to its
-tail. With nothing before T, nothing is told.
+**`Exact` or `Summary`.** `Exact` when the provider has a transcript writer
+(claude, codex, pi) and the history before T is all its own; it doesn't
+matter where T ran, since the history is copied from what Fletch stored. The
+new session is materialized with that history; with none to write (T opened
+the conversation), it starts fresh, told what T's session was told (nothing
+for a workspace's first session). Otherwise it's `Summary`: the client renders
+the history before T (`handoffTranscriptBefore`), and the summary of it falls
+back to its tail. With nothing before T, nothing is told.
 
 ## Module map
 
@@ -257,23 +284,25 @@ tail. With nothing before T, nothing is told.
 
 | Module | Owns |
 |---|---|
-| `workspace/lineage.rs` | the `SessionLineage` a child session is created with, anchor → cut resolution, the stitched `read_history_records` / `read_history_turns`, the session a turn ran in (`turn_session`, `bodies_from_turn`), `detach_children` |
+| `workspace/lineage.rs` | the `SessionLineage` a child session is created with, anchor → cut resolution, the stitched `read_history_records` / `read_history_turns`, the history a lineage shows before its session exists (`read_lineage_records`), whether a workspace ran a turn's session (`turn_is_own`), `detach_children` |
 | `workspace/turns.rs` | user turns, and matching each to its prompt record |
-| `workspace/sessions.rs` | the single current-session helper |
+| `workspace/sessions.rs` | the single current-session helper; a session's written transcript (`NativeTranscript`, `transcript_prefix`) |
 | `git/checkpoint.rs` | capture, fetch-into and restore, built on the snapshot primitive |
 | `supervisor/checkpoints.rs` | capture for every checkout of an agent at turn delivery, a workspace's pinned code, restoring a turn's code and its undo point (undo, discard, `has_code_undo`) |
+| `supervisor/materialize.rs` | the native continuation: which records are copied, writing and counting a session's transcript, `materialize` for a fork |
+| `supervisor/session_sync.rs` | ingestion, and the prefix rule |
 | `supervisor/fork.rs` | fork orchestration only |
 | `supervisor/session_switch.rs` | starting a new session in place: the runtime half of the switch |
 | `supervisor/rewind.rs` | rewind orchestration only, and the code preview its confirmation reads |
 | `handoff/` | the summarizer: the one-shot runner (per-provider flags are `agent::OneShot` descriptors), the fallback tail |
-| `agent` | `SessionStart { Fresh, Resume, Branch(BranchPoint) }` replaces `fresh: bool`; the `branch` capability per provider |
+| `agent` | `SessionStart { Fresh, Resume }`, chosen from the session's own transcript; each provider's transcript writer beside its reader, and the `transcript_writer` capability |
 
 **Frontend** (`src`)
 
 | Module | Owns |
 |---|---|
 | `adapters/handoff.ts` | the handoff transcript: the cut (through T for a fork, before T for a rewind), the compaction start, tool caps and the input budget (was `store/forkDigest.ts`) |
-| fork UI | sends `turn_id` anchors |
+| fork UI | `Workspace/ForkMenu`: "Full conversation" (the default, disabled with why for a provider without a writer) or "Summary"; sends `turn_id` anchors |
 | rewind UI | `Workspace/RewindMenu` (a per-message action, its availability rules and the code confirmation), `Workspace/CodeUndoBar`, `store/rewind.ts` |
 
 ## Removed by this design
@@ -283,10 +312,18 @@ tail. With nothing before T, nothing is told.
 - Prompt-ordinal anchors, and the `APP_ACTION_PREFIX` copy in Rust.
 - Stamping the parent's task on the child to unlock the chat-history load.
 - Every "latest session by `created_at`" query.
+- A "fresh conversation" fork: every fork continues the parent's.
+- CLI fork features (claude's `--fork-session` / `--resume-session-at`), the
+  branch point on the session (`SessionStart::Branch`, migration 0042, dropped
+  by 0045), and skipping a branched transcript's repeated records by
+  `native_id`: the prefix rule covers it.
 
 ## Known limits (v1)
 - Native PTY turns can't be anchors or checkpoints.
-- `Exact` is Claude-only. Other providers rewind with `Summary`.
+- Native continuation is claude, codex and pi. Cursor, Antigravity and
+  OpenCode fork and rewind with `Summary`.
+- A claude checkout path over 200 characters can't be materialized: claude
+  names such a session dir with a hash of its own.
 - Side effects outside the worktree (database changes, installs, pushes) are
   not rolled back.
 - Fork and rewind are desktop-only: their ops aren't on the remote wire yet.
@@ -304,6 +341,7 @@ tail. With nothing before T, nothing is told.
 | 1 | Cap the current digest (hotfix) | none |
 | 2 | Lineage, the current-session helper, fork by reference, `turn_id` anchors, `detach_children` | none |
 | 3 | Checkpoint capture and the git/checkpoint API, no UI | none |
-| 5 | `SessionStart::Branch` and the Claude branch capability | none |
+| 5 | `SessionStart::Branch` and the Claude branch capability (replaced by 7) | none |
 | 4 | Handoff summarizer, the "code as of this message" fork option, fork UI cleanup | 1, 2, 3 |
 | 6 | Rewind (conversation, code, both) | 2, 3, 4, 5 |
+| 7 | Native continuation (materialize): fork `Full`, rewind `Exact` for every provider with a writer | 6 |
