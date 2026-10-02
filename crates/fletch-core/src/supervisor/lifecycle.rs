@@ -368,10 +368,10 @@ pub struct SpawnRequest {
     /// and teardown must never remove the directory: the run owns it, not the
     /// agent. `None` for every non-kernel spawn.
     pub existing_workspace: Option<PathBuf>,
-    /// A fork's code: snapshots the new checkouts start from once they are
-    /// provisioned, matched to them by subdir (`Supervisor::start_from`).
-    /// Empty for a normal spawn or a clean fork.
-    pub code_from: Vec<super::CodeSource>,
+    /// A fork's code: the pinned code of the workspace the new checkouts start
+    /// from once they are provisioned, each from the snapshot of its repo
+    /// (`Supervisor::start_from`). `None` for a normal spawn or a clean fork.
+    pub code_from: Option<super::PinnedCode>,
     /// The GitHub issue this spawn originates from (bare issue number as text),
     /// set by the Home inbox's "Start work". Persisted on the workspace so the
     /// agent's PR closes it. `None` for a spawn not tied to an issue.
@@ -792,17 +792,17 @@ impl Supervisor {
                 }
             }
 
-            // A fork's code: every checkout with a snapshot starts from it,
-            // once all of them exist. Fatal on failure — the user asked for
-            // this code, so silently producing a clean fork would drop it. A
-            // workflow step never forks code, so this is always a non-run
-            // clone, torn down like the start_process failure path below.
-            if !code_from.is_empty() {
+            // A fork's code: the checkouts start from it, once all of them
+            // exist. Fatal on failure — the user asked for this code, so
+            // silently producing a clean fork would drop it. A workflow step
+            // never forks code, so this is always a non-run clone, torn down
+            // like the start_process failure path below.
+            if let Some(code) = &code_from {
                 if !progress(SpawnStage::Carrying, None) {
                     discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
                     return;
                 }
-                if let Err(e) = sup.start_from(&id_for_task, &code_from).await {
+                if let Err(e) = sup.start_from(&id_for_task, code).await {
                     discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
                     fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                     return;
