@@ -21,7 +21,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::{capabilities, claude_branch_before, BranchPoint, SessionStart};
 use crate::error::{Error, Result};
-use crate::git::checkpoint;
 use crate::host::EngineCtx;
 use crate::workspace::{AgentRecord, AgentStatus, AgentView, Anchor, SessionLineage};
 
@@ -51,12 +50,12 @@ impl RewindScope {
 /// What a rewind did.
 #[derive(Debug, Serialize)]
 pub struct RewindOutcome {
-    /// The code restore, which [`Supervisor::undo_code_restore`] reverses;
-    /// `None` when the code wasn't rewound.
+    /// What the code restore did; `None` when the code wasn't rewound. Its
+    /// undo point is the backend's ([`Supervisor::undo_code_restore`]).
     pub code: Option<RestoreReport>,
     /// Why the conversation couldn't be rewound after the code was. The code
-    /// stays restored and `code` can undo it, so this is reported alongside
-    /// it rather than as the rewind's error.
+    /// stays restored, and can be undone, so this is reported alongside it
+    /// rather than as the rewind's error.
     pub conversation_error: Option<String>,
 }
 
@@ -140,8 +139,11 @@ impl Supervisor {
 
     /// What rewinding `agent_id`'s code to before `turn_id` would do, for the
     /// confirmation, or why it can't: the turn ran in another workspace (a
-    /// fork's parent), whose checkouts hold its checkpoints, or no checkpoint
-    /// of it was kept.
+    /// fork's parent), whose checkouts hold its checkpoints, or no checkout
+    /// kept a checkpoint of it. When only some did, the others are in the
+    /// report without one, for the confirmation to name: they stay as they
+    /// are. A checkpoint that can't be looked up is an error, never taken for
+    /// a missing one.
     pub async fn preview_rewind_code(
         &self,
         agent_id: &str,
@@ -159,43 +161,6 @@ impl Supervisor {
             ));
         }
         Ok(report)
-    }
-
-    /// Undo the code restore `report` describes ([`RewindOutcome::code`]):
-    /// put each checkout it changed back as it stood just before, from its
-    /// undo point. Under the same lock and route as the restore, and refused
-    /// while a turn runs, as the restore is.
-    pub async fn undo_code_restore(&self, agent_id: &str, report: &RestoreReport) -> Result<()> {
-        self.workspace.agent(agent_id)?;
-        let _delivering = self.lock_delivery(agent_id).await;
-        let _route = self.open_route(agent_id)?;
-        if self.is_busy(agent_id) {
-            return Err(Error::Other(
-                "Stop the agent before undoing the code restore.".into(),
-            ));
-        }
-        let record = self.workspace.agent(agent_id)?;
-        let mut undos = Vec::new();
-        for restored in &report.repos {
-            let Some(undo) = &restored.undo_ref else {
-                continue;
-            };
-            if !checkpoint::is_undo_ref(undo) {
-                return Err(Error::Other(format!("not an undo point: {undo:?}")));
-            }
-            let repo = record
-                .repos
-                .iter()
-                .find(|repo| repo.subdir == restored.subdir)
-                .ok_or_else(|| Error::Other(format!("no checkout {}", restored.subdir)))?;
-            undos.push((repo.checkout_path(agent_id)?, undo));
-        }
-        // Each one only resets to its own undo point, so a retry after a
-        // failure part way redoes the ones already back without harm.
-        for (checkout, undo) in undos {
-            checkpoint::restore(&checkout, undo).await?;
-        }
-        Ok(())
     }
 
     /// Why `record` can't be rewound now, if it can't.
@@ -713,16 +678,63 @@ mod tests {
 
         assert_eq!(code(&checkout), "after t1");
         assert_eq!(outcome.conversation_error, None);
+        assert!(outcome.code.is_some());
         assert_eq!(sup.workspace.agent(AGENT).unwrap().session_id, session);
-        let report = outcome.code.unwrap();
-        // Only an undo point the restore made is restored from.
-        let mut forged = report.clone();
-        forged.repos[0].undo_ref = Some("refs/heads/main".into());
-        assert!(sup.undo_code_restore(AGENT, &forged).await.is_err());
-        assert_eq!(code(&checkout), "after t1");
 
-        sup.undo_code_restore(AGENT, &report).await.unwrap();
+        assert!(sup.has_code_undo(AGENT).await.unwrap());
+        sup.undo_code_restore(AGENT).await.unwrap();
         assert_eq!(code(&checkout), "after t2");
+        assert!(!sup.has_code_undo(AGENT).await.unwrap());
+    }
+
+    /// A workspace with a checkout attached after the turn: the code it can
+    /// restore is restored, and the preview names the checkout it can't.
+    #[tokio::test]
+    async fn a_partial_snapshot_restores_what_it_has_and_names_the_rest() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkout) = talked(td.path()).await;
+        let (ctx, _sink, _dir) = test_ctx();
+        let later = committed_repo(td.path(), "later").await;
+        sup.workspace.add_workspace_repo(later.clone()).unwrap();
+        let attached = crate::workspace::TrackedRepo {
+            repo_path: later.clone(),
+            subdir: "repo-1".into(),
+            adopted_checkout: Some(later.clone()),
+            ..sup.workspace.agent(AGENT).unwrap().repos[0].clone()
+        };
+        sup.workspace.append_tracked_repo(AGENT, attached).unwrap();
+        edit(&later, "after t2");
+
+        let preview = sup.preview_rewind_code(AGENT, "t2").await.unwrap();
+        let snapshots: Vec<(&str, bool)> = preview
+            .repos
+            .iter()
+            .map(|repo| (repo.subdir.as_str(), repo.checkpoint.is_some()))
+            .collect();
+        assert_eq!(snapshots, [("repo-0", true), ("repo-1", false)]);
+
+        sup.rewind(&ctx, AGENT, "t2", RewindScope::Code, None)
+            .await
+            .unwrap();
+        assert_eq!(code(&checkout), "after t1");
+        assert_eq!(code(&later), "after t2");
+    }
+
+    /// A checkpoint that can't be looked up is an error of its own, never
+    /// mistaken for one that wasn't kept.
+    #[tokio::test]
+    async fn a_failed_lookup_is_not_a_missing_snapshot() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkout) = talked(td.path()).await;
+        std::fs::remove_dir_all(&checkout).unwrap();
+
+        let err = sup
+            .preview_rewind_code(AGENT, "t2")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(!err.contains("no snapshot"), "{err}");
     }
 
     #[tokio::test]
@@ -781,9 +793,8 @@ mod tests {
             record.session_id
         );
         assert!(sink.events().is_empty(), "no session switch was announced");
-        sup.undo_code_restore(AGENT, &outcome.code.unwrap())
-            .await
-            .unwrap();
+        assert!(sup.has_code_undo(AGENT).await.unwrap());
+        sup.undo_code_restore(AGENT).await.unwrap();
         assert_eq!(code(&checkout), "after t2");
     }
 

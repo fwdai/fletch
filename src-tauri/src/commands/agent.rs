@@ -128,17 +128,31 @@ pub async fn preview_rewind_code(
         .await
 }
 
-/// Undo a rewind's code restore, from the report the rewind returned.
+/// Undo an agent's last code restore, from the undo point its checkouts hold.
 #[tauri::command]
 pub async fn undo_code_restore(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
-    report: crate::supervisor::RestoreReport,
 ) -> Result<()> {
-    supervisor
-        .inner()
-        .undo_code_restore(&agent_id, &report)
-        .await
+    supervisor.inner().undo_code_restore(&agent_id).await
+}
+
+/// Let an agent's last code restore's undo point go, keeping the restored code.
+#[tauri::command]
+pub async fn discard_code_undo(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<()> {
+    supervisor.inner().discard_code_undo(&agent_id).await
+}
+
+/// Whether an agent's last code restore can still be undone.
+#[tauri::command]
+pub async fn has_code_undo(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<bool> {
+    supervisor.inner().has_code_undo(&agent_id).await
 }
 
 #[tauri::command]

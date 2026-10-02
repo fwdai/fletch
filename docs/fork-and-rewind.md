@@ -155,10 +155,14 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 - Checkpoints live in the checkout, so they disappear when the checkout is
   deleted on archive. "Code as of this message" is then unavailable.
 - A child receives a checkpoint by fetching its ref from the checkout that
-  holds it and restoring it, in each checkout with the same subdir: the tree
-  is the snapshot's and HEAD the snapshot's parent, so commits stay commits
-  and uncommitted work stays uncommitted. A fork of the current code pins the
+  holds it and restoring it, in its checkout of the same repo: the tree is
+  the snapshot's and HEAD the snapshot's parent, so commits stay commits and
+  uncommitted work stays uncommitted. A fork of the current code pins the
   parent's live tree the same way, under a key of its own.
+- A fork takes the code of every checkout of the source workspace or none of
+  it: a checkout without the checkpoint, or a repo the child doesn't check
+  out, fails the fork and names the repos. A repo the child checks out but
+  the source never had keeps its clean base.
 
 ## Flows
 
@@ -189,10 +193,19 @@ turn and no archive takes the workspace halfway through.
   itself: an inherited turn's checkpoints are in the other workspace's
   checkouts, so its code is unavailable. The client confirms first, from
   `preview_rewind_code`: per repo, the commits made after T that leave the
-  branch, flagged when already pushed (the next push has to force). The
-  checked-out branch moves back with HEAD, and each checkout is first pinned
-  at `refs/fletch/undo/<id>`, uncommitted work included, which keeps those
-  commits reachable; `undo_code_restore` puts the checkouts back from it.
+  branch, flagged when already pushed (the next push has to force), and every
+  repo that kept no snapshot of T and so stays as it is now. A partial restore
+  is confirmed knowingly; one with no snapshot at all is refused, and a failed
+  lookup is an error, never "no snapshot".
+  The checked-out branch moves back with HEAD, and each checkout it changes is
+  first pinned at `refs/fletch/undo/latest`, uncommitted work included, which
+  keeps those commits reachable and makes the restore undoable. The backend
+  owns that one undo point per checkout: a new restore replaces it, and it
+  goes when it is undone (`undo_code_restore`) or discarded
+  (`discard_code_undo`), or when the next turn is delivered (undoing then would
+  clobber the agent's work; the turn's checkpoint keeps that code anyway).
+  `has_code_undo` tells a client whether one is still there, after a restart
+  too.
 - **Conversation:**
   1. Resolve `Before(T)` to the lineage `(session owning T, cut before T)`.
   2. Choose the handoff (below).
@@ -208,12 +221,12 @@ turn and no archive takes the workspace halfway through.
   6. The client rebuilds the chat from the new history and prefills the
      composer with T's text.
 - **Both:** code first, then the conversation. A conversation that can't be
-  rewound after the code was restored comes back in the outcome with the
-  code's report, so the restore can still be undone.
+  rewound after the code was restored comes back in the outcome as an error
+  beside the code's report; the restore's undo point is there to undo it.
 
-The client offers the code's undo until it is used or dismissed, or the
-agent's next turn starts, after which undoing would discard that turn's work
-too.
+The client offers the undo while `has_code_undo` says there is one: right
+after the restore, and again when the agent's chat opens. Dismissing it
+discards the point, and the agent's next turn retires it.
 
 **`Exact` or `Summary`.** `Exact` when all of these hold:
 - the provider can branch a session at a message (claude);
@@ -243,10 +256,10 @@ tail. With nothing before T, nothing is told.
 | `workspace/turns.rs` | user turns, and matching each to its prompt record |
 | `workspace/sessions.rs` | the single current-session helper |
 | `git/checkpoint.rs` | capture, fetch-into and restore, built on the snapshot primitive |
-| `supervisor/checkpoints.rs` | capture for every checkout of an agent at turn delivery |
+| `supervisor/checkpoints.rs` | capture for every checkout of an agent at turn delivery, a workspace's pinned code, restoring a turn's code and its undo point (undo, discard, `has_code_undo`) |
 | `supervisor/fork.rs` | fork orchestration only |
 | `supervisor/session_switch.rs` | starting a new session in place: the runtime half of the switch |
-| `supervisor/rewind.rs` | rewind orchestration only, the code preview and the undo |
+| `supervisor/rewind.rs` | rewind orchestration only, and the code preview its confirmation reads |
 | `handoff/` | the summarizer: the one-shot runner (per-provider flags are `agent::OneShot` descriptors), the fallback tail |
 | `agent` | `SessionStart { Fresh, Resume, Branch(BranchPoint) }` replaces `fresh: bool`; the `branch` capability per provider |
 

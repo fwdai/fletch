@@ -1699,6 +1699,8 @@ pub fn run() {
             commands::rewind_agent,
             commands::preview_rewind_code,
             commands::undo_code_restore,
+            commands::discard_code_undo,
+            commands::has_code_undo,
             commands::write_to_agent,
             commands::send_user_message,
             commands::answer_tool_use,
