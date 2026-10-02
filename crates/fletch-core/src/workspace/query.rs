@@ -8,7 +8,7 @@ impl WorkspaceManager {
 
     /// Translate a requested runtime status into durable disposition writes.
     /// There is no status column — only the workspace's `stopped_at` and the
-    /// session's `last_error` are persisted; everything else is derived.
+    /// current session's `last_error` are persisted; everything else is derived.
     pub(super) fn apply_status(
         conn: &Connection,
         id: &str,
@@ -31,14 +31,16 @@ impl WorkspaceManager {
                     [id],
                 )?;
                 conn.execute(
-                    "UPDATE sessions SET last_error = NULL WHERE workspace_id = ?1",
+                    "UPDATE sessions SET last_error = NULL
+                     WHERE workspace_id = ?1 AND superseded_at IS NULL",
                     [id],
                 )?;
             }
             // Record the failure on the session row.
             AgentStatus::Error => {
                 conn.execute(
-                    "UPDATE sessions SET last_error = ?1 WHERE workspace_id = ?2",
+                    "UPDATE sessions SET last_error = ?1
+                     WHERE workspace_id = ?2 AND superseded_at IS NULL",
                     rusqlite::params![last_error, id],
                 )?;
             }

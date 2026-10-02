@@ -133,11 +133,12 @@ export async function loadPulseTotals(projectId: string, nowMs: number): Promise
  *  NOT snapshotted — see `recordUsageSnapshot` for why a cumulative
  *  catalog-priced number would corrupt the per-day history. */
 export async function loadPulseUsage(projectId: string, catalog: SlimCatalog): Promise<PulseUsage> {
+  // The provider of each workspace's current session (the one not superseded).
   const rows = await dbQuery<{ id: string; provider: string | null }>(
-    `SELECT w.id AS id,
-            (SELECT s.provider FROM sessions s WHERE s.workspace_id = w.id
-             ORDER BY s.created_at DESC LIMIT 1) AS provider
-     FROM workspaces w WHERE w.project_id = ?`,
+    `SELECT w.id AS id, s.provider AS provider
+     FROM workspaces w
+     LEFT JOIN sessions s ON s.workspace_id = w.id AND s.superseded_at IS NULL
+     WHERE w.project_id = ?`,
     [projectId],
   );
   let tokens = 0;

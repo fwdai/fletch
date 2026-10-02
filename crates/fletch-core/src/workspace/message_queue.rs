@@ -1,5 +1,6 @@
 //! `impl WorkspaceManager` — the pending outgoing-message queue.
 
+use super::sessions::current_session_id;
 use super::*;
 
 impl WorkspaceManager {
@@ -98,7 +99,8 @@ impl WorkspaceManager {
     /// rehydrating the in-memory queue at startup. Returns `(workspace_id,
     /// PendingMsg)` pairs in per-workspace enqueue (seq) order. Archived
     /// workspaces are excluded so a leftover row can never resurrect a queue for
-    /// an agent the user has put away.
+    /// an agent the user has put away, and so are superseded sessions: only the
+    /// current one has an agent to deliver to.
     pub fn read_all_pending_messages(
         &self,
     ) -> Result<Vec<(String, crate::message_queue::PendingMsg)>> {
@@ -106,7 +108,7 @@ impl WorkspaceManager {
         let mut stmt = conn.prepare(
             "SELECT s.workspace_id, p.turn_id, p.text, p.attachments
              FROM pending_messages p
-             JOIN sessions s ON s.id = p.session_id
+             JOIN sessions s ON s.id = p.session_id AND s.superseded_at IS NULL
              JOIN workspaces w ON w.id = s.workspace_id
              WHERE w.archived_at IS NULL
              ORDER BY s.workspace_id, p.seq ASC",

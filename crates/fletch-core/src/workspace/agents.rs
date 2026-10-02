@@ -410,7 +410,8 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE sessions SET provider_session_id = ?1 WHERE workspace_id = ?2",
+            "UPDATE sessions SET provider_session_id = ?1
+             WHERE workspace_id = ?2 AND superseded_at IS NULL",
             rusqlite::params![session_id, id],
         )?;
         Ok(())
@@ -420,7 +421,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE sessions SET view = ?1 WHERE workspace_id = ?2",
+            "UPDATE sessions SET view = ?1 WHERE workspace_id = ?2 AND superseded_at IS NULL",
             rusqlite::params![view_to_str(&view), id],
         )?;
         Ok(())
@@ -435,7 +436,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE sessions SET effort = ?1 WHERE workspace_id = ?2",
+            "UPDATE sessions SET effort = ?1 WHERE workspace_id = ?2 AND superseded_at IS NULL",
             rusqlite::params![effort, id],
         )?;
         Ok(())
@@ -449,7 +450,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE sessions SET model = ?1 WHERE workspace_id = ?2",
+            "UPDATE sessions SET model = ?1 WHERE workspace_id = ?2 AND superseded_at IS NULL",
             rusqlite::params![model, id],
         )?;
         Ok(())

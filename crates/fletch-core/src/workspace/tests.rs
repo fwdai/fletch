@@ -2122,6 +2122,77 @@ fn append_session_record_to_workspace_with_no_session_is_noop() {
     assert!(wm.read_session_records("no-such-ws").unwrap().is_empty());
 }
 
+// ── the current session ───────────────────────────────────────────────
+
+#[test]
+fn a_workspace_has_at_most_one_current_session() {
+    let db = test_db();
+    let (ws, _wm) = make_workspace_with_session(&db);
+    let conn = db.lock();
+    let second = conn.execute(
+        "INSERT INTO sessions (id, workspace_id, created_at) VALUES ('s2', ?1, 0)",
+        [&ws],
+    );
+    assert!(second.is_err(), "a second current session must be refused");
+    conn.execute(
+        "INSERT INTO sessions (id, workspace_id, superseded_at, created_at)
+         VALUES ('old', ?1, 1, 0)",
+        [&ws],
+    )
+    .expect("a superseded session sits beside the current one");
+}
+
+#[test]
+fn a_superseded_session_is_invisible_to_current_session_reads() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    // Newer by created_at — the old `ORDER BY created_at DESC LIMIT 1` reads
+    // would have picked it.
+    db.lock()
+        .execute(
+            "INSERT INTO sessions (id, workspace_id, provider, superseded_at, created_at)
+             VALUES ('old', ?1, 'codex', 1, 9999999999999)",
+            [&ws],
+        )
+        .unwrap();
+
+    let listed: Vec<_> = wm
+        .current()
+        .unwrap()
+        .agents
+        .into_iter()
+        .filter(|r| r.id == ws)
+        .collect();
+    assert_eq!(listed.len(), 1, "one row per workspace");
+    assert_eq!(listed[0].provider, "claude");
+    assert_eq!(wm.agent(&ws).unwrap().provider, "claude");
+
+    let body = serde_json::json!({"n": 1});
+    wm.append_session_records(&ws, "claude", "transcript", None, &[("own", &body)])
+        .unwrap();
+    assert_eq!(wm.read_session_records(&ws).unwrap().len(), 1);
+    assert_eq!(wm.session_record_count(&ws).unwrap(), 1);
+    let old_records: i64 = db
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM session_records WHERE session_id = 'old'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_records, 0, "writes land in the current session");
+
+    wm.update_agent_model(&ws, Some("m")).unwrap();
+    let old_model: Option<String> = db
+        .lock()
+        .query_row("SELECT model FROM sessions WHERE id = 'old'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(old_model, None, "updates touch only the current session");
+    assert_eq!(wm.agent(&ws).unwrap().model.as_deref(), Some("m"));
+}
+
 #[test]
 fn insert_and_read_user_turns_roundtrip() {
     let db = test_db();

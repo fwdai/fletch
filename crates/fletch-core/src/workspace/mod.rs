@@ -441,17 +441,6 @@ fn now_millis() -> i64 {
     Utc::now().timestamp_millis()
 }
 
-/// The workspace's current session id (the most recent session row). `None`
-/// when the workspace has no session yet.
-fn current_session_id(conn: &Connection, workspace_id: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
-        [workspace_id],
-        |r| r.get(0),
-    )
-    .ok()
-}
-
 // ── WorkspaceManager ──────────────────────────────────────────────────────
 
 /// One canonical durable record from `session_records`, in the agent's own
@@ -503,8 +492,10 @@ pub struct WorkspaceManager {
 
 /// Identity + task metadata live on `workspaces`; the provider run
 /// (provider / view / session id / last_error / effort / model /
-/// instructions / custom agent) lives on the single `sessions` row. Status
-/// is derived, never selected. Callers append their own `ORDER BY` / `WHERE`.
+/// instructions / custom agent) lives on the workspace's current `sessions`
+/// row — joined on its own, so a workspace is one row however many superseded
+/// sessions it keeps. Status is derived, never selected. Callers append their
+/// own `ORDER BY` / `WHERE`.
 const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
             w.stopped_at, w.archived_at,
             s.provider, s.view, s.provider_session_id, s.last_error,
@@ -512,7 +503,7 @@ const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created
             s.skills, s.mcp_servers,
             w.sandbox_engine, w.owner_run_id, w.issue_ref, w.purpose, w.title
      FROM workspaces w
-     LEFT JOIN sessions s ON s.workspace_id = w.id";
+     LEFT JOIN sessions s ON s.workspace_id = w.id AND s.superseded_at IS NULL";
 
 /// Raw column tuple decoded from an [`AGENT_SELECT`] row, in column order.
 type AgentRow = (

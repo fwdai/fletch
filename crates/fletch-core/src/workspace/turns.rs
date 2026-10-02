@@ -1,5 +1,6 @@
 //! `impl WorkspaceManager` — Fletch-origin user turns and their timing.
 
+use super::sessions::current_session_id;
 use super::*;
 
 impl WorkspaceManager {
