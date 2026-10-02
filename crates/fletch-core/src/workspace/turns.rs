@@ -70,6 +70,11 @@ impl WorkspaceManager {
     /// Insert an outgoing user message for the workspace's current session.
     /// Idempotent on `turn_id` (send auto-retries reuse the same id). Returns
     /// `true` if a new row was inserted, `false` on duplicate / no session.
+    ///
+    /// Callers insert before the message reaches the agent, so the row's
+    /// `record_watermark` (the session's last record seq, read in the same
+    /// statement) is below the record its prompt produces
+    /// (`associate_pending_user_turns`).
     pub fn insert_user_turn(
         &self,
         workspace_id: &str,
@@ -92,12 +97,27 @@ impl WorkspaceManager {
         )?;
         let n = tx.execute(
             "INSERT OR IGNORE INTO session_user_turns
-                (turn_id, session_id, seq, text, attachments, native_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
+                (turn_id, session_id, seq, text, attachments, native_id, record_watermark,
+                 created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL,
+                     (SELECT COALESCE(MAX(seq), 0) FROM session_records WHERE session_id = ?2),
+                     ?6)",
             rusqlite::params![turn_id, sid, seq, text, attachments_json, now_millis()],
         )?;
         tx.commit()?;
         Ok(n > 0)
+    }
+
+    /// Withdraw a turn that never reached the agent: the row
+    /// [`Self::insert_user_turn`] just created for a send that then failed,
+    /// before anything could match it. A matched turn is never removed.
+    pub fn delete_pending_user_turn(&self, turn_id: &str) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "DELETE FROM session_user_turns WHERE turn_id = ?1 AND native_id IS NULL",
+            [turn_id],
+        )?;
+        Ok(())
     }
 
     /// Stamp a turn's run start when it flips to Running, with the caller's
@@ -159,18 +179,19 @@ impl WorkspaceManager {
     /// Match pending (`native_id IS NULL`) user turns to their canonical
     /// `session_records` user-message rows and fill in `native_id`. Run at
     /// turn-end after transcript ingest. Matching: for each pending turn (seq
-    /// order) find the lowest-seq transcript record not already claimed,
-    /// ingested at or after the turn was created, whose body contains the
-    /// turn's distinctive marker — the first attachment path (injected by the
-    /// runner as `Attached file: <path>`) when present, else the prompt text.
-    /// Returns the number newly associated.
+    /// order) find the lowest-seq transcript record not already claimed, past
+    /// the turn's `record_watermark`, whose body contains the turn's
+    /// distinctive marker — the first attachment path (injected by the runner
+    /// as `Attached file: <path>`) when present, else the prompt text. Returns
+    /// the number newly associated.
     ///
-    /// A record ingested before its turn existed can't be its prompt: the
-    /// turn's row is written before the message goes out
-    /// (`deliver_user_message`). It can quote it, though, and a short prompt
-    /// ("yes") is quoted often; matched to that, every cut at the turn
-    /// (`resolve_anchor`) would land in the wrong place. Ingest time is stable:
-    /// a re-ingested record keeps its first row (`append_session_records`).
+    /// A record at or below the watermark was stored before the turn's row,
+    /// and so before its message went out (`insert_user_turn`): it can't be the
+    /// prompt. It can quote it, though, and a short prompt ("yes") is quoted
+    /// often; matched to that, every cut at the turn (`resolve_anchor`) would
+    /// land in the wrong place. A seq is fixed for good: a re-ingested record
+    /// keeps its first row (`append_session_records`). A row from before the
+    /// watermark existed has none, and matches any record, as it always did.
     pub fn associate_pending_user_turns(&self, workspace_id: &str) -> Result<usize> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
@@ -178,9 +199,9 @@ impl WorkspaceManager {
         };
 
         // Pending turns, oldest first.
-        let pending: Vec<(String, String, String, i64)> = {
+        let pending: Vec<(String, String, String, Option<i64>)> = {
             let mut stmt = conn.prepare(
-                "SELECT turn_id, text, attachments, created_at FROM session_user_turns
+                "SELECT turn_id, text, attachments, record_watermark FROM session_user_turns
                  WHERE session_id = ?1 AND native_id IS NULL ORDER BY seq ASC",
             )?;
             let v = stmt
@@ -192,10 +213,10 @@ impl WorkspaceManager {
             return Ok(0);
         }
 
-        // Transcript records, oldest first, with their ingest time.
-        let records: Vec<(String, String, i64)> = {
+        // Transcript records, oldest first.
+        let records: Vec<(i64, String, String)> = {
             let mut stmt = conn.prepare(
-                "SELECT native_id, body, created_at FROM session_records
+                "SELECT seq, native_id, body FROM session_records
                  WHERE session_id = ?1 AND source = 'transcript' ORDER BY seq ASC",
             )?;
             let v = stmt
@@ -218,7 +239,7 @@ impl WorkspaceManager {
 
         let tx = conn.unchecked_transaction()?;
         let mut associated = 0usize;
-        for (turn_id, text, attachments_text, created_at) in pending {
+        for (turn_id, text, attachments_text, watermark) in pending {
             let attachments: Vec<String> =
                 serde_json::from_str(&attachments_text).unwrap_or_default();
             // Distinctive needle: an attachment path beats the prompt text
@@ -234,12 +255,13 @@ impl WorkspaceManager {
             let needle_escaped = serde_json::to_string(&needle)
                 .map(|s| s[1..s.len() - 1].to_string())
                 .unwrap_or(needle.clone());
-            let hit = records.iter().find(|(nid, body, ingested_at)| {
-                *ingested_at >= created_at
+            let hit = records.iter().find(|(seq, nid, body)| {
+                // `map_or`, not `is_none_or`: the crate's rust-version is 1.77.
+                watermark.map_or(true, |w| *seq > w)
                     && !claimed.contains(nid)
                     && body.contains(&needle_escaped)
             });
-            if let Some((nid, _, _)) = hit {
+            if let Some((_, nid, _)) = hit {
                 tx.execute(
                     "UPDATE session_user_turns SET native_id = ?1 WHERE turn_id = ?2",
                     rusqlite::params![nid, turn_id],

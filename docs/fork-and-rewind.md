@@ -37,16 +37,23 @@ App-action turns are ordinary turns here. No prefix filtering is needed,
 because anchors are ids.
 
 **Matching a turn to its prompt record** (`associate_pending_user_turns`, at
-turn end): the earliest unclaimed record of the turn's session that was
-ingested at or after the turn was sent, and whose body holds the turn's
-first attachment path, or else its text. A turn's row is written before its
-message goes out, so an earlier record can't be its prompt, though it can quote
-it: without the time rule a short prompt ("yes") matched an earlier answer
-quoting it, and every cut at that turn landed there. A re-ingested record keeps
-its first row, and its first ingest time with it. Records aren't told apart by
-role: no field says "user" across providers (opencode keeps the role on a
-separate message record, codex and antigravity tag by type), and the earliest
-record is the right cut where a provider writes the prompt twice (codex).
+turn end): the earliest unclaimed record of the turn's session past the turn's
+`record_watermark` whose body holds the turn's first attachment path, or else
+its text. The watermark is the session's last record seq when the turn's row
+was written (migration 0044), and every path writes the row before the message
+reaches the agent: a delivered turn, a live-injected one (which takes its row
+back if the write fails), a coalesced flush. So a record at or below it can't
+be the prompt, though it can quote it: without the rule a short prompt ("yes")
+matched an earlier answer quoting it, and every cut at that turn landed there.
+A seq is fixed for good, a re-ingested record keeping its first row, and it
+orders records exactly where a millisecond timestamp can't. A row from before
+the watermark existed has none and is matched as before, with no lower bound.
+Records aren't told apart by role: no field says "user" across providers
+(opencode keeps the role on a separate message record, codex and antigravity
+tag by type), and the earliest record is the right cut where a provider writes
+the prompt twice (codex). One case remains: a live-injected prompt quoted by
+an answer the running turn wrote before reading it, both ingested after the
+row, matches the quote.
 
 ### 2. Session lineage
 `sessions.parent_session_id` and `sessions.parent_cut_seq` define a session's
