@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::agent::SessionStart;
 use crate::error::{Error, Result};
 use crate::git;
 use crate::host::EngineCtx;
@@ -315,7 +316,10 @@ impl Supervisor {
         let ctx_for_task = ctx.clone();
         let id_for_task = agent_id.to_string();
         crate::host::spawn(async move {
-            if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task, false).await {
+            if let Err(e) = sup
+                .start_process(&ctx_for_task, &id_for_task, SessionStart::Resume)
+                .await
+            {
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
             }
         });

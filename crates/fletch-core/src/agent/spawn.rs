@@ -56,6 +56,39 @@ pub struct PerTurnSpec {
     pub blackboard: Option<PathBuf>,
 }
 
+/// How a claude launch attaches to its conversation (see `args::session_args`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionStart {
+    /// A new, empty conversation under the agent's own session id.
+    Fresh,
+    /// Continue the agent's own session.
+    Resume,
+    /// Start the agent's own session as a native, lossless copy of another
+    /// session, cut at a message — rewind's `Exact` handoff.
+    Branch(BranchPoint),
+}
+
+impl SessionStart {
+    /// A categorical label for logs: no ids, so it may egress (`sentry_scrub`).
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Resume => "resume",
+            Self::Branch(_) => "branch",
+        }
+    }
+}
+
+/// Where a [`SessionStart::Branch`] copies its history from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchPoint {
+    /// The provider session to copy.
+    pub from_session: String,
+    /// The last message the branch keeps: for claude, any chain entry's `uuid`
+    /// (see `claude_branch_before`). `None` keeps the whole session.
+    pub at_message: Option<String>,
+}
+
 pub struct SpawnSpec<'a> {
     pub agent_id: &'a str,
     /// Claude's working directory — the primary repo's checkout.
@@ -70,10 +103,11 @@ pub struct SpawnSpec<'a> {
     /// never from the agent-writable checkout alternates (see `AgentLaunchCtx`).
     pub source_repos: &'a [PathBuf],
     pub session_id: &'a str,
-    /// True if this is the agent's first spawn (no prior conversation
-    /// on disk for this session). False if we're respawning to switch
-    /// views — claude should `--resume` instead of starting fresh.
-    pub fresh: bool,
+    /// How claude attaches to `session_id`: fresh on the agent's first spawn,
+    /// resumed on every later launch (view switch, respawn, restore), or
+    /// branched from another session. Per-turn agents' native view always
+    /// resumes and ignores it.
+    pub start: SessionStart,
     /// Claude's session-level effort (`--effort <level>`), chosen at session
     /// creation and persisted on the `AgentRecord`. Applied on every spawn
     /// (fresh, view-switch, resume) so it sticks for the session. `None` =
@@ -164,6 +198,17 @@ impl Agent {
         F: Fn(Vec<u8>) + Send + 'static,
         G: Fn(PtyExit) + Send + 'static,
     {
+        // Claude honors `--resume-session-at` in print mode only; its TUI would
+        // silently open the whole source session instead of the cut branch.
+        if let SessionStart::Branch(BranchPoint {
+            at_message: Some(_),
+            ..
+        }) = spec.start
+        {
+            return Err(Error::Other(
+                "A conversation branched at a message opens in the chat view first".into(),
+            ));
+        }
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let engine = sandbox::engine_for(spec.engine)?;
@@ -197,7 +242,7 @@ impl Agent {
         tracing::info!(
             agent_id = %spec.agent_id,
             session = %spec.session_id,
-            fresh = spec.fresh,
+            start = spec.start.label(),
             cwd = %spec.cwd.display(),
             sandbox_root = %spec.sandbox_root.display(),
             argv = ?args,
@@ -224,7 +269,7 @@ impl Agent {
     /// Launch a per-turn agent's interactive TUI in a PTY — the native view
     /// for codex/cursor/opencode/pi. Unlike claude's `spawn_pty`, the agent
     /// binary runs directly (no `sandbox-exec`): these agents self-sandbox.
-    /// The session is always resumed (`spec.fresh == false`); the supervisor
+    /// The session is always resumed (`spec.start` is ignored); the supervisor
     /// only routes a per-turn agent here once it has an established session
     /// id, so the TUI continues the same conversation the Custom view built.
     pub fn spawn_pty_native<F, G>(
@@ -245,15 +290,15 @@ impl Agent {
         // Under docker this is the provider's in-image bin (`codex`); under
         // seatbelt the host-resolved path — same decision claude makes.
         let bin = agent_bin_for(desc.id, desc.bin, desc.label, engine.as_ref(), &home)?;
-        let session = if spec.fresh {
-            None
-        } else {
-            Some(spec.session_id)
-        };
         // Provider MCP delivery, rebuilt from the session's snapshot so the TUI
         // resumes with the same tool set the Custom-view turns had.
         let mcp = resolve_mcp(provider, spec.mcp_servers, &spec.sandbox_root)?;
-        let agent_args = (desc.pty_args)(session, spec.model, spec.instructions, &mcp.args);
+        let agent_args = (desc.pty_args)(
+            Some(spec.session_id),
+            spec.model,
+            spec.instructions,
+            &mcp.args,
+        );
 
         // Unified sandbox: run the agent's TUI under the sandbox engine (the
         // agent's own sandbox is disabled in its arg builder), so per-turn
@@ -285,7 +330,6 @@ impl Agent {
             agent_id = %spec.agent_id,
             provider = %provider,
             session = %spec.session_id,
-            fresh = spec.fresh,
             cwd = %spec.cwd.display(),
             sandbox_root = %spec.sandbox_root.display(),
             bin = %bin,
@@ -348,7 +392,7 @@ impl Agent {
         tracing::info!(
             agent_id = %spec.agent_id,
             session = %spec.session_id,
-            fresh = spec.fresh,
+            start = spec.start.label(),
             cwd = %spec.cwd.display(),
             sandbox_root = %spec.sandbox_root.display(),
             argv = ?args,
