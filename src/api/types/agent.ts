@@ -16,6 +16,46 @@ export type ForkCode = "clean" | "current" | "at_message";
  *  Mirrors the backend `ForkContext`. */
 export type ForkContext = "none" | "summary";
 
+/** What a rewind to just before a message puts back. Mirrors the backend
+ *  `RewindScope`. */
+export type RewindScope = "conversation" | "code" | "both";
+
+/** A commit a code restore takes off its checkout's branch. `pushed`: origin
+ *  has it, so the branch's next push has to force. */
+export interface LeavingCommit {
+  sha: string;
+  subject: string;
+  pushed: boolean;
+}
+
+/** One checkout in a `RestoreReport`. */
+export interface RepoRestore {
+  subdir: string;
+  /** The branch that goes back with HEAD; null when HEAD is detached. */
+  branch: string | null;
+  /** The message's checkpoint; null leaves this checkout as it is. */
+  checkpoint: string | null;
+  /** Newest first. */
+  leaving: LeavingCommit[];
+  /** Where the checkout as it stood is kept, uncommitted work included;
+   *  null in a preview. */
+  undo_ref: string | null;
+}
+
+/** What restoring the code as of a message does to each of an agent's
+ *  checkouts: previewed before, and handed back to undo after. Mirrors the
+ *  backend `RestoreReport`. */
+export interface RestoreReport {
+  repos: RepoRestore[];
+}
+
+/** What a rewind did. `conversation_error` says why the conversation couldn't
+ *  follow a code restore that already happened, which `code` can undo. */
+export interface RewindOutcome {
+  code: RestoreReport | null;
+  conversation_error: string | null;
+}
+
 /** Where an agent's session branches off an earlier one: the parent session
  *  and the exclusive record seq below which it shows the parent's history.
  *  Mirrors the backend `SessionLineage`. */
@@ -104,6 +144,9 @@ export interface AgentRecord {
    *  mailbox op once it knows what the user wants. Null until then; the
    *  sidebar subtitle falls back to the first line of `task`. */
   title?: string | null;
+  /** The workflow run that owns this agent, when it is a run's step agent.
+   *  Null for a user's agent. */
+  owner_run_id?: string | null;
 }
 
 /** `workspaces.purpose` for a Roadmap project-manager chat — a manual chat that

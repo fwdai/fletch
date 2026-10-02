@@ -504,6 +504,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       // killed process never flushed a turn_end, this ensures the next genuine
       // completion still chimes.
       if (e.status === "running") interruptedAgents.delete(e.agent_id);
+      // A rewind's code undo is offered until the agent's next turn: undoing
+      // after it would discard that turn's work too.
+      if (e.status === "running") get().dismissCodeUndo(e.agent_id);
       // A spawn retry can fail again without ever reaching `running`, so a new
       // attempt re-arms the error signal too.
       if (e.status === "running" || e.status === "spawning") erroredAgents.delete(e.agent_id);

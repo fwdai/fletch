@@ -5,7 +5,7 @@ import { renderToolResult, stringifyInput } from "@/util/toolText";
 
 // The handoff transcript: a conversation rendered as plain text, for the
 // summarizer that briefs a new session's agent on it (the engine's `handoff`
-// module). The caller (the store's forkAgent) feeds it the parent's
+// module). The callers (the store's forkAgent and rewindAgent) feed it the
 // record-derived, policy-filtered history — the same history the new session
 // shows through its lineage — so what the agent is told never diverges from
 // what the chat displays, for any provider.
@@ -94,16 +94,16 @@ export function serializeHandoffItem(it: ChatItem): string | null {
   }
 }
 
+const turnIdOf = (it: ChatItem) => (it.kind === "user_message" ? it.turnId : undefined);
+
 /** Render the conversation in `log` through the turn `throughTurnId` and its
  *  reply, stopping at the next turn (a user message carrying a turn id) as the
- *  backend's cut does — or the whole log when it's null. Returns null when
- *  nothing is carried, or when the anchor isn't in the log.
+ *  backend's cut does — or the whole log when it's null. A fork's transcript.
+ *  Returns null when nothing is carried, or when the anchor isn't in the log.
  *
  *  The transcript starts at the last compaction before the cut, whose summary
  *  stands for everything before it, and keeps to `HANDOFF_INPUT_MAX`. */
 export function handoffTranscript(log: ChatItem[], throughTurnId: string | null): string | null {
-  const turnIdOf = (it: ChatItem) => (it.kind === "user_message" ? it.turnId : undefined);
-
   // Exclusive item cutoff.
   let cutoff = log.length;
   if (throughTurnId !== null) {
@@ -112,7 +112,19 @@ export function handoffTranscript(log: ChatItem[], throughTurnId: string | null)
     const next = log.findIndex((it, i) => i > anchor && turnIdOf(it) !== undefined);
     if (next !== -1) cutoff = next;
   }
+  return renderBefore(log, cutoff);
+}
 
+/** Render the conversation in `log` before the turn `turnId`, up to its
+ *  prompt, as the backend's cut for a rewind is. Null when nothing comes
+ *  before it, or when the turn isn't in the log. */
+export function handoffTranscriptBefore(log: ChatItem[], turnId: string): string | null {
+  const anchor = log.findIndex((it) => turnIdOf(it) === turnId);
+  return anchor === -1 ? null : renderBefore(log, anchor);
+}
+
+/** The transcript of `log` up to the item at `cutoff` (exclusive). */
+function renderBefore(log: ChatItem[], cutoff: number): string | null {
   // From the last compaction before the cut, or from the top when there's none.
   let start = cutoff - 1;
   while (start >= 0 && !isCompaction(log[start])) start -= 1;

@@ -134,6 +134,7 @@ describe("gateReason", () => {
     expect(gateReason(old, "roadmap")).toBe(GATES.roadmap.reason);
     expect(gateReason(old, "nativeView")).toBe(GATES.nativeView.reason);
     expect(gateReason(old, "fork")).toBe(GATES.fork.reason);
+    expect(gateReason(old, "rewind")).toBe(GATES.rewind.reason);
     // Added after the descriptor existed, so a host that reports none is too
     // old for them — which is the whole reason they are gates and not calls.
     expect(gateReason(old, "mergePr")).toBe(GATES.mergePr.reason);

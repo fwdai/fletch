@@ -1,7 +1,16 @@
 import type { McpServerSnapshot } from "@/storage/mcpServers";
 import type { SkillSnapshot } from "@/storage/skills";
 import { invoke } from "../invoke";
-import type { AgentRecord, AgentView, ForkCode, ForkContext, TrackedRepo } from "../types/agent";
+import type {
+  AgentRecord,
+  AgentView,
+  ForkCode,
+  ForkContext,
+  RestoreReport,
+  RewindOutcome,
+  RewindScope,
+  TrackedRepo,
+} from "../types/agent";
 
 export const agentsApi = {
   spawnAgent: (
@@ -75,6 +84,20 @@ export const agentsApi = {
     context: ForkContext,
     transcript: string | null,
   ) => invoke<AgentRecord>("fork_agent", { parentId, turnId, code, context, transcript }),
+  /** Rewind an agent in place to just before the turn `turnId` names: its
+   *  conversation, its code, or both. `transcript` is the conversation before
+   *  that turn rendered as text (adapters/handoff), for the summary the
+   *  rewound agent is briefed with when it can't resume the conversation
+   *  natively. Resolves once the rewound agent is up. */
+  rewindAgent: (agentId: string, turnId: string, scope: RewindScope, transcript: string | null) =>
+    invoke<RewindOutcome>("rewind_agent", { agentId, turnId, scope, transcript }),
+  /** What rewinding the code to before `turnId` would do; rejects with why it
+   *  can't when it can't. */
+  previewRewindCode: (agentId: string, turnId: string) =>
+    invoke<RestoreReport>("preview_rewind_code", { agentId, turnId }),
+  /** Undo a rewind's code restore, from the report the rewind returned. */
+  undoCodeRestore: (agentId: string, report: RestoreReport) =>
+    invoke<void>("undo_code_restore", { agentId, report }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   /** Resolves to `true` when the message was enqueued for a later turn boundary

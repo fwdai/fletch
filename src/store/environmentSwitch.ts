@@ -116,6 +116,8 @@ const STASH_KEYS = [
   "drafts",
   // Remembered right-rail tab per agent.
   "rightPanelTabs",
+  // A rewind's code undo, which only this environment's engine can apply.
+  "codeUndo",
 ] as const;
 
 type StashKey = (typeof STASH_KEYS)[number];
@@ -172,6 +174,7 @@ const BLANK: Pick<AppState, StashKey> = {
   composerDrafts: {},
   drafts: [],
   rightPanelTabs: {},
+  codeUndo: {},
 };
 
 const stashOf = (s: AppState): Partial<AppState> => {

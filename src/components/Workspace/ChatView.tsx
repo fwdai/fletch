@@ -3,6 +3,7 @@ import type { AgentRecord } from "@/api";
 import { useAppStore } from "@/store";
 import { ChatComposer } from "./ChatComposer";
 import { ChatSearch } from "./ChatSearch";
+import { CodeUndoBar } from "./CodeUndoBar";
 import { TranscriptList } from "./messages/TranscriptList";
 import { isTurnPending } from "./messages/turnPending";
 import { useTranscript } from "./messages/useTranscript";
@@ -96,6 +97,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         pinRef={pinnedToBottom}
         hideNav={searchOpen}
       />
+      <CodeUndoBar agentId={agent.id} />
       <ChatComposer
         agent={agent}
         activeModel={activeModel}

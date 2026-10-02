@@ -780,3 +780,45 @@
   padding: 12px 10px;
   max-width: none;
 }
+
+/* Rewind menu: an option that can't be picked says why, under its label. */
+.rewind-why {
+  display: block;
+  max-width: 280px;
+  white-space: normal;
+  color: var(--fg-3);
+}
+/* Rewind confirmation: the commits each branch loses. */
+.rewind-commits {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--fg-1);
+}
+.rewind-sha {
+  color: var(--fg-2);
+}
+.rewind-pushed {
+  margin-left: 6px;
+  color: var(--warn);
+}
+/* After a rewind restored the code: a quiet line above the composer, in its
+   column, offering the undo. */
+.code-undo {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 20px 8px;
+  color: var(--fg-2);
+}
+.code-undo-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.code-undo > span {
+  flex: 1;
+  min-width: 0;
+}

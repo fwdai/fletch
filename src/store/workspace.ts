@@ -246,6 +246,22 @@ async function readHistory(id: string): Promise<{ records: SessionRecord[]; turn
   return { records, turns };
 }
 
+/** The log a handoff transcript (adapters/handoff) is cut from: agent `id`'s
+ *  history, reduced with `provider`'s adapter and passed through its display
+ *  policy, with only its *matched* turns overlaid. Those carry the turn ids a
+ *  transcript is cut at, while pending turns — which have no place in the
+ *  history, so a new session never shows them — stay out of it. Read from the
+ *  records rather than managedLogs, so it is right even when the chat has not
+ *  been loaded into the UI yet. */
+export async function handoffLog(provider: string | undefined, id: string): Promise<ChatItem[]> {
+  const { records, turns } = await readHistory(id);
+  const log = applyUserTurns(
+    reduceRecords(provider, records),
+    turns.filter((t) => t.native_id),
+  );
+  return applyPolicy(log, getAdapter(provider).policy);
+}
+
 // Labels shown alongside the busy spinner when a known slash command is
 // dispatched. The key is the bare command name (no leading slash). Any
 // command not listed falls back to the generic "thinking" indicator.
@@ -430,21 +446,11 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     set({ busy: true, lastError: null });
     try {
       // Render the transcript to summarize from the history the child will
-      // show: the parent's records, reduced and passed through the display
-      // policy, with only its *matched* turns overlaid. Those carry the turn
-      // ids the transcript cuts at, while pending turns — which have no place
-      // in the history, so the child never shows them — stay out of it.
-      // Reading records directly (not managedLogs) also keeps this correct
-      // when the parent transcript has not been loaded into the UI yet.
+      // show (see handoffLog).
       let transcript: string | null = null;
       if (context === "summary") {
-        const provider = providerFor(get(), parentId);
-        const { records, turns } = await readHistory(parentId);
-        const log = applyUserTurns(
-          reduceRecords(provider, records),
-          turns.filter((t) => t.native_id),
-        );
-        transcript = handoffTranscript(applyPolicy(log, getAdapter(provider).policy), turnId);
+        const log = await handoffLog(providerFor(get(), parentId), parentId);
+        transcript = handoffTranscript(log, turnId);
       }
       const rec = await api.forkAgent(parentId, turnId, code, context, transcript);
       // No optimistic managedLogs seed. A fork that carries context is created

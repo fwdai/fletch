@@ -23,6 +23,7 @@ import type { LocalCommandsSlice } from "./localCommands";
 import type { McpServersSlice } from "./mcpServers";
 import type { ProvidersSlice } from "./providers";
 import type { ReposSlice } from "./repos";
+import type { RewindSlice } from "./rewind";
 import type { DockerBuildProgress, SandboxSlice } from "./sandbox";
 import type { SkillsSlice } from "./skills";
 import type { RightPanelTab, UiSlice } from "./ui";
@@ -51,6 +52,7 @@ export type {
   PromoteSeed,
   ProvidersSlice,
   ReposSlice,
+  RewindSlice,
   RightPanelTab,
   SandboxSlice,
   SkillsSlice,
@@ -64,6 +66,7 @@ export type AppState = AppSlice &
   EnvironmentSwitchSlice &
   WorkspaceSlice &
   ReposSlice &
+  RewindSlice &
   GitSlice &
   ComposerSlice &
   DraftsSlice &

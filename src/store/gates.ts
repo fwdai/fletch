@@ -126,6 +126,14 @@ export const GATES = {
     label: "Forking",
     reason: "Forking isn't available on a remote host yet.",
   },
+  /** Rewinding a session in place: the rewind, the preview its menu and
+   *  confirmation read, and the undo offered after a code restore. Not on the
+   *  wire yet, like forking. */
+  rewind: {
+    op: ["rewind_agent", "preview_rewind_code", "undo_code_restore"],
+    label: "Rewinding",
+    reason: "Rewinding isn't available on a remote host yet.",
+  },
   /** Merging a PR is on the wire, so this closes only against a host from
    *  before the op existed — the same shape as any other added op. */
   mergePr: {

@@ -100,9 +100,13 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   const { [id]: _offSidebar, ...offSidebarAgents } = state.offSidebarAgents;
   // Background tasks (sub-agents, background bash) die with the agent's process.
   const { [id]: _tasks, ...backgroundTasks } = state.backgroundTasks;
+  // A code undo names the agent's checkouts, which go with it; a recycled name
+  // must not inherit it.
+  const { [id]: _undo, ...codeUndo } = state.codeUndo;
   return {
     offSidebarAgents,
     backgroundTasks,
+    codeUndo,
     managedLogs,
     transcriptLoading,
     transcriptLoaded,
