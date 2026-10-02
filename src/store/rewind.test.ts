@@ -8,6 +8,8 @@ import { create } from "zustand";
 const api = vi.hoisted(() => ({
   rewindAgent: vi.fn(),
   undoCodeRestore: vi.fn(),
+  discardCodeUndo: vi.fn(),
+  hasCodeUndo: vi.fn(),
   readSessionRecords: vi.fn(),
   readUserTurns: vi.fn(),
   syncSession: vi.fn(),
@@ -54,15 +56,7 @@ const SHOWN: ChatItem[] = [
 ];
 
 const report: RestoreReport = {
-  repos: [
-    {
-      subdir: "repo",
-      branch: "main",
-      checkpoint: "c0ffee",
-      leaving: [],
-      undo_ref: "refs/fletch/undo/1",
-    },
-  ],
+  repos: [{ subdir: "repo", branch: "main", checkpoint: "c0ffee", leaving: [] }],
 };
 
 const makeStore = () => {
@@ -130,7 +124,7 @@ describe("rewindAgent", () => {
     expect(api.rewindAgent).toHaveBeenCalledWith("denali", "t1", "code", null);
     expect(api.readSessionRecords).not.toHaveBeenCalled();
     const s = store.getState();
-    expect(s.codeUndo.denali).toEqual(report);
+    expect(s.codeUndo.denali).toBe(true);
     expect(s.managedLogs.denali).toBe(SHOWN);
     expect(s.composerSeeds.denali).toBeUndefined();
   });
@@ -144,7 +138,7 @@ describe("rewindAgent", () => {
 
     const s = store.getState();
     expect(s.lastError).toBe(why);
-    expect(s.codeUndo.denali).toEqual(report);
+    expect(s.codeUndo.denali).toBe(true);
     expect(s.managedLogs.denali).toBe(SHOWN);
     expect(s.composerSeeds.denali).toBeUndefined();
   });
@@ -163,15 +157,66 @@ describe("rewindAgent", () => {
   });
 });
 
-describe("undoCodeRestore", () => {
-  it("hands the restore back to undo it, then stops offering it", async () => {
+describe("the code undo", () => {
+  beforeEach(() => {
+    for (const fn of Object.values(api)) fn.mockReset();
+  });
+
+  /** A store whose `denali` has a code restore to undo. */
+  const undoable = () => {
     const store = makeStore();
-    store.setState({ codeUndo: { denali: report } });
-    api.undoCodeRestore.mockReset().mockResolvedValue(undefined);
+    store.setState({ codeUndo: { denali: true } });
+    return store;
+  };
+
+  it("comes back from the backend when the chat opens, and goes when it's gone", async () => {
+    const store = makeStore();
+    api.hasCodeUndo.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    await store.getState().refreshCodeUndo("denali");
+    expect(store.getState().codeUndo).toEqual({ denali: true });
+    await store.getState().refreshCodeUndo("denali");
+    expect(store.getState().codeUndo).toEqual({});
+    expect(api.hasCodeUndo).toHaveBeenCalledWith("denali");
+  });
+
+  it("isn't offered when the backend can't be asked", async () => {
+    const store = undoable();
+    api.hasCodeUndo.mockRejectedValue("unknown op");
+
+    await store.getState().refreshCodeUndo("denali");
+
+    expect(store.getState().codeUndo).toEqual({});
+  });
+
+  it("undoes through the backend's undo point, then stops offering it", async () => {
+    const store = undoable();
+    api.undoCodeRestore.mockResolvedValue(undefined);
 
     await store.getState().undoCodeRestore("denali");
 
-    expect(api.undoCodeRestore).toHaveBeenCalledWith("denali", report);
+    expect(api.undoCodeRestore).toHaveBeenCalledWith("denali");
+    expect(store.getState().codeUndo).toEqual({});
+  });
+
+  it("keeps offering an undo that failed, for another try", async () => {
+    const store = undoable();
+    api.undoCodeRestore.mockRejectedValue("git failed");
+
+    await store.getState().undoCodeRestore("denali");
+
+    expect(store.getState().lastError).toBe("git failed");
+    expect(store.getState().codeUndo).toEqual({ denali: true });
+  });
+
+  it("discards the undo point when dismissed, keeping the restored code", async () => {
+    const store = undoable();
+    api.discardCodeUndo.mockResolvedValue(undefined);
+
+    await store.getState().discardCodeUndo("denali");
+
+    expect(api.discardCodeUndo).toHaveBeenCalledWith("denali");
+    expect(api.undoCodeRestore).not.toHaveBeenCalled();
     expect(store.getState().codeUndo).toEqual({});
   });
 });

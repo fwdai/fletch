@@ -95,9 +95,14 @@ export const agentsApi = {
    *  can't when it can't. */
   previewRewindCode: (agentId: string, turnId: string) =>
     invoke<RestoreReport>("preview_rewind_code", { agentId, turnId }),
-  /** Undo a rewind's code restore, from the report the rewind returned. */
-  undoCodeRestore: (agentId: string, report: RestoreReport) =>
-    invoke<void>("undo_code_restore", { agentId, report }),
+  /** Undo the agent's last code restore, from the undo point the backend keeps
+   *  in each checkout it changed. */
+  undoCodeRestore: (agentId: string) => invoke<void>("undo_code_restore", { agentId }),
+  /** Let the agent's last code restore's undo point go, keeping the code. */
+  discardCodeUndo: (agentId: string) => invoke<void>("discard_code_undo", { agentId }),
+  /** Whether the agent's last code restore can still be undone. Its undo
+   *  point lasts until it is used or discarded, or the next turn starts. */
+  hasCodeUndo: (agentId: string) => invoke<boolean>("has_code_undo", { agentId }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   /** Resolves to `true` when the message was enqueued for a later turn boundary

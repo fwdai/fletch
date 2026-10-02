@@ -657,7 +657,8 @@ force is confined to the branch the host itself materialized. Deleting a merged
 branch is done on the host, or on GitHub.
 
 Not yet exposed, but only for want of a reason to be: `fork_agent`, the rewind
-ops (`rewind_agent`, `preview_rewind_code`, `undo_code_restore`), and the two
+ops (`rewind_agent`, `preview_rewind_code`, `undo_code_restore`,
+`discard_code_undo`, `has_code_undo`), and the two
 mention sources the composers use (`list_repo_tree`, `list_repo_prs`, which stay
 off with their read families). These are scope, not policy — a client gates each
 one on its absence from `protocol.ops` and says so, and a later release may add

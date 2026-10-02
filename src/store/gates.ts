@@ -127,10 +127,16 @@ export const GATES = {
     reason: "Forking isn't available on a remote host yet.",
   },
   /** Rewinding a session in place: the rewind, the preview its menu and
-   *  confirmation read, and the undo offered after a code restore. Not on the
-   *  wire yet, like forking. */
+   *  confirmation read, and the undo offered after a code restore (asked
+   *  about, used or discarded). Not on the wire yet, like forking. */
   rewind: {
-    op: ["rewind_agent", "preview_rewind_code", "undo_code_restore"],
+    op: [
+      "rewind_agent",
+      "preview_rewind_code",
+      "undo_code_restore",
+      "discard_code_undo",
+      "has_code_undo",
+    ],
     label: "Rewinding",
     reason: "Rewinding isn't available on a remote host yet.",
   },

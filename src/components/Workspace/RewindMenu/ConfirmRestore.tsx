@@ -4,9 +4,10 @@ import { Button, Modal, ModalBody, ModalFooter } from "@/components/ui";
 import { type CodeScope, restoreConfirmation } from "./confirm";
 
 /** The confirmation before a rewind restores the code: the commits each
- *  branch loses, flagged when already pushed, and where uncommitted changes
- *  go. Portaled to the body, since it opens from a message's hover-revealed
- *  actions, which fade out from under it once the pointer leaves. */
+ *  branch loses, flagged when already pushed, every checkout that stays as it
+ *  is for want of a snapshot, and where uncommitted changes go. Portaled to
+ *  the body, since it opens from a message's hover-revealed actions, which
+ *  fade out from under it once the pointer leaves. */
 export function ConfirmRestore({
   scope,
   report,
@@ -22,9 +23,14 @@ export function ConfirmRestore({
   return createPortal(
     <Modal icon="rewind" title={confirmation.title} onClose={onCancel}>
       <ModalBody>
-        <p className="text-base">
-          Each checkout goes back to how it was when this message was sent.
-        </p>
+        <p className="text-base">{confirmation.summary}</p>
+        {confirmation.keptAsIs.length > 0 && (
+          <ul className="rewind-commits text-sm">
+            {confirmation.keptAsIs.map((row) => (
+              <li key={row}>{row}</li>
+            ))}
+          </ul>
+        )}
         {confirmation.changes.length === 0 && (
           <p className="text-base">No commits leave a branch.</p>
         )}
@@ -49,13 +55,9 @@ export function ConfirmRestore({
             Some of these commits were already pushed: your next push will need to force.
           </p>
         )}
-        {confirmation.untouched.length > 0 && (
-          <p className="text-sm">
-            {confirmation.untouched.join(", ")} kept no snapshot of this message and stays as it is.
-          </p>
-        )}
         <p className="text-sm">
-          Uncommitted changes are kept in an undo point, so you can undo this right after.
+          What each restored checkout holds now, uncommitted changes included, is kept as an undo
+          point until the agent's next turn.
         </p>
       </ModalBody>
       <ModalFooter>

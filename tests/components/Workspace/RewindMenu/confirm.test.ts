@@ -7,7 +7,6 @@ const repo = (subdir: string, over: Partial<RepoRestore> = {}): RepoRestore => (
   branch: "main",
   checkpoint: "c0ffee",
   leaving: [],
-  undo_ref: null,
   ...over,
 });
 
@@ -38,7 +37,10 @@ describe("the code restore confirmation", () => {
       { subdir: "api", branch: null, leaving: [commit("c3", "detached work")] },
     ]);
     expect(confirmation.pushed).toBe(false);
-    expect(confirmation.untouched).toEqual([]);
+    expect(confirmation.keptAsIs).toEqual([]);
+    expect(confirmation.summary).toBe(
+      "Each checkout goes back to how it was when this message was sent.",
+    );
   });
 
   it("flags a branch whose leaving commits were already pushed", () => {
@@ -48,11 +50,20 @@ describe("the code restore confirmation", () => {
     expect(confirmation.pushed).toBe(true);
   });
 
-  it("names the checkouts with no snapshot, which stay as they are", () => {
+  it("names, one row each, the checkouts a partial restore leaves as they are", () => {
     const confirmation = restoreConfirmation("code", {
-      repos: [repo("app"), repo("added-later", { checkpoint: null })],
+      repos: [
+        repo("repo-a", { leaving: [commit("b2", "since")] }),
+        repo("repo-b", { checkpoint: null }),
+        repo("repo-c", { checkpoint: null }),
+      ],
     });
-    expect(confirmation.changes).toEqual([]);
-    expect(confirmation.untouched).toEqual(["added-later"]);
+
+    expect(confirmation.keptAsIs).toEqual([
+      "repo-b: no snapshot of this message, so it stays as it is now",
+      "repo-c: no snapshot of this message, so it stays as it is now",
+    ]);
+    expect(confirmation.summary).toMatch(/^Only part of the code goes back/);
+    expect(confirmation.changes.map((change) => change.subdir)).toEqual(["repo-a"]);
   });
 });

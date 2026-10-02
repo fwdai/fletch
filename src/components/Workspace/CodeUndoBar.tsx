@@ -1,39 +1,51 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 
-/** Above the composer after a rewind restored an agent's code: says so and
- *  offers to put the code back as it was (the store's `codeUndo`, kept until
- *  the agent's next turn). */
+/** Above the composer while a rewind's code restore can still be undone: says
+ *  so, and offers to put the code back as it was, or to keep it (which lets
+ *  the backend's undo point go). Asks the backend as the chat opens, so the
+ *  offer survives a restart. */
 export function CodeUndoBar({ agentId }: { agentId: string }) {
-  const report = useAppStore((s) => s.codeUndo[agentId]);
+  const rewindGate = useGate("rewind");
+  const undoable = useAppStore((s) => agentId in s.codeUndo);
+  const refresh = useAppStore((s) => s.refreshCodeUndo);
   const undo = useAppStore((s) => s.undoCodeRestore);
-  const dismiss = useAppStore((s) => s.dismissCodeUndo);
+  const discard = useAppStore((s) => s.discardCodeUndo);
   const [busy, setBusy] = useState(false);
-  if (!report) return null;
+
+  useEffect(() => {
+    if (!rewindGate) void refresh(agentId);
+  }, [agentId, rewindGate, refresh]);
+
+  if (rewindGate || !undoable) return null;
+
+  const run = async (action: (agentId: string) => Promise<void>) => {
+    setBusy(true);
+    try {
+      await action(agentId);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="code-undo text-sm" role="status">
       <Icon name="rewind" size={12} className="code-undo-icon" />
       <span>The code was restored to before that message.</span>
-      <Button
-        variant="link"
-        size="sm"
-        disabled={busy}
-        onClick={async () => {
-          setBusy(true);
-          try {
-            await undo(agentId);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
+      <Button variant="link" size="sm" disabled={busy} onClick={() => run(undo)}>
         Undo
       </Button>
-      <IconButton size="xs" aria-label="Dismiss" onClick={() => dismiss(agentId)}>
+      <IconButton
+        size="xs"
+        aria-label="Keep the restored code"
+        tip="Keep the restored code"
+        disabled={busy}
+        onClick={() => run(discard)}
+      >
         <Icon name="close" size={12} />
       </IconButton>
     </div>

@@ -1,42 +1,47 @@
 // Rewind: going back to just before a message in place — the conversation, the
-// code, or both (docs/fork-and-rewind.md). The backend does the rewind; this
-// slice renders the transcript it may summarize, puts the chat and composer
-// where a rewind leaves them, and holds a code restore's undo.
+// code, or both (docs/fork-and-rewind.md). The backend does the rewind and owns
+// a code restore's undo point; this slice renders the transcript it may
+// summarize, puts the chat and composer where a rewind leaves them, and mirrors
+// whether each agent's code restore can still be undone.
 
 import { handoffTranscriptBefore } from "@/adapters/handoff";
-import { api, type RestoreReport, type RewindScope } from "@/api";
+import { api, type RewindScope } from "@/api";
 import { providerFor } from "@/helpers";
 import type { SliceCreator } from "./types";
 import { handoffLog } from "./workspace";
 
 export interface RewindSlice {
-  /** The code restore each agent's last rewind made, while it can still be
-   *  undone: until it is, the user dismisses it, or the agent's next turn
-   *  starts (eventListeners), after which undoing would discard that turn's
-   *  work as well. */
-  codeUndo: Record<string, RestoreReport>;
+  /** The agents whose last code restore can still be undone, as the backend
+   *  last said (`hasCodeUndo`): its undo point lasts until it is used or
+   *  discarded, or the agent's next turn is delivered. */
+  codeUndo: Record<string, true>;
 
   /** Rewind agent `agentId` to just before the turn `turnId`, whose text is
    *  `prompt`. A conversation rewind reloads the chat and puts `prompt` back
-   *  in the composer, as Claude Code's double-Esc does; a code restore leaves
-   *  its undo in `codeUndo`. Failures land in `lastError`. */
+   *  in the composer, as Claude Code's double-Esc does; a code restore can
+   *  then be undone. Failures land in `lastError`. */
   rewindAgent: (
     agentId: string,
     turnId: string,
     scope: RewindScope,
     prompt: string,
   ) => Promise<void>;
-  /** Undo the code restore `codeUndo` holds for `agentId`. */
+  /** Undo `agentId`'s last code restore. */
   undoCodeRestore: (agentId: string) => Promise<void>;
-  dismissCodeUndo: (agentId: string) => void;
+  /** Keep `agentId`'s restored code, letting its undo point go. */
+  discardCodeUndo: (agentId: string) => Promise<void>;
+  /** Ask the backend whether `agentId`'s last code restore can still be
+   *  undone: when its chat opens (after a restart too), and once a new turn
+   *  starts, which retires the point. */
+  refreshCodeUndo: (agentId: string) => Promise<void>;
 }
 
 export const createRewindSlice: SliceCreator<RewindSlice> = (set, get) => {
-  const dismissCodeUndo = (agentId: string) =>
+  const markCodeUndo = (agentId: string, undoable: boolean) =>
     set((s) => {
-      if (!(agentId in s.codeUndo)) return s;
-      const { [agentId]: _undone, ...codeUndo } = s.codeUndo;
-      return { codeUndo };
+      if (undoable === agentId in s.codeUndo) return s;
+      const { [agentId]: _was, ...rest } = s.codeUndo;
+      return { codeUndo: undoable ? { ...rest, [agentId]: true } : rest };
     });
 
   return {
@@ -52,8 +57,7 @@ export const createRewindSlice: SliceCreator<RewindSlice> = (set, get) => {
           ? handoffTranscriptBefore(await handoffLog(providerFor(get(), agentId), agentId), turnId)
           : null;
         const outcome = await api.rewindAgent(agentId, turnId, scope, transcript);
-        const { code } = outcome;
-        if (code) set((s) => ({ codeUndo: { ...s.codeUndo, [agentId]: code } }));
+        if (outcome.code) markCodeUndo(agentId, true);
         if (outcome.conversation_error) {
           set({ lastError: outcome.conversation_error });
           return;
@@ -71,16 +75,32 @@ export const createRewindSlice: SliceCreator<RewindSlice> = (set, get) => {
     },
 
     undoCodeRestore: async (agentId) => {
-      const report = get().codeUndo[agentId];
-      if (!report) return;
       try {
-        await api.undoCodeRestore(agentId, report);
-        dismissCodeUndo(agentId);
+        await api.undoCodeRestore(agentId);
+        markCodeUndo(agentId, false);
+      } catch (e) {
+        // A failed undo keeps its point for another try.
+        set({ lastError: String(e) });
+      }
+    },
+
+    discardCodeUndo: async (agentId) => {
+      try {
+        await api.discardCodeUndo(agentId);
+        markCodeUndo(agentId, false);
       } catch (e) {
         set({ lastError: String(e) });
       }
     },
 
-    dismissCodeUndo,
+    refreshCodeUndo: async (agentId) => {
+      try {
+        markCodeUndo(agentId, await api.hasCodeUndo(agentId));
+      } catch {
+        // A read for an affordance: on failure, offer nothing rather than
+        // something that may not be there.
+        markCodeUndo(agentId, false);
+      }
+    },
   };
 };
