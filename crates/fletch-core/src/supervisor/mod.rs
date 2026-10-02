@@ -1,6 +1,7 @@
 //! Coordinator between Tauri IPC commands and the running agents.
 
 pub mod auto_archive;
+mod checkpoints;
 mod disposition;
 mod events;
 mod fork;
@@ -13,6 +14,7 @@ pub(crate) mod run;
 mod session_sync;
 mod shell;
 
+pub use checkpoints::RepoCheckpoint;
 pub use disposition::ArchiveTrigger;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};
@@ -903,6 +905,48 @@ mod tests {
             AgentView::Custom,
         );
         record.status = status;
+        record
+    }
+
+    /// A git repo with one commit at `<dir>/<name>`, standing in for a checkout.
+    pub(super) async fn committed_repo(dir: &Path, name: &str) -> PathBuf {
+        let repo = dir.join(name);
+        std::fs::create_dir(&repo).unwrap();
+        crate::git::init_repo(&repo).await.unwrap();
+        for (key, value) in [("user.email", "t@example.com"), ("user.name", "Tester")] {
+            crate::git::run_git(&repo, &["config", key, value], "config")
+                .await
+                .unwrap();
+        }
+        std::fs::write(repo.join("a.txt"), b"base").unwrap();
+        crate::git::commit_all(&repo, "base").await.unwrap();
+        repo
+    }
+
+    /// An idle agent `id` working in `checkouts`, one tracked repo each, for
+    /// the caller to `add_agent`. Adopted, so they resolve as given rather than
+    /// under the checkouts root; each is registered as a repo so it can be
+    /// tracked.
+    pub(super) fn record_in_checkouts(
+        sup: &Supervisor,
+        id: &str,
+        checkouts: &[PathBuf],
+    ) -> AgentRecord {
+        let mut record = record_with_status(id, AgentStatus::Idle);
+        let template = record.repos[0].clone();
+        record.repos = checkouts
+            .iter()
+            .enumerate()
+            .map(|(i, checkout)| {
+                sup.workspace.add_workspace_repo(checkout.clone()).unwrap();
+                TrackedRepo {
+                    repo_path: checkout.clone(),
+                    subdir: format!("repo-{i}"),
+                    adopted_checkout: Some(checkout.clone()),
+                    ..template.clone()
+                }
+            })
+            .collect();
         record
     }
 

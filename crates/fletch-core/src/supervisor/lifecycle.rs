@@ -1659,7 +1659,7 @@ impl Supervisor {
         // is back, deliver any follow-ups queued during that turn — unless the
         // user stopped (A2-A), which we own the interrupt check for here.
         if !self.interrupted.lock().remove(agent_id) {
-            if let Err(e) = flush_queued(self, ctx, agent_id) {
+            if let Err(e) = flush_queued(self, ctx, agent_id).await {
                 tracing::warn!(agent_id, error = %e, "post-respawn queue flush failed");
             }
         }
