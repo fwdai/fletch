@@ -506,8 +506,9 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       if (e.status === "running") interruptedAgents.delete(e.agent_id);
       // Delivering the agent's next turn retires a rewind's code undo point
       // (undoing after it would discard that turn's work too), so re-ask
-      // whether one is left. Typing into the native TUI delivers no turn
-      // through Fletch, and leaves the point.
+      // whether one is left. Any other change to the code (a native-view turn,
+      // the terminal, an editor) ends it as well: the backend checks the code
+      // is as the restore left it on every ask, and again before undoing.
       if (e.status === "running" && e.agent_id in get().codeUndo) {
         void get().refreshCodeUndo(e.agent_id);
       }
