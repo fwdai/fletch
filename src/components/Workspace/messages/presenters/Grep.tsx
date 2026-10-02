@@ -1,5 +1,6 @@
+import { renderToolResult } from "@/util/toolText";
 import type { ToolPresenter } from "./types";
-import { countResultLines, getStringField, renderToolResult, SummaryNote, ToolBlock } from "./util";
+import { countResultLines, getStringField, SummaryNote, ToolBlock } from "./util";
 
 /** A muted count of what the grep returned, labelled by output_mode:
  *  - files_with_matches (default): one path per line  -> "N files"

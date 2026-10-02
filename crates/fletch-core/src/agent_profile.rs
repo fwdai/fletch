@@ -264,12 +264,13 @@ pub fn materialize_skills(skills: &[SkillSnapshot], sandbox_root: &Path) -> Resu
 }
 
 /// The session's effective instruction suffix: the codegraph playbook (when
-/// this session got the server), then the custom agent's standing brief, then a
-/// forked session's carried-conversation digest, then the materialized skill
-/// index. Each is optional; `None` when all are absent — which keeps every
-/// `instructions.rs` helper a no-op, exactly like today.
+/// this session got the server), then the custom agent's standing brief, then
+/// the handoff context of a session that continues a conversation (under its
+/// own heading), then the materialized skill index. Each is optional; `None`
+/// when all are absent — which keeps every `instructions.rs` helper a no-op,
+/// exactly like today.
 ///
-/// `brief` and `forked_context` are stored in separate session columns (so the
+/// `brief` and `handoff_context` are stored in separate session columns (so the
 /// user brief is never parsed apart from an injected block) but are injected
 /// together here, brief first.
 ///
@@ -279,7 +280,7 @@ pub fn materialize_skills(skills: &[SkillSnapshot], sandbox_root: &Path) -> Resu
 /// flag here is the same: never advertise a tool the agent wasn't given.
 pub fn effective_instructions(
     brief: Option<&str>,
-    forked_context: Option<&str>,
+    handoff_context: Option<&str>,
     skills: &[SkillSnapshot],
     sandbox_root: &Path,
     blocks: Blocks<'_>,
@@ -290,6 +291,9 @@ pub fn effective_instructions(
             .filter(|s| !s.is_empty())
             .map(str::to_string)
     };
+    let handoff = clean(handoff_context).map(|context| {
+        format!("## Context carried over from an earlier conversation\n\n{context}")
+    });
     let codegraph = blocks
         .codegraph
         .then(crate::instructions::codegraph_block)
@@ -301,16 +305,10 @@ pub fn effective_instructions(
         .roadmap_pm
         .then(|| crate::instructions::roadmap_block(blocks.product_context))
         .flatten();
-    let parts: Vec<String> = [
-        codegraph,
-        roadmap,
-        clean(brief),
-        clean(forked_context),
-        index,
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let parts: Vec<String> = [codegraph, roadmap, clean(brief), handoff, index]
+        .into_iter()
+        .flatten()
+        .collect();
     Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
 }
 
@@ -752,22 +750,23 @@ mod tests {
     }
 
     #[test]
-    fn effective_instructions_orders_brief_then_forked_context_then_index() {
+    fn effective_instructions_orders_brief_then_handoff_context_then_index() {
         let dir = tempfile::tempdir().unwrap();
         let skills = vec![skill("Deploy", "cutting a release", "steps")];
+        let handoff = "## Context carried over from an earlier conversation\n\nprior convo";
 
-        // Forked context alone (no brief) still injects.
+        // Handoff context alone (no brief) still injects, under its heading.
         let ctx_only = effective_instructions(
             None,
-            Some("prior convo"),
+            Some("prior convo\n"),
             &[],
             dir.path(),
             Blocks::default(),
         )
         .unwrap();
-        assert_eq!(ctx_only.as_deref(), Some("prior convo"));
+        assert_eq!(ctx_only.as_deref(), Some(handoff));
 
-        // All three compose in order: brief, forked context, skill index.
+        // All three compose in order: brief, handoff context, skill index.
         let all = effective_instructions(
             Some("Be terse."),
             Some("prior convo"),
@@ -777,9 +776,9 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(all.starts_with("Be terse.\n\nprior convo\n\n## Skills"));
+        assert!(all.starts_with(&format!("Be terse.\n\n{handoff}\n\n## Skills")));
 
-        // Blank forked context is dropped like a blank brief.
+        // Blank handoff context is dropped like a blank brief.
         let blank = effective_instructions(
             Some("Be terse."),
             Some("  "),

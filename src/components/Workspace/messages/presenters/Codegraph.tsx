@@ -1,12 +1,6 @@
+import { renderToolResult, stringifyInput } from "@/util/toolText";
 import type { ToolPresenter } from "./types";
-import {
-  firstLineOf,
-  getStringField,
-  renderToolResult,
-  SummaryNote,
-  stringifyInput,
-  ToolBlock,
-} from "./util";
+import { firstLineOf, getStringField, SummaryNote, ToolBlock } from "./util";
 
 /** Pull the operation out of a codegraph tool name, regardless of how the
  *  adapter spelled the namespace: the tool itself is always `codegraph_<op>`,

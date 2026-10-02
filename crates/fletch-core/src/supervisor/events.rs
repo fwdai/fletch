@@ -209,10 +209,13 @@ pub(super) enum SpawnStage {
     Cloning,
     /// Warming the codegraph index for the new checkout.
     Indexing,
-    /// Overlaying the source workspace's uncommitted work (fork "carry code").
-    Carrying,
     /// Checking out the project's other repos.
     AttachingRepos,
+    /// Starting the checkouts from a fork's code (`Supervisor::start_from`).
+    Carrying,
+    /// Condensing the conversation the session continues into its handoff
+    /// context (`crate::handoff`).
+    Summarizing,
     /// Launching the agent process.
     Starting,
 }

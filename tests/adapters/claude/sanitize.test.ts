@@ -69,8 +69,9 @@ describe("sanitizeUserText", () => {
       "This session is being continued from a previous conversation that ran out of context.\n\nSummary: lorem ipsum…";
     const out = sanitizeUserText(raw);
     expect(out.text).toBe("");
+    // The summary rides along, unrendered, for a handoff transcript.
     expect(out.notices).toEqual([
-      { kind: "notice", subtype: "compact_summary", text: "Conversation compacted" },
+      { kind: "notice", subtype: "compact_summary", text: "Conversation compacted", summary: raw },
     ]);
   });
 

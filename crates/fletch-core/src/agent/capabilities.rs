@@ -12,20 +12,23 @@ use super::providers::antigravity::{
     antigravity_build_args, antigravity_locate, antigravity_pty_args, antigravity_read,
     antigravity_session_id_from_cwd,
 };
-use super::providers::claude::CLAUDE_TRANSCRIPT;
+use super::providers::claude::{claude_one_shot_args, CLAUDE_TRANSCRIPT};
 use super::providers::codex::{
-    codex_build_args, codex_locate, codex_pty_args, codex_read, codex_session_id, CODEX_SUBAGENTS,
+    codex_build_args, codex_locate, codex_one_shot_args, codex_pty_args, codex_read,
+    codex_session_id, CODEX_SUBAGENTS,
 };
 use super::providers::cursor::{
-    cursor_build_args, cursor_locate, cursor_pty_args, cursor_read, cursor_session_id,
-    CURSOR_SUBAGENTS,
+    cursor_build_args, cursor_locate, cursor_one_shot_args, cursor_pty_args, cursor_read,
+    cursor_session_id, CURSOR_SUBAGENTS,
 };
 use super::providers::opencode::{
     opencode_build_args, opencode_locate, opencode_pty_args, opencode_read, opencode_session_id,
 };
-use super::providers::pi::{pi_build_args, pi_locate, pi_pty_args, pi_read, pi_session_id};
+use super::providers::pi::{
+    pi_build_args, pi_locate, pi_one_shot_args, pi_pty_args, pi_read, pi_session_id,
+};
 use super::transcript::{JsonlTail, TranscriptReader};
-use super::{McpDeliveryBuilder, PtyArgsBuilder, TurnArgs};
+use super::{McpDeliveryBuilder, OneShot, PtyArgsBuilder, TurnArgs};
 
 /// Everything that varies between per-turn agents. The runner lifecycle —
 /// one fresh process per turn via `ExecSession` — is identical for all of
@@ -75,6 +78,10 @@ pub struct PerTurnDescriptor {
     /// ingest verbatim records into `session_records`. `None` = no readable
     /// transcript.
     pub transcript: Option<TranscriptReader>,
+    /// How to run this agent's CLI once as a plain completion (see
+    /// [`one_shot`]). `None` = it has no tool-less or read-only mode that takes
+    /// the prompt on stdin, so it can't run one safely.
+    pub(crate) one_shot: Option<OneShot>,
 }
 
 impl PerTurnDescriptor {
@@ -155,6 +162,10 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             tail: None, // multiple rollout files
             subagents: Some(CODEX_SUBAGENTS),
         }),
+        one_shot: Some(OneShot {
+            args: codex_one_shot_args,
+            reply_flag: Some("--output-last-message"),
+        }),
     },
     PerTurnDescriptor {
         id: "cursor",
@@ -176,6 +187,10 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             tail: Some(JsonlTail { id_field: None }), // single jsonl, positional ids
             subagents: Some(CURSOR_SUBAGENTS),
         }),
+        one_shot: Some(OneShot {
+            args: cursor_one_shot_args,
+            reply_flag: None,
+        }),
     },
     PerTurnDescriptor {
         id: "opencode",
@@ -195,6 +210,9 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             tail: None, // blob-store directory, not a single file
             subagents: None,
         }),
+        // `opencode run` reads piped stdin, but has no flag to turn tools off
+        // or make them read-only (per `opencode run --help`, 1.18).
+        one_shot: None,
     },
     PerTurnDescriptor {
         id: "pi",
@@ -216,6 +234,10 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
                 id_field: Some("id"),
             }), // single jsonl when one file
             subagents: None,
+        }),
+        one_shot: Some(OneShot {
+            args: pi_one_shot_args,
+            reply_flag: None,
         }),
     },
     PerTurnDescriptor {
@@ -241,6 +263,9 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             tail: None, // per-turn agent; full read on exit is bounded
             subagents: None,
         }),
+        // agy takes the prompt only as `--print <prompt>` (argv) and has no
+        // tool-less mode (per `agy --help`).
+        one_shot: None,
     },
 ];
 
@@ -274,6 +299,20 @@ pub fn mcp_delivery(provider: &str) -> Option<McpDeliveryBuilder> {
     match per_turn_descriptor(provider) {
         Some(d) => d.mcp,
         None if provider == "claude" => Some(crate::agent_profile::claude_mcp_delivery),
+        None => None,
+    }
+}
+
+/// How to run a provider's CLI once as a plain, tool-less completion, or `None`
+/// if it can't run that way safely. Same dispatch as `transcript_reader`:
+/// per-turn descriptors plus the claude special case.
+pub fn one_shot(provider: &str) -> Option<OneShot> {
+    match per_turn_descriptor(provider) {
+        Some(d) => d.one_shot,
+        None if provider == "claude" => Some(OneShot {
+            args: claude_one_shot_args,
+            reply_flag: None,
+        }),
         None => None,
     }
 }
@@ -314,6 +353,92 @@ mod tests {
         }
 
         assert!(mcp_delivery("nonesuch").is_none());
+    }
+
+    fn one_shot_argv(provider: &str, model: Option<&str>) -> Option<Vec<String>> {
+        one_shot(provider).map(|shot| {
+            let mut argv = (shot.args)(model);
+            if let Some(flag) = shot.reply_flag {
+                argv.extend([flag.to_string(), "<reply>".to_string()]);
+            }
+            argv
+        })
+    }
+
+    /// The one-shot argv per provider, flags as each CLI's `--help` documents
+    /// them. None carries a prompt: the input goes to stdin.
+    #[test]
+    fn one_shot_runs_each_cli_headless_and_tool_less() {
+        let expected: [(&str, &[&str]); 4] = [
+            (
+                "claude",
+                &[
+                    "-p",
+                    "--output-format",
+                    "text",
+                    "--tools",
+                    "",
+                    "--strict-mcp-config",
+                    "--disable-slash-commands",
+                    "--no-session-persistence",
+                ],
+            ),
+            (
+                "codex",
+                &[
+                    "exec",
+                    "--sandbox",
+                    "read-only",
+                    "-c",
+                    "approval_policy=\"never\"",
+                    "--skip-git-repo-check",
+                    "--ephemeral",
+                    "--color",
+                    "never",
+                    "--output-last-message",
+                    "<reply>",
+                ],
+            ),
+            (
+                "cursor",
+                &["-p", "--output-format", "text", "--mode", "ask", "--trust"],
+            ),
+            (
+                "pi",
+                &[
+                    "-p",
+                    "--mode",
+                    "text",
+                    "--no-tools",
+                    "--no-session",
+                    "--no-context-files",
+                ],
+            ),
+        ];
+        for (provider, argv) in expected {
+            assert_eq!(one_shot_argv(provider, None).unwrap(), argv, "{provider}");
+        }
+    }
+
+    #[test]
+    fn one_shot_passes_the_model_before_the_reply_file() {
+        assert_eq!(
+            one_shot_argv("codex", Some("gpt-5.5")).unwrap()[9..],
+            ["--model", "gpt-5.5", "--output-last-message", "<reply>"]
+        );
+        for provider in ["claude", "cursor", "pi"] {
+            let argv = one_shot_argv(provider, Some("m-1")).unwrap();
+            assert_eq!(argv[argv.len() - 2..], ["--model", "m-1"], "{provider}");
+        }
+    }
+
+    /// No stdin prompt or no tool-less mode: these must take the fallback
+    /// rather than run with tools on.
+    #[test]
+    fn providers_that_cant_run_tool_less_have_no_one_shot() {
+        for provider in ["opencode", "antigravity", "nonesuch"] {
+            assert!(one_shot(provider).is_none(), "{provider}");
+        }
     }
 
     #[test]

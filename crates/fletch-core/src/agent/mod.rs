@@ -35,7 +35,7 @@ use crate::pty_session::PtySession;
 pub use auth_probe::{probe_all_provider_auth, AuthStatus, ProviderAuthProbe};
 pub use capabilities::provider_bin_label;
 pub use capabilities::{
-    capabilities, injection_mode, mcp_delivery, per_turn_descriptor, transcript_reader,
+    capabilities, injection_mode, mcp_delivery, one_shot, per_turn_descriptor, transcript_reader,
     PerTurnDescriptor,
 };
 pub use host_state::{host_providers, HostProvider};
@@ -90,6 +90,19 @@ pub struct TurnArgs<'a> {
     /// Provider-specific MCP override args, prebuilt once per session by the
     /// descriptor's `mcp_args` (codex `-c mcp_servers.*`). Empty otherwise.
     pub mcp_args: &'a [String],
+}
+
+/// How a provider's CLI runs once as a plain text completion: headless, with
+/// tools off or read-only, the prompt on stdin. The handoff summarizer's
+/// runner (`crate::handoff`); a provider that can't run that way has none.
+#[derive(Clone, Copy)]
+pub struct OneShot {
+    /// The argv for one run, given the model (`None` keeps the CLI default).
+    /// Never the prompt: that goes to stdin, so its size is never argv's.
+    pub args: fn(Option<&str>) -> Vec<String>,
+    /// Where the answer lands: stdout when `None`, else the file the CLI
+    /// writes when passed this flag and a path.
+    pub reply_flag: Option<&'static str>,
 }
 
 /// Builds the native (PTY) view launch args from

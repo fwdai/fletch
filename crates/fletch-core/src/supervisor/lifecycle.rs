@@ -331,10 +331,11 @@ pub struct SpawnRequest {
     pub model: Option<String>,
     /// Custom agent's standing brief, re-injected on every spawn/resume.
     pub instructions: Option<String>,
-    /// Prior-conversation digest for a forked session, composed after
-    /// `instructions` on every spawn. `None` for a non-fork spawn. Kept separate
-    /// from `instructions` so the user brief is never parsed/mutated.
-    pub forked_context: Option<String>,
+    /// The conversation the new session continues (a fork's parent, up to its
+    /// anchor), rendered as text. The Summarizing stage condenses it into the
+    /// session's handoff context before the agent starts (`crate::handoff`).
+    /// `None` carries nothing.
+    pub handoff_transcript: Option<String>,
     /// The history the new session continues (a fork's parent up to its
     /// anchor), written with the session row. `None` starts it empty.
     pub lineage: Option<crate::workspace::SessionLineage>,
@@ -367,11 +368,10 @@ pub struct SpawnRequest {
     /// and teardown must never remove the directory: the run owns it, not the
     /// agent. `None` for every non-kernel spawn.
     pub existing_workspace: Option<PathBuf>,
-    /// Fork "carry code": another workspace's primary checkout whose current
-    /// working tree (incl. uncommitted work) is overlaid onto this fresh
-    /// checkout after provisioning, so the fork starts from that workspace's
-    /// state. `None` for a normal spawn or a clean fork.
-    pub carry_from: Option<PathBuf>,
+    /// A fork's code: snapshots the new checkouts start from once they are
+    /// provisioned, matched to them by subdir (`Supervisor::start_from`).
+    /// Empty for a normal spawn or a clean fork.
+    pub code_from: Vec<super::CodeSource>,
     /// The GitHub issue this spawn originates from (bare issue number as text),
     /// set by the Home inbox's "Start work". Persisted on the workspace so the
     /// agent's PR closes it. `None` for a spawn not tied to an issue.
@@ -404,7 +404,7 @@ impl Supervisor {
             effort,
             model,
             instructions,
-            forked_context,
+            handoff_transcript,
             lineage,
             custom_agent_id,
             skills,
@@ -413,7 +413,7 @@ impl Supervisor {
             run_repo,
             owner_run_id,
             existing_workspace,
-            carry_from,
+            code_from,
             issue_ref,
             purpose,
             task,
@@ -499,9 +499,6 @@ impl Supervisor {
         let subdir_for_fork = subdir.clone();
         // A workflow step forks from its `fork_base` ref in this run repo.
         let run_repo_for_task = run_repo.clone();
-        // Fork "carry code": the source checkout whose working tree is overlaid
-        // onto the fresh checkout once it's provisioned.
-        let carry_from_task = carry_from.clone();
 
         let primary = TrackedRepo {
             repo_path: repo_path.clone(),
@@ -542,9 +539,6 @@ impl Supervisor {
         // Custom agent identity + snapshotted brief. Both `None` for a plain
         // built-in spawn. The brief is re-injected on every spawn/resume.
         record.instructions = instructions;
-        // Forked-conversation digest, kept separate from the brief and composed
-        // after it at launch (see start_process). `None` for a non-fork spawn.
-        record.forked_context = forked_context;
         // The history the session continues; inserted with the session row.
         record.lineage = lineage;
         record.custom_agent_id = custom_agent_id;
@@ -602,13 +596,20 @@ impl Supervisor {
         // caller that issued the spawn refetches on its own; the generation
         // guard in `refreshWorkspace` makes the extra fetch harmless.
         emit_workspace_changed(ctx.sink.as_ref());
-        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.clone());
+        // A spawn that summarizes may spend the summarizer's whole budget on
+        // it, on top of everything else a spawn does.
+        let watchdog = match handoff_transcript {
+            Some(_) => SPAWN_TIMEOUT + crate::handoff::TIMEOUT,
+            None => SPAWN_TIMEOUT,
+        };
+        arm_spawn_watchdog(self.clone(), ctx.clone(), agent_id.clone(), watchdog);
 
         let sup = self.clone();
         let ctx_for_task = ctx.clone();
         let id_for_task = agent_id.clone();
         let project_id_for_task = record.project_id.clone();
         let provider_for_task = record.provider.clone();
+        let model_for_task = record.model.clone();
         let mcp_servers_for_task = record.mcp_servers.clone();
         let adopted_for_task = adopted.is_some();
         crate::host::spawn(async move {
@@ -756,33 +757,6 @@ impl Supervisor {
             )
             .await;
 
-            // Fork "carry code": overlay the source workspace's current working
-            // tree onto the fresh checkout, so the fork starts from that
-            // workspace's uncommitted work. Fatal on failure — the user asked to
-            // carry, so silently producing a clean fork would drop their changes.
-            // Tears down like the start_process failure path below (a workflow
-            // step never carries, so this is always a non-run clone).
-            if let Some(src) = &carry_from_task {
-                if !progress(SpawnStage::Carrying, None) {
-                    discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
-                    return;
-                }
-                let carried = match &base_sha {
-                    Some(base) => match git::snapshot_worktree(src).await {
-                        Ok(snap) => git::carry_worktree(&primary_checkout, src, &snap, base).await,
-                        Err(e) => Err(e),
-                    },
-                    None => Err(Error::Other(
-                        "cannot carry working tree without a base commit".into(),
-                    )),
-                };
-                if let Err(e) = carried {
-                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
-                    fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
-                    return;
-                }
-            }
-
             // Multi-repo project: fork a checkout of every *other* repo of the
             // project too, so the agent works across all of them from turn one
             // (untouched repos are just clean clones). Runs before
@@ -815,6 +789,45 @@ impl Supervisor {
                         );
                         return;
                     }
+                }
+            }
+
+            // A fork's code: every checkout with a snapshot starts from it,
+            // once all of them exist. Fatal on failure — the user asked for
+            // this code, so silently producing a clean fork would drop it. A
+            // workflow step never forks code, so this is always a non-run
+            // clone, torn down like the start_process failure path below.
+            if !code_from.is_empty() {
+                if !progress(SpawnStage::Carrying, None) {
+                    discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
+                    return;
+                }
+                if let Err(e) = sup.start_from(&id_for_task, &code_from).await {
+                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                    fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+                    return;
+                }
+            }
+
+            // The conversation the session continues, condensed into what its
+            // agent is told — in place before the first launch reads it. A
+            // summary that can't be made falls back to the transcript's tail
+            // (`handoff::context`), so only failing to store it fails the spawn.
+            if let Some(transcript) = &handoff_transcript {
+                if !progress(SpawnStage::Summarizing, None) {
+                    discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
+                    return;
+                }
+                let context = crate::handoff::context(
+                    &provider_for_task,
+                    model_for_task.as_deref(),
+                    transcript,
+                )
+                .await;
+                if let Err(e) = sup.workspace.set_handoff_context(&id_for_task, &context) {
+                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                    fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+                    return;
                 }
             }
 
@@ -1307,7 +1320,7 @@ impl Supervisor {
         };
         let instructions = crate::agent_profile::effective_instructions(
             brief.as_deref(),
-            record.forked_context.as_deref(),
+            record.handoff_context.as_deref(),
             &record.skills,
             &sandbox_root,
             blocks,
@@ -2043,15 +2056,28 @@ fn spawn_turn_watchdog(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: Stri
 }
 
 pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: String) {
+    arm_spawn_watchdog(sup, ctx, agent_id, SPAWN_TIMEOUT);
+}
+
+/// Fail the spawn of `agent_id` if it is still spawning after `timeout`.
+fn arm_spawn_watchdog(
+    sup: Arc<Supervisor>,
+    ctx: Arc<EngineCtx>,
+    agent_id: String,
+    timeout: Duration,
+) {
     crate::host::spawn(async move {
-        tokio::time::sleep(SPAWN_TIMEOUT).await;
+        tokio::time::sleep(timeout).await;
         // Atomically claim the timeout outcome. Only an agent still in the
         // live Spawning state may be timed out; if the swap fails the spawn
         // already left Spawning (completed, or failed on its own) and must
         // not be killed. The compare-and-swap also closes the race with
         // start_process: if the spawn task inserts its process concurrently,
         // exactly one of us flips the status, and the loser tears down.
-        let err = "Spawn timed out after 15s — process did not become ready.".to_string();
+        let err = format!(
+            "Spawn timed out after {}s — process did not become ready.",
+            timeout.as_secs()
+        );
         if !sup.claim_spawn_outcome(&ctx, &agent_id, AgentStatus::Error, Some(err)) {
             return;
         }

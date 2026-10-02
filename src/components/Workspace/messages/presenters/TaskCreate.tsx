@@ -1,6 +1,7 @@
 import { Markdown } from "@/components/Markdown";
+import { renderToolResult } from "@/util/toolText";
 import type { ToolPresenter } from "./types";
-import { getStringField, renderToolResult, ToolBlock } from "./util";
+import { getStringField, ToolBlock } from "./util";
 
 /** Pull a metadata object off the input bag, if present and non-empty. */
 function getMetadata(input: unknown): Record<string, unknown> | null {

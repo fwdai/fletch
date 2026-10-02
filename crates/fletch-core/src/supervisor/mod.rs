@@ -14,7 +14,7 @@ pub(crate) mod run;
 mod session_sync;
 mod shell;
 
-pub use checkpoints::RepoCheckpoint;
+pub use checkpoints::{CodeSource, RepoCheckpoint};
 pub use disposition::ArchiveTrigger;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};

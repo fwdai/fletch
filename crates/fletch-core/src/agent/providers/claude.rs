@@ -1,4 +1,4 @@
-//! Claude transcript reader.
+//! Claude transcript reader, branch point and one-shot args.
 //!
 //! Claude is the lone persistent-runner agent (not in PER_TURN_AGENTS), launched
 //! `--session-id <uuid>` / `--resume <uuid>`, so it writes
@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::agent::args::model_args;
 use crate::agent::transcript::{
     records_with_id, JsonlTail, RawRecord, ReadDiagnostics, SubagentLayout, TranscriptReader,
 };
@@ -175,6 +176,29 @@ pub(crate) fn claude_session_has_messages(session_id: &str, cwd: &Path) -> bool 
             .iter()
             .any(|v| v.get("uuid").is_some())
     })
+}
+
+/// Claude as a one-shot completion (`OneShot`), per `claude --help` (2.1.287):
+/// print mode with a plain-text answer, the prompt read from stdin. `--tools ""`
+/// turns every built-in tool off, and `--strict-mcp-config` with no
+/// `--mcp-config` loads no MCP server, so the run can only answer.
+/// `--disable-slash-commands` keeps the input from invoking a skill, and
+/// `--no-session-persistence` leaves no session behind.
+pub(crate) fn claude_one_shot_args(model: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-p",
+        "--output-format",
+        "text",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+    ]
+    .map(String::from)
+    .into();
+    args.extend(model_args(model));
+    args
 }
 
 #[cfg(test)]
