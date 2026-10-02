@@ -10,9 +10,10 @@
 //! contributed as `inherited`.
 //!
 //! The operations: resolving an [`Anchor`] into the [`SessionLineage`] a new
-//! session is created with (`insert_agent` writes it with the session row),
-//! the stitched reads, and [`detach_children`] for every path that deletes
-//! sessions. See docs/fork-and-rewind.md.
+//! session is created with (`insert_agent` and `start_session` write it with
+//! the session row), the stitched reads, the history a branched transcript
+//! repeats ([`RepeatedHistory`]), and [`detach_children`] for every path that
+//! deletes sessions. See docs/fork-and-rewind.md.
 
 use rusqlite::OptionalExtension;
 
@@ -71,6 +72,56 @@ fn history_chain(conn: &Connection, session_id: &str) -> Result<Vec<Link>> {
         })?
         .collect::<std::result::Result<_, rusqlite::Error>>()?;
     Ok(links)
+}
+
+/// The history a branched session's transcript repeats. A native branch
+/// (`SessionStart::Branch`) starts its transcript with a copy of the
+/// conversation it was cut from, under the same native ids, and the session
+/// already shows that conversation through lineage — so ingestion skips what
+/// this finds rather than show it twice (`append_session_records`).
+///
+/// Only a branched session's transcript repeats anything, so for any other
+/// this is empty. Positional ids (`ln:{i}`) never match: they number the lines
+/// of one transcript, so an equal id in an ancestor is a different line.
+pub(super) struct RepeatedHistory {
+    /// The session's ancestors, each with the bound it shows them below.
+    ancestors: Vec<Link>,
+}
+
+impl RepeatedHistory {
+    pub(super) fn of(conn: &Connection, session_id: &str) -> Result<Self> {
+        let branched: bool = conn.query_row(
+            "SELECT branch_from_session IS NOT NULL FROM sessions WHERE id = ?1",
+            [session_id],
+            |r| r.get(0),
+        )?;
+        let ancestors = if branched {
+            history_chain(conn, session_id)?
+                .into_iter()
+                .filter(|link| link.bound.is_some())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Ok(Self { ancestors })
+    }
+
+    /// Whether `native_id` is a record the session already shows through
+    /// lineage.
+    pub(super) fn contains(&self, conn: &Connection, native_id: &str) -> Result<bool> {
+        if self.ancestors.is_empty() || native_id.starts_with("ln:") {
+            return Ok(false);
+        }
+        let mut stmt = conn.prepare_cached(
+            "SELECT 1 FROM session_records WHERE session_id = ?1 AND native_id = ?2 AND seq < ?3",
+        )?;
+        for link in &self.ancestors {
+            if stmt.exists(rusqlite::params![link.session_id, native_id, link.bound])? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 /// One past the session's last record: the cut that keeps all of it.
@@ -278,76 +329,11 @@ pub(super) fn detach_children(conn: &Connection, doomed: &[String]) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::tests::{mark_archived, mk_repo, seed_repo, test_db};
+    use crate::workspace::tests::{
+        agent, concat, exchange, history, history_turns, inherited, mark_archived, owned,
+        seed_repo, session_of, test_db,
+    };
     use serde_json::json;
-
-    /// A workspace `id` (on repo `repo`), whose session continues `lineage`.
-    fn agent(wm: &WorkspaceManager, id: &str, repo: &str, lineage: Option<SessionLineage>) {
-        let mut rec = new_agent_record(
-            id.into(),
-            id.into(),
-            "claude".into(),
-            mk_repo(repo),
-            "task".into(),
-            AgentView::Custom,
-        );
-        rec.lineage = lineage;
-        wm.add_agent(&mut rec).unwrap();
-    }
-
-    /// One exchange in `ws`'s current session, as turn-end ingest leaves it: the
-    /// sent turn, its prompt and reply records (`{turn}-u`, `{turn}-a`), matched.
-    fn exchange(wm: &WorkspaceManager, ws: &str, turn: &str, text: &str) {
-        wm.insert_user_turn(ws, turn, text, &[]).unwrap();
-        let prompt = json!({"type": "user", "text": text});
-        let reply = json!({"type": "assistant", "text": format!("re {text}")});
-        wm.append_session_records(
-            ws,
-            "claude",
-            "transcript",
-            None,
-            &[
-                (format!("{turn}-u").as_str(), &prompt),
-                (format!("{turn}-a").as_str(), &reply),
-            ],
-        )
-        .unwrap();
-        wm.associate_pending_user_turns(ws).unwrap();
-    }
-
-    fn session_of(wm: &WorkspaceManager, ws: &str) -> String {
-        current_session_id(&wm.db.lock(), ws).unwrap()
-    }
-
-    /// `(native_id, inherited)` of the workspace's stitched records.
-    fn history(wm: &WorkspaceManager, ws: &str) -> Vec<(String, bool)> {
-        wm.read_history_records(ws)
-            .unwrap()
-            .into_iter()
-            .map(|r| (r.native_id, r.inherited))
-            .collect()
-    }
-
-    /// `(turn_id, inherited)` of the workspace's stitched turns.
-    fn history_turns(wm: &WorkspaceManager, ws: &str) -> Vec<(String, bool)> {
-        wm.read_history_turns(ws)
-            .unwrap()
-            .into_iter()
-            .map(|t| (t.turn_id, t.inherited))
-            .collect()
-    }
-
-    fn owned(ids: &[&str]) -> Vec<(String, bool)> {
-        ids.iter().map(|id| (id.to_string(), false)).collect()
-    }
-
-    fn inherited(ids: &[&str]) -> Vec<(String, bool)> {
-        ids.iter().map(|id| (id.to_string(), true)).collect()
-    }
-
-    fn concat(parts: &[Vec<(String, bool)>]) -> Vec<(String, bool)> {
-        parts.concat()
-    }
 
     /// Root `a` (alpha, bravo, charlie); `b` forked through alpha, then ran
     /// delta and echo; `c` forked `b` through delta, then ran foxtrot.

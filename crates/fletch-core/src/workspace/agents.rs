@@ -423,15 +423,24 @@ impl WorkspaceManager {
     /// Persist the agent's session id. Used for Codex, whose thread id
     /// is assigned by the CLI and captured from its first turn's events
     /// (Claude's id is generated up front, so it never changes here).
-    pub fn set_agent_session_id(&self, id: &str, session_id: &str) -> Result<()> {
+    ///
+    /// Returns whether the current session took it. An id one of the
+    /// workspace's superseded sessions already has is refused: a provider
+    /// session belongs to one session, and a capture that finds it (agy's
+    /// checkout → conversation map, before a rewound session's first turn) has
+    /// found the conversation the current session replaced.
+    pub fn set_agent_session_id(&self, id: &str, session_id: &str) -> Result<bool> {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
-        conn.execute(
+        let taken = conn.execute(
             "UPDATE sessions SET provider_session_id = ?1
-             WHERE workspace_id = ?2 AND superseded_at IS NULL",
+             WHERE workspace_id = ?2 AND superseded_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM sessions
+                                WHERE workspace_id = ?2 AND superseded_at IS NOT NULL
+                                  AND provider_session_id = ?1)",
             rusqlite::params![session_id, id],
         )?;
-        Ok(())
+        Ok(taken > 0)
     }
 
     pub fn update_agent_view(&self, id: &str, view: AgentView) -> Result<()> {
