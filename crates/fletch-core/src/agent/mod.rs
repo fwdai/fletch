@@ -63,6 +63,15 @@ pub struct PtyAgent {
     pty: PtySession,
 }
 
+#[cfg(test)]
+impl Agent {
+    /// An agent over a bare PTY process, for a test that needs a live process
+    /// to hand messages to.
+    pub(crate) fn over_pty(pty: PtySession) -> Self {
+        Self::Pty(PtyAgent { pty })
+    }
+}
+
 pub struct ManagedAgent {
     session: ManagedSession,
 }
