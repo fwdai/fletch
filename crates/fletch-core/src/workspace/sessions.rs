@@ -1,6 +1,7 @@
 //! `impl WorkspaceManager` — canonical session-record persistence.
 
 use super::*;
+use crate::agent::BranchPoint;
 
 impl WorkspaceManager {
     // ── Session event log ─────────────────────────────────────────────────
@@ -102,6 +103,36 @@ impl WorkspaceManager {
             rusqlite::params![workspace_id, offset as i64],
         )?;
         Ok(())
+    }
+
+    /// Record that the current session starts as a native branch of `point`
+    /// (see `Supervisor::set_branch_point`).
+    pub fn set_session_branch_point(&self, workspace_id: &str, point: &BranchPoint) -> Result<()> {
+        let conn = self.db.lock();
+        let sid = current_session_id(&conn, workspace_id)
+            .ok_or_else(|| Error::AgentNotFound(workspace_id.to_string()))?;
+        conn.execute(
+            "UPDATE sessions SET branch_from_session = ?2, branch_at_message = ?3 WHERE id = ?1",
+            rusqlite::params![sid, point.from_session, point.at_message],
+        )?;
+        Ok(())
+    }
+
+    /// The branch point the current session starts from, if any.
+    pub fn session_branch_point(&self, workspace_id: &str) -> Result<Option<BranchPoint>> {
+        let conn = self.db.lock();
+        let Some(sid) = current_session_id(&conn, workspace_id) else {
+            return Ok(None);
+        };
+        let (from_session, at_message): (Option<String>, Option<String>) = conn.query_row(
+            "SELECT branch_from_session, branch_at_message FROM sessions WHERE id = ?1",
+            [&sid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(from_session.map(|from_session| BranchPoint {
+            from_session,
+            at_message,
+        }))
     }
 
     /// Count of records already ingested for the current session (= MAX(seq)) —

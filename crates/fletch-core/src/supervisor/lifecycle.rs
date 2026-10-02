@@ -296,21 +296,18 @@ fn build_activity(record: &AgentRecord, start: &SessionStart) -> Box<dyn Activit
     activity
 }
 
-/// The session a launch attaches to. A pending branch wins over what the caller
-/// asked for and over the no-messages-yet rule below: until it lands, the
-/// agent's own session doesn't exist.
+/// The session a launch attaches to. An unlanded branch (see
+/// `Supervisor::unlanded_branch`) wins over what the caller asked for and over
+/// the no-messages-yet rule below: until it lands, the agent's own session
+/// doesn't exist.
 ///
 /// Claude only writes a session file once the first turn lands. If task is
 /// still empty (no first user message has ever been sent) `--resume <uuid>`
 /// will 404. So we treat that case as fresh — same UUID, no replay attempt —
 /// and the eventual first message creates the session file. Once that's
 /// happened, switch / resume can safely `--resume`.
-fn resolve_start(
-    requested: SessionStart,
-    pending: Option<BranchPoint>,
-    task: &str,
-) -> SessionStart {
-    match (pending, requested) {
+fn resolve_start(requested: SessionStart, branch: Option<BranchPoint>, task: &str) -> SessionStart {
+    match (branch, requested) {
         (Some(point), _) => SessionStart::Branch(point),
         (None, SessionStart::Resume) if task.trim().is_empty() => SessionStart::Fresh,
         (None, requested) => requested,
@@ -941,41 +938,41 @@ impl Supervisor {
         Ok(repo)
     }
 
-    /// Start `agent_id`'s next launch as a branch of `point` rather than by
-    /// resuming its own session — rewind's `Exact` handoff. The record must
-    /// already carry the new session's id: the branch is written under it.
-    /// Refused for providers that can't branch at a message; for claude, a
-    /// branch cut at a message only opens in the custom view.
-    ///
-    /// The branch stays pending until it lands (see `pending_branch`), so a
-    /// view switch or respawn before the first turn branches again rather than
-    /// resuming a session that doesn't exist yet.
-    pub fn set_pending_branch(&self, agent_id: &str, point: BranchPoint) -> Result<()> {
+    /// Start `agent_id`'s current session as a native branch of `point` rather
+    /// than an empty one — rewind's `Exact` handoff. Persisted on the session
+    /// row, so the record must already carry the new session's id: the branch
+    /// is written under it. Refused for providers that can't branch at a
+    /// message; for claude, a branch cut at a message only opens in the custom
+    /// view.
+    pub fn set_branch_point(&self, agent_id: &str, point: BranchPoint) -> Result<()> {
         let provider = self.workspace.agent(agent_id)?.provider;
         if !capabilities(&provider).branch_at_message {
             return Err(Error::Other(format!(
                 "{provider} can't branch a conversation at a message"
             )));
         }
-        self.pending_branches
-            .lock()
-            .insert(agent_id.to_string(), point);
-        Ok(())
+        self.workspace.set_session_branch_point(agent_id, &point)
     }
 
-    /// The branch `agent_id`'s launch must start, if one is still pending.
-    /// Claude writes the new session's transcript only with its first message,
-    /// so until then every launch (view switch, respawn, resume, restore)
-    /// branches again. Once the transcript holds a message the branch has
-    /// landed: it's forgotten, and the agent resumes its own session.
-    fn pending_branch(&self, agent_id: &str, session_id: &str, cwd: &Path) -> Option<BranchPoint> {
-        let mut pending = self.pending_branches.lock();
-        let point = pending.get(agent_id)?.clone();
-        if claude_session_has_messages(session_id, cwd) {
-            pending.remove(agent_id);
-            return None;
-        }
-        Some(point)
+    /// The branch `record`'s launch must start, if its session has one that
+    /// hasn't landed. Claude writes the new session's transcript only with its
+    /// first message, so until then every launch (view switch, respawn,
+    /// resume, restore, after a restart) branches again; once the transcript
+    /// holds a message the agent resumes its own session. Derived, never
+    /// cleared: a recycled agent id gets a new session row without one.
+    fn unlanded_branch(&self, record: &AgentRecord) -> Result<Option<BranchPoint>> {
+        let (Some(point), Some(own)) = (
+            self.workspace.session_branch_point(&record.id)?,
+            record.session_id.as_deref(),
+        ) else {
+            return Ok(None);
+        };
+        let cwd = record
+            .repos
+            .first()
+            .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?
+            .checkout_path(&record.id)?;
+        Ok((!claude_session_has_messages(own, &cwd)).then_some(point))
     }
 
     pub(super) async fn start_process(
@@ -1077,10 +1074,7 @@ impl Supervisor {
             (None, false) => Arc::new(git_dispatcher),
         };
 
-        let pending = session_id
-            .as_deref()
-            .and_then(|own| self.pending_branch(agent_id, own, &cwd));
-        let start = resolve_start(start, pending, &record.task);
+        let start = resolve_start(start, self.unlanded_branch(&record)?, &record.task);
 
         let agent_id_str = agent_id.to_string();
 
@@ -1520,6 +1514,23 @@ impl Supervisor {
         {
             return Err(Error::Other(
                 "Switch to the native view after the agent's first turn".into(),
+            ));
+        }
+
+        // Claude's TUI can't open a branch cut at a message (see
+        // `Agent::spawn_pty`), so a rewound conversation stays in the custom
+        // view until its first turn lands it as a session of its own.
+        if new_view == AgentView::Native
+            && matches!(
+                self.unlanded_branch(&record)?,
+                Some(BranchPoint {
+                    at_message: Some(_),
+                    ..
+                })
+            )
+        {
+            return Err(Error::Other(
+                "Switch to the native view after the rewound conversation's first turn".into(),
             ));
         }
 
@@ -2190,11 +2201,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_a_provider_that_can_branch_takes_a_pending_branch() {
+    /// A `claude` and a `codex` agent on one repo, both with the checkout
+    /// adopted at `<td>/ws/repo`. Returns the supervisor and where the claude
+    /// agent's transcript goes: the docker per-agent dir beside the checkout,
+    /// which the locator checks first (the agent's random session id keeps the
+    /// real `~/.claude` scan from ever matching).
+    fn branch_fixture(td: &Path) -> (Supervisor, PathBuf) {
         let sup = crate::supervisor::tests::test_supervisor();
-        let td = tempfile::tempdir().unwrap();
-        let repo = td.path().join("repo");
+        let repo = td.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         sup.workspace.add_workspace_repo(repo.clone()).unwrap();
         let tracked = TrackedRepo {
@@ -2208,7 +2222,7 @@ mod tests {
             pr_title: None,
             pr_state: None,
             label: None,
-            adopted_checkout: None,
+            adopted_checkout: Some(td.join("ws").join("repo")),
         };
         for provider in ["claude", "codex"] {
             let mut record = new_agent_record(
@@ -2221,18 +2235,95 @@ mod tests {
             );
             sup.workspace.add_agent(&mut record).unwrap();
         }
+        let own = sup.workspace.agent("claude").unwrap().session_id.unwrap();
+        let slug = td
+            .join("ws")
+            .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME)
+            .join("slug");
+        std::fs::create_dir_all(&slug).unwrap();
+        (sup, slug.join(format!("{own}.jsonl")))
+    }
 
-        sup.set_pending_branch("claude", branch_point()).unwrap();
-        assert!(sup.set_pending_branch("codex", branch_point()).is_err());
-        assert!(sup.set_pending_branch("nonesuch", branch_point()).is_err());
+    fn unlanded(sup: &Supervisor) -> Option<BranchPoint> {
+        sup.unlanded_branch(&sup.workspace.agent("claude").unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn only_a_provider_that_can_branch_takes_a_branch_point() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = branch_fixture(td.path());
+
+        sup.set_branch_point("claude", branch_point()).unwrap();
+        assert!(sup.set_branch_point("codex", branch_point()).is_err());
+        assert!(sup.set_branch_point("nonesuch", branch_point()).is_err());
         assert_eq!(
-            sup.pending_branches.lock().keys().collect::<Vec<_>>(),
-            ["claude"]
+            sup.workspace.session_branch_point("claude").unwrap(),
+            Some(branch_point())
+        );
+        assert_eq!(sup.workspace.session_branch_point("codex").unwrap(), None);
+    }
+
+    /// Until the branched session's first message lands there is nothing of
+    /// its own to resume, so every launch — after a restart too — branches
+    /// again. Once it lands the agent resumes, with nothing to clear.
+    #[test]
+    fn a_branch_holds_until_its_session_has_a_message() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, transcript) = branch_fixture(td.path());
+        assert_eq!(unlanded(&sup), None, "an ordinary session");
+
+        sup.set_branch_point("claude", branch_point()).unwrap();
+        assert_eq!(unlanded(&sup), Some(branch_point()), "no transcript yet");
+        let restarted = Supervisor::new(sup.workspace.clone());
+        assert_eq!(
+            unlanded(&restarted),
+            Some(branch_point()),
+            "after a restart"
+        );
+
+        std::fs::write(&transcript, "{\"type\":\"mode\",\"mode\":\"normal\"}\n").unwrap();
+        assert_eq!(
+            unlanded(&sup),
+            Some(branch_point()),
+            "metadata alone can't be resumed"
+        );
+
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"mode\",\"mode\":\"normal\"}\n{\"type\":\"user\",\"uuid\":\"u1\"}\n",
+        )
+        .unwrap();
+        assert_eq!(unlanded(&sup), None, "landed");
+        assert_eq!(
+            sup.workspace.session_branch_point("claude").unwrap(),
+            Some(branch_point()),
+            "the row keeps where the session came from"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_native_view_waits_for_a_rewound_branch_to_land() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = branch_fixture(td.path());
+        let sup = Arc::new(sup);
+        sup.set_branch_point("claude", branch_point()).unwrap();
+
+        let err = sup
+            .clone()
+            .switch_view(ctx, "claude", AgentView::Native)
+            .await
+            .expect_err("a branch cut at a message can't open in the TUI");
+        assert!(err.to_string().contains("first turn"), "{err}");
+        assert_eq!(
+            sup.workspace.agent("claude").unwrap().view,
+            AgentView::Custom
         );
     }
 
     #[test]
-    fn a_pending_branch_wins_over_every_other_start() {
+    fn a_branch_wins_over_every_other_start() {
         let branch = SessionStart::Branch(branch_point());
         for (requested, task) in [
             (SessionStart::Resume, "did things"),
@@ -2257,53 +2348,6 @@ mod tests {
         assert_eq!(
             resolve_start(SessionStart::Fresh, None, "did things"),
             SessionStart::Fresh
-        );
-    }
-
-    /// Until the branched session's first message lands there is nothing of
-    /// its own to resume, so every launch must branch again; once it lands the
-    /// branch is forgotten.
-    #[test]
-    fn a_pending_branch_holds_until_its_session_has_a_message() {
-        let sup = crate::supervisor::tests::test_supervisor();
-        let td = tempfile::tempdir().unwrap();
-        let cwd = td.path().join("repo");
-        // A docker agent's transcript dir, which the locator checks first. A
-        // random id keeps the real `~/.claude` scan from ever matching.
-        let slug = td
-            .path()
-            .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME)
-            .join("slug");
-        std::fs::create_dir_all(&slug).unwrap();
-        let own = uuid::Uuid::new_v4().to_string();
-        let transcript = slug.join(format!("{own}.jsonl"));
-
-        assert_eq!(sup.pending_branch("a1", &own, &cwd), None);
-        sup.pending_branches
-            .lock()
-            .insert("a1".into(), branch_point());
-
-        assert_eq!(
-            sup.pending_branch("a1", &own, &cwd),
-            Some(branch_point()),
-            "no transcript yet"
-        );
-        std::fs::write(&transcript, "{\"type\":\"mode\",\"mode\":\"normal\"}\n").unwrap();
-        assert_eq!(
-            sup.pending_branch("a1", &own, &cwd),
-            Some(branch_point()),
-            "metadata alone can't be resumed"
-        );
-
-        std::fs::write(
-            &transcript,
-            "{\"type\":\"mode\",\"mode\":\"normal\"}\n{\"type\":\"user\",\"uuid\":\"u1\"}\n",
-        )
-        .unwrap();
-        assert_eq!(sup.pending_branch("a1", &own, &cwd), None);
-        assert!(
-            sup.pending_branches.lock().is_empty(),
-            "landed, so forgotten"
         );
     }
 }
