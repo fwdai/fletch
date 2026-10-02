@@ -1,5 +1,6 @@
-//! Repo/worktree lifecycle: init, commit-all, fork snapshot/carry, worktree
-//! removal/prune, and the unborn-HEAD seed used before forking a checkout.
+//! Repo/worktree lifecycle: init, commit-all, the working-tree snapshot behind
+//! fork carry and turn checkpoints, worktree removal/prune, and the unborn-HEAD
+//! seed used before forking a checkout.
 
 use std::path::Path;
 
@@ -55,14 +56,15 @@ pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
 /// Capture `checkout`'s current working tree — tracked modifications plus
 /// untracked, non-ignored files, and deletions — into a commit object WITHOUT
 /// touching the checkout's real index, HEAD, or working tree, and return its
-/// sha. Used by fork "carry code": the snapshot is created in the *source*
-/// checkout's object store (so a live agent is left undisturbed) and later
-/// fetched into the fork by [`carry_worktree`]. The snapshot's parent is the
-/// source's HEAD, so it records the full state (committed + uncommitted).
+/// sha. The snapshot is created in the checkout's own object store (so a live
+/// agent is left undisturbed) and its parent is the checkout's HEAD, so it
+/// records the full state (committed + uncommitted). Used by fork "carry code"
+/// (fetched into the fork by [`carry_worktree`]) and by turn checkpoints
+/// (`git::checkpoint`); `apply_snapshot` is its inverse.
 pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
     // A throwaway index so `add -A` never stages into the live agent's index.
     let tmp = tempfile::Builder::new()
-        .prefix("fletch-fork-index-")
+        .prefix("fletch-snapshot-index-")
         .tempfile()
         .map_err(Error::from)?;
     let index_env = vec![(
@@ -70,23 +72,20 @@ pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
         tmp.path().display().to_string(),
     )];
 
-    // Seed the temp index from HEAD, then stage every working-tree change
-    // (adds/mods/dels, honoring .gitignore) into it — the snapshot tree.
-    run_git_env(
-        checkout,
-        &["read-tree", "HEAD"],
-        &index_env,
-        "fork snapshot read-tree",
-    )
-    .await?;
-    run_git_env(checkout, &["add", "-A"], &index_env, "fork snapshot add").await?;
-    let tree = run_git_env(
-        checkout,
-        &["write-tree"],
-        &index_env,
-        "fork snapshot write-tree",
-    )
-    .await?;
+    // Seed the temp index, then stage every working-tree change (adds/mods/
+    // dels, honoring .gitignore) into it — the snapshot tree. `read-tree`
+    // replaces whatever the copy attempt left in the temp index.
+    if !seed_index_from_live(checkout, tmp.path(), &index_env).await {
+        run_git_env(
+            checkout,
+            &["read-tree", "HEAD"],
+            &index_env,
+            "snapshot read-tree",
+        )
+        .await?;
+    }
+    run_git_env(checkout, &["add", "-A"], &index_env, "snapshot add").await?;
+    let tree = run_git_env(checkout, &["write-tree"], &index_env, "snapshot write-tree").await?;
     let tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
 
     // commit-tree writes no hooks but needs an identity, same fallback as commit.
@@ -99,13 +98,100 @@ pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
             "-p",
             "HEAD",
             "-m",
-            "fletch: fork snapshot",
+            "fletch: worktree snapshot",
         ],
         &commit_env,
-        "fork snapshot commit-tree",
+        "snapshot commit-tree",
     )
     .await?;
     Ok(String::from_utf8_lossy(&commit.stdout).trim().to_string())
+}
+
+/// Seed the snapshot's temp index with a copy of the checkout's real index, so
+/// `add -A` re-hashes only the files whose stat data changed. Seeding from
+/// `read-tree HEAD` instead writes zeroed stat data, which re-hashes every
+/// tracked file — fine once per fork, too slow on every turn of a big repo.
+///
+/// Both seeds yield the same tree: `add -A` converges the index on the working
+/// tree wherever it starts, and git's racy-entry checks catch stale stat data.
+/// The exception is an entry `add -A` never compares with the working tree —
+/// skip-worktree (sparse checkouts) or assume-unchanged — so a copy carrying
+/// either is not used. Returns whether the copy seeded the index; on `false`
+/// the caller seeds from HEAD.
+async fn seed_index_from_live(checkout: &Path, tmp: &Path, index_env: &[(String, String)]) -> bool {
+    let Ok(out) = run_git(
+        checkout,
+        &["rev-parse", "--git-path", "index"],
+        "rev-parse --git-path",
+    )
+    .await
+    else {
+        return false;
+    };
+    // Relative to the checkout (`.git/index`), or absolute in a linked worktree.
+    let live = checkout.join(String::from_utf8_lossy(&out.stdout).trim());
+    let dest = tmp.to_path_buf();
+    if !matches!(
+        tokio::task::spawn_blocking(move || copy_index(&live, &dest)).await,
+        Ok(Ok(()))
+    ) {
+        return false;
+    }
+    // `ls-files -v` tags assume-unchanged entries lowercase and skip-worktree
+    // ones `S`.
+    let Ok(out) = run_git_env(
+        checkout,
+        &["ls-files", "-v", "-z"],
+        index_env,
+        "ls-files -v",
+    )
+    .await
+    else {
+        return false;
+    };
+    !out.stdout
+        .split(|b| *b == 0)
+        .filter_map(|entry| entry.first())
+        .any(|tag| tag.is_ascii_lowercase() || *tag == b'S')
+}
+
+/// Copy the index at `live` to `dest`, keeping its mtime. Git distrusts the
+/// stat data of an entry modified in the same instant the index was written
+/// (racy git) by comparing it with the index file's mtime — a copy stamped
+/// later would vouch for exactly those entries. The mtime is read first, so a
+/// live index replaced mid-copy can only make the copy look older (stricter).
+fn copy_index(live: &Path, dest: &Path) -> std::io::Result<()> {
+    let mtime = std::fs::metadata(live)?.modified()?;
+    std::fs::copy(live, dest)?;
+    std::fs::File::options()
+        .write(true)
+        .open(dest)?
+        .set_modified(mtime)
+}
+
+/// Make `checkout`'s working tree exactly `snapshot`'s tree with HEAD (and the
+/// branch it is on, if any) at `head`, so the snapshot's delta from `head`
+/// reads as uncommitted changes — the inverse of [`snapshot_worktree`].
+/// Untracked files the snapshot lacks are removed; ignored files are never
+/// touched (no `clean -x`). Used by fork "carry code" (`head` = the fork's
+/// base) and checkpoint restore (`head` = the HEAD the snapshot was taken on).
+pub(crate) async fn apply_snapshot(checkout: &Path, snapshot: &str, head: &str) -> Result<()> {
+    // Materialize the snapshot exactly (adds/mods/dels), drop what it doesn't
+    // track, then move HEAD + index to `head`, leaving the working tree.
+    run_git(
+        checkout,
+        &["reset", "--hard", snapshot],
+        "snapshot reset --hard",
+    )
+    .await?;
+    run_git(checkout, &["clean", "-fd"], "snapshot clean").await?;
+    run_git(
+        checkout,
+        &["reset", "--mixed", head],
+        "snapshot reset --mixed",
+    )
+    .await?;
+    Ok(())
 }
 
 /// Point `dest`'s working tree at `snapshot` (fetched from the `source`
@@ -123,12 +209,7 @@ pub async fn carry_worktree(dest: &Path, source: &Path, snapshot: &str, base: &s
         "carry fetch",
     )
     .await?;
-    // Materialize the snapshot exactly (adds/mods/dels), then move HEAD + index
-    // back to base, leaving the working tree — so the delta reads as unstaged
-    // working-tree changes, exactly like the parent's uncommitted state.
-    run_git(dest, &["reset", "--hard", snapshot], "carry reset --hard").await?;
-    run_git(dest, &["reset", "--mixed", base], "carry reset --mixed").await?;
-    Ok(())
+    apply_snapshot(dest, snapshot, base).await
 }
 
 pub async fn worktree_remove(repo: &Path, worktree_path: &Path, force: bool) -> Result<()> {
@@ -312,6 +393,109 @@ mod tests {
             !String::from_utf8_lossy(&status.stdout).trim().is_empty(),
             "carried changes should show as uncommitted"
         );
+    }
+
+    /// A committed repo with a `.gitignore`, then uncommitted work of every
+    /// kind: a modification, a deletion, a new file, an ignored file, a staged
+    /// change modified again, and an intent-to-add entry.
+    async fn repo_with_mixed_changes(dir: &Path) {
+        init_repo(dir).await.unwrap();
+        config(dir, "user.email", "t@example.com").await;
+        config(dir, "user.name", "Tester").await;
+        std::fs::write(dir.join(".gitignore"), b"ignored.txt\n").unwrap();
+        for name in ["keep.txt", "drop.txt", "staged.txt"] {
+            std::fs::write(dir.join(name), b"base").unwrap();
+        }
+        commit_all(dir, "base").await.unwrap();
+
+        std::fs::write(dir.join("keep.txt"), b"modified").unwrap();
+        std::fs::remove_file(dir.join("drop.txt")).unwrap();
+        std::fs::write(dir.join("new.txt"), b"added").unwrap();
+        std::fs::write(dir.join("ignored.txt"), b"secret").unwrap();
+        std::fs::write(dir.join("staged.txt"), b"staged").unwrap();
+        run_git(dir, &["add", "staged.txt"], "add").await.unwrap();
+        std::fs::write(dir.join("staged.txt"), b"staged then edited").unwrap();
+        std::fs::write(dir.join("intent.txt"), b"intent").unwrap();
+        run_git(dir, &["add", "-N", "intent.txt"], "add -N")
+            .await
+            .unwrap();
+    }
+
+    /// The tree the original seeding produces — a temp index from `read-tree
+    /// HEAD`, then `add -A` — which the index-copy seed must reproduce.
+    async fn read_tree_seeded_tree(repo: &Path) -> String {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let env = vec![(
+            "GIT_INDEX_FILE".to_string(),
+            tmp.path().display().to_string(),
+        )];
+        run_git_env(repo, &["read-tree", "HEAD"], &env, "read-tree")
+            .await
+            .unwrap();
+        run_git_env(repo, &["add", "-A"], &env, "add")
+            .await
+            .unwrap();
+        let out = run_git_env(repo, &["write-tree"], &env, "write-tree")
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    async fn snapshot_tree(repo: &Path) -> String {
+        let snap = snapshot_worktree(repo).await.unwrap();
+        rev_parse(repo, &format!("{snap}^{{tree}}")).await.unwrap()
+    }
+
+    /// Whether the index-copy seed would be used for `repo`'s current index.
+    async fn copy_seed_used(repo: &Path) -> bool {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let env = vec![(
+            "GIT_INDEX_FILE".to_string(),
+            tmp.path().display().to_string(),
+        )];
+        seed_index_from_live(repo, tmp.path(), &env).await
+    }
+
+    #[tokio::test]
+    async fn index_copy_seed_gives_the_read_tree_seed_tree() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        repo_with_mixed_changes(repo).await;
+
+        let live_index = || async {
+            run_git(repo, &["ls-files", "--stage"], "ls-files")
+                .await
+                .unwrap()
+                .stdout
+        };
+        let before = live_index().await;
+
+        assert!(copy_seed_used(repo).await, "a plain index is copied");
+        assert_eq!(snapshot_tree(repo).await, read_tree_seeded_tree(repo).await);
+        assert_eq!(live_index().await, before, "the live index is untouched");
+    }
+
+    /// Entries `add -A` never compares with the working tree would hide their
+    /// changes from a copied index, so either bit forces the HEAD seed — and the
+    /// snapshot still records the hidden edits.
+    #[tokio::test]
+    async fn skip_worktree_and_assume_unchanged_fall_back_to_the_head_seed() {
+        for bit in ["--skip-worktree", "--assume-unchanged"] {
+            let td = tempfile::tempdir().unwrap();
+            let repo = td.path();
+            repo_with_mixed_changes(repo).await;
+            run_git(repo, &["update-index", bit, "keep.txt"], "update-index")
+                .await
+                .unwrap();
+
+            assert!(!copy_seed_used(repo).await, "{bit} must not be copied");
+            let tree = snapshot_tree(repo).await;
+            assert_eq!(tree, read_tree_seeded_tree(repo).await, "{bit}");
+            let keep = run_git(repo, &["show", &format!("{tree}:keep.txt")], "show")
+                .await
+                .unwrap();
+            assert_eq!(keep.stdout, b"modified", "{bit} hid an edit");
+        }
     }
 
     #[tokio::test]
