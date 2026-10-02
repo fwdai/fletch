@@ -108,6 +108,7 @@ impl Supervisor {
         // for the parent's current code, taken — before anything is created.
         let fork_base = Some(primary.base_branch().await);
         let code_from = self.fork_code(&parent, code, turn_id).await?;
+        let pin = code_from.clone();
 
         let req = SpawnRequest {
             view: parent.view,
@@ -138,7 +139,13 @@ impl Supervisor {
             // A fork has no first prompt yet; its task is captured on first send.
             task: None,
         };
-        self.spawn_agent(ctx, req).await
+        let spawned = self.spawn_agent(ctx, req).await;
+        // Once spawned, its provisioning releases the code's pin; a spawn
+        // refused before that never will.
+        if let (Err(_), Some(code)) = (&spawned, pin) {
+            code.release().await;
+        }
+        spawned
     }
 
     /// The pinned code `code` starts the fork's checkouts from (`None` for a
@@ -195,7 +202,9 @@ impl Supervisor {
 mod tests {
     use super::*;
     use crate::git::checkpoint;
-    use crate::supervisor::tests::{committed_repo, record_in_checkouts, test_supervisor};
+    use crate::supervisor::tests::{
+        committed_repo, pins, record_in_checkouts, test_supervisor, workspace_of,
+    };
     use crate::supervisor::PinnedCheckout;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -431,6 +440,37 @@ mod tests {
             "{err}"
         );
         assert_eq!(sup.workspace.current().unwrap().agents.len(), 1);
+    }
+
+    /// The spawn is refused before its provisioning (which releases the pin)
+    /// ever runs: the fork releases it itself.
+    #[tokio::test]
+    async fn a_fork_refused_at_spawn_leaves_no_pin() {
+        let td = tempfile::tempdir().unwrap();
+        let sup = Arc::new(test_supervisor());
+        let source = committed_repo(td.path(), "src").await;
+        let checkout = committed_repo(td.path(), "checkout").await;
+        workspace_of(&sup, "denali", &[&source], std::slice::from_ref(&checkout));
+        // The source repo is gone, so the spawn refuses it.
+        std::fs::remove_dir_all(source.join(".git")).unwrap();
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+
+        let forked = sup
+            .clone()
+            .fork_agent(
+                ctx,
+                "denali",
+                None,
+                ForkCode::Current,
+                ForkContext::None,
+                None,
+            )
+            .await;
+        assert!(forked
+            .unwrap_err()
+            .to_string()
+            .contains("not a git repository"));
+        assert_eq!(pins(&checkout).await, Vec::<String>::new());
     }
 
     #[tokio::test]

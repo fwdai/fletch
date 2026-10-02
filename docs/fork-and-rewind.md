@@ -138,7 +138,9 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
   holds it and restoring it, in its checkout of the same repo: the tree is
   the snapshot's and HEAD the snapshot's parent, so commits stay commits and
   uncommitted work stays uncommitted. A fork of the current code pins the
-  parent's live tree the same way, under a key of its own.
+  parent's live tree the same way, under a key of its own. The child drops
+  its fetched copy once restored, and the spawn drops an on-demand pin from
+  the parent however it ends; a turn's checkpoint is never dropped.
 - A fork takes the code of every checkout of the source workspace or none of
   it: a checkout without the checkpoint, or a repo the child doesn't check
   out, fails the fork and names the repos. A repo the child checks out but
