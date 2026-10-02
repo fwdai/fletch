@@ -159,10 +159,18 @@ impl WorkspaceManager {
     /// Match pending (`native_id IS NULL`) user turns to their canonical
     /// `session_records` user-message rows and fill in `native_id`. Run at
     /// turn-end after transcript ingest. Matching: for each pending turn (seq
-    /// order) find the lowest-seq transcript record not already claimed whose
-    /// body contains the turn's distinctive marker — the first attachment path
-    /// (injected by the runner as `Attached file: <path>`) when present, else
-    /// the prompt text. Returns the number newly associated.
+    /// order) find the lowest-seq transcript record not already claimed,
+    /// ingested at or after the turn was created, whose body contains the
+    /// turn's distinctive marker — the first attachment path (injected by the
+    /// runner as `Attached file: <path>`) when present, else the prompt text.
+    /// Returns the number newly associated.
+    ///
+    /// A record ingested before its turn existed can't be its prompt: the
+    /// turn's row is written before the message goes out
+    /// (`deliver_user_message`). It can quote it, though, and a short prompt
+    /// ("yes") is quoted often; matched to that, every cut at the turn
+    /// (`resolve_anchor`) would land in the wrong place. Ingest time is stable:
+    /// a re-ingested record keeps its first row (`append_session_records`).
     pub fn associate_pending_user_turns(&self, workspace_id: &str) -> Result<usize> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
@@ -170,13 +178,13 @@ impl WorkspaceManager {
         };
 
         // Pending turns, oldest first.
-        let pending: Vec<(String, String, String)> = {
+        let pending: Vec<(String, String, String, i64)> = {
             let mut stmt = conn.prepare(
-                "SELECT turn_id, text, attachments FROM session_user_turns
+                "SELECT turn_id, text, attachments, created_at FROM session_user_turns
                  WHERE session_id = ?1 AND native_id IS NULL ORDER BY seq ASC",
             )?;
             let v = stmt
-                .query_map([&sid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .query_map([&sid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
                 .collect::<std::result::Result<_, rusqlite::Error>>()?;
             v
         };
@@ -184,14 +192,14 @@ impl WorkspaceManager {
             return Ok(0);
         }
 
-        // Transcript records, oldest first.
-        let records: Vec<(String, String)> = {
+        // Transcript records, oldest first, with their ingest time.
+        let records: Vec<(String, String, i64)> = {
             let mut stmt = conn.prepare(
-                "SELECT native_id, body FROM session_records
+                "SELECT native_id, body, created_at FROM session_records
                  WHERE session_id = ?1 AND source = 'transcript' ORDER BY seq ASC",
             )?;
             let v = stmt
-                .query_map([&sid], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .query_map([&sid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
                 .collect::<std::result::Result<_, rusqlite::Error>>()?;
             v
         };
@@ -210,7 +218,7 @@ impl WorkspaceManager {
 
         let tx = conn.unchecked_transaction()?;
         let mut associated = 0usize;
-        for (turn_id, text, attachments_text) in pending {
+        for (turn_id, text, attachments_text, created_at) in pending {
             let attachments: Vec<String> =
                 serde_json::from_str(&attachments_text).unwrap_or_default();
             // Distinctive needle: an attachment path beats the prompt text
@@ -226,10 +234,12 @@ impl WorkspaceManager {
             let needle_escaped = serde_json::to_string(&needle)
                 .map(|s| s[1..s.len() - 1].to_string())
                 .unwrap_or(needle.clone());
-            let hit = records
-                .iter()
-                .find(|(nid, body)| !claimed.contains(nid) && body.contains(&needle_escaped));
-            if let Some((nid, _)) = hit {
+            let hit = records.iter().find(|(nid, body, ingested_at)| {
+                *ingested_at >= created_at
+                    && !claimed.contains(nid)
+                    && body.contains(&needle_escaped)
+            });
+            if let Some((nid, _, _)) = hit {
                 tx.execute(
                     "UPDATE session_user_turns SET native_id = ?1 WHERE turn_id = ?2",
                     rusqlite::params![nid, turn_id],

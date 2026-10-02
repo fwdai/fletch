@@ -2426,6 +2426,111 @@ fn associate_leaves_unmatched_turn_pending() {
     assert_eq!(turns[0].native_id, None); // still pending → renders standalone
 }
 
+/// Move every record ingested so far a second into the past, so what is
+/// ingested next is unambiguously later, whatever the clock's resolution.
+fn backdate_records(wm: &WorkspaceManager) {
+    wm.db
+        .lock()
+        .execute(
+            "UPDATE session_records SET created_at = created_at - 1000",
+            [],
+        )
+        .unwrap();
+}
+
+fn native_ids_of_turns(wm: &WorkspaceManager, ws: &str) -> Vec<Option<String>> {
+    wm.read_history_turns(ws)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.native_id)
+        .collect()
+}
+
+#[test]
+fn associate_never_matches_a_record_ingested_before_the_turn() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    let append = |records: &[(&str, &serde_json::Value)]| {
+        wm.append_session_records(&ws_id, "claude", "transcript", None, records)
+            .unwrap();
+    };
+    // An earlier answer that happens to quote the next prompt.
+    wm.insert_user_turn(&ws_id, "t1", "deploy it", &[]).unwrap();
+    append(&[
+        (
+            "u1",
+            &serde_json::json!({"type": "user", "text": "deploy it"}),
+        ),
+        (
+            "a1",
+            &serde_json::json!({"type": "assistant", "text": "Shall I? Reply yes to go on."}),
+        ),
+    ]);
+    wm.associate_pending_user_turns(&ws_id).unwrap();
+    backdate_records(&wm);
+
+    wm.insert_user_turn(&ws_id, "t2", "yes", &[]).unwrap();
+    append(&[
+        ("u2", &serde_json::json!({"type": "user", "text": "yes"})),
+        (
+            "a2",
+            &serde_json::json!({"type": "assistant", "text": "done"}),
+        ),
+    ]);
+    assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 1);
+
+    assert_eq!(
+        native_ids_of_turns(&wm, &ws_id),
+        [Some("u1".into()), Some("u2".into())]
+    );
+    // So a rewind to before "yes" keeps the answer that asked for it.
+    let cut = wm.resolve_anchor(&ws_id, Anchor::Before("t2")).unwrap();
+    assert_eq!(cut.cut_seq, 3);
+}
+
+#[test]
+fn a_re_ingested_record_keeps_the_time_it_first_landed() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    let quote = serde_json::json!({"type": "assistant", "text": "say yes when ready"});
+    wm.append_session_records(&ws_id, "claude", "transcript", None, &[("a0", &quote)])
+        .unwrap();
+    backdate_records(&wm);
+
+    // The quote comes round again in the batch that carries the prompt (a
+    // re-read from the top), still as the row it first landed in.
+    wm.insert_user_turn(&ws_id, "t1", "yes", &[]).unwrap();
+    let prompt = serde_json::json!({"type": "user", "text": "yes"});
+    wm.append_session_records(
+        &ws_id,
+        "claude",
+        "transcript",
+        None,
+        &[("a0", &quote), ("u1", &prompt)],
+    )
+    .unwrap();
+    wm.associate_pending_user_turns(&ws_id).unwrap();
+
+    assert_eq!(native_ids_of_turns(&wm, &ws_id), [Some("u1".into())]);
+}
+
+#[test]
+fn a_repeated_prompt_matches_each_send_to_its_own_record() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    for (turn, prompt) in [("t1", "u1"), ("t2", "u2")] {
+        wm.insert_user_turn(&ws_id, turn, "yes", &[]).unwrap();
+        let body = serde_json::json!({"type": "user", "text": "yes"});
+        wm.append_session_records(&ws_id, "claude", "transcript", None, &[(prompt, &body)])
+            .unwrap();
+        wm.associate_pending_user_turns(&ws_id).unwrap();
+    }
+    assert_eq!(
+        native_ids_of_turns(&wm, &ws_id),
+        [Some("u1".into()), Some("u2".into())]
+    );
+}
+
 // ── mid-turn follow-up messages (coalesced delivery + live injection) ──
 
 #[test]
