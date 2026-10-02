@@ -483,7 +483,7 @@ mod tests {
             .lock()
             .query_row(
                 "SELECT provider, view, effort, model, instructions, custom_agent_id, skills,
-                        mcp_servers, forked_context, last_error
+                        mcp_servers, handoff_context, last_error
                    FROM sessions WHERE id = ?1",
                 [session],
                 |r| {
@@ -505,7 +505,7 @@ mod tests {
             .execute(
                 "UPDATE sessions SET view = 'native', effort = 'high', model = 'opus',
                         instructions = 'be brief', custom_agent_id = 'ca', skills = '[1]',
-                        mcp_servers = '[2]', forked_context = 'digest', last_error = 'boom'
+                        mcp_servers = '[2]', handoff_context = 'digest', last_error = 'boom'
                   WHERE id = ?1",
                 [&old],
             )
