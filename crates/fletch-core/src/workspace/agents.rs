@@ -1,6 +1,8 @@
 //! `impl WorkspaceManager` — agent CRUD, per-repo metadata (branch / base_sha /
 //! pr_number / pr_snapshot), archive & restore, setup flags, settings, run env.
 
+use rusqlite::OptionalExtension;
+
 use super::*;
 
 impl WorkspaceManager {
@@ -93,14 +95,20 @@ impl WorkspaceManager {
         // *archived* agents (live ones and on-disk checkouts are excluded), but
         // the archived row still owns this primary key. Evict it so the INSERT
         // below doesn't trip the PK constraint. Cascades clear its sessions,
-        // worktrees, and session records. A *live* row with this id would be a
-        // genuine bug, so we deliberately don't touch those — the INSERT will
-        // surface the conflict instead of silently clobbering a running agent.
-        let recycled = tx.execute(
-            "DELETE FROM workspaces WHERE id = ?1 AND archived_at IS NOT NULL",
-            rusqlite::params![record.id],
-        )?;
-        if recycled > 0 {
+        // worktrees, and session records, once any fork still inheriting from
+        // them is detached. A *live* row with this id would be a genuine bug,
+        // so we deliberately don't touch those — the INSERT will surface the
+        // conflict instead of silently clobbering a running agent.
+        let archived = tx
+            .query_row(
+                "SELECT id FROM workspaces WHERE id = ?1 AND archived_at IS NOT NULL",
+                [&record.id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(evicted) = archived {
+            lineage::detach_children(tx, std::slice::from_ref(&evicted))?;
+            tx.execute("DELETE FROM workspaces WHERE id = ?1", [&evicted])?;
             tracing::info!(
                 agent_id = %record.id,
                 "reusing archived agent name; evicted its archived record",
@@ -124,12 +132,19 @@ impl WorkspaceManager {
             ],
         )?;
 
-        // Exactly one provider run per workspace today. The runtime status is
-        // not persisted — it derives from the workspace/session dispositions.
+        // The workspace's first (and current) session, carrying its lineage
+        // when it continues an earlier conversation (a fork) — written with the
+        // row so a session never exists without the history it was created
+        // with. The runtime status is not persisted — it derives from the
+        // workspace/session dispositions.
         let session_id = uuid::Uuid::new_v4().to_string();
+        let (parent_session_id, parent_cut_seq) = match &record.lineage {
+            Some(l) => (Some(l.parent_session_id.as_str()), Some(l.cut_seq)),
+            None => (None, None),
+        };
         tx.execute(
-            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, instructions, forked_context, custom_agent_id, skills, mcp_servers, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id, last_error, effort, model, instructions, forked_context, custom_agent_id, skills, mcp_servers, parent_session_id, parent_cut_seq, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             rusqlite::params![
                 session_id,
                 record.id,
@@ -144,6 +159,8 @@ impl WorkspaceManager {
                 record.custom_agent_id,
                 encode_json_vec(&record.skills),
                 encode_json_vec(&record.mcp_servers),
+                parent_session_id,
+                parent_cut_seq,
                 created_millis,
             ],
         )?;
@@ -410,7 +427,8 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE sessions SET provider_session_id = ?1 WHERE workspace_id = ?2",
+            "UPDATE sessions SET provider_session_id = ?1
+             WHERE workspace_id = ?2 AND superseded_at IS NULL",
             rusqlite::params![session_id, id],
         )?;
         Ok(())
@@ -420,7 +438,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE sessions SET view = ?1 WHERE workspace_id = ?2",
+            "UPDATE sessions SET view = ?1 WHERE workspace_id = ?2 AND superseded_at IS NULL",
             rusqlite::params![view_to_str(&view), id],
         )?;
         Ok(())
@@ -435,7 +453,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE sessions SET effort = ?1 WHERE workspace_id = ?2",
+            "UPDATE sessions SET effort = ?1 WHERE workspace_id = ?2 AND superseded_at IS NULL",
             rusqlite::params![effort, id],
         )?;
         Ok(())
@@ -449,7 +467,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         Self::ensure_agent_exists(&conn, id)?;
         conn.execute(
-            "UPDATE sessions SET model = ?1 WHERE workspace_id = ?2",
+            "UPDATE sessions SET model = ?1 WHERE workspace_id = ?2 AND superseded_at IS NULL",
             rusqlite::params![model, id],
         )?;
         Ok(())
@@ -676,8 +694,12 @@ impl WorkspaceManager {
 
     pub fn remove_agent(&self, id: &str) -> Result<()> {
         let conn = self.db.lock();
-        // Cascades to the workspace's sessions, worktrees, and session_records.
-        conn.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
+        let tx = conn.unchecked_transaction()?;
+        // Cascades to the workspace's sessions, worktrees, and session_records,
+        // once any fork still inheriting from those sessions is detached.
+        lineage::detach_children(&tx, &[id.to_string()])?;
+        tx.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
+        tx.commit()?;
         Ok(())
     }
 }

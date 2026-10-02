@@ -10,20 +10,20 @@ import { ForkMenu, type ForkOption } from "./ForkMenu";
 import { ViewToggle } from "./ViewToggle";
 
 /** Workspace-level fork options — the "start a new thread of work" entry point,
- *  spanning both axes (git-action turns aside, there's no single message to
- *  anchor on here, so context is whole-conversation or none). */
+ *  spanning both axes. There's no single message to anchor on here, so context
+ *  is the whole conversation (through the end, `turn_id: null`) or none. */
 const HEADER_FORK_OPTIONS: ForkOption[] = [
   {
     key: "full-clean",
     label: "Full history · clean workspace",
     code: "clean",
-    context: { kind: "full" },
+    context: { kind: "through", turn_id: null },
   },
   {
     key: "full-carry",
     label: "Full history · with current code",
     code: "carry",
-    context: { kind: "full" },
+    context: { kind: "through", turn_id: null },
   },
   {
     key: "fresh-carry",

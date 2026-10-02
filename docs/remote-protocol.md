@@ -527,8 +527,8 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `discard_agent` | `{ agentId }` — destructive: record, checkout and transcript all go | `null` |
 | `set_agent_model` | `{ agentId, model }` | `null` |
 | `set_agent_effort` | `{ agentId, effort }` | `null` |
-| `read_session_records` | `{ agentId }` | `SessionRecord[]` |
-| `read_user_turns` | `{ agentId }` | `UserTurn[]` |
+| `read_session_records` | `{ agentId }` — the agent's display history: what its session inherits through lineage (a fork's parent conversation, `inherited: true`), then its own records | `SessionRecord[]` |
+| `read_user_turns` | `{ agentId }` — the user turns of the same history, in the same order | `UserTurn[]` |
 | `sync_session` | `{ agentId }` | `null` |
 | `read_live_turn` | `{ agentId }` — the `event` payloads of the agent's current turn, oldest first, as they were forwarded on `agent:event`; `dropped` counts events cut from the head when the turn outgrew the host's buffer; `next_seq` is the `seq` the agent's next `agent:event` will carry, so a frame with `seq >= next_seq` is one the snapshot does not hold. Empty for a turn that ran under a previous host process or in the native view. No desktop command of this name yet | `{ events: object[], dropped: number, next_seq: number }` |
 | `get_git_state` | `{ agentId }` — a checkout whose config Fletch refuses to run git over comes back as a zero-state with the keys in `blocked_config` | `GitState \| null` |
@@ -968,10 +968,11 @@ the rest of `run:*`, `dictation:*`, `docker:*` and `agent-install:*`.
 
 Delivery is best effort, exactly like the desktop frontend: the phone must
 refetch `get_workspace` on reconnect and on returning to the foreground, and
-`read_session_records` when it opens an agent. An empty record list is not
-proof of an empty conversation — the turn-end ingest can lag or miss — so the
-phone then asks the host to `sync_session` and reads once more, and keeps
-whatever log it already rendered from live events if that is still empty.
+`read_session_records` when it opens an agent. A list with no records of the
+agent's own (empty, or only `inherited` ones) is not proof of an empty
+conversation — the turn-end ingest can lag or miss — so the phone then asks the
+host to `sync_session` and reads once more, and keeps whatever log it already
+rendered from live events if that is still empty.
 
 Records stop at the last *finished* turn: the running one is ingested only when
 it ends. A phone that opens a busy agent therefore also asks for

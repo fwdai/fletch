@@ -691,7 +691,7 @@ mod tests {
         );
 
         // Outgoing turn captured, pending (no transcript yet) → renders standalone.
-        let turns = sup.workspace.read_user_turns("yosemite").unwrap();
+        let turns = sup.workspace.read_history_turns("yosemite").unwrap();
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].turn_id, "turn-1");
         assert_eq!(turns[0].text, "hello");

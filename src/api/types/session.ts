@@ -1,12 +1,20 @@
 /** One canonical record from session_records: a verbatim per-provider
- *  transcript body plus its dedup key and provenance. */
+ *  transcript body plus its dedup key and provenance. `read_session_records`
+ *  returns an agent's display history, which starts with whatever its session
+ *  inherits through lineage (a fork's parent conversation). */
 export interface SessionRecord {
+  /** Order within the record's own session; a history that spans sessions is
+   *  ordered by its position in the list, not by this. */
   seq: number;
   provider: string;
   source: string;
   native_id: string;
   agent_version: string | null;
   body: Record<string, unknown> & { type?: string };
+  /** Shown from an ancestor session rather than produced by this agent —
+   *  display only, never this agent's usage. Absent from hosts that predate
+   *  lineage, where every record is the agent's own. */
+  inherited?: boolean;
 }
 
 /** One Fletch-origin outgoing user message (session_user_turns). Carries the
@@ -14,6 +22,7 @@ export interface SessionRecord {
  *  canonical session_records user-message once matched at turn-end (null =
  *  pending or failed — rendered standalone for retry). */
 export interface UserTurn {
+  /** Stable id, and what a fork anchors on. */
   turn_id: string;
   seq: number;
   text: string;
@@ -23,6 +32,8 @@ export interface UserTurn {
   started_at: number | null;
   /** Epoch millis when the turn finished; null while in flight. */
   ended_at: number | null;
+  /** From an ancestor session (see `SessionRecord.inherited`). */
+  inherited?: boolean;
 }
 
 export interface SessionRecordsAppendedEvent {

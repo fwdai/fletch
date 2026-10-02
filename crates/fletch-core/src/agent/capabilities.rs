@@ -95,6 +95,12 @@ pub struct AgentCapabilities {
     /// and every per-turn agent (codex/cursor/opencode/pi); a per-turn agent
     /// can only switch *into* native once it has a session id to resume.
     pub native_view: bool,
+    /// Can start a session as a native, lossless branch of another of its
+    /// sessions, cut at a message (`SessionStart::Branch`) — rewind's `Exact`
+    /// handoff. Claude only, and in the custom view only: claude honors
+    /// `--resume-session-at` in print mode alone, so its TUI can't open such a
+    /// branch. No per-turn arg builder can branch.
+    pub branch_at_message: bool,
 }
 
 /// Capabilities for a provider. Per-turn agents read theirs from the
@@ -104,9 +110,16 @@ pub fn capabilities(provider: &str) -> AgentCapabilities {
     match per_turn_descriptor(provider) {
         Some(d) => AgentCapabilities {
             native_view: d.native_view,
+            branch_at_message: false,
         },
-        None if provider == "claude" => AgentCapabilities { native_view: true },
-        None => AgentCapabilities { native_view: false },
+        None if provider == "claude" => AgentCapabilities {
+            native_view: true,
+            branch_at_message: true,
+        },
+        None => AgentCapabilities {
+            native_view: false,
+            branch_at_message: false,
+        },
     }
 }
 
@@ -301,5 +314,18 @@ mod tests {
         }
 
         assert!(mcp_delivery("nonesuch").is_none());
+    }
+
+    #[test]
+    fn only_claude_branches_at_a_message() {
+        assert!(capabilities("claude").branch_at_message);
+        for d in PER_TURN_AGENTS {
+            assert!(
+                !capabilities(d.id).branch_at_message,
+                "{} claims a branch it can't launch",
+                d.id
+            );
+        }
+        assert!(!capabilities("nonesuch").branch_at_message);
     }
 }

@@ -94,7 +94,7 @@ fn init_repo(dir: &Path) -> PathBuf {
     repo
 }
 
-fn mk_repo(path: &str) -> TrackedRepo {
+pub(crate) fn mk_repo(path: &str) -> TrackedRepo {
     TrackedRepo {
         repo_path: PathBuf::from(path),
         subdir: "repo".into(),
@@ -200,7 +200,7 @@ fn adopted_checkout_round_trips_and_is_cleared_by_restore() {
 }
 
 /// Helper: ensure the repo path exists in the repos table so add_agent can find it.
-fn seed_repo(db: &Arc<Mutex<Connection>>, repo_path: &str) {
+pub(crate) fn seed_repo(db: &Arc<Mutex<Connection>>, repo_path: &str) {
     let conn = db.lock();
     let path = Path::new(repo_path);
     let project_name = path
@@ -2122,6 +2122,77 @@ fn append_session_record_to_workspace_with_no_session_is_noop() {
     assert!(wm.read_session_records("no-such-ws").unwrap().is_empty());
 }
 
+// ── the current session ───────────────────────────────────────────────
+
+#[test]
+fn a_workspace_has_at_most_one_current_session() {
+    let db = test_db();
+    let (ws, _wm) = make_workspace_with_session(&db);
+    let conn = db.lock();
+    let second = conn.execute(
+        "INSERT INTO sessions (id, workspace_id, created_at) VALUES ('s2', ?1, 0)",
+        [&ws],
+    );
+    assert!(second.is_err(), "a second current session must be refused");
+    conn.execute(
+        "INSERT INTO sessions (id, workspace_id, superseded_at, created_at)
+         VALUES ('old', ?1, 1, 0)",
+        [&ws],
+    )
+    .expect("a superseded session sits beside the current one");
+}
+
+#[test]
+fn a_superseded_session_is_invisible_to_current_session_reads() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    // Newer by created_at — the old `ORDER BY created_at DESC LIMIT 1` reads
+    // would have picked it.
+    db.lock()
+        .execute(
+            "INSERT INTO sessions (id, workspace_id, provider, superseded_at, created_at)
+             VALUES ('old', ?1, 'codex', 1, 9999999999999)",
+            [&ws],
+        )
+        .unwrap();
+
+    let listed: Vec<_> = wm
+        .current()
+        .unwrap()
+        .agents
+        .into_iter()
+        .filter(|r| r.id == ws)
+        .collect();
+    assert_eq!(listed.len(), 1, "one row per workspace");
+    assert_eq!(listed[0].provider, "claude");
+    assert_eq!(wm.agent(&ws).unwrap().provider, "claude");
+
+    let body = serde_json::json!({"n": 1});
+    wm.append_session_records(&ws, "claude", "transcript", None, &[("own", &body)])
+        .unwrap();
+    assert_eq!(wm.read_session_records(&ws).unwrap().len(), 1);
+    assert_eq!(wm.session_record_count(&ws).unwrap(), 1);
+    let old_records: i64 = db
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM session_records WHERE session_id = 'old'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_records, 0, "writes land in the current session");
+
+    wm.update_agent_model(&ws, Some("m")).unwrap();
+    let old_model: Option<String> = db
+        .lock()
+        .query_row("SELECT model FROM sessions WHERE id = 'old'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(old_model, None, "updates touch only the current session");
+    assert_eq!(wm.agent(&ws).unwrap().model.as_deref(), Some("m"));
+}
+
 #[test]
 fn insert_and_read_user_turns_roundtrip() {
     let db = test_db();
@@ -2131,7 +2202,7 @@ fn insert_and_read_user_turns_roundtrip() {
         .insert_user_turn(&ws_id, "turn-1", "hello", &["/tmp/a.png".into()])
         .unwrap());
 
-    let turns = wm.read_user_turns(&ws_id).unwrap();
+    let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].turn_id, "turn-1");
     assert_eq!(turns[0].seq, 1);
@@ -2151,15 +2222,15 @@ fn user_turn_timing_start_then_end() {
 
     // Start stamps started_at; end stamps ended_at on the open turn.
     wm.mark_user_turn_started("turn-1", 1000).unwrap();
-    let started = wm.read_user_turns(&ws_id).unwrap()[0].started_at;
+    let started = wm.read_history_turns(&ws_id).unwrap()[0].started_at;
     assert_eq!(started, Some(1000));
-    assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].ended_at, None);
+    assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].ended_at, None);
 
     let closed = wm
         .mark_user_turn_ended(&ws_id)
         .unwrap()
         .expect("open turn closed");
-    let turn = wm.read_user_turns(&ws_id).unwrap().remove(0);
+    let turn = wm.read_history_turns(&ws_id).unwrap().remove(0);
     assert_eq!(turn.started_at, started, "start clock not reset by end");
     assert!(
         turn.ended_at >= turn.started_at,
@@ -2180,10 +2251,10 @@ fn mark_user_turn_started_is_idempotent() {
     wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
 
     wm.mark_user_turn_started("turn-1", 1000).unwrap();
-    let first = wm.read_user_turns(&ws_id).unwrap()[0].started_at;
+    let first = wm.read_history_turns(&ws_id).unwrap()[0].started_at;
     // A delivery retry re-stamps — but the guard keeps the original clock.
     wm.mark_user_turn_started("turn-1", 2000).unwrap();
-    assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].started_at, first);
+    assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].started_at, first);
 }
 
 #[test]
@@ -2197,7 +2268,7 @@ fn mark_user_turn_ended_skips_turns_that_never_started() {
         wm.mark_user_turn_ended(&ws_id).unwrap().is_none(),
         "no open turn to close"
     );
-    assert_eq!(wm.read_user_turns(&ws_id).unwrap()[0].ended_at, None);
+    assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].ended_at, None);
 }
 
 #[test]
@@ -2211,7 +2282,7 @@ fn insert_user_turn_is_idempotent_on_turn_id() {
         .insert_user_turn(&ws_id, "turn-1", "second", &[])
         .unwrap());
 
-    let turns = wm.read_user_turns(&ws_id).unwrap();
+    let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].text, "first");
 }
@@ -2243,7 +2314,7 @@ fn associate_pending_user_turns_matches_attachment_path_then_text() {
     let n = wm.associate_pending_user_turns(&ws_id).unwrap();
     assert_eq!(n, 2);
 
-    let turns = wm.read_user_turns(&ws_id).unwrap();
+    let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns[0].native_id.as_deref(), Some("rec-A"));
     assert_eq!(turns[1].native_id.as_deref(), Some("rec-B"));
 
@@ -2272,7 +2343,7 @@ fn associate_matches_multiline_text() {
 
     let n = wm.associate_pending_user_turns(&ws_id).unwrap();
     assert_eq!(n, 1);
-    let turns = wm.read_user_turns(&ws_id).unwrap();
+    let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns[0].native_id.as_deref(), Some("rec-1"));
 }
 
@@ -2286,7 +2357,7 @@ fn associate_leaves_unmatched_turn_pending() {
         .unwrap();
     assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 0);
 
-    let turns = wm.read_user_turns(&ws_id).unwrap();
+    let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].native_id, None); // still pending → renders standalone
 }
@@ -2309,7 +2380,7 @@ fn coalesced_follow_ups_persist_one_row_that_matches_one_record() {
         .unwrap();
 
     assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 1);
-    let turns = wm.read_user_turns(&ws_id).unwrap();
+    let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].native_id.as_deref(), Some("rec-1"));
 }
@@ -2337,7 +2408,7 @@ fn live_injected_follow_ups_each_match_their_own_record() {
     .unwrap();
 
     assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 2);
-    let turns = wm.read_user_turns(&ws_id).unwrap();
+    let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns[0].native_id.as_deref(), Some("rec-A"));
     assert_eq!(turns[1].native_id.as_deref(), Some("rec-B"));
 }
@@ -2362,7 +2433,7 @@ fn per_message_rows_orphan_against_a_coalesced_record() {
     // Only one row can claim the single record; the other stays pending.
     assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 1);
     let pending = wm
-        .read_user_turns(&ws_id)
+        .read_history_turns(&ws_id)
         .unwrap()
         .into_iter()
         .filter(|t| t.native_id.is_none())
@@ -2437,7 +2508,7 @@ fn build_workspaces_subpath_splits_debug_from_release() {
 
 /// Mark a workspace archived directly (tests don't go through the full
 /// archive flow, which needs live checkouts on disk).
-fn mark_archived(db: &Arc<Mutex<Connection>>, id: &str) {
+pub(crate) fn mark_archived(db: &Arc<Mutex<Connection>>, id: &str) {
     let conn = db.lock();
     conn.execute(
         "UPDATE workspaces SET archived_at = ?1 WHERE id = ?2",
