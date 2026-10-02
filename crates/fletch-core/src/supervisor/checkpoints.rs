@@ -40,11 +40,22 @@ pub struct RepoCheckpoint {
 /// workspace's code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinnedCode {
-    /// The key every snapshot is pinned under: a turn id, or a key of its own
-    /// for code pinned on demand.
-    key: String,
+    pin: Pin,
     /// One per repo of the workspace.
     checkouts: Vec<PinnedCheckout>,
+}
+
+/// What a [`PinnedCode`]'s snapshots are pinned as in their checkouts, which
+/// decides whether the pin may be dropped once the fork has its code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pin {
+    /// A turn's checkpoint ([`Supervisor::code_at`]): the source workspace's
+    /// own, which its forks and rewinds may still need. Never unpinned here.
+    Turn(String),
+    /// Pinned for one fork ([`Supervisor::pin_code`]): unpinned from the
+    /// source once that fork has its code, or won't get it
+    /// ([`PinnedCode::release`]).
+    OnDemand(String),
 }
 
 /// One checkout holding its snapshot of a [`PinnedCode`].
@@ -60,12 +71,31 @@ pub struct PinnedCheckout {
 }
 
 impl PinnedCode {
+    /// The key every snapshot is pinned under: a turn id, or a key of its own
+    /// for code pinned on demand.
     pub fn key(&self) -> &str {
-        &self.key
+        match &self.pin {
+            Pin::Turn(key) | Pin::OnDemand(key) => key,
+        }
     }
 
     pub fn checkouts(&self) -> &[PinnedCheckout] {
         &self.checkouts
+    }
+
+    /// Drop an on-demand pin from the source checkouts, once its fork has the
+    /// code or won't get it; until then it is all that keeps the snapshots
+    /// from gc. A turn's checkpoint stays. Best-effort: a failure is logged,
+    /// never returned, so it can't mask how the fork went.
+    pub async fn release(&self) {
+        let Pin::OnDemand(key) = &self.pin else {
+            return;
+        };
+        for pinned in &self.checkouts {
+            if let Err(e) = checkpoint::unpin(&pinned.checkout, key).await {
+                tracing::warn!(error = %e, checkout = %pinned.checkout.display(), "dropping a fork's code pin failed");
+            }
+        }
     }
 }
 
@@ -136,24 +166,39 @@ impl Supervisor {
     }
 
     /// `agent_id`'s current code: every checkout pinned as it stands now,
-    /// under one fresh key. Fails if any checkout can't be captured.
+    /// under one fresh key, for one fork — whose spawn releases the pin
+    /// ([`PinnedCode::release`]). Fails if any checkout can't be captured,
+    /// leaving none pinned.
     pub async fn pin_code(&self, agent_id: &str) -> Result<PinnedCode> {
         let record = self.workspace.agent(agent_id)?;
         if record.repos.is_empty() {
             return Err(Error::Other(format!("{agent_id} has no checkouts")));
         }
-        let key = uuid::Uuid::new_v4().to_string();
-        let mut checkouts = Vec::with_capacity(record.repos.len());
+        let mut code = PinnedCode {
+            pin: Pin::OnDemand(uuid::Uuid::new_v4().to_string()),
+            checkouts: Vec::with_capacity(record.repos.len()),
+        };
         for repo in &record.repos {
-            let checkout = repo.checkout_path(agent_id)?;
-            checkpoint::capture(&checkout, &key).await?;
-            checkouts.push(PinnedCheckout {
-                repo_path: repo.repo_path.clone(),
-                subdir: repo.subdir.clone(),
-                checkout,
-            });
+            let captured = match repo.checkout_path(agent_id) {
+                Ok(checkout) => checkpoint::capture(&checkout, code.key())
+                    .await
+                    .map(|_| checkout),
+                Err(e) => Err(e),
+            };
+            match captured {
+                Ok(checkout) => code.checkouts.push(PinnedCheckout {
+                    repo_path: repo.repo_path.clone(),
+                    subdir: repo.subdir.clone(),
+                    checkout,
+                }),
+                Err(e) => {
+                    // Pinned whole or not at all.
+                    code.release().await;
+                    return Err(e);
+                }
+            }
         }
-        Ok(PinnedCode { key, checkouts })
+        Ok(code)
     }
 
     /// The code `agent_id`'s checkouts held as `turn_id` was delivered: its
@@ -189,7 +234,7 @@ impl Supervisor {
             )));
         }
         Ok(PinnedCode {
-            key: turn_id.to_string(),
+            pin: Pin::Turn(turn_id.to_string()),
             checkouts,
         })
     }
@@ -207,6 +252,10 @@ impl Supervisor {
     /// `code` holds every checkout of its workspace, so that workspace never
     /// had the repo (it joined the project later) and there is no code of it
     /// to copy.
+    ///
+    /// A snapshot arrives pinned under `code`'s key, and is unpinned once
+    /// restored: the checkout's HEAD and tree hold it from then on. The
+    /// source's pin is the caller's to release.
     pub async fn start_from(&self, agent_id: &str, code: &PinnedCode) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
         let dropped: Vec<&str> = code
@@ -231,8 +280,15 @@ impl Supervisor {
                 continue;
             };
             let checkout = repo.checkout_path(agent_id)?;
-            let sha = checkpoint::fetch_into(&checkout, &pinned.checkout, &code.key).await?;
-            checkpoint::restore(&checkout, &sha).await?;
+            let sha = checkpoint::fetch_into(&checkout, &pinned.checkout, code.key()).await?;
+            let restored = checkpoint::restore(&checkout, &sha).await;
+            // Only ever the copy the fetch made, never the source's own pin.
+            if checkout != pinned.checkout {
+                if let Err(e) = checkpoint::unpin(&checkout, code.key()).await {
+                    tracing::warn!(error = %e, agent_id, subdir = %repo.subdir, "dropping a fetched code pin failed");
+                }
+            }
+            restored?;
         }
         Ok(())
     }
@@ -242,7 +298,10 @@ impl Supervisor {
 mod tests {
     use super::*;
     use crate::git::run_git;
-    use crate::supervisor::tests::{committed_repo, record_in_checkouts, test_supervisor};
+    use crate::supervisor::lifecycle::provision_then_release;
+    use crate::supervisor::tests::{
+        checkout_of, committed_repo, pins, record_in_checkouts, test_supervisor, workspace_of,
+    };
     use crate::workspace::AgentStatus;
     use std::path::Path;
 
@@ -311,22 +370,6 @@ mod tests {
         assert!(checkpoint::resolve(&kept, TURN).await.unwrap().is_some());
     }
 
-    /// A `--shared` clone of `source` at `<dir>/<name>`, the shape of every
-    /// checkout, with an identity to commit with.
-    async fn checkout_of(source: &Path, dir: &Path, name: &str) -> PathBuf {
-        let dest = dir.join(name);
-        let (source, dest_str) = (source.to_str().unwrap(), dest.to_str().unwrap());
-        run_git(dir, &["clone", "-q", "--shared", source, dest_str], "clone")
-            .await
-            .unwrap();
-        for (key, value) in [("user.email", "t@example.com"), ("user.name", "Tester")] {
-            run_git(&dest, &["config", key, value], "config")
-                .await
-                .unwrap();
-        }
-        dest
-    }
-
     async fn head(checkout: &Path) -> String {
         crate::git::rev_parse(checkout, "HEAD").await.unwrap()
     }
@@ -338,16 +381,13 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    /// Workspace `id` with a checkout of each of `sources`, at `checkouts`.
-    fn workspace_of(sup: &Supervisor, id: &str, sources: &[&PathBuf], checkouts: &[PathBuf]) {
-        let mut record = record_in_checkouts(sup, id, checkouts);
-        for (repo, source) in record.repos.iter_mut().zip(sources) {
-            sup.workspace
-                .add_workspace_repo(source.to_path_buf())
-                .unwrap();
-            repo.repo_path = source.to_path_buf();
-        }
-        sup.workspace.add_agent(&mut record).unwrap();
+    /// Start `agent_id` from `code` the way a fork's spawn does: then release
+    /// the pin, whatever came of it.
+    async fn fork_into(sup: &Supervisor, agent_id: &str, code: &PinnedCode) -> Result<()> {
+        let mut started = None;
+        let start = async { started = Some(sup.start_from(agent_id, code).await) };
+        provision_then_release(start, Some(code.clone())).await;
+        started.unwrap()
     }
 
     #[tokio::test]
@@ -383,7 +423,7 @@ mod tests {
         let code = sup.pin_code("denali").await.unwrap();
         let subdirs: Vec<&str> = code.checkouts().iter().map(|c| c.subdir.as_str()).collect();
         assert_eq!(subdirs, ["repo-0", "repo-1"]);
-        sup.start_from("fuji", &code).await.unwrap();
+        fork_into(&sup, "fuji", &code).await.unwrap();
 
         // Each repo: HEAD is the commit the snapshot was taken on, and what
         // was uncommitted there is uncommitted here.
@@ -395,8 +435,11 @@ mod tests {
         assert_eq!(read(child[0].join("committed.txt")), b"committed");
         assert_eq!(read(child[0].join("a.txt")), b"edited");
         assert_eq!(read(child[1].join("new.txt")), b"untracked");
-        // The parent is left as it was.
+        // The parent is left as it was, and no pin is left on either side.
         assert_eq!(status(&parent[0]).await, " M a.txt\n");
+        for checkout in parent.iter().chain(&child) {
+            assert_eq!(pins(checkout).await, Vec::<String>::new());
+        }
     }
 
     #[tokio::test]
@@ -417,7 +460,12 @@ mod tests {
             std::fs::write(parent.join("a.txt"), b"edited").unwrap();
         }
         let sup = test_supervisor();
-        workspace_of(&sup, "denali", &[&sources[0], &sources[1]], &[pa, pb]);
+        workspace_of(
+            &sup,
+            "denali",
+            &[&sources[0], &sources[1]],
+            &[pa.clone(), pb.clone()],
+        );
         workspace_of(&sup, "solo", &[&sources[0]], &[only_a]);
         // The new workspace checks out a and c, but not b.
         workspace_of(
@@ -429,19 +477,72 @@ mod tests {
         let base = head(&ca).await;
 
         // b's code has nowhere to go: refused, naming it, before any
-        // checkout is touched.
+        // checkout is touched — and the failed fork still drops its pin.
         let both = sup.pin_code("denali").await.unwrap();
-        let err = sup.start_from("fuji", &both).await.unwrap_err().to_string();
+        let err = fork_into(&sup, "fuji", &both)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no checkout of repo-1,"), "{err}");
         assert_eq!(status(&ca).await, "");
         assert_eq!(head(&ca).await, base);
+        for parent in [&pa, &pb] {
+            assert_eq!(pins(parent).await, Vec::<String>::new());
+        }
 
         // c was never in the source workspace, so there is no code of it to
         // copy: it keeps its clean base while a takes the source's code.
         let a = sup.pin_code("solo").await.unwrap();
-        sup.start_from("fuji", &a).await.unwrap();
+        fork_into(&sup, "fuji", &a).await.unwrap();
         assert_eq!(status(&ca).await, " M a.txt\n");
         assert_eq!(status(&cc).await, "");
+    }
+
+    #[tokio::test]
+    async fn a_pin_is_released_however_the_spawn_ends() {
+        let td = tempfile::tempdir().unwrap();
+        let (a, b) = (
+            committed_repo(td.path(), "a").await,
+            committed_repo(td.path(), "b").await,
+        );
+        let sup = test_supervisor();
+        let mut record = record_in_checkouts(&sup, "denali", &[a.clone(), b.clone()]);
+        sup.workspace.add_agent(&mut record).unwrap();
+
+        // Abandoned before the code stage: nothing fetched it.
+        let code = sup.pin_code("denali").await.unwrap();
+        assert_eq!(pins(&a).await.len(), 1);
+        provision_then_release(async {}, Some(code)).await;
+        assert_eq!(pins(&a).await, Vec::<String>::new());
+        assert_eq!(pins(&b).await, Vec::<String>::new());
+
+        // Pinned whole or not at all: b can't be captured, so a's pin goes.
+        std::fs::remove_dir_all(&b).unwrap();
+        assert!(sup.pin_code("denali").await.is_err());
+        assert_eq!(pins(&a).await, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn code_as_of_a_turn_keeps_the_sources_checkpoint_and_drops_the_childs_copy() {
+        let td = tempfile::tempdir().unwrap();
+        let source = committed_repo(td.path(), "src").await;
+        let parent = checkout_of(&source, td.path(), "parent").await;
+        let child = checkout_of(&source, td.path(), "child").await;
+        std::fs::write(parent.join("a.txt"), b"edited").unwrap();
+        let sup = test_supervisor();
+        workspace_of(&sup, "denali", &[&source], std::slice::from_ref(&parent));
+        workspace_of(&sup, "fuji", &[&source], std::slice::from_ref(&child));
+        sup.checkpoint_turn("denali", TURN).await;
+
+        let code = sup.code_at("denali", TURN).await.unwrap();
+        fork_into(&sup, "fuji", &code).await.unwrap();
+
+        assert_eq!(status(&child).await, " M a.txt\n");
+        assert_eq!(pins(&child).await, Vec::<String>::new());
+        assert_eq!(
+            pins(&parent).await,
+            [format!("refs/fletch/checkpoints/{TURN}")]
+        );
     }
 
     #[tokio::test]

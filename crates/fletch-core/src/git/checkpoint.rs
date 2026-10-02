@@ -24,6 +24,19 @@ pub async fn capture(checkout: &Path, turn_id: &str) -> Result<String> {
     Ok(sha)
 }
 
+/// Drop the pin on `turn_id`'s checkpoint in `checkout`, so gc may take its
+/// snapshot. A pin that is already gone is fine.
+pub async fn unpin(checkout: &Path, turn_id: &str) -> Result<()> {
+    let refname = checkpoint_ref(turn_id)?;
+    run_git(
+        checkout,
+        &["update-ref", "-d", &refname],
+        "unpin checkpoint",
+    )
+    .await?;
+    Ok(())
+}
+
 /// `turn_id`'s checkpoint in `checkout`, or `None` when it has none.
 pub async fn resolve(checkout: &Path, turn_id: &str) -> Result<Option<String>> {
     let refname = checkpoint_ref(turn_id)?;
@@ -186,6 +199,18 @@ mod tests {
             file_at(&repo, &sha, "new.txt").await.as_deref(),
             Some(&b"added"[..])
         );
+    }
+
+    #[tokio::test]
+    async fn unpin_drops_the_pin_and_is_fine_when_it_is_gone() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = repo(td.path(), "repo").await;
+        work_in_progress(&repo).await;
+        capture(&repo, TURN).await.unwrap();
+
+        unpin(&repo, TURN).await.unwrap();
+        assert_eq!(resolve(&repo, TURN).await.unwrap(), None);
+        unpin(&repo, TURN).await.unwrap();
     }
 
     #[tokio::test]
