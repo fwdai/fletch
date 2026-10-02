@@ -17,9 +17,11 @@ export type ChatItem =
        *  flight (the live turn); both absent for turns with no timing row. */
       startedAt?: number;
       endedAt?: number;
-      /** Client turn id on a store-inserted optimistic bubble (the message that
-       *  opened a turn, before the transcript echoes it). Lets the `turn:sent`
-       *  mirror skip this client's own send. Never set on adapter-reduced items. */
+      /** The turn's id (`session_user_turns.turn_id`): on a store-inserted
+       *  optimistic bubble (the message that opened a turn, before the
+       *  transcript echoes it), or overlaid from the matching `UserTurn` row.
+       *  Lets the `turn:sent` mirror skip a send already in the log, and names
+       *  the turn a fork anchors on. Never set by an adapter's reduce(). */
       turnId?: string;
     }
   // A follow-up the user sent mid-turn that hasn't landed in the transcript

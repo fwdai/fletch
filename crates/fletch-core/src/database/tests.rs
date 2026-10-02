@@ -231,6 +231,59 @@ fn pr_history_migration_backfills_existing_bindings() {
     assert_eq!(count, 0, "no persisted state means no renderable snapshot");
 }
 
+/// Schema version at which session lineage and the one-current-session index
+/// (0041) exist. Pinned for the same reason as `V_WORKTREE_PRS`.
+const V_SESSION_LINEAGE: usize = 41;
+
+/// The current-session index can't fail an upgrade: should a workspace already
+/// hold several sessions, the newest stays current — the one the old
+/// `ORDER BY created_at DESC LIMIT 1` reads resolved — and the rest become
+/// superseded. Existing sessions start with no lineage.
+#[test]
+fn session_lineage_migration_keeps_the_newest_session_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_SESSION_LINEAGE - 1)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w', 'p', 'ws', 0);
+         INSERT INTO sessions (id, workspace_id, created_at) VALUES ('old', 'w', 1);
+         INSERT INTO sessions (id, workspace_id, created_at) VALUES ('new', 'w', 2);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w2', 'p', 'ws2', 0);
+         INSERT INTO sessions (id, workspace_id, created_at) VALUES ('only', 'w2', 1);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = init(dir.path()).unwrap();
+    let conn = db.lock();
+    let current: Vec<String> = conn
+        .prepare("SELECT id FROM sessions WHERE superseded_at IS NULL ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(current, vec!["new", "only"]);
+    let rooted: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NULL AND parent_cut_seq IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rooted, 3);
+    // A lineage is a parent and a cut, never half of one.
+    assert!(conn
+        .execute(
+            "UPDATE sessions SET parent_session_id = 'old' WHERE id = 'only'",
+            [],
+        )
+        .is_err());
+}
+
 /// The roadmap table (0026) lands on an existing install with the shape the DAO
 /// assumes: per-project unique codes, cascade from the owning project, and no
 /// generic-CRUD access (typed commands only, like the `wf_*` tables).
@@ -643,12 +696,14 @@ fn null_where_clause() {
     let db = test_db();
     let conn = db.lock();
     let pid = make_project(&conn);
+    // One workspace per session: a workspace has a single current session.
+    let failed_ws = make_workspace(&conn, &pid);
     let ws_id = make_workspace(&conn, &pid);
 
     db_insert(
         &conn,
         "sessions",
-        json!({ "workspace_id": ws_id, "provider": "claude", "last_error": "boom" }),
+        json!({ "workspace_id": failed_ws, "provider": "claude", "last_error": "boom" }),
     )
     .unwrap();
 

@@ -300,7 +300,8 @@ impl WorkspaceManager {
     /// Atomically delete a project and its workflow runs after filesystem and
     /// runtime cleanup has been staged by the supervisor. Workflow runs do not
     /// have a project FK, so they share this transaction explicitly; every
-    /// other project-owned row is removed by foreign-key cascade.
+    /// other project-owned row is removed by foreign-key cascade, once any
+    /// session outside the project that inherits from one inside is detached.
     pub fn delete_project(&self, project_id: &str, expected_run_ids: &[String]) -> Result<()> {
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
@@ -320,6 +321,14 @@ impl WorkspaceManager {
             )));
         }
         tx.execute("DELETE FROM wf_run WHERE project_id = ?1", [project_id])?;
+        let doomed = {
+            let mut stmt = tx.prepare("SELECT id FROM workspaces WHERE project_id = ?1")?;
+            let ids = stmt
+                .query_map([project_id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids
+        };
+        lineage::detach_children(&tx, &doomed)?;
         let changed = tx.execute("DELETE FROM projects WHERE id = ?1", [project_id])?;
         if changed == 0 {
             return Err(Error::Other(format!("project not found: {project_id}")));

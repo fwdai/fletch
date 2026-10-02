@@ -335,6 +335,9 @@ pub struct SpawnRequest {
     /// `instructions` on every spawn. `None` for a non-fork spawn. Kept separate
     /// from `instructions` so the user brief is never parsed/mutated.
     pub forked_context: Option<String>,
+    /// The history the new session continues (a fork's parent up to its
+    /// anchor), written with the session row. `None` starts it empty.
+    pub lineage: Option<crate::workspace::SessionLineage>,
     /// Custom agent identity; `None` for a plain built-in spawn.
     pub custom_agent_id: Option<String>,
     /// Custom agent's skills, snapshotted by value (see `agent_profile`).
@@ -402,6 +405,7 @@ impl Supervisor {
             model,
             instructions,
             forked_context,
+            lineage,
             custom_agent_id,
             skills,
             mcp_servers,
@@ -541,6 +545,8 @@ impl Supervisor {
         // Forked-conversation digest, kept separate from the brief and composed
         // after it at launch (see start_process). `None` for a non-fork spawn.
         record.forked_context = forked_context;
+        // The history the session continues; inserted with the session row.
+        record.lineage = lineage;
         record.custom_agent_id = custom_agent_id;
         // Skill/MCP snapshots, persisted like the brief so every process spawn
         // (fresh, view-switch, resume) re-materializes the same profile.

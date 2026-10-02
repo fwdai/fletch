@@ -25,8 +25,8 @@
 //     (`autopilotPausedAgents`, `autopilotDisabledProjects`) live in THIS Mac's
 //     database and describe its own engine. They are neither stashed nor reset,
 //     because autopilot never runs against a remote environment: its rungs need
-//     `run_verification`, `fork_agent` and the local `project_settings` table,
-//     none of which are on the wire (docs/remote-protocol.md's op table).
+//     `run_verification` and the local `project_settings` table, neither of
+//     which is on the wire (docs/remote-protocol.md's op table).
 //     What autopilot builds *per checkout* — `autopilot`, `autopilotVerdicts`,
 //     `autopilotLog` — IS stashed, for the reason above: those maps are keyed by
 //     `agentId::subdir`, so a local checkout's enrolment would otherwise answer

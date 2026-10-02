@@ -16,11 +16,12 @@ import { type PairCache, pairToolItems, type ViewItem } from "./pair";
 import { isUserInputTool } from "./UserInput/parse";
 
 /** A turn's closing footer: how long it ran, its settled prose (for copy), and
- *  its ordinal among navigable prompts (the fork cutoff). */
+ *  the turn a fork from here continues through — the last turn above the
+ *  footer, which is an app action when one closed the span. */
 export interface TurnFooterData {
   runSec: number;
   copyText: string;
-  turnOrdinal: number;
+  forkTurnId: string | undefined;
 }
 
 export interface Transcript {
@@ -43,8 +44,8 @@ export interface Transcript {
    *  the user, not working, so the "is thinking" spinner must be suppressed. */
   awaitingInput: boolean;
   transcriptLoading: boolean;
-  /** The agent has history worth loading (distinguishes "empty new session"
-   *  from "transcript missing on disk"). */
+  /** The agent has had a conversation of its own (distinguishes "empty new
+   *  session" from "transcript missing on disk"). */
   hasPriorConversation: boolean;
   /** Raw log identity — a stable dep for scroll-to-bottom effects. */
   log: unknown;
@@ -57,21 +58,24 @@ export function useTranscript(agent: AgentRecord): Transcript {
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   const loadHistoryTranscript = useAppStore((s) => s.loadHistoryTranscript);
 
-  const hasSession = Boolean(agent.session_id);
+  // A first message was sent (it becomes the task), so a provider session
+  // holds a conversation of the agent's own.
   const hasPriorConversation = agent.task.trim().length > 0;
+  // History to load: that own conversation, or the one the agent's session
+  // continues through lineage (a fork) — there before its first message.
+  const hasHistory = (Boolean(agent.session_id) && hasPriorConversation) || agent.lineage != null;
 
   useEffect(() => {
-    if (!hasSession || transcriptLoaded || transcriptLoading || switchInFlight) {
+    if (!hasHistory || transcriptLoaded || transcriptLoading || switchInFlight) {
       return;
     }
-    if (log !== undefined || !hasPriorConversation) {
+    if (log !== undefined) {
       return;
     }
     void loadHistoryTranscript(agent.id);
   }, [
     agent.id,
-    hasSession,
-    hasPriorConversation,
+    hasHistory,
     loadHistoryTranscript,
     log,
     switchInFlight,
@@ -126,16 +130,20 @@ export function useTranscript(agent: AgentRecord): Transcript {
         openStart = start.startedAt; // turn still running
         return;
       }
-      // The agent's settled prose for this turn — what "copy" yields.
+      // The agent's settled prose for this turn — what "copy" yields — and
+      // the last turn in the span (the prompt, or an app action after it),
+      // so a fork from this footer carries everything above it.
       const texts: string[] = [];
+      let forkTurnId: string | undefined;
       for (let j = startIdx; j < endExclusive; j += 1) {
         const it = items[j];
         if (it.kind === "agent_message" && !it.streaming && it.text) texts.push(it.text);
+        if (it.kind === "user_message" && it.turnId) forkTurnId = it.turnId;
       }
       footers[endExclusive - 1] = {
         runSec: (start.endedAt - start.startedAt) / 1000,
         copyText: texts.join("\n\n"),
-        turnOrdinal: k,
+        forkTurnId,
       };
     });
     return { turnFooters: footers, openTurnStartedAt: openStart };

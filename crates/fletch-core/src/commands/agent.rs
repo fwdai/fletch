@@ -41,8 +41,10 @@ pub async fn spawn_agent_impl(
             effort,
             model,
             instructions,
-            // Forked-conversation context is set only by the fork path.
+            // Forked-conversation context and lineage are set only by the fork
+            // path.
             forked_context: None,
+            lineage: None,
             custom_agent_id,
             skills: skills.unwrap_or_default(),
             mcp_servers: mcp_servers.unwrap_or_default(),

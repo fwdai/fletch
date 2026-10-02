@@ -9,6 +9,7 @@ import {
   type RunPhase,
   type SessionRecord,
   type SpawnStage,
+  type UserTurn,
   type Workspace,
 } from "@/api";
 import { discoverCommands } from "@/data/slashCommands";
@@ -226,25 +227,20 @@ export interface WorkspaceSlice {
   loadHistoryTranscript: (id: string) => Promise<void>;
 }
 
-/** Read an agent's canonical log exactly as the transcript view does: pull its
- *  session_records (lazily ingesting on-disk history when the DB is still empty),
- *  reduce them for the provider, then overlay outgoing/pending user turns. Shared
- *  by loadHistoryTranscript (display) and forkAgent (carried-context digest) so a
- *  fork's injected brief is built from the very records the backend copies —
- *  never from a possibly-unloaded managedLogs entry. */
-async function readReducedLog(
-  get: () => AppState,
-  id: string,
-): Promise<{ records: SessionRecord[]; items: ChatItem[] }> {
-  const provider = providerFor(get(), id);
+/** Read an agent's display history: its session_records — inherited through
+ *  lineage, then its own — and its user turns, lazily ingesting on-disk history
+ *  when it has no records of its own yet. Shared by loadHistoryTranscript
+ *  (display) and forkAgent (carried-context digest) so a fork's injected brief
+ *  is built from the history the child will show — never from a
+ *  possibly-unloaded managedLogs entry. */
+async function readHistory(id: string): Promise<{ records: SessionRecord[]; turns: UserTurn[] }> {
   let records = await api.readSessionRecords(id);
-  if (records.length === 0) {
+  if (records.every((r) => r.inherited)) {
     await api.syncSession(id);
     records = await api.readSessionRecords(id);
   }
   const turns = await api.readUserTurns(id);
-  const items = applyUserTurns(reduceRecords(provider, records), turns);
-  return { records, items };
+  return { records, turns };
 }
 
 // Labels shown alongside the busy spinner when a known slash command is
@@ -430,37 +426,31 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   forkAgent: async (parentId, code, context) => {
     set({ busy: true, lastError: null });
     try {
-      // Build the carried prose from the exact surface the backend copies into
-      // the child: the parent's session_records, reduced and passed through the
-      // display policy. Crucially NOT the turn-overlaid items — pending/unmatched
-      // user turns are never copied into the child, so keeping them out here
-      // stops the brief from carrying a prompt the child transcript won't show.
-      // Reading records directly (not managedLogs) also keeps this correct when
-      // the parent transcript has not been loaded into the UI yet.
+      // Build the carried prose from the history the child will show: the
+      // parent's records, reduced and passed through the display policy, with
+      // only its *matched* turns overlaid. Those carry the turn ids the digest
+      // cuts at, while pending turns — which have no place in the history, so
+      // the child never shows them — stay out of the brief. Reading records
+      // directly (not managedLogs) also keeps this correct when the parent
+      // transcript has not been loaded into the UI yet.
       let digest: string | null = null;
-      // Highest seq in the snapshot the digest is built from. Passed to the
-      // backend so it caps its own record read at the same boundary — otherwise
-      // a sync appending to the parent between our read and the backend's could
-      // seed the child with turns the brief never mentioned.
-      let snapshotMaxSeq: number | null = null;
       if (context.kind !== "none") {
         const provider = providerFor(get(), parentId);
-        const { records } = await readReducedLog(get, parentId);
-        snapshotMaxSeq = records.reduce<number | null>(
-          (max, r) => (max === null || r.seq > max ? r.seq : max),
-          null,
+        const { records, turns } = await readHistory(parentId);
+        const log = applyUserTurns(
+          reduceRecords(provider, records),
+          turns.filter((t) => t.native_id),
         );
-        const visible = applyPolicy(reduceRecords(provider, records), getAdapter(provider).policy);
-        digest = forkContextDigest(visible, context);
+        digest = forkContextDigest(applyPolicy(log, getAdapter(provider).policy), context);
       }
-      const rec = await api.forkAgent(parentId, code, context, digest, snapshotMaxSeq);
-      // No optimistic managedLogs seed. When context is carried the fork is
-      // created with a non-empty task, so opening it triggers
-      // loadHistoryTranscript to render the copied history; a context-less fork
-      // opens as an empty chat. Set the selection ahead of the guarded refresh
-      // so it survives a superseding concurrent refresh, with the record in the
-      // same update so a recycled name can't mount against its archived
-      // predecessor (see adoptSpawnedAgent).
+      const rec = await api.forkAgent(parentId, code, context, digest);
+      // No optimistic managedLogs seed. A fork that carries context is created
+      // with lineage, so opening it triggers loadHistoryTranscript to render the
+      // parent's history; a context-less fork opens as an empty chat. Set the
+      // selection ahead of the guarded refresh so it survives a superseding
+      // concurrent refresh, with the record in the same update so a recycled
+      // name can't mount against its archived predecessor (see
+      // adoptSpawnedAgent).
       set((state) => ({
         workspace: adoptSpawnedAgent(state.workspace, rec),
         selectedAgentId: rec.id,
@@ -833,10 +823,11 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       const provider = providerFor(get(), id);
       // session_records is the sole canonical store: per-provider verbatim
-      // transcript bodies, rendered via normalizeTranscript→reduce. readReducedLog
-      // lazily ingests on-disk history when the DB is empty and overlays
-      // outgoing/pending user turns, so a failed send still shows on reload.
-      const { records, items } = await readReducedLog(get, id);
+      // transcript bodies, rendered via normalizeTranscript→reduce. readHistory
+      // lazily ingests on-disk history when the DB is empty; overlaying
+      // outgoing/pending user turns keeps a failed send visible on reload.
+      const { records, turns } = await readHistory(id);
+      const items = applyUserTurns(reduceRecords(provider, records), turns);
       const usage = usageFromRecords(provider, records);
       if (hasUsage(usage)) {
         // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
