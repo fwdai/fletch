@@ -829,7 +829,7 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, Error::AgentNotFound(_)), "got {err}");
-        let turns = sup.workspace.read_user_turns("yosemite").unwrap();
+        let turns = sup.workspace.read_history_turns("yosemite").unwrap();
         assert_eq!(turns.len(), 1, "the turn was persisted past the checkpoint");
     }
 
@@ -857,7 +857,7 @@ mod tests {
             "waited {waited:?}"
         );
         assert!(matches!(err, Error::AgentNotFound(_)), "got {err}");
-        let turns = sup.workspace.read_user_turns("yosemite").unwrap();
+        let turns = sup.workspace.read_history_turns("yosemite").unwrap();
         assert_eq!(turns.len(), 1, "the turn went out past the timeout");
         assert_eq!(checkpoint::resolve(&checkout, TURN).await.unwrap(), None);
     }
@@ -948,7 +948,7 @@ mod tests {
         assert_eq!(checkpoint::resolve(&checkout, TURN).await.unwrap(), None);
         assert!(sup
             .workspace
-            .read_user_turns("yosemite")
+            .read_history_turns("yosemite")
             .unwrap()
             .is_empty());
     }
