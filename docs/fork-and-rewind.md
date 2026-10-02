@@ -88,6 +88,22 @@ a single-statement update) uses the same predicate, `superseded_at IS NULL`.
 `Summary` is provider-neutral prose, so it also enables cross-provider forks
 later.
 
+`Exact` (Claude) facts, from the 2.1.287 binary:
+- `--resume-session-at` takes the uuid of the last chain entry to *keep*. To
+  rewind before prompt T, pass T's `parentUuid` (`agent::claude_branch_before`).
+- It is honored only in print mode, so `Exact` works in the chat view only.
+  Switching to the native view is refused until the branch has its first
+  message.
+- A resume can't cut before the last compaction. Such cuts fall back to
+  `Summary`.
+- The branched transcript repeats the kept history under the same `uuid`s.
+  Ingestion for a branched session skips records whose `native_id` is already
+  in its inherited history.
+- The branch point is persisted on the session (`branch_from_session`,
+  `branch_at_message`, migration 0042). A launch branches while the session's
+  own transcript has no message yet, so it survives restarts with no in-memory
+  state.
+
 The summarizer runs once at fork time, as a provisioning stage
 (`Summarizing`). It uses the parent's provider and model in a one-shot,
 no-tools, text-only mode, with the input on stdin, never argv. Its input is the
