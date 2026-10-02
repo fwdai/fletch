@@ -163,6 +163,20 @@ pub(super) async fn provision_codegraph_index(
     });
 }
 
+/// Run a spawn's `provisioning`, then release the pin its code came from (a
+/// fork's, see `PinnedCode::release`) — however provisioning ended: with the
+/// code carried over, failed, or abandoned before it got that far. Nothing
+/// fetches it after this.
+pub(super) async fn provision_then_release(
+    provisioning: impl std::future::Future<Output = ()>,
+    pin: Option<super::PinnedCode>,
+) {
+    provisioning.await;
+    if let Some(code) = pin {
+        code.release().await;
+    }
+}
+
 /// Undo what a failed spawn created: the checkout it provisioned, then the
 /// agent's dir. `checkout` is `None` when the spawn *adopted* its working tree
 /// — that directory belongs to the run, not the agent, so a step whose process
@@ -629,7 +643,8 @@ impl Supervisor {
         let model_for_task = record.model.clone();
         let mcp_servers_for_task = record.mcp_servers.clone();
         let adopted_for_task = adopted.is_some();
-        crate::host::spawn(async move {
+        let pin = code_from.clone();
+        let provisioning = async move {
             // Stage markers for the clients, emitted ahead of each step so the
             // spinner behind `spawning` can say what it is waiting on. Progress
             // only: a dropped one costs a label.
@@ -861,7 +876,8 @@ impl Supervisor {
                 discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
             }
-        });
+        };
+        crate::host::spawn(provision_then_release(provisioning, pin));
 
         Ok(record)
     }

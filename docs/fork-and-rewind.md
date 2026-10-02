@@ -158,7 +158,9 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
   holds it and restoring it, in its checkout of the same repo: the tree is
   the snapshot's and HEAD the snapshot's parent, so commits stay commits and
   uncommitted work stays uncommitted. A fork of the current code pins the
-  parent's live tree the same way, under a key of its own.
+  parent's live tree the same way, under a key of its own. The child drops
+  its fetched copy once restored, and the spawn drops an on-demand pin from
+  the parent however it ends; a turn's checkpoint is never dropped.
 - A fork takes the code of every checkout of the source workspace or none of
   it: a checkout without the checkpoint, or a repo the child doesn't check
   out, fails the fork and names the repos. A repo the child checks out but
@@ -199,13 +201,16 @@ turn and no archive takes the workspace halfway through.
   lookup is an error, never "no snapshot".
   The checked-out branch moves back with HEAD, and each checkout it changes is
   first pinned at `refs/fletch/undo/latest`, uncommitted work included, which
-  keeps those commits reachable and makes the restore undoable. The backend
-  owns that one undo point per checkout: a new restore replaces it, and it
-  goes when it is undone (`undo_code_restore`) or discarded
-  (`discard_code_undo`), or when the next turn is delivered (undoing then would
-  clobber the agent's work; the turn's checkpoint keeps that code anyway).
-  `has_code_undo` tells a client whether one is still there, after a restart
-  too.
+  keeps those commits reachable and makes the restore undoable;
+  `refs/fletch/undo/restored` pins what it was restored to. The backend owns
+  that one undo point per checkout: a new restore replaces it, an undo
+  (`undo_code_restore`) or a discard (`discard_code_undo`) ends it, and
+  otherwise it lasts until the next delivered turn, or until the code changes
+  in any way, whichever comes first. An undo applies only while every restored
+  checkout is exactly as the restore left it (HEAD and the working tree,
+  ignored files aside), so it never discards newer work, whether a turn, the
+  native view, the terminal or an editor made it. `has_code_undo` tells a
+  client whether a valid one is still there, after a restart too.
 - **Conversation:**
   1. Resolve `Before(T)` to the lineage `(session owning T, cut before T)`.
   2. Choose the handoff (below).
