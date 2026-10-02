@@ -36,6 +36,18 @@ It is resolved by the backend into `(origin_session_id, cut_seq)`, where
 App-action turns are ordinary turns here. No prefix filtering is needed,
 because anchors are ids.
 
+**Matching a turn to its prompt record** (`associate_pending_user_turns`, at
+turn end): the earliest unclaimed record of the turn's session that was
+ingested at or after the turn was sent, and whose body holds the turn's
+first attachment path, or else its text. A turn's row is written before its
+message goes out, so an earlier record can't be its prompt, though it can quote
+it: without the time rule a short prompt ("yes") matched an earlier answer
+quoting it, and every cut at that turn landed there. A re-ingested record keeps
+its first row, and its first ingest time with it. Records aren't told apart by
+role: no field says "user" across providers (opencode keeps the role on a
+separate message record, codex and antigravity tag by type), and the earliest
+record is the right cut where a provider writes the prompt twice (codex).
+
 ### 2. Session lineage
 `sessions.parent_session_id` and `sessions.parent_cut_seq` define a session's
 history: its parent's history below the cut (recursively), followed by its own
@@ -108,14 +120,15 @@ later.
   own transcript has no message yet, so it survives restarts with no in-memory
   state.
 
-The summarizer runs once at fork time, as a provisioning stage
+The summarizer runs once at fork or rewind time, as a provisioning stage
 (`Summarizing`). It uses the parent's provider and model in a one-shot,
 no-tools, text-only mode, with the input on stdin, never argv. Its input is the
 rendered history up to the anchor, starting from the last compaction summary
 before the cut, with tool output truncated.
 
 If summarizing fails, or the provider has no safe one-shot mode, the session
-gets the bounded raw transcript tail plus a notice. It never fails the fork.
+gets the bounded raw transcript tail plus a notice. It never fails the fork or
+the rewind.
 
 ### 5. Checkpoints (code as of a message)
 Before Fletch delivers a turn to the agent (`deliver_as_turn`), it snapshots
@@ -155,19 +168,63 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 5. Spawn the agent (fresh provider session).
 
 ### Rewind `(agent, turn T, conversation | code | both)`
-- **Code:** in each checkout, restore checkpoint(T): files and HEAD. Confirm
-  first if commits made after T would leave the branch, or were already pushed.
-  The checked-out branch moves back with HEAD, and each checkout is first
-  pinned at `refs/fletch/undo/<id>`, which keeps those commits reachable and
-  makes the restore undoable.
+`Supervisor::rewind`, from the per-message rewind menu in the chat. It holds
+the agent's delivery lock and input route throughout, so no message starts a
+turn and no archive takes the workspace halfway through.
+
+- **Refused** while a turn runs or the agent starts ("stop the agent first"),
+  in the native view (rewind lives in the chat view, the only one in which
+  claude resumes a conversation cut at a message), and for a workflow step.
+  Everything that can refuse (the anchor, the code's checkpoint) is checked
+  before anything changes.
+- **Code:** in each checkout, restore checkpoint(T): files and HEAD
+  (`restore_turn_code`). Only for a turn of a session the workspace ran
+  itself: an inherited turn's checkpoints are in the other workspace's
+  checkouts, so its code is unavailable. The client confirms first, from
+  `preview_rewind_code`: per repo, the commits made after T that leave the
+  branch, flagged when already pushed (the next push has to force). The
+  checked-out branch moves back with HEAD, and each checkout is first pinned
+  at `refs/fletch/undo/<id>`, uncommitted work included, which keeps those
+  commits reachable; `undo_code_restore` puts the checkouts back from it.
 - **Conversation:**
-  1. Stop the agent and drop its queued messages.
-  2. Create a new session in the same workspace with lineage
-     `(session owning T, cut before T)`, and mark the old session superseded.
-  3. Launch with `Exact` if the provider supports branching at a message,
-     otherwise with `Summary`.
-  4. Prefill the composer with T's text.
-- **Both:** do both.
+  1. Resolve `Before(T)` to the lineage `(session owning T, cut before T)`.
+  2. Choose the handoff (below).
+  3. `start_session`: a new current session with that lineage, natively
+     branched for `Exact`; the old session is superseded, its idle process
+     stopped and its queued messages dropped. The agent goes `Spawning`. The
+     lifecycle lock is held over the switch, as a spawn holds it.
+  4. For `Summary`, the summarizer runs in the `Summarizing` stage, as a fork's
+     does, and its context is stored on the new session.
+  5. Launch `Fresh` (an `Exact` session launches as its branch until the
+     branch lands). A launch that fails leaves the agent in error, as a failed
+     spawn does; resuming it launches the rewound session.
+  6. The client rebuilds the chat from the new history and prefills the
+     composer with T's text.
+- **Both:** code first, then the conversation. A conversation that can't be
+  rewound after the code was restored comes back in the outcome with the
+  code's report, so the restore can still be undone.
+
+The client offers the code's undo until it is used or dismissed, or the
+agent's next turn starts, after which undoing would discard that turn's work
+too.
+
+**`Exact` or `Summary`.** `Exact` when all of these hold:
+- the provider can branch a session at a message (claude);
+- the workspace ran T's session itself (its current session or one it
+  superseded, not one inherited from another workspace or handed over by
+  `detach_children`), since claude finds a session's transcript by the working
+  directory;
+- the session can still be cut before T (`claude_branch_before`): its records
+  from T's prompt on hold no compaction. That is all of the session's own
+  records, including any part a later rewind left behind, which a resume still
+  loads.
+
+Then the new session branches at T's prompt's parent. When T opened its
+session there is nothing in it to keep: the new session starts fresh, told what
+that session's agent was told (its handoff context, nothing for a workspace's
+first session). Otherwise it's `Summary`: the client renders the history
+before T (`handoffTranscriptBefore`), and the summary of it falls back to its
+tail. With nothing before T, nothing is told.
 
 ## Module map
 
@@ -175,12 +232,14 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 
 | Module | Owns |
 |---|---|
-| `workspace/lineage.rs` | the `SessionLineage` a child session is created with, anchor → cut resolution, the stitched `read_history_records` / `read_history_turns`, `detach_children` |
+| `workspace/lineage.rs` | the `SessionLineage` a child session is created with, anchor → cut resolution, the stitched `read_history_records` / `read_history_turns`, the session a turn ran in (`turn_session`, `bodies_from_turn`), `detach_children` |
+| `workspace/turns.rs` | user turns, and matching each to its prompt record |
 | `workspace/sessions.rs` | the single current-session helper |
 | `git/checkpoint.rs` | capture, fetch-into and restore, built on the snapshot primitive |
 | `supervisor/checkpoints.rs` | capture for every checkout of an agent at turn delivery |
 | `supervisor/fork.rs` | fork orchestration only |
-| `supervisor/rewind.rs` | rewind orchestration only |
+| `supervisor/session_switch.rs` | starting a new session in place: the runtime half of the switch |
+| `supervisor/rewind.rs` | rewind orchestration only, the code preview and the undo |
 | `handoff/` | the summarizer: the one-shot runner (per-provider flags are `agent::OneShot` descriptors), the fallback tail |
 | `agent` | `SessionStart { Fresh, Resume, Branch(BranchPoint) }` replaces `fresh: bool`; the `branch` capability per provider |
 
@@ -188,9 +247,9 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 
 | Module | Owns |
 |---|---|
-| `adapters/handoff.ts` | the handoff transcript: the cut, the compaction start, tool caps and the input budget (was `store/forkDigest.ts`) |
+| `adapters/handoff.ts` | the handoff transcript: the cut (through T for a fork, before T for a rewind), the compaction start, tool caps and the input budget (was `store/forkDigest.ts`) |
 | fork UI | sends `turn_id` anchors |
-| rewind UI | a per-message action |
+| rewind UI | `Workspace/RewindMenu` (a per-message action, its availability rules and the code confirmation), `Workspace/CodeUndoBar`, `store/rewind.ts` |
 
 ## Removed by this design
 - Copying parent records into the child, and `snapshot_max_seq` /
@@ -205,6 +264,13 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 - `Exact` is Claude-only. Other providers rewind with `Summary`.
 - Side effects outside the worktree (database changes, installs, pushes) are
   not rolled back.
+- Fork and rewind are desktop-only: their ops aren't on the remote wire yet.
+- Only the client that rewound rebuilds its chat; another client showing the
+  same agent sees the new session on its next transcript load.
+- The summary is written after the session switch. If the app quits while it
+  runs, the rewound session starts without it.
+- The code of a turn inherited from another workspace can't be restored, even
+  when a fork carried that code over.
 
 ## PR sequence
 
