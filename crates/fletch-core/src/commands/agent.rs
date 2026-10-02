@@ -41,9 +41,9 @@ pub async fn spawn_agent_impl(
             effort,
             model,
             instructions,
-            // Forked-conversation context and lineage are set only by the fork
+            // A carried conversation and its lineage are set only by the fork
             // path.
-            forked_context: None,
+            handoff_transcript: None,
             lineage: None,
             custom_agent_id,
             skills: skills.unwrap_or_default(),

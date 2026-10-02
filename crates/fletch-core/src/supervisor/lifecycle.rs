@@ -331,10 +331,11 @@ pub struct SpawnRequest {
     pub model: Option<String>,
     /// Custom agent's standing brief, re-injected on every spawn/resume.
     pub instructions: Option<String>,
-    /// Prior-conversation digest for a forked session, composed after
-    /// `instructions` on every spawn. `None` for a non-fork spawn. Kept separate
-    /// from `instructions` so the user brief is never parsed/mutated.
-    pub forked_context: Option<String>,
+    /// The conversation the new session continues (a fork's parent, up to its
+    /// anchor), rendered as text. The Summarizing stage condenses it into the
+    /// session's handoff context before the agent starts (`crate::handoff`).
+    /// `None` carries nothing.
+    pub handoff_transcript: Option<String>,
     /// The history the new session continues (a fork's parent up to its
     /// anchor), written with the session row. `None` starts it empty.
     pub lineage: Option<crate::workspace::SessionLineage>,
@@ -404,7 +405,7 @@ impl Supervisor {
             effort,
             model,
             instructions,
-            forked_context,
+            handoff_transcript,
             lineage,
             custom_agent_id,
             skills,
@@ -542,9 +543,6 @@ impl Supervisor {
         // Custom agent identity + snapshotted brief. Both `None` for a plain
         // built-in spawn. The brief is re-injected on every spawn/resume.
         record.instructions = instructions;
-        // Forked-conversation digest, kept separate from the brief and composed
-        // after it at launch (see start_process). `None` for a non-fork spawn.
-        record.forked_context = forked_context;
         // The history the session continues; inserted with the session row.
         record.lineage = lineage;
         record.custom_agent_id = custom_agent_id;
@@ -602,13 +600,20 @@ impl Supervisor {
         // caller that issued the spawn refetches on its own; the generation
         // guard in `refreshWorkspace` makes the extra fetch harmless.
         emit_workspace_changed(ctx.sink.as_ref());
-        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.clone());
+        // A spawn that summarizes may spend the summarizer's whole budget on
+        // it, on top of everything else a spawn does.
+        let watchdog = match handoff_transcript {
+            Some(_) => SPAWN_TIMEOUT + crate::handoff::TIMEOUT,
+            None => SPAWN_TIMEOUT,
+        };
+        arm_spawn_watchdog(self.clone(), ctx.clone(), agent_id.clone(), watchdog);
 
         let sup = self.clone();
         let ctx_for_task = ctx.clone();
         let id_for_task = agent_id.clone();
         let project_id_for_task = record.project_id.clone();
         let provider_for_task = record.provider.clone();
+        let model_for_task = record.model.clone();
         let mcp_servers_for_task = record.mcp_servers.clone();
         let adopted_for_task = adopted.is_some();
         crate::host::spawn(async move {
@@ -815,6 +820,28 @@ impl Supervisor {
                         );
                         return;
                     }
+                }
+            }
+
+            // The conversation the session continues, condensed into what its
+            // agent is told — in place before the first launch reads it. A
+            // summary that can't be made falls back to the transcript's tail
+            // (`handoff::context`), so only failing to store it fails the spawn.
+            if let Some(transcript) = &handoff_transcript {
+                if !progress(SpawnStage::Summarizing, None) {
+                    discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
+                    return;
+                }
+                let context = crate::handoff::context(
+                    &provider_for_task,
+                    model_for_task.as_deref(),
+                    transcript,
+                )
+                .await;
+                if let Err(e) = sup.workspace.set_handoff_context(&id_for_task, &context) {
+                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                    fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+                    return;
                 }
             }
 
@@ -1307,7 +1334,7 @@ impl Supervisor {
         };
         let instructions = crate::agent_profile::effective_instructions(
             brief.as_deref(),
-            record.forked_context.as_deref(),
+            record.handoff_context.as_deref(),
             &record.skills,
             &sandbox_root,
             blocks,
@@ -2043,15 +2070,28 @@ fn spawn_turn_watchdog(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: Stri
 }
 
 pub(super) fn arm_spawn_timeout(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: String) {
+    arm_spawn_watchdog(sup, ctx, agent_id, SPAWN_TIMEOUT);
+}
+
+/// Fail the spawn of `agent_id` if it is still spawning after `timeout`.
+fn arm_spawn_watchdog(
+    sup: Arc<Supervisor>,
+    ctx: Arc<EngineCtx>,
+    agent_id: String,
+    timeout: Duration,
+) {
     crate::host::spawn(async move {
-        tokio::time::sleep(SPAWN_TIMEOUT).await;
+        tokio::time::sleep(timeout).await;
         // Atomically claim the timeout outcome. Only an agent still in the
         // live Spawning state may be timed out; if the swap fails the spawn
         // already left Spawning (completed, or failed on its own) and must
         // not be killed. The compare-and-swap also closes the race with
         // start_process: if the spawn task inserts its process concurrently,
         // exactly one of us flips the status, and the loser tears down.
-        let err = "Spawn timed out after 15s — process did not become ready.".to_string();
+        let err = format!(
+            "Spawn timed out after {}s — process did not become ready.",
+            timeout.as_secs()
+        );
         if !sup.claim_spawn_outcome(&ctx, &agent_id, AgentStatus::Error, Some(err)) {
             return;
         }

@@ -33,11 +33,14 @@ function clipBottom(el: HTMLElement): number {
  *  option list and `compact` sizing. */
 export function ForkMenu({
   agentId,
+  turnId,
   options,
   tip,
   compact = false,
 }: {
   agentId: string;
+  /** The turn the fork is anchored through, or null for the whole conversation. */
+  turnId: string | null;
   options: ForkOption[];
   tip: string;
   compact?: boolean;
@@ -73,7 +76,7 @@ export function ForkMenu({
     setOpen(false);
     setBusy(true);
     try {
-      await forkAgent(agentId, opt.code, opt.context);
+      await forkAgent(agentId, turnId, opt.code, opt.context);
     } finally {
       setBusy(false);
     }

@@ -213,6 +213,9 @@ pub(super) enum SpawnStage {
     Carrying,
     /// Checking out the project's other repos.
     AttachingRepos,
+    /// Condensing the conversation the session continues into its handoff
+    /// context (`crate::handoff`).
+    Summarizing,
     /// Launching the agent process.
     Starting,
 }

@@ -32,6 +32,7 @@ pub mod git;
 pub mod git_dist;
 pub mod git_state;
 pub mod github;
+pub mod handoff;
 pub mod host;
 pub mod instructions;
 pub mod issues;

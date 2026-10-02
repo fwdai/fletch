@@ -1,12 +1,6 @@
+import { renderToolResult } from "@/util/toolText";
 import type { ToolPresenter } from "./types";
-import {
-  countResultLines,
-  firstLineOf,
-  getStringField,
-  renderToolResult,
-  SummaryNote,
-  ToolBlock,
-} from "./util";
+import { countResultLines, firstLineOf, getStringField, SummaryNote, ToolBlock } from "./util";
 
 /** Glob emits one matched path per line, or a "No files found" sentinel. */
 function matchCount(result: { content: unknown } | null): number {

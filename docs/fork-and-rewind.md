@@ -110,8 +110,8 @@ no-tools, text-only mode, with the input on stdin, never argv. Its input is the
 rendered history up to the anchor, starting from the last compaction summary
 before the cut, with tool output truncated.
 
-If summarizing fails, the session gets the bounded raw digest tail plus a
-notice. It never fails the fork.
+If summarizing fails, or the provider has no safe one-shot mode, the session
+gets the bounded raw transcript tail plus a notice. It never fails the fork.
 
 ### 5. Checkpoints (code as of a message)
 Before Fletch delivers a turn to the agent (`deliver_as_turn`), it snapshots
@@ -170,14 +170,14 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 | `supervisor/checkpoints.rs` | capture for every checkout of an agent at turn delivery |
 | `supervisor/fork.rs` | fork orchestration only |
 | `supervisor/rewind.rs` | rewind orchestration only |
-| `handoff/` | the summarizer: per-provider one-shot runner, input budget, fallback |
+| `handoff/` | the summarizer: the one-shot runner (per-provider flags are `agent::OneShot` descriptors), the fallback tail |
 | `agent` | `SessionStart { Fresh, Resume, Branch(BranchPoint) }` replaces `fresh: bool`; the `branch` capability per provider |
 
 **Frontend** (`src`)
 
 | Module | Owns |
 |---|---|
-| `adapters/handoff.ts` | the handoff renderer (was `store/forkDigest.ts`) |
+| `adapters/handoff.ts` | the handoff transcript: the cut, the compaction start, tool caps and the input budget (was `store/forkDigest.ts`) |
 | fork UI | sends `turn_id` anchors |
 | rewind UI | a per-message action |
 

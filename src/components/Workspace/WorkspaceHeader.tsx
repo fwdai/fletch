@@ -11,25 +11,25 @@ import { ViewToggle } from "./ViewToggle";
 
 /** Workspace-level fork options — the "start a new thread of work" entry point,
  *  spanning both axes. There's no single message to anchor on here, so context
- *  is the whole conversation (through the end, `turn_id: null`) or none. */
+ *  is the whole conversation or none. */
 const HEADER_FORK_OPTIONS: ForkOption[] = [
   {
     key: "full-clean",
     label: "Full history · clean workspace",
     code: "clean",
-    context: { kind: "through", turn_id: null },
+    context: "summary",
   },
   {
     key: "full-carry",
     label: "Full history · with current code",
     code: "carry",
-    context: { kind: "through", turn_id: null },
+    context: "summary",
   },
   {
     key: "fresh-carry",
     label: "Fresh chat · with current code",
     code: "carry",
-    context: { kind: "none" },
+    context: "none",
   },
 ];
 
@@ -115,6 +115,7 @@ export function WorkspaceHeader({ agent }: Props) {
       {/* Hides itself on a remote environment — see ForkMenu. */}
       <ForkMenu
         agentId={agent.id}
+        turnId={null}
         options={HEADER_FORK_OPTIONS}
         tip="Fork this workspace and conversation"
       />

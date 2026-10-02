@@ -1,4 +1,5 @@
 import { applyPolicy, type ChatItem, getAdapter } from "@/adapters";
+import { handoffTranscript } from "@/adapters/handoff";
 import { hasUsage, type UsageSnapshot, usageFromRecords } from "@/adapters/usage";
 import {
   type AgentRecord,
@@ -29,7 +30,6 @@ import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
 import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { createKeyedQueue } from "@/util/keyedQueue";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
-import { forkContextDigest } from "./forkDigest";
 import { interruptedAgents } from "./interrupted";
 import {
   applyPendingHides,
@@ -182,11 +182,14 @@ export interface WorkspaceSlice {
   /** Discard a consumed promote seed so it fires only once. */
   clearPromoteSeed: () => void;
   spawn: (view: AgentView, repoPath: string) => Promise<AgentRecord | null>;
-  /** Fork an existing workspace into a new one, seeding its worktree (`code`)
-   *  and conversation (`context`) independently. Refreshes the workspace and
-   *  selects the new agent. Resolves to the new record, or null on failure. */
+  /** Fork an existing workspace into a new one at an anchor — through the
+   *  turn `turnId` names, or the end of the conversation when `null` — seeding
+   *  its worktree (`code`) and conversation (`context`) independently.
+   *  Refreshes the workspace and selects the new agent. Resolves to the new
+   *  record, or null on failure. */
   forkAgent: (
     parentId: string,
+    turnId: string | null,
     code: ForkCode,
     context: ForkContext,
   ) => Promise<AgentRecord | null>;
@@ -230,7 +233,7 @@ export interface WorkspaceSlice {
 /** Read an agent's display history: its session_records — inherited through
  *  lineage, then its own — and its user turns, lazily ingesting on-disk history
  *  when it has no records of its own yet. Shared by loadHistoryTranscript
- *  (display) and forkAgent (carried-context digest) so a fork's injected brief
+ *  (display) and forkAgent (handoff transcript) so what a fork's agent is told
  *  is built from the history the child will show — never from a
  *  possibly-unloaded managedLogs entry. */
 async function readHistory(id: string): Promise<{ records: SessionRecord[]; turns: UserTurn[] }> {
@@ -423,27 +426,27 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     }
   },
 
-  forkAgent: async (parentId, code, context) => {
+  forkAgent: async (parentId, turnId, code, context) => {
     set({ busy: true, lastError: null });
     try {
-      // Build the carried prose from the history the child will show: the
-      // parent's records, reduced and passed through the display policy, with
-      // only its *matched* turns overlaid. Those carry the turn ids the digest
-      // cuts at, while pending turns — which have no place in the history, so
-      // the child never shows them — stay out of the brief. Reading records
-      // directly (not managedLogs) also keeps this correct when the parent
-      // transcript has not been loaded into the UI yet.
-      let digest: string | null = null;
-      if (context.kind !== "none") {
+      // Render the transcript to summarize from the history the child will
+      // show: the parent's records, reduced and passed through the display
+      // policy, with only its *matched* turns overlaid. Those carry the turn
+      // ids the transcript cuts at, while pending turns — which have no place
+      // in the history, so the child never shows them — stay out of it.
+      // Reading records directly (not managedLogs) also keeps this correct
+      // when the parent transcript has not been loaded into the UI yet.
+      let transcript: string | null = null;
+      if (context === "summary") {
         const provider = providerFor(get(), parentId);
         const { records, turns } = await readHistory(parentId);
         const log = applyUserTurns(
           reduceRecords(provider, records),
           turns.filter((t) => t.native_id),
         );
-        digest = forkContextDigest(applyPolicy(log, getAdapter(provider).policy), context);
+        transcript = handoffTranscript(applyPolicy(log, getAdapter(provider).policy), turnId);
       }
-      const rec = await api.forkAgent(parentId, code, context, digest);
+      const rec = await api.forkAgent(parentId, turnId, code, context, transcript);
       // No optimistic managedLogs seed. A fork that carries context is created
       // with lineage, so opening it triggers loadHistoryTranscript to render the
       // parent's history; a context-less fork opens as an empty chat. Set the

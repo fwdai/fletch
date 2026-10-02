@@ -9,6 +9,7 @@ const LABELS: Record<SpawnStage, string> = {
   indexing: "Warming code index…",
   carrying: "Carrying over your changes…",
   attaching_repos: "Checking out the project's other repos…",
+  summarizing: "Summarizing the conversation…",
   starting: "Starting agent…",
 };
 

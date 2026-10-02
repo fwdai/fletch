@@ -259,6 +259,19 @@ pub(crate) fn cursor_build_args(turn: &TurnArgs) -> Vec<String> {
     args
 }
 
+/// Cursor as a one-shot completion (`OneShot`), per `cursor-agent --help`
+/// (2026.06.19): print mode with a plain-text answer, `--mode ask` (read-only
+/// Q&A) so its tools can't change anything, and `--trust` so headless mode
+/// doesn't stop at the workspace-trust prompt. Given no prompt argument it
+/// reads the prompt from stdin (its `build-prompt`, not in the help).
+pub(crate) fn cursor_one_shot_args(model: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = ["-p", "--output-format", "text", "--mode", "ask", "--trust"]
+        .map(String::from)
+        .into();
+    args.extend(model_args(model));
+    args
+}
+
 /// Cursor reports its session id on the `system`/`init` event (echoed on every
 /// later event; `maybe_capture_session_id` keeps only the first).
 pub(crate) fn cursor_session_id(event: &Value) -> Option<String> {

@@ -1,5 +1,6 @@
+import { renderToolResult, stringifyInput } from "@/util/toolText";
 import type { ToolPresenter } from "./types";
-import { describeInput, renderToolResult, stringifyInput, ToolBlock } from "./util";
+import { describeInput, ToolBlock } from "./util";
 
 /** Fallback presenter for tools without a dedicated implementation:
  *  a readable one-line rendering of the input when collapsed, the exact

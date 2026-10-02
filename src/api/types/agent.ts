@@ -10,10 +10,10 @@ export type AgentView = "custom" | "native";
  *  `ForkCode`. */
 export type ForkCode = "clean" | "carry";
 
-/** What of the parent conversation a fork continues. Mirrors the backend
- *  `ForkContext`: nothing, or everything through the turn `turn_id` names
- *  (`null` = through the end of the parent's session). */
-export type ForkContext = { kind: "none" } | { kind: "through"; turn_id: string | null };
+/** What a forked session knows of the parent conversation up to the fork's
+ *  anchor: nothing, or a summary (and the chat shows the history it covers).
+ *  Mirrors the backend `ForkContext`. */
+export type ForkContext = "none" | "summary";
 
 /** Where an agent's session branches off an earlier one: the parent session
  *  and the exclusive record seq below which it shows the parent's history.
@@ -178,6 +178,7 @@ export type SpawnStage =
   | "indexing"
   | "carrying"
   | "attaching_repos"
+  | "summarizing"
   | "starting";
 
 /** Progress behind the `spawning` status — a label for the wait, never

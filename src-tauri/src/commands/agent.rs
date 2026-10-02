@@ -60,31 +60,34 @@ pub async fn spawn_agent(
     .await
 }
 
-/// Fork an existing workspace into a new one, seeding its worktree (`code`) and
-/// conversation (`context`) independently. `context = through` continues the
-/// parent conversation through the turn `turn_id` names (the end of the
-/// parent's session when `null`), by reference — the child shows the parent's
-/// history through session lineage.
+/// Fork an existing workspace into a new one at an anchor — through the turn
+/// `turn_id` names, or the end of the parent's session when `null` — seeding
+/// its worktree (`code`) and conversation (`context`) independently.
+/// `context = summary` continues the parent conversation by reference (the
+/// child shows the parent's history through session lineage) and briefs the
+/// child's fresh agent with a summary of it.
 ///
-/// `context_digest` is the frontend-rendered prose for the same range — built
-/// there so it renders uniformly across every provider's chat adapter. It briefs
-/// the child's fresh agent. `null`/empty when nothing is carried.
+/// `transcript` is the frontend-rendered text of the parent conversation up to
+/// the anchor — built there so it renders uniformly across every provider's
+/// chat adapter — which the spawn summarizes. `null` when nothing is carried.
 #[tauri::command]
 pub async fn fork_agent(
     supervisor: State<'_, Arc<Supervisor>>,
     ctx: State<'_, Arc<EngineCtx>>,
     parent_id: String,
+    turn_id: Option<String>,
     code: crate::supervisor::ForkCode,
     context: crate::supervisor::ForkContext,
-    context_digest: Option<String>,
+    transcript: Option<String>,
 ) -> Result<AgentRecord> {
     let sup = supervisor.inner().clone();
     sup.fork_agent(
         ctx.inner().clone(),
         &parent_id,
+        turn_id.as_deref(),
         code,
         context,
-        context_digest,
+        transcript,
     )
     .await
 }

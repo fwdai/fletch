@@ -284,6 +284,45 @@ fn session_lineage_migration_keeps_the_newest_session_current() {
         .is_err());
 }
 
+/// Schema version at which the session branch point (0042) exists — the
+/// version an install upgrading into the handoff-context rename comes from.
+/// Pinned like `V_WORKTREE_PRS`.
+const V_SESSION_BRANCH_POINT: usize = 42;
+
+/// A fork's carried context survives the rename of its column (0043): the
+/// text a session was forked with is what it keeps being launched with.
+#[test]
+fn handoff_context_migration_keeps_a_forks_carried_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_SESSION_BRANCH_POINT)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w', 'p', 'ws', 0);
+         INSERT INTO sessions (id, workspace_id, created_at, forked_context)
+              VALUES ('fork', 'w', 1, 'prior convo');",
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = init(dir.path()).unwrap();
+    let conn = db.lock();
+    let carried: Option<String> = conn
+        .query_row(
+            "SELECT handoff_context FROM sessions WHERE id = 'fork'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(carried.as_deref(), Some("prior convo"));
+    assert!(
+        conn.prepare("SELECT forked_context FROM sessions").is_err(),
+        "the old column is gone"
+    );
+}
+
 /// The roadmap table (0026) lands on an existing install with the shape the DAO
 /// assumes: per-project unique codes, cascade from the owning project, and no
 /// generic-CRUD access (typed commands only, like the `wf_*` tables).
