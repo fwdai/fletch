@@ -17,6 +17,51 @@ pub(super) fn current_session_id(conn: &Connection, workspace_id: &str) -> Optio
     .ok()
 }
 
+/// One session's own records with `seq < below`, in seq order, each tagged
+/// `inherited` as given — the single row decoder behind both the own-session
+/// read and the stitched history read (`lineage`).
+pub(super) fn query_records(
+    conn: &Connection,
+    session_id: &str,
+    below: i64,
+    inherited: bool,
+) -> Result<Vec<SessionRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, provider, source, native_id, agent_version, body
+         FROM session_records WHERE session_id = ?1 AND seq < ?2 ORDER BY seq ASC",
+    )?;
+    let rows: Vec<(i64, String, String, String, Option<String>, String)> = stmt
+        .query_map(rusqlite::params![session_id, below], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })?
+        .collect::<std::result::Result<_, rusqlite::Error>>()?;
+
+    rows.into_iter()
+        .map(
+            |(seq, provider, source, native_id, agent_version, body_text)| {
+                let body = serde_json::from_str(&body_text)
+                    .map_err(|e| Error::Other(format!("deserialize record body: {e}")))?;
+                Ok(SessionRecord {
+                    seq,
+                    provider,
+                    source,
+                    native_id,
+                    agent_version,
+                    body,
+                    inherited,
+                })
+            },
+        )
+        .collect()
+}
+
 impl WorkspaceManager {
     // ── Session event log ─────────────────────────────────────────────────
 
@@ -109,6 +154,8 @@ impl WorkspaceManager {
 
     /// Count of records already ingested for the current session (= MAX(seq)) —
     /// the starting index for positional `ln:{i}` native ids on the next read.
+    /// Own records only: history inherited through lineage is never re-read
+    /// from this session's transcript.
     pub fn session_record_count(&self, workspace_id: &str) -> Result<usize> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
@@ -171,46 +218,14 @@ impl WorkspaceManager {
             .collect()
     }
 
-    /// All canonical records for the workspace's current session, in seq order.
+    /// The current session's own records, in seq order — what this session's
+    /// agent actually produced, for internal readers (the workflow budget
+    /// ledger). Display reads use the stitched `read_history_records`.
     pub fn read_session_records(&self, workspace_id: &str) -> Result<Vec<SessionRecord>> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
             return Ok(vec![]);
         };
-
-        let mut stmt = conn.prepare(
-            "SELECT seq, provider, source, native_id, agent_version, body
-             FROM session_records WHERE session_id = ?1 ORDER BY seq ASC",
-        )?;
-
-        let rows: Vec<(i64, String, String, String, Option<String>, String)> = stmt
-            .query_map([&sid], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                ))
-            })?
-            .collect::<std::result::Result<_, rusqlite::Error>>()?;
-
-        rows.into_iter()
-            .map(
-                |(seq, provider, source, native_id, agent_version, body_text)| {
-                    let body = serde_json::from_str(&body_text)
-                        .map_err(|e| Error::Other(format!("deserialize record body: {e}")))?;
-                    Ok(SessionRecord {
-                        seq,
-                        provider,
-                        source,
-                        native_id,
-                        agent_version,
-                        body,
-                    })
-                },
-            )
-            .collect()
+        query_records(&conn, &sid, i64::MAX, false)
     }
 }

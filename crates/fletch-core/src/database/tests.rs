@@ -231,14 +231,14 @@ fn pr_history_migration_backfills_existing_bindings() {
     assert_eq!(count, 0, "no persisted state means no renderable snapshot");
 }
 
-/// Schema version at which the one-current-session index and session lineage
+/// Schema version at which session lineage and the one-current-session index
 /// (0041) exist. Pinned for the same reason as `V_WORKTREE_PRS`.
 const V_SESSION_LINEAGE: usize = 41;
 
 /// The current-session index can't fail an upgrade: should a workspace already
 /// hold several sessions, the newest stays current — the one the old
 /// `ORDER BY created_at DESC LIMIT 1` reads resolved — and the rest become
-/// superseded.
+/// superseded. Existing sessions start with no lineage.
 #[test]
 fn session_lineage_migration_keeps_the_newest_session_current() {
     let dir = tempfile::tempdir().unwrap();
@@ -267,6 +267,21 @@ fn session_lineage_migration_keeps_the_newest_session_current() {
         .map(|r| r.unwrap())
         .collect();
     assert_eq!(current, vec!["new", "only"]);
+    let rooted: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NULL AND parent_cut_seq IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rooted, 3);
+    // A lineage is a parent and a cut, never half of one.
+    assert!(conn
+        .execute(
+            "UPDATE sessions SET parent_session_id = 'old' WHERE id = 'only'",
+            [],
+        )
+        .is_err());
 }
 
 /// The roadmap table (0026) lands on an existing install with the shape the DAO

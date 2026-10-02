@@ -44,6 +44,8 @@ pub fn new_agent_record(
         model: None,
         instructions: None,
         forked_context: None,
+        // Set by a fork, from the anchor it resolved; a plain spawn starts empty.
+        lineage: None,
         custom_agent_id: None,
         skills: Vec::new(),
         mcp_servers: Vec::new(),

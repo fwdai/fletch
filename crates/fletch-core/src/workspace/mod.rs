@@ -17,6 +17,7 @@ use crate::names;
 // re-exports below keep every `crate::workspace::X` path stable.
 mod agents;
 mod factory;
+mod lineage;
 mod message_queue;
 mod paths;
 mod query;
@@ -27,6 +28,7 @@ pub(crate) mod tests;
 mod turns;
 
 pub use factory::{is_per_turn_provider, new_agent_record};
+pub use lineage::{Anchor, SessionLineage};
 pub use paths::{
     agent_parent_dir, allocate_repo_subdir, checkouts_root, discard_root, discard_tombstone,
     migrate_default_checkouts_root, projects_root, repo_checkout_path, sweep_discarded_checkouts,
@@ -270,6 +272,11 @@ pub struct AgentRecord {
     /// parent's records and never inherits the parent's value.
     #[serde(default)]
     pub forked_context: Option<String>,
+    /// Where the current session's history branches off an earlier session (a
+    /// fork's parent), so it shows that history before its own. Written once,
+    /// with the session row; `None` for a session that starts empty.
+    #[serde(default)]
+    pub lineage: Option<SessionLineage>,
     /// The custom agent this session was spawned from, used to show its
     /// name/color in the sidebar. `None` for a plain built-in spawn.
     #[serde(default)]
@@ -447,12 +454,17 @@ fn now_millis() -> i64 {
 /// verbatim shape. Normalized into ChatItems on read by the per-provider adapter.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionRecord {
+    /// Position in the owning session's own seq space. A stitched history read
+    /// spans several sessions, so seqs there are only ordered per session.
     pub seq: i64,
     pub provider: String,
     pub source: String,
     pub native_id: String,
     pub agent_version: Option<String>,
     pub body: serde_json::Value,
+    /// Shown through lineage from an ancestor session rather than produced by
+    /// this one — display only, never this session's usage.
+    pub inherited: bool,
 }
 
 /// One Fletch-origin outgoing user message (the `session_user_turns` table).
@@ -473,6 +485,9 @@ pub struct UserTurn {
     /// Wall-clock millis when the turn reached a terminal state. `None` while
     /// in flight — the live-timer signal.
     pub ended_at: Option<i64>,
+    /// Shown through lineage from an ancestor session (see
+    /// [`SessionRecord::inherited`]).
+    pub inherited: bool,
 }
 
 /// Stats for a turn that `mark_user_turn_ended` just closed, returned so the
@@ -492,16 +507,17 @@ pub struct WorkspaceManager {
 
 /// Identity + task metadata live on `workspaces`; the provider run
 /// (provider / view / session id / last_error / effort / model /
-/// instructions / custom agent) lives on the workspace's current `sessions`
-/// row — joined on its own, so a workspace is one row however many superseded
-/// sessions it keeps. Status is derived, never selected. Callers append their
-/// own `ORDER BY` / `WHERE`.
+/// instructions / custom agent / lineage) lives on the workspace's current
+/// `sessions` row — joined on its own, so a workspace is one row however many
+/// superseded sessions it keeps. Status is derived, never selected. Callers
+/// append their own `ORDER BY` / `WHERE`.
 const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created_at,
             w.stopped_at, w.archived_at,
             s.provider, s.view, s.provider_session_id, s.last_error,
             s.effort, s.model, s.instructions, s.forked_context, s.custom_agent_id,
             s.skills, s.mcp_servers,
-            w.sandbox_engine, w.owner_run_id, w.issue_ref, w.purpose, w.title
+            w.sandbox_engine, w.owner_run_id, w.issue_ref, w.purpose, w.title,
+            s.parent_session_id, s.parent_cut_seq
      FROM workspaces w
      LEFT JOIN sessions s ON s.workspace_id = w.id AND s.superseded_at IS NULL";
 
@@ -530,6 +546,8 @@ type AgentRow = (
     Option<String>, // w.issue_ref
     Option<String>, // w.purpose
     Option<String>, // w.title
+    Option<String>, // s.parent_session_id
+    Option<i64>,    // s.parent_cut_seq
 );
 
 impl WorkspaceManager {

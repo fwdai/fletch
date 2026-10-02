@@ -3,6 +3,67 @@
 use super::sessions::current_session_id;
 use super::*;
 
+/// One session's user turns in seq order, each tagged `inherited` as given —
+/// the row decoder behind the stitched history read (`lineage`). `below`
+/// keeps only the turns whose matched prompt record lies below that seq; an
+/// unmatched turn has no position, so it is left out. `None` keeps every turn,
+/// pending ones included.
+pub(super) fn query_turns(
+    conn: &Connection,
+    session_id: &str,
+    below: Option<i64>,
+    inherited: bool,
+) -> Result<Vec<UserTurn>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.turn_id, t.seq, t.text, t.attachments, t.native_id, t.started_at, t.ended_at
+         FROM session_user_turns t
+         LEFT JOIN session_records r ON r.session_id = t.session_id AND r.native_id = t.native_id
+         WHERE t.session_id = ?1 AND (?2 IS NULL OR r.seq < ?2)
+         ORDER BY t.seq ASC",
+    )?;
+    // (turn_id, seq, text, attachments, native_id, started_at, ended_at)
+    type UserTurnRow = (
+        String,
+        i64,
+        String,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+    );
+    let rows: Vec<UserTurnRow> = stmt
+        .query_map(rusqlite::params![session_id, below], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        })?
+        .collect::<std::result::Result<_, rusqlite::Error>>()?;
+    rows.into_iter()
+        .map(
+            |(turn_id, seq, text, attachments_text, native_id, started_at, ended_at)| {
+                let attachments = serde_json::from_str(&attachments_text)
+                    .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
+                Ok(UserTurn {
+                    turn_id,
+                    seq,
+                    text,
+                    attachments,
+                    native_id,
+                    started_at,
+                    ended_at,
+                    inherited,
+                })
+            },
+        )
+        .collect()
+}
+
 impl WorkspaceManager {
     // ── Outgoing user turns (session_user_turns) ──────────────────────────
 
@@ -93,58 +154,6 @@ impl WorkspaceManager {
             duration_ms: now - started_at,
             record_count,
         }))
-    }
-
-    /// All outgoing user turns for the workspace's current session, in seq order.
-    pub fn read_user_turns(&self, workspace_id: &str) -> Result<Vec<UserTurn>> {
-        let conn = self.db.lock();
-        let Some(sid) = current_session_id(&conn, workspace_id) else {
-            return Ok(vec![]);
-        };
-        let mut stmt = conn.prepare(
-            "SELECT turn_id, seq, text, attachments, native_id, started_at, ended_at
-             FROM session_user_turns WHERE session_id = ?1 ORDER BY seq ASC",
-        )?;
-        // (turn_id, seq, text, attachments, native_id, started_at, ended_at)
-        type UserTurnRow = (
-            String,
-            i64,
-            String,
-            String,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-        );
-        let rows: Vec<UserTurnRow> = stmt
-            .query_map([&sid], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                ))
-            })?
-            .collect::<std::result::Result<_, rusqlite::Error>>()?;
-        rows.into_iter()
-            .map(
-                |(turn_id, seq, text, attachments_text, native_id, started_at, ended_at)| {
-                    let attachments = serde_json::from_str(&attachments_text)
-                        .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
-                    Ok(UserTurn {
-                        turn_id,
-                        seq,
-                        text,
-                        attachments,
-                        native_id,
-                        started_at,
-                        ended_at,
-                    })
-                },
-            )
-            .collect()
     }
 
     /// Match pending (`native_id IS NULL`) user turns to their canonical
