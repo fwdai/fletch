@@ -5,7 +5,7 @@
 //! every checkout can be put back to one, with an undo point: rewind's code
 //! half.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -50,7 +50,7 @@ pub struct CodeSource {
 
 /// What restoring a turn's code does to an agent's checkouts, in `repos`
 /// order: what a confirmation shows before
-/// ([`Supervisor::preview_turn_code_restore`]) and what an undo needs after
+/// ([`Supervisor::preview_turn_code_restore`]) and what changed after
 /// ([`Supervisor::restore_turn_code`]).
 #[derive(Debug, Clone, Serialize)]
 pub struct RestoreReport {
@@ -70,15 +70,16 @@ pub struct RepoRestore {
     pub checkpoint: Option<String>,
     /// The commits the restore takes off the branch, newest first.
     pub leaving: Vec<LeavingCommit>,
-    /// Where the checkout as it stood before the restore is pinned, to undo it
-    /// (`git::checkpoint::restore` to this ref). `None` in a preview, and for
-    /// a checkout the restore left alone.
-    pub undo_ref: Option<String>,
 }
 
 impl Supervisor {
     /// Checkpoint every checkout of `agent_id` under `turn_id`. Called as a
     /// turn is delivered, before the agent sees it (`deliver_as_turn`).
+    ///
+    /// The turn also retires the undo point a code restore left
+    /// ([`Self::restore_turn_code`]): undoing once the agent has acted would
+    /// clobber its work, and this checkpoint keeps that code anyway. Dropped
+    /// first, being the quick half.
     ///
     /// Best-effort: a checkout that can't be captured (a config the hardening
     /// refuses, a vanished directory) is logged and skipped, and the whole
@@ -86,7 +87,8 @@ impl Supervisor {
     /// way. Nothing is captured when there is no settled tree:
     /// - mid-turn or mid-spawn — `deliver_as_turn` then holds the message
     ///   rather than start its turn;
-    /// - a workflow step agent (`owner_run_id`) works in a tree its run shares.
+    /// - a workflow step agent (`owner_run_id`) works in a tree its run shares,
+    ///   and so never has a checkpoint to restore, nor an undo point.
     ///
     /// Live-injected messages and native PTY typing never get here.
     pub(super) async fn checkpoint_turn(&self, agent_id: &str, turn_id: &str) {
@@ -97,6 +99,14 @@ impl Supervisor {
             return;
         }
         let capture_all = async {
+            for repo in &record.repos {
+                let Ok(checkout) = repo.checkout_path(agent_id) else {
+                    continue;
+                };
+                if let Err(e) = checkpoint::drop_undo(&checkout).await {
+                    tracing::warn!(error = %e, agent_id, subdir = %repo.subdir, "dropping the code undo point failed");
+                }
+            }
             for repo in &record.repos {
                 let captured = match repo.checkout_path(agent_id) {
                     Ok(checkout) => checkpoint::capture(&checkout, turn_id).await,
@@ -196,14 +206,21 @@ impl Supervisor {
     ///
     /// The branch a checkout is on stays checked out and goes back with HEAD
     /// (a reset), so the user is still on the branch they were on, minus the
-    /// commits made since (`leaving`). Each checkout is pinned first under an
-    /// undo ref, which keeps those commits reachable and the restore
-    /// reversible. Pushed commits stay on the remote, so the branch's next
-    /// push has to force. Ignored files are never touched.
+    /// commits made since (`leaving`). Pushed commits stay on the remote, so
+    /// the branch's next push has to force. Ignored files are never touched.
+    ///
+    /// Each checkout it changes is pinned first as its undo point, which
+    /// keeps those commits reachable and the restore undoable
+    /// ([`Self::undo_code_restore`]). A checkout has one undo point, so this
+    /// restore's replaces any earlier one — in every checkout, so that none of
+    /// an older one survives where this restore changes nothing. It lasts until
+    /// it is undone or discarded, or the next turn is delivered.
     ///
     /// All or nothing: a failure before the first checkout changes leaves
     /// every one as it was, and a failure during the restore puts back the
-    /// ones already changed, from their undo refs.
+    /// ones already changed, from their undo points. Either way no undo point
+    /// is left, as there is nothing to undo — unless putting one back fails,
+    /// which keeps that point for another try.
     ///
     /// Runs under the caller's delivery lock and input route (`lock_delivery`,
     /// `open_route`), and is refused while a turn runs: the agent would be
@@ -214,31 +231,97 @@ impl Supervisor {
                 "stop the agent before restoring its code".into(),
             ));
         }
-        let mut repos = self.plan_code_restore(agent_id, turn_id).await?;
-        for (checkout, repo) in &mut repos {
-            if repo.checkpoint.is_some() {
-                repo.undo_ref = Some(checkpoint::capture_undo(checkout).await?);
+        let repos = self.plan_code_restore(agent_id, turn_id).await?;
+        for (checkout, _) in &repos {
+            checkpoint::drop_undo(checkout).await?;
+        }
+        let changing: Vec<(&Path, &str)> = repos
+            .iter()
+            .filter_map(|(checkout, repo)| Some((checkout.as_path(), repo.checkpoint.as_deref()?)))
+            .collect();
+        for (pinned, (checkout, _)) in changing.iter().enumerate() {
+            if let Err(e) = checkpoint::pin_undo(checkout).await {
+                take_back_restore(agent_id, &changing[..pinned], 0).await;
+                return Err(e);
             }
         }
-        for (i, (checkout, repo)) in repos.iter().enumerate() {
-            let Some(sha) = &repo.checkpoint else {
-                continue;
-            };
+        for (i, (checkout, sha)) in changing.iter().enumerate() {
             if let Err(e) = checkpoint::restore(checkout, sha).await {
-                for (checkout, repo) in &repos[..=i] {
-                    let Some(undo) = &repo.undo_ref else {
-                        continue;
-                    };
-                    if let Err(e) = checkpoint::restore(checkout, undo).await {
-                        tracing::warn!(error = %e, agent_id, undo, "putting a checkout back after a failed restore failed");
-                    }
-                }
+                take_back_restore(agent_id, &changing, i + 1).await;
                 return Err(e);
             }
         }
         Ok(RestoreReport {
             repos: repos.into_iter().map(|(_, repo)| repo).collect(),
         })
+    }
+
+    /// Undo the last code restore ([`Self::restore_turn_code`]): each checkout
+    /// it changed goes back to how it stood before, and the undo points go.
+    /// They go only once every checkout is back, so a failure can be tried
+    /// again. An error when there is nothing to undo.
+    ///
+    /// Takes the agent's delivery lock and input route, like a send: no turn
+    /// may start on a half-undone tree, and no archive tear it down. Refused
+    /// while a turn runs.
+    pub async fn undo_code_restore(&self, agent_id: &str) -> Result<()> {
+        let checkouts = self.checkouts(agent_id)?;
+        let _delivering = self.lock_delivery(agent_id).await;
+        let _route = self.open_route(agent_id)?;
+        if self.is_busy(agent_id) {
+            return Err(Error::Other(
+                "stop the agent before undoing the code restore".into(),
+            ));
+        }
+        let mut undoable = Vec::new();
+        for checkout in checkouts {
+            if checkpoint::has_undo(&checkout).await? {
+                undoable.push(checkout);
+            }
+        }
+        if undoable.is_empty() {
+            return Err(Error::Other("there is no code restore to undo".into()));
+        }
+        for checkout in &undoable {
+            checkpoint::undo(checkout).await?;
+        }
+        for checkout in &undoable {
+            checkpoint::drop_undo(checkout).await?;
+        }
+        Ok(())
+    }
+
+    /// Let the last code restore's undo points go, keeping the restored code.
+    /// Takes the agent's delivery lock and input route, as an undo does.
+    pub async fn discard_code_undo(&self, agent_id: &str) -> Result<()> {
+        let checkouts = self.checkouts(agent_id)?;
+        let _delivering = self.lock_delivery(agent_id).await;
+        let _route = self.open_route(agent_id)?;
+        for checkout in &checkouts {
+            checkpoint::drop_undo(checkout).await?;
+        }
+        Ok(())
+    }
+
+    /// Whether `agent_id`'s last code restore can still be undone — what the
+    /// UI offers again after a restart. A read, so it takes no lock.
+    pub async fn has_code_undo(&self, agent_id: &str) -> Result<bool> {
+        for checkout in self.checkouts(agent_id)? {
+            if checkpoint::has_undo(&checkout).await? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// `agent_id`'s checkouts, in `repos` order.
+    fn checkouts(&self, agent_id: &str) -> Result<Vec<PathBuf>> {
+        self.workspace
+            .agent(agent_id)?
+            .repos
+            .iter()
+            .map(|repo| repo.checkout_path(agent_id))
+            .collect()
     }
 
     /// Each checkout with what restoring `turn_id`'s checkpoint would do to it.
@@ -258,7 +341,6 @@ impl Supervisor {
                 branch: crate::git::current_branch(&found.checkout).await?,
                 checkpoint: found.sha,
                 leaving,
-                undo_ref: None,
             };
             repos.push((found.checkout, repo));
         }
@@ -266,10 +348,30 @@ impl Supervisor {
     }
 }
 
+/// Take back a restore that failed after its undo points were pinned in
+/// `pinned`, and after the first `changed` of those checkouts were (perhaps
+/// partly) restored: those go back from their points, and no point is left
+/// behind. A checkout that can't be put back keeps its point, so an undo can
+/// try again.
+async fn take_back_restore(agent_id: &str, pinned: &[(&Path, &str)], changed: usize) {
+    for (i, (checkout, _)) in pinned.iter().enumerate() {
+        let put_back = if i < changed {
+            checkpoint::undo(checkout).await
+        } else {
+            Ok(())
+        };
+        let taken_back = match put_back {
+            Ok(()) => checkpoint::drop_undo(checkout).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = taken_back {
+            tracing::warn!(error = %e, agent_id, checkout = %checkout.display(), "taking back a failed code restore failed");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
     use crate::git::run_git;
     use crate::supervisor::tests::{committed_repo, record_in_checkouts, test_supervisor};
@@ -473,8 +575,8 @@ mod tests {
         assert_eq!(ra.leaving[0].subject, "a commit after the turn");
         assert!(!ra.leaving[0].pushed);
         assert!(rb.leaving.is_empty() && rc.leaving.is_empty());
-        assert!(report.repos.iter().all(|r| r.undo_ref.is_none()));
-        // Nothing moved.
+        // Nothing moved, and there is nothing to undo.
+        assert!(!sup.has_code_undo("denali").await.unwrap());
         assert_eq!(head(&a).await, tip);
         assert_eq!(read(&a, "wip.txt").as_deref(), Some("edited later"));
         assert!(c.join("a.txt").exists());
@@ -514,19 +616,114 @@ mod tests {
         assert_eq!(read(&b, "stray.txt"), None);
         // `c` had no checkpoint and is left alone.
         assert_eq!(head(&c).await, c_head);
-        assert_eq!(report.repos[2].undo_ref, None);
         assert_eq!(report.repos[0].leaving[0].sha, tip);
 
-        // Each changed checkout has an undo point that puts it back.
-        let undo = report.repos[0].undo_ref.as_deref().unwrap();
-        assert!(report.repos[1].undo_ref.is_some());
-        checkpoint::restore(&a, undo).await.unwrap();
+        // The undo puts every changed checkout back, and is then spent.
+        assert!(sup.has_code_undo("denali").await.unwrap());
+        sup.undo_code_restore("denali").await.unwrap();
         assert_eq!(head(&a).await, tip);
         assert_eq!(read(&a, "wip.txt").as_deref(), Some("edited later"));
         assert_eq!(
             read(&a, "later.txt").as_deref(),
             Some("a commit after the turn")
         );
+        assert_eq!(read(&b, "stray.txt").as_deref(), Some("created later"));
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+        assert!(sup.undo_code_restore("denali").await.is_err());
+    }
+
+    async fn undo_points(checkouts: &[PathBuf]) -> Vec<bool> {
+        let mut found = Vec::new();
+        for checkout in checkouts {
+            found.push(checkpoint::has_undo(checkout).await.unwrap());
+        }
+        found
+    }
+
+    #[tokio::test]
+    async fn a_restore_pins_only_what_it_changes_and_clears_older_undo_points() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkouts) = worked_past_the_turn(td.path()).await;
+        // Left over from an earlier restore in `c`, which this one won't change.
+        checkpoint::pin_undo(&checkouts[2]).await.unwrap();
+
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+
+        assert_eq!(undo_points(&checkouts).await, [true, true, false]);
+    }
+
+    #[tokio::test]
+    async fn a_second_restore_replaces_the_first_undo_point() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, ..]) = worked_past_the_turn(td.path()).await;
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        std::fs::write(a.join("wip.txt"), b"between the restores").unwrap();
+
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        sup.undo_code_restore("denali").await.unwrap();
+
+        // Back to before the second restore, not the first.
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("between the restores"));
+        assert_eq!(read(&a, "later.txt"), None);
+    }
+
+    #[tokio::test]
+    async fn a_discarded_undo_point_leaves_the_restored_code() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, ..]) = worked_past_the_turn(td.path()).await;
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+
+        sup.discard_code_undo("denali").await.unwrap();
+
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+        assert!(sup.undo_code_restore("denali").await.is_err());
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("at the turn"));
+    }
+
+    /// Undoing once the agent has worked on the restored code would clobber
+    /// that work, so the next turn retires the undo point.
+    #[tokio::test]
+    async fn the_next_turn_retires_the_undo_point() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkouts) = worked_past_the_turn(td.path()).await;
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        let next = "7a1e5c3b-2d4f-4e6a-9b8c-0d1e2f3a4b5c";
+
+        sup.checkpoint_turn("denali", next).await;
+
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+        assert_eq!(undo_points(&checkouts).await, [false; 3]);
+        assert!(checkpoint::resolve(&checkouts[0], next)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    /// A restore that fails part-way puts back the checkouts it changed and
+    /// leaves no undo point but for one it couldn't put back.
+    #[tokio::test]
+    async fn a_failed_restore_is_taken_back() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, b, c]) = worked_past_the_turn(td.path()).await;
+        let tip = head(&a).await;
+        // `b` can be read and pinned, but not reset, and not put back either.
+        let lock = b.join(".git").join("index.lock");
+        std::fs::write(&lock, b"").unwrap();
+
+        assert!(sup.restore_turn_code("denali", TURN).await.is_err());
+
+        assert_eq!(head(&a).await, tip);
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("edited later"));
+        assert_eq!(read(&b, "stray.txt").as_deref(), Some("created later"));
+        assert_eq!(
+            undo_points(&[a.clone(), b.clone(), c]).await,
+            [false, true, false]
+        );
+        // Once `b` can be written again, the undo it kept finishes the job.
+        std::fs::remove_file(&lock).unwrap();
+        sup.undo_code_restore("denali").await.unwrap();
+        assert_eq!(read(&b, "stray.txt").as_deref(), Some("created later"));
+        assert!(!sup.has_code_undo("denali").await.unwrap());
     }
 
     #[tokio::test]

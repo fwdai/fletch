@@ -157,9 +157,12 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 ### Rewind `(agent, turn T, conversation | code | both)`
 - **Code:** in each checkout, restore checkpoint(T): files and HEAD. Confirm
   first if commits made after T would leave the branch, or were already pushed.
-  The checked-out branch moves back with HEAD, and each checkout is first
-  pinned at `refs/fletch/undo/<id>`, which keeps those commits reachable and
-  makes the restore undoable.
+  The checked-out branch moves back with HEAD, and each checkout it changes is
+  first pinned at `refs/fletch/undo/latest`, which keeps those commits
+  reachable and makes the restore undoable. The backend owns that one undo
+  point per checkout: a new restore replaces it, and it goes when it is undone
+  or discarded, or when the next turn is delivered (undoing then would clobber
+  the agent's work; the turn's checkpoint keeps that code anyway).
 - **Conversation:**
   1. Stop the agent and drop its queued messages.
   2. Create a new session in the same workspace with lineage

@@ -7,9 +7,10 @@
 //! at `refs/fletch/checkpoints/<turn_id>` so gc keeps it. It lives in the
 //! checkout's own object store, so it goes when the checkout does.
 //!
-//! A restore is undone the same way: [`capture_undo`] pins the checkout as it
-//! stands under `refs/fletch/undo/<id>` first, and [`restore`] of that ref
-//! puts it back.
+//! A restore can be undone the same way. A checkout has at most one undo
+//! point, pinned at `refs/fletch/undo/latest` by [`pin_undo`] before a restore
+//! changes it: [`undo`] puts the checkout back to it, and [`drop_undo`] lets it
+//! go. Nothing outside the checkout names it, so nothing can lose track of it.
 
 use std::path::Path;
 
@@ -21,20 +22,40 @@ use super::branch::rev_parse;
 use super::cmd::{git_output, run_git};
 use super::worktree::{apply_snapshot, snapshot_worktree};
 
+/// Where a checkout's undo point is pinned: one fixed ref, so the next one
+/// replaces it and nothing outside the checkout has to remember a name. A
+/// namespace of its own, apart from the checkpoints', which a turn's id could
+/// otherwise clash with.
+const UNDO_REF: &str = "refs/fletch/undo/latest";
+
 /// Snapshot `checkout` and pin it as `turn_id`'s checkpoint, replacing any
 /// earlier one. Returns the snapshot's sha.
 pub async fn capture(checkout: &Path, turn_id: &str) -> Result<String> {
     pin_snapshot(checkout, &checkpoint_ref(turn_id)?).await
 }
 
-/// Snapshot `checkout` under a new undo ref, for undoing the [`restore`]
-/// about to change it, and return the ref; `restore(checkout, &ref)` undoes.
-/// Undo points have a namespace of their own: one under the checkpoints' could
-/// clash with a turn's ref.
-pub async fn capture_undo(checkout: &Path) -> Result<String> {
-    let refname = format!("refs/fletch/undo/{}", uuid::Uuid::new_v4());
-    pin_snapshot(checkout, &refname).await?;
-    Ok(refname)
+/// Snapshot `checkout` as its undo point, replacing any earlier one, before a
+/// [`restore`] changes it.
+pub async fn pin_undo(checkout: &Path) -> Result<()> {
+    pin_snapshot(checkout, UNDO_REF).await?;
+    Ok(())
+}
+
+/// Whether `checkout` has an undo point.
+pub async fn has_undo(checkout: &Path) -> Result<bool> {
+    Ok(resolve_ref(checkout, UNDO_REF).await?.is_some())
+}
+
+/// Put `checkout` back to its undo point. The point stays until the caller
+/// lets it go ([`drop_undo`]), so a failed undo can be tried again.
+pub async fn undo(checkout: &Path) -> Result<()> {
+    restore(checkout, UNDO_REF).await
+}
+
+/// Let `checkout`'s undo point go, if it has one.
+pub async fn drop_undo(checkout: &Path) -> Result<()> {
+    run_git(checkout, &["update-ref", "-d", UNDO_REF], "drop undo point").await?;
+    Ok(())
 }
 
 async fn pin_snapshot(checkout: &Path, refname: &str) -> Result<String> {
@@ -45,8 +66,11 @@ async fn pin_snapshot(checkout: &Path, refname: &str) -> Result<String> {
 
 /// `turn_id`'s checkpoint in `checkout`, or `None` when it has none.
 pub async fn resolve(checkout: &Path, turn_id: &str) -> Result<Option<String>> {
-    let refname = checkpoint_ref(turn_id)?;
-    let out = git_output(checkout, &["rev-parse", "--verify", "--quiet", &refname]).await?;
+    resolve_ref(checkout, &checkpoint_ref(turn_id)?).await
+}
+
+async fn resolve_ref(checkout: &Path, refname: &str) -> Result<Option<String>> {
+    let out = git_output(checkout, &["rev-parse", "--verify", "--quiet", refname]).await?;
     match out.status.code() {
         Some(0) => Ok(Some(
             String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -54,7 +78,7 @@ pub async fn resolve(checkout: &Path, turn_id: &str) -> Result<Option<String>> {
         // `--verify --quiet` exits 1, silently, when the ref doesn't exist.
         Some(1) => Ok(None),
         _ => Err(Error::Git(format!(
-            "resolve checkpoint failed: {}",
+            "resolve {refname} failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ))),
     }
