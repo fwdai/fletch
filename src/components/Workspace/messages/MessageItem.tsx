@@ -20,6 +20,7 @@ import {
   stripInjectedInstructions,
   stripSystemTurnMarker,
 } from "@/util/instructions";
+import { RewindMenu } from "../RewindMenu";
 import { pairToolItems, rowKey, type ViewItem } from "./pair";
 import { getPresenter } from "./presenters";
 import { ToolResultItem } from "./ToolResultItem";
@@ -92,7 +93,14 @@ export const MessageItem = memo(function MessageItem({
           </div>
         );
       }
-      return <UserBubble text={item.text} attachments={item.attachments} turnId={turnId} />;
+      return (
+        <UserBubble
+          text={item.text}
+          attachments={item.attachments}
+          turnId={turnId}
+          rewind={agentId && item.turnId ? { agentId, turnId: item.turnId } : undefined}
+        />
+      );
     }
     case "queued_message":
       // A follow-up the user sent mid-turn. Badged "queued" only while it's
@@ -195,17 +203,20 @@ export const MessageItem = memo(function MessageItem({
 
 /** The user-prompt bubble, shared by the canonical `user_message` and the
  *  optimistic `queued_message` (a mid-turn follow-up not yet in the transcript)
- *  so both render identically aside from the queued marker. */
+ *  so both render identically aside from the queued marker. `rewind` names the
+ *  agent and the turn a rewind to before this message goes back to. */
 function UserBubble({
   text,
   attachments,
   queued,
   turnId,
+  rewind,
 }: {
   text: string;
   attachments?: string[];
   queued?: boolean;
   turnId?: number;
+  rewind?: { agentId: string; turnId: string };
 }) {
   const display = stripSystemTurnMarker(stripInjectedInstructions(text));
   // A turn Fletch authored, not the user: the roadmap's settle review, a mid-run
@@ -235,10 +246,13 @@ function UserBubble({
         )}
         {queued && <span className="m-user__queued-tag text-xs">queued</span>}
       </div>
-      {/* A still-queued follow-up isn't canonical yet, so skip its copy affordance. */}
+      {/* A still-queued follow-up isn't canonical yet, so skip its actions. */}
       {!queued && (
         <div className="m-actions">
           <CopyButton text={display} />
+          {rewind && (
+            <RewindMenu agentId={rewind.agentId} turnId={rewind.turnId} prompt={display} />
+          )}
         </div>
       )}
     </div>

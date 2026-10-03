@@ -49,6 +49,7 @@ const EMPTY_MAPS = {
   rightPanelTabs: {},
   offSidebarAgents: {},
   backgroundTasks: {},
+  codeUndo: {},
 };
 
 // biome-ignore lint/suspicious/noExplicitAny: test fixtures use minimal shapes

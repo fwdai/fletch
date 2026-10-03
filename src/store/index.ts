@@ -17,6 +17,7 @@ import { createLocalCommandsSlice } from "./localCommands";
 import { createMcpServersSlice } from "./mcpServers";
 import { createProvidersSlice } from "./providers";
 import { createReposSlice } from "./repos";
+import { createRewindSlice } from "./rewind";
 import { createSandboxSlice } from "./sandbox";
 import { createSkillsSlice } from "./skills";
 import type { AppState } from "./types";
@@ -31,6 +32,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createEnvironmentSwitchSlice(...a),
   ...createWorkspaceSlice(...a),
   ...createReposSlice(...a),
+  ...createRewindSlice(...a),
   ...createGitSlice(...a),
   ...createComposerSlice(...a),
   ...createDraftsSlice(...a),

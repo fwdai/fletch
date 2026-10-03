@@ -14,6 +14,7 @@ export { DropdownItem, DropdownMenu, DropdownSection, DropdownSeparator } from "
 export { IconButton } from "./IconButton";
 export type { LoaderSize, LoaderVariant } from "./Loader";
 export { Loader } from "./Loader";
+export { MenuButton } from "./MenuButton";
 export type { ModalLayer, ModalSize } from "./Modal";
 export { Modal, ModalBody, ModalFooter, ModalSheet } from "./Modal";
 export { SandboxBadge } from "./SandboxBadge";

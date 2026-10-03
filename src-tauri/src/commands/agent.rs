@@ -92,6 +92,69 @@ pub async fn fork_agent(
     .await
 }
 
+/// Rewind an agent to just before the turn `turn_id` names, in place: its
+/// conversation, its code, or both (`scope`). `transcript` is the
+/// frontend-rendered conversation before that turn, which the rewound
+/// session's agent is briefed with a summary of when its provider can't
+/// resume the conversation natively; `null` when the conversation isn't
+/// rewound. Resolves once the rewound agent is up.
+#[tauri::command]
+pub async fn rewind_agent(
+    supervisor: State<'_, Arc<Supervisor>>,
+    ctx: State<'_, Arc<EngineCtx>>,
+    agent_id: String,
+    turn_id: String,
+    scope: crate::supervisor::RewindScope,
+    transcript: Option<String>,
+) -> Result<crate::supervisor::RewindOutcome> {
+    supervisor
+        .inner()
+        .rewind(ctx.inner(), &agent_id, &turn_id, scope, transcript)
+        .await
+}
+
+/// What rewinding an agent's code to before turn `turn_id` would do — the
+/// commits that would leave each branch — for the confirmation; an error says
+/// why its code can't be rewound.
+#[tauri::command]
+pub async fn preview_rewind_code(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    turn_id: String,
+) -> Result<crate::supervisor::RestoreReport> {
+    supervisor
+        .inner()
+        .preview_rewind_code(&agent_id, &turn_id)
+        .await
+}
+
+/// Undo an agent's last code restore, from the undo point its checkouts hold.
+#[tauri::command]
+pub async fn undo_code_restore(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<()> {
+    supervisor.inner().undo_code_restore(&agent_id).await
+}
+
+/// Let an agent's last code restore's undo point go, keeping the restored code.
+#[tauri::command]
+pub async fn discard_code_undo(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<()> {
+    supervisor.inner().discard_code_undo(&agent_id).await
+}
+
+/// Whether an agent's last code restore can still be undone.
+#[tauri::command]
+pub async fn has_code_undo(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<bool> {
+    supervisor.inner().has_code_undo(&agent_id).await
+}
+
 #[tauri::command]
 pub fn write_to_agent(
     supervisor: State<'_, Arc<Supervisor>>,

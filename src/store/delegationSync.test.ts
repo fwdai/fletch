@@ -55,6 +55,7 @@ const EMPTY_MAPS = {
   rightPanelTabs: {},
   offSidebarAgents: {},
   backgroundTasks: {},
+  codeUndo: {},
 };
 
 const NOW = 100_000;

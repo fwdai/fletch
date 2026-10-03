@@ -269,28 +269,54 @@ impl Supervisor {
     }
 
     /// Inject a message into the running turn over the managed agent's open
-    /// stdin (claude). On success, persist its row so it matches the transcript
-    /// record the live message produces (the matcher stays 1→1 per live
-    /// message). Returns `Err` if the write fails — the turn ended or the pipe
-    /// broke in the race window between the busy check and the write — leaving
-    /// the message untouched so the caller can fall back without double-handling
-    /// it.
+    /// stdin (claude), with its own row, so it matches the transcript record
+    /// the live message produces (the matcher stays 1→1 per live message).
+    ///
+    /// The row goes in before the write, as for any delivered turn
+    /// (`deliver_user_message`): the record the message produces then lies past
+    /// the row's watermark whenever it is ingested (`insert_user_turn`).
+    /// Returns `Err` if the write fails — the turn ended or the pipe broke in
+    /// the race window between the busy check and the write — with the row
+    /// withdrawn if this call made it, so the caller can fall back (queue it;
+    /// its delivery inserts the row again) without double-handling it or
+    /// leaving a turn that never went out.
     fn inject_live(&self, agent_id: &str, msg: &PendingMsg) -> Result<()> {
         // `live_agent` yields `AgentNotFound` when the turn already ended; the
-        // send error then propagates untouched so the caller's fallback still
-        // fires. Both happen with the `agents` lock released (see `live_agent`).
-        // Live injection is claude-only (managed), and claude's model/effort are
+        // send error then propagates so the caller's fallback still fires. Both
+        // happen with the `agents` lock released (see `live_agent`). Live
+        // injection is claude-only (managed), and claude's model/effort are
         // fixed on its running process — so no per-turn config to pass.
-        self.live_agent(agent_id)?
-            .send_user_message(&msg.text, &msg.attachments, None, None)?;
+        self.persist_and_send(agent_id, msg, || {
+            self.live_agent(agent_id)?
+                .send_user_message(&msg.text, &msg.attachments, None, None)
+        })?;
         self.reset_native_input(agent_id);
-        if let Err(e) =
-            self.workspace
-                .insert_user_turn(agent_id, &msg.turn_id, &msg.text, &msg.attachments)
-        {
-            tracing::warn!(error = %e, agent_id, "persist live-injected user turn failed");
-        }
         Ok(())
+    }
+
+    /// Write `msg`'s turn row, then hand the message over with `send`. When
+    /// the send fails, the row is withdrawn if this call wrote it; one that
+    /// was already there (a retry's) stays.
+    fn persist_and_send(
+        &self,
+        agent_id: &str,
+        msg: &PendingMsg,
+        send: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        let inserted = self
+            .workspace
+            .insert_user_turn(agent_id, &msg.turn_id, &msg.text, &msg.attachments)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, agent_id, "persist live-injected user turn failed");
+                false
+            });
+        let sent = send();
+        if sent.is_err() && inserted {
+            if let Err(e) = self.workspace.delete_pending_user_turn(&msg.turn_id) {
+                tracing::warn!(error = %e, agent_id, "withdraw undelivered user turn failed");
+            }
+        }
+        sent
     }
 
     /// Capture the outgoing user turn durably, then deliver it to the agent.
@@ -659,8 +685,11 @@ pub(super) fn drain_pending_respawn(sup: &Supervisor, ctx: &Arc<EngineCtx>, agen
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Agent;
     use crate::error::Error;
     use crate::git::checkpoint;
+    use crate::pty_session::{PtySession, PtySpawn};
+    use crate::sandbox::KillHandle;
     use crate::supervisor::checkpoints::CAPTURE_TIMEOUT;
     use crate::supervisor::tests::{
         committed_repo, record_in_checkouts, record_with_status, test_supervisor,
@@ -951,5 +980,158 @@ mod tests {
             .read_history_turns("yosemite")
             .unwrap()
             .is_empty());
+    }
+
+    // ── turn rows and the records their prompts produce ───────────────────
+
+    /// A process for `yosemite` that takes whatever it is handed and ignores
+    /// it: a live agent to deliver to, without a real one.
+    fn live_process(sup: &Supervisor, dir: &std::path::Path) {
+        let pty = PtySession::spawn(
+            PtySpawn {
+                program: std::path::Path::new("/bin/sh"),
+                args: &["-c".to_string(), "cat >/dev/null".to_string()],
+                cwd: dir,
+                env: &[],
+                cols: 80,
+                rows: 24,
+                kill_plan: KillHandle::ProcessGroup,
+            },
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        sup.agents
+            .lock()
+            .insert("yosemite".to_string(), Arc::new(Agent::over_pty(pty)));
+    }
+
+    fn msg(turn_id: &str, text: &str) -> PendingMsg {
+        PendingMsg {
+            turn_id: turn_id.to_string(),
+            text: text.to_string(),
+            attachments: vec![],
+        }
+    }
+
+    fn said(role: &str, text: &str) -> serde_json::Value {
+        serde_json::json!({"type": role, "text": text})
+    }
+
+    /// Ingest `records` into `yosemite`'s session and match its turns, as a
+    /// turn-end sync does.
+    fn ingest(sup: &Supervisor, records: &[(&str, serde_json::Value)]) {
+        let records: Vec<_> = records.iter().map(|(id, body)| (*id, body)).collect();
+        sup.workspace
+            .append_session_records("yosemite", "claude", "transcript", None, &records)
+            .unwrap();
+        sup.workspace
+            .associate_pending_user_turns("yosemite")
+            .unwrap();
+    }
+
+    /// `(turn_id, matched record)` of `yosemite`'s turns, in send order.
+    fn matched(sup: &Supervisor) -> Vec<(String, Option<String>)> {
+        sup.workspace
+            .read_history_turns("yosemite")
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.turn_id, t.native_id))
+            .collect()
+    }
+
+    /// The race this order closes: the agent's record of an injected message
+    /// can be ingested the moment the write lands — which, when the row was
+    /// written after the write, came before the row and left the turn
+    /// unmatched for good.
+    #[tokio::test]
+    async fn an_injection_ingested_as_it_is_written_still_matches_its_turn() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = idle_agent_in(td.path()).await;
+        // The running turn so far, its answer quoting what comes next.
+        ingest(&sup, &[("a0", said("assistant", "Reply yes to go on."))]);
+
+        // The hand-off, with the agent's record of it ingested at once.
+        sup.persist_and_send("yosemite", &msg(FIRST, "yes"), || {
+            ingest(&sup, &[("u1", said("user", "yes"))]);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(matched(&sup), [(FIRST.to_string(), Some("u1".to_string()))]);
+    }
+
+    #[tokio::test]
+    async fn live_injections_into_one_turn_each_match_their_own_record_in_order() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = idle_agent_in(td.path()).await;
+        live_process(&sup, td.path());
+        sup.workspace
+            .insert_user_turn("yosemite", TURN, "fix the build", &[])
+            .unwrap();
+
+        sup.inject_live("yosemite", &msg(FIRST, "yes")).unwrap();
+        sup.inject_live("yosemite", &msg(SECOND, "yes")).unwrap();
+        // The turn ends, and its transcript lands in one batch.
+        ingest(
+            &sup,
+            &[
+                ("u0", said("user", "fix the build")),
+                ("a0", said("assistant", "working on it")),
+                ("u1", said("user", "yes")),
+                ("a1", said("assistant", "ok")),
+                ("u2", said("user", "yes")),
+                ("a2", said("assistant", "done")),
+            ],
+        );
+
+        assert_eq!(
+            matched(&sup),
+            [
+                (TURN.to_string(), Some("u0".to_string())),
+                (FIRST.to_string(), Some("u1".to_string())),
+                (SECOND.to_string(), Some("u2".to_string())),
+            ]
+        );
+    }
+
+    /// An injection that couldn't be written takes back the row it made: the
+    /// caller queues the message, and its delivery writes the row again.
+    #[tokio::test]
+    async fn a_failed_injection_leaves_no_turn_behind() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = idle_agent_in(td.path()).await;
+
+        let err = sup.inject_live("yosemite", &msg(FIRST, "yes")).unwrap_err();
+
+        assert!(matches!(err, Error::AgentNotFound(_)), "got {err}");
+        assert!(matched(&sup).is_empty());
+        // A row it didn't make (a retry's) stays.
+        sup.workspace
+            .insert_user_turn("yosemite", SECOND, "again", &[])
+            .unwrap();
+        assert!(sup.inject_live("yosemite", &msg(SECOND, "again")).is_err());
+        assert_eq!(matched(&sup), [(SECOND.to_string(), None)]);
+    }
+
+    /// Coalesced follow-ups go out as one turn under the last message's id,
+    /// and that row too is written before the hand-off.
+    #[tokio::test]
+    async fn a_coalesced_flush_has_its_turn_before_the_agent_has_the_message() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = idle_agent_in(td.path()).await;
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        live_process(&sup, td.path());
+        ingest(&sup, &[("a0", said("assistant", "say first\n\nsecond"))]);
+        sup.persist_and_enqueue("yosemite", msg(FIRST, "first"));
+        sup.persist_and_enqueue("yosemite", msg(SECOND, "second"));
+
+        assert!(!flush_queued(&sup, &ctx, "yosemite").await.unwrap(), "sent");
+        ingest(&sup, &[("u1", said("user", "first\n\nsecond"))]);
+
+        assert_eq!(
+            matched(&sup),
+            [(SECOND.to_string(), Some("u1".to_string()))]
+        );
     }
 }

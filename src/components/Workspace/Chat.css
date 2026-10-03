@@ -97,7 +97,7 @@
 /* The fork affordance sits at the far right of the seam. Its menu wrapper takes
    the `margin-left: auto`, so it pushes right when it's the only trailing action
    and sits just after the copy button when both are present. */
-.turn-meta .fork-menu {
+.turn-meta .dd-anchor {
   margin-left: auto;
 }
 .turn-meta .turn-fork {
@@ -107,36 +107,8 @@
    group right — reset the fork menu's so a second auto doesn't split the free
    space (which would strand the copy button mid-row). The 7px flex gap spaces
    them. */
-.turn-meta .turn-copy + .fork-menu {
+.turn-meta .turn-copy + .dd-anchor {
   margin-left: 0;
-}
-/* Fork menu: a branch button that opens the context and code choices and the
-   fork action. The scrim is a full-viewport click-catcher for outside-dismiss;
-   the menu anchors to the trigger's right edge and opens down by default,
-   flipping up (`.up`) when the footer sits too close to the composer for the
-   list to fit below. */
-.fork-menu {
-  position: relative;
-  display: inline-flex;
-}
-.fork-menu-scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 199;
-}
-.fork-menu-dd {
-  position: absolute;
-  right: 0;
-  z-index: 200;
-  white-space: nowrap;
-}
-.fork-menu-dd.down {
-  top: 100%;
-  margin-top: 4px;
-}
-.fork-menu-dd.up {
-  bottom: 100%;
-  margin-bottom: 4px;
 }
 
 /* The fixed 22px .btn-i.xs box clamps the copy glyph, so size the button to its
@@ -807,4 +779,46 @@
 .native-rail .chat-inner {
   padding: 12px 10px;
   max-width: none;
+}
+
+/* Rewind menu: an option that can't be picked says why, under its label. */
+.rewind-why {
+  display: block;
+  max-width: 280px;
+  white-space: normal;
+  color: var(--fg-3);
+}
+/* Rewind confirmation: the commits each branch loses. */
+.rewind-commits {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--fg-1);
+}
+.rewind-sha {
+  color: var(--fg-2);
+}
+.rewind-pushed {
+  margin-left: 6px;
+  color: var(--warn);
+}
+/* After a rewind restored the code: a quiet line above the composer, in its
+   column, offering the undo. */
+.code-undo {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 20px 8px;
+  color: var(--fg-2);
+}
+.code-undo-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.code-undo > span {
+  flex: 1;
+  min-width: 0;
 }

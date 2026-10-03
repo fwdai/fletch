@@ -10,6 +10,7 @@ import {
   HANDOFF_INPUT_MAX,
   HANDOFF_TOOL_TEXT_MAX,
   handoffTranscript,
+  handoffTranscriptBefore,
   OMITTED_NOTE,
   serializeHandoffItem,
 } from "@/adapters/handoff";
@@ -300,5 +301,37 @@ describe("handoffTranscript", () => {
       expect(transcript.startsWith(`${OMITTED_NOTE}\n\nxxx`)).toBe(true);
       expect(transcript.endsWith("end")).toBe(true);
     });
+  });
+});
+
+describe("handoffTranscriptBefore", () => {
+  const conversation: ChatItem[] = [
+    user("q0", "t0"),
+    agent("a0"),
+    user("q1", "t1"),
+    agent("a1"),
+    user("q2", "t2"),
+  ];
+
+  it("keeps everything up to the turn's prompt, and none of it", () => {
+    expect(handoffTranscriptBefore(conversation, "t1")).toBe("User: q0\n\nAssistant: a0");
+    expect(handoffTranscriptBefore(conversation, "t2")).toBe(
+      "User: q0\n\nAssistant: a0\n\nUser: q1\n\nAssistant: a1",
+    );
+  });
+
+  it("carries nothing before the first turn, or for a turn not in the log", () => {
+    expect(handoffTranscriptBefore(conversation, "t0")).toBeNull();
+    expect(handoffTranscriptBefore(conversation, "gone")).toBeNull();
+  });
+
+  it("starts at the last compaction before the turn", () => {
+    const log: ChatItem[] = [
+      user("q0", "t0"),
+      compaction("Summary: q0"),
+      agent("a0"),
+      user("q1", "t1"),
+    ];
+    expect(handoffTranscriptBefore(log, "t1")).toBe("Summary: q0\n\nAssistant: a0");
   });
 });

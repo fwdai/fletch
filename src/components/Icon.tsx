@@ -65,6 +65,7 @@ import {
   Radio,
   RefreshCw,
   Repeat,
+  RotateCcw,
   Search,
   Settings,
   Shapes,
@@ -152,6 +153,8 @@ const ICON_COMPONENTS = {
   terminal: Terminal,
   branch: GitBranch,
   split: Split,
+  // Back to just before a message, in place (a fork is `split`).
+  rewind: RotateCcw,
   commit: GitCommitHorizontal,
   merge: GitMerge,
   pr: GitPullRequest,

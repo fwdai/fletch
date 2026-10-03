@@ -2426,6 +2426,131 @@ fn associate_leaves_unmatched_turn_pending() {
     assert_eq!(turns[0].native_id, None); // still pending → renders standalone
 }
 
+fn native_ids_of_turns(wm: &WorkspaceManager, ws: &str) -> Vec<Option<String>> {
+    wm.read_history_turns(ws)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.native_id)
+        .collect()
+}
+
+fn append_records(wm: &WorkspaceManager, ws: &str, records: &[(&str, serde_json::Value)]) {
+    let records: Vec<(&str, &serde_json::Value)> = records.iter().map(|(id, b)| (*id, b)).collect();
+    wm.append_session_records(ws, "claude", "transcript", None, &records)
+        .unwrap();
+}
+
+fn said(role: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({"type": role, "text": text})
+}
+
+#[test]
+fn associate_never_matches_a_record_stored_before_the_turn() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    // An earlier answer that happens to quote the next prompt.
+    wm.insert_user_turn(&ws_id, "t1", "deploy it", &[]).unwrap();
+    append_records(
+        &wm,
+        &ws_id,
+        &[
+            ("u1", said("user", "deploy it")),
+            ("a1", said("assistant", "Shall I? Reply yes to go on.")),
+        ],
+    );
+    wm.associate_pending_user_turns(&ws_id).unwrap();
+    wm.insert_user_turn(&ws_id, "t2", "yes", &[]).unwrap();
+    append_records(
+        &wm,
+        &ws_id,
+        &[
+            ("u2", said("user", "yes")),
+            ("a2", said("assistant", "done")),
+        ],
+    );
+    // All within one millisecond: the order of the rows decides, not time.
+    {
+        let conn = wm.db.lock();
+        conn.execute("UPDATE session_records SET created_at = 1", [])
+            .unwrap();
+        conn.execute("UPDATE session_user_turns SET created_at = 1", [])
+            .unwrap();
+    }
+
+    assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 1);
+
+    assert_eq!(
+        native_ids_of_turns(&wm, &ws_id),
+        [Some("u1".into()), Some("u2".into())]
+    );
+    // So a rewind to before "yes" keeps the answer that asked for it.
+    let cut = wm.resolve_anchor(&ws_id, Anchor::Before("t2")).unwrap();
+    assert_eq!(cut.cut_seq, 3);
+}
+
+/// Why a turn's row goes in before its message is sent: a prompt record
+/// stored before the row can't be told from a quote, and is never matched.
+#[test]
+fn a_record_stored_before_its_turns_row_is_never_matched() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    append_records(&wm, &ws_id, &[("u1", said("user", "yes"))]);
+    wm.insert_user_turn(&ws_id, "t1", "yes", &[]).unwrap();
+
+    assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 0);
+    assert_eq!(native_ids_of_turns(&wm, &ws_id), [None]);
+}
+
+#[test]
+fn a_re_ingested_record_keeps_its_first_seq() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    let quote = said("assistant", "say yes when ready");
+    append_records(&wm, &ws_id, &[("a0", quote.clone())]);
+
+    // The quote comes round again in the batch that carries the prompt (a
+    // re-read from the top), still as the row it first landed in.
+    wm.insert_user_turn(&ws_id, "t1", "yes", &[]).unwrap();
+    append_records(&wm, &ws_id, &[("a0", quote), ("u1", said("user", "yes"))]);
+    wm.associate_pending_user_turns(&ws_id).unwrap();
+
+    assert_eq!(native_ids_of_turns(&wm, &ws_id), [Some("u1".into())]);
+}
+
+/// A row from before the watermark existed is matched as it always was.
+#[test]
+fn a_turn_without_a_watermark_matches_any_record() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    append_records(&wm, &ws_id, &[("u1", said("user", "legacy"))]);
+    wm.insert_user_turn(&ws_id, "t1", "legacy", &[]).unwrap();
+    wm.db
+        .lock()
+        .execute("UPDATE session_user_turns SET record_watermark = NULL", [])
+        .unwrap();
+
+    wm.associate_pending_user_turns(&ws_id).unwrap();
+
+    assert_eq!(native_ids_of_turns(&wm, &ws_id), [Some("u1".into())]);
+}
+
+#[test]
+fn a_repeated_prompt_matches_each_send_to_its_own_record() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    for (turn, prompt) in [("t1", "u1"), ("t2", "u2")] {
+        wm.insert_user_turn(&ws_id, turn, "yes", &[]).unwrap();
+        let body = serde_json::json!({"type": "user", "text": "yes"});
+        wm.append_session_records(&ws_id, "claude", "transcript", None, &[(prompt, &body)])
+            .unwrap();
+        wm.associate_pending_user_turns(&ws_id).unwrap();
+    }
+    assert_eq!(
+        native_ids_of_turns(&wm, &ws_id),
+        [Some("u1".into()), Some("u2".into())]
+    );
+}
+
 // ── mid-turn follow-up messages (coalesced delivery + live injection) ──
 
 #[test]

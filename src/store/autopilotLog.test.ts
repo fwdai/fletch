@@ -182,4 +182,5 @@ const EMPTY_MAPS = {
   rightPanelTabs: {},
   offSidebarAgents: {},
   backgroundTasks: {},
+  codeUndo: {},
 };
