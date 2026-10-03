@@ -1,20 +1,77 @@
-//! `impl WorkspaceManager` — canonical session-record persistence.
+//! `impl WorkspaceManager` — canonical session-record persistence, and the one
+//! definition of a workspace's current session.
 
 use super::*;
+
+/// The workspace's current session: its one session that hasn't been
+/// superseded (`idx_sessions_current` allows at most one). Every read or write
+/// that means "this workspace's conversation" resolves its session here; SQL
+/// that has to say it inline (a join, a single-statement update) uses the same
+/// predicate, `superseded_at IS NULL`. `None` when the workspace has no session.
+pub(super) fn current_session_id(conn: &Connection, workspace_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT id FROM sessions WHERE workspace_id = ?1 AND superseded_at IS NULL",
+        [workspace_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// One session's own records with `seq < below`, in seq order, each tagged
+/// `inherited` as given — the single row decoder behind both the own-session
+/// read and the stitched history read (`lineage`).
+pub(super) fn query_records(
+    conn: &Connection,
+    session_id: &str,
+    below: i64,
+    inherited: bool,
+) -> Result<Vec<SessionRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, provider, source, native_id, agent_version, body
+         FROM session_records WHERE session_id = ?1 AND seq < ?2 ORDER BY seq ASC",
+    )?;
+    let rows: Vec<(i64, String, String, String, Option<String>, String)> = stmt
+        .query_map(rusqlite::params![session_id, below], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })?
+        .collect::<std::result::Result<_, rusqlite::Error>>()?;
+
+    rows.into_iter()
+        .map(
+            |(seq, provider, source, native_id, agent_version, body_text)| {
+                let body = serde_json::from_str(&body_text)
+                    .map_err(|e| Error::Other(format!("deserialize record body: {e}")))?;
+                Ok(SessionRecord {
+                    seq,
+                    provider,
+                    source,
+                    native_id,
+                    agent_version,
+                    body,
+                    inherited,
+                })
+            },
+        )
+        .collect()
+}
 
 impl WorkspaceManager {
     // ── Session event log ─────────────────────────────────────────────────
 
-    /// Append a canonical record to the workspace's current session. Idempotent
-    /// on `(session_id, native_id)`: a duplicate native_id is ignored and the
-    /// original row's body is retained. Returns `true` if a new row was
-    /// inserted, `false` if it was a duplicate or the workspace has no session.
-    /// Append many transcript records in a single transaction. Same idempotency
-    /// as `append_session_record` (ignored on a `(session_id, native_id)`
-    /// conflict), but one commit for the whole batch instead of one per record —
-    /// so turn-end ingest is O(batch) commits, not O(conversation). `seq` stays
-    /// contiguous: an ignored duplicate doesn't burn a number. Returns how many
-    /// rows were actually inserted.
+    /// Append many transcript records to the workspace's current session in a
+    /// single transaction. Idempotent on `(session_id, native_id)`: a duplicate
+    /// native_id is ignored and the original row's body is retained. One commit
+    /// for the whole batch instead of one per record, so turn-end ingest is
+    /// O(batch) commits, not O(conversation). `seq` stays contiguous: an ignored
+    /// duplicate doesn't burn a number. Returns how many rows were actually
+    /// inserted (0 when the workspace has no session).
     pub fn append_session_records(
         &self,
         workspace_id: &str,
@@ -27,15 +84,7 @@ impl WorkspaceManager {
             return Ok(0);
         }
         let conn = self.db.lock();
-
-        let sid: Option<String> = conn
-            .query_row(
-                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
-                [workspace_id],
-                |r| r.get(0),
-            )
-            .ok();
-        let Some(sid) = sid else {
+        let Some(sid) = current_session_id(&conn, workspace_id) else {
             return Ok(0);
         };
 
@@ -85,7 +134,7 @@ impl WorkspaceManager {
         let conn = self.db.lock();
         let offset: Option<i64> = conn
             .query_row(
-                "SELECT ingest_offset FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                "SELECT ingest_offset FROM sessions WHERE workspace_id = ?1 AND superseded_at IS NULL",
                 [workspace_id],
                 |r| r.get(0),
             )
@@ -97,8 +146,7 @@ impl WorkspaceManager {
     pub fn set_session_ingest_offset(&self, workspace_id: &str, offset: u64) -> Result<()> {
         let conn = self.db.lock();
         conn.execute(
-            "UPDATE sessions SET ingest_offset = ?2
-             WHERE id = (SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1)",
+            "UPDATE sessions SET ingest_offset = ?2 WHERE workspace_id = ?1 AND superseded_at IS NULL",
             rusqlite::params![workspace_id, offset as i64],
         )?;
         Ok(())
@@ -106,16 +154,11 @@ impl WorkspaceManager {
 
     /// Count of records already ingested for the current session (= MAX(seq)) —
     /// the starting index for positional `ln:{i}` native ids on the next read.
+    /// Own records only: history inherited through lineage is never re-read
+    /// from this session's transcript.
     pub fn session_record_count(&self, workspace_id: &str) -> Result<usize> {
         let conn = self.db.lock();
-        let sid: Option<String> = conn
-            .query_row(
-                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
-                [workspace_id],
-                |r| r.get(0),
-            )
-            .ok();
-        let Some(sid) = sid else {
+        let Some(sid) = current_session_id(&conn, workspace_id) else {
             return Ok(0);
         };
         let count: i64 = conn.query_row(
@@ -132,13 +175,7 @@ impl WorkspaceManager {
     /// tell a working agent from a silent one (see `workflow::attempt`).
     pub fn last_activity(&self, workspace_id: &str) -> Option<i64> {
         let conn = self.db.lock();
-        let sid: String = conn
-            .query_row(
-                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
-                [workspace_id],
-                |r| r.get(0),
-            )
-            .ok()?;
+        let sid = current_session_id(&conn, workspace_id)?;
         // MAX over an empty set is SQL NULL, so decode into an Option and let a
         // session with no records yet report `None` rather than 0.
         conn.query_row(
@@ -161,15 +198,16 @@ impl WorkspaceManager {
         needle: &str,
     ) -> Result<Vec<serde_json::Value>> {
         let conn = self.db.lock();
+        let Some(sid) = current_session_id(&conn, workspace_id) else {
+            return Ok(vec![]);
+        };
         let mut stmt = conn.prepare(
             "SELECT body FROM session_records
-             WHERE session_id = (SELECT id FROM sessions WHERE workspace_id = ?1
-                                 ORDER BY created_at DESC LIMIT 1)
-               AND instr(body, ?2) > 0
+             WHERE session_id = ?1 AND instr(body, ?2) > 0
              ORDER BY seq ASC",
         )?;
         let bodies: Vec<String> = stmt
-            .query_map(rusqlite::params![workspace_id, needle], |r| r.get(0))?
+            .query_map(rusqlite::params![sid, needle], |r| r.get(0))?
             .collect::<std::result::Result<_, rusqlite::Error>>()?;
         bodies
             .iter()
@@ -180,55 +218,14 @@ impl WorkspaceManager {
             .collect()
     }
 
-    /// All canonical records for the workspace's current session, in seq order.
+    /// The current session's own records, in seq order — what this session's
+    /// agent actually produced, for internal readers (the workflow budget
+    /// ledger). Display reads use the stitched `read_history_records`.
     pub fn read_session_records(&self, workspace_id: &str) -> Result<Vec<SessionRecord>> {
         let conn = self.db.lock();
-
-        let sid: Option<String> = conn
-            .query_row(
-                "SELECT id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at DESC LIMIT 1",
-                [workspace_id],
-                |r| r.get(0),
-            )
-            .ok();
-
-        let Some(sid) = sid else {
+        let Some(sid) = current_session_id(&conn, workspace_id) else {
             return Ok(vec![]);
         };
-
-        let mut stmt = conn.prepare(
-            "SELECT seq, provider, source, native_id, agent_version, body
-             FROM session_records WHERE session_id = ?1 ORDER BY seq ASC",
-        )?;
-
-        let rows: Vec<(i64, String, String, String, Option<String>, String)> = stmt
-            .query_map([&sid], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                ))
-            })?
-            .collect::<std::result::Result<_, rusqlite::Error>>()?;
-
-        rows.into_iter()
-            .map(
-                |(seq, provider, source, native_id, agent_version, body_text)| {
-                    let body = serde_json::from_str(&body_text)
-                        .map_err(|e| Error::Other(format!("deserialize record body: {e}")))?;
-                    Ok(SessionRecord {
-                        seq,
-                        provider,
-                        source,
-                        native_id,
-                        agent_version,
-                        body,
-                    })
-                },
-            )
-            .collect()
+        query_records(&conn, &sid, i64::MAX, false)
     }
 }

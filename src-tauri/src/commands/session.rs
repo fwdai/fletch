@@ -7,20 +7,23 @@ use tauri::State;
 use crate::error::Result;
 use crate::supervisor::Supervisor;
 
+/// The agent's display history: records it inherits through session lineage
+/// (tagged `inherited`), then its own.
 #[tauri::command]
 pub fn read_session_records(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Vec<crate::workspace::SessionRecord>> {
-    supervisor.workspace.read_session_records(&agent_id)
+    supervisor.workspace.read_history_records(&agent_id)
 }
 
+/// The user turns of the same history, in the same order.
 #[tauri::command]
 pub fn read_user_turns(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
 ) -> Result<Vec<crate::workspace::UserTurn>> {
-    supervisor.workspace.read_user_turns(&agent_id)
+    supervisor.workspace.read_history_turns(&agent_id)
 }
 
 /// Ingest the agent's on-disk transcript into session_records now (lazy

@@ -38,9 +38,10 @@ export function reduceRecords(provider: string | undefined, records: SessionReco
   return items;
 }
 
-/** Overlay one turn's Fletch-origin metadata (run timing, attachments) onto the
- *  rendered user message it belongs to. */
+/** Overlay one turn's Fletch-origin metadata (id, run timing, attachments) onto
+ *  the rendered user message it belongs to. */
 function overlayTurn(item: Extract<ChatItem, { kind: "user_message" }>, t: UserTurn): void {
+  item.turnId = t.turn_id;
   if (t.started_at != null) item.startedAt = t.started_at;
   if (t.ended_at != null) item.endedAt = t.ended_at;
   if (t.attachments.length > 0) {
@@ -62,8 +63,8 @@ function turnNeedle(t: UserTurn): string | undefined {
   return t.text || t.attachments[0];
 }
 
-/** Overlay Fletch-origin outgoing-turn metadata (attachments, run timing) onto
- *  the transcript-rendered conversation. Additive only — never replaces
+/** Overlay Fletch-origin outgoing-turn metadata (turn id, attachments, run
+ *  timing) onto the transcript-rendered conversation. Additive only — never replaces
  *  transcript content (which stays the canonical, re-ingestable history):
  *  - Matched turns (`native_id` set) hang their attachments on the rendered
  *    user message. Aligned from the end, so older turns that predate this

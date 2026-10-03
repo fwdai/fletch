@@ -704,14 +704,16 @@ impl Dispatch for SupervisorDispatch {
                         .await)
                 }
 
+                // The stitched display history (lineage included), like the
+                // desktop commands of the same name.
                 "read_session_records" => {
                     let a: AgentArgs = parse(args)?;
-                    res(sup.workspace.read_session_records(&a.agent_id))
+                    res(sup.workspace.read_history_records(&a.agent_id))
                 }
 
                 "read_user_turns" => {
                     let a: AgentArgs = parse(args)?;
-                    res(sup.workspace.read_user_turns(&a.agent_id))
+                    res(sup.workspace.read_history_turns(&a.agent_id))
                 }
 
                 // Lazy backfill, same as the `sync_session` command: the phone

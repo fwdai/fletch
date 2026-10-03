@@ -39,25 +39,25 @@ export function LiveTimer({ startedAt }: { startedAt: number }) {
  *  on the right, a dimmed copy of the turn's response plus a "fork from here"
  *  action. Doubles as the seam between turns (the hairline lives in CSS).
  *
- *  `agentId` + `turnOrdinal` (the 0-based navigable-prompt index this turn
- *  closes) are what the fork action carries to seed the new conversation. */
+ *  `agentId` + `forkTurnId` (the last turn above this footer) are what the fork
+ *  action anchors the new conversation on; no turn id, no fork action. */
 export function TurnFooter({
   runSec,
   copyText,
   agentId,
-  turnOrdinal,
+  forkTurnId,
 }: {
   runSec: number;
   copyText: string;
   agentId: string;
-  turnOrdinal: number;
+  forkTurnId: string | undefined;
 }) {
   return (
     <div className="turn-meta">
       <Icon name="clock" size={11} />
       <span>Ran {fmtDur(runSec)}</span>
       {copyText && <CopyButton text={copyText} className="turn-copy" />}
-      <ForkButton agentId={agentId} upToPrompt={turnOrdinal} />
+      {forkTurnId && <ForkButton agentId={agentId} turnId={forkTurnId} />}
     </div>
   );
 }
