@@ -41,7 +41,7 @@ export const client = createClient();
 export const api = createApi(client);
 
 export type ThemeMode = "system" | "light" | "dark";
-export type ScreenName = "home" | "project" | "agent" | "file" | "diff";
+export type ScreenName = "home" | "project" | "agent" | "code" | "file" | "diff";
 export type SheetName =
   | "host"
   | "newAgent"

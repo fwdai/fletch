@@ -1,4 +1,4 @@
-// `list_checkout_tree` returns a flat path list; the Code tab renders a
+// `list_checkout_tree` returns a flat path list; the Code screen renders a
 // collapsible tree, so fold the paths into nodes and flatten again per the open
 // set. Reusable for any flat path list, not just a checkout.
 
