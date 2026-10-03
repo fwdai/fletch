@@ -1,8 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use super::args::effort_args;
+use super::args::{effort_args, prepare_managed_args, prepare_pty_args};
 use super::capabilities::{provider_bin_label, PER_TURN_AGENTS};
 use super::providers::antigravity::{
     antigravity_build_args, antigravity_conv_id_from_map, antigravity_read,
@@ -15,6 +15,87 @@ use super::providers::pi::{pi_build_args, pi_pty_args, pi_session_id, pi_session
 use super::spawn::pty_input_keystrokes;
 use super::transcript::{jsonl_files_ending, records_with_id};
 use super::*;
+
+// ── claude session flags ──────────────────────────────────────────────
+
+fn claude_spec(start: SessionStart) -> SpawnSpec<'static> {
+    SpawnSpec {
+        agent_id: "a1",
+        cwd: PathBuf::new(),
+        sandbox_root: PathBuf::new(),
+        source_repos: &[],
+        session_id: "own",
+        start,
+        effort: None,
+        model: None,
+        instructions: None,
+        codegraph_available: false,
+        mcp_servers: &[],
+        rpc_dir: PathBuf::new(),
+        cols: 80,
+        rows: 24,
+        engine: crate::sandbox::EngineKind::SandboxExec,
+        blackboard: None,
+    }
+}
+
+fn branch(at_message: Option<&str>) -> SessionStart {
+    SessionStart::Branch(BranchPoint {
+        from_session: "src".into(),
+        at_message: at_message.map(str::to_string),
+    })
+}
+
+#[test]
+fn claude_session_flags_match_the_start_in_both_views() {
+    let cases = [
+        (SessionStart::Fresh, vec!["--session-id", "own"]),
+        (SessionStart::Resume, vec!["--resume", "own"]),
+        (
+            branch(Some("m1")),
+            vec![
+                "--resume",
+                "src",
+                "--fork-session",
+                "--session-id",
+                "own",
+                "--resume-session-at",
+                "m1",
+            ],
+        ),
+        (
+            branch(None),
+            vec!["--resume", "src", "--fork-session", "--session-id", "own"],
+        ),
+    ];
+    let session_flags = |args: &[String]| {
+        args.iter()
+            .filter(|a| a.starts_with("--resume") || *a == "--session-id")
+            .count()
+    };
+    for (start, flags) in cases {
+        let flags: Vec<String> = flags.into_iter().map(String::from).collect();
+        let spec = claude_spec(start);
+        for args in [
+            prepare_managed_args(&spec, &[]),
+            prepare_pty_args(&spec, &[]),
+        ] {
+            assert!(args.ends_with(&flags), "{args:?}");
+            // Nothing earlier on the line names a session.
+            assert_eq!(session_flags(&args), session_flags(&flags), "{args:?}");
+        }
+    }
+}
+
+#[test]
+fn claude_tui_refuses_a_branch_cut_at_a_message() {
+    // Claude's TUI ignores `--resume-session-at` and would open the whole
+    // source session, so the launch must fail rather than show the wrong history.
+    let err = Agent::spawn_pty(claude_spec(branch(Some("m1"))), |_| {}, |_| {})
+        .err()
+        .expect("a TUI branch cut at a message must be refused");
+    assert!(err.to_string().contains("chat view"), "{err}");
+}
 
 // ── native (PTY) view input ───────────────────────────────────────────
 //

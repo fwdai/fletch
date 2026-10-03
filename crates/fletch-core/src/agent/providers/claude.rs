@@ -22,6 +22,8 @@ use serde_json::Value;
 use crate::agent::transcript::{
     records_with_id, JsonlTail, RawRecord, ReadDiagnostics, SubagentLayout, TranscriptReader,
 };
+use crate::agent::BranchPoint;
+use crate::error::{Error, Result};
 
 fn claude_locate(session_id: &str, cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
     crate::transcripts::find_session_jsonl(session_id, cwd, diag)
@@ -115,6 +117,66 @@ pub(crate) static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
     subagents: Some(CLAUDE_SUBAGENTS),
 };
 
+/// The branch of `from_session` that rewinds to just before the user prompt
+/// whose `uuid` is `prompt_id`. `bodies` are that session's records in
+/// transcript order.
+///
+/// `--resume-session-at <id>` keeps the resumed conversation "up to and
+/// including the chain entry with <id>": claude (verified on 2.1.287) finds
+/// the loaded message whose `uuid` is `<id>`, drops everything after it, and
+/// exits with "No message found with message.uuid of: <id>" if there's none.
+/// Any chain entry is accepted, not only user/assistant ones. So the cut is the
+/// entry the prompt was appended to, its `parentUuid` — usually the `system`
+/// entry that closed the previous turn (`stop_hook_summary`, `turn_duration`),
+/// sometimes an assistant message or an attachment.
+///
+/// - `Ok(None)`: the prompt opens the session, so nothing is kept. Launch
+///   `SessionStart::Fresh`; a `BranchPoint` without a message keeps *all*.
+/// - `Err`: the prompt isn't in `bodies`, or the session was compacted after
+///   it. A resume loads only the chain since the last compaction, so a cut
+///   before one has nothing to resume at.
+pub fn claude_branch_before<'a>(
+    from_session: &str,
+    bodies: impl IntoIterator<Item = &'a Value>,
+    prompt_id: &str,
+) -> Result<Option<BranchPoint>> {
+    let mut bodies = bodies.into_iter();
+    let prompt = bodies
+        .by_ref()
+        .find(|b| b.get("uuid").and_then(Value::as_str) == Some(prompt_id))
+        .ok_or_else(|| Error::Other(format!("message {prompt_id} isn't in the session")))?;
+    if bodies.any(is_compact_boundary) {
+        return Err(Error::Other(
+            "the conversation was compacted after this message".into(),
+        ));
+    }
+    Ok(prompt
+        .get("parentUuid")
+        .and_then(Value::as_str)
+        .map(|parent| BranchPoint {
+            from_session: from_session.to_string(),
+            at_message: Some(parent.to_string()),
+        }))
+}
+
+fn is_compact_boundary(body: &Value) -> bool {
+    body.get("type").and_then(Value::as_str) == Some("system")
+        && body.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
+}
+
+/// Whether claude has written a message into `session_id`'s transcript, i.e.
+/// whether the session can be `--resume`d. Claude creates the file with its
+/// first message, and only message lines carry a `uuid` (metadata lines such
+/// as `mode` don't).
+pub(crate) fn claude_session_has_messages(session_id: &str, cwd: &Path) -> bool {
+    let mut diag = ReadDiagnostics::default();
+    crate::transcripts::find_session_jsonl(session_id, cwd, &mut diag).is_some_and(|path| {
+        crate::transcripts::read_jsonl_values(&path, &mut diag)
+            .iter()
+            .any(|v| v.get("uuid").is_some())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +262,61 @@ mod tests {
         let own =
             json!({ "type": "assistant", "isSidechain": true, "agentId": "abc", "message": {} });
         assert_eq!(claude_subagent_parent(&[notification, own], "abc"), None);
+    }
+
+    /// Two turns in the shape real transcripts use: a metadata line (no uuid),
+    /// then prompt → assistant → the `system` entry that closes the turn, which
+    /// the next prompt is appended to.
+    fn two_turns() -> Vec<Value> {
+        vec![
+            json!({ "type": "mode", "mode": "normal" }),
+            json!({ "type": "user", "uuid": "p1", "parentUuid": null }),
+            json!({ "type": "assistant", "uuid": "a1", "parentUuid": "p1" }),
+            json!({ "type": "system", "subtype": "turn_duration", "uuid": "s1", "parentUuid": "a1" }),
+            json!({ "type": "user", "uuid": "p2", "parentUuid": "s1" }),
+            json!({ "type": "assistant", "uuid": "a2", "parentUuid": "p2" }),
+        ]
+    }
+
+    #[test]
+    fn branch_before_a_prompt_keeps_through_the_entry_it_follows() {
+        let bodies = two_turns();
+        assert_eq!(
+            claude_branch_before("src", &bodies, "p2").unwrap(),
+            Some(BranchPoint {
+                from_session: "src".into(),
+                at_message: Some("s1".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn branch_before_the_opening_prompt_keeps_nothing() {
+        assert_eq!(
+            claude_branch_before("src", &two_turns(), "p1").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn branch_before_an_unknown_prompt_is_an_error() {
+        assert!(claude_branch_before("src", &two_turns(), "nope").is_err());
+    }
+
+    #[test]
+    fn branch_cannot_cut_before_a_compaction() {
+        let boundary = json!({
+            "type": "system", "subtype": "compact_boundary", "uuid": "c1", "parentUuid": null
+        });
+        let mut bodies = two_turns();
+        bodies.push(boundary.clone());
+        assert!(claude_branch_before("src", &bodies, "p2").is_err());
+
+        // A compaction *before* the prompt is part of the resumed chain.
+        let mut bodies = vec![boundary];
+        bodies.extend(two_turns());
+        assert!(claude_branch_before("src", &bodies, "p2")
+            .unwrap()
+            .is_some());
     }
 }

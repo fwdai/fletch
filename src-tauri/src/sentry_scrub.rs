@@ -41,12 +41,12 @@ use sentry::Breadcrumb;
 ///
 /// * `agent_id` — opaque per-agent UUID;
 /// * `session`  — opaque per-session id;
-/// * `fresh`    — bool (fresh session vs resume);
+/// * `start`    — how a launch attaches to its session (`fresh`/`resume`/`branch`);
 /// * `op`       — a short static operation label.
 ///
 /// Everything else is dropped, including `error`, `path`, `file`, `cwd`, `argv`,
 /// `sandbox_root`, and `stderr`.
-const ALLOWLIST: &[&str] = &["agent_id", "session", "fresh", "op"];
+const ALLOWLIST: &[&str] = &["agent_id", "session", "start", "op"];
 
 /// Drop every entry whose key is not in [`ALLOWLIST`].
 fn retain_allowlisted(map: &mut BTreeMap<String, Value>) {
