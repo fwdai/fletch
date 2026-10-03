@@ -2,7 +2,7 @@ import type { BackgroundTaskMap } from "@desktop/adapters/shared/backgroundTasks
 import type { AgentManagedEvent, AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
 import type { GitState, ShortStats } from "@desktop/api/types/git";
-import type { PrChecks, PrState } from "@desktop/api/types/pr";
+import type { PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
 import type { LiveTurn } from "@desktop/api/types/session";
@@ -130,6 +130,9 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   shortstats: Record<string, ShortStats>;
   prStates: Record<string, PrState | null>;
   prChecks: Record<string, PrChecks | null>;
+  /** Unresolved review threads per agent, from `get_pr_threads`. Never set on
+   *  a host without the op, so a missing key means "unknown", not "none". */
+  prComments: Record<string, PrComments | null>;
   trees: Record<string, CheckoutFile[]>;
 
   theme: ThemeMode;
@@ -180,6 +183,13 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  turn is replayed on top from `read_live_turn` (see store/liveTurn). */
   rebuildLog(agentId: string, opts?: { liveTurn?: boolean }): Promise<void>;
   loadGit(agentId: string): Promise<void>;
+  /** The Git tab's live tick: PR state and CI from one `get_pr_live` pass, so
+   *  both are from the same moment. A null `checks` means the CI read didn't
+   *  resolve (see `PrLive`), so the last tint is kept rather than blanked. */
+  loadPrLive(agentId: string): Promise<void>;
+  /** Re-read the PR's unresolved review threads. A no-op on a host without
+   *  `get_pr_threads`. */
+  loadPrThreads(agentId: string): Promise<void>;
   /** Refresh the fleet-wide working-tree stats behind the agent rows. */
   loadShortstats(): Promise<void>;
   loadTree(agentId: string): Promise<void>;
@@ -221,6 +231,10 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   /** Manual path: commit + push + open a PR with the user's own text. */
   publish(agentId: string, title: string, body: string): Promise<void>;
   pushToPr(agentId: string): Promise<void>;
+  /** Merge the open PR through the host (`merge_pr`), then re-read the git and
+   *  PR state. Gated on `hostSupports("merge_pr")`; the failure, if any, lands
+   *  in `lastError`. */
+  mergePr(agentId: string): Promise<void>;
 
   listDir(path: string): Promise<DirListing>;
   addWorkspaceRepo(repoPath: string): Promise<void>;
@@ -480,6 +494,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   shortstats: {},
   prStates: {},
   prChecks: {},
+  prComments: {},
   trees: {},
 
   theme: "dark",
@@ -925,6 +940,30 @@ export const useStore = create<MobileState>()((set, get) => ({
     }
   },
 
+  async loadPrLive(agentId) {
+    try {
+      const live = await api.getPrLive(agentId);
+      // Null means the host had nothing to say this round, not "no PR".
+      if (!live) return;
+      set((s) => ({
+        prStates: { ...s.prStates, [agentId]: live.state },
+        ...(live.checks ? { prChecks: { ...s.prChecks, [agentId]: live.checks } } : {}),
+      }));
+    } catch {
+      // Advisory, like loadGit: keep the last-known state.
+    }
+  },
+
+  async loadPrThreads(agentId) {
+    if (!get().hostSupports("get_pr_threads")) return;
+    try {
+      const comments = await api.getPrThreads(agentId);
+      set((s) => ({ prComments: { ...s.prComments, [agentId]: comments } }));
+    } catch {
+      // Advisory, like loadGit: keep the last-known threads.
+    }
+  },
+
   async loadShortstats() {
     try {
       // Replaced wholesale, mirroring the desktop's `fetchAllShortstats`: the
@@ -1110,6 +1149,13 @@ export const useStore = create<MobileState>()((set, get) => ({
     if (git?.files.length) await api.commitAgent(agentId, title);
     await api.pushAgent(agentId);
     await get().loadGit(agentId);
+  },
+
+  async mergePr(agentId) {
+    return guard(set, async () => {
+      await api.mergePr(agentId);
+      await get().loadGit(agentId);
+    });
   },
 
   async listDir(path) {

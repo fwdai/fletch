@@ -231,6 +231,63 @@ describe("git and PR state", () => {
     expect(state().gitStates.arabia?.files).toHaveLength(3);
   });
 
+  it("loadPrLive keeps the last checks when the live read has none, replaces them when it does", async () => {
+    await state().loadGit("kamakura");
+    const before = state().prChecks.kamakura;
+    const pr = state().prStates.kamakura;
+    expect(before).toBeTruthy();
+    expect(pr).toBeTruthy();
+    if (!before || !pr) return;
+    const spy = vi.spyOn(api, "getPrLive");
+    try {
+      // The CI read didn't resolve this round: the state is fresh, the tint
+      // is whatever it was.
+      spy.mockResolvedValueOnce({ state: { ...pr, title: "renamed on GitHub" }, checks: null });
+      await state().loadPrLive("kamakura");
+      expect(state().prStates.kamakura?.title).toBe("renamed on GitHub");
+      expect(state().prChecks.kamakura).toBe(before);
+      // A real rollup replaces it.
+      spy.mockResolvedValueOnce({ state: pr, checks: { ...before, passed: 13, failed: 1 } });
+      await state().loadPrLive("kamakura");
+      expect(state().prChecks.kamakura?.failed).toBe(1);
+      // Nothing to say at all leaves both alone.
+      spy.mockResolvedValueOnce(null);
+      await state().loadPrLive("kamakura");
+      expect(state().prChecks.kamakura?.failed).toBe(1);
+      expect(state().prStates.kamakura?.title).toBe(pr.title);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("loadPrThreads asks nothing of a host without get_pr_threads", async () => {
+    expect(state().hostSupports("get_pr_threads")).toBe(false);
+    const spy = vi.spyOn(api, "getPrThreads");
+    try {
+      await state().loadPrThreads("kamakura");
+      expect(spy).not.toHaveBeenCalled();
+      expect(state().prComments.kamakura).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("loadPrThreads stores the threads once the host lists the op", async () => {
+    const protocol = state().protocol;
+    const spy = vi.spyOn(api, "getPrThreads").mockResolvedValue({ unresolved: [] });
+    useStore.setState({
+      protocol: protocol && { ...protocol, ops: [...protocol.ops, "get_pr_threads"] },
+    });
+    try {
+      await state().loadPrThreads("kamakura");
+      expect(spy).toHaveBeenCalledWith("kamakura");
+      expect(state().prComments.kamakura).toEqual({ unresolved: [] });
+    } finally {
+      useStore.setState({ protocol });
+      spy.mockRestore();
+    }
+  });
+
   it("polls working-tree stats for the whole fleet, and replaces them wholesale", async () => {
     await state().loadShortstats();
     expect(state().shortstats.arabia?.additions).toBe(136);
