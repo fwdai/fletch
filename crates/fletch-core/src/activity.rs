@@ -1,13 +1,16 @@
-//! Per-agent activity tracking — the abstraction that decides when a
-//! turn has ended.
+//! Per-agent activity tracking — the abstraction that decides whether a
+//! turn is open.
 //!
 //! Each running agent owns one `Activity` instance. The supervisor
 //! feeds it whatever signal the agent's output channel produces (PTY
-//! bytes for native view, stream-json events for custom view) and
-//! periodically asks "has the turn ended?". The state machine is
-//! provider-agnostic; only the impls know about claude-specific event
-//! shapes. Adding gemini / codex / etc. means writing new impls
-//! against this trait, not touching the supervisor.
+//! bytes for native view, stream-json events for custom view) and asks
+//! "has the turn ended?". The answer follows the output in both
+//! directions: a terminal event closes the turn, and main-line output
+//! after that opens one again — the provider may start a turn Fletch
+//! never asked for (Claude answering a finished background task), and
+//! the status has to say so. The state machine is provider-agnostic;
+//! only the constructors know provider-specific event shapes. Adding a
+//! provider means one more constructor, not touching the supervisor.
 
 use std::time::{Duration, Instant};
 
@@ -23,12 +26,17 @@ pub trait Activity: Send {
     /// native-mode impls care about raw bytes.
     fn observe_bytes(&mut self, _bytes: &[u8]) {}
 
-    /// Feed a structured event to the detector. Default does nothing —
-    /// only managed-mode impls care.
-    fn observe_event(&mut self, _event: &Value) {}
+    /// Feed a structured event to the detector. Returns true when the event
+    /// is main-line turn output — proof that a turn is open *right now*,
+    /// whoever started it. Terminal events, sidechain (sub-agent) events and
+    /// control-plane chatter return false. Default does nothing and reports
+    /// nothing — only managed-mode impls care.
+    fn observe_event(&mut self, _event: &Value) -> bool {
+        false
+    }
 
-    /// Called every watchdog tick. Returns true if the current turn
-    /// should be considered ended (claude has stopped responding).
+    /// Whether the current turn has ended: the provider said so (managed) or
+    /// the output went quiet (native), and nothing has opened a turn since.
     fn turn_ended(&self) -> bool;
 
     /// Called when a new user turn is submitted. Resets the detector
@@ -40,18 +48,41 @@ pub trait Activity: Send {
 /// Custom view: agents that stream structured events and signal end-of-turn
 /// with one specific event. The turn-end *signal* is the only thing that
 /// varies between providers, so it's injected as a predicate; the rest of the
-/// state machine trusts only that explicit signal. Construct via the provider
-/// helpers below.
+/// state machine is shared: the terminal event closes the turn, any later
+/// main-line output opens it again. Construct via the provider helpers below.
 pub struct ManagedActivity {
-    explicit_turn_end: bool,
+    /// The terminal event has been seen and no main-line output followed it.
+    ended: bool,
     /// Returns true for the event that marks the end of a turn.
     is_turn_end: fn(&Value) -> bool,
+}
+
+/// Sub-agent (sidechain) events carry the spawning Task/Agent tool's id in a
+/// top-level `parent_tool_use_id`. They belong to a nested turn, not the main
+/// one: a sub-agent's `result` must not end the main turn, and its output must
+/// not open one. (The frontend mirrors this via `parent_tool_use_id` routing
+/// in reduce.ts.)
+fn is_sidechain(event: &Value) -> bool {
+    event
+        .get("parent_tool_use_id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+}
+
+/// Control-plane events that say nothing about whether a turn is open:
+/// Claude's `system` family — `init` at process start, the `task_*` lifecycle
+/// of background sub-agents and background Bash, hook output. These arrive
+/// between turns as a matter of course, so they must not open one. The turn a
+/// provider starts on its own announces itself with ordinary `user` /
+/// `assistant` output, which does.
+fn is_control_plane(event: &Value) -> bool {
+    event.get("type").and_then(|v| v.as_str()) == Some("system")
 }
 
 impl ManagedActivity {
     fn new(is_turn_end: fn(&Value) -> bool) -> Self {
         Self {
-            explicit_turn_end: false,
+            ended: false,
             is_turn_end,
         }
     }
@@ -102,33 +133,32 @@ impl ManagedActivity {
 }
 
 impl Activity for ManagedActivity {
-    fn observe_event(&mut self, event: &Value) {
-        // Subagent (sidechain) events carry the spawning Task/Agent tool's id in
-        // a top-level `parent_tool_use_id`. They belong to a nested turn, not the
-        // main one: a subagent's `result` must not end the main turn. Ignore
-        // sidechain events entirely here. (The frontend mirrors this via
-        // `parent_tool_use_id` routing in reduce.ts.)
-        if event
-            .get("parent_tool_use_id")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| !s.is_empty())
-        {
-            return;
+    fn observe_event(&mut self, event: &Value) -> bool {
+        if is_sidechain(event) {
+            return false;
         }
         if (self.is_turn_end)(event) {
-            self.explicit_turn_end = true;
+            self.ended = true;
+            return false;
         }
+        if is_control_plane(event) {
+            return false;
+        }
+        // Main-line output. A turn is open — the one Fletch started, or one the
+        // provider began on its own after the last terminal event.
+        self.ended = false;
+        true
     }
 
     fn turn_ended(&self) -> bool {
         // Structured providers define an explicit terminal event. Silence is
         // not completion: reasoning, tools, and provider-side work can all be
         // quiet for an arbitrary amount of time before more events arrive.
-        self.explicit_turn_end
+        self.ended
     }
 
     fn reset_for_new_turn(&mut self) {
-        self.explicit_turn_end = false;
+        self.ended = false;
     }
 }
 
@@ -247,6 +277,63 @@ mod tests {
         }));
         a.observe_event(&serde_json::json!({"type": "result", "subtype": "success"}));
         assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn managed_main_line_output_after_the_terminal_event_reopens_the_turn() {
+        // Claude ends the user's turn while a background sub-agent is still
+        // running, then starts a turn of its own to answer the task's
+        // notification. That turn is ordinary main-line output and must count.
+        let mut a = ManagedActivity::claude();
+        a.observe_event(&serde_json::json!({"type": "result", "subtype": "success"}));
+        assert!(a.turn_ended());
+
+        let opened = a.observe_event(&serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": "<task-notification>done</task-notification>"}
+        }));
+        assert!(opened);
+        assert!(!a.turn_ended());
+
+        assert!(a.observe_event(&serde_json::json!({"type": "assistant"})));
+        assert!(!a.turn_ended());
+
+        // Its own `result` closes it again.
+        assert!(!a.observe_event(&serde_json::json!({"type": "result", "subtype": "success"})));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn managed_control_plane_and_sidechain_events_never_open_a_turn() {
+        let mut a = ManagedActivity::claude();
+        a.observe_event(&serde_json::json!({"type": "result", "subtype": "success"}));
+
+        // Background-task lifecycle on the main stream: not a turn.
+        for subtype in [
+            "task_started",
+            "task_progress",
+            "task_notification",
+            "background_tasks_changed",
+            "init",
+        ] {
+            assert!(!a.observe_event(&serde_json::json!({"type": "system", "subtype": subtype})));
+            assert!(a.turn_ended(), "{subtype} must not reopen the turn");
+        }
+        // A sub-agent streaming after the main turn: not the main turn.
+        assert!(!a.observe_event(&serde_json::json!({
+            "type": "assistant", "parent_tool_use_id": "toolu_bg"
+        })));
+        assert!(a.turn_ended());
+    }
+
+    #[test]
+    fn managed_reports_main_line_activity_while_the_turn_runs() {
+        let mut a = ManagedActivity::claude();
+        a.reset_for_new_turn();
+        assert!(a.observe_event(&serde_json::json!({"type": "stream_event", "event": {}})));
+        assert!(a.observe_event(&serde_json::json!({"type": "assistant"})));
+        assert!(!a.observe_event(&serde_json::json!({"type": "system", "subtype": "init"})));
+        assert!(!a.turn_ended());
     }
 
     #[test]

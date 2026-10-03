@@ -101,7 +101,7 @@ Paired hosts.
 | 3.10 | Revoked by the host | `fletch-host devices revoke <id>` or the host desktop's revoke | Dot red, "This device is not paired with the host any more", **no retry**. Forget → switches to local first; switcher disappears when the last host is gone. |
 | 3.11 | Saved hosts on relaunch | Relaunch with a saved host; also edit `remote.hosts` to an undialable `addr` | Dial starts after first paint; undialable → error row "Saved address … cannot be dialled. Pair this host again." |
 | 3.12 | Local agents while remote is active | Start a local agent turn; switch to the host; let it finish; switch back | Status and transcript are correct on return (listeners were detached; `refreshWorkspace` catches up). Desktop notifications for the local agent during that window: note what happens. |
-| 3.13 | Agent-name collision | Hard to force (names from a recycled pool). Proxy test: same agent selected on both envs, switch back and forth while one is mid-turn | No cross-contamination of `managedLogs`/`managedBusy`. **Known:** `autopilot` enrolment map and local DB prefs are keyed by bare agent id and not stashed (`environmentSwitch.ts:18-35`). |
+| 3.13 | Agent-name collision | Hard to force (names from a recycled pool). Proxy test: same agent selected on both envs, switch back and forth while one is mid-turn | No cross-contamination of `managedLogs`/`sending`. **Known:** `autopilot` enrolment map and local DB prefs are keyed by bare agent id and not stashed (`environmentSwitch.ts:18-35`). |
 
 ### 3.14 Unknown-op paths (P1) — expected to degrade, must not crash or spin
 

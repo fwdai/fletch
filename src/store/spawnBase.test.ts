@@ -28,7 +28,7 @@ import { createWorkspaceSlice } from "./workspace";
 const makeStore = () => {
   const store = create<AppState>()((...a) => ({ ...createWorkspaceSlice(...a) }) as AppState);
   // biome-ignore lint/suspicious/noExplicitAny: partial store seed
-  store.setState({ managedLogs: {}, managedBusy: {} } as any);
+  store.setState({ managedLogs: {}, sending: {} } as any);
   return store;
 };
 

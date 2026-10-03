@@ -21,6 +21,7 @@
 // hidden until a snapshot confirms it.
 
 import { api, type Workspace } from "@/api";
+import { reconcileSending } from "@/helpers";
 import { newestWins } from "@/util/newestWins";
 import { applyPendingHides } from "./pendingHides";
 import type { AppState, SliceCreator } from "./types";
@@ -34,9 +35,8 @@ const refetches = newestWins();
  * this one was in flight — in which case the fresh snapshot is dropped rather
  * than allowed to clobber the newer state.
  *
- * `extra` computes any state DERIVED from the snapshot (e.g. resync's
- * `managedBusy`) so it lands atomically with the workspace it came from; it
- * runs only when this refresh wins. State that reflects user intent rather than
+ * `extra` computes any state DERIVED from the snapshot so it lands atomically
+ * with the workspace it came from; it runs only when this refresh wins. State that reflects user intent rather than
  * the snapshot (selection, draft cleanup, log seeds) must be set by the caller
  * BEFORE calling this, so it is never dropped along with a superseded snapshot.
  *
@@ -53,6 +53,13 @@ export const refreshWorkspace = async (
   // ours is stale, so drop it instead of overwriting the newer snapshot.
   if (!claim.current() || !fresh) return null;
   const applied = applyPendingHides(fresh);
-  set((state) => ({ ...extra?.(applied, state), workspace: applied }));
+  // Every snapshot also settles the `sending` bridge: a status event missed
+  // while the window was backgrounded would otherwise leave an agent reading
+  // "working" for the rest of the session (see helpers/sending).
+  set((state) => ({
+    ...extra?.(applied, state),
+    workspace: applied,
+    sending: reconcileSending(state.sending, applied.agents),
+  }));
   return applied;
 };

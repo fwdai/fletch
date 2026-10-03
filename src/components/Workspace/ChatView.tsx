@@ -60,9 +60,9 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
   const transcript = useTranscript(agent);
   const { items, turns, activeModel, awaitingInput, openTurnStartedAt } = transcript;
 
-  // Debounced "is working" (see useLiveBusy), shared with the Roadmap tab's PM
-  // chat so both surfaces settle on the same beat.
-  const liveBusy = useLiveBusy(agent.id, awaitingInput);
+  // "Is working" (see useLiveBusy), shared with the Roadmap tab's PM chat and
+  // the sidebar's own derivation so every surface settles on the same beat.
+  const liveBusy = useLiveBusy(agent, awaitingInput);
 
   // Phase A: user just sent a turn-starting prompt and nothing has landed yet.
   // A quiet inline anchor (dots only — label lives in the bottom status strip).

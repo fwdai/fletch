@@ -9,6 +9,7 @@ import {
   resolveBaseBranch,
   resolveSkillInvocation,
   sendWhenAgentReady,
+  whileSending,
 } from "@/helpers";
 import { setSetting } from "@/storage/settings";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
@@ -398,17 +399,23 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
                 : { kind: "user_message", text: prompt, turnId },
             ],
           },
-          managedBusy: { ...state.managedBusy, [rec.id]: true },
+          // The first prompt is on its way: busy from here until the backend's
+          // `running` lands, across the spawn in between.
+          sending: { ...state.sending, [rec.id]: true },
         };
         return patches;
       });
       await refreshWorkspace(set);
-      await sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, attachments));
+      // In-flight across the whole wait for the agent to come up: a snapshot of
+      // the spawn's resting `idle` must not settle the `sending` flag early.
+      await whileSending(rec.id, () =>
+        sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, attachments)),
+      );
     } catch (e) {
       const selected = get().selectedAgentId;
       set((state) => ({
         lastError: String(e),
-        managedBusy: selected ? { ...state.managedBusy, [selected]: false } : state.managedBusy,
+        sending: selected ? { ...state.sending, [selected]: false } : state.sending,
       }));
     } finally {
       set({ busy: false });
