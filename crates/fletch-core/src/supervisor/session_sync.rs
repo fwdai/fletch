@@ -675,20 +675,17 @@ pub(super) fn spawn_live_transcript_sync(
     });
 }
 
-/// A top-level (main-thread) Claude event that means the transcript grew after
-/// the agent went Idle:
+/// A top-level (main-thread) Claude event that means the transcript grew while
+/// the agent is Idle: `system` / `task_notification` — a background task
+/// (sub-agent, background bash) finished. Its file is final, but it kept
+/// writing after the main turn's `result`, past the point where the turn-end
+/// poll settled and the live poller stopped reading.
 ///
-/// - `system` / `task_notification`: a background task (sub-agent, background
-///   bash) finished. Its file is final, but it kept writing after the main
-///   turn's `result`, past the point where the turn-end poll settled and the
-///   live poller stopped reading.
-/// - `result`: Claude answers that notification with a turn of its own — no
-///   user message, so nothing marked the agent Running and the watchdog sees a
-///   flag it already acted on. The reply (the injected `<task-notification>`
-///   user record and the assistant's answer) is only now on disk.
-///
-/// Sidechain events (tagged `parent_tool_use_id`) never count: a sub-agent's
-/// own `result` is mid-stream for the main transcript.
+/// The turn Claude then starts on its own to answer the notification needs no
+/// entry here: its output moves the agent to Running and its `result` back to
+/// Idle (see `make_event_handler`), and that transition runs the turn-end sync
+/// like any other. Sidechain events (tagged `parent_tool_use_id`) never count:
+/// a sub-agent's own events are mid-stream for the main transcript.
 pub(super) fn grows_transcript_while_idle(event: &serde_json::Value) -> bool {
     if event
         .get("parent_tool_use_id")
@@ -697,29 +694,21 @@ pub(super) fn grows_transcript_while_idle(event: &serde_json::Value) -> bool {
     {
         return false;
     }
-    match event.get("type").and_then(|v| v.as_str()) {
-        Some("result") => true,
-        Some("system") => {
-            event.get("subtype").and_then(|v| v.as_str()) == Some("task_notification")
-        }
-        _ => false,
-    }
+    event.get("type").and_then(|v| v.as_str()) == Some("system")
+        && event.get("subtype").and_then(|v| v.as_str()) == Some("task_notification")
 }
 
 impl Supervisor {
     /// Settle the transcript after an event that grew it while the agent is
     /// Idle (see [`grows_transcript_while_idle`]). Without this, records a
-    /// background sub-agent wrote after the main turn settled — and the turn
-    /// Claude starts on its own to answer its notification — reach
-    /// `session_records` only at the *next* user turn's end, so a reload in
-    /// between loses the nested thread. Running agents are left alone: the live
-    /// poller is already reading and the turn-end sync will settle the file.
+    /// background sub-agent wrote after the main turn settled reach
+    /// `session_records` only at the *next* turn's end, so a reload in between
+    /// loses the nested thread. Running agents are left alone: the live poller
+    /// is already reading and the turn-end sync will settle the file.
     ///
-    /// Re-uses the turn-end poll as is. Two triggers a couple of seconds apart
-    /// (notification, then the reply's `result`) mean two short polls, which is
-    /// intended: a poll that had already settled cannot see what the second
-    /// event announces. Overlap is serialized by `agent_sync_lock`, and a pass
-    /// that finds nothing new emits nothing.
+    /// Re-uses the turn-end poll as is. Overlap with the turn-end sync of the
+    /// reply turn Claude starts right after is serialized by `agent_sync_lock`,
+    /// and a pass that finds nothing new emits nothing.
     pub(super) fn settle_after_idle_event(
         &self,
         ctx: &Arc<EngineCtx>,
@@ -2561,12 +2550,13 @@ pub(super) mod tests {
             "type": "system", "subtype": "task_notification", "task_id": "abc",
             "tool_use_id": "toolu_bg", "status": "completed", "summary": "done"
         })));
-        assert!(grows_transcript_while_idle(&json!({
-            "type": "result", "subtype": "success"
-        })));
-        // A sub-agent's own result is mid-stream for the main transcript.
+        // A sub-agent's notification is mid-stream for the main transcript.
         assert!(!grows_transcript_while_idle(&json!({
-            "type": "result", "subtype": "success", "parent_tool_use_id": "toolu_bg"
+            "type": "system", "subtype": "task_notification", "parent_tool_use_id": "toolu_bg"
+        })));
+        // A `result` is a turn ending: the status transition syncs it.
+        assert!(!grows_transcript_while_idle(&json!({
+            "type": "result", "subtype": "success"
         })));
         for subtype in [
             "task_started",
@@ -2690,8 +2680,12 @@ pub(super) mod tests {
         // `tokio::spawn` before boot, so the handler needs a runtime context.
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _enter = runtime.enter();
-        let on_event =
-            super::super::lifecycle::make_event_handler(sup.clone(), ctx.clone(), agent_id.clone());
+        let on_event = super::super::lifecycle::make_event_handler(
+            sup.clone(),
+            ctx.clone(),
+            agent_id.clone(),
+            super::super::lifecycle::TurnClose::OnTerminalEvent,
+        );
         on_event(json!({
             "type": "system", "subtype": "task_notification", "task_id": "abc",
             "tool_use_id": "toolu_bg", "status": "completed", "summary": "found it"
