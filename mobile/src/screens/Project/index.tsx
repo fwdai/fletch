@@ -1,3 +1,4 @@
+import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { AgentRow } from "../../components/AgentRow";
@@ -5,7 +6,10 @@ import { Nav, Segmented, Swatch } from "../../components/ui";
 import { agentsOfProject, baseOf, isActive, isBusy, repoLabel } from "../../lib/agents";
 import { useStore } from "../../store";
 
-type Filter = "all" | "active" | "prs";
+/** The three stages of an agent's life, each row in exactly one: working now,
+ *  finished with a PR waiting on review, or idle — no PR, or one already
+ *  merged or closed. */
+type Filter = "active" | "prs" | "idle";
 
 export function ProjectScreen({ projectId }: { projectId: string }) {
   // Derived outside the selector: a selector that builds a new array on every
@@ -23,7 +27,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
   const loadChats = useStore((s) => s.loadChats);
   const connected = useStore((s) => s.connection === "connected");
   const canPlan = useStore((s) => s.hostSupports("list_project_chats"));
-  const [filter, setFilter] = useState<Filter>("all");
+  const [filter, setFilter] = useState<Filter>("active");
 
   // Planning chats are absent from the workspace snapshot, so they are read on
   // their own — on arrival, and again on every reconnect, since nothing pushes
@@ -34,13 +38,16 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
 
   if (!project) return null;
 
-  const hasPr = (id: string) =>
-    !!prStates[id] || !!agents.find((a) => a.id === id)?.repos[0]?.pr_number;
-  const list = agents.filter((a) =>
-    filter === "all" ? true : filter === "active" ? isActive(a) : hasPr(a.id),
-  );
+  // The live PR state wins over the record's persisted snapshot when it is
+  // known; most rows only have the snapshot.
+  const prStateOf = (a: AgentRecord) => prStates[a.id]?.state ?? a.repos[0]?.pr_state ?? null;
+  const hasPr = (a: AgentRecord) => prStateOf(a) !== null;
+  const stageOf = (a: AgentRecord): Filter =>
+    isActive(a) ? "active" : prStateOf(a) === "open" ? "prs" : "idle";
+  const list = agents.filter((a) => stageOf(a) === filter);
+  const count = (stage: Filter) => agents.filter((a) => stageOf(a) === stage).length;
   const running = agents.filter(isBusy).length;
-  const prs = agents.filter((a) => hasPr(a.id)).length;
+  const prs = agents.filter(hasPr).length;
 
   return (
     <>
@@ -89,9 +96,9 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
       <div className="proj-tabs">
         <Segmented
           items={[
-            { id: "all", label: "All" },
-            { id: "active", label: "Active", count: agents.filter(isActive).length },
-            { id: "prs", label: "With PR" },
+            { id: "active", label: "Active", count: count("active") },
+            { id: "prs", label: "With PR", count: count("prs") },
+            { id: "idle", label: "Idle" },
           ]}
           value={filter}
           onChange={(id) => setFilter(id as Filter)}
@@ -105,7 +112,11 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
           {list.length === 0 && (
             <div className="empty">
               <b>Nothing here</b>
-              No agents match this filter.
+              {filter === "active"
+                ? "No agents are working right now."
+                : filter === "prs"
+                  ? "No PRs waiting on review."
+                  : "No idle agents."}
             </div>
           )}
         </div>
