@@ -21,6 +21,7 @@
 // hidden until a snapshot confirms it.
 
 import { api, type Workspace } from "@/api";
+import { reconcileSending } from "@/helpers";
 import { newestWins } from "@/util/newestWins";
 import { applyPendingHides } from "./pendingHides";
 import type { AppState, SliceCreator } from "./types";
@@ -52,6 +53,13 @@ export const refreshWorkspace = async (
   // ours is stale, so drop it instead of overwriting the newer snapshot.
   if (!claim.current() || !fresh) return null;
   const applied = applyPendingHides(fresh);
-  set((state) => ({ ...extra?.(applied, state), workspace: applied }));
+  // Every snapshot also settles the `sending` bridge: a status event missed
+  // while the window was backgrounded would otherwise leave an agent reading
+  // "working" for the rest of the session (see helpers/sending).
+  set((state) => ({
+    ...extra?.(applied, state),
+    workspace: applied,
+    sending: reconcileSending(state.sending, applied.agents),
+  }));
   return applied;
 };

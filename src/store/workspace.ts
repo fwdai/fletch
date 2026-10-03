@@ -27,6 +27,7 @@ import {
   repoPathFor,
   resolveBaseBranch,
   unsupportedManagedCommand,
+  whileSending,
 } from "@/helpers";
 import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
 import { createKeyedQueue } from "@/util/keyedQueue";
@@ -586,7 +587,11 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // error, but the backend no longer surfaces one — it holds the message
       // instead — and keeping the revive there covers every other sender
       // (autopilot, delegation, drafts) rather than just this one.
-      const enqueued = await api.sendUserMessage(id, turnId, sendText, attachments);
+      // In-flight for the round trip, so a snapshot landing meanwhile can't
+      // settle the `sending` flag this send just raised (see helpers/sending).
+      const enqueued = await whileSending(id, () =>
+        api.sendUserMessage(id, turnId, sendText, attachments),
+      );
       // Only a genuinely-held message wears the badge; a delivered one stays a
       // plain bubble. Match by turnId — agent output may have appended since.
       if (wasBusy && enqueued) {

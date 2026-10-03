@@ -2,7 +2,7 @@
 // (AppState/Workspace/DraftAgent). Type-only store import, erased at compile
 // time, so there's no runtime cycle.
 
-import type { AgentStatus, Workspace } from "../api";
+import type { AgentRecord, AgentStatus, Workspace } from "../api";
 import type { AppState, DraftAgent } from "../store";
 
 /** An agent's record, wherever it lives: the sidebar snapshot, or the
@@ -28,15 +28,43 @@ export function providerFor(state: AppState, agentId: string): string | undefine
  *  answered with a status yet (`sending`), so the UI reads "working" from the
  *  click rather than from the round trip.
  *
- *  `status` defaults to the record's, looked up by id. Callers that render a
- *  record the workspace snapshot does not carry (a run's step agents, fetched
- *  separately) pass theirs. */
+ *  The status is the store's record's when the store has one — that is what
+ *  `agent:status` patches (see `patchAgentRecord`), so it is never behind a
+ *  copy a component holds. `fallbackStatus` is for a record the store does not
+ *  carry at all: a run's step agents, fetched separately. */
 export function isAgentBusy(
   state: AppState,
   agentId: string,
-  status: AgentStatus | undefined = agentRecord(state, agentId)?.status,
+  fallbackStatus?: AgentStatus,
 ): boolean {
+  const status = agentRecord(state, agentId)?.status ?? fallbackStatus;
   return status === "running" || status === "spawning" || state.sending[agentId] === true;
+}
+
+export type AgentPatch = Partial<AgentRecord> | ((a: AgentRecord) => Partial<AgentRecord>);
+
+/** Patch an agent's record wherever the store holds it — the workspace
+ *  snapshot for a sidebar agent, the off-sidebar registry for a Roadmap chat —
+ *  as a state patch. The one path for every `agent:*` event, so a chat the
+ *  snapshot omits follows the same status, title and model changes a sidebar
+ *  agent does. Touches only the registries that hold the record. */
+export function patchAgentRecord(
+  state: AppState,
+  agentId: string,
+  patch: AgentPatch,
+): Partial<AppState> {
+  const apply = (a: AgentRecord): AgentRecord => ({
+    ...a,
+    ...(typeof patch === "function" ? patch(a) : patch),
+  });
+  const out: Partial<AppState> = {};
+  const ws = state.workspace;
+  if (ws?.agents.some((a) => a.id === agentId)) {
+    out.workspace = { ...ws, agents: ws.agents.map((a) => (a.id === agentId ? apply(a) : a)) };
+  }
+  const off = state.offSidebarAgents[agentId];
+  if (off) out.offSidebarAgents = { ...state.offSidebarAgents, [agentId]: apply(off) };
+  return out;
 }
 
 /** The primary repo path for an agent (`repos[0]`), used to scope

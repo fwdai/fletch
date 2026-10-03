@@ -126,7 +126,7 @@ impl Supervisor {
                     // We classified the agent idle-and-ready, but a teardown
                     // raced our delivery: an idle agent is torn down under the
                     // `agents` lock while its live status still reads Idle (the
-                    // status flip trails delivery), so a concurrent effort/model
+                    // Running flip comes after the busy check), so a concurrent effort/model
                     // respawn can remove it — or kill the process mid-send —
                     // between our `is_busy` check and `live_agent`, surfacing as
                     // AgentNotFound/a send error. Re-queue rather than dropping
@@ -539,8 +539,30 @@ async fn deliver_as_turn(
         .entry(agent_id.to_string())
         .or_default()
         .begin_turn();
-    sup.deliver_user_message(agent_id, &msg.turn_id, &msg.text, &msg.attachments)?;
+    // Durable capture ahead of the turn-start stamp below, which updates this
+    // row. Idempotent (`INSERT OR IGNORE`): a queued message's earlier row and
+    // `deliver_user_message`'s own capture are no-ops after it.
+    if let Err(e) =
+        sup.workspace
+            .insert_user_turn(agent_id, &msg.turn_id, &msg.text, &msg.attachments)
+    {
+        tracing::warn!(error = %e, agent_id, "persist outgoing user turn failed");
+    }
+    // The turn opens *before* the message goes out. Its first event can reach
+    // the event handler before this function resumes, and the handler reads
+    // main-line output under an Idle status as a turn the provider started on
+    // its own (`make_event_handler`) — with Running already set here, that
+    // reading is exact. A terminal event that beats this function back then
+    // closes a turn that is open, rather than one not yet marked, which is what
+    // would otherwise leave the agent Running with nothing left to end it.
+    let resting = sup.live_status(agent_id);
     mark_user_turn_started(sup, ctx, agent_id, Some(&msg.turn_id));
+    if let Err(e) = sup.deliver_user_message(agent_id, &msg.turn_id, &msg.text, &msg.attachments) {
+        // Nothing was handed over, so nothing ran: back to rest without the
+        // turn-end side effects, for the caller's re-queue to retry against.
+        sup.revert_turn_start(ctx, agent_id, resting);
+        return Err(e);
+    }
     on_first_user_message(
         sup.clone(),
         ctx.clone(),
@@ -842,6 +864,40 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    /// The turn is open before the prompt is handed over, so a provider event
+    /// that lands first finds it Running; a hand-off that fails puts the agent
+    /// back exactly as it rested, announced as idle, with no turn-end side
+    /// effects for a turn that never ran.
+    #[tokio::test]
+    async fn a_turn_opens_before_the_hand_off_and_closes_quietly_when_it_fails() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _checkout) = idle_agent_in(td.path()).await;
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        assert_eq!(sup.live_status("yosemite"), None);
+
+        let err = deliver_as_turn(&sup, &ctx, "yosemite", &pending(TURN))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::AgentNotFound(_)), "got {err}");
+
+        // Back to how it rested — no runtime entry at all, as before.
+        assert_eq!(sup.live_status("yosemite"), None);
+        let statuses: Vec<String> = sink
+            .events()
+            .into_iter()
+            .filter_map(|(name, payload)| match name.as_str() {
+                "turn:started" => Some("started".to_string()),
+                "agent:status" => payload["status"].as_str().map(str::to_string),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(statuses, ["started", "running", "idle"]);
+        // The turn row was captured and stamped ahead of the hand-off.
+        let turns = sup.workspace.read_history_turns("yosemite").unwrap();
+        assert_eq!(turns.len(), 1);
+        assert!(turns[0].started_at.is_some());
     }
 
     /// Capture is best-effort: a checkout that can't be snapshotted is skipped

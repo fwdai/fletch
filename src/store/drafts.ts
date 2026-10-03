@@ -9,6 +9,7 @@ import {
   resolveBaseBranch,
   resolveSkillInvocation,
   sendWhenAgentReady,
+  whileSending,
 } from "@/helpers";
 import { setSetting } from "@/storage/settings";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
@@ -405,7 +406,11 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         return patches;
       });
       await refreshWorkspace(set);
-      await sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, attachments));
+      // In-flight across the whole wait for the agent to come up: a snapshot of
+      // the spawn's resting `idle` must not settle the `sending` flag early.
+      await whileSending(rec.id, () =>
+        sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, attachments)),
+      );
     } catch (e) {
       const selected = get().selectedAgentId;
       set((state) => ({

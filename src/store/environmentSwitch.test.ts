@@ -92,8 +92,10 @@ const newStore = () => {
   return store;
 };
 
-// Minimal workspace shapes; nothing here reads past the identity.
-const ws = (label: string) => ({ label }) as unknown as NonNullable<AppState["workspace"]>;
+// Minimal workspace shapes; nothing here reads past the identity and the (empty)
+// agent list the snapshot reconcile walks.
+const ws = (label: string) =>
+  ({ label, agents: [] }) as unknown as NonNullable<AppState["workspace"]>;
 
 const gh = (login: string) =>
   ({ installed: true, authenticated: true, login }) as NonNullable<AppState["github"]>;
