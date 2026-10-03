@@ -63,7 +63,7 @@ const delegate = (key: string, label: string, params?: Record<string, string>): 
 
 /** Everything the footer could offer, most pressing first:
  *
- *  1. local conflicts → `resolve-conflicts`
+ *  1. local conflicts → `resolve-conflicts`, and nothing else until they are
  *  2. uncommitted files / unpushed commits → the commit-push / push /
  *     commit-pr / open-pr playbook, as the Changes footer always chose it
  *  3. an open PR behind or conflicting with its base → `update-branch`
@@ -86,8 +86,11 @@ export function gitActionsFor({
   const unpushed = git?.unpushed ?? 0;
   const open = pr?.state === "open" ? pr : null;
 
+  // A conflicted tree is the only thing on offer, as on the desktop: a commit
+  // would capture the markers, and merging the PR while the checkout cannot
+  // even be reconciled locally is not a state to publish from.
   if (files.some((f) => f.kind === "conflicted")) {
-    out.push(delegate("resolve-conflicts", "Resolve conflicts with agent"));
+    return [delegate("resolve-conflicts", "Resolve conflicts with agent")];
   }
 
   // The commit-* playbooks start with a commit, so a clean tree (only unpushed

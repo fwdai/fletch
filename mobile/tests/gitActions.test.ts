@@ -125,9 +125,9 @@ describe("gitActionsFor", () => {
     ]);
   });
 
-  it("leads with resolving local conflicts", () => {
+  it("resolving local conflicts is the only action a conflicted tree gets", () => {
     const list = gitActionsFor(input({ git: git({ files: [file("conflicted"), file()] }) }));
-    expect(list.map((a) => a.key)).toEqual(["resolve-conflicts", "commit-pr"]);
+    expect(list.map((a) => a.key)).toEqual(["resolve-conflicts"]);
     expect(list[0]).toMatchObject({ kind: "delegate", playbook: "resolve-conflicts" });
     expect(list[0].params).toBeUndefined();
   });
@@ -201,15 +201,28 @@ describe("gitActionsFor", () => {
     ).toEqual(["merge"]);
   });
 
+  it("offers only resolve-conflicts while the tree is conflicted", () => {
+    // Never a commit (it would capture the markers) and never a merge, however
+    // green the PR is: the desktop's conflict state makes the same call.
+    expect(
+      keys({
+        git: git({ files: [file("conflicted"), file("modified")], unpushed: 2 }),
+        pr: pr(),
+        checks: checks({ merge_state: "clean" }),
+        threads: threads(thread()),
+      }),
+    ).toEqual(["resolve-conflicts"]);
+  });
+
   it("orders everything most pressing first, merge last", () => {
     expect(
       keys({
-        git: git({ files: [file("conflicted")] }),
+        git: git({ files: [file("modified")] }),
         pr: pr(),
         checks: checks({ merge_state: "unstable", failed: 1, required_failing: ["test"] }),
         threads: threads(thread()),
       }),
-    ).toEqual(["resolve-conflicts", "commit-push", "fix-checks", "resolve-comments", "merge"]);
+    ).toEqual(["commit-push", "fix-checks", "resolve-comments", "merge"]);
   });
 
   it("offers nothing for a closed PR beyond the local work", () => {
@@ -223,11 +236,12 @@ describe("isCommitAction", () => {
   it("names the family the Changes footer shows", () => {
     const all = gitActionsFor(
       input({
-        git: git({ files: [file("conflicted")] }),
+        git: git({ files: [file()] }),
         pr: pr(),
         checks: checks({ merge_state: "behind" }),
       }),
     );
+    expect(all.map((a) => a.key)).toEqual(["commit-push", "update-branch"]);
     expect(all.filter(isCommitAction).map((a) => a.key)).toEqual(["commit-push"]);
   });
 });
