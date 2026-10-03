@@ -8,9 +8,9 @@ import { agentOf, projectOf, useStore } from "../../store";
 import { ChangesTab } from "./ChangesTab";
 import { ChatTab } from "./ChatTab";
 import { Composer } from "./Composer";
-import { GitTab } from "./GitTab";
+import { ShipTab } from "./ShipTab";
 
-const TABS = ["chat", "changes", "git"] as const;
+const TABS = ["chat", "changes", "ship"] as const;
 type Tab = (typeof TABS)[number];
 
 function SpawnPane({ task, base, branch }: { task: string; base: string; branch: string }) {
@@ -103,7 +103,6 @@ export function AgentScreen({ agentId }: { agentId: string }) {
   const pop = useStore((s) => s.pop);
   const openSheet = useStore((s) => s.openSheet);
   const git = useStore((s) => s.gitStates[agentId]);
-  const pr = useStore((s) => s.prStates[agentId]);
   const ensureAgent = useStore((s) => s.ensureAgent);
   const connected = useStore((s) => s.connection === "connected");
   const [tab, setTab] = useState<Tab>("chat");
@@ -124,7 +123,7 @@ export function AgentScreen({ agentId }: { agentId: string }) {
 
   // A purpose-tagged workspace is a conversation, not a piece of work: the PM
   // never edits a file and the host denies it the publish ops, so Changes and
-  // Git have nothing to show and the tab bar has nothing to choose between.
+  // Ship have nothing to show and the tab bar has nothing to choose between.
   const planning = !!agent.purpose;
   const pane = planning ? "chat" : tab;
 
@@ -162,7 +161,7 @@ export function AgentScreen({ agentId }: { agentId: string }) {
             items={[
               { id: "chat", label: "Chat" },
               { id: "changes", label: "Changes", count: git?.files.length ?? 0 },
-              { id: "git", label: pr ? `PR #${pr.number}` : "Git" },
+              { id: "ship", label: "Ship" },
             ]}
             value={tab}
             onChange={go}
@@ -188,7 +187,13 @@ export function AgentScreen({ agentId }: { agentId: string }) {
           >
             {pane === "chat" && <ChatTab agent={agent} pinRef={pinnedToBottom} />}
             {pane === "changes" && <ChangesTab agent={agent} onDelegated={() => go("chat")} />}
-            {pane === "git" && <GitTab agent={agent} onDelegated={() => go("chat")} />}
+            {pane === "ship" && (
+              <ShipTab
+                agent={agent}
+                onDelegated={() => go("chat")}
+                onShowChanges={() => go("changes")}
+              />
+            )}
           </div>
         )}
       </div>

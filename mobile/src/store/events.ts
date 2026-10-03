@@ -24,6 +24,7 @@ import type {
   TurnSentEvent,
   TurnStartedEvent,
 } from "@desktop/api/types/session";
+import type { VerificationReportEvent } from "@desktop/api/types/verify";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import { dischargeSending } from "@desktop/helpers/sending";
 import { getAdapter, type RawEvent } from "../adapters";
@@ -33,6 +34,7 @@ import { dropTasks, foldTaskEvent } from "./backgroundTasks";
 import { patchChatIn } from "./chats";
 import { agentOf, type MobileState } from "./index";
 import { isReplayed } from "./liveTurn";
+import { appendActivity, prTransitionText } from "./shipActivity";
 import { applyLiveEvent } from "./transcript";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
@@ -221,6 +223,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // Ground truth that a git mutation landed: re-read the checkout's git and PR
   // state rather than guessing what changed.
   on<AgentGitActionEvent>("agent:git-action", (e) => {
+    set((s) => ({ shipActivity: appendActivity(s.shipActivity, e.agent_id, `Agent ran ${e.op}`) }));
     void get().loadGit(e.agent_id);
     // A commit or discard empties the working tree, which is what the rows
     // show — don't make them wait out the poll interval to catch up.
@@ -228,8 +231,23 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   on<PrStateChangedEvent>("pr:state_changed", (e) => {
-    set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
+    set((s) => {
+      // The transition is read against the record being replaced, so the line
+      // says what changed ("opened", "merged", "closed") and not merely that
+      // something did.
+      const line = prTransitionText(s.prStates[e.agent_id], e.state);
+      return {
+        prStates: { ...s.prStates, [e.agent_id]: e.state },
+        ...(line ? { shipActivity: appendActivity(s.shipActivity, e.agent_id, line) } : {}),
+      };
+    });
     if (e.state) void get().loadGit(e.agent_id);
+  });
+
+  // The turn-end verification for an opted-in project: the Ship tab's tests
+  // evidence row and the Changes tab's chip read the latest per agent.
+  on<VerificationReportEvent>("verify:report", (e) => {
+    set((s) => ({ verificationReports: { ...s.verificationReports, [e.agent_id]: e.report } }));
   });
 
   // Archive/restore reshapes `repos` and `archive`, which agent:status doesn't
@@ -266,7 +284,4 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   on<PublishApprovalResolved>("publish:approval-resolved", (e) => {
     get().resolvePublishApproval(e.id);
   });
-
-  // `verify:report` is forwarded by the host but has no v1 surface on the phone
-  // (no verification card), so it is intentionally unhandled.
 }

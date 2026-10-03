@@ -15,6 +15,7 @@ import { ModelPickerSheet } from "./sheets/ModelPickerSheet";
 import { NewAgentSheet } from "./sheets/NewAgentSheet";
 import { NewPlanSheet } from "./sheets/NewPlanSheet";
 import { PrSheet } from "./sheets/PrSheet";
+import { ShipMoreSheet } from "./sheets/ShipMoreSheet";
 import { type NavItem, useStore } from "./store";
 import "./styles/base.css";
 import "./styles/screens.css";
@@ -82,6 +83,7 @@ export function App() {
             {...props("addProject")}
           />
           <AgentMoreSheet open={isOpen("agentMore")} onClose={closeSheet} {...props("agentMore")} />
+          <ShipMoreSheet open={isOpen("shipMore")} onClose={closeSheet} {...props("shipMore")} />
           <ModelPickerSheet
             open={isOpen("modelPicker")}
             onClose={closeSheet}
