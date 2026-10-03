@@ -3,7 +3,7 @@
 // playbooks and merges asked for from this phone. Newest first, capped, and
 // never persisted: it starts empty on every handshake like `backgroundTasks`.
 
-import type { PrState } from "@desktop/api/types/pr";
+import type { PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
 
 export interface ShipActivityEntry {
   /** Epoch millis. */
@@ -57,4 +57,30 @@ export function askedText(action: string): string {
     "resolve-comments": "work through the review comments",
   };
   return `Asked the agent to ${what[action] ?? action}`;
+}
+
+/** What a `pr:checks_changed` means in one line, or null when the rollup did
+ *  not settle — still pending, or the same verdict with a different set of
+ *  failing names, which is the list's to show and not a new line. */
+export function checksSettledText(
+  prev: PrChecks | null | undefined,
+  next: PrChecks,
+): string | null {
+  if (prev?.rollup === next.rollup) return null;
+  if (next.rollup === "passing") return "Checks passed";
+  if (next.rollup === "failing") {
+    const first = next.required_failing[0];
+    return first ? `Checks failing: ${first}` : "Checks failing";
+  }
+  return null;
+}
+
+/** What a `pr:threads_changed` means in one line: the author of the one new
+ *  thread, or a count when several arrived at once. Null when none of the new
+ *  ids is in the unresolved set (resolved before the event landed). */
+export function newThreadsText(comments: PrComments, newIds: string[]): string | null {
+  const fresh = comments.unresolved.filter((t) => newIds.includes(t.id));
+  if (fresh.length === 0) return null;
+  if (fresh.length === 1) return `New review comment from ${fresh[0].author}`;
+  return `${fresh.length} new review comments`;
 }

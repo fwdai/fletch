@@ -10,6 +10,7 @@ mod live_turn;
 mod materialize;
 mod messaging;
 mod pr_set;
+pub mod pr_watch;
 mod rewind;
 mod rpc_watch;
 pub(crate) mod run;

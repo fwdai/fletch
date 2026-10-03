@@ -35,6 +35,10 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "turn:started",
     "workspace:changed",
     "pr:state_changed",
+    // The host-side PR watcher's two (`supervisor::pr_watch`): CI and review
+    // threads reach the phone without its Git tab polling for them.
+    "pr:checks_changed",
+    "pr:threads_changed",
     "verify:report",
     "publish:approval-requested",
     "publish:approval-resolved",

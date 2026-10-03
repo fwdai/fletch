@@ -21,7 +21,9 @@ import {
   onAgentTitle,
   onAgentView,
   onDockerBuildProgress,
+  onPrChecksChanged,
   onPrStateChanged,
+  onPrThreadsChanged,
   onPublishApprovalRequested,
   onPublishApprovalResolved,
   onRunPort,
@@ -80,6 +82,7 @@ import { getAllSettings } from "@/storage/settings";
 import { notify } from "@/util/notify";
 import { playSound, type SoundKind } from "@/util/sound";
 import { reduceInstallEvent } from "./agentInstall";
+import { checkoutKey } from "./git";
 import { erroredAgents, interruptedAgents } from "./interrupted";
 import { stampPrWrite } from "./prWriteOrder";
 import { refreshWorkspace } from "./refreshWorkspace";
@@ -145,6 +148,9 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       // the phone push reads the same key): only an explicit "false" silences
       // turn-complete alerts.
       notifyTurnComplete: s.notify_turn_complete !== "false",
+      // The ship-loop alerts, same rule and same ownership
+      // (`set_notify_pr_activity`).
+      notifyPrActivity: s.notify_pr_activity !== "false",
       providerFlags: parseProviderFlags(s.providers),
       providerPathOverrides: parseProviderPathOverrides(s),
       // Opt-in, backend-owned (`set_agent_attribution_removed`): only an explicit
@@ -667,6 +673,25 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       // land afterwards and roll the badge back (merged flipping to open).
       stampPrWrite("prStates", e.agent_id);
       set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
+    }),
+  );
+
+  // The host-side PR watcher's reads land here the same way, so the Git panel's
+  // checks and comments move between its own polls — and keep moving for an
+  // agent whose panel is not open. Same stamp rule: a poll already in flight
+  // must not roll these back.
+  await bind(
+    onPrChecksChanged((e) => {
+      const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
+      stampPrWrite("prChecks", key);
+      set((s) => ({ prChecks: { ...s.prChecks, [key]: e.checks } }));
+    }),
+  );
+  await bind(
+    onPrThreadsChanged((e) => {
+      const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
+      stampPrWrite("prComments", key);
+      set((s) => ({ prComments: { ...s.prComments, [key]: e.comments } }));
     }),
   );
 

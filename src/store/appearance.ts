@@ -22,6 +22,10 @@ export interface AppearanceSlice {
    *  alike; needing input always does. Opt-out. Mirrors the backend-owned
    *  `notify_turn_complete` setting, which the phone push reads too. */
   notifyTurnComplete: boolean;
+  /** The ship-loop phone alerts under one switch — checks settling, a new
+   *  review comment, a PR merging or closing. Opt-out. Mirrors the backend-owned
+   *  `notify_pr_activity` setting the push reads. */
+  notifyPrActivity: boolean;
 
   // appearance
   setTheme: (t: ThemeMode) => void;
@@ -31,6 +35,7 @@ export interface AppearanceSlice {
   setSoundEnabled: (on: boolean) => void;
   setNotifyEnabled: (on: boolean) => void;
   setNotifyTurnComplete: (on: boolean) => void;
+  setNotifyPrActivity: (on: boolean) => void;
 }
 
 export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
@@ -41,6 +46,7 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
   soundEnabled: true,
   notifyEnabled: true,
   notifyTurnComplete: true,
+  notifyPrActivity: true,
 
   // ── appearance ──────────────────────────────────────────────────────────────
   setTheme: (t) => {
@@ -74,5 +80,10 @@ export const createAppearanceSlice: SliceCreator<AppearanceSlice> = (set) => ({
     // The backend command persists `notify_turn_complete` and updates the phone
     // push's mirror, so no setSetting here.
     void api.setNotifyTurnComplete(on);
+  },
+  // Same ownership as above: the backend persists `notify_pr_activity`.
+  setNotifyPrActivity: (on) => {
+    set({ notifyPrActivity: on });
+    void api.setNotifyPrActivity(on);
   },
 });

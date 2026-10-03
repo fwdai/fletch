@@ -346,6 +346,11 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
             database::get_setting(&db.lock(), crate::remote::push::TURN_COMPLETE_SETTING)
                 .as_deref(),
         ));
+        // The ship-loop alert opt-out (checks settled, review comment, PR
+        // merged or closed), same mechanics.
+        crate::remote::push::set_pr_activity(crate::remote::push::parse_pr_activity(
+            database::get_setting(&db.lock(), crate::remote::push::PR_ACTIVITY_SETTING).as_deref(),
+        ));
     }
 
     // Seed the in-memory code-indexing consent (mirror of the
@@ -540,6 +545,13 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // now (a PR may well have merged while the app was closed), then sleeps
     // until there is something to watch.
     crate::roadmap::merge_sweep::spawn(ctx.clone(), db.clone());
+    // The ship loop's eyes while the window is shut: read every agent's bound
+    // open PR once a minute (state and CI, review threads every other tick)
+    // and emit a `pr:*` event per change, so a paired phone hears about failed
+    // checks, a reviewer's comment or a merge without the Git panel polling.
+    // Reads once now to seed its memory — the seed announces nothing, so a
+    // restart does not re-raise last week's threads.
+    crate::supervisor::pr_watch::spawn(ctx.clone(), supervisor.clone());
     // Archive sidebar workspaces left idle past the user's threshold — only
     // ones that are clean and fully pushed, so nothing unrecoverable goes.
     crate::supervisor::auto_archive::spawn(ctx.clone(), supervisor.clone(), db.clone());

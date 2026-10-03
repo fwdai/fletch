@@ -111,6 +111,9 @@ impl Supervisor {
                 .await
                 .and_then(|(pr, bound)| bound.then_some(pr));
             emit_pr_state(ctx.sink.as_ref(), &agent_id, state);
+            // The PR may be brand new: let the host-side watcher seed it now,
+            // while its checks are still pending, rather than at its next tick.
+            super::pr_watch::nudge();
         });
     }
 

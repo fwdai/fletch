@@ -6,7 +6,7 @@
 
 use serde_json::Value;
 
-use crate::github::PrState;
+use crate::github::{PrChecks, PrComments, PrState};
 use crate::host::EventSink;
 // Shared with the other PTY-carrying events (see `provider_login` commands),
 // so the base64 wire format is defined once next to the sessions producing it.
@@ -432,6 +432,65 @@ pub(super) fn emit_pr_state(sink: &dyn EventSink, agent_id: &str, state: Option<
         PrStateChangedPayload {
             agent_id: agent_id.to_string(),
             state,
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
+struct PrChecksChangedPayload {
+    agent_id: String,
+    /// `None` for the agent's primary repo, the subdir for a secondary — the
+    /// same addressing the per-repo PR reads take.
+    subdir: Option<String>,
+    checks: PrChecks,
+}
+
+/// The host-side PR watcher saw a bound open PR's CI rollup, or its set of
+/// failing checks, change (`supervisor::pr_watch`).
+pub(super) fn emit_pr_checks(
+    sink: &dyn EventSink,
+    agent_id: &str,
+    subdir: Option<&str>,
+    checks: PrChecks,
+) {
+    emit(
+        sink,
+        "pr:checks_changed",
+        PrChecksChangedPayload {
+            agent_id: agent_id.to_string(),
+            subdir: subdir.map(str::to_string),
+            checks,
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
+struct PrThreadsChangedPayload {
+    agent_id: String,
+    subdir: Option<String>,
+    comments: PrComments,
+    /// The unresolved thread ids the watcher had not seen before this read.
+    new_thread_ids: Vec<String>,
+}
+
+/// The host-side PR watcher saw new unresolved review threads on a bound open
+/// PR. Carries the whole unresolved set so a client replaces its copy, plus the
+/// ids that are new so it can announce exactly those.
+pub(super) fn emit_pr_threads(
+    sink: &dyn EventSink,
+    agent_id: &str,
+    subdir: Option<&str>,
+    comments: PrComments,
+    new_thread_ids: Vec<String>,
+) {
+    emit(
+        sink,
+        "pr:threads_changed",
+        PrThreadsChangedPayload {
+            agent_id: agent_id.to_string(),
+            subdir: subdir.map(str::to_string),
+            comments,
+            new_thread_ids,
         },
     );
 }

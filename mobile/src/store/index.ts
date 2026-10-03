@@ -61,6 +61,13 @@ export interface NavItem {
   phase: "enter" | "idle" | "leave";
 }
 
+/** The agent screen's tabs, as its `tab` nav prop names them. */
+export type AgentTab = "chat" | "changes" | "ship";
+
+/** Push `kind`s about the agent's PR (docs/remote-protocol.md, "Push
+ *  notifications"): a tap on one of these opens the Ship tab. */
+const SHIP_PUSH_KINDS = new Set(["checks_settled", "review_comment", "pr_merged", "pr_closed"]);
+
 export interface SheetState {
   name: SheetName;
   props: Record<string, string>;
@@ -186,7 +193,9 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  the foreground probe reads that, everything else ignores it. Never
    *  rejects — a failed read is best effort and the next resync recovers. */
   refreshWorkspace(): Promise<boolean>;
-  openAgent(agentId: string): void;
+  /** Open an agent's screen, on `tab` when given (an alert about its PR lands
+   *  on Ship rather than the chat). */
+  openAgent(agentId: string, tab?: AgentTab): void;
   loadAgent(agentId: string): Promise<void>;
   /** Rebuild the log from the host's records. With `liveTurn`, the running
    *  turn is replayed on top from `read_live_turn` (see store/liveTurn). */
@@ -836,7 +845,9 @@ export const useStore = create<MobileState>()((set, get) => ({
     // when there is no pairing, which is the honest answer.
     const { hostKey } = get();
     if (!fletch.agentId || !hostKey || fletch.hostId !== hostKey) return;
-    get().openAgent(fletch.agentId);
+    // An alert about the PR is answered on the Ship tab; a turn ending or a
+    // held prompt, in the chat.
+    get().openAgent(fletch.agentId, SHIP_PUSH_KINDS.has(fletch.kind ?? "") ? "ship" : undefined);
   },
 
   openSheet(name, props = {}) {
@@ -862,8 +873,8 @@ export const useStore = create<MobileState>()((set, get) => ({
     }
   },
 
-  openAgent(agentId) {
-    get().push("agent", { agentId });
+  openAgent(agentId, tab) {
+    get().push("agent", tab ? { agentId, tab } : { agentId });
     void get().loadAgent(agentId).catch(ignore);
   },
 

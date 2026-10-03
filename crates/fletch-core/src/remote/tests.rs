@@ -2880,8 +2880,9 @@ fn transcript_events_and_other_control_requests_are_ignored() {
 }
 
 /// The other half of the wiring: the sink hands over an event *name* and the
-/// payload the emitter built, and only these two names are of interest — the
-/// engine emits ~50, and a third one reaching a trigger would be a bug.
+/// payload the emitter built, and only a handful of names are of interest (these
+/// two and the three `pr:*` ones below) — the engine emits ~50, and any other
+/// reaching a trigger would be a bug.
 #[test]
 fn the_tap_routes_the_two_event_names_and_ignores_the_rest() {
     let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
@@ -3006,4 +3007,368 @@ fn an_agent_with_no_name_still_alerts() {
         .on_status(&agents, "arabia", &AgentStatus::Running);
     h.triggers.on_status(&agents, "arabia", &AgentStatus::Idle);
     assert_eq!(h.sent()[0]["body"], "Agent");
+}
+
+// ---------------------------------------------------------------------------
+// Push triggers: the ship loop
+
+/// The ship-loop opt-out is process-global, so every test that reads or flips
+/// it takes this lock. The turn-complete tests above never touch it.
+fn pr_prefs() -> parking_lot::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock()
+}
+
+/// The opt-out held off for the test's duration, restored on drop — a panic
+/// included — so a failing test cannot mute the rest.
+struct Muted;
+
+impl Muted {
+    fn new() -> Self {
+        super::push::set_pr_activity(false);
+        Self
+    }
+}
+
+impl Drop for Muted {
+    fn drop(&mut self) {
+        super::push::set_pr_activity(true);
+    }
+}
+
+/// A `pr:checks_changed` payload as `supervisor::events::emit_pr_checks` writes
+/// it, for the primary repo.
+fn checks_changed(agent_id: &str, rollup: &str, failing: &[&str]) -> Value {
+    json!({
+        "agent_id": agent_id,
+        "subdir": null,
+        "checks": {
+            "merge_state": "unknown",
+            "rollup": rollup,
+            "total": 2,
+            "passed": 0,
+            "failed": failing.len(),
+            "pending": 0,
+            "required_failing": failing,
+            "runs": [],
+        },
+    })
+}
+
+/// A `pr:threads_changed` payload: the whole unresolved set as `(id, author)`,
+/// plus the ids the watcher found new.
+fn threads_changed(agent_id: &str, threads: &[(&str, &str)], new_ids: &[&str]) -> Value {
+    let unresolved: Vec<Value> = threads
+        .iter()
+        .map(|(id, author)| {
+            json!({
+                "id": id,
+                "author": author,
+                "is_bot": false,
+                "body": "",
+                "path": null,
+                "line": null,
+                "url": "",
+                "replies": 0,
+                "we_replied_last": false,
+            })
+        })
+        .collect();
+    json!({
+        "agent_id": agent_id,
+        "subdir": null,
+        "comments": { "unresolved": unresolved },
+        "new_thread_ids": new_ids,
+    })
+}
+
+/// A `pr:state_changed` payload with a bound PR in `state`.
+fn pr_state_of(agent_id: &str, state: &str) -> Value {
+    json!({
+        "agent_id": agent_id,
+        "state": {
+            "number": 650,
+            "url": "https://github.com/o/r/pull/650",
+            "state": state,
+            "title": "t",
+            "mergeable": "unknown",
+        },
+    })
+}
+
+#[test]
+fn failing_checks_send_one_alert_naming_the_first_failing_check() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed("arabia", "pending", &[]),
+    );
+    assert!(
+        h.sent().is_empty(),
+        "pending is not settled: {:?}",
+        h.sent()
+    );
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed("arabia", "failing", &["unit", "lint"]),
+    );
+
+    let sent = h.sent();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(
+        sent[0],
+        json!({
+            "tokens": [{ "token": "a1b2", "environment": "sandbox" }],
+            "title": "Checks failed",
+            "body": "Fix login crash · unit",
+            "kind": "checks_settled",
+            "agentId": "arabia",
+            "collapseId": "arabia",
+        })
+    );
+}
+
+/// A PR this process had not seen settling green is still news.
+#[test]
+fn passing_checks_alert_with_their_own_title() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed("arabia", "passing", &[]),
+    );
+    assert_eq!(h.kinds(), ["checks_settled"]);
+    assert_eq!(h.sent()[0]["title"], "Checks passed");
+    assert_eq!(h.sent()[0]["body"], "Fix login crash");
+    assert_eq!(h.sent()[0]["collapseId"], "arabia");
+}
+
+/// The watcher emits for a changed set of failing names too; that is the
+/// phone's list to refresh, not a second interruption. Going green after is.
+#[test]
+fn a_different_failing_set_is_not_a_second_alert_but_passing_after_it_is() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    for failing in [&["unit"][..], &["unit", "lint"], &["lint"]] {
+        h.triggers.on_event(
+            &agents,
+            "pr:checks_changed",
+            &checks_changed("arabia", "failing", failing),
+        );
+    }
+    assert_eq!(h.kinds(), ["checks_settled"], "{:?}", h.sent());
+
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed("arabia", "passing", &[]),
+    );
+    let titles: Vec<Value> = h.sent().iter().map(|s| s["title"].clone()).collect();
+    assert_eq!(titles, [json!("Checks failed"), json!("Checks passed")]);
+}
+
+#[test]
+fn a_new_review_thread_alerts_with_its_author() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers.on_event(
+        &agents,
+        "pr:threads_changed",
+        &threads_changed("arabia", &[("t1", "greptile"), ("t2", "alex")], &["t2"]),
+    );
+    let sent = h.sent();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["kind"], "review_comment");
+    assert_eq!(sent[0]["title"], "New review comment");
+    assert_eq!(sent[0]["body"], "Fix login crash · alex");
+    assert_eq!(sent[0]["collapseId"], "arabia");
+
+    // The whole set with nothing new in it (a thread resolved) is no alert.
+    h.triggers.on_event(
+        &agents,
+        "pr:threads_changed",
+        &threads_changed("arabia", &[("t2", "alex")], &[]),
+    );
+    assert_eq!(h.sent().len(), 1);
+}
+
+#[test]
+fn a_merge_or_close_after_a_seen_open_alerts_with_the_pr_number() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+    assert!(h.sent().is_empty(), "opening is not an alert");
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("arabia", "merged"),
+    );
+    let sent = h.sent();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["kind"], "pr_merged");
+    assert_eq!(sent[0]["title"], "PR merged");
+    assert_eq!(sent[0]["body"], "Fix login crash · #650");
+    assert_eq!(sent[0]["collapseId"], "arabia");
+
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("dolomites", "open"),
+    );
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("dolomites", "closed"),
+    );
+    assert_eq!(h.kinds(), ["pr_merged", "pr_closed"]);
+    assert_eq!(h.sent()[1]["title"], "PR closed");
+    assert_eq!(h.sent()[1]["collapseId"], "dolomites");
+}
+
+/// The event reports a state, not a transition, and fires from a turn end as
+/// readily as from the watcher. A first `merged` is a stale snapshot of a PR
+/// that landed while this process was not running — nobody needs telling.
+#[test]
+fn a_first_pr_state_of_merged_is_not_a_merge() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("arabia", "merged"),
+    );
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("arabia", "merged"),
+    );
+    // Nor is an unbound PR, however it is followed.
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &json!({ "agent_id": "dolomites", "state": null }),
+    );
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("dolomites", "closed"),
+    );
+    assert!(h.sent().is_empty(), "{:?}", h.sent());
+}
+
+/// One switch for the whole ship loop: `notify_pr_activity` off silences all
+/// four kinds, and the triggers keep tracking while muted so turning it back on
+/// alerts on the next change rather than re-raising the muted ones.
+#[test]
+fn notify_pr_activity_false_silences_every_ship_loop_kind() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("dolomites", "open"),
+    );
+    {
+        let _muted = Muted::new();
+        h.triggers.on_event(
+            &agents,
+            "pr:checks_changed",
+            &checks_changed("arabia", "failing", &["unit"]),
+        );
+        h.triggers.on_event(
+            &agents,
+            "pr:threads_changed",
+            &threads_changed("arabia", &[("t1", "greptile")], &["t1"]),
+        );
+        h.triggers.on_event(
+            &agents,
+            "pr:state_changed",
+            &pr_state_of("arabia", "merged"),
+        );
+        h.triggers.on_event(
+            &agents,
+            "pr:state_changed",
+            &pr_state_of("dolomites", "closed"),
+        );
+        assert!(h.sent().is_empty(), "{:?}", h.sent());
+    }
+    // Back on: the rollup and PR state were tracked while muted, so the next
+    // settle and the next witnessed merge alert; a new thread always does.
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed("arabia", "passing", &[]),
+    );
+    h.triggers.on_event(
+        &agents,
+        "pr:threads_changed",
+        &threads_changed("arabia", &[("t1", "greptile")], &["t1"]),
+    );
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("arabia", "merged"),
+    );
+    assert_eq!(h.kinds(), ["checks_settled", "review_comment", "pr_merged"]);
+}
+
+/// The focus rule covers the ship loop too: at the Mac, the Git panel shows it.
+#[test]
+fn a_focused_window_suppresses_the_ship_loop_alerts() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(true, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed("arabia", "failing", &["unit"]),
+    );
+    h.triggers.on_event(
+        &agents,
+        "pr:threads_changed",
+        &threads_changed("arabia", &[("t1", "greptile")], &["t1"]),
+    );
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("arabia", "merged"),
+    );
+    assert!(h.sent().is_empty(), "{:?}", h.sent());
+}
+
+/// The two watcher events are on the wire and advertised, so a phone can gate
+/// its Ship tab's live updates on them.
+#[test]
+fn the_pr_watch_events_are_forwarded_and_advertised() {
+    let protocol = super::protocol_descriptor();
+    for event in ["pr:checks_changed", "pr:threads_changed"] {
+        assert!(
+            super::events::FORWARDED_EVENTS.contains(&event),
+            "{event} is not forwarded"
+        );
+        assert!(
+            protocol.events.contains(&event),
+            "{event} is missing from the descriptor"
+        );
+    }
 }

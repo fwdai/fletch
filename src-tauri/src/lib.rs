@@ -627,6 +627,24 @@ fn set_notify_turn_complete(enabled: bool, state: tauri::State<'_, DbState>) -> 
     Ok(())
 }
 
+/// Whether the ship loop alerts the phone at all — checks settling, a review
+/// comment, a PR merging or closing. Same shape as `set_notify_turn_complete`:
+/// one backend-owned key, `notify_pr_activity`, mirrored for the push triggers.
+#[tauri::command]
+fn set_notify_pr_activity(enabled: bool, state: tauri::State<'_, DbState>) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(
+            &conn,
+            remote::push::PR_ACTIVITY_SETTING,
+            if enabled { "true" } else { "false" },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    remote::push::set_pr_activity(enabled);
+    Ok(())
+}
+
 /// How long a publish-approval prompt waits before denying; `0` waits until
 /// answered.
 #[tauri::command]
@@ -1616,6 +1634,7 @@ pub fn run() {
             set_draft_prs,
             set_agent_attribution_removed,
             set_notify_turn_complete,
+            set_notify_pr_activity,
             probe_docker_engine,
             probe_podman_engine,
             get_container_auth_status,
