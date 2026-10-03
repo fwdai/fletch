@@ -22,6 +22,7 @@ import {
   isAgentBusy,
   passthroughSlashName,
   providerFor,
+  reconcileSending,
   recordWorkspaceUsage,
   reduceRecords,
   repoPathFor,
@@ -310,6 +311,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         },
         { ...state.offSidebarAgents },
       ),
+      // A fresh read of these records settles their `sending` bridge the way a
+      // workspace snapshot settles a sidebar agent's (see helpers/sending):
+      // they are absent from that snapshot, so this is their only authority.
+      sending: reconcileSending(state.sending, agents),
     })),
 
   selectAgent: (id) =>

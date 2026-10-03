@@ -135,6 +135,21 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Withdraw a turn's run start: the hand-off to the process failed after
+    /// the stamp above, so the turn never ran. Clearing `started_at` keeps the
+    /// row out of `mark_user_turn_ended`'s open-turn set — an unrelated Idle
+    /// would otherwise close it — and lets the retry's own stamp land, since
+    /// that stamp only writes a null. A turn already closed is left alone.
+    pub fn unmark_user_turn_started(&self, turn_id: &str) -> Result<()> {
+        let conn = self.db.lock();
+        conn.execute(
+            "UPDATE session_user_turns SET started_at = NULL
+             WHERE turn_id = ?1 AND ended_at IS NULL",
+            [turn_id],
+        )?;
+        Ok(())
+    }
+
     /// Close the in-flight turn at turn end by stamping `ended_at` on the open
     /// turn (started, not yet ended) of the workspace's current session, and
     /// return its stats for telemetry. `None` when none is open — e.g. the

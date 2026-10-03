@@ -354,15 +354,20 @@ impl Supervisor {
     /// `resting` — the live status from before the start, `None` for an agent
     /// with no runtime entry — and announced to clients as idle, with none of
     /// the turn-end side effects: no queue drain, no sync, no closed-turn
-    /// stats, because nothing ran. The caller re-queues the message for the
-    /// next boundary. A status that moved on meanwhile (a teardown's Error) is
-    /// left alone.
+    /// stats, because nothing ran. The turn row's start stamp goes too, so the
+    /// retry can stamp its own and no unrelated Idle closes a turn that never
+    /// ran. The caller re-queues the message for the next boundary. A status
+    /// that moved on meanwhile (a teardown's Error) is left alone.
     fn revert_turn_start(
         &self,
         ctx: &Arc<EngineCtx>,
         agent_id: &str,
+        turn_id: &str,
         resting: Option<AgentStatus>,
     ) {
+        if let Err(e) = self.workspace.unmark_user_turn_started(turn_id) {
+            tracing::warn!(error = %e, agent_id, "withdraw user turn start failed");
+        }
         {
             let mut statuses = self.statuses.lock();
             if !matches!(statuses.get(agent_id), Some(AgentStatus::Running)) {

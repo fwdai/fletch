@@ -77,7 +77,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     // environment switch (see `switchEnvironment`).
     await registerLocalListeners(set);
     await registerEventListeners(set, get);
-    setupResync(set);
+    setupResync(set, get);
 
     await refreshWorkspace(set);
   },

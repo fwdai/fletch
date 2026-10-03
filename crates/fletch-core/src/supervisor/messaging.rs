@@ -560,7 +560,7 @@ async fn deliver_as_turn(
     if let Err(e) = sup.deliver_user_message(agent_id, &msg.turn_id, &msg.text, &msg.attachments) {
         // Nothing was handed over, so nothing ran: back to rest without the
         // turn-end side effects, for the caller's re-queue to retry against.
-        sup.revert_turn_start(ctx, agent_id, resting);
+        sup.revert_turn_start(ctx, agent_id, &msg.turn_id, resting);
         return Err(e);
     }
     on_first_user_message(
@@ -894,10 +894,15 @@ mod tests {
             })
             .collect();
         assert_eq!(statuses, ["started", "running", "idle"]);
-        // The turn row was captured and stamped ahead of the hand-off.
+        // The turn row was captured, but its start stamp was withdrawn with the
+        // status: the turn never ran, so an unrelated Idle must not close it and
+        // the retry's own stamp — which only writes a null — must land.
         let turns = sup.workspace.read_history_turns("yosemite").unwrap();
         assert_eq!(turns.len(), 1);
-        assert!(turns[0].started_at.is_some());
+        assert_eq!(turns[0].started_at, None);
+        sup.workspace.mark_user_turn_started(TURN, 4242).unwrap();
+        let turns = sup.workspace.read_history_turns("yosemite").unwrap();
+        assert_eq!(turns[0].started_at, Some(4242));
     }
 
     /// Capture is best-effort: a checkout that can't be snapshotted is skipped
