@@ -11,7 +11,7 @@ import type {
   DirListing,
 } from "@desktop/api/types/checkout";
 import type { GitState, ShortStats } from "@desktop/api/types/git";
-import type { PrChecks, PrLive, PrState } from "@desktop/api/types/pr";
+import type { PrChecks, PrComments, PrLive, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type {
   ItemStatus,
@@ -174,6 +174,13 @@ export function createApi(client: RemoteClient) {
       call<PrChecks | null>("get_pr_checks", { agentId, subdir }),
     getPrLive: (agentId: string, subdir?: string) =>
       call<PrLive | null>("get_pr_live", { agentId, subdir }),
+    /** The PR's unresolved review threads. GraphQL on the host, so polled well
+     *  below the `get_pr_live` cadence. Gated on `hostSupports("get_pr_threads")`. */
+    getPrThreads: (agentId: string, subdir?: string) =>
+      call<PrComments | null>("get_pr_threads", { agentId, subdir }),
+    /** Merge the open PR on the checkout's branch, under the host's GitHub
+     *  identity. Gated on `hostSupports("merge_pr")`. */
+    mergePr: (agentId: string, subdir?: string) => call<null>("merge_pr", { agentId, subdir }),
     listRepoBranches: (repoPath: string) => call<string[]>("list_repo_branches", { repoPath }),
     repoDefaultBranch: (repoPath: string) => call<string>("repo_default_branch", { repoPath }),
     discoverSupportedModels: () => call<AgentModels[]>("discover_supported_models"),

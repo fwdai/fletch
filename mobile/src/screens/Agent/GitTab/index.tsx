@@ -1,12 +1,20 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { baseOf, refLabel } from "../../../lib/agents";
+import { usePoll } from "../../../lib/hooks";
 import { useStore } from "../../../store";
-import { GitActionFooter } from "../GitActionFooter";
+import { ChecksList } from "./ChecksList";
+import { GitActions, useGitActionList } from "./GitActions";
 import { PrCard } from "./PrCard";
 import { StatusHeader } from "./StatusHeader";
 
+/** `get_pr_live` is one conditional REST pass on the host; the threads read is
+ *  GraphQL, so it runs at half the cadence (docs/remote-protocol.md). */
+const LIVE_MS = 30_000;
+const THREADS_MS = 60_000;
+
 /** The checkout's git and PR state: a tinted status strip, the branch's
- *  numbers, the PR card, and the same delegated action footer as Changes. */
+ *  numbers, the PR card with its checks and review threads, and the footer of
+ *  what to do about it. */
 export function GitTab({
   agent,
   onDelegated,
@@ -19,9 +27,21 @@ export function GitTab({
   const git = useStore((s) => s.gitStates[agent.id]);
   const pr = useStore((s) => s.prStates[agent.id]);
   const checks = useStore((s) => s.prChecks[agent.id]);
+  const threads = useStore((s) => s.prComments[agent.id]);
+  const connected = useStore((s) => s.connection === "connected");
+  const loadPrLive = useStore((s) => s.loadPrLive);
+  const loadPrThreads = useStore((s) => s.loadPrThreads);
+  const actions = useGitActionList(agent);
   const branch = refLabel(git);
   const base = baseOf(agent);
   const pending = (git?.files.length ?? 0) > 0 || (git?.unpushed ?? 0) > 0;
+  const unresolved = threads?.unresolved.length ?? 0;
+
+  // Live while the tab is open and there is a PR to be live about. Each poll
+  // runs once on activation, which is the mount-time load.
+  const live = !!pr && connected;
+  usePoll(() => void loadPrLive(agent.id), LIVE_MS, live);
+  usePoll(() => void loadPrThreads(agent.id), THREADS_MS, live);
 
   return (
     <>
@@ -57,7 +77,18 @@ export function GitTab({
             )}
           </div>
           {pr ? (
-            <PrCard agentId={agent.id} pr={pr} />
+            <>
+              <PrCard agentId={agent.id} pr={pr} />
+              {checks && checks.runs.length > 0 && <ChecksList checks={checks} />}
+              {unresolved > 0 && (
+                <div className="card git-kv">
+                  <div className="kv">
+                    <span>Review threads</span>
+                    <span>{unresolved} unresolved</span>
+                  </div>
+                </div>
+              )}
+            </>
           ) : (
             <div className="card empty">
               <b>No pull request yet</b>
@@ -66,7 +97,7 @@ export function GitTab({
           )}
         </div>
       </div>
-      <GitActionFooter agent={agent} onDelegated={onDelegated} />
+      <GitActions agent={agent} actions={actions} onDelegated={onDelegated} />
     </>
   );
 }
