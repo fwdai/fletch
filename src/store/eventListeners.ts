@@ -739,13 +739,30 @@ export const detachEventListeners = async () => {
 // actually running) until its next transition. The refetch is cheap and
 // `get_workspace` overlays live in-memory status, so it's authoritative — and
 // every busy surface derives from that status, so one refetch corrects them all.
-export const setupResync = (set: AppSet) => {
+export const setupResync = (set: AppSet, get: AppGet) => {
   let resyncInFlight = false;
+  // The records the snapshot omits — Roadmap chats — are re-read by project
+  // from the same host, so a status they missed has a way back too. Each fresh
+  // list settles its own `sending` flags (see `registerOffSidebarAgents`).
+  const refreshOffSidebarAgents = async () => {
+    const byProject = new Map<string, string>();
+    for (const a of Object.values(get().offSidebarAgents)) {
+      if (a.purpose && !a.archive) byProject.set(a.project_id, a.purpose);
+    }
+    await Promise.all(
+      [...byProject].map(([projectId, purpose]) =>
+        api
+          .listProjectChats(projectId, purpose)
+          .then((rows) => get().registerOffSidebarAgents(rows))
+          .catch(() => {}),
+      ),
+    );
+  };
   const resyncWorkspace = async () => {
     if (resyncInFlight) return;
     resyncInFlight = true;
     try {
-      await refreshWorkspace(set);
+      await Promise.all([refreshWorkspace(set), refreshOffSidebarAgents()]);
     } catch {
       // Best-effort; the next event or resync recovers.
     } finally {
