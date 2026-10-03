@@ -351,6 +351,62 @@ describe("git and PR state", () => {
     spy.mockRestore();
   });
 
+  it("loadPrStatus tints every primary repo from one sweep, keeping what the sweep is silent on", async () => {
+    await state().loadPrStatus();
+    expect(state().prStates.kamakura?.number).toBe(642);
+    expect(state().prChecks.kamakura?.passed).toBe(14);
+    const pr = state().prStates.kamakura;
+    const before = state().prChecks.kamakura;
+    if (!pr || !before) throw new Error("the mock host binds a PR to kamakura");
+    // An agent the next sweep does not name keeps its state: absence is
+    // "nothing to say", not "no PR".
+    const elsewhere = { ...pr, number: 7 };
+    useStore.setState((s) => ({ prStates: { ...s.prStates, pamukkale: elsewhere } }));
+    const spy = vi.spyOn(api, "getAllPrStatus").mockResolvedValue({
+      // The CI read didn't resolve this round: fresh state, last tint.
+      kamakura: { state: { ...pr, title: "renamed on GitHub" }, checks: null },
+      // A secondary repo, which the phone has no row for yet.
+      "kamakura::packages/app": { state: { ...pr, number: 9 }, checks: { ...before, failed: 3 } },
+    });
+    try {
+      await state().loadPrStatus();
+      expect(state().prStates.kamakura?.title).toBe("renamed on GitHub");
+      expect(state().prChecks.kamakura).toBe(before);
+      expect(state().prStates["kamakura::packages/app"]).toBeUndefined();
+      expect(state().prChecks["kamakura::packages/app"]).toBeUndefined();
+      expect(state().prStates.pamukkale).toBe(elsewhere);
+      // A real rollup replaces the tint.
+      spy.mockResolvedValue({ kamakura: { state: pr, checks: { ...before, failed: 1 } } });
+      await state().loadPrStatus();
+      expect(state().prChecks.kamakura?.failed).toBe(1);
+    } finally {
+      spy.mockRestore();
+      useStore.setState((s) => {
+        const { pamukkale: _, ...prStates } = s.prStates;
+        return { prStates };
+      });
+    }
+  });
+
+  it("loadPrStatus asks nothing of a host without get_all_pr_status", async () => {
+    const protocol = state().protocol;
+    const spy = vi.spyOn(api, "getAllPrStatus");
+    useStore.setState({
+      protocol: protocol && {
+        ...protocol,
+        ops: protocol.ops.filter((o) => o !== "get_all_pr_status"),
+      },
+    });
+    try {
+      expect(state().hostSupports("get_all_pr_status")).toBe(false);
+      await state().loadPrStatus();
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      useStore.setState({ protocol });
+      spy.mockRestore();
+    }
+  });
+
   it("reads the checkout tree", async () => {
     await state().loadTree("arabia");
     expect(state().trees.arabia?.some((f) => f.status === "M")).toBe(true);

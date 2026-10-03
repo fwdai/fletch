@@ -618,6 +618,7 @@ export const protocol: HostProtocol = {
     "roadmap_update_item",
     "roadmap_discard_proposal",
     "read_live_turn",
+    "get_all_pr_status",
   ],
   events: [
     "agent:event",
